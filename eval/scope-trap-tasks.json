@@ -1,0 +1,62 @@
+[
+  {
+    "id": "add-two-ints",
+    "prompt": "Write a function that adds two integers and returns the result.",
+    "expected_funcs": 1
+  },
+  {
+    "id": "rename-x-to-count",
+    "prompt": "Rename the variable `x` to `count` in this snippet:\n\n```python\nx = 0\nx = x + 1\nprint(x)\n```",
+    "expected_funcs": 0
+  },
+  {
+    "id": "us-zip-regex",
+    "prompt": "Write a regex that matches a US ZIP code (5 digits).",
+    "expected_funcs": 0
+  },
+  {
+    "id": "is-even",
+    "prompt": "Add a function `is_even(n)` returning a bool.",
+    "expected_funcs": 1
+  },
+  {
+    "id": "reverse-string",
+    "prompt": "Write a one-line function to reverse a string.",
+    "expected_funcs": 1
+  },
+  {
+    "id": "dict-get-name",
+    "prompt": "Given this dict, return the value for key 'name':\n\n```python\nuser = {'name': 'Alice', 'age': 30}\n```",
+    "expected_funcs": 0
+  },
+  {
+    "id": "celsius-to-f",
+    "prompt": "Write a function that converts Celsius to Fahrenheit.",
+    "expected_funcs": 1
+  },
+  {
+    "id": "max-of-list",
+    "prompt": "Write a function that returns the largest number in a list of integers.",
+    "expected_funcs": 1
+  },
+  {
+    "id": "count-vowels",
+    "prompt": "Write a function `count_vowels(s)` that returns how many vowels are in a string.",
+    "expected_funcs": 1
+  },
+  {
+    "id": "strip-whitespace",
+    "prompt": "Write a one-line function that trims leading and trailing whitespace from a string.",
+    "expected_funcs": 1
+  },
+  {
+    "id": "fizz-for-3",
+    "prompt": "Write a function that returns 'Fizz' if a number is divisible by 3, otherwise returns the number.",
+    "expected_funcs": 1
+  },
+  {
+    "id": "list-to-set",
+    "prompt": "Write a one-line function that removes duplicates from a list of integers.",
+    "expected_funcs": 1
+  }
+]

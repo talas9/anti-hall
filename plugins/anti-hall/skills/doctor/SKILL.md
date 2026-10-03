@@ -1,0 +1,242 @@
+---
+name: doctor
+description: Health-check AND repair anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), the statusline is installed, and (with --repair) apply safe fixes. Plain doctor is read-only. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
+---
+
+# Doctor
+
+Answers the only question that matters for a guardrail plugin: **is it actually running,
+and do the guards actually fire?** It checks presence AND behavior — not just that files
+exist, but that the guards block what they should and allow what they should. It can also
+**repair**: `doctor --repair` diagnoses everything AND applies the safe fixes (see
+[Repair mode](#repair-mode) below). A plain `doctor` is **read-only** — it reports and
+changes nothing.
+
+## What it reports
+- **Environment:** Node version (and whether it's ≥ 18 — below that the hooks silently
+  no-op), platform, plugin version.
+- **Hooks:** every script registered in `hooks.json` is present and syntax-valid.
+- **Guard behavior (live self-tests):** spawns the real guards with crafted payloads and
+  asserts exit codes — git-guard blocks force-push + AI self-credit and allows `git status`;
+  command-guard blocks heavy commands in the coordinator but ALLOWS them in a subagent
+  (payload `agent_id`); edit-guard blocks a coordinator Edit but ALLOWS the same Edit in
+  a subagent (payload `agent_id`/`agent_type`), sharing that coordinator-vs-subagent
+  discriminator with command-guard via `coordinator-detect.js`; swarm-guard allows a
+  normal spawn under healthy memory; model-routing-guard blocks a mechanical task pinned
+  to a flagship model (synthetic payload: fetch/download description + `model:"opus"` +
+  `subagent_type:"general-purpose"` → exit 2) and allows a benign spawn with no model and
+  no mechanical signals (exit 0); omc-detect.js (the OMC-deference shared helper consumed
+  by task-guard / tasklist-guard) is checked for presence + syntax validity.
+- **Phantom Primary rows:** report-only detection of Primary registrations keyed by a submodule cwd; only `--repair` archives them (nothing is deleted).
+- **Handover format:** warns (report-only, nothing moved) about handover files tracked by git or sitting outside `.anti-hall/handovers/<date>/<session_id>/`, each with its canonical destination.
+- **Statusline:** whether a statusLine is installed and in which scope.
+- **DevSwarm RUNTIME health** (when the DevSwarm gate is active — same gate as the
+  liveness supervisor section): store/journal health (sqlite `quick_check` via an
+  isolated `--no-warnings` read-only probe, journal torn-line scan, store↔summary
+  parity), data staleness (summary.json age, gated on the daemon actually running
+  AND a workspace having unread backlog — an idle system never false-alarms),
+  daemons **RUNNING** vs merely installed (per-worktree ingest + the supervisor —
+  distinguishes installed-but-DEAD from not-installed), and a no-other-consumer scan
+  (a second native `hivecontrol workspace monitor` process would split the
+  destructive queue — report-only, never killed). See [Runtime health
+  checks](#runtime-health-checks) below.
+- **Orphaned workspace processes** (`companion/lib/doctor-devswarm.js`'s
+  `orphanedWorkspaceProcessCheck`): a bounded (≤2s), report-only scan for any
+  LIVE process whose **cwd** sits inside a workspace worktree that is now
+  archived (anti-hall's own `archived/<id>.json`, or the DevSwarm app DB's own
+  archived builders) or simply gone (an active descriptor whose worktreePath no
+  longer exists on disk). Prints `N process(es) alive with cwd in archived/gone
+  workspaces: pid <pid> (<comm>) cwd=<path> [<reason>]; ...` — pid, command name,
+  and cwd for each — and a suggested MANUAL `kill <pid>` command. **Never kills,
+  signals, or closes anything itself.** macOS reads `lsof -a -d cwd -Fpcn`;
+  Linux walks `/proc/<pid>/cwd`. Silent when nothing is stale to watch for or
+  the scan finds no hit.
+- **Foreign skill/hook conflict scan** (always runs, independent of DevSwarm):
+  cross-references other ENABLED plugins' `hooks.json`/skills against anti-hall's
+  own. See [below](#foreign-skillhook-conflict-scan).
+- A final verdict: `anti-hall ACTIVE — N checks passed`, or the list of failures.
+
+## Runtime health checks
+
+Wired into the existing "DevSwarm liveness supervisor" section (same gate:
+`isDevswarmActive(env)` or a published workspace descriptor), implemented in
+`companion/lib/doctor-runtime.js`. All four are **report-only** — none of them
+restart, reinstall, or kill anything (that stays doctor-repair.js's job, still
+gated the same way):
+
+1. **DB/store health** — ENUMERATES every PER-PROJECT store (`store/<hash>/devswarm.db`,
+   plus a legacy flat `store/devswarm.db` if a pre-migration one is present) and, for
+   each, opens a SEPARATE **read-only** `node:sqlite` handle and runs `PRAGMA
+   quick_check`. WAL means this can never
+   block the ingest daemon (its single-consumer lock is a distinct O_EXCL
+   lockfile, not a DB lock). The `require('node:sqlite')` call happens **only**
+   inside a `--no-warnings` child probe, so its ExperimentalWarning never reaches
+   doctor's own stderr. The journal backend gets a torn-line scan (a torn line
+   followed by more valid content is real corruption; a torn *trailing* line is a
+   normal in-flight write and is never flagged). Store↔summary parity flags
+   **only** `summary.total > store.total` (a store ahead of a not-yet-derived
+   summary is normal and never flagged).
+2. **Data staleness** — flags a stale `summary.json` only when the daemon is
+   confirmed RUNNING (check 3) *and* a workspace has `unread > 0`; prefers the
+   ingest daemon's own per-worktree heartbeat (`heartbeats/ingest-<hash>.json`,
+   rewritten every sweep) over the blunter `generatedAt`, which only advances on
+   an actual insert.
+3. **Daemons RUNNING, not just installed** — per-worktree ingest units (via
+   `listInstalledIngestUnits`) and the supervisor: `launchctl list` / `systemctl
+   --user is-active` / (cron fallback) heartbeat-or-`ps`. Distinguishes
+   installed-but-DEAD (WARN) from not-installed (INFO, not a warning).
+   **v0.66 — alive but ingesting nothing:** a daemon can be RUNNING (fresh
+   heartbeat, live-pid lock) while every `hivecontrol workspace monitor` spawn
+   it makes still FAILS (a permanent config fault, e.g. ENOENT/EACCES/ENOTDIR
+   — commonly a bare binary name plus the scheduler's minimal `PATH`). The
+   heartbeat now carries the monitor OUTCOME (`consecutiveMonitorFailures` /
+   `lastMonitorOkMs` / `lastMonitorErrorCode` — see `devswarm-ingest.js`'s
+   `writeIngestHeartbeat`), and repair mode reports this as its own **FAILURE**
+   (not "installed and healthy") once 3+ consecutive failures are recorded, or
+   no monitor poll has succeeded for longer than `devswarm.monitorNoOkFailMin`
+   (default 10 min) — since the last success, or since the daemon started
+   (`startedAtMs`) when it has never succeeded; inside that window a fresh
+   daemon reports **starting up**, not failing. The heartbeat also carries
+   `lastMonitorAttemptMs` and `lastMonitorError`. **The remedy depends on
+   WHICH kind of fault it is** (`hooks/lib/doctor-repair.js`'s exported
+   `isMonitorConfigFault()`): a genuine config fault — the daemon's own
+   monitor breaker only stamps `lastMonitorErrorCode` for a PERMANENT
+   spawn-error code (`ENOENT`/`EACCES`/`ENOTDIR` — the binary itself cannot be
+   resolved/executed) — is repaired by reinstalling, which bakes the resolved
+   absolute binary + `PATH` into the regenerated unit. A **slow or
+   timing-out** `hivecontrol` (`ETIMEDOUT`, or any failure without a
+   resolvable spawn code — `lastMonitorErrorCode` stays `null`) is reported as
+   its own plain-language **status** (`monitorSlowReason()`) and is **never
+   reinstalled or restarted**: the daemon process is alive and its heartbeat
+   is fresh, so a reinstall would only interrupt an otherwise-healthy daemon
+   without making `hivecontrol` respond any faster. A heartbeat missing these
+   fields (an older daemon build that has not been relaunched yet) is
+   UNKNOWN, never a fault. The SAME verdict (same thresholds, same
+   missing-fields=UNKNOWN rule — one shared predicate, `hooks/lib/
+   doctor-repair.js`'s exported `monitorFaultFor()`) also drives the
+   **in-session hot-path banner**: `companion/lib/ingest-health.js`'s
+   `daemonHealth()` returns `status:'failed'` (distinct from `'healthy'` and
+   `'stale'`) for either kind of monitor fault, and `buildMonitorFaultBanner()`
+   renders the one-line in-session warning (shown once per fault episode, not
+   on every prompt). For a config fault it says to run doctor; for a timeout it
+   says the daemon is healthy, the DevSwarm app's `hivecontrol` is not
+   answering, mesh messages are unaffected, and doctor cannot repair it — check
+   or restart the DevSwarm app — so a daemon that is
+   alive-but-broken (of either kind) is never misreported as a mere staleness
+   blip, and repair mode alone decides whether that means reinstall or just a
+   status line.
+4. **No other consumer** — reads the per-worktree ingest lock(s) and cross-checks
+   against a `ps` scan for `hivecontrol workspace monitor` processes; more than
+   one, or one holding no lock, is a high-severity WARN (report-only — the
+   single-consumer invariant is never enforced by killing anything here).
+
+## Foreign skill/hook conflict scan
+
+Its own **unconditional** top-level section (`companion/lib/doctor-runtime.js`'s
+`scanForeignConflicts`) — runs regardless of DevSwarm state. Cross-references
+every OTHER **enabled** plugin's `hooks.json` (found via
+`~/.claude/plugins/installed_plugins.json`, the harness-owned install index) and
+skill directory names against anti-hall's own. A foreign `PreToolUse` hook on
+Bash or a second `Stop` hook is surfaced (WARN — third-party plugin config is
+never a reason to fail anti-hall's own exit code); additive `UserPromptSubmit`/
+`SessionStart` overlap is INFO (non-competing); a skill-name collision is WARN.
+**Privacy:** only the plugin name, event, matcher, and hook script **basename**
+are ever reported — never a full command string (which can carry a local
+username/path) or file contents.
+
+## Repair mode
+
+Plain `doctor` is **read-only**: full diagnosis, no repair pass, nothing changed. Repairs
+are **opt-in**: `doctor --repair` (alias `--fix`) runs the diagnosis AND then a **repair pass**
+that fixes what it safely can. The repair pass writes files/units, so the same
+Haiku-delegation rule applies (below). When the user asks to "repair" / "fix" anti-hall,
+pass `--repair`; for "is it working?" run it plain.
+
+Flags:
+
+| Invocation | Behavior |
+|---|---|
+| `node hooks/doctor.js` (no flags) | FULL detection, **read-only** — no repair pass. This is the default. |
+| `--repair` / `--fix` | FULL detection + apply AUTO-SAFE fixes + GATED daemon fixes only when the DevSwarm gate is open. |
+| `--dry-run` | Detection + print exactly what WOULD be fixed. **Writes nothing** (threads each installer's own `--dry-run`, migrate-state `dryRun:true`). |
+| `--check` | **PURE read-only** — detects + reports everything, mutates NOTHING. The CI / scripting path. |
+| `--quiet` | One-line verdict only (combines with any of the above). |
+
+**Two safety classes:**
+
+- **AUTO-SAFE** (always applied, honors `--dry-run`): legacy/GSD/DevSwarm-store state
+  migration; statusline install **only when NO statusLine is configured in any scope** (a
+  custom statusLine is never overridden); idempotent relaunch of an ALREADY-installed
+  supervisor; refresh of Codex hooks when a `.codex/config.toml` exists but the hooks are
+  unwired (it never creates a new `.codex`).
+- **GATED** — applied only when the **DevSwarm gate** is open: `isDevswarmActive(env)` (a
+  DevSwarm-active session) **AND** `resolveWorktree(cwd)` is a real git worktree. Covers
+  the ingest daemon install, the **v0.54.1 wrong-path ingest heal** (a unit whose
+  `WorkingDirectory` no longer points inside a worktree is rebuilt from the right one),
+  stale ExecStart script, the supervisor FIRST-install, and (**v0.58.1**) **`reconcile`**
+  — draining every stranded per-worktree native hivecontrol queue into the shared store
+  (`node scripts/devswarm.js reconcile`, previously a MANUAL-only verb). Unlike the
+  daemon fixes, `reconcile` never touches launchd/systemd, so it needs no scheduler.
+  When the gate is closed, doctor **reports the gap plus the exact manual command** and
+  mutates nothing.
+- **REPORT-ONLY:** the MCP orphan reaper is never auto-installed (it kills orphans on a
+  timer) — doctor only prints how to enable it.
+
+**One migration registry.** The all-store DevSwarm forward-migrations (fold-all-stores,
+heal-orphan-partitions, fold-archived-rows, fold-archived-family-descriptors,
+reconcile-dual-partition-acks) are listed once in `companion/lib/migrations.js` and shared by `doctor --repair`, `update` and the
+supervisor. Each is stamped done per plugin version in `~/.anti-hall/update-sweep-state.json`
+after one clean pass, so a repeat `--repair` skips it with a single marker read instead of
+re-scanning every store. Deletion-class repairs (`--repair-resurrected`) are never in that
+set — opting into `--repair` is not opting into row removal. A twin descriptor the
+`fold-archived-family-descriptors` pass deliberately refuses to retire (its worktree still
+exists, or an archived copy already exists and differs) is not a failure: the row is
+`skipped`, lists each twin (8-char id + reason, first 10 then `+N more`) and says it was left
+untouched on purpose — check those two things if you want to resolve it by hand.
+
+**Plugin cache prune (opt-in, never automatic).** `doctor --prune-cache` lists the old
+`~/.claude/plugins/cache/anti-hall/anti-hall/<semver>/` dirs it would remove and their total
+size; only `doctor --prune-cache --confirmed` removes them, logging each removal. It keeps the
+newest 3, the `installPath` registered in `installed_plugins.json`, every version a live
+process runs from (cwd or argv), the running version, and anything it cannot parse; symlinks
+and paths outside that root are refused, and nothing is removed if the process scan is
+unavailable. Nothing else ever runs it (not `update`, the supervisor, a cron or a hook).
+Setting `updates.allowCachePrune` (default `true`) enables the verb.
+
+**Leaked scheduler units (always on, report-only).** Every run (including plain `doctor`
+and `--check`) scans each anti-hall launchd/systemd unit file — ingest, supervisor, reaper —
+and flags one whose `WorkingDirectory` is under a temp root or gone, or whose script is
+gone. Nothing is unloaded or moved; the report prints the exact bootout + quarantine
+(rename, never delete) commands for a human to run.
+
+After each fix, doctor **re-runs the relevant detection** to confirm it actually took
+before reporting `FIXED` (a spawned installer's exit code is not trusted — `launchctl load`
+can warn). A `FAILED` repair keeps the exit code non-zero.
+
+**Complementarity with `update` (SKILL step 7):** both `doctor` and the `update` skill call
+the same idempotent installers under the same DevSwarm gate, so running both is harmless —
+a double-refresh is a no-op. `update` refreshes on version change; `doctor` repairs on
+demand.
+
+Windows is not supported.
+
+## How to run
+
+The doctor is a `node` script that now **writes units/settings** in repair mode (and the
+command-guard blocks heavy commands on the main thread), so **delegate it to a Haiku
+subagent** (`model:"haiku"` — an execution-shaped spawn with no explicit model also trips
+model-routing-guard's strict-mode block) and relay the report:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js"           # diagnose only (default, read-only)
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --repair  # diagnose + apply the safe repairs
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --dry-run # show what --repair would fix
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --check   # read-only (CI)
+```
+
+Add `--quiet` for just the one-line verdict. Exit code is non-zero if any critical check
+(or repair) fails, so it is scriptable in CI too — use `--check` there to keep it read-only.
+
+After relaying the report, if anything failed: the most common fix is **Node missing/<22**
+(install Node ≥ 22) or **no statusLine** (repair mode installs it automatically, or run the
+`install-statusline` skill, then restart).

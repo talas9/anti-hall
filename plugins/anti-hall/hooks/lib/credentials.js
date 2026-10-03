@@ -1,0 +1,277 @@
+'use strict';
+// credentials.js — the ONE place anti-hall resolves an API key.
+//
+// Resolution order (never logs, echoes or returns a key in any message):
+//   1. The plugin option the user stored via the plugin's options screen (anti-hall ->
+//      jev_vercel_api_key / jev_typesafe_api_key (vendor-bound; the legacy
+//      generic jev_api_key counts only for the vendor it is bound to, see
+//      genericKeyVendor) / anthropic_api_key, sensitive: true). Claude Code exports
+//      it to HOOK processes as CLAUDE_PLUGIN_OPTION_<KEY> (uppercased); the
+//      detached/sync workers anti-hall spawns inherit that env. Statusline,
+//      monitor and plain CLI/Bash-tool processes do NOT receive it.
+//   2. ONLY behind a PER-KIND opt-in, each default false and HOME-SETTINGS
+//      ONLY (schema `homeOnly`: ~/.anti-hall/settings.json — never env, never a
+//      project .claude/settings.json, never /config):
+//        jev       -> jev.allowLegacyKeyRead: AI_GATEWAY_API_KEY /
+//                     TYPESAFE_API_KEY env vars, then the key file.
+//        anthropic -> guards.allowAnthropicEnvKey: ANTHROPIC_API_KEY env.
+//      The Codex port (no userConfig) enables them in that same file.
+// With the opt-in off the plugin never reads a credential from the machine;
+// it only reports that a legacy key EXISTS (presence check, value untouched)
+// so doctor / jev-setup can tell the user how to migrate.
+
+const fs = require('fs');
+const path = require('path');
+const MAX_KEY_FILE_BYTES = 4096;
+
+const OPTION_ENV = {
+  jev: 'CLAUDE_PLUGIN_OPTION_JEV_API_KEY',
+  anthropic: 'CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY',
+};
+const OPTION_NAME = { jev: 'jev_api_key', anthropic: 'anthropic_api_key' };
+// Vendor-bound Jev keys: a key is NEVER sent to a vendor it was not entered for.
+// jev_vercel_api_key / jev_typesafe_api_key belong to exactly one vendor.
+const VENDOR_OPTION_ENV = {
+  vercel: 'CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY',
+  typesafe: 'CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY',
+};
+const VENDOR_OPTION_NAME = { vercel: 'jev_vercel_api_key', typesafe: 'jev_typesafe_api_key' };
+const DEFAULT_VENDOR = 'vercel'; // schema default of jev.transport
+const OPT_IN = { jev: ['jev', 'allowLegacyKeyRead'], anthropic: ['guards', 'allowAnthropicEnvKey'] };
+const OPT_IN_SETTING = { jev: 'jev.allowLegacyKeyRead', anthropic: 'guards.allowAnthropicEnvKey' };
+
+function legacyEnvName(kind, transport) {
+  if (kind === 'anthropic') return 'ANTHROPIC_API_KEY';
+  return transport === 'typesafe' ? 'TYPESAFE_API_KEY' : 'AI_GATEWAY_API_KEY';
+}
+
+function nonEmpty(v) {
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
+// allowLegacyKeyRead(kind, opts) -> true only when that kind's opt-in resolves
+// to exactly true (home settings file only). Any settings error -> false
+// (fail-closed: never read a machine credential because settings broke).
+function allowLegacyKeyRead(kind, opts) {
+  try {
+    const [sec, key] = OPT_IN[kind];
+    return require('./settings.js').get(sec, key, false, opts) === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// readKeyFile(keyPath, home) -> {key, rejected}. The key file is only read when
+// ALL hold: the real path (symlinks resolved) is inside <home>/.config or
+// <home>/.anti-hall, it is a regular file, <= 4096 bytes, and its trimmed
+// content is ONE line with no whitespace. A missing file is a plain "no key"
+// ({key:null, rejected:null}); a present-but-unacceptable file is
+// {key:null, rejected:'<why>'} — the reason never contains file content.
+function insideDir(real, dir) {
+  const rel = path.relative(dir, real);
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+function readKeyFile(keyPath, home) {
+  let real;
+  try { real = fs.realpathSync(keyPath); } catch (_) { return { key: null, rejected: null }; }
+  try {
+    const roots = ['.config', '.anti-hall'].map((d) => {
+      try { return fs.realpathSync(path.join(home, d)); } catch (_) { return path.join(home, d); }
+    });
+    if (!roots.some((r) => insideDir(real, r))) return { key: null, rejected: 'path is outside ~/.config and ~/.anti-hall' };
+    const st = fs.lstatSync(real);
+    if (!st.isFile()) return { key: null, rejected: 'not a regular file' };
+    if (st.size > MAX_KEY_FILE_BYTES) return { key: null, rejected: 'larger than ' + MAX_KEY_FILE_BYTES + ' bytes' };
+    const content = fs.readFileSync(real, 'utf8').trim();
+    if (!content) return { key: null, rejected: null };
+    if (/\s/.test(content)) return { key: null, rejected: 'content is not a single line without whitespace' };
+    return { key: content, rejected: null };
+  } catch (_) {
+    return { key: null, rejected: 'unreadable' };
+  }
+}
+
+// genericKeyVendor(opts) -> the ONE vendor the ambiguous generic jev_api_key and
+// jev.keyFile (no vendor in their name) are bound to. Read ONLY from the
+// homeOnly setting jev.genericKeyVendor (~/.anti-hall/settings.json; default
+// vercel): never from env, a /config plugin option, a project file, and NEVER
+// from jev.transport, which a normal `enable --transport` rewrites and an
+// env/plugin-option flip can change. Only `jev-setup.js bind-generic-key`
+// re-binds it.
+function genericKeyVendor(o) {
+  try {
+    const opts = o || {};
+    const home = opts.home || require('../../companion/lib/test-home-guard.js').resolveHome(undefined, opts.env);
+    const v = require('./settings.js').get('jev', 'genericKeyVendor', DEFAULT_VENDOR, { home, env: {} });
+    return (v === 'vercel' || v === 'typesafe') ? v : DEFAULT_VENDOR;
+  } catch (_) {
+    return DEFAULT_VENDOR;
+  }
+}
+
+// resolveKey(kind, {vendor, keyFile, env, allowLegacy, home}) ->
+//   {key: string|null, source: 'plugin-option'|'legacy-env'|'legacy-file'|null,
+//    rejected?: why a present key file was refused (see readKeyFile),
+//    diagnostic?: why a present generic key was NOT used (never key material)}
+// kind: 'jev' | 'anthropic'. For jev the credential is resolved BY VENDOR
+// (opts.vendor, legacy alias opts.transport): that vendor's own plugin option
+// first; then the generic jev_api_key ONLY when it is bound to this vendor (see
+// genericKeyVendor); then, behind the legacy opt-in, this vendor's env var and
+// key file. keyFile: absolute path (jev only), already expanded by the caller.
+// allowLegacy: tests/callers may pass a boolean; default reads the settings key.
+function resolveKey(kind, o) {
+  const opts = o || {};
+  const env = opts.env || process.env;
+  const vendor = opts.vendor || opts.transport;
+  let diagnostic;
+  if (kind === 'jev') {
+    const own = nonEmpty(env[VENDOR_OPTION_ENV[vendor]]);
+    if (own) return { key: own, source: 'plugin-option' };
+    const generic = nonEmpty(env[OPTION_ENV.jev]);
+    if (generic) {
+      const bound = genericKeyVendor(opts);
+      if (bound === vendor) return { key: generic, source: 'plugin-option' };
+      diagnostic = OPTION_NAME.jev + ' is bound to ' + bound + '; set ' + VENDOR_OPTION_NAME[vendor] + ' for ' + vendor
+        + ' (or re-bind the generic key deliberately: jev-setup.js bind-generic-key --vendor ' + vendor + ')';
+    }
+  } else {
+    const fromOption = nonEmpty(env[OPTION_ENV[kind]]);
+    if (fromOption) return { key: fromOption, source: 'plugin-option' };
+  }
+
+  const allow = typeof opts.allowLegacy === 'boolean' ? opts.allowLegacy : allowLegacyKeyRead(kind, opts);
+  const none = diagnostic ? { key: null, source: null, diagnostic } : { key: null, source: null };
+  if (!allow) return none;
+
+  const fromEnv = nonEmpty(env[legacyEnvName(kind, vendor)]);
+  if (fromEnv) return { key: fromEnv, source: 'legacy-env' };
+  if (kind === 'jev' && opts.keyFile) {
+    const f = readKeyFile(opts.keyFile, opts.home || require('../../companion/lib/test-home-guard.js').resolveHome(undefined, opts.env));
+    if (f.key) return { key: f.key, source: 'legacy-file' };
+    if (f.rejected) return Object.assign({ rejected: f.rejected }, none);
+  }
+  return none;
+}
+
+// legacyKeyPresent(kind, {transport, keyFile, env}) -> boolean. Presence only:
+// an env var that is non-empty, or a regular non-empty file. The value is
+// never read into a returned/logged string.
+function legacyKeyPresent(kind, o) {
+  const opts = o || {};
+  const env = opts.env || process.env;
+  const v = env[legacyEnvName(kind, opts.transport)];
+  if (typeof v === 'string' && v.length > 0) return true;
+  if (kind === 'jev' && opts.keyFile) {
+    try {
+      const st = fs.statSync(opts.keyFile);
+      return st.isFile() && st.size > 0;
+    } catch (_) { return false; }
+  }
+  return false;
+}
+
+// migrationNotice(kind) -> the one-line user notice (no key material).
+function migrationNotice(kind) {
+  return 'a legacy ' + (kind === 'anthropic' ? 'ANTHROPIC_API_KEY env var' : 'Jev key file/env var')
+    + ' exists but anti-hall no longer reads credentials from this machine: re-enter your key in the plugin\'s options screen (anti-hall -> '
+    + OPTION_NAME[kind] + '), or enable ' + OPT_IN_SETTING[kind] + ' to keep using the existing key.';
+}
+
+// rejectedNotice(why) -> one line; names the reason, never file content.
+function rejectedNotice(why) {
+  return 'Jev key file rejected (' + why + '): it must be a regular file under ~/.config or ~/.anti-hall, at most 4096 bytes, one line with no whitespace.';
+}
+
+// backgroundNoKeyNotice() -> the one-line reason a NON-hook process (CLI,
+// finding-dedup, jev-report, jev-setup) reports when it finds no Jev key.
+// Claude Code hands CLAUDE_PLUGIN_OPTION_* to hook processes only.
+function backgroundNoKeyNotice() {
+  return 'no Jev key visible to this process: a key stored as a plugin option (the plugin\'s options screen: jev_vercel_api_key / jev_typesafe_api_key) is only visible to hooks; '
+    + 'enable ' + OPT_IN_SETTING.jev + ' with a key file to make it available to background tools (CLI, finding-dedup, jev-report).';
+}
+
+// legacyNotices(opts) -> notice strings (opts.kinds limits which keys are
+// checked). A kind whose opt-in is on, or with no legacy key present, yields
+// nothing. Cannot know whether the plugin option is already set (CLI processes
+// do not receive it) — the wording covers both cases.
+function legacyNotices(o) {
+  const opts = o || {};
+  const kinds = Array.isArray(opts.kinds) ? opts.kinds : ['jev', 'anthropic'];
+  const out = [];
+  for (const k of kinds) {
+    if (allowLegacyKeyRead(k, opts)) continue;
+    if (legacyKeyPresent(k, opts)) out.push(migrationNotice(k));
+  }
+  return out;
+}
+
+// sessionNotice({home, env}) -> a one-line string or null: the ONE-TIME
+// SessionStart notice that a legacy key is present but unused. Presence-only
+// (never reads a value). Per-kind dedupe state lives in
+// ~/.anti-hall/legacy-key-notice-state.json ({shown: {jev, anthropic}}); a kind
+// is marked shown when its line is returned. Only for features the user turned
+// on (jev.enabled; the Anthropic key also for jev.semanticJudge). Fail-open: any
+// error -> null.
+function sessionNotice(o) {
+  try {
+    const opts = o || {};
+    const home = opts.home;
+    const settings = require('./settings.js');
+    const jevOn = settings.get('jev', 'enabled', false, { home, env: opts.env }) === true;
+    const judgeOn = settings.get('jev', 'semanticJudge', false, { home, env: opts.env }) === true;
+    const kinds = [];
+    if (jevOn) kinds.push('jev');
+    if (jevOn || judgeOn) kinds.push('anthropic');
+    if (!kinds.length) return null;
+
+    const stateFile = path.join(home, '.anti-hall', 'legacy-key-notice-state.json');
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) || {}; } catch (_) { state = {}; }
+    const shown = (state.shown && typeof state.shown === 'object') ? state.shown : {};
+
+    const jc = require('./jev-client.js');
+    const cfg = jc.loadJevConfig();
+    const pending = [];
+    for (const k of kinds) {
+      if (shown[k]) continue;
+      if (allowLegacyKeyRead(k, { home, env: opts.env })) continue;
+      if (legacyKeyPresent(k, { env: opts.env, transport: cfg.transport, keyFile: cfg.keyFile || jc.defaultKeyFilePath(cfg.transport) })) pending.push(k);
+    }
+    // One-time, report-only: a generic key (jev.keyFile, or the generic plugin
+    // option: presence only) on an install whose EFFECTIVE jev.transport (env >
+    // home settings > plugin option > default, the same resolver the client
+    // uses) is typesafe while jev.genericKeyVendor was never recorded. We do NOT guess a binding
+    // (that would send a key to a vendor it may not belong to): the generic key
+    // stays bound to the default vendor until the user binds it explicitly.
+    let bindingNote = null;
+    if (jevOn && !shown.jevBinding) {
+      const store = settings.load({ home });
+      const jevStore = (store && store.jev && typeof store.jev === 'object') ? store.jev : {};
+      const env = opts.env || process.env;
+      const transport = settings.get('jev', 'transport', DEFAULT_VENDOR, { home, env });
+      if (transport === 'typesafe' && jevStore.genericKeyVendor === undefined
+        && (cfg.keyFile || nonEmpty(env[OPTION_ENV.jev]))) {
+        bindingNote = 'your generic Jev key (jev_api_key / jev.keyFile) is bound to ' + DEFAULT_VENDOR + ' and is NOT sent to typesafe. '
+          + 'Enter a typesafe key (jev-setup.js set-key --transport typesafe, or jev_typesafe_api_key in the plugin\'s options screen), '
+          + 'or, if that generic key is a typesafe key, bind it: jev-setup.js bind-generic-key --vendor typesafe.';
+      }
+    }
+    if (!pending.length && !bindingNote) return null;
+
+    const next = { shown: Object.assign({}, shown) };
+    for (const k of pending) next.shown[k] = Date.now();
+    if (bindingNote) next.shown.jevBinding = Date.now();
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const tmp = stateFile + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(next) + '\n', 'utf8');
+    fs.renameSync(tmp, stateFile);
+    return 'anti-hall (shown once): ' + pending.map((k) => migrationNotice(k)).concat(bindingNote ? [bindingNote] : []).join(' ');
+  } catch (_) {
+    return null;
+  }
+}
+
+module.exports = {
+  OPTION_ENV, OPTION_NAME, VENDOR_OPTION_ENV, VENDOR_OPTION_NAME, genericKeyVendor, OPT_IN_SETTING, readKeyFile, rejectedNotice,
+  allowLegacyKeyRead, resolveKey, legacyKeyPresent, migrationNotice, backgroundNoKeyNotice, legacyNotices, sessionNotice,
+};

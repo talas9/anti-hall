@@ -1,0 +1,926 @@
+#!/usr/bin/env node
+// anti-hall :: edit-guard (PreToolUse Write|Edit|MultiEdit|NotebookEdit — coordinator only)
+//
+// WHAT IT DOES
+//   Blocks direct file edits (Edit, Write, MultiEdit, NotebookEdit) when running in a
+//   COORDINATOR context, requiring the model to delegate the edit to a subagent
+//   instead. Silent pass-through in subagent context. Mirrors command-guard.js, but
+//   for the Edit-family tools instead of Bash.
+//
+//   THREE EXEMPTIONS keep it from firing on legitimate orchestrator work:
+//     1) PLAN MODE (payload.permission_mode === 'plan') — a read-only planning
+//        session drafting docs/scratch/plan artifacts. NARROWED: source files are
+//        STILL blocked in plan mode (see isPlanMode / isLikelySource / main()),
+//        because plan mode is gate-based, not a toolset removal, so edit-guard
+//        keeps its source-file gate as defense-in-depth.
+//     2) ORCHESTRATOR-ARTIFACT ALLOWLIST — plan/state/handover/memory files the
+//        coordinator owns directly (see DEFAULT_ALLOW / isAllowed). Applies in any
+//        mode.
+//     3) HANDOVER / COMPACT-PREP DOC EXCLUSION — a broader, name-pattern-based
+//        match (HANDOVER*/*-handover*/*handoff* variants, *compact*handover*/
+//        *compact*handoff*/*compact*prep*) for the coordinator's own
+//        session-handover synthesis, hard-gated to '.md' basenames only so it
+//        can never become a route to write code (see isHandoverDoc / main()).
+//        Deliberately does NOT re-match "continue-here" — that already has its
+//        own dedicated root-anchored allowlist entries (exemption 2) with their
+//        own lookalike/nesting tests; CONTINUE-HERE*/.continue-here* variants
+//        stay covered by exemption 2, unchanged.
+//
+// COORDINATOR vs SUBAGENT DETECTION
+//   Shared with command-guard.js — see hooks/coordinator-detect.js for the full
+//   rationale (payload agent_id/agent_type is the reliable signal; entrypoint is a
+//   fallback; fail-open on ambiguity).
+//
+// ALLOWLIST
+//   Some paths are legitimately coordinator-owned (docs the coordinator itself is
+//   expected to maintain, its own state/plan files). These are always allowed,
+//   matched against a default glob list plus any globs supplied via
+//   ANTIHALL_EDIT_GUARD_ALLOW (split on ':' and ','). Default patterns WITH '/'
+//   (directory globs like '.claude/**') match by BOTH basename and cwd-relative
+//   path, as before. Default BARE-filename patterns (no '/', e.g. 'CLAUDE.md',
+//   'PLAN.md', 'STATE.json', 'CONTINUE-HERE.md') are root-anchored: they match
+//   ONLY a root-level file
+//   (no '/' in the cwd-relative path), never a same-named file nested anywhere
+//   else in the tree. Env-supplied globs are unrestricted, as before.
+//
+//   SYMLINK HONESTY (security): an allowlist match is by NAME, so a path is only
+//   honored once it is confirmed to BE what its name claims — see
+//   allowlistIsHonest(). Without that check the allowlist is an arbitrary-write
+//   primitive: `ln -s hooks/command-guard.js CONTINUE-HERE.md` turns an allowed
+//   name into a write-through to any file on disk.
+//
+// Contract (Claude Code PreToolUse hook):
+//   stdin  : JSON { tool_name, tool_input: { file_path | notebook_path, ... } }
+//   stdout : JSON { decision: "block", reason: "..." } | nothing
+//   exit 2 : to block (decision field); exit 0: allow
+//   Fail-open on ANY error (exit 0).
+
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+// tmpRoots / ownScratchpadDirs / realpathOrSelf live in lib/scratchpad.js
+// (shared with command-guard.js); their rationale is documented below.
+const { ownScratchpadDirs, realpathOrSelf } = require('./lib/scratchpad.js');
+
+// Tools this guard applies to. Anything else passes through untouched.
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+// Default allow-globs: paths the coordinator is documented/expected to touch
+// directly (its own state/plan/docs), never delegated.
+// CONTINUE-HERE.md / '*.continue-here.md' are NO LONGER allowlisted: the only
+// handover format is .anti-hall/handovers/<date>/<session>/HANDOVER.md. Editing
+// an EXISTING root file of that name stays allowed and a NEW one is blocked with
+// the canonical path — see isLegacyContinueHere() and the HANDOVER-LOCATION RULE
+// in main().
+//
+// ORCHESTRATOR ARTIFACTS (why each is coordinator-owned, never a source file):
+//   - 'plan.md' (lowercase): the plan file is a planning artifact, not code —
+//     ship-it-guard.js treats both 'PLAN.md' and 'plan.md' as the plan; the
+//     allowlist only had the uppercase form, so a Primary drafting a lowercase
+//     'plan.md' was wrongly blocked. Root-anchored bare filename.
+//   - '**/.claude/projects/**/memory/**': Claude Code's per-project memory
+//     store (MEMORY.md + linked notes). It lives OUTSIDE the repo cwd (under
+//     ~/.claude/...), so a cwd-relative '.claude/**' glob does NOT reach it —
+//     this leading-'**' pattern matches the '../…/.claude/projects/<slug>/memory/…'
+//     shape. Scoped to the memory subtree only (never general source).
+const DEFAULT_ALLOW = [
+  'CLAUDE.md', 'AGENTS.md', 'GEMINI.md',
+  '.claude/**', '.omc/**', '.anti-hall/**',
+  'PLAN.md', 'plan.md', 'STATE.json',
+  '**/.claude/projects/**/memory/**',
+];
+
+// Cross-platform basename: handle both / and \ path separators (mirrors
+// command-guard.js's basename()).
+function basename(p) {
+  if (!p) return '';
+  const norm = String(p).replace(/\\/g, '/');
+  const parts = norm.split('/');
+  return parts[parts.length - 1];
+}
+
+// Normalize a path to forward slashes and, if absolute + a cwd is known, make
+// it cwd-relative so a glob like '.claude/**' can match regardless of how the
+// tool_input path was expressed.
+function toRelPath(filePath, cwd) {
+  if (!filePath) return '';
+  let p = String(filePath);
+  if (cwd) {
+    try {
+      if (path.isAbsolute(p)) p = path.relative(cwd, p);
+    } catch (_) {
+      // keep p as-is
+    }
+  }
+  return p.replace(/\\/g, '/');
+}
+
+// Small self-contained glob matcher: '**' matches any sequence of characters
+// (including '/'), '*' matches any sequence EXCEPT '/'. No new deps.
+function escapeRegExpChar(c) {
+  return /[.*+?^${}()|[\]\\]/.test(c) ? '\\' + c : c;
+}
+function globToRegExp(glob) {
+  let src = '';
+  let i = 0;
+  const n = glob.length;
+  while (i < n) {
+    const c = glob[i];
+    if (c === '*' && glob[i + 1] === '*') {
+      src += '.*';
+      i += 2;
+      continue;
+    }
+    if (c === '*') {
+      src += '[^/]*';
+      i += 1;
+      continue;
+    }
+    src += escapeRegExpChar(c);
+    i += 1;
+  }
+  return new RegExp('^' + src + '$');
+}
+
+// isAllowed(filePath, cwd): true if filePath matches any default allow-glob or
+// any glob from ANTIHALL_EDIT_GUARD_ALLOW (split on both ':' and ','). Empty
+// filePath matches nothing (falls through to block).
+//
+// BARE-FILENAME ANCHORING: a DEFAULT_ALLOW pattern with no '/' (e.g.
+// 'CLAUDE.md', 'PLAN.md', 'STATE.json') is a coordinator-owned ROOT file, not
+// a filename anyone may drop anywhere in the tree. Such patterns are matched
+// against the cwd-relative path AND required to have no '/' in it (i.e. the
+// file must live at repo root) — matching only against the basename would
+// silently allow-list e.g. 'src/deep/nested/CLAUDE.md', defeating the
+// delegation gate for any nested file that happens to share a root filename.
+// DEFAULT_ALLOW patterns WITH '/' (directory globs like '.claude/**') are
+// unchanged: matched against both basename and cwd-relative path as before.
+// Env-supplied globs (ANTIHALL_EDIT_GUARD_ALLOW) are also unchanged, so a user
+// can opt back into nested matches (e.g. '**/CLAUDE.md') at any depth.
+function isAllowed(filePath, cwd) {
+  if (!filePath) return false;
+  const base = basename(filePath);
+  const rel = toRelPath(filePath, cwd);
+  for (const pat of DEFAULT_ALLOW) {
+    const re = globToRegExp(pat);
+    if (pat.includes('/')) {
+      if (re.test(base) || re.test(rel)) return true;
+    } else {
+      if (!rel.includes('/') && re.test(rel)) return true;
+    }
+  }
+  let editGuardAllowRaw;
+  try { editGuardAllowRaw = require('./lib/settings.js').get('guards', 'editGuardAllow'); }
+  catch (_) { editGuardAllowRaw = process.env.ANTIHALL_EDIT_GUARD_ALLOW; }
+  const envAllow = String(editGuardAllowRaw || '')
+    .split(/[:,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const pat of envAllow) {
+    const re = globToRegExp(pat);
+    if (re.test(base) || re.test(rel)) return true;
+  }
+  return false;
+}
+
+// realpathOf(p) — canonical on-disk path. On win32 prefer fs.realpathSync.native()
+// (the same idiom as companion/lib/devswarm-repokey.js): the default JS realpath
+// neither expands 8.3 short names nor queries the OS for true casing, so only the
+// native variant canonicalizes reparse points reliably there.
+function realpathOf(p) {
+  const useNative = process.platform === 'win32' &&
+    fs.realpathSync && typeof fs.realpathSync.native === 'function';
+  return useNative ? fs.realpathSync.native(p) : fs.realpathSync(p);
+}
+
+// resolvesIntoLauncherBinDir(filePath, cwd) — true when filePath (literally,
+// or by resolving through a symlink) targets ~/.anti-hall/bin itself or
+// something inside it. DEFAULT_ALLOW's '.anti-hall/**' entry deliberately
+// keeps the REST of .anti-hall/** (handovers, progress, history, state)
+// writable by the coordinator; this check carves the launcher dir back out
+// of that allowlist (R3A1-3), mirroring the Bash-side block in git-guard.js.
+// Best-effort like that one: a literal-path match always fires; the realpath
+// check additionally catches a symlink already on disk, but an env var, a
+// glob, or a not-yet-existing symlink target is out of scope for a
+// path-string guard.
+function resolvesIntoLauncherBinDir(filePath, cwd) {
+  if (!filePath) return false;
+  let home;
+  try { home = os.homedir(); } catch (_) { home = process.env.HOME || process.env.USERPROFILE || ''; }
+  if (!home) return false;
+  const binDir = path.resolve(home, '.anti-hall', 'bin');
+  const normBin = binDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  const base = cwd ? String(cwd) : process.cwd();
+  const abs = path.resolve(base, String(filePath));
+  const normAbs = abs.replace(/\\/g, '/');
+  if (normAbs === normBin || normAbs.startsWith(normBin + '/')) return true;
+  try {
+    const realAbs = realpathOf(abs).replace(/\\/g, '/');
+    let realBin = normBin;
+    try { realBin = realpathOf(binDir).replace(/\\/g, '/'); } catch (_) { /* bin dir doesn't exist yet */ }
+    if (realAbs === realBin || realAbs.startsWith(realBin + '/')) return true;
+  } catch (_) { /* target doesn't exist yet - the literal check above stands */ }
+  return false;
+}
+
+// samePath(a, b) — path equality, case-insensitive on win32 (NTFS is).
+function samePath(a, b) {
+  const norm = (s) => String(s).replace(/\\/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32'
+    ? norm(a).toLowerCase() === norm(b).toLowerCase()
+    : norm(a) === norm(b);
+}
+
+// allowlistIsHonest(filePath, cwd) -> true when an ALLOWLIST-MATCHED path really
+// is the plain file its name claims to be. isAllowed() matches a NAME; the OS
+// writes to a TARGET. A symlink splits the two, so the name-match alone is an
+// arbitrary-write bypass of the whole guard (a coordinator Edit on a
+// 'CONTINUE-HERE.md' that is a symlink to hooks/command-guard.js writes the hook).
+// This closes it for EVERY allowlist entry, not just the newest one.
+//
+//   - SYMLINK (the target itself, or any directory under `cwd` that the path
+//     traverses) -> NOT honest: fall through to the normal block. On win32,
+//     lstat reports junctions/reparse points as symbolic links too (libuv maps
+//     IO_REPARSE_TAG_SYMLINK/MOUNT_POINT to S_IFLNK), so they are covered.
+//   - NON-EXISTENT -> HONEST. `Write` legitimately CREATES PLAN.md / STATE.json /
+//     CONTINUE-HERE.md (and their parent dirs) on first use, so ENOENT is the
+//     EXPECTED case, never an error: it stops the walk and allows.
+//   - ANY OTHER fs error -> NOT honest (FAIL-CLOSED). This is a security boundary:
+//     blocking a coordinator write just makes it delegate, while allowing an
+//     unverified one is an arbitrary write.
+//
+// Components ABOVE `cwd` are not walked — they are the user's environment (a
+// project legitimately living under a symlinked ~/Projects or macOS /tmp is not
+// an attack), and the realpath cross-check below still pins the final file to the
+// directory it claims to live in.
+function allowlistIsHonest(filePath, cwd) {
+  try {
+    const base = cwd ? String(cwd) : process.cwd();
+    const abs = path.resolve(base, String(filePath));
+
+    // Walk cwd -> target, one component at a time. Anything outside cwd (only
+    // reachable via an env-supplied glob) still gets the target itself checked.
+    const rel = path.relative(base, abs);
+    const inside = rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+    const chain = [];
+    if (inside) {
+      let cur = base;
+      for (const seg of rel.split(path.sep)) {
+        cur = path.join(cur, seg);
+        chain.push(cur);
+      }
+    } else {
+      chain.push(abs);
+    }
+    for (let i = 0; i < chain.length; i++) {
+      const p = chain[i];
+      let st;
+      try {
+        st = fs.lstatSync(p);
+      } catch (e) {
+        if (e && e.code === 'ENOENT') return true; // first write: nothing below exists
+        return false; // unexpected fs error -> fail CLOSED
+      }
+      if (st.isSymbolicLink()) return false;
+      // HARDLINK (final path component only): a regular file with nlink > 1 has
+      // another name pointing at the SAME inode elsewhere on disk. Writing
+      // through this path clobbers whatever that other name is — structurally
+      // the same arbitrary-overwrite bypass as the symlink case above, just
+      // without a symlink for lstat to flag (found in the bypass-safety review
+      // of the handover-doc exclusion below, which widens the name space
+      // reachable through this check far past the original narrow allowlist).
+      // Checked ONLY on the final component and ONLY for regular files:
+      // intermediate directories legitimately have nlink > 1 (POSIX counts '.'
+      // plus one per subdirectory), so checking them would false-positive on
+      // every ordinary directory in the chain.
+      if (i === chain.length - 1 && st.isFile() && st.nlink > 1) return false;
+    }
+
+    // Cross-check: the real file must live in the real directory it claims to.
+    // (Belt-and-braces against a reparse point lstat did not flag; the basename
+    // is not compared, so win32 true-casing cannot false-positive here.)
+    return samePath(path.dirname(realpathOf(abs)), realpathOf(path.dirname(abs)));
+  } catch (_) {
+    return false; // fail CLOSED
+  }
+}
+
+// canonicalUnderProjectRoot(filePath, cwd) -> {filePath, root} | null. The path
+// with its directory part realpath'd (a symlinked directory resolves AWAY, so
+// an allowlist name can never be reached through one; the final component is
+// left as-is so allowlistIsHonest still lstat-checks it), paired with the real
+// project root (git superproject toplevel of cwd, see sessionProjectRoot).
+// null unless the resolved path lies inside that root, or on any error.
+function canonicalUnderProjectRoot(filePath, cwd) {
+  try {
+    if (!filePath || !cwd) return null;
+    const { sessionProjectRoot } = require('./lib/handover-find.js');
+    const root = realpathOrSelf(sessionProjectRoot(cwd) || cwd);
+    const abs = path.resolve(String(cwd), String(filePath));
+    const real = path.join(realpathOrSelf(path.dirname(abs)), path.basename(abs));
+    const rel = path.relative(root, real);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    return { filePath: real, root };
+  } catch (_) {
+    return null;
+  }
+}
+
+// isLikelySource(filePath) — best-effort "this is real code, not a doc/scratch/
+// plan artifact" classifier. Used ONLY to NARROW the plan-mode exemption so a
+// plan-mode session can draft docs/scratch/plan files but is STILL blocked from an
+// undelegated write to a source file (defense-in-depth: plan mode does not hard-
+// remove Write from the toolset — docs/KB-model-modes.md — so edit-guard keeps its
+// source-file gate even there). Matches (1) a known code DIRECTORY anywhere in the
+// path, or (2) a source-code file EXTENSION. Docs (.md/.mdx/.txt/.rst/…) are
+// intentionally NOT source. Allowlisted artifacts have already exited before this
+// is reached, so it only ever classifies non-allowlisted paths.
+const SOURCE_DIRS = /(^|[\\/])(plugins|scripts|hooks|companion|statusline|tests)[\\/]/i;
+const SOURCE_EXT = /\.(js|mjs|cjs|jsx|ts|tsx|py|sh|go|rs|c|h|cpp|java|rb)$/i;
+function isLikelySource(filePath) {
+  if (!filePath) return false;
+  const norm = String(filePath).replace(/\\/g, '/');
+  return SOURCE_DIRS.test(norm) || SOURCE_EXT.test(norm);
+}
+
+// COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION
+// A handover/compact-prep doc is the coordinator SYNTHESIZING its OWN session
+// state ahead of compaction — no subagent has seen this conversation, so
+// "delegate the handover" is nonsensical (identical rationale to the existing
+// CONTINUE-HERE.md / *.continue-here.md allowlist entries above, which this
+// exclusion intentionally does NOT duplicate — those already have dedicated
+// root-anchored handling with their own lookalike/nesting regression tests;
+// re-matching "continue-here" loosely here would relax that anchoring). This
+// widens the SAME idea to the common handover/handoff/compact-prep naming
+// variants the exact-name allowlist entries miss (e.g.
+// 'HANDOVER-2026-08-03.md', 'x-handoff.md', 'session-compact-handover.md').
+//
+// BYPASS-SAFETY (the entire point of this exclusion, read before touching it):
+//   1) Matched by BASENAME ONLY, never a path substring — a file living under
+//      a directory that happens to contain "handover" in its name (e.g.
+//      'src/handover-notes/evil.js') is judged on its own filename, not the
+//      path it sits in.
+//   2) HARD-GATED on a literal '.md' extension. This is the anti-bypass
+//      constraint: 'handover.js' / 'handoff.py' / any non-markdown file NEVER
+//      qualifies, no matter how its basename reads, so this exclusion can
+//      never be used to write code or config.
+//   3) Still subject to the SAME symlink/hardlink-honesty check as the
+//      allowlist (allowlistIsHonest, called at the use site below) — a
+//      'HANDOVER.md' that is actually a symlink OR a hardlink to a real
+//      source file is judged dishonest and falls through to the normal block,
+//      exactly like an allowlist entry would.
+//   4) CWD-CONTAINED (isWithinCwd, called at the use site below). Unlike
+//      isAllowed's bare-filename patterns (which are root-anchored — no '/' in
+//      the cwd-relative path), this exclusion matches by basename at ANY
+//      depth, so without an explicit containment check a coordinator could
+//      write 'HANDOVER.md' to an arbitrary location OUTSIDE the project
+//      entirely (e.g. '../../other-project/HANDOVER.md', or an absolute path
+//      under the user's home directory) — a real containment escape even
+//      though the written content stays markdown. isWithinCwd rejects any
+//      path that resolves outside `cwd` (found in the bypass-safety review of
+//      this exclusion; see git history for the exact review that flagged it).
+const HANDOVER_DOC_RE = /(handover|handoff|compact.*(?:handover|handoff|prep))/i;
+function isHandoverDoc(filePath) {
+  if (!filePath) return false;
+  const base = basename(filePath);
+  if (!/\.md$/i.test(base)) return false; // constraint (2): markdown docs ONLY
+  return HANDOVER_DOC_RE.test(base);
+}
+
+// isLegacyContinueHere(filePath, cwd) -> true for a ROOT-level 'CONTINUE-HERE.md'
+// or '<prefix>.continue-here.md' (the old allowlisted handover names). Root only,
+// like the bare allowlist patterns they replace; nested ones were never allowed.
+function isLegacyContinueHere(filePath, cwd) {
+  if (!filePath) return false;
+  const rel = path.posix.normalize(toRelPath(filePath, cwd)); // './CONTINUE-HERE.md' -> root
+  return !rel.includes('/') && /^(?:CONTINUE-HERE\.md|[^/]*\.continue-here\.md)$/.test(rel);
+}
+
+// OWN-SESSION SCRATCHPAD EXEMPTION (P2 fp 385aa8beb602, widened for fp
+// 6-of-2026-09-24): the harness itself tells every agent (coordinator
+// included) to use its OWN session-local scratchpad directory for temp
+// files — a fixed, harness-controlled layout of
+// `<tmp-root>/claude-<uid>/<sanitized-cwd>/<session-id>/scratchpad/**`, where
+// <sanitized-cwd> is the session's cwd with every '/' replaced by '-' (e.g.
+// cwd '/Users/x/proj' -> '-Users-x-proj') and <session-id> is the exact
+// harness-assigned session_id for THIS run. Blocking writes there forced a
+// pointless subagent detour on the one path whose entire purpose is
+// disposable scratch I/O.
+//
+// MULTIPLE TMP ROOTS (fp 6-of-2026-09-24): the original fix hardcoded '/tmp'
+// as the only tmp root, but a Bash heredoc writing to the SAME scratchpad
+// path was allowed while Write/Edit to it was blocked — because on some
+// environments the harness reports (or a session otherwise resolves) its
+// scratchpad under Node's `os.tmpdir()` root instead of the literal '/tmp'
+// (on macOS `os.tmpdir()` is the per-user $TMPDIR, `/var/folders/.../T/`, a
+// DIFFERENT directory than '/tmp' or '/private/tmp' — see the identical
+// tmp-root enumeration in companion/install-devswarm-ingest.js's
+// homeIsUnderTmpdir(), which hit this exact gap first: "os.tmpdir() alone
+// misses real tmp roots it doesn't resolve to"). ownScratchpadDirs() below
+// now enumerates ALL THREE roots (os.tmpdir(), '/tmp', '/private/tmp'),
+// de-duplicated by realpath, so a scratchpad path reported under any of them
+// is recognized — mirroring the guard-agnostic tmp-root set already proven
+// out in the ingest installer.
+//
+// SCOPING (why this cannot become a general escape hatch):
+//   - Computed DETERMINISTICALLY from THIS payload's own `cwd` + `session_id`
+//     (harness-set fields, same trust class as permission_mode — see
+//     isPlanMode) and this PROCESS's own real uid (process.getuid(), not
+//     anything from the payload/env). It is never a name-glob or directory
+//     prefix an attacker/model could redirect by choosing a path that merely
+//     LOOKS like a scratchpad — the path must resolve inside the literal,
+//     computed directory for the CURRENT session, nothing broader (not
+//     '/tmp/**', not 'scratchpad/**' anywhere, not another session's or
+//     another user's scratchpad).
+//   - "Reaching another session's scratchpad" is not a privilege escalation
+//     here: a session already has an unrestricted Write tool over its own
+//     process's reachable filesystem outside this guard's purview (this guard
+//     only gates the DELEGATION posture, not filesystem permissions), and
+//     another session's scratchpad is an ordinary, non-privileged temp path —
+//     so narrowing to "this session's own" is a hygiene/precision property
+//     (never grant more than the reported fp needs), not a security boundary.
+//   - Still requires allowlistIsHonest() below (no symlink/hardlink redirect
+//     out of the scratchpad tree to a real source file).
+//   - Windows has no '/tmp' convention and Windows support is dropped
+//     (min Node 22, ubuntu/macos CI only) — inert (returns []) there, which
+//     fails CLOSED (falls through to the normal block), never open.
+//
+// TMP ROOTS (fp 6-of-2026-09-24): enumerates os.tmpdir(), '/tmp', and
+// '/private/tmp' — the same three-root set as
+// companion/install-devswarm-ingest.js's homeIsUnderTmpdir() — rather than
+// hardcoding '/tmp' alone. Deduplicated by raw string (cheap, order-
+// preserving); a symlinked root (macOS '/tmp' -> '/private/tmp') is not
+// collapsed here but is still handled correctly downstream: each candidate
+// dir is realpath'd independently at the comparison site
+// (isOwnScratchpadPath), so two string-distinct roots that resolve to the
+// same real directory simply produce two candidates that both match.
+
+// ownScratchpadDirs(payload) -> array of candidate scratchpad directories (one
+// per known tmp root), or [] when the payload lacks the fields needed to
+// compute one, or on win32. Never throws.
+
+// realpathOrSelf(p) -> fs.realpathSync(p) when it resolves, else `p`
+// unchanged. Fail-safe, not fail-open: a path that does not exist yet (a
+// scratchpad file the model is about to CREATE, or a scratchpad dir the
+// harness has not materialized yet) must still compare correctly against its
+// nearest existing ancestor's real path, so this walks up to the first
+// existing ancestor, realpaths THAT, and reattaches the remaining (still
+// un-resolved) suffix — never silently drops the exemption just because the
+// leaf does not exist yet, and never THROWS/blocks on a missing path either.
+
+// isOwnScratchpadPath(filePath, payload) -> true when filePath resolves
+// strictly INSIDE this session's own computed scratchpad directory (never
+// equal to it, and never merely a path that happens to CONTAIN the word
+// "scratchpad").
+//
+// REALPATH BOTH SIDES (P2 fix): a computed candidate dir may be rooted at
+// '/tmp', which on macOS is itself a symlink to '/private/tmp' — the
+// harness's own reported scratchpad path (and any payload cwd derived under
+// it) is typically already the REAL '/private/tmp/...' form. Comparing the
+// raw '/tmp/...'-prefixed computed dir against a raw '/private/tmp/...' abs
+// path via plain string-prefix `path.relative` fails CLOSED (never matches)
+// even though both name the identical directory — the exemption silently
+// never fires on macOS. Realpathing both sides (fail-safe via
+// realpathOrSelf, never throwing on a not-yet-created path) makes the
+// comparison symlink-invariant on both directions, cross-platform (a no-op
+// wherever there is no such symlink, e.g. Linux CI).
+//
+// MULTIPLE CANDIDATES (fp 6-of-2026-09-24): checks EVERY dir from
+// ownScratchpadDirs() (one per known tmp root — os.tmpdir(), '/tmp',
+// '/private/tmp') and matches if filePath resolves inside ANY of them, so a
+// scratchpad reported under a non-'/tmp' root (e.g. macOS's per-user
+// os.tmpdir() at '/var/folders/.../T/') is recognized too.
+function isOwnScratchpadPath(filePath, payload) {
+  if (!filePath) return false;
+  const dirs = ownScratchpadDirs(payload);
+  if (!dirs.length) return false;
+  try {
+    const base = (payload && payload.cwd) || process.cwd();
+    const abs = path.resolve(String(base), String(filePath));
+    const realAbs = realpathOrSelf(abs);
+    for (const dir of dirs) {
+      const realDir = realpathOrSelf(dir);
+      const rel = path.relative(realDir, realAbs);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return true;
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+// isWithinCwd(filePath, cwd) -> true when filePath resolves to somewhere UNDER
+// cwd (no '../' escape, not an absolute path outside cwd). See constraint (4)
+// above for why this exists. Mirrors the `inside` check already used inside
+// allowlistIsHonest, kept as a small standalone predicate so it can be
+// evaluated independently of the symlink walk.
+function isWithinCwd(filePath, cwd) {
+  try {
+    const base = cwd ? String(cwd) : process.cwd();
+    const abs = path.resolve(base, String(filePath));
+    const rel = path.relative(base, abs);
+    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch (_) {
+    return false; // fail CLOSED
+  }
+}
+
+// isHarnessPlanFile(filePath, cwd) -> true when filePath resolves to a '.md'
+// file strictly INSIDE ~/.claude/plans/ — the HARNESS's own per-session plan
+// artifact (distinct from this repo's own PLAN.md/plan.md convention already
+// covered by DEFAULT_ALLOW). Reported false positive: the coordinator was
+// blocked writing/revising this file OUTSIDE plan mode (permission_mode !==
+// 'plan') — e.g. after ExitPlanMode, or on a later turn that refines the same
+// plan — which the existing PLAN-MODE-NARROWED exemption below does not cover
+// (that one only fires while permission_mode === 'plan'). Same rationale as
+// the other coordinator-owned orchestrator artifacts (PLAN.md/STATE.json/
+// CONTINUE-HERE.md): the harness plan file is always coordinator-owned, never
+// delegated, so it is allowed UNCONDITIONALLY (not gated on permission_mode) —
+// this is the actual path the hook input reports via tool_input.file_path,
+// resolved and realpath-honesty-checked at the call site via
+// allowlistIsHonest(), not a hardcoded guess.
+//
+// Uses realpathOrSelf() (defined below) so a not-yet-created plan file (the
+// harness creates it lazily) still resolves correctly against ~/.claude/plans
+// even when neither exists yet, and stays symlink-invariant when both do.
+function isHarnessPlanFile(filePath, cwd) {
+  if (!filePath) return false;
+  try {
+    if (!/\.md$/i.test(String(filePath))) return false;
+    const base = cwd ? String(cwd) : process.cwd();
+    const abs = path.resolve(base, String(filePath));
+    const plansDir = path.join(os.homedir(), '.claude', 'plans');
+    const realAbs = realpathOrSelf(abs);
+    const realPlansDir = realpathOrSelf(plansDir);
+    const rel = path.relative(realPlansDir, realAbs);
+    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch (_) {
+    return false; // fail CLOSED
+  }
+}
+
+// isPlanMode(payload) — true when the session is in Claude Code PLAN MODE.
+// The harness sets `permission_mode` on the PreToolUse payload (one of
+// 'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
+// see docs/KB-model-modes.md §on permission modes). It is a top-level,
+// harness-controlled field — NOT part of tool_input and not model/tool-settable,
+// so it is the same trust class as tool_name / agent_id. Case-insensitive for
+// safety; any non-string is not plan mode.
+// PER-PROJECT DOC-EDIT ALLOWLIST (owner-approved 2026-09-26, 0.112). A repo
+// may list repo-relative globs in `<repo>/.anti-hall/edit-allow.json`
+// ({"paths":["docs/**","PLAN.md","*.md"]}) that the MAIN THREAD may Edit/Write
+// directly instead of delegating. Same trust model as command-guard's
+// command-allow.json, via the SAME lib/command-allow.js machinery (kind
+// 'edit'): it applies ONLY while ~/.anti-hall/trusted-edit-allow.json holds the
+// sha256 of the file's exact bytes for this repo's realpath (a cloned repo
+// cannot authorize itself; any edit to the file revokes trust; a symlinked
+// file or .anti-hall dir is refused). Globs that are absolute, contain `..`,
+// or match every file are ignored (validateEditPath). A match NEVER covers:
+// a path outside the repo (checked on realpaths), any `.git`, `.anti-hall`,
+// `.claude`, `.codex`, `.husky` or `.githooks` segment (so the allowlist can
+// never authorize itself or hook config), a `hooks.json`, anything under
+// ~/.claude, or a symlinked/hard-linked target (allowlistIsHonest). Subagents
+// never reach this code (edit-guard exits for them above). Gated by
+// guards.projectEditAllow (default true); false restores 0.111 behaviour.
+const PROJECT_EDIT_DENY_SEGMENTS = new Set(['.git', '.anti-hall', '.claude', '.codex', '.husky', '.githooks']);
+
+function projectEditAllowOn() {
+  try { return require('./lib/settings.js').get('guards', 'projectEditAllow') !== false; } catch (_) { return true; }
+}
+
+// projectEditTarget(filePath, cwd) -> { top, rel } with rel the '/'-joined
+// path of the REALPATH'd target relative to the REALPATH'd repo toplevel, or
+// null when there is no repo or the target is not strictly inside it.
+function projectEditTarget(filePath, cwd) {
+  if (!filePath) return null;
+  const base = cwd ? String(cwd) : process.cwd();
+  const allowLib = require('./lib/command-allow.js');
+  const top = allowLib.repoToplevel(base);
+  if (!top) return null;
+  const realTop = realpathOrSelf(top);
+  const realAbs = realpathOrSelf(path.resolve(base, String(filePath)));
+  const rel = path.relative(realTop, realAbs);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return { top, rel: rel.split(path.sep).join('/'), realAbs };
+}
+
+// foldSegment(seg) -> the form every deny-list comparison uses: NFKC then
+// lowercase, because macOS/Windows filesystems fold more than ASCII case
+// (`hookſ.json` with a long s, or `.huſky`, IS `hooks.json` / `.husky` on APFS).
+function foldSegment(seg) {
+  let t = String(seg);
+  try { t = t.normalize('NFKC'); } catch (_) { /* keep raw */ }
+  return t.toLowerCase();
+}
+
+// isEditAllowFileTarget -> true when the edit targets this repo's own
+// .anti-hall/edit-allow.json (folded with foldSegment: .anti-hall/EDIT-ALLOW.json
+// or a compatibility-character spelling is the same file on macOS/Windows).
+function isEditAllowFileTarget(filePath, cwd) {
+  try {
+    const t = projectEditTarget(filePath, cwd);
+    return !!t && t.rel.split('/').map(foldSegment).join('/') === '.anti-hall/edit-allow.json';
+  } catch (_) {
+    return false;
+  }
+}
+
+function isProjectEditAllowed(filePath, cwd) {
+  try {
+    const t = projectEditTarget(filePath, cwd);
+    if (!t) return false;
+    const segs = t.rel.split('/').map(foldSegment);
+    if (segs.some((seg) => PROJECT_EDIT_DENY_SEGMENTS.has(seg))) return false;
+    if (segs[segs.length - 1] === 'hooks.json') return false;
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    const claudeHome = realpathOrSelf(path.join(home, '.claude'));
+    const inClaudeHome = path.relative(claudeHome, t.realAbs);
+    if (inClaudeHome === '' || (!inClaudeHome.startsWith('..') && !path.isAbsolute(inClaudeHome))) return false;
+    const { paths } = require('./lib/command-allow.js').loadTrustedEditPaths(cwd || process.cwd(), home);
+    if (!paths.length) return false;
+    if (!paths.some((glob) => globToRegExp(glob).test(t.rel))) return false;
+    return allowlistIsHonest(filePath, cwd);
+  } catch (_) {
+    return false; // fail CLOSED: never widen the allowance on an error
+  }
+}
+
+function isPlanMode(payload) {
+  const m = payload && payload.permission_mode;
+  return typeof m === 'string' && m.toLowerCase() === 'plan';
+}
+
+function main() {
+  // Settings switch safety.editGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('safety', 'editGuard')) return; } catch (_) { /* run */ }
+  // Read stdin first (fail-open on any read error).
+  let raw = '';
+  try {
+    raw = fs.readFileSync(0, 'utf8');
+  } catch (_) {
+    process.exit(0);
+  }
+
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('edit-guard')) process.exit(0);
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_) {
+    process.exit(0);
+  }
+
+  const toolName = payload && payload.tool_name;
+  if (!EDIT_TOOLS.has(toolName)) process.exit(0);
+
+  const toolInput = (payload && payload.tool_input) || {};
+  const filePath = toolName === 'NotebookEdit'
+    ? (toolInput.notebook_path || '')
+    : (toolInput.file_path || '');
+  const cwd = (payload && payload.cwd) || '';
+
+  // LAUNCHER DIR DENY — applies in BOTH coordinator AND subagent context
+  // (unlike everything else below, which is coordinator-only), because
+  // ~/.anti-hall/bin holds installed launcher scripts anti-hall manages
+  // itself (update / doctor --repair); overwriting one runs arbitrary code
+  // under a trusted name on the next invocation. Checked before the
+  // isCoordinator gate on purpose (R3A1-3).
+  if (resolvesIntoLauncherBinDir(filePath, cwd)) {
+    fs.writeSync(1, JSON.stringify({
+      decision: 'block',
+      reason:
+        'anti-hall edit-guard: BLOCKED. This ' + toolName + ' targets ' +
+        '~/.anti-hall/bin/, the stable launcher directory anti-hall installs ' +
+        'and manages itself (update / doctor --repair). Overwriting a launcher ' +
+        'file here would run arbitrary code under a trusted name on the next ' +
+        'invocation. Leave that directory alone; the rest of .anti-hall/** ' +
+        '(handovers, progress, history, state) stays writable as usual.',
+    }) + '\n');
+    process.exit(2);
+  }
+
+  // Only block in coordinator context (subagents pass through) past this point.
+  const { isCoordinator } = require('./coordinator-detect.js');
+  if (!isCoordinator(payload)) process.exit(0);
+
+  // Advisory inline-work nudge (devswarm.inlineWorkNudge, Primary only, once per
+  // session). Emitted only on an ALLOWED call (exit 0): a blocked call already
+  // carries its own redirect and must not print two JSON documents. Never blocks.
+  try {
+    const nudge = require('./lib/inline-work-nudge.js').evaluate(payload, process.env);
+    if (nudge) {
+      process.on('exit', (code) => {
+        if (code !== 0) return;
+        try {
+          fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: nudge.text } }) + '\n');
+          nudge.commit();
+        } catch (_) { /* fail-open */ }
+      });
+    }
+  } catch (_) { /* fail-open */ }
+
+  // An allowlist match is honored ONLY when the path is honest (not a symlink /
+  // reparse point, and not reached through one) — see allowlistIsHonest().
+  // The project doc-edit allowlist file itself is never edited in the main
+  // thread (it must not be able to authorize itself — and DEFAULT_ALLOW's
+  // '.anti-hall/**' would otherwise let it through). Only while the feature is on.
+  const projectEditAllow = projectEditAllowOn();
+  if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) {
+    fs.writeSync(1, JSON.stringify({
+      decision: 'block',
+      reason:
+        'EDIT-ALLOW SELF-EDIT: .anti-hall/edit-allow.json decides which files the main thread ' +
+        'may edit directly, so the main thread never edits it. Ask the user to change it (or ' +
+        'delegate the change to a subagent), then the user re-trusts it with `node ' +
+        '<plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`. (tool: ' + toolName + ')',
+    }) + '\n');
+    process.exit(2);
+  }
+
+  if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+  // Same check against the PROJECT ROOT when the payload cwd is not the root
+  // (a subdirectory the shell cd'd into, a submodule, or a symlinked spelling
+  // such as /tmp vs /private/tmp): '.anti-hall/**' etc. are root-relative, but
+  // the cwd-relative path above reads '../.anti-hall/...' and misses them.
+  // Additive only — never narrows the check above.
+  const canon = canonicalUnderProjectRoot(filePath, cwd);
+  if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) process.exit(0);
+
+  // Per-project doc-edit allowlist (trusted .anti-hall/edit-allow.json).
+  if (projectEditAllow && isProjectEditAllowed(filePath, cwd)) process.exit(0);
+
+  // HARNESS PLAN FILE (~/.claude/plans/*.md) — see isHarnessPlanFile() above.
+  // Unconditional (not gated on permission_mode): the reported false positive
+  // was the coordinator blocked revising this file OUTSIDE plan mode, which
+  // the PLAN-MODE-NARROWED exemption further below does not reach.
+  if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+
+  // OWN-SESSION SCRATCHPAD EXEMPTION — see isOwnScratchpadPath()/
+  // ownScratchpadDirs() above for the full rationale and anti-bypass scoping
+  // (session-id + cwd + real uid computed path only, honesty-checked).
+  if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) {
+    process.exit(0);
+  }
+
+  // COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION — see isHandoverDoc()
+  // above for the exclusion's rationale and its four anti-bypass constraints
+  // (basename-only match, .md-only gate, symlink/hardlink honesty, cwd
+  // containment). Applies in ANY coordinator context (DevSwarm or not), same
+  // as the allowlist line above and for the same reason. Runs AFTER the
+  // allowlist check; requires BOTH isWithinCwd (blocks writing the doc outside
+  // the project entirely) AND allowlistIsHonest (blocks a symlinked/hardlinked
+  // lookalike), so neither an escape nor a lookalike can slip a real write
+  // through under a handover-shaped name.
+  //
+  // WRONG-LOCATION REDIRECT (owner amendment 2026-08-07, thread 3). This
+  // exclusion USED TO allow a handover-named .md ANYWHERE under cwd — a field
+  // failure produced a 177-line handover written to docs/ that
+  // handover-resume.js (which scans ONLY .anti-hall/handovers/**) can never
+  // find. Paths INSIDE .anti-hall/handovers/** already exit at the allowlist
+  // check above (DEFAULT_ALLOW '.anti-hall/**'), so they never reach this
+  // block — unaffected. A file OUTSIDE that dir which ALREADY EXISTS on disk
+  // (a legacy repo HANDOVER-*.md, or root CONTINUE-HERE.md, which is also
+  // separately allowlisted above) is unaffected too — only a NEW write
+  // (target doesn't exist yet) at a wrong location gets redirected instead of
+  // silently allowed. Fail-open on ambiguity: an unknown cwd behaves exactly
+  // as before (allowed) since the redirect has nowhere reliable to check
+  // existence against. Skippable via the existing skip.json mechanism (the
+  // 'edit-guard' key), already honored at the top of main().
+  // Legacy CONTINUE-HERE names ride the same rule: an existing file stays
+  // editable (never strand a user's file), a NEW one is redirected.
+  if ((isHandoverDoc(filePath) || isLegacyContinueHere(filePath, cwd)) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {
+    if (!cwd) {
+      process.exit(0); // ambiguous cwd -> old broad-allow behavior, unchanged
+    }
+    let alreadyExists = false;
+    try {
+      alreadyExists = fs.existsSync(path.resolve(String(cwd), String(filePath)));
+    } catch (_) {
+      alreadyExists = true; // can't check -> ambiguous -> fail-open (old broad-allow behavior)
+    }
+    if (alreadyExists) {
+      process.exit(0); // legacy file at its existing location -> unaffected
+    }
+    fs.writeSync(1, JSON.stringify({
+      decision: 'block',
+      reason:
+        'HANDOVER-LOCATION RULE: a NEW session-handover doc belongs under ' +
+        '.anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (see the `handover` skill, ' +
+        'which computes <date>/<session-id> for you) — not at this path. Write ' +
+        'handovers under .anti-hall/handovers/** (exempt); copy elsewhere afterwards ' +
+        'if the project wants one. If this is an intentional exception, honor it via ' +
+        "the existing skip mechanism — run 'node scripts/devswarm.js skip edit-guard' " +
+        '(~/.anti-hall/skip.json, 15-min TTL), then retry. Never skip on your own ' +
+        'initiative. (tool: ' + toolName + ')',
+    }) + '\n');
+    process.exit(2);
+  }
+
+  // PLAN MODE (NARROWED): a plan-mode session is doing read-only planning, so
+  // drafting a doc/scratch/plan artifact is legitimate orchestrator work and the
+  // guard firing there is the reported false positive (a DevSwarm Primary in plan
+  // mode blocked from Writing its own plan file). But plan mode does NOT hard-remove
+  // Write from the toolset — it is enforced by a system-prompt instruction + the
+  // standing permission-prompt gate (docs/KB-model-modes.md) — so edit-guard KEEPS
+  // its source-file gate even in plan mode: the exemption applies ONLY when the
+  // target is not likely source. This closes the abuse vector where a plan-mode
+  // session could otherwise slip an undelegated source write past the delegation
+  // gate. Runs AFTER the allowlist check, so a symlinked allowlisted lookalike
+  // (isAllowed but dishonest) has already failed to exit and, being a NON-source
+  // NAME, must ALSO pass the honesty check here before plan mode can allow it —
+  // otherwise the plan-mode path would reopen the symlink bypass the allowlist line
+  // guards against. permission_mode is harness-set (see isPlanMode), so it cannot
+  // be spoofed via tool_input.
+  if (isPlanMode(payload) && !isLikelySource(filePath) && allowlistIsHonest(filePath, cwd)) {
+    process.exit(0);
+  }
+
+  // DevSwarm-aware wording switch (lazy-require, mirrors this file's pattern).
+  let devswarmActive = false;
+  try {
+    devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+  } catch (_) {
+    devswarmActive = false; // fail-open: treat as standalone/dormant
+  }
+
+  // SKIP-GUARD OVERRIDE HINT (papercut fix): the block message never told the
+  // agent the sanctioned override exists, and the reason title's "DEVSWARM
+  // EDIT-DELEGATION RULE" mismatched the real skip key ("edit-guard"), which
+  // misled agents into writing a useless "devswarm-edit-delegation" key instead.
+  // Appended verbatim to ALL THREE reason branches below — the skip key is
+  // ALWAYS "edit-guard" regardless of DevSwarm role/activity.
+  const SKIP_HINT = ' If the user EXPLICITLY instructed you to make THIS edit ' +
+    "yourself, that is the documented override — run 'node scripts/devswarm.js " +
+    "skip edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min " +
+    'TTL), then retry. Never skip on your own initiative.';
+
+  // Points at the exempt locations so a coordinator's own notes/reports need no
+  // delegation; repo docs still need a subagent or a trusted edit-allow.json.
+  const NOTES_HINT = ' Session notes/reports can go in .anti-hall/history/** or the ' +
+    'scratchpad (exempt); repo docs need a subagent or a trusted .anti-hall/edit-allow.json.';
+
+  let reason;
+  if (devswarmActive) {
+    // Topology-aware noun: a child workspace is a sub-orchestrator, but the root
+    // session is the primary/main orchestrator — the old wording hardcoded
+    // "sub-orchestrator" even for the Primary. Fail-open: if devswarm-role
+    // require/throws, default to the current (sub-orchestrator) wording. This only
+    // changes the noun; the block decision is identical for both roles.
+    let childWorkspace = true; // default to current wording on any failure
+    try {
+      childWorkspace = require('./lib/devswarm-role.js').isChildWorkspace(process.env);
+    } catch (_) {
+      childWorkspace = true; // fall back to current generic (sub-orchestrator) wording
+    }
+    // PRIMARY redirect names the RIGHT primitive first. The Primary's top fan-out
+    // tier is a CHILD WORKSPACE (docs/KB-devswarm-hivecontrol.md §8.1-8.2); naming
+    // "spawn a subagent" as the only exit at the exact point the Primary is blocked
+    // from working is what drove Primaries to decompose feature-scale work into
+    // subagents instead of workspaces. No mechanical scale classifier is used (a
+    // false positive would break legitimate subagent use) — the reason states the
+    // CHOICE and lets the model classify. The CHILD wording is unchanged, and the
+    // BLOCK DECISION is identical for both roles (only the redirect text differs).
+    // The workspace recommendation is shared with the other Primary tier text
+    // (lib/primary-tier.js): a repo that forbids workspaces for real work (or
+    // devswarm.dispatchTierText off) gets the subagent-only advice. Fail-open
+    // to the subagent-only text. Advice text only; the block is unchanged.
+    let tierText = false;
+    try { tierText = !childWorkspace && require('./lib/primary-tier.js').primaryTierTextOn(process.env, cwd); } catch (_) { tierText = false; }
+    reason = childWorkspace
+      ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
+         'directly in its workspace — spawn a subagent to make this edit and have it ' +
+         'report a tight summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')')
+      : !tierText
+      ? ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
+         'files directly — spawn a subagent to make this edit and have it report a tight ' +
+         'summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')')
+      : ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
+         'files directly. CHOOSE THE TIER: if this edit belongs to a workspace-scale ' +
+         'MATTER (a feature/fix/deploy — multi-step, own branch, own review), spin a ' +
+         'CHILD WORKSPACE and let it own the work: `node scripts/devswarm.js spawn ' +
+         '<branch> -p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for ' +
+         'genuinely small/scoped work (a one-file tweak, a mechanical transform): spawn ' +
+         'a subagent to make this edit and have it report a tight summary. Do NOT hand a ' +
+         'workspace-scale matter to a subagent.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')');
+  } else {
+    reason =
+      'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
+      'a subagent to make this edit and have it report a tight summary. The ' +
+      'coordinator synthesizes the summary; raw edits never happen in the main ' +
+      'thread.' + SKIP_HINT + ' (tool: ' + toolName + ')';
+  }
+
+  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+  process.exit(2);
+}
+
+try {
+  main();
+} catch (_) {
+  // Fail-open: never block a turn due to a hook bug.
+}
+process.exit(0);

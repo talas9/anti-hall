@@ -1,0 +1,1360 @@
+'use strict';
+// edit-guard (PreToolUse Write|Edit|MultiEdit|NotebookEdit). Coordinator => may
+// block (exit 2 + decision); subagent => always allow (exit 0). Mirrors
+// command-guard.test.js's structure for the Edit-family tools instead of Bash.
+//
+// COORDINATOR env: CLAUDE_CODE_ENTRYPOINT='cli' AND no agent_id in the payload.
+// SUBAGENT: agent_id in the PAYLOAD (the cmux-reliable signal).
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { testHook, testHookRaw, editPayload } = require('../helpers/spawn-hook.js');
+const { makeHome } = require('../helpers/fixtures.js');
+
+const HOOK = 'edit-guard.js';
+const COORD = { CLAUDE_CODE_ENTRYPOINT: 'cli' };
+
+// Coordinator run with a fresh fake HOME (no skip.json -> guard active).
+function runCoord(payload, env) {
+  const h = makeHome();
+  try {
+    return testHook(HOOK, payload, { home: h.home, env: Object.assign({}, COORD, env || {}) });
+  } finally {
+    h.cleanup();
+  }
+}
+
+test('COORD BLOCK: cli + Edit on src/app.js', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }));
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+});
+
+for (const tool of ['Write', 'MultiEdit', 'NotebookEdit']) {
+  test(`COORD BLOCK: ${tool} variant`, () => {
+    const r = runCoord(editPayload(tool, { filePath: 'src/app.js' }));
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+  });
+}
+
+test('SUBAGENT ALLOW: cli + Edit + agent_id/agent_type present', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js', agentId: 'test-agent' }));
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+test('FAIL-OPEN: no entrypoint env -> allow', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, editPayload('Edit', { filePath: 'src/app.js' }), { home: h.home });
+    assert.strictEqual(r.status, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("FAIL-OPEN: unknown entrypoint 'weird' -> allow", () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), { CLAUDE_CODE_ENTRYPOINT: 'weird' });
+  assert.strictEqual(r.status, 0);
+});
+
+test('FAIL-OPEN: empty stdin -> allow', () => {
+  const h = makeHome();
+  try {
+    assert.strictEqual(testHookRaw(HOOK, '', { home: h.home, env: COORD }).status, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FAIL-OPEN: malformed JSON -> allow', () => {
+  const h = makeHome();
+  try {
+    assert.strictEqual(testHookRaw(HOOK, '{bad', { home: h.home, env: COORD }).status, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+const ALLOWLIST_PATHS = ['CLAUDE.md', '.claude/settings.json', '.anti-hall/x.md', 'PLAN.md'];
+for (const p of ALLOWLIST_PATHS) {
+  test(`ALLOWLIST: cli + Edit on ${p}`, () => {
+    const r = runCoord(editPayload('Edit', { filePath: p }));
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+}
+
+test("ALLOWLIST: env ANTIHALL_EDIT_GUARD_ALLOW='docs/**' on docs/x.md", () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'docs/x.md' }), { ANTIHALL_EDIT_GUARD_ALLOW: 'docs/**' });
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+// BARE-FILENAME ROOT ANCHORING (P0 fix): DEFAULT_ALLOW patterns with no '/'
+// ('CLAUDE.md', 'AGENTS.md', 'GEMINI.md', 'PLAN.md', 'STATE.json') must match
+// ONLY a root-level file, never a same-named file nested anywhere else in the
+// tree (a bug that previously allow-listed e.g. 'src/deep/nested/CLAUDE.md'
+// because isAllowed tested the pattern against basename() with no path check).
+const NESTED_BARE_BLOCKED = [
+  'src/nested/CLAUDE.md',
+  'src/app/PLAN.md',
+  'a/b/STATE.json',
+  'sub/AGENTS.md',
+  'x/GEMINI.md',
+  'src/nested/CONTINUE-HERE.md',
+];
+for (const p of NESTED_BARE_BLOCKED) {
+  test(`BARE-FILENAME NOT ROOT-ANCHORED: cli + Edit on ${p} -> BLOCKED`, () => {
+    const r = runCoord(editPayload('Edit', { filePath: p }));
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+  });
+}
+
+const ROOT_BARE_ALLOWED = ['CLAUDE.md', 'PLAN.md', 'STATE.json'];
+for (const p of ROOT_BARE_ALLOWED) {
+  test(`BARE-FILENAME ROOT-ANCHORED: cli + Edit on root ${p} -> ALLOWED`, () => {
+    const r = runCoord(editPayload('Edit', { filePath: p }));
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+}
+
+test("ALLOWLIST: env ANTIHALL_EDIT_GUARD_ALLOW='**/CLAUDE.md' still opts nested CLAUDE.md back in", () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/nested/CLAUDE.md' }), { ANTIHALL_EDIT_GUARD_ALLOW: '**/CLAUDE.md' });
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+// ---------------------------------------------------------------------------
+// CONTINUE-HERE.md: coordinator's own session-handover artifact. No subagent
+// has seen the coordinator's conversation, so this is the coordinator's own
+// synthesis of its own context — the same class as PLAN.md/STATE.json above,
+// not delegatable. Root-anchored bare filename (see BARE-FILENAME tests above
+// for the generic mechanism); these tests pin the specific allowlist entry
+// and the mandated regression checks (normal file still blocked with the
+// UNCHANGED reason string; a traversal/lookalike does not slip through).
+
+// ONE HANDOVER FORMAT (0.122): CONTINUE-HERE.md / *.continue-here.md are no
+// longer allowlisted. An EXISTING root file stays editable (never strand a
+// user's file); a NEW one is blocked with the canonical path.
+const LEGACY_CONTINUE_NAMES = ['CONTINUE-HERE.md', 'session.continue-here.md', '.continue-here.md'];
+for (const name of LEGACY_CONTINUE_NAMES) {
+  test(`LEGACY CONTINUE-HERE: EXISTING root ${name} -> Edit stays ALLOWED`, () => {
+    const proj = makeProject();
+    try {
+      fs.writeFileSync(path.join(proj.dir, name), '# old\n', 'utf8');
+      const r = runIn(proj, 'Edit', name);
+      assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+    } finally { proj.cleanup(); }
+  });
+  for (const tool of ['Write', 'Edit']) {
+    test(`LEGACY CONTINUE-HERE: NEW root ${name} (${tool}) -> BLOCKED, names the canonical path`, () => {
+      const proj = makeProject();
+      try {
+        const r = runIn(proj, tool, name);
+        assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+        assert.match(r.json.reason, /HANDOVER-LOCATION RULE/);
+        assert.match(r.json.reason, /\.anti-hall\/handovers\/<YYYY-MM-DD>\/<session-id>\/HANDOVER\.md/);
+      } finally { proj.cleanup(); }
+    });
+  }
+}
+
+test('LEGACY CONTINUE-HERE: EXISTING ./CONTINUE-HERE.md (leading ./) -> Edit stays ALLOWED; NEW one is still blocked', () => {
+  const proj = makeProject();
+  try {
+    const h = makeHome();
+    try {
+      const edit = () => testHook(HOOK, editPayload('Edit', { filePath: './CONTINUE-HERE.md', cwd: proj.dir }), { home: h.home, env: COORD });
+      assert.strictEqual(edit().status, 2, 'new file blocked');
+      fs.writeFileSync(path.join(proj.dir, 'CONTINUE-HERE.md'), '# old\n', 'utf8');
+      assert.strictEqual(edit().status, 0, 'existing file allowed');
+    } finally { h.cleanup(); }
+  } finally { proj.cleanup(); }
+});
+
+// The plain (non-DevSwarm) coordinator reason, WITH the skip-guard override
+// hint appended (papercut fix: the block message now names the documented
+// escape hatch — 'node scripts/devswarm.js skip edit-guard' — instead of
+// leaving the agent to guess or invent a wrong skip key).
+const PLAIN_REASON = (tool) =>
+  'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
+  'a subagent to make this edit and have it report a tight summary. The ' +
+  'coordinator synthesizes the summary; raw edits never happen in the main ' +
+  'thread. If the user EXPLICITLY instructed you to make THIS edit yourself, ' +
+  "that is the documented override — run 'node scripts/devswarm.js skip " +
+  "edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min TTL), " +
+  'then retry. Never skip on your own initiative. (tool: ' + tool + ')';
+
+test('CONTINUE-HERE.md REGRESSION: normal source file still BLOCKED with unchanged reason', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/foo.js' }));
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.strictEqual(r.json.reason, PLAIN_REASON('Edit'));
+});
+
+const CONTINUE_HERE_LOOKALIKES_BLOCKED = [
+  'notes/CONTINUE-HERE.md',            // nested, not root
+  '../../CONTINUE-HERE.md',            // traversal, contains '/'
+  'foo/CONTINUE-HERE.md.js',           // suffix lookalike, not an exact match
+  'CONTINUE-HERE.md.bak',              // suffix lookalike at root
+  'notCONTINUE-HERE.md',               // substring-contains lookalike at root
+];
+for (const p of CONTINUE_HERE_LOOKALIKES_BLOCKED) {
+  test(`CONTINUE-HERE.md LOOKALIKE NOT ALLOWLISTED: cli + Edit on ${p} -> BLOCKED`, () => {
+    const r = runCoord(editPayload('Edit', { filePath: p }));
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// PLAN MODE (permission_mode === 'plan'), NARROWED. A read-only planning session
+// drafting docs/scratch/plan artifacts must NOT be blocked — the reported false
+// positive (a DevSwarm Primary in plan mode blocked from Writing its own plan
+// file). BUT plan mode is gate-based, not a toolset removal, so edit-guard keeps
+// its source-file gate even in plan mode (defense-in-depth): a plan-mode write to
+// a SOURCE file is STILL blocked. permission_mode is harness-set, not
+// model/tool-controllable.
+
+// planPayload(tool, file): an edit payload marked as a plan-mode session.
+function planPayload(tool, filePath) {
+  const p = editPayload(tool, { filePath });
+  p.permission_mode = 'plan';
+  return p;
+}
+
+// Plan mode + a NON-source, non-allowlisted path (doc/scratch) -> ALLOWED.
+const PLAN_NONSOURCE_ALLOWED = ['docs/notes.md', 'scratch/notes.txt', 'design/spec.rst'];
+for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+  test(`PLAN MODE non-source: ${tool} on docs/notes.md -> ALLOWED`, () => {
+    const r = runCoord(planPayload(tool, 'docs/notes.md'));
+    assert.strictEqual(r.status, 0, `plan-mode doc edit must pass; stdout: ${r.stdout}`);
+  });
+}
+for (const p of PLAN_NONSOURCE_ALLOWED) {
+  test(`PLAN MODE non-source: Write on ${p} -> ALLOWED`, () => {
+    const r = runCoord(planPayload('Write', p));
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+}
+
+test("PLAN MODE case-insensitive: permission_mode:'Plan' + doc -> ALLOWED", () => {
+  const p = editPayload('Write', { filePath: 'docs/notes.md' });
+  p.permission_mode = 'Plan';
+  const r = runCoord(p);
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+// ABUSE VECTOR CLOSED: plan mode must STILL block a SOURCE file. Covers both the
+// extension signal (src/app.js) and the code-directory signal (plugins/scripts/...).
+const PLAN_SOURCE_BLOCKED = [
+  'src/app.js',
+  'plugins/anti-hall/scripts/foo.js',
+  'plugins/anti-hall/hooks/edit-guard.js',
+  'scripts/build.sh',
+  'companion/x.py',
+  'statusline/render.ts',
+];
+for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+  test(`PLAN MODE source: ${tool} on plugins/anti-hall/scripts/foo.js -> STILL BLOCKED`, () => {
+    const r = runCoord(planPayload(tool, 'plugins/anti-hall/scripts/foo.js'));
+    assert.strictEqual(r.status, 2, `plan-mode SOURCE edit must block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+for (const p of PLAN_SOURCE_BLOCKED) {
+  test(`PLAN MODE source: Write on ${p} -> STILL BLOCKED`, () => {
+    const r = runCoord(planPayload('Write', p));
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+
+// SYMLINK HONESTY holds in plan mode too: a NON-source-NAMED file (isLikelySource
+// false) that is actually a SYMLINK to a source file must NOT slip through the
+// plan-mode exemption — the exemption also requires allowlistIsHonest(). Without
+// that guard the plan-mode path would reopen the symlink bypass.
+test('PLAN MODE symlink: a non-source-named symlink -> a source file -> BLOCKED', { skip: process.platform === 'win32' }, () => {
+  const p = makeProject();
+  try {
+    const target = path.join(p.dir, 'command-guard.js');
+    fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+    fs.symlinkSync(target, path.join(p.dir, 'notes.md')); // .md name, points at source
+    const h = makeHome();
+    try {
+      const payload = editPayload('Write', { filePath: path.join(p.dir, 'notes.md'), cwd: p.dir });
+      payload.permission_mode = 'plan';
+      const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 2, `symlinked plan-mode write must block; stdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+// REGRESSION: outside plan mode, a source-file edit is STILL blocked. This is the
+// no-relaxation anchor for the plan-mode exemption — 'default'/'acceptEdits'/absent
+// permission_mode must not slip a source write past the delegation gate.
+for (const mode of ['default', 'acceptEdits', 'bypassPermissions']) {
+  test(`NOT PLAN MODE (permission_mode:'${mode}'): src edit STILL BLOCKED`, () => {
+    const p = editPayload('Edit', { filePath: 'src/app.js' });
+    p.permission_mode = mode;
+    const r = runCoord(p);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+
+test('NO permission_mode field: src edit STILL BLOCKED (unchanged baseline)', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }));
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+});
+
+// ---------------------------------------------------------------------------
+// NEW ORCHESTRATOR-ARTIFACT ALLOWLIST ENTRIES (outside plan mode). Each is a
+// coordinator-owned plan/handover/memory artifact, never source.
+
+const NEW_ARTIFACT_ALLOWED = [
+  'plan.md',                       // lowercase plan file (ship-it-guard convention)
+];
+for (const p of NEW_ARTIFACT_ALLOWED) {
+  test(`NEW ALLOWLIST: coordinator + Write on root ${p} -> ALLOWED`, () => {
+    const r = runCoord(editPayload('Write', { filePath: p }));
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+}
+
+// The new artifact patterns must NOT over-relax: nested/lookalike source paths
+// that merely resemble them are STILL blocked.
+const NEW_ARTIFACT_BLOCKED = [
+  'src/nested/plan.md',            // lowercase plan.md is root-anchored (bare)
+  'src/session.continue-here.md',  // nested continue-here variant, not root
+  'src/plan.md.js',                // suffix lookalike, real source
+  'memory/app.js',                 // a 'memory' dir that is NOT the .claude memory store
+  'src/.claude/memory/app.js',     // '.claude/memory' but not '.claude/projects/*/memory'
+];
+for (const p of NEW_ARTIFACT_BLOCKED) {
+  test(`NEW ALLOWLIST NOT OVER-RELAXED: coordinator + Write on ${p} -> BLOCKED`, () => {
+    const r = runCoord(editPayload('Write', { filePath: p }));
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+
+// Claude Code per-project MEMORY store lives OUTSIDE the repo cwd (~/.claude/...),
+// so the cwd-relative '.claude/**' glob cannot reach it. The '**/.claude/projects/
+// **/memory/**' entry matches that out-of-cwd shape. Hermetic: a real cwd dir plus
+// a sibling home tree holding the memory file, referenced by absolute path.
+test('MEMORY STORE (out-of-cwd .claude/projects/*/memory): coordinator + Write -> ALLOWED', () => {
+  const proj = makeProject(); // acts as the session cwd
+  const homeTree = makeProject();
+  try {
+    const memDir = path.join(homeTree.dir, '.claude', 'projects', 'slug', 'memory');
+    fs.mkdirSync(memDir, { recursive: true });
+    const memFile = path.join(memDir, 'MEMORY.md');
+    fs.writeFileSync(memFile, '# memory\n', 'utf8');
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, editPayload('Write', { filePath: memFile, cwd: proj.dir }),
+        { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 0, `out-of-cwd memory write must pass; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    proj.cleanup();
+    homeTree.cleanup();
+  }
+});
+
+test("SKIP: writeSkip({'edit-guard': future}) -> allow", () => {
+  const h = makeHome();
+  try {
+    h.writeSkip({ 'edit-guard': Date.now() + 60000 });
+    const r = testHook(HOOK, editPayload('Edit', { filePath: 'src/app.js' }), { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("SKIP: writeSkip({all: future}) -> allow (honors broad 'all')", () => {
+  const h = makeHome();
+  try {
+    h.writeSkip({ all: Date.now() + 60000 });
+    const r = testHook(HOOK, editPayload('Edit', { filePath: 'src/app.js' }), { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('INJECTION: block reason does not echo file_path text', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/INJECTSECRET.js' }));
+  assert.strictEqual(r.status, 2);
+  assert.ok(!r.stdout.includes('INJECTSECRET'), 'stdout must not reflect file_path text');
+  assert.ok(!r.stderr.includes('INJECTSECRET'), 'stderr must not reflect file_path text');
+});
+
+// ---------------------------------------------------------------------------
+// SYMLINK BYPASS (security). isAllowed() matches a NAME; the OS writes to a
+// TARGET. Before allowlistIsHonest(), a coordinator could `ln -s
+// hooks/command-guard.js CONTINUE-HERE.md`, Edit the allowlisted NAME, and the
+// write landed on the guard itself — an arbitrary-write bypass of the whole
+// delegation gate. Verified live: pre-fix, all three bare-filename allowlist
+// entries exited 0 through a symlink. The hole was PRE-EXISTING for
+// PLAN.md/STATE.json, so every entry is covered here, not just the newest.
+//
+// win32 skip: creating a symlink there needs SeCreateSymbolicLinkPrivilege
+// (Developer Mode / elevation), which CI runners do not reliably have — same
+// idiom as the other win32-skipped fs tests in this suite.
+const NO_SYMLINKS = process.platform === 'win32';
+
+// realCwd(): a throwaway project root the guard treats as the session cwd.
+function makeProject() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edit-guard-'));
+  return { dir, cleanup: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {} } };
+}
+
+function runIn(project, tool, file) {
+  const h = makeHome();
+  try {
+    return testHook(HOOK, editPayload(tool, { filePath: path.join(project.dir, file), cwd: project.dir }),
+      { home: h.home, env: COORD });
+  } finally {
+    h.cleanup();
+  }
+}
+
+for (const name of ['CONTINUE-HERE.md', 'PLAN.md', 'STATE.json', 'CLAUDE.md']) {
+  test(`SYMLINK BYPASS: allowlisted ${name} that is a SYMLINK -> BLOCKED`, { skip: NO_SYMLINKS }, () => {
+    const p = makeProject();
+    try {
+      // The exploit target: a file the guard exists to keep the coordinator away from.
+      const target = path.join(p.dir, 'command-guard.js');
+      fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+      fs.symlinkSync(target, path.join(p.dir, name));
+      const r = runIn(p, 'Write', name);
+      assert.strictEqual(r.status, 2, `symlinked ${name} must NOT be allowlisted; stdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+    } finally {
+      p.cleanup();
+    }
+  });
+}
+
+test('SYMLINK BYPASS: an allowlisted DIRECTORY glob reached through a symlinked dir -> BLOCKED', { skip: NO_SYMLINKS }, () => {
+  const p = makeProject();
+  try {
+    fs.mkdirSync(path.join(p.dir, 'elsewhere'));
+    fs.symlinkSync(path.join(p.dir, 'elsewhere'), path.join(p.dir, '.claude'));
+    const r = runIn(p, 'Write', path.join('.claude', 'settings.json'));
+    assert.strictEqual(r.status, 2, `a symlink TRAVERSED by the path must block too; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('SYMLINK BYPASS: a symlinked allowlisted file blocks with the UNCHANGED reason string', { skip: NO_SYMLINKS }, () => {
+  const p = makeProject();
+  try {
+    fs.writeFileSync(path.join(p.dir, 'target.js'), 'x\n', 'utf8');
+    fs.symlinkSync(path.join(p.dir, 'target.js'), path.join(p.dir, 'CONTINUE-HERE.md'));
+    const r = runIn(p, 'Edit', 'CONTINUE-HERE.md');
+    assert.strictEqual(r.status, 2);
+    assert.strictEqual(r.json.reason, PLAIN_REASON('Edit'));
+  } finally {
+    p.cleanup();
+  }
+});
+
+// FIRST-WRITE MUST STILL WORK: an ENOENT is the EXPECTED case (Write CREATES
+// these files), never an fs error — if this regressed, the coordinator could no
+// longer create its own handover/plan/state files at all.
+for (const name of ['PLAN.md', 'STATE.json']) {
+  test(`SYMLINK CHECK: NON-EXISTENT ${name} (first Write) -> still ALLOWED`, () => {
+    const p = makeProject();
+    try {
+      assert.strictEqual(fs.existsSync(path.join(p.dir, name)), false, 'precondition: file must not exist');
+      const r = runIn(p, 'Write', name);
+      assert.strictEqual(r.status, 0, `first Write must be allowed; stdout: ${r.stdout}`);
+    } finally {
+      p.cleanup();
+    }
+  });
+}
+
+test('SYMLINK CHECK: a REAL regular-file CONTINUE-HERE.md -> still ALLOWED', () => {
+  const p = makeProject();
+  try {
+    fs.writeFileSync(path.join(p.dir, 'CONTINUE-HERE.md'), '# handover\n', 'utf8');
+    const r = runIn(p, 'Edit', 'CONTINUE-HERE.md');
+    assert.strictEqual(r.status, 0, `a real regular file must stay allowed; stdout: ${r.stdout}`);
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('SYMLINK CHECK: a real allowlisted file under a real directory -> still ALLOWED', () => {
+  const p = makeProject();
+  try {
+    fs.mkdirSync(path.join(p.dir, '.claude'));
+    fs.writeFileSync(path.join(p.dir, '.claude', 'settings.json'), '{}\n', 'utf8');
+    const r = runIn(p, 'Edit', path.join('.claude', 'settings.json'));
+    assert.strictEqual(r.status, 0, `a real file in a real dir must stay allowed; stdout: ${r.stdout}`);
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DevSwarm topology-aware wording. isDevswarmActive follows DEVSWARM_REPO_ID (auto
+// mode); isChildWorkspace follows DEVSWARM_SOURCE_BRANCH (non-empty = child).
+// Both roles still BLOCK a non-allowlisted edit — only the orchestrator noun in
+// the reason string differs (child = "sub-orchestrator", root = "primary").
+
+test('DEVSWARM CHILD: coordinator + child env + Edit -> block, reason says sub-orchestrator', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }),
+    { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' });
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  assert.ok(/sub-orchestrator/.test(r.json.reason), `reason: ${r.json.reason}`);
+});
+
+test('DEVSWARM PRIMARY: coordinator + primary env (no source branch) + Edit -> block, reason says primary', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }),
+    { DEVSWARM_REPO_ID: 'repo-x' }); // DEVSWARM_SOURCE_BRANCH unset -> Primary
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  assert.ok(/primary/.test(r.json.reason), `reason: ${r.json.reason}`);
+  assert.ok(!/sub-orchestrator/.test(r.json.reason),
+    `Primary reason must NOT say sub-orchestrator: ${r.json.reason}`);
+});
+
+// ---------------------------------------------------------------------------
+// WORKSPACE-TIER REDIRECT (P0: anti-hall's own doctrine used to name "spawn a
+// subagent" as the Primary's ONLY exit at the exact point it was blocked from
+// editing — the decision point where a DevSwarm Primary should have spun a child
+// workspace instead). What is BLOCKED is unchanged; only the redirect text differs,
+// and only for a Primary.
+
+const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-x' }; // no SOURCE_BRANCH -> Primary
+const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' };
+
+test('DEVSWARM PRIMARY: block reason names `devswarm.js spawn` as the PRIMARY exit', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), PRIMARY_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  const reason = r.json.reason;
+  assert.ok(/devswarm\.js spawn <branch> -p/.test(reason),
+    `Primary reason must name devswarm.js spawn: ${reason}`);
+  assert.ok(/workspace-scale/i.test(reason), `Primary reason must state the choice rule: ${reason}`);
+  // The workspace must be named BEFORE the subagent — the subagent is the
+  // alternative for small/scoped work, never the headline exit.
+  assert.ok(reason.indexOf('devswarm.js spawn') < reason.indexOf('subagent'),
+    `workspace exit must precede the subagent alternative: ${reason}`);
+  assert.ok(/Do NOT hand a workspace-scale matter to a subagent/.test(reason),
+    `Primary reason must forbid subagent-for-workspace-scale: ${reason}`);
+});
+
+test('DEVSWARM PRIMARY: block reason carries the exempt-locations notes hint', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), PRIMARY_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(/\.anti-hall\/history\/\*\* or the scratchpad \(exempt\)/.test(r.json.reason), r.json.reason);
+});
+
+test('DEVSWARM CHILD: block reason is UNCHANGED (no workspace redirect — children never spawn workspaces)', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), CHILD_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.strictEqual(
+    r.json.reason,
+    'DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
+    'directly in its workspace — spawn a subagent to make this edit and have it ' +
+    'report a tight summary. Session notes/reports can go in .anti-hall/history/** ' +
+    'or the scratchpad (exempt); repo docs need a subagent or a trusted ' +
+    '.anti-hall/edit-allow.json. If the user EXPLICITLY instructed you to make THIS ' +
+    "edit yourself, that is the documented override — run 'node scripts/devswarm.js " +
+    "skip edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min TTL), " +
+    'then retry. Never skip on your own initiative. (tool: Edit)',
+  );
+});
+
+test('NON-DEVSWARM: block reason is the pre-fix baseline plus the skip-hint (no DEVSWARM-ACTIVE title)', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' })); // no DEVSWARM_* env
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.strictEqual(r.json.reason, PLAIN_REASON('Edit'));
+  // The shared skip-hint intentionally names 'scripts/devswarm.js' (the CLI that
+  // now implements `skip`) even in the non-DevSwarm-active branch — that is NOT
+  // the DevSwarm-active wording switch. What must stay absent is the ACTIVE-mode
+  // title/redirect text (the "DEVSWARM EDIT-DELEGATION RULE" title and the
+  // workspace-tier CHOOSE-THE-TIER redirect), which only devswarmActive adds.
+  assert.ok(!/DEVSWARM EDIT-DELEGATION RULE/.test(r.stdout),
+    'non-DevSwarm output must not carry the DevSwarm-active title');
+  assert.ok(!/CHOOSE THE TIER/.test(r.stdout),
+    'non-DevSwarm output must not carry the Primary workspace-tier redirect');
+});
+
+// ---------------------------------------------------------------------------
+// COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION (isHandoverDoc). A handover
+// is the coordinator synthesizing ITS OWN session state for compaction —
+// delegating that to a subagent that never saw the conversation is nonsensical,
+// so the Primary (and any coordinator) may Write/Edit these directly. The
+// exclusion is basename-matched and HARD-GATED to '.md' — this is the
+// anti-bypass property under test below.
+
+// NOTE (owner amendment 2026-08-07, thread 3): a NEW handover-named .md write
+// OUTSIDE .anti-hall/handovers/** is now REDIRECTED (see WRONG-LOCATION
+// REDIRECT tests below) rather than silently allowed anywhere. The legacy
+// CONTINUE-HERE.md / .continue-here.md names follow the same rule (see the
+// LEGACY CONTINUE-HERE tests above).
+for (const p of ['CONTINUE-HERE.md', '.continue-here.md']) {
+  test(`HANDOVER DOC: DevSwarm Primary EXISTING ${p} -> Edit ALLOWED`, () => {
+    const proj = makeProject();
+    try {
+      fs.writeFileSync(path.join(proj.dir, p), '# old\n', 'utf8');
+      const h = makeHome();
+      try {
+        const r = testHook(HOOK, editPayload('Edit', { filePath: path.join(proj.dir, p), cwd: proj.dir }),
+          { home: h.home, env: Object.assign({}, COORD, PRIMARY_ENV) });
+        assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+      } finally { h.cleanup(); }
+    } finally { proj.cleanup(); }
+  });
+}
+
+// ANTI-BYPASS (mandatory): the same basenames with a non-.md extension must
+// STILL be blocked — the .md gate is the entire safety property of this
+// exclusion, and it must never be usable to write code.
+const HANDOVER_NONMD_BLOCKED = [
+  'handover.js',
+  'handoff.py',
+  'HANDOVER-2026-08-03.js',
+  'session-compact-handover.sh',
+];
+for (const p of HANDOVER_NONMD_BLOCKED) {
+  test(`HANDOVER DOC ANTI-BYPASS: DevSwarm Primary Write on ${p} -> STILL BLOCKED`, () => {
+    const r = runCoord(editPayload('Write', { filePath: p }), PRIMARY_ENV);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+
+// A normal source file must remain blocked regardless of this exclusion.
+test('HANDOVER DOC: DevSwarm Primary Write on foo.js -> STILL BLOCKED', () => {
+  const r = runCoord(editPayload('Write', { filePath: 'foo.js' }), PRIMARY_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+});
+
+// A non-Primary / non-DevSwarm normal coordinator session is unaffected by the
+// DevSwarm-Primary framing — the exclusion applies to ANY coordinator. A NEW
+// root-level HANDOVER.md write is now redirected (thread 3), covered below;
+// this test moves to the redirect section.
+
+test('HANDOVER DOC: plain (non-DevSwarm) coordinator Write on src/app.js -> UNCHANGED (still blocked)', () => {
+  const r = runCoord(editPayload('Write', { filePath: 'src/app.js' }));
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.strictEqual(r.json.reason, PLAIN_REASON('Write'));
+});
+
+// ---------------------------------------------------------------------------
+// WRONG-LOCATION REDIRECT (owner amendment 2026-08-07, thread 3). A NEW
+// handover-named .md write OUTSIDE <cwd>/.anti-hall/handovers/** is redirected
+// instead of silently allowed anywhere — the field failure this closes: a
+// 177-line handover written to docs/, invisible to handover-resume.js (which
+// scans ONLY .anti-hall/handovers/**).
+
+const HANDOVER_DOC_REDIRECTED_NEW = [
+  'HANDOVER.md',
+  'HANDOVER-2026-08-03.md',
+  'x-handoff.md',
+  'session-compact-handover.md',
+  'team-handover.md',
+  'docs/HANDOVER.md',
+];
+for (const p of HANDOVER_DOC_REDIRECTED_NEW) {
+  test(`WRONG-LOCATION REDIRECT: NEW Write on ${p} (outside .anti-hall/handovers/**) -> BLOCKED w/ redirect`, () => {
+    const proj = makeProject();
+    try {
+      assert.strictEqual(fs.existsSync(path.join(proj.dir, p)), false, 'precondition: file must not exist yet');
+      const r = runIn(proj, 'Write', p);
+      assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+      assert.match(r.json.reason, /HANDOVER-LOCATION RULE/);
+      assert.match(r.json.reason, /\.anti-hall\/handovers/);
+      assert.match(r.json.reason, /handover.* skill/);
+      assert.match(r.json.reason, /skip edit-guard/);
+      // item D (v0.107.1): the deny explicitly names the exempt path AND says
+      // the write can be copied elsewhere afterwards, so a child orchestrator
+      // isn't left guessing whether it can ever produce a doc outside the
+      // exempt tree.
+      assert.match(r.json.reason, /Write handovers under \.anti-hall\/handovers\/\*\* \(exempt\)/);
+      assert.match(r.json.reason, /copy elsewhere afterwards if the project wants one/);
+    } finally {
+      proj.cleanup();
+    }
+  });
+}
+
+test('WRONG-LOCATION REDIRECT: write INSIDE .anti-hall/handovers/** stays ALLOWED (unaffected)', () => {
+  const proj = makeProject();
+  try {
+    const inside = path.join('.anti-hall', 'handovers', '2026-08-07', 'sess-1', 'HANDOVER.md');
+    const r = runIn(proj, 'Write', inside);
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  } finally {
+    proj.cleanup();
+  }
+});
+
+test('WRONG-LOCATION REDIRECT: a file that ALREADY EXISTS at a wrong location stays ALLOWED (only NEW writes redirect)', () => {
+  const proj = makeProject();
+  try {
+    const target = path.join(proj.dir, 'HANDOVER-2026-01-01.md');
+    fs.writeFileSync(target, '# old handover\n', 'utf8');
+    const r = runIn(proj, 'Edit', 'HANDOVER-2026-01-01.md');
+    assert.strictEqual(r.status, 0, `pre-existing legacy file must stay allowed; stdout: ${r.stdout}`);
+  } finally {
+    proj.cleanup();
+  }
+});
+
+test('WRONG-LOCATION REDIRECT: unknown cwd -> ambiguous, allowed as before (fail-open)', () => {
+  const h = makeHome();
+  try {
+    const payload = editPayload('Write', { filePath: 'HANDOVER.md' });
+    delete payload.cwd;
+    const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('WRONG-LOCATION REDIRECT: SKIP escape hatch -> allowed even for a NEW wrong-location write', () => {
+  const proj = makeProject();
+  const h = makeHome();
+  try {
+    h.writeSkip({ 'edit-guard': Date.now() + 60000 });
+    const r = testHook(HOOK, editPayload('Write', { filePath: 'HANDOVER.md', cwd: proj.dir }),
+      { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+    proj.cleanup();
+  }
+});
+
+// SYMLINK HONESTY holds for the handover exclusion too: a '.md'-named, handover-
+// shaped symlink pointing at a real source file must NOT slip through.
+test('HANDOVER DOC symlink: a handover-shaped .md symlink -> a source file -> BLOCKED', { skip: NO_SYMLINKS }, () => {
+  const p = makeProject();
+  try {
+    const target = path.join(p.dir, 'command-guard.js');
+    fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+    fs.symlinkSync(target, path.join(p.dir, 'HANDOVER.md'));
+    const r = runIn(p, 'Write', 'HANDOVER.md');
+    assert.strictEqual(r.status, 2, `symlinked handover doc must NOT be allowed; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  } finally {
+    p.cleanup();
+  }
+});
+
+// HARDLINK BYPASS (found in Opus bypass-safety review): a regular file with
+// nlink > 1 has another name pointing at the SAME inode — writing through the
+// handover-shaped name clobbers whatever the other name is, the same
+// arbitrary-overwrite shape as the symlink case, just without a symlink for
+// lstat to flag. allowlistIsHonest now rejects nlink > 1 on the FINAL path
+// component (regular files only).
+test('HANDOVER DOC hardlink: a handover-shaped .md HARDLINK -> a source file -> BLOCKED', { skip: NO_SYMLINKS }, () => {
+  const p = makeProject();
+  try {
+    const target = path.join(p.dir, 'victim.js');
+    fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+    fs.linkSync(target, path.join(p.dir, 'HANDOVER.md')); // hardlink, not symlink
+    const r = runIn(p, 'Write', 'HANDOVER.md');
+    assert.strictEqual(r.status, 2, `hardlinked handover doc must NOT be allowed; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  } finally {
+    p.cleanup();
+  }
+});
+
+// SYMLINK BYPASS regression: allowlistIsHonest's new hardlink check must not
+// break the pre-existing symlink coverage for allowlist entries.
+test('SYMLINK BYPASS REGRESSION: hardlink check does not affect existing allowlist symlink coverage', () => {
+  const p = makeProject();
+  try {
+    fs.writeFileSync(path.join(p.dir, 'CONTINUE-HERE.md'), '# handover\n', 'utf8');
+    const r = runIn(p, 'Edit', 'CONTINUE-HERE.md');
+    assert.strictEqual(r.status, 0, `a real single-link file must stay allowed; stdout: ${r.stdout}`);
+  } finally {
+    p.cleanup();
+  }
+});
+
+// CWD-CONTAINMENT ESCAPE (found in Opus bypass-safety review): isHandoverDoc
+// matches by basename at ANY depth, so without an explicit containment check a
+// coordinator could write a handover-shaped .md OUTSIDE the project entirely.
+// isWithinCwd must reject that even though the target is legitimately markdown
+// and even though the path, taken alone, would match HANDOVER_DOC_RE.
+test('HANDOVER DOC escape: writing OUTSIDE cwd via ../ traversal -> BLOCKED', () => {
+  const p = makeProject(); // acts as session cwd
+  const outside = makeProject(); // a sibling directory OUTSIDE p.dir
+  try {
+    const escapePath = path.join(outside.dir, 'HANDOVER.md');
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, editPayload('Write', { filePath: escapePath, cwd: p.dir }),
+        { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 2, `writing a handover doc OUTSIDE cwd must be blocked; stdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    p.cleanup();
+    outside.cleanup();
+  }
+});
+
+test('SKIP HINT: block message names the documented override in all three branches', () => {
+  // Plain (non-DevSwarm) coordinator.
+  let r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }));
+  assert.ok(/skip edit-guard/.test(r.json.reason), `plain reason: ${r.json.reason}`);
+  // DevSwarm child (sub-orchestrator).
+  r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), CHILD_ENV);
+  assert.ok(/skip edit-guard/.test(r.json.reason), `child reason: ${r.json.reason}`);
+  // DevSwarm primary.
+  r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), PRIMARY_ENV);
+  assert.ok(/skip edit-guard/.test(r.json.reason), `primary reason: ${r.json.reason}`);
+});
+
+// ---------------------------------------------------------------------------
+// P2 fp 385aa8beb602: edit-guard blocked a Write to the agent's OWN session
+// scratchpad directory (`/tmp/claude-<uid>/<sanitized-cwd>/<session-id>/
+// scratchpad/**`) — the exact location the harness tells every agent to use
+// for temp files, forcing a pointless subagent detour for the one path that
+// exists purely for disposable scratch I/O.
+//
+// FIX: edit-guard now computes this session's OWN scratchpad directory
+// deterministically from the payload's own `cwd` + `session_id` (harness-set
+// fields) and this process's real uid, and exempts writes strictly INSIDE it
+// (still subject to the existing symlink/hardlink honesty check). Scoped
+// narrowly: a DIFFERENT session_id, a path merely containing the word
+// "scratchpad", or a bare '/tmp/**' path must all still BLOCK.
+//
+// MUTATION LIST (apply each, prove RED, then revert -> GREEN):
+//   M1: make isOwnScratchpadPath always `return false;` (or remove its call
+//       in main()) -> OWN_SCRATCHPAD_ALLOW below must flip from allow (0) to
+//       block (2).
+// Both applied by hand against the working tree, run, and confirmed RED (see
+// PR/report evidence); the current tree is the fixed (GREEN) state.
+// ---------------------------------------------------------------------------
+
+// computeOwnScratchpadPath(cwd, sessionId, relFile) -> the exact path
+// edit-guard's ownScratchpadDir() computes, for building test fixtures without
+// duplicating the hook's internal formula by hand at each call site.
+function computeOwnScratchpadPath(cwd, sessionId, relFile) {
+  const uid = process.getuid();
+  const sanitizedCwd = cwd.replace(/[^A-Za-z0-9]/g, '-');
+  return path.join('/tmp', 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad', relFile);
+}
+
+test('P2 fp 385aa8beb602 FIX: Write to the session\'s OWN scratchpad dir is ALLOWED', () => {
+  if (process.platform === 'win32') return; // scratchpad convention is posix-only ('/tmp'); see hook comment
+  const p = makeProject(); // acts as session cwd
+  try {
+    const sessionId = 'sess-385aa8beb602';
+    const scratchFile = computeOwnScratchpadPath(p.dir, sessionId, 'msg-body.txt');
+    const h = makeHome();
+    try {
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: scratchFile, content: 'x' },
+        session_id: sessionId,
+        cwd: p.dir,
+      };
+      const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 0, `own-session scratchpad write must be allowed; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+      try { fs.rmSync(path.dirname(scratchFile), { recursive: true, force: true }); } catch (_) {}
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('WAVE 9 P2 FIX: harness-shaped payload whose scratchpad path is reported via its REALPATH (e.g. macOS /private/tmp when /tmp is a symlink) is still ALLOWED', () => {
+  // Regression for: ownScratchpadDir() hard-codes the literal '/tmp' prefix,
+  // and the old isOwnScratchpadPath() compared raw path.resolve() output with
+  // no realpath on either side. On a platform where '/tmp' is itself a
+  // symlink (macOS: '/tmp' -> '/private/tmp'), a harness that reports the
+  // file_path in its RESOLVED form (exactly what this repo's own scratchpad
+  // env variable looks like: '/private/tmp/claude-<uid>/...') would never
+  // string-match the guard's literal '/tmp/...'-prefixed computed dir, so the
+  // exemption failed CLOSED (blocked) on macOS even for a legitimate
+  // in-scratchpad write. Deliberately does NOT reuse the guard's own
+  // realpath/compare helpers to build the expectation (that would be
+  // circular) — it creates a REAL directory on disk at the guard's literal
+  // '/tmp'-prefixed formula, resolves it with a plain fs.realpathSync (a
+  // Node built-in, independent of the guard's code), and asserts the LITERAL
+  // outcome (status 0 / allow) for a payload built from that resolved path.
+  if (process.platform === 'win32') return; // scratchpad convention is posix-only; see hook comment
+  const p = makeProject();
+  try {
+    const sessionId = 'sess-wave9-p2-realpath';
+    const uid = process.getuid();
+    const sanitizedCwd = p.dir.replace(/[^A-Za-z0-9]/g, '-');
+    const literalDir = path.join('/tmp', 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
+    fs.mkdirSync(literalDir, { recursive: true });
+    try {
+      // Resolve the directory we just created to its real, symlink-free form
+      // via a plain Node builtin (not the guard's own helper) — this is what
+      // a harness reporting an already-resolved cwd/path would hand the hook.
+      const realDir = fs.realpathSync(literalDir);
+      const scratchFile = path.join(realDir, 'msg-body.txt');
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: scratchFile, content: 'x' },
+        session_id: sessionId,
+        cwd: p.dir,
+      };
+      const h = makeHome();
+      try {
+        const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+        assert.strictEqual(r.status, 0, `realpath-reported scratchpad write must be allowed; stdout: ${r.stdout}`);
+      } finally {
+        h.cleanup();
+      }
+    } finally {
+      try { fs.rmSync(literalDir, { recursive: true, force: true }); } catch (_) {}
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('P2 fp 385aa8beb602 NEGATIVE CONTROL: a DIFFERENT session\'s scratchpad dir still BLOCKS', () => {
+  // Scoped narrowly to THIS session's own session_id — reaching for another
+  // session's scratchpad path (even a plausible-looking one) must not be
+  // silently allow-listed by a broad 'scratchpad' name match.
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const scratchFile = computeOwnScratchpadPath(p.dir, 'OTHER-SESSION-ID', 'msg-body.txt');
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: scratchFile, content: 'x' },
+      session_id: 'THIS-SESSION-ID',
+      cwd: p.dir,
+    });
+    assert.strictEqual(r.status, 2, `a different session's scratchpad must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('P2 fp 385aa8beb602 NEGATIVE CONTROL: an ordinary source file under a "scratchpad"-named dir still BLOCKS', () => {
+  // A path merely CONTAINING the word "scratchpad" (not the computed,
+  // session-specific harness path) must not be exempted — proves this is not
+  // a general name-glob escape hatch.
+  const r = runCoord(editPayload('Write', { filePath: 'scratchpad/app.js' }));
+  assert.strictEqual(r.status, 2, `lookalike "scratchpad" path must still block; stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block');
+});
+
+test('P2 fp 385aa8beb602 NEGATIVE CONTROL: a bare /tmp/** path (not the computed scratchpad dir) still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: '/tmp/some-other-file.js', content: 'x' },
+      session_id: 'sess-x',
+      cwd: p.dir,
+    });
+    assert.strictEqual(r.status, 2, `an unrelated /tmp path must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// v0.116 A: the harness encodes the cwd into its per-project scratchpad dir by
+// replacing EVERY non-alphanumeric character with '-' (a real dir for a cwd
+// under ~/.devswarm/repos/... reads `-Users-<u>--devswarm-repos-0-...`). The
+// old encoder replaced only '/', so for a dotted/underscored cwd (every
+// DevSwarm child worktree) the own-scratchpad exemption never matched and the
+// child was blocked writing its own scratchpad.
+// MUTATION: revert lib/scratchpad.js encodeHarnessCwd to `cwd.replace(/\//g,
+// '-')` -> DOTTED_CHILD_OWN_ALLOW flips to block (2).
+// ---------------------------------------------------------------------------
+const CHILD = { DEVSWARM_REPO_ID: 'r1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'b1' };
+
+function dottedChildWorktree() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'eg-dotted-'));
+  const dir = path.join(base, '.devswarm', 'repos', '0', 'ab_cd.x');
+  fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+  return { dir, cleanup: () => { try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {} } };
+}
+
+function runChildWrite(cwd, sessionId, filePath) {
+  const h = makeHome();
+  try {
+    return testHook(HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: filePath, content: 'x' },
+      session_id: sessionId,
+      cwd,
+    }, { home: h.home, env: Object.assign({}, COORD, CHILD) });
+  } finally {
+    h.cleanup();
+  }
+}
+
+test('v0.116 A FIX: child worktree under a dotted path may Write its OWN scratchpad (harness encoding)', () => {
+  if (process.platform === 'win32') return;
+  const w = dottedChildWorktree();
+  const sessionId = 'sess-v116a-own';
+  const scratchFile = computeOwnScratchpadPath(w.dir, sessionId, 'note.txt');
+  try {
+    // The encoded segment must carry no '.' or '_' (independent check of the fixture).
+    assert.ok(!/[._]/.test(path.basename(path.dirname(path.dirname(path.dirname(scratchFile))))));
+    const r = runChildWrite(w.dir, sessionId, scratchFile);
+    assert.strictEqual(r.status, 0, `own scratchpad under a dotted cwd must be allowed; stdout: ${r.stdout}`);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('v0.116 A NEGATIVE: dotted child worktree Write to ANOTHER session\'s scratchpad still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const w = dottedChildWorktree();
+  try {
+    const other = computeOwnScratchpadPath(w.dir, 'sess-v116a-OTHER', 'note.txt');
+    const r = runChildWrite(w.dir, 'sess-v116a-own', other);
+    assert.strictEqual(r.status, 2, `sibling session scratchpad must block; stdout: ${r.stdout}`);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('v0.116 A NEGATIVE: dotted child worktree Write to a repo file still BLOCKS (delegation)', () => {
+  if (process.platform === 'win32') return;
+  const w = dottedChildWorktree();
+  try {
+    const r = runChildWrite(w.dir, 'sess-v116a-own', path.join(w.dir, 'src', 'app.js'));
+    assert.strictEqual(r.status, 2, `repo file must still block; stdout: ${r.stdout}`);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test('v0.116 A: encodeHarnessCwd replaces every non-alphanumeric char', () => {
+  const { encodeHarnessCwd } = require('../../plugins/anti-hall/hooks/lib/scratchpad.js');
+  assert.strictEqual(encodeHarnessCwd('/Users/u/.devswarm/repos/0-ab_c'), '-Users-u--devswarm-repos-0-ab-c');
+  assert.strictEqual(encodeHarnessCwd('/Users/u/Projects/anti-hall'), '-Users-u-Projects-anti-hall');
+  assert.strictEqual(encodeHarnessCwd(''), null);
+});
+
+// ---------------------------------------------------------------------------
+// 0.117.1 A: ownScratchpadDirs() derived the encoded project segment from
+// payload.cwd (the LIVE cwd), but the harness names the real scratchpad dir
+// after the session's ORIGINAL project dir (the one it started in) —
+// <tmp>/claude-<uid>/<encoded-ORIGINAL-cwd>/<session-id>/scratchpad/. After a
+// `cd` inside the session (e.g. into a DevSwarm child worktree), payload.cwd
+// no longer matches the original encoding, so a legitimate Write to the
+// session's own scratchpad was wrongly blocked with the edit-delegation
+// message.
+//
+// FIX: derive the encoded segment from payload.transcript_path (of the form
+// ~/.claude/projects/<encoded-original-cwd>/<session-id>.jsonl — the parent
+// dir's basename IS the harness's own encoding of the original cwd) when
+// present, falling back to the cwd-derived encoding otherwise. A scratchpad
+// path is accepted only when its session-id segment matches payload's own
+// session_id (still no widening to other sessions).
+// ---------------------------------------------------------------------------
+
+function computeOwnScratchpadPathFromEncoded(encodedSegment, sessionId, relFile) {
+  const uid = process.getuid();
+  return path.join('/tmp', 'claude-' + uid, encodedSegment, sessionId, 'scratchpad', relFile);
+}
+
+test('0.117.1 A FIX: Write to session scratchpad AFTER a cd (transcript_path original-cwd encoding) is ALLOWED', () => {
+  if (process.platform === 'win32') return;
+  const origProject = makeProject(); // session's ORIGINAL cwd at start
+  const newProject = makeProject();  // cwd AFTER an in-session `cd`
+  try {
+    const sessionId = 'sess-0117a-cd';
+    const encodedOrig = origProject.dir.replace(/[^A-Za-z0-9]/g, '-');
+    const scratchFile = computeOwnScratchpadPathFromEncoded(encodedOrig, sessionId, 'msg-body.txt');
+    const transcriptPath = path.join(
+      os.homedir(), '.claude', 'projects', encodedOrig, sessionId + '.jsonl');
+    const h = makeHome();
+    try {
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: scratchFile, content: 'x' },
+        session_id: sessionId,
+        cwd: newProject.dir, // LIVE cwd differs from the session's original cwd
+        transcript_path: transcriptPath,
+      };
+      const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 0, `own-session scratchpad write after cd must be allowed; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    origProject.cleanup();
+    newProject.cleanup();
+  }
+});
+
+test('0.117.1 A NEGATIVE CONTROL: after a cd, ANOTHER session\'s original-cwd-encoded scratchpad still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const origProject = makeProject();
+  const newProject = makeProject();
+  try {
+    const encodedOrig = origProject.dir.replace(/[^A-Za-z0-9]/g, '-');
+    const otherSessionId = 'sess-0117a-OTHER';
+    const scratchFile = computeOwnScratchpadPathFromEncoded(encodedOrig, otherSessionId, 'msg-body.txt');
+    const thisSessionId = 'sess-0117a-cd';
+    const transcriptPath = path.join(
+      os.homedir(), '.claude', 'projects', encodedOrig, thisSessionId + '.jsonl');
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: scratchFile, content: 'x' },
+      session_id: thisSessionId,
+      cwd: newProject.dir,
+      transcript_path: transcriptPath,
+    });
+    assert.strictEqual(r.status, 2, `a different session's scratchpad must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    origProject.cleanup();
+    newProject.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// fp 6-of-2026-09-24: in a Primary/coordinator session, Write was blocked for
+// a session scratchpad reported under a tmp root OTHER than the literal
+// '/tmp' — e.g. Node's os.tmpdir() on a platform/config where that resolves
+// to a different directory than '/tmp' or '/private/tmp' (macOS's per-user
+// $TMPDIR, '/var/folders/.../T/', is the canonical example: it is NOT under
+// '/tmp' at all) — while a Bash heredoc writing to the SAME path sailed
+// through untouched (command-guard has no file-path notion to gate on).
+//
+// FIX: ownScratchpadDirs() now enumerates os.tmpdir(), '/tmp', and
+// '/private/tmp' (mirrors companion/install-devswarm-ingest.js's
+// homeIsUnderTmpdir() tmp-root set) instead of hardcoding '/tmp' alone, and
+// isOwnScratchpadPath() matches if the target resolves under ANY of them.
+//
+// MUTATION LIST (apply each, prove RED, then revert -> GREEN):
+//   M1: revert tmpRoots() to `return ['/tmp'];` -> OS_TMPDIR_SCRATCHPAD_ALLOW
+//       below must flip from allow (0) to block (2) whenever os.tmpdir() !==
+//       '/tmp' and !== '/private/tmp' on the test machine.
+// ---------------------------------------------------------------------------
+
+test('fp 6-of-2026-09-24 FIX: Write to the session\'s OWN scratchpad dir rooted at os.tmpdir() is ALLOWED', () => {
+  if (process.platform === 'win32') return; // scratchpad convention is posix-only; see hook comment
+  const p = makeProject();
+  try {
+    const sessionId = 'sess-fp6-osTmpdir';
+    const uid = process.getuid();
+    const sanitizedCwd = p.dir.replace(/[^A-Za-z0-9]/g, '-');
+    // Build the scratchpad dir under os.tmpdir() directly (NOT the guard's
+    // literal '/tmp' formula) — this is the exact shape the fix must cover.
+    const dir = path.join(os.tmpdir(), 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      const scratchFile = path.join(dir, 'msg-body.txt');
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: scratchFile, content: 'x' },
+        session_id: sessionId,
+        cwd: p.dir,
+      };
+      const h = makeHome();
+      try {
+        const r = testHook(HOOK, payload, { home: h.home, env: Object.assign({}, COORD, { TMPDIR: os.tmpdir() }) });
+        assert.strictEqual(r.status, 0, `os.tmpdir()-rooted own-session scratchpad write must be allowed; stdout: ${r.stdout}`);
+      } finally {
+        h.cleanup();
+      }
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('fp 6-of-2026-09-24: Edit tool (not just Write) to an os.tmpdir()-rooted scratchpad dir is ALLOWED', () => {
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const sessionId = 'sess-fp6-edit-tool';
+    const uid = process.getuid();
+    const sanitizedCwd = p.dir.replace(/[^A-Za-z0-9]/g, '-');
+    const dir = path.join(os.tmpdir(), 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      const scratchFile = path.join(dir, 'notes.md');
+      fs.writeFileSync(scratchFile, 'orig');
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Edit',
+        tool_input: { file_path: scratchFile, old_string: 'orig', new_string: 'new' },
+        session_id: sessionId,
+        cwd: p.dir,
+      };
+      const h = makeHome();
+      try {
+        const r = testHook(HOOK, payload, { home: h.home, env: Object.assign({}, COORD, { TMPDIR: os.tmpdir() }) });
+        assert.strictEqual(r.status, 0, `Edit to os.tmpdir()-rooted scratchpad must be allowed; stdout: ${r.stdout}`);
+      } finally {
+        h.cleanup();
+      }
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('fp 6-of-2026-09-24 NEGATIVE CONTROL: an os.tmpdir()-rooted path for a DIFFERENT session still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const uid = process.getuid();
+    const sanitizedCwd = p.dir.replace(/[^A-Za-z0-9]/g, '-');
+    const scratchFile = path.join(
+      os.tmpdir(), 'claude-' + uid, sanitizedCwd, 'OTHER-SESSION-ID', 'scratchpad', 'msg-body.txt');
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: scratchFile, content: 'x' },
+      session_id: 'THIS-SESSION-ID',
+      cwd: p.dir,
+    });
+    assert.strictEqual(r.status, 2, `a different session's os.tmpdir()-rooted scratchpad must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('fp 6-of-2026-09-24 NEGATIVE CONTROL: a bare os.tmpdir() path (not the computed scratchpad dir) still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: path.join(os.tmpdir(), 'some-other-file.js'), content: 'x' },
+      session_id: 'sess-x',
+      cwd: p.dir,
+    });
+    assert.strictEqual(r.status, 2, `an unrelated os.tmpdir() path must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HARNESS PLAN FILE (~/.claude/plans/*.md). Reported false positive: the
+// coordinator was blocked writing its OWN harness-managed plan file — an
+// ABSOLUTE path OUTSIDE cwd, under the user's home dir. The existing
+// PLAN-MODE-NARROWED exemption only fires when permission_mode === 'plan'; the
+// bug report describes the orchestrator revising the SAME plan file outside
+// plan mode too (e.g. after ExitPlanMode, or between plan-mode turns), which
+// is NOT covered by that exemption and falls through to the normal
+// delegation block. This is the SAME class of file as the existing
+// PLAN.md/STATE.json/CONTINUE-HERE.md orchestrator artifacts (coordinator-
+// owned, never delegated) — it should be unconditionally allowed, not gated
+// on permission_mode.
+function planFilePath(home) {
+  return path.join(home, '.claude', 'plans', 'session-abc.md');
+}
+
+test('HARNESS PLAN FILE: Write to ~/.claude/plans/*.md OUTSIDE plan mode -> ALLOWED', () => {
+  const h = makeHome();
+  try {
+    const plan = planFilePath(h.home);
+    fs.mkdirSync(path.dirname(plan), { recursive: true });
+    const r = testHook(HOOK, editPayload('Write', { filePath: plan, cwd: '/some/project' }),
+      { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `plan file write must be allowed outside plan mode; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HARNESS PLAN FILE: Edit to ~/.claude/plans/*.md IN plan mode -> ALLOWED (unchanged)', () => {
+  const h = makeHome();
+  try {
+    const plan = planFilePath(h.home);
+    fs.mkdirSync(path.dirname(plan), { recursive: true });
+    const payload = editPayload('Edit', { filePath: plan, cwd: '/some/project' });
+    payload.permission_mode = 'plan';
+    const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `plan file edit must be allowed in plan mode; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HARNESS PLAN FILE: a lookalike path outside ~/.claude/plans/ is STILL BLOCKED', () => {
+  const h = makeHome();
+  try {
+    const notPlan = path.join(h.home, '.claude', 'plans-lookalike', 'session-abc.md');
+    fs.mkdirSync(path.dirname(notPlan), { recursive: true });
+    const r = testHook(HOOK, editPayload('Write', { filePath: notPlan, cwd: '/some/project' }),
+      { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 2, `non-plans-dir lookalike must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HARNESS PLAN FILE: symlink out of ~/.claude/plans/ to a source file is STILL BLOCKED', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  const p = makeProject();
+  try {
+    const plansDir = path.join(h.home, '.claude', 'plans');
+    fs.mkdirSync(plansDir, { recursive: true });
+    const target = path.join(p.dir, 'command-guard.js');
+    fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+    const plan = path.join(plansDir, 'session-abc.md');
+    fs.symlinkSync(target, plan);
+    const r = testHook(HOOK, editPayload('Write', { filePath: plan, cwd: p.dir }),
+      { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 2, `symlinked plan file must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    h.cleanup();
+    p.cleanup();
+  }
+});

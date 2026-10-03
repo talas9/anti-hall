@@ -1,0 +1,1030 @@
+#!/usr/bin/env node
+// anti-hall :: task-guard (Stop hook, loop-safe)
+//
+// Fires on Stop. Checks whether the session's task list still has open tasks.
+// If so, blocks to prompt the model to continue or explicitly defer them.
+//
+// SHARP MODE — IDLE NEGLECT (the orchestrator's #1 failure): if there is at
+// least one ACTIONABLE-NOW task (status pending, unowned, no OPEN blocker) AND no
+// subagent is currently in flight (no FRESH ~/.anti-hall/agents/<id>.json
+// heartbeat), the orchestrator is sitting on dispatchable work — we block with a
+// SPECIFIC reason naming those tasks and demanding parallel dispatch. If agents
+// ARE running, or the only open tasks are blocked/owned/in_progress, we fall back
+// to the gentler generic nudge (don't nag genuine parallel work or genuine
+// waiting on real blockers).
+//
+// Loop-safety: if the exact same set was already blocked on last Stop, we do NOT
+// block again; the idle-neglect block dedupes on (actionable-set + "no-agents")
+// so it re-fires only when that set changes, and an absolute MAX_BLOCKS cap
+// (counting BOTH modes) guarantees no hard loop even when the set keeps churning.
+//
+// Contract (Claude Code Stop hook):
+//   stdin  : JSON { transcript_path, session_id?, cwd?, ... }
+//   stdout : JSON {"decision":"block","reason":"..."} to block, or nothing.
+//   exit 0 : always - fail-open on any error so a bug never hard-loops Claude.
+//
+// Design (OS-agnostic - pure Node built-ins, fd-0 stdin, os.tmpdir state):
+//   - Reads a bounded trailing window of the transcript JSONL (512 KB by
+//     default) so a multi-GB transcript can never OOM/stall the hook. A task
+//     that lives entirely before the window is not seen, which can only suppress
+//     a block (fail-open), never cause a false one.
+//   - Discovers tasks from TodoWrite tool_use entries (input.todos[]) AND
+//     TaskCreate/TaskUpdate entries; replays in order, last state wins.
+//   - TaskCreate / TaskUpdate keying: the harness assigns a sequential numeric
+//     ID (1, 2, 3 ...) but does NOT include it in the tool_use input; it appears
+//     only in the tool_result text "Task #N created successfully: <subject>".
+//     TaskUpdate references this ID via the field "taskId" (not "id"/"task_id").
+//     The parser therefore:
+//       (a) parses tool_result strings to map tool_use_id -> numeric task id,
+//       (b) on TaskCreate uses the tool_use id as a provisional key until the
+//           result is seen, then remaps to the numeric key,
+//       (c) on TaskUpdate reads inp.taskId (plus inp.id / inp.task_id as
+//           fallbacks) so completions are correctly applied.
+//   - Loop-state file lives under ~/.anti-hall/ keyed by session_id
+//     (F-07: never written into the user's project tree, so it does not pollute
+//     a stranger's repo or show as dirty git status, and dedupe survives `cd`).
+//     It stores JSON { hash, blocks } - a hash of the sorted open-task
+//     identifiers from the last block, plus a running count of how many times we
+//     have blocked this session.
+//   - HARD BLOCK CAP (loop-safety): the byte-identical-set dedupe only catches a
+//     frozen list. In the normal flow the model reacts to a block by completing
+//     or adding a task, so the set CHANGES every Stop and the hash dedupe never
+//     fires - re-blocking forever. So we also cap total blocks per session
+//     (MAX_BLOCKS); once reached we stay quiet regardless of set churn.
+//   - NEVER throws: all logic is wrapped in a top-level try/catch -> exit 0.
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+
+// metricsHome() — metrics home or null; never throws (the test-home guard
+// refuses the real HOME under a test runner).
+function metricsHome() {
+  try { return require('../companion/lib/test-home-guard.js').resolveHome(); } catch (_) { return null; }
+}
+
+function main() {
+  // Settings switch guards.taskGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('guards', 'taskGuard')) return; } catch (_) { /* run */ }
+  // Read stdin synchronously (fd 0 - cross-platform; /dev/stdin is Windows-unsafe).
+  let raw = '';
+  try {
+    raw = fs.readFileSync(0, 'utf8');
+  } catch (_) {
+    process.exit(0);
+  }
+
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('task-guard')) process.exit(0);
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_) {
+    process.exit(0);
+  }
+
+  const transcriptPath = payload && payload.transcript_path;
+  if (!transcriptPath || typeof transcriptPath !== 'string') {
+    process.exit(0);
+  }
+
+  // Loop-state under a per-user temp dir keyed by session_id (F-07). Fall back
+  // to a stable hash of the transcript path when session_id is absent so dedupe
+  // still works per-session without touching the project tree.
+  const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
+    crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
+  const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
+  // Session-scoped loop-state under ~/.anti-hall/ (not os.tmpdir) for consistency
+  // and cross-runner visibility; still keyed by session_id so dedupe is per-session.
+  const stateDir = path.join(os.homedir(), '.anti-hall');
+  const stateFile = path.join(stateDir, 'last-stop-taskset-' + safeSession);
+
+  // Parse tasks by streaming the transcript lines.
+  let taskMap;
+  try {
+    taskMap = parseTasksFromFile(transcriptPath);
+  } catch (_) {
+    process.exit(0);
+  }
+
+  // TOKEN-SAVING LEVER 2 (owner-approved, 0.117.0, `guards.pruneCompletedTasksAfter`
+  // default 10): field measurement found Claude Code's own TaskCreate reminder
+  // re-prints the WHOLE list, completed tasks included, every few turns — a
+  // fixed per-turn floor cost that grows with a session's completed-task count
+  // for no benefit (completed work needs no further reminding). This is
+  // ADVISORY ONLY (never blocks, never writes/prunes anything itself — pruning
+  // is the agent's own TaskUpdate call, after it records the tasks in the
+  // history ledger per CLAUDE.md) and rides the SAME stdout advisory channel
+  // task-guard already uses for its OMC-defer/live-agent-defer lines above, so
+  // it never adds a Stop-hook block of its own.
+  let completedCount = 0;
+  for (const task of taskMap.values()) {
+    const s = (task.status || '').toLowerCase();
+    if (s === 'completed' || s === 'done' || s === 'cancelled' || s === 'canceled') completedCount++;
+  }
+  try {
+    const pruneAfter = require('./lib/settings.js').getWithEnv('guards', 'pruneCompletedTasksAfter', 10, process.env);
+    if (Number.isFinite(pruneAfter) && pruneAfter > 0 && completedCount > pruneAfter) {
+      fs.writeSync(1,
+        '[task-guard] ' + completedCount + ' completed/cancelled tasks in the list (> ' + pruneAfter +
+        ') — advisory: after recording them in the history ledger, prune them with ' +
+        'TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n'
+      );
+    }
+  } catch (_) { /* advisory only, never blocks */ }
+
+  // Compute open tasks (shared view, lib/task-state.js: excludes status-unknown
+  // tasks and pending tasks whose block state is unknown).
+  const TS = require('./lib/task-state.js');
+  const openTasks = TS.openOf(taskMap);
+
+  // Tasks left in an UNKNOWN state (records too far back to read) get ONE short,
+  // throttled line (set-change + max 3/session): appended to the block reason when
+  // this Stop blocks, else printed as an advisory. It never blocks by itself.
+  let unknownNoteLine = null;
+  const takeUnknownNote = () => {
+    if (unknownNoteLine === null) unknownNoteLine = TS.unknownNote(taskMap, { sessionId, tag: 'guard' });
+    return unknownNoteLine;
+  };
+  const quietExit = () => {
+    const n = takeUnknownNote();
+    if (n) { try { fs.writeSync(1, '[task-guard] ' + n + '\n'); } catch (_) {} }
+    process.exit(0);
+  };
+
+  if (openTasks.length === 0) {
+    try { fs.unlinkSync(stateFile); } catch (_) {}
+    quietExit();
+  }
+
+  // Classify: which open tasks are ACTIONABLE NOW (pending, unowned, no open
+  // blocker) and is any subagent in flight? These drive the SHARP idle-neglect
+  // block vs the gentler generic nudge.
+  const actionable = classifyOpen(openTasks, taskMap);
+  const haveAgents = agentsRunning();
+  // IDLE NEGLECT = there is dispatchable work that no in-flight agent of THIS
+  // session covers (lib/dispatch-demand.js evaluate: per-task coverage from the
+  // transcript; unmapped agents cover at most one task each; running < cap).
+  // It used to be "actionable && !haveAgents", where haveAgents is the
+  // machine-global recent-spawn.json heartbeat — refreshed for 20 min by ANY
+  // spawn in ANY session — so one agent anywhere silenced it for every task.
+  const DD = require('./lib/dispatch-demand.js');
+  let demand = { fire: false, dispatch: [] };
+  if (actionable.length >= 1) {
+    if (DD.enabled()) {
+      let running = null;
+      try { running = require('./lib/agent-scan.js').runningAgentsOrNull(transcriptPath); } catch (_) { running = null; }
+      demand = DD.evaluate({ actionable, knownIds: [...taskMap.keys()], inProgressIds: openTasks.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running });
+    } else {
+      // Setting off: legacy blanket rule.
+      demand = { fire: !haveAgents, dispatch: actionable };
+    }
+  }
+  const idleNeglect = demand.fire;
+  // The generic nudge lists only tasks NOT honestly marked blocked (an open
+  // blockedBy task, or an owner/external blockedOn marker). All blocked -> no
+  // nudge: the session is genuinely waiting, not neglecting work.
+  const nudgeTasks = unblockedOpen(openTasks, taskMap);
+  if (!idleNeglect && nudgeTasks.length === 0) {
+    quietExit();
+  }
+
+  // Hash basis differs per mode so the two block types dedupe independently:
+  //  - idle-neglect: hash of the ACTIONABLE set + a "no-agents" tag, so it
+  //    re-fires only when the actionable set changes (still capped, see below).
+  //  - generic: hash of the full open-task set (legacy behavior).
+  let hash;
+  if (idleNeglect) {
+    const aids = demand.dispatch.map(t => String(t.id || t.content || t.subject || '')).sort();
+    hash = crypto.createHash('sha1')
+      .update('idle\x00no-agents\x00' + aids.join('\x00')).digest('hex');
+  } else {
+    const ids = nudgeTasks.map(t => String(t.id || t.content || t.subject || '')).sort();
+    hash = crypto.createHash('sha1').update(ids.join('\x00')).digest('hex');
+  }
+
+  // Load prior loop-state: { hash, blocks }. Tolerate the legacy plain-hash
+  // format (a bare hex string from an older version) so an upgrade in place does
+  // not lose dedupe.
+  let lastHash = '';
+  let blocks = 0;
+  try {
+    const rawState = fs.readFileSync(stateFile, 'utf8').trim();
+    if (rawState) {
+      try {
+        const parsed = JSON.parse(rawState);
+        if (parsed && typeof parsed === 'object') {
+          lastHash = typeof parsed.hash === 'string' ? parsed.hash : '';
+          blocks = Number.isFinite(parsed.blocks) ? parsed.blocks : 0;
+        } else {
+          lastHash = rawState; // legacy bare-hash file
+        }
+      } catch (_) {
+        lastHash = rawState; // legacy bare-hash file
+      }
+    }
+  } catch (_) {
+    // First time or cleared.
+  }
+
+  // Loop-safety 1: if we already blocked on this exact set, don't block again.
+  if (hash === lastHash) {
+    quietExit(); // already nudged for this exact set; nothing changed
+  }
+
+  // Loop-safety 2: hard cap on total blocks this session. The set legitimately
+  // changes as the model works through tasks, which defeats the byte-identical
+  // dedupe; without a cap we would re-block on every Stop forever. After
+  // MAX_BLOCKS nudges we stay quiet regardless of churn. Modestly raised to 5 so
+  // a genuinely-stuck actionable set can still re-nudge a few times when it
+  // changes, but can NEVER hard-loop (cap is absolute, counts both modes).
+  const MAX_BLOCKS = 5;
+  if (blocks >= MAX_BLOCKS) {
+    quietExit();
+  }
+
+  // OMC-awareness: if an autonomous OMC loop (ralph, ultrawork, autopilot, etc.)
+  // is active, SUPPRESS the Stop block entirely — emit a one-line advisory and
+  // exit 0 instead. This prevents task-guard from deadlocking against the loop.
+  // The block is NOT counted against the budget (no state write). If detection
+  // fails for any reason, we fall through to the normal block (fail-open = guard
+  // stays active, never silent).
+  try {
+    const { isOmcLoopActive } = require('./omc-detect.js');
+    const cwd = payload && payload.cwd;
+    const sid = (payload && payload.session_id && String(payload.session_id)) || undefined;
+    if (isOmcLoopActive({ cwd, sessionId: sid })) {
+      // fs.writeSync(1): process.stdout.write races the async pipe flush with
+      // exit() on macOS node 18/20 (repo-wide rule for hook output).
+      fs.writeSync(1,
+        '[task-guard] OMC autonomous loop active — deferring Stop block to avoid deadlock.\n'
+      );
+      process.exit(0);
+    }
+  } catch (_) {
+    // detection error → fall through to normal block
+  }
+
+  // FIX 2: Generic block suppression — when live agents are active, the generic
+  // "open tasks remain" nudge would fire even though those agents are picking up
+  // the open tasks. Suppress it (soft advisory, no decision:block) to avoid
+  // interrupting genuine parallel orchestration. The idle-neglect sharp block
+  // (pending + no agents) is unaffected — it fires via the idleNeglect branch above.
+  // An in_progress task that carries an owner is also "being worked" — the owner
+  // field already excludes it from the actionable set (classifyOpen only returns
+  // pending+unowned tasks), so when haveAgents catches the rest no extra check is needed.
+  // State is NOT written here (no block counter increment) so a future Stop after
+  // agents finish can still hard-block on genuinely neglected work.
+  if (!idleNeglect && haveAgents) {
+    // fs.writeSync(1): stdout.write races the async pipe flush on macOS node 18/20.
+    fs.writeSync(1,
+      '[task-guard] open tasks remain but live agents are active — deferring Stop block.\n'
+    );
+    process.exit(0);
+  }
+
+  // Write the new state before blocking (so a no-op next Stop won't re-block and
+  // the cap is enforced even if the set keeps changing).
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ hash, blocks: blocks + 1 }), 'utf8');
+  } catch (_) {
+    process.exit(0); // can't persist -> fail-open to avoid loops
+  }
+
+  // Build the block reason. Two modes:
+  //  - IDLE NEGLECT (sharp): name the ACTIONABLE-NOW tasks and demand parallel
+  //    dispatch — the user's #1 pain is the orchestrator sitting on dispatchable
+  //    work with no agents running.
+  //  - GENERIC (gentle): work is in flight or the only open tasks are
+  //    blocked/owned/in_progress — nudge to drain but don't accuse of neglect.
+  const renderList = (arr) => arr.slice(0, 5).map(t => {
+    // A task whose subject was never actually learned (its TaskCreate sits
+    // outside the scan window, or belonged to a PRIOR epoch and only a bare
+    // TaskUpdate{taskId} was seen) falls back to content === id during
+    // reconstruction — printing that bare id AS the subject (e.g. `"3"`) is
+    // indistinguishable from a real one-word subject and actively misleads.
+    // Say "(subject unknown)" instead of ever presenting the id as if it were
+    // the task's text — never the bare id.
+    const learnedSubject = t.content || t.subject;
+    const hasSubject = learnedSubject != null && String(learnedSubject) !== String(t.id);
+    const rawSubject = hasSubject ? learnedSubject : '(subject unknown)';
+    // Sanitize: strip control chars/newlines and truncate to ~60 chars so a
+    // TodoWrite item's text cannot inject instruction-like content into the Stop
+    // reason. Does not change which tasks are listed, only how the subject reads.
+    const subject = sanitizeSubject(rawSubject) || '(subject unknown)';
+    const status = sanitizeSubject(t.status || 'open', 24) || 'open';
+    // JSON.stringify the subject (and status) so a subject containing a literal
+    // " renders cleanly and matches task-tracker.js's approach (symmetry). The
+    // whole reason is JSON.stringify'd anyway, so this is cleanliness, not safety.
+    return JSON.stringify(subject) + ' [' + JSON.stringify(status) + ']';
+  }).join('; ');
+
+  let reason;
+  if (idleNeglect) {
+    DD.recordIdleNeglect({ home: metricsHome() });
+    const list = demand.dispatch.slice(0, 12).map((t) => DD.label(t)).join(', ');
+    const more = demand.dispatch.length > 12 ? ' (and ' + (demand.dispatch.length - 12) + ' more)' : '';
+    reason =
+      'IDLE NEGLECT: ' + demand.dispatch.length + ' non-blocked, unassigned task(s) with ' +
+      'NO in-flight agent on them — DISPATCH NOW in PARALLEL (one background agent ' +
+      'each, cap ' + (demand.cap || '~min(16, cores-2)') + '): ' + list + more + '. ' +
+      'Do not end the turn idle; only stop if a task truly needs the user (then ' +
+      'say which + why). If a task is genuinely blocked on the OWNER (hardware, a ' +
+      'decision only a human can make), mark it non-dispatchable honestly — ' +
+      'metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or an "OWNER:" / ' +
+      '"OWNER DECISION" subject prefix — never a fake blockedBy dependency. ' +
+      'If a task waits on an in-flight task, set its blockedBy (TaskUpdate addBlockedBy) instead of dispatching it. ' +
+      'If a running agent already covers a task, set the task\'s owner to it (TaskUpdate owner) and it counts as attended.' +
+      (anyLiveDevswarmChildren()
+        ? ' If this task is delegated to a DevSwarm workspace, set its owner to the ' +
+          'workspace id, branch or title (TaskUpdate owner) and it counts as attended.'
+        : '');
+  } else {
+    const list = renderList(nudgeTasks);
+    const more = nudgeTasks.length > 5 ? ' (and ' + (nudgeTasks.length - 5) + ' more)' : '';
+    reason =
+      'Open tasks remain and the session is stopping: ' + list + more + '. ' +
+      'Actively drain the task list: pick up pending tasks and dispatch subagents to ' +
+      'finalize them; run independent tasks in parallel (up to the concurrency cap, ' +
+      '~min(16, cores-2)); do not let tasks sit neglected. ' +
+      'Continue them, mark them completed or deferred via TaskUpdate, or tell the user ' +
+      'explicitly what is pending and why you are stopping. If a task is genuinely ' +
+      'blocked, mark it honestly via TaskUpdate — blockedBy:[<open task id>] for a task ' +
+      'dependency, or metadata.blockedOn:\'owner\'/\'user\'/\'human\'/\'external\' for an ' +
+      'outside wait — and it is no longer listed here.';
+  }
+  const unkLine = takeUnknownNote();
+  if (unkLine) reason += ' ' + unkLine;
+
+  // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
+  // macOS node 18/20 (repo-wide hook-output rule; R2-N1).
+  try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
+  process.exit(0);
+}
+
+// Read a bounded trailing window of the transcript JSONL (see readTranscriptTail)
+// and build Map<id, {id, content, status}> (last write wins). The window keeps a
+// multi-GB transcript from OOM-ing/stalling the hook. Tradeoff: a TaskCreate that
+// occurred before the window and was never updated within it is not seen — which
+// can only suppress a block (fail-open), never cause a false one. Lines that fail
+// to parse are skipped.
+//
+// Key insight (verified against real transcripts, 2026-05-31):
+//
+//   TaskCreate input has NO id / task_id field. The harness assigns a sequential
+//   numeric id (1, 2, 3 ...) and returns it only in the tool_result string:
+//     "Task #1 created successfully: <subject>"
+//   TaskUpdate uses the field "taskId" (camelCase) — NOT "id" or "task_id".
+//
+//   The old code keyed TaskCreate by Date.now()+random (id never present) and
+//   read TaskUpdate via inp.id||inp.task_id (both always null), so NO update ever
+//   matched ANY create, and ALL creates stayed pending forever. That caused the
+//   false-block of 34 "pending" tasks when the harness TaskList showed 0.
+//
+//   Fix: two-pass strategy within a single scan:
+//     1. Collect tool_result strings that say "Task #N created successfully" and
+//        map the tool_use_id (e.g. "toolu_01...") -> numeric key "N".
+//     2. On TaskCreate, store provisionally under the tool_use id.
+//     3. After the full scan, remap provisional keys to numeric keys using the
+//        result map (entries whose tool_use id appears in the result map get
+//        re-keyed; others stay as their tool_use id — still valid for dedup).
+//     4. On TaskUpdate, check inp.taskId first, then inp.id, then inp.task_id.
+// Bounded tail read: load only the last `windowBytes` of a possibly multi-GB
+// transcript instead of the whole file, so a huge transcript can never OOM or
+// stall this hook. If the file is smaller than the window we read it all. Any
+// error -> null (caller returns an empty task map -> no block, fail-open).
+function readTranscriptTail(transcriptPath, windowBytes) {
+  // Shared transcript-tail cap (1.5MB): the old 512KB window could drop a
+  // task created only minutes earlier on a chatty session.
+  const WINDOW = windowBytes || require('./lib/transcript-tail.js').MAX_TAIL_BYTES;
+  let fd = null;
+  try {
+    const size = fs.statSync(transcriptPath).size;
+    if (size <= WINDOW) {
+      return { data: fs.readFileSync(transcriptPath, 'utf8'), truncated: false };
+    }
+    const start = size - WINDOW;
+    const buf = Buffer.alloc(WINDOW);
+    fd = fs.openSync(transcriptPath, 'r');
+    const bytesRead = fs.readSync(fd, buf, 0, WINDOW, start);
+    return { data: buf.toString('utf8', 0, bytesRead), truncated: true };
+  } catch (_) {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
+// Strip control chars + newlines and truncate to keep a task subject from
+// injecting instruction-like content (or breaking JSON layout) when embedded in
+// the Stop reason. Does NOT change which tasks are listed — only the rendered
+// string. Non-string input collapses to ''.
+function sanitizeSubject(s, maxLen) {
+  const cap = maxLen || 60;
+  if (typeof s !== 'string') return '';
+  // Replace control chars (C0 0x00-0x1F, DEL 0x7F, C1 0x80-0x9F) — including
+  // newlines/tabs — with spaces, then collapse whitespace runs so nothing in a
+  // task subject can reshape the Stop reason or inject instruction-like lines.
+  let out = s.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (out.length > cap) out = out.slice(0, cap).trimEnd() + '…';
+  return out;
+}
+
+// Normalize an owner field to a trimmed string ('' = unowned). The harness owner
+// is an agent id string; anything non-string collapses to ''.
+function normOwner(o) {
+  return typeof o === 'string' ? o.trim() : '';
+}
+
+// devswarmChildAttended(owner) — true only when `owner` identifies a DevSwarm
+// child workspace the app's own database (the ground truth for archive
+// state; companion/lib/devswarm-app-db.js) currently shows LIVE (known, not
+// archived). A Primary that delegates an in_progress task to a child
+// workspace over the mesh has no local heartbeat file for it (agentsRunning()
+// only sees ~/.anti-hall/agents/), so without this the task read as
+// unattended and the Stop hook nagged/blocked on work that was genuinely
+// being worked, just remotely. Reuses appArchivedVerdict — the SAME
+// read-only, fail-open reader devswarm-parent-gate.js already uses to tell a
+// live child from an archived one — instead of re-walking the app DB or a
+// registry file here.
+//   - owner blank, or the pre-existing main/orchestrator/coordinator
+//     main-thread carve-out -> false (not a workspace id at all; unaffected
+//     by this function, handled elsewhere).
+//   - owner (optionally prefixed "workspace:"/"ws:"/"devswarm:") matches a
+//     LIVE app-DB builder id, or (when it is not a known id) the exact branch
+//     name / title of a LIVE workspace -> true (attended; excluded from nudge/block).
+//   - owner names an ARCHIVED id, an id the app DB doesn't know, or the
+//     registry/app DB can't be read at all (no node:sqlite, no file, wrong
+//     schema, disabled) -> appArchivedVerdict returns true/null either way,
+//     both of which this treats as "still block" — conservative and
+//     deterministic: a stale or unverifiable delegation must never hide a
+//     genuinely neglected task.
+function devswarmChildAttended(owner) {
+  const o = normOwner(owner);
+  if (!o || /^(main|orchestrator|coordinator)$/i.test(o)) return false;
+  const id = o.replace(/^(workspace|ws|devswarm)\s*[:#]\s*/i, '').trim();
+  if (!id) return false;
+  let appDb;
+  try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { return false; }
+  let verdict;
+  try { verdict = appDb.appArchivedVerdict({ home: metricsHome(), id }); } catch (_) { verdict = null; }
+  if (verdict === false) return true; // known id + NOT archived ("live")
+  if (verdict === true) return false; // known id, archived -> still block
+  // Not a known id: the owner may be spelled as the workspace's BRANCH or TITLE
+  // (label) — what a Primary sees in the roster. Same app-DB snapshot (cached
+  // per process, already read by anyLiveDevswarmChildren); exact match against a
+  // NOT-archived workspace only. Archived/unknown/unreadable -> still block.
+  try {
+    const snap = appDb.snapshot({ home: metricsHome() });
+    if (!snap || !Array.isArray(snap.workspaces)) return false;
+    return snap.workspaces.some((w) => w && w.archived === false && (w.branchName === id || w.label === id));
+  } catch (_) { return false; }
+}
+
+// anyLiveDevswarmChildren() — true only when the app DB's own record (the SAME
+// ground truth devswarmChildAttended reads above) shows at least one NOT-
+// archived workspace. Purely ADDITIVE — this only decides whether the IDLE
+// NEGLECT reason mentions delegating a task to a workspace; it never touches
+// which tasks are actionable/dispatchable (detection unchanged). Fail-open to
+// false (no node:sqlite, no app DB, disabled, any error) — the hint is simply
+// omitted, never a block.
+function anyLiveDevswarmChildren() {
+  let appDb;
+  try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { return false; }
+  let map;
+  try { map = appDb.builderStates({ home: metricsHome() }); } catch (_) { map = null; }
+  if (!map || typeof map.values !== 'function') return false;
+  for (const b of map.values()) { if (b && !b.archived) return true; }
+  return false;
+}
+
+// Normalize a blockedBy field to an array of string task ids. The harness sends a
+// list of open task ids that must resolve first; tolerate a single id or junk.
+function normBlockedBy(b) {
+  if (Array.isArray(b)) return b.filter(x => x != null).map(x => String(x));
+  if (b != null && (typeof b === 'string' || typeof b === 'number')) return [String(b)];
+  return [];
+}
+
+// agentsRunning() — true if ~/.anti-hall/agents/ holds at least one FRESH
+// heartbeat (an in-flight subagent). Matches how agent-watchdog.js reads them:
+// each file is <id>.json with a numeric `ts` (epoch ms). Fresh = ts within
+// FRESH_MS; we also accept file mtime as a fallback when ts is missing/old, so a
+// just-touched heartbeat still counts. Absent/unreadable dir => false (no agents)
+// — fail-open toward "not running", which can only PERMIT an idle-neglect nudge,
+// never silence one falsely while work is genuinely in flight (the dir IS written
+// when agents run). Any error => false.
+function agentsRunning(freshMs) {
+  const FRESH = freshMs || 20 * 60 * 1000; // ~20 min, matches agent-watchdog
+  const dir = path.join(os.homedir(), '.anti-hall', 'agents');
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+  } catch (_) {
+    return false; // no dir / unreadable => no agents
+  }
+  const now = Date.now();
+  for (const f of files) {
+    const full = path.join(dir, f);
+    let ts = 0;
+    try {
+      const data = JSON.parse(fs.readFileSync(full, 'utf8'));
+      if (data && typeof data.ts === 'number') ts = data.ts;
+    } catch (_) { /* fall back to mtime */ }
+    if (!ts) {
+      try { ts = fs.statSync(full).mtimeMs; } catch (_) { ts = 0; }
+    }
+    if (ts && (now - ts) < FRESH) return true;
+  }
+  return false;
+}
+
+// normPriority — normalize a raw priority value to a trimmed string or null.
+// Non-string/blank collapses to null (treated as missing → actionable P1).
+function normPriority(p) {
+  if (p == null) return null;
+  const s = String(p).trim();
+  return s || null;
+}
+
+// priorityRank(p) -> numeric urgency rank, lower = more urgent. "P<n>" parses
+// to n; "low"/"deferred" rank alongside P2 (the pre-existing backlog synonyms);
+// missing/blank/unrecognized ranks as P1 (fail-open: never under-nag a real
+// high-priority task whose priority field is absent or malformed).
+function priorityRank(p) {
+  if (p == null || p === '') return 1;
+  const s = String(p).trim().toLowerCase();
+  const m = /^p([0-9]+)$/.exec(s);
+  if (m) return parseInt(m[1], 10);
+  if (s === 'low' || s === 'deferred') return 2;
+  return 1; // unrecognized -> fail-open actionable (P1)
+}
+
+// idleNeglectMinPriorityRank() — guards.idleNeglectMinPriority (default 'P1')
+// as a numeric rank via the settings store (env > settings.json > default).
+function idleNeglectMinPriorityRank() {
+  let raw = 'p1';
+  try { raw = require('./lib/settings.js').get('guards', 'idleNeglectMinPriority', 'p1'); } catch (_) { /* default */ }
+  const m = /^p([0-9]+)$/.exec(String(raw || 'p1').trim().toLowerCase());
+  return m ? parseInt(m[1], 10) : 1;
+}
+
+// isActionablePriority — returns true when a task's priority should trigger
+// idle-neglect nagging: its rank is at or above the configured urgency floor
+// (guards.idleNeglectMinPriority, default P1 — i.e. P0/P1 nag, P2/P3/lower and
+// "low"/"deferred" are non-nagging backlog). Consistent across every rank: a
+// task ranked BELOW the floor is skipped the same way regardless of how far
+// below it sits, instead of special-casing only the literal string "P2".
+function isActionablePriority(p) {
+  return priorityRank(p) <= idleNeglectMinPriorityRank();
+}
+
+// OWNER-BLOCKED MARKER (field report — a Primary faked a `blockedBy` pointing
+// at a nonexistent task id to silence IDLE NEGLECT when every pending task
+// was genuinely blocked on the OWNER, e.g. hardware or a decision only the
+// human can make; `blockedBy` has no way to express "blocked on a human", so
+// the fake-dependency trick was the only lever available). isOwnerBlocked(t)
+// recognizes an EXPLICIT marker instead, so a task can honestly declare
+// "not dispatchable, and not because of another task":
+//   - metadata.blockedOn (or a top-level blockedOn) === 'owner' | 'user' |
+//     'human' | 'external' (case-insensitive), OR
+//   - the subject/content starts with "OWNER:" or "OWNER DECISION"
+//     (case-insensitive, leading whitespace ignored).
+// A task matching either is treated as non-dispatchable — excluded from the
+// ACTIONABLE-NOW set (never nagged) — WITHOUT needing a fake blockedBy
+// dependency. It is also left out of the generic nudge (unblockedOpen).
+// Implementation shared with task-tracker: lib/dispatch-demand.js isOwnerBlocked.
+function isOwnerBlocked(t) {
+  return require('./lib/dispatch-demand.js').isOwnerBlocked(t);
+}
+
+// classifyOpen(openTasks) — split open tasks into ACTIONABLE-NOW vs the rest.
+// ACTIONABLE NOW = status pending AND unowned (no owner, or owner is the main
+// thread) AND no OPEN blocker (every blockedBy id is either absent from the map
+// or already in a done/completed state) AND priority P0/P1 (missing → P1).
+// P2/low/deferred tasks are NON-NAGGING backlog and never trigger idle-neglect.
+// in_progress / owned / blocked tasks are NOT actionable — the orchestrator is
+// either working them or genuinely waiting.
+function classifyOpen(openTasks, taskMap) {
+  // Build sets of (a) ids present in the map and (b) ids that are NOT done (so a
+  // blocker pointing at them is "open"). A blocker whose id is NOT in the map at
+  // all (dangling/unknown) is the SAFER default treated as STILL OPEN — we cannot
+  // prove it resolved, so the task is considered blocked (NOT actionable),
+  // suppressing a possible false block rather than risking one.
+  const known = new Set();
+  const notDone = new Set();
+  for (const t of taskMap.values()) {
+    known.add(String(t.id));
+    const s = (t.status || '').toLowerCase();
+    if (s !== 'completed' && s !== 'done' && s !== 'cancelled' && s !== 'canceled') {
+      notDone.add(String(t.id));
+    }
+  }
+  const actionable = [];
+  for (const t of openTasks) {
+    const s = (t.status || '').toLowerCase();
+    if (s !== 'pending') continue; // in_progress => already being worked
+    if (t.blockUnknown) continue; // block state unproven: may be waiting on the owner (counted in the unknown note)
+    const owner = normOwner(t.owner);
+    // Owned by a subagent => not the main thread's to dispatch. Treat "main"/
+    // "orchestrator"/"coordinator" owner labels as the main thread (still ours).
+    if (owner && !/^(main|orchestrator|coordinator)$/i.test(owner)) continue;
+    // OWNER-BLOCKED (explicit marker) — see isOwnerBlocked's own header. Not
+    // dispatchable without a fake blockedBy dependency; never actionable-now.
+    if (isOwnerBlocked(t)) continue;
+    const blockers = normBlockedBy(t.blockedBy);
+    // A blocker is OPEN if it is not-done OR unknown (dangling id => assume open).
+    const hasOpenBlocker = blockers.some(id => {
+      const k = String(id);
+      return notDone.has(k) || !known.has(k);
+    });
+    if (hasOpenBlocker) continue;
+    // Priority filter: only P0/P1 (or missing) tasks trigger idle-neglect.
+    // P2/low/deferred is non-nagging backlog — never count toward idle-neglect.
+    if (!isActionablePriority(t.priority)) continue;
+    actionable.push(t);
+  }
+  return actionable;
+}
+
+// unblockedOpen(openTasks, taskMap) — the open tasks the GENERIC nudge lists:
+// drops a task with an owner-blocked marker (isOwnerBlocked) or a blockedBy id
+// naming a DIFFERENT known task that is still pending/in_progress AND whose own
+// chain reaches a task that can actually make progress (or an owner/external
+// marker) -- fixpoint over the whole blockedBy graph. A dangling blockedBy id
+// does not count here (unlike classifyOpen), so a fake dependency cannot
+// silence the generic nudge. A self-reference (A blockedBy A) or a pure cycle
+// (A<->B) never reaches such a terminal, so it is NOT an honest blocker either
+// -- the base nudged in both cases, and this restores that. ALSO drops a task
+// whose owner names a LIVE DevSwarm child workspace (devswarmChildAttended) --
+// a Primary's delegation to a child over the mesh has no local heartbeat, so
+// without this an attended in_progress task false-blocked as if neglected; an
+// archived/unknown/unreadable-registry owner still counts as unattended.
+function unblockedOpen(openTasks, taskMap) {
+  const openIds = new Set();
+  for (const t of taskMap.values()) {
+    const s = (t.status || '').toLowerCase();
+    if (s === 'pending' || s === 'in_progress' || s === 'in-progress') openIds.add(String(t.id));
+  }
+
+  // Only DIFFERENT, known, still-open ids count as candidate blockers.
+  function validBlockers(t) {
+    return normBlockedBy(t.blockedBy).map(String).filter(id => id !== String(t.id) && openIds.has(id));
+  }
+  // A chain can stop at t: either t has no honest blocker of its own (a leaf
+  // that can make progress right now) or t is itself owner/user/external
+  // blocked (a legitimate human dependency).
+  function isTerminal(t) {
+    return validBlockers(t).length === 0 || isOwnerBlocked(t);
+  }
+
+  // reachOrTerminal — a real fixpoint over the blockedBy graph, not a
+  // memoized DFS: order-independent by construction, so the same graph
+  // yields the same verdict regardless of task/TodoWrite order. Seed with
+  // every open terminal task, then repeatedly add any open task that has a
+  // valid blocker already in the set, until nothing new is added. A pure
+  // cycle (A<->B, or a self-reference A->A) never gets seeded and never
+  // gains a validBlocker already in the set, so it correctly never joins.
+  const reachOrTerminal = new Set();
+  for (const id of openIds) {
+    const t = taskMap.get(id);
+    if (t && isTerminal(t)) reachOrTerminal.add(id);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const id of openIds) {
+      if (reachOrTerminal.has(id)) continue;
+      const t = taskMap.get(id);
+      if (!t) continue;
+      if (validBlockers(t).some(bid => reachOrTerminal.has(bid))) {
+        reachOrTerminal.add(id);
+        changed = true;
+      }
+    }
+  }
+
+  function honestlyBlocked(t) {
+    return validBlockers(t).some(id => reachOrTerminal.has(id));
+  }
+
+  return openTasks.filter(t => !isOwnerBlocked(t) && !honestlyBlocked(t) && !devswarmChildAttended(t.owner));
+}
+
+function parseTasksFromFile(filePath) {
+  const tail = readTranscriptTail(filePath);
+  if (!tail) {
+    return new Map();
+  }
+  const lines = tail.data.split(/\r?\n/);
+  // The first line of a mid-file window may be a truncated partial JSON line;
+  // drop it so the parser never sees a fragment.
+  if (tail.truncated && lines.length > 0) {
+    lines.shift();
+  }
+
+  // provisional storage: tool_use_id -> task record
+  const provisionalMap = new Map(); // tool_use_id -> { toolUseId, content, status }
+  // final task map: numeric-or-fallback id -> task record
+  const taskMap = new Map();
+  // result map: tool_use_id -> numeric string id ("1", "2", ...)
+  const resultIdMap = new Map(); // tool_use_id -> "N"
+  let maxCreatedId = 0; // highest "Task #N created" in the current list epoch
+  let groupMsg = null;  // assistant message id of the TaskCreate group being resolved
+  let groupBase = 0;    // highest created id BEFORE that message
+  // For the subject backfill (lib/task-subject-backfill.js): did ANY reset
+  // happen inside the window, and which id was created first in it.
+  let windowReset = false;
+  let firstCreated = Infinity;
+  // toolCallInfo: tool_use_id -> { name, taskId } for EVERY tool_use seen so
+  // far (built from the assistant entries, which precede their tool_result
+  // in transcript order) — lets the tool_result handling below tell a real
+  // TaskList/TaskGet/TaskUpdate result apart from an unrelated Bash result
+  // (or a mistyped TaskGet id) that merely CONTAINS "No tasks found"/"Task
+  // not found" in its own output. See dispatch-demand.js's header on
+  // isTaskListEmptyText/isTaskNotFoundText for the full rationale.
+  const toolCallInfo = new Map();
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry;
+    try {
+      entry = JSON.parse(trimmed);
+    } catch (_) {
+      continue;
+    }
+
+    // Collect TaskCreate tool_results from user messages.
+    // Shape: { type:"user", message:{ content:[ { type:"tool_result",
+    //   tool_use_id:"toolu_...", content:"Task #N created successfully: ..." } ] } }
+    if (entry.type === 'user') {
+      const msg = entry.message;
+      const content = msg && Array.isArray(msg.content) ? msg.content : [];
+      for (const item of content) {
+        if (item && item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
+          const resultText = typeof item.content === 'string' ? item.content : '';
+          const dd = require('./lib/dispatch-demand.js');
+          const call = toolCallInfo.get(item.tool_use_id);
+          const callName = call ? call.name : '';
+          // TASK-LIST EPOCH (restart / usage-limit resume): a "No tasks
+          // found" result FROM TaskList (the store is empty NOW) is direct
+          // proof the harness's task store no longer matches this
+          // reconstruction — drop every task seen so far so it can never be
+          // reported as still open. A "Task not found" result FROM TaskGet
+          // or TaskUpdate only proves that ONE id is stale (it could be a
+          // simple typo) — drop only that id, never the whole map.
+          if (callName === 'TaskList' && dd.isTaskListEmptyText(resultText)) {
+            taskMap.clear();
+            provisionalMap.clear();
+            resultIdMap.clear();
+            maxCreatedId = 0;
+            windowReset = true;
+          } else if ((callName === 'TaskGet' || callName === 'TaskUpdate') && dd.isTaskNotFoundText(resultText)) {
+            const badId = call && call.taskId != null ? String(call.taskId) : null;
+            if (badId != null) {
+              // Per id ONLY (not a list reset): a mistyped id must not silence the
+              // rest. The epoch boundary is the numbering restart / TaskList
+              // "No tasks found" / TodoWrite handled elsewhere in this parser.
+              taskMap.delete(badId);
+              for (const [tid, nid] of [...resultIdMap]) {
+                if (nid === badId) { resultIdMap.delete(tid); provisionalMap.delete(tid); }
+              }
+            }
+          }
+          const m = callName === 'TaskCreate' ? resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i) : null;
+          if (m && !resultIdMap.has(item.tool_use_id)) {
+            // TASK-LIST EPOCH: the harness restarts numbering at #1 when its
+            // list resets (restart/resume). A created id <= the highest one
+            // already seen means every older task is gone — drop them so a
+            // stale pre-reset task (or a reused id) never shadows the live
+            // list. Field: a session reset 50 -> 1 and the old "#50
+            // in_progress" stayed "open" inside the scan window.
+            const n = Number(m[1]);
+            // Max over created ids AND ids known only from a TaskUpdate (their
+            // create can sit before the scan window).
+            // Creates of ONE assistant message (parallel calls may be numbered in
+            // reverse) are compared with the state BEFORE that message, never each
+            // other: a lower id inside the same message is not a restart.
+            const mid = call && call.msgId;
+            if (!(mid && mid === groupMsg)) { groupMsg = mid || null; groupBase = Math.max(maxCreatedId, require('./lib/dispatch-demand.js').maxNumericKey(taskMap)); }
+            if (n <= groupBase) {
+              taskMap.clear();
+              for (const tid of [...provisionalMap.keys()]) if (resultIdMap.has(tid)) provisionalMap.delete(tid);
+              resultIdMap.clear();
+              windowReset = true;
+              maxCreatedId = 0;
+              groupBase = 0;
+            }
+            firstCreated = Math.min(firstCreated, n);
+            maxCreatedId = Math.max(maxCreatedId, n);
+            resultIdMap.set(item.tool_use_id, m[1]);
+          }
+        }
+      }
+    }
+
+    const toolUses = collectToolUses(entry);
+    for (const tu of toolUses) {
+      const name = tu.name || '';
+
+      // Record tool_use_id -> {name, taskId} for every call BEFORE the
+      // name-specific branches below, so the tool_result handling above
+      // (an earlier line in this same pass, since tool_use precedes its
+      // tool_result) can tell a TaskList/TaskGet/TaskUpdate result apart
+      // from an unrelated tool's result.
+      if (tu.id) {
+        const inp = tu.input || {};
+        const taskId = inp.taskId != null ? inp.taskId
+                     : inp.id != null ? inp.id
+                     : inp.task_id != null ? inp.task_id
+                     : null;
+        toolCallInfo.set(tu.id, { name, taskId, msgId: entry.message && typeof entry.message.id === 'string' ? entry.message.id : null });
+      }
+
+      if (name === 'TodoWrite') {
+        const todos = tu.input && tu.input.todos;
+        if (Array.isArray(todos)) {
+          // TodoWrite replaces the entire list — clear both maps.
+          windowReset = true;
+          taskMap.clear();
+          provisionalMap.clear();
+          for (const todo of todos) {
+            const id = todo.id || todo.content || String(taskMap.size);
+            taskMap.set(String(id), {
+              id: String(id),
+              content: todo.content || todo.activeForm || String(id),
+              status: todo.status || 'pending',
+              // TodoWrite items have no owner/dependency model — they are the
+              // main thread's own list, so they count as unowned + unblocked
+              // (i.e. always actionable when pending).
+              owner: normOwner(todo.owner),
+              blockedBy: normBlockedBy(todo.blockedBy),
+              priority: normPriority(
+                (todo.metadata != null && todo.metadata.priority != null)
+                  ? todo.metadata.priority : todo.priority
+              ),
+              // blockedOn — the explicit owner-blocked marker (metadata.blockedOn
+              // preferred, top-level blockedOn as a fallback). See
+              // isOwnerBlocked's own header.
+              blockedOn: (todo.metadata != null && todo.metadata.blockedOn != null)
+                ? todo.metadata.blockedOn : todo.blockedOn,
+            });
+          }
+        }
+        continue;
+      }
+
+      if (name === 'TaskCreate') {
+        // The harness-assigned numeric id is NOT in input; it comes back via
+        // tool_result. Store provisionally under the tool_use wire id (tu.id).
+        const inp = tu.input || {};
+        const toolUseId = tu.id || '';
+        const content = inp.subject || inp.title || inp.content || inp.description || toolUseId;
+        const status = inp.status || 'pending';
+        // owner / blockedBy may be absent at create-time (set later via
+        // TaskUpdate) — capture if present so a single-shot create with deps is
+        // still classified correctly.
+        const owner = normOwner(inp.owner);
+        const blockedBy = normBlockedBy(inp.blockedBy);
+        // Priority: check inp.metadata.priority first (harness convention), then
+        // inp.priority as a fallback. Missing/null → null (treated as P1 later).
+        const priority = normPriority(
+          (inp.metadata != null && inp.metadata.priority != null)
+            ? inp.metadata.priority : inp.priority
+        );
+        // blockedOn — see isOwnerBlocked's own header (metadata.blockedOn
+        // preferred, top-level blockedOn as a fallback).
+        const blockedOn = (inp.metadata != null && inp.metadata.blockedOn != null)
+          ? inp.metadata.blockedOn : inp.blockedOn;
+        if (toolUseId) {
+          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy, priority, blockedOn });
+        }
+        continue;
+      }
+
+      if (name === 'TaskUpdate') {
+        const inp = tu.input || {};
+        // Real harness uses "taskId"; also accept "id" and "task_id" as fallbacks.
+        const id = inp.taskId != null ? String(inp.taskId)
+                 : inp.id     != null ? String(inp.id)
+                 : inp.task_id != null ? String(inp.task_id)
+                 : null;
+        if (id != null) {
+          const TS = require('./lib/task-state.js');
+          const existing = taskMap.get(id) || TS.unseenTask(id);
+          // Priority: only overwrite when the update explicitly carries the field
+          // (either inp.priority or inp.metadata.priority). A status-only update
+          // must not clear a priority that was set at TaskCreate time.
+          const hasPriorityUpdate = inp.priority !== undefined ||
+            (inp.metadata != null && inp.metadata.priority !== undefined);
+          const updatedPriority = hasPriorityUpdate
+            ? normPriority(
+                (inp.metadata != null && inp.metadata.priority != null)
+                  ? inp.metadata.priority : inp.priority
+              )
+            : (existing.priority || null);
+          // blockedOn — only overwrite when the update explicitly carries the
+          // field (metadata.blockedOn preferred, top-level blockedOn as a
+          // fallback); a status-only update must not clear a marker set at
+          // create-time. See isOwnerBlocked's own header.
+          const hasBlockedOnUpdate = inp.blockedOn !== undefined ||
+            (inp.metadata != null && inp.metadata.blockedOn !== undefined);
+          const updatedBlockedOn = hasBlockedOnUpdate
+            ? ((inp.metadata != null && inp.metadata.blockedOn != null) ? inp.metadata.blockedOn : inp.blockedOn)
+            : existing.blockedOn;
+          taskMap.set(id, {
+            id: existing.id,
+            content: existing.content,
+            unknown: TS.gapsAfterUpdate(existing.unknown, inp),
+            // NEVER guess: an id first seen here stays status-unknown (undefined)
+            // unless the update carries one; lib/task-subject-backfill.js recovers
+            // it from before the window, else the task is neither open nor nagged.
+            status: inp.status || existing.status,
+            // Only overwrite owner/blockedBy when the update actually carries the
+            // field; an unrelated status-only update must not clear them.
+            owner: inp.owner !== undefined ? normOwner(inp.owner) : (existing.owner || ''),
+            // Full blockedBy replacement OR the harness's incremental
+            // addBlockedBy ({"taskId":"5","addBlockedBy":["4"]}).
+            blockedBy: require('./lib/dispatch-demand.js').blockedByAfterUpdate(existing.blockedBy, inp, normBlockedBy),
+            priority: updatedPriority,
+            blockedOn: updatedBlockedOn,
+          });
+        }
+        continue;
+      }
+    }
+  }
+
+  // Flush provisional TaskCreate entries into taskMap using the result id map.
+  // If the tool_result was seen, use the numeric key; otherwise fall back to the
+  // tool_use id (still unique per task, so dedup and open-task count are correct).
+  for (const [toolUseId, rec] of provisionalMap) {
+    const numericId = resultIdMap.get(toolUseId) || toolUseId;
+    const key = String(numericId);
+    // Merge: if taskMap already has this key (from a TaskUpdate that arrived
+    // before we flushed), keep its status; otherwise use the provisional status.
+    let existing = taskMap.get(key);
+    if (existing && existing.unknown) {
+      existing = Object.assign({}, existing, require('./lib/task-state.js').fillFromCreate(existing, rec));
+      taskMap.set(key, existing);
+    }
+    if (!existing) {
+      taskMap.set(key, {
+        id: key, content: rec.content, status: rec.status,
+        owner: rec.owner || '', blockedBy: rec.blockedBy || [],
+        priority: rec.priority || null, blockedOn: rec.blockedOn,
+      });
+    } else if (!existing.content || existing.content === key) {
+      // Backfill subject from provisional record (update may have arrived first).
+      taskMap.set(key, {
+        id: key, content: rec.content, status: existing.status,
+        owner: existing.owner || rec.owner || '',
+        blockedBy: (existing.blockedBy && existing.blockedBy.length) ? existing.blockedBy : (rec.blockedBy || []),
+        priority: existing.priority || rec.priority || null,
+        blockedOn: existing.blockedOn !== undefined ? existing.blockedOn : rec.blockedOn,
+      });
+    }
+    // If existing already has a richer status from TaskUpdate, leave it.
+  }
+
+  // An open task whose TaskCreate lies before the window has no subject here
+  // (content === id). Backfill it from one bounded extra pass (no-op, no I/O,
+  // when every open task already has a subject); fail-open to "(subject unknown)".
+  if (tail.truncated) {
+    require('./lib/task-subject-backfill.js').backfillSubjects(taskMap, filePath, { windowReset, firstCreated });
+  }
+
+  return taskMap;
+}
+
+function collectToolUses(node) {
+  if (!node || typeof node !== 'object') return [];
+  const results = [];
+  if (node.type === 'tool_use' && node.name) {
+    results.push(node);
+  }
+  for (const key of ['content', 'message', 'messages', 'tool_uses', 'parts']) {
+    const val = node[key];
+    if (Array.isArray(val)) {
+      for (const item of val) results.push(...collectToolUses(item));
+    } else if (val && typeof val === 'object') {
+      results.push(...collectToolUses(val));
+    }
+  }
+  return results;
+}
+
+try {
+  main();
+} catch (_) {
+  process.exit(0);
+}

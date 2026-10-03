@@ -1,0 +1,1196 @@
+#!/usr/bin/env node
+// anti-hall :: devswarm-child-gate (Stop hook, child workspace only)
+//
+// The Stop-side complement to devswarm-child-role.js (SessionStart). When a
+// DevSwarm CHILD workspace sub-orchestrator is about to stop, force it — a CAPPED
+// number of times — to emit a heartbeat / self-report to its parent BEFORE going
+// idle, so a child that finishes a turn pings the parent instead of silently
+// dropping off the parent's radar and later reading as stale/neglected.
+//
+// This satisfies the heartbeat-authorship rule (PLAN.md Phase 2 correction):
+// heartbeats are emitted by the working session's OWN turn (this hook fires on
+// the child's Stop), NEVER by a background daemon on the child's behalf. The
+// forced-ack is the mechanism — it blocks the Stop with a reason telling the
+// child to run `hivecontrol workspace message-parent`.
+//
+// SOUND FORCED-ACK (v0.54.1 correction — reverts the v0.54.0 "fresh heartbeat
+// satisfies the Stop gate" logic, which FALSE-SILENCED a child that worked <5min
+// then stopped WITHOUT message-parent): the turn-START heartbeat written by
+// devswarm-child-turn is NOT a valid "I reported my stop-state" signal — it says
+// only that a turn began, not that the child pinged its parent before going idle.
+// Treating it as satisfaction let an unreported child drop off the parent's radar.
+// So this gate ALWAYS demands at least one real report per unchanged blocking
+// state (never false-silence), bounded ONLY by the capped forced-ack below.
+//
+// v0.58 "mesh-only messaging" BUILDS the v0.54.2 improvement noted above: a
+// proper "satisfied-by-actual-report" marker now exists — alreadyReportedThisEpisode()
+// below reads the shared store's summaries/<repoKey>.json projection for a
+// `recent[]` row this child itself SENT (a real `heartbeat --summary`/`send
+// --broadcast` mesh call, never the turn-start heartbeat FILE) since the last
+// forced-ack. When found (and no KNOWN durable unread backlog is still pending —
+// the INBOUND half of this gate, #29, is a SEPARATE concern this satisfaction
+// path does not silence), the block is skipped entirely for this Stop.
+//
+// INBOUND GATE (#29): alongside the outbound message-parent forcing above, this
+// hook also checks whether the child has unpulled/unread PARENT messages waiting.
+// When it does, the SAME forced-ack reason (still gated by the SAME MAX_BLOCKS
+// cap / state file below — this is not a second, independent budget) is extended
+// to tell the child to `inbox pull` / read / ack the backlog before it stops, so a
+// child cannot go idle sitting on an unread parent message. The check is layered:
+//   1. Durable (pure fs, non-destructive): readUnread() on the child's own
+//      descriptor inbox (workspaces/<id>.json -> inboxPath/cursorPath) — the same
+//      primitive devswarm-child-turn.js already uses.
+//   2. STRICT (default ON; ANTIHALL_DEVSWARM_CHILD_GATE_STRICT=0 disables): when
+//      the durable check finds nothing, ONE bounded, NON-DESTRUCTIVE `hivecontrol
+//      workspace message-count` spawn (finite timeout, NEVER read-messages /
+//      monitor) catches a native backlog the child has never `inbox pull`ed. Only
+//      probed when we are about to block anyway (never on the cap-exhausted
+//      yield path), so a healthy child pays zero extra spawn cost.
+// Fail-open throughout: any probe error/timeout/missing binary -> treated as "no
+// unread" (never blocks on an unknown state).
+//
+// WAKE RE-VERIFY (v0.59 "self-wake"): whenever this gate ALREADY forces a heartbeat
+// block below, the reason text also re-asserts the MAILBOX WAKE directive
+// (devswarm-child-role.js: CronList-check, then CronCreate the job that is the only
+// primitive firing while the REPL is IDLE). No new state, no new cap — it rides
+// the SAME MAX_BLOCKS-bounded forced-ack this file already has. Claude-only (a
+// Codex workspace has no CronCreate tool, so it never gets the line).
+//
+// CAPPED (loop-safe, shared Stop policy hooks/lib/stop-policy.js, Phase 5 #14):
+// `stop_hook_active` allows immediately; otherwise at most MAX_BLOCKS blocks
+// per STABLE kind ('heartbeat-report', 'inbox') per session. A kind's budget
+// re-opens only when its condition is observed cleared (a real report lands /
+// the inbox is drained), never on a timer and never because a count changed.
+// RESET_MS survives only as the "this stop episode" window for the report check.
+//
+// Gates (identical role detection to devswarm-child-role.js):
+//   - liveness supervisor ACTIVE (devswarm-detect: DEVSWARM_REPO_ID / mode), AND
+//   - this session is a CHILD workspace (devswarm-role: DEVSWARM_SOURCE_BRANCH
+//     non-empty).
+// Primary sessions, non-DevSwarm sessions, and any error -> silent no-op, exit 0
+// (byte-identical to today). Honors the user's explicit skip marker.
+//
+// Contract (Claude Code Stop hook):
+//   stdin  : JSON { hook_event_name, session_id, stop_hook_active, ... }
+//   stdout : JSON {"decision":"block","reason":"..."} to force the heartbeat, or
+//            nothing (allow the stop).
+//   exit 0 : always (fail-open on ANY error).
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
+
+const { isDevswarmActive } = require('./lib/devswarm-detect.js');
+const { isChildWorkspace, isChildWorkspaceCorroborated } = require('./lib/devswarm-role.js');
+const { isSkipped } = require('./skip-guard.js');
+const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
+const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
+const devswarmUnread = require('../companion/lib/devswarm-unread.js');
+// Shared Stop policy (Phase 5, #14) — stop_hook_active + stable-kind caps.
+const stopPolicy = require('./lib/stop-policy.js');
+const testHomeGuard = require('../companion/lib/test-home-guard.js');
+
+// RAW_CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved
+// ONCE from this hook's own on-disk location (never a relative
+// "scripts/devswarm.js" string — a DevSwarm child's cwd is its PROJECT
+// WORKTREE, not the plugin root, so a relative path in the emitted Stop-block
+// reason is unrunnable there; P1 fix). Version-pinned; only the FALLBACK for
+// the stable launcher below — see lib/stable-launcher.js header.
+const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
+// RAW_WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving:
+// no required args). Same __dirname-based resolution rationale as RAW_CLI
+// above. Only the FALLBACK for the stable launcher below.
+const RAW_WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+
+// CLI/WATCHER — the paths actually embedded in wakeReassert()'s directive
+// text. devswarm.stableLauncher (default on) points these at
+// ~/.anti-hall/bin/'s version-independent launchers instead of the
+// version-pinned RAW_* paths, so the printed pointer survives an anti-hall
+// update. Fail-open to RAW_CLI/RAW_WATCHER on any install failure or when
+// the setting is off.
+let CLI = RAW_CLI;
+let WATCHER = RAW_WATCHER;
+try {
+  if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+    const stable = require('./lib/stable-launcher.js').installLaunchers({
+      cliFallback: RAW_CLI,
+      watcherFallback: RAW_WATCHER,
+    });
+    CLI = stable.cli;
+    WATCHER = stable.watcher;
+  }
+} catch (_) {
+  // fail-open: keep RAW_CLI/RAW_WATCHER
+}
+
+// wakeReassertLine(env, isChild) -> the Stop-gate wake re-verify text, or '' when
+// the agent is not Claude (no CronCreate tool) OR the wake lib cannot be loaded.
+// LAZY + GUARDED require (the same idiom as the repokey load below / edit-guard.js):
+// a top-level require sits OUTSIDE main()'s try/catch, so a lib missing from a
+// package or throwing on load would CRASH this Stop hook instead of failing open.
+// Degrade to the pre-wake reason text — never crash, never wedge the stop.
+function wakeReassertLine(env, isChild) {
+  try {
+    const wake = require('./lib/devswarm-wake.js');
+    return wake.isClaudeAgent(env) ? wake.wakeReassert(env, CLI, isChild, WATCHER) : '';
+  } catch (_) {
+    return ''; // fail-open: pre-v0.59 behavior
+  }
+}
+
+// findGitToplevel used to live here as a local pure-fs walk-up (byte-for-byte
+// mirrored across 6 hook files — Phase 2 mesh redesign, B3); both call sites
+// below now resolve `worktree` via companion/lib/identity.js's resolveContext
+// (same zero-spawn-first fs walk, submodule-aware).
+// resolvedIdSafe(env) -> the real DEVSWARM_BUILDER_ID (hooks/lib/devswarm-wake.js's
+// resolvedId — validated against ID_FIELD there) when set/safe, else the literal
+// placeholder `<DEVSWARM_BUILDER_ID>`. Same lazy+guarded require idiom as
+// wakeReassertLine above — a missing/throwing lib degrades to the placeholder,
+// never crashes this Stop hook.
+function resolvedIdSafe(env) {
+  try {
+    const wake = require('./lib/devswarm-wake.js');
+    if (wake && typeof wake.resolvedId === 'function') return wake.resolvedId(env);
+  } catch (_) { /* fail-open below */ }
+  return '<DEVSWARM_BUILDER_ID>';
+}
+
+// alreadyReportedThisEpisode(env, home, cwd, episodeSince) -> bool. PROJECTION-
+// ONLY "already-reported" satisfaction (v0.58 mesh-only messaging): reads the
+// SAME shared summaries/<repoKey>.json projection the Primary/child-turn hooks
+// already read (no store DB open — devswarm-store.js layering) and looks for an
+// OUTBOUND row THIS CHILD ITSELF sent — a `recent[]` entry (the only place the
+// projection carries a `sender`/`from`) with `from === DEVSWARM_BUILDER_ID` and
+// `ts >= episodeSince`. `recent[]` is populated by a REAL `devswarm.js heartbeat
+// --summary` / `send --broadcast` call (never the mechanical devswarm-child-
+// turn.js turn-start heartbeat FILE, which the v0.54.1 correction above already
+// ruled out as a false-silence signal — that heartbeat never touches the store).
+// Fail-open: ANY error (unresolvable repoKey, missing/corrupt summary, lazy-
+// require failure, unsafe id) -> false — never silently skip a required report.
+function alreadyReportedThisEpisode(env, home, cwd, episodeSince) {
+  try {
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return false;
+    let repokeyMod = null;
+    try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
+    if (!repokeyMod) return false;
+    let worktree = null;
+    try { worktree = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).worktreeRoot || null; } catch (_) { worktree = null; }
+    if (!worktree) return false;
+    let repoKey = null;
+    try { repoKey = repokeyMod.repoKeyForWorktree(worktree); } catch (_) { repoKey = null; }
+    if (!repoKey) return false;
+    const p = path.join(devswarmRoot(home), 'summaries', repoKey + '.json');
+    const raw = String(fs.readFileSync(p, 'utf8')).trim();
+    if (!raw) return false;
+    const summary = JSON.parse(raw);
+    const recent = summary && Array.isArray(summary.recent) ? summary.recent : [];
+    return recent.some((r) => r && r.from === id && Number.isFinite(r.ts) && r.ts >= episodeSince);
+  } catch (_) {
+    return false;
+  }
+}
+
+// findRecentDropAttempt(env, home, cwd, episodeSince) -> {ts, reason} | null.
+//
+// defect a55d6b71a76f fix (root cause A): alreadyReportedThisEpisode() above
+// ONLY sees a real mesh broadcast (recent[]). When `heartbeat --summary` is
+// refused for a BENIGN reason (unresolvable-caller-identity,
+// caller-not-registered, ownership-mismatch — devswarm.js's
+// BENIGN_MESH_BROADCAST_REASONS), the summary is DROPPED before it ever
+// reaches recent[], so this gate could never see that the child DID attempt
+// to report — it re-prescribed the SAME failing heartbeat command forever.
+// devswarm.js's cmdHeartbeat now writes a local, bounded attempt record
+// (devswarmRoot/summary-attempts/<repoKey>.ndjson) on every such drop; this
+// reads it back the same way alreadyReportedThisEpisode reads summaries/.
+// Fail-open: any error/missing file -> null (never silently skip a required
+// report because of an attempt-record read failure).
+//
+// P0-1 FORGERY FIX (gate-fix Wave 2 round-1 review): the record is keyed by
+// the TARGET id + a PROJECT-WIDE repoKey, with no writer authentication —
+// any sibling workspace sharing this worktree could satisfy ANOTHER child's
+// Stop gate by simply running `heartbeat <victim-id> --summary ...` itself
+// (the refusal is intentionally BENIGN/ok:true, so a forger pays no cost).
+// A matching `row.id` alone is therefore not proof — bind acceptance to the
+// WRITING PROCESS: `row.instanceNonce` must equal THIS gate's own
+// deriveInstanceNonce() (same per-ancestor-session derivation devswarm.js's
+// real broadcast path already stamps outbound rows with — the hook process
+// and the CLI process the agent's heartbeat command spawns share the same
+// top-level session ancestor, so a genuine self-write always nonce-matches;
+// a sibling's own process never does). Identity-family exception (Auditor
+// P1): a child legitimately registered under two id forms (slug + UUID
+// builder-id) can heartbeat under the "other" form of its OWN identity —
+// accept that case too when `row.sessionId` is non-null and equals a
+// session id belonging to THIS workspace's own identity family.
+//
+// TWIN-CASE FIX (Wave 3 P1, defect a55d6b71a76f follow-up): the match used
+// to require `row.id === id` (env.DEVSWARM_BUILDER_ID) BEFORE even trying
+// nonce/session authentication — so a child that heartbeats under its
+// meshId (row.id = meshId) while the gate's own env id is a UUID never
+// matched, even though the write was genuinely its own. Authentication IS
+// the nonce (or the session), not the id: a row is now accepted when
+// `row.instanceNonce === ownNonce` REGARDLESS of `row.id` (the nonce alone
+// already proves same-process authorship), or when `row.sessionId` is a
+// member of `ownSessionIds` (below) REGARDLESS of `row.id`. `row.ts` is
+// still required to be within the episode window. If the nonce cannot be
+// derived at all (home/cwd unresolvable) -> do NOT accept the record
+// (fail CLOSED on authentication, never fail-open into forgeability); the
+// pre-existing fail-open posture is preserved only for read/parse errors on
+// the attempt file itself (missing/corrupt -> null, same as before).
+//
+// `diag` (optional, Wave 3 P2): when provided, set `diag.nonceFailClosed =
+// true` on the fail-CLOSED nonce-derivation path so the caller can log a
+// ONE-per-session diagnostic (this function itself stays silent/pure — it has
+// no session id and no state file to dedup against).
+//
+// Wave 3 addendum item 6: `diag.mismatch = {rowNoncePrefix, ownNoncePrefix}`
+// is set when a row FOR THIS EXACT id (`row.id === id`) exists within the
+// episode window but authenticates against NEITHER the nonce nor the session
+// (a genuine attempt record that this process just cannot recognize as its
+// own — e.g. `deriveInstanceNonce`'s documented `self:<ppid>:0` fallback
+// changes on every process restart, so a record written by a PRIOR OS
+// process for this SAME workspace id legitimately nonce-mismatches after a
+// restart; this is deliberately scoped to `row.id === id` ONLY — a
+// same-repoKey sibling's own, unrelated, non-matching rows for a DIFFERENT
+// id are the expected common case and must not spam this diagnostic).
+// Only the freshest such row (by `row.ts`) is recorded, and only when no row
+// ultimately authenticated (`latest` stays null) — a caller that logs this
+// is explaining exactly the null this function is about to return.
+function findRecentDropAttempt(env, home, cwd, episodeSince, diag) {
+  try {
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return null;
+    let repokeyMod = null;
+    try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
+    if (!repokeyMod) return null;
+    let worktree = null;
+    try { worktree = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).worktreeRoot || null; } catch (_) { worktree = null; }
+    if (!worktree) return null;
+    let repoKey = null;
+    try { repoKey = repokeyMod.repoKeyForWorktree(worktree); } catch (_) { repoKey = null; }
+    if (!repoKey) return null;
+
+    // cliMod is used for both deriveInstanceNonce (below) and canonicalMeshId
+    // (identity-family fallback below) — required once, reused by both.
+    let cliMod = null;
+    try { cliMod = require('../scripts/devswarm.js'); } catch (_) { cliMod = null; }
+
+    // Own nonce (the gate's own process/ancestor identity) — required for
+    // authentication below. Fail CLOSED (return null) if it cannot be
+    // derived at all; never treat "can't verify" as "verified".
+    // B5: the reader nonce (nearest harness ancestor, 'h:<pid>:<startMs>') —
+    // the SAME value the heartbeat CLI stamps on its attempt record. A HEADLESS
+    // caller (Codex, no harness ancestor) legitimately has NO nonce (null): the
+    // nonce path then simply cannot match and only SESSION authentication can
+    // accept a record. Fail CLOSED only when the derivation itself is
+    // unavailable or throws — "can't verify" is never "verified".
+    let ownNonce = null;
+    let nonceDerivable = false;
+    try {
+      if (cliMod && typeof cliMod.deriveReaderNonce === 'function') {
+        ownNonce = cliMod.deriveReaderNonce({ home, cwd });
+        nonceDerivable = true;
+      }
+    } catch (_) { ownNonce = null; nonceDerivable = false; }
+    if (!nonceDerivable || (ownNonce !== null && (typeof ownNonce !== 'string' || !ownNonce))) {
+      if (diag && typeof diag === 'object') diag.nonceFailClosed = true;
+      return null;
+    }
+
+    // Own session id(s) (identity-family match set) — every sessionId that
+    // provably belongs to THIS workspace's own registered identity, so a row
+    // written under a DIFFERENT id form (e.g. this workspace's meshId, when
+    // env.DEVSWARM_BUILDER_ID is a UUID that was never separately registered)
+    // can still be recognized as self-authored.
+    //   1. This workspace's OWN descriptor (workspaces/<id>.json, `id` =
+    //      env.DEVSWARM_BUILDER_ID) — the common case.
+    //   2. Only when that descriptor is absent/unreadable: scan every
+    //      registered descriptor for one that is PROVABLY the same identity —
+    //      either its `id` is a uuid-prefix re-registration of `id`
+    //      (devswarm-child-turn.js's TRUNCATED_UUID_RE recovery:
+    //      `desc.sessionId` there begins with `id`, i.e. `did.indexOf(id) ===
+    //      0` here checks the SAME relationship from the descriptor's own id
+    //      field), or its worktree resolves to the SAME canonical meshId as
+    //      this gate's own worktree (`canonicalMeshId` — scripts/devswarm.js;
+    //      a Primary-spawned meshId row for the same physical worktree).
+    // Fail-open throughout: any lookup error simply yields fewer candidate
+    // session ids, never a crash — sessionMatch below just has less to match.
+    const ownSessionIds = new Set();
+    try {
+      const descPath = path.join(devswarmRoot(home), 'workspaces', id + '.json');
+      const desc = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+      if (desc && typeof desc === 'object' && desc.sessionId != null && String(desc.sessionId) !== '') {
+        ownSessionIds.add(String(desc.sessionId));
+      }
+    } catch (_) { /* own descriptor absent/unreadable — try the family fallback below */ }
+
+    if (ownSessionIds.size === 0) {
+      try {
+        let ownMeshId = null;
+        try {
+          if (cliMod && typeof cliMod.canonicalMeshId === 'function') ownMeshId = cliMod.canonicalMeshId(worktree);
+        } catch (_) { ownMeshId = null; }
+        let auditMod = null;
+        try { auditMod = require('../companion/lib/devswarm-store-audit.js'); } catch (_) { auditMod = null; }
+        const descriptors = auditMod && typeof auditMod.readDescriptors === 'function'
+          ? (auditMod.readDescriptors(home).list || [])
+          : [];
+        for (const d of descriptors) {
+          if (!d || typeof d !== 'object' || d.sessionId == null || String(d.sessionId) === '') continue;
+          const did = d.id != null ? String(d.id) : '';
+          const idPrefixMatch = did !== '' && did.indexOf(id) === 0;
+          let meshMatch = false;
+          if (!idPrefixMatch && ownMeshId && d.worktreePath) {
+            try { meshMatch = cliMod.canonicalMeshId(d.worktreePath) === ownMeshId; } catch (_) { meshMatch = false; }
+          }
+          if (idPrefixMatch || meshMatch) ownSessionIds.add(String(d.sessionId));
+        }
+      } catch (_) { /* fail-open: no family fallback available */ }
+    }
+
+    // Wave 3 addendum item 7: the writer (cmdHeartbeat, scripts/devswarm.js)
+    // now writes PER-ID files under `summary-attempts/<repoKey>/<writerId>.ndjson`
+    // (never a single shared per-repoKey file — that was a read-modify-write-
+    // rename race between concurrent sibling writers). The reader here must
+    // still scan EVERY id's file in this repoKey's attempt directory, not just
+    // the one named `id` — the twin-case match above is deliberately
+    // id-independent (a row written under a DIFFERENT writerId, e.g. this
+    // workspace's meshId, can still be THIS process's own nonce/session), so
+    // narrowing the read to `<id>.ndjson` alone would silently un-fix that.
+    // Bounded by the number of distinct writer ids that have ever dropped a
+    // summary for this project — small in practice, and fail-open throughout
+    // (an unreadable directory/file just yields fewer candidate rows, never a
+    // crash or a false accept).
+    const attemptDir = path.join(devswarmRoot(home), 'summary-attempts', repoKey);
+    let attemptFiles = [];
+    try { attemptFiles = fs.readdirSync(attemptDir).filter((f) => f.endsWith('.ndjson')); } catch (_) { attemptFiles = []; }
+    // Persisted-shape carry-over: the writer (cmdHeartbeat) used to write a
+    // SINGLE flat file at summary-attempts/<repoKey>.ndjson (pre-Wave-3-
+    // addendum-7, before the per-writer-id directory split above). A row
+    // written by a process still on that older code path — or simply never
+    // migrated — must still be read back; additive-only, no delete, no
+    // migration required. Collected as {dir, name} pairs alongside the
+    // directory-scan files so both shapes feed the same read loop below.
+    const attemptSources = attemptFiles.map((fname) => ({ dir: attemptDir, name: fname }));
+    const legacyAttemptFile = path.join(devswarmRoot(home), 'summary-attempts', repoKey + '.ndjson');
+    try {
+      if (fs.statSync(legacyAttemptFile).isFile()) {
+        attemptSources.push({ dir: path.join(devswarmRoot(home), 'summary-attempts'), name: repoKey + '.ndjson' });
+      }
+    } catch (_) { /* legacy flat file absent — nothing to add */ }
+    let latest = null;
+    let mismatchRow = null; // freshest row.id===id in-window that failed BOTH checks
+    for (const { dir, name: fname } of attemptSources) {
+      let raw;
+      try { raw = fs.readFileSync(path.join(dir, fname), 'utf8'); } catch (_) { continue; }
+      const lines = String(raw).split('\n').filter(Boolean);
+      for (const line of lines) {
+        let row;
+        try { row = JSON.parse(line); } catch (_) { continue; }
+        if (!row || !Number.isFinite(row.ts) || row.ts < episodeSince) continue;
+        const nonceMatch = typeof ownNonce === 'string' && typeof row.instanceNonce === 'string' && row.instanceNonce === ownNonce;
+        const sessionMatch = typeof row.sessionId === 'string' && row.sessionId !== ''
+          && ownSessionIds.has(row.sessionId);
+        if (!nonceMatch && !sessionMatch) {
+          if (row.id === id && (!mismatchRow || row.ts > mismatchRow.ts)) mismatchRow = row;
+          continue;
+        }
+        if (!latest || row.ts > latest.ts) latest = row;
+      }
+    }
+    if (!latest && mismatchRow && diag && typeof diag === 'object') {
+      diag.mismatch = {
+        rowNoncePrefix: typeof mismatchRow.instanceNonce === 'string' ? mismatchRow.instanceNonce.slice(0, 12) : null,
+        ownNoncePrefix: typeof ownNonce === 'string' ? ownNonce.slice(0, 12) : null,
+      };
+    }
+    return latest;
+  } catch (_) {
+    return null;
+  }
+}
+
+// DROP_REMEDY — per-reason remedy text for findRecentDropAttempt()'s result,
+// so the forced-block reason (when a block still fires despite an attempted
+// report — e.g. an independent unread-inbox backlog) tells the child what to
+// actually DO differently, instead of re-prescribing the exact heartbeat
+// command that just failed for this same reason.
+// P2 fix: 'no-project' was a DEAD entry — that cause is set in cmdHeartbeat's
+// OUTER branch (repoKey unresolvable), which is exactly the branch that never
+// reaches the attempt-record write below it (the write requires a resolved
+// repoKey to name the ndjson file). A drop attempt with reason 'no-project'
+// can therefore never be read back here; removed rather than left unreachable.
+const DROP_REMEDY = {
+  'unresolvable-caller-identity': 'run `inbox pull <DEVSWARM_BUILDER_ID>` to establish your identity with the parent, then re-run the heartbeat',
+  'caller-not-registered': 'run `inbox pull <DEVSWARM_BUILDER_ID>` to register with the parent, then re-run the heartbeat',
+  'ownership-mismatch': 'run the heartbeat from the workspace root (cwd was not recognized as this workspace)',
+};
+
+// P0-2 INJECTION FIX (gate-fix Wave 2 round-1 review): dropAttempt.reason
+// (and .summary) are attacker-influenceable — either a hand-crafted
+// summary-attempts ndjson row, or (pre-nonce-fix) a forged one from a
+// sibling — and the Stop-block text below is fed straight back into the
+// agent's own context. Never interpolate the raw field. Render ONLY a fixed,
+// whitelisted label for a KNOWN reason key (one that also has a DROP_REMEDY
+// entry); an unrecognized reason renders a generic message that carries no
+// attacker-controlled bytes at all.
+const DROP_REASON_LABEL = {
+  'unresolvable-caller-identity': 'your caller identity could not be resolved',
+  'caller-not-registered': 'your workspace is not yet registered with the parent',
+  'ownership-mismatch': 'the heartbeat was not recognized as coming from this workspace',
+};
+function describeDropAttempt(dropAttempt, env) {
+  const reason = dropAttempt && typeof dropAttempt.reason === 'string' ? dropAttempt.reason : null;
+  const label = reason && Object.prototype.hasOwnProperty.call(DROP_REASON_LABEL, reason)
+    ? DROP_REASON_LABEL[reason]
+    : null;
+  let remedy = reason && Object.prototype.hasOwnProperty.call(DROP_REMEDY, reason)
+    ? DROP_REMEDY[reason]
+    : null;
+  // Substitute the real id (when set/safe) for the literal placeholder in the
+  // whitelisted remedy text — same resolvedId(env) substitution wakeReassertLine
+  // already applies, so the Stop text names the real id the child can run with
+  // instead of a placeholder it has nothing to fill in.
+  if (remedy) remedy = remedy.split('<DEVSWARM_BUILDER_ID>').join(resolvedIdSafe(env));
+  if (label && remedy) return 'your last heartbeat summary was DROPPED — ' + label + '. ' + remedy;
+  return 'your last heartbeat summary was dropped (reason not recognized)';
+}
+
+// How many times each stable block kind may be forced (per session, until its
+// condition clears) before we yield. One forced-ack is usually enough; a small budget lets a child that
+// didn't actually report on the first bounce get one more chance, and the cap
+// then guarantees the child is never hard-looped.
+const MAX_BLOCKS = 2;
+
+// "This stop episode" for alreadyReportedThisEpisode: the more recent of the
+// last forced block and RESET_MS ago. (No longer a cap re-arm timer.)
+const RESET_MS = 5 * 60 * 1000;
+
+// (defect a55d6b71a76f's lifetime-6 counter and the RESET_MS re-arming window
+// are replaced by the shared Stop policy's stable-kind cap — see main().)
+
+// D13 (v0.97.0): a fresh, zero-unread mailbox-wake TICK marker (written by
+// `devswarm.js inbox tick <id>` — the cron prompt's own drain step, see
+// devswarm-wake.js's drainCmd useTick branch) is itself a liveness+no-op proof
+// — the cron fired, ran `inbox count` (and `inbox pull` first, for a child),
+// found nothing, and already bumped heartbeats/<id>.json's ts. Forcing a
+// SEPARATE heartbeat report on top of that is redundant overhead — exactly
+// what the D13 field measurement (1,225 polling lines / 2.29 MB, ~half a
+// session's real content, almost entirely "mailbox empty" no-ops) was about.
+// 120s window: generous enough to cover the tick's own subprocess latency,
+// tight enough that a marker from a PRIOR tick (this cron now fires every 30
+// min) can never be mistaken for "just happened" satisfaction of THIS Stop.
+const TICK_MARKER_FRESH_MS = 120 * 1000;
+
+function stateFileFor(sessionId) {
+  const safe = String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_');
+  // Own DISTINCT state file, namespaced under devswarm/ so it never collides with
+  // task-guard's ~/.anti-hall/last-stop-taskset-* or the liveness verdict files.
+  return path.join(os.homedir(), '.anti-hall', 'devswarm', 'child-gate', safe + '.json');
+}
+
+function readState(stateFile) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    if (parsed && typeof parsed === 'object') {
+      return {
+        blocks: Number.isFinite(parsed.blocks) ? parsed.blocks : 0,
+        lastBlockAt: Number.isFinite(parsed.lastBlockAt) ? parsed.lastBlockAt : 0,
+        // defect a55d6b71a76f fix (root cause B): lifetime counter, NEVER
+        // reset by the RESET_MS window logic below (unlike `blocks`).
+        totalBlocks: Number.isFinite(parsed.totalBlocks) ? parsed.totalBlocks : 0,
+        lifetimeCapLogged: parsed.lifetimeCapLogged === true,
+        // Wave 3 P2: dedup flag for the "instance nonce could not be derived"
+        // stderr diagnostic below — same one-line-per-session convention as
+        // lifetimeCapLogged, so a session stuck unable to derive its own
+        // nonce (e.g. an unresolvable home/cwd) does not spam stderr once per
+        // Stop.
+        nonceFailClosedLogged: parsed.nonceFailClosedLogged === true,
+        // Wave 3 addendum item 6: dedup flag for the "attempt record exists
+        // but did not authenticate" stderr diagnostic — same convention.
+        mismatchLogged: parsed.mismatchLogged === true,
+        // defect E1 fix: the wall-clock timestamp of the PREVIOUS Stop check
+        // for this session (see episodeSince below) — 0 when this is the
+        // first Stop check this session has ever made.
+        lastCheckAt: Number.isFinite(parsed.lastCheckAt) ? parsed.lastCheckAt : 0,
+      };
+    }
+  } catch (_) { /* first time / unreadable -> fresh state */ }
+  return {
+    blocks: 0, lastBlockAt: 0, totalBlocks: 0,
+    lifetimeCapLogged: false, nonceFailClosedLogged: false, mismatchLogged: false, lastCheckAt: 0,
+  };
+}
+
+function writeState(stateFile, state) {
+  // Atomic tmp + rename so a crash mid-write can never leave a torn state file.
+  // Returns true iff the cap state was persisted; false lets the caller FAIL OPEN
+  // (a guard that cannot track its own cap must never block — see main()).
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const tmp = stateFile + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(state));
+    fs.renameSync(tmp, stateFile);
+    return true;
+  } catch (_) {
+    return false; // could not persist the cap -> caller fails open (never blocks)
+  }
+}
+
+// emitBlock(reason) — the ONE place this hook writes its Stop verdict.
+// fs.writeSync(1): a synchronous write to fd 1 — process.stdout.write races the
+// async pipe flush with process.exit() on macOS node 18/20 (project convention).
+function emitBlock(reason) {
+  try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
+}
+
+// ONE bounded, NON-DESTRUCTIVE probe timeout — must never wedge a Stop.
+const MESSAGE_COUNT_TIMEOUT_MS = 5000;
+
+// strictEnabled(env) -> bool. ANTIHALL_DEVSWARM_CHILD_GATE_STRICT default ON;
+// '0' disables the native fallback probe (pure-fs durable-unread check only).
+function strictEnabled(env) {
+  const e = env || {};
+  try { return require('./lib/settings.js').getWithEnv('devswarm', 'childGateStrict', true, e) !== false; }
+  catch (_) { /* fall through */ }
+  const raw = e.ANTIHALL_DEVSWARM_CHILD_GATE_STRICT;
+  return String(raw === undefined ? '1' : raw).trim() !== '0';
+}
+
+// readDurableUnread(env, home) -> { known, count }. NON-DESTRUCTIVE unread check
+// on the child's OWN durable descriptor inbox (workspaces/<DEVSWARM_BUILDER_ID>
+// .json -> inboxPath/cursorPath), via the same inbox-cursor primitive devswarm-
+// child-turn.js uses. Pure fs — never drains the native queue, never spawns
+// hivecontrol. Fail-safe: ANY error -> { known: false, count: 0 }.
+//
+// UNION-AWARE (root cause b fix): a mesh-direct `send --to` is STORE-ONLY (see
+// companion/lib/devswarm-unread.js's header) — the NDJSON-only readUnread()
+// above is blind to it. When the descriptor carries a worktreePath, ALSO
+// consult the union (NDJSON ∪ store-only) count via the shared lib, LAZY +
+// GUARDED (same D27 idiom as devswarm-child-turn.js's registerStoreDescriptor)
+// so a missing/corrupt module or a store-open failure degrades to the
+// pre-fix NDJSON-only count — never throws, never regresses the known:false
+// fail-open-to-blocking posture below.
+function readDurableUnread(env, home) {
+  try {
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return { known: false, count: 0 };
+    const descPath = path.join(devswarmRoot(home), 'workspaces', id + '.json');
+    let desc;
+    try { desc = JSON.parse(fs.readFileSync(descPath, 'utf8')); } catch (_) { return { known: false, count: 0 }; }
+    if (!desc || typeof desc !== 'object' || !desc.inboxPath) return { known: false, count: 0 };
+    if (desc.worktreePath) {
+      try {
+        const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: desc.worktreePath, id, home, env });
+        if (storeHandle) {
+          try {
+            // Phase 3 (reader_cursors): the child's OWN mailbox via ONE countFor
+            // (own reader row, or the floor when headless). A read error is
+            // UNKNOWN: reported as { unknown:true } so the gate blocks with a
+            // reason instead of reading it as "0 unread".
+            let reader = null;
+            try { reader = require('../scripts/devswarm.js').deriveReaderNonce({ home }); } catch (_) { reader = null; }
+            const union = require('../companion/lib/reader-cursors.js').countFor(storeHandle, {
+              reader, partition: id, inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, home,
+            });
+            if (union.unknown) return { known: false, count: 0, unknown: true, reason: union.reason || 'store-read-error' };
+            return { known: !!union.known, count: union.known ? union.unread : 0 };
+          } finally {
+            try { storeHandle.close(); } catch (_) {}
+          }
+        }
+      } catch (e) {
+        // The store-side count THREW: unknown, never "0 unread".
+        return { known: false, count: 0, unknown: true, reason: 'store-read-threw' };
+      }
+    }
+    const u = readUnread(desc.inboxPath, desc.cursorPath);
+    return { known: !!u.known, count: u.known ? u.count : 0 };
+  } catch (_) {
+    return { known: false, count: 0 };
+  }
+}
+
+// probeNativeMessageCount(env) -> int | null. ONE bounded, NON-DESTRUCTIVE
+// `hivecontrol workspace message-count` spawn (finite timeout, NEVER read-messages
+// or monitor). Returns null on any error/timeout/non-zero exit/unparseable output
+// (unknown -> fail-open, never counted as unread).
+//
+// shell: win32-only. Node's spawnSync resolves a bare command name via Windows
+// CreateProcess, which (unlike cmd.exe) does NOT consult PATHEXT — an npm-style
+// `hivecontrol.cmd`/`.bat` shim (how JS-based global CLIs install on Windows)
+// silently fails to spawn without a shell to do that resolution. args stay a
+// fixed, hardcoded literal array (never user input), so shell:true here carries
+// no injection risk. POSIX is unaffected (shell stays false; plain PATH search).
+function probeNativeMessageCount(env) {
+  try {
+    const r = spawnSync('hivecontrol', ['workspace', 'message-count'], {
+      encoding: 'utf8', timeout: MESSAGE_COUNT_TIMEOUT_MS, env,
+      shell: process.platform === 'win32',
+    });
+    // Tri-state (Phase 5 review): binary not installed (ENOENT) = no native
+    // channel to read ('absent'); any other failure (timeout, non-zero exit,
+    // signal, unparseable) = UNKNOWN (null) — never "0 unread".
+    if (r.error && r.error.code === 'ENOENT') return 'absent';
+    if (r.error || r.status !== 0 || r.signal) return null;
+    const m = String(r.stdout || '').trim().match(/-?\d+/);
+    if (!m) return null;
+    const n = parseInt(m[0], 10);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// hasUnreadParentMessages(env, home) -> bool. Durable (pure-fs) check FIRST; when
+// it shows nothing AND STRICT mode is enabled, a bounded native message-count
+// probe catches a backlog the child has never `inbox pull`ed. Fail-open: any probe
+// error -> false (never blocks on an unknown state).
+// -> true | false | 'unknown' (the native probe failed: never read as "no unread").
+function hasUnreadParentMessages(env, home) {
+  const durable = readDurableUnread(env, home);
+  if (durable.known && durable.count > 0) return true;
+  if (!strictEnabled(env)) return false;
+  const native = probeNativeMessageCount(env);
+  if (native === 'absent') return false;
+  if (native === null) return 'unknown';
+  return native > 0;
+}
+
+// tickMarkerFreshZero(env, home, now) -> bool. D13: true iff `inbox tick`'s own
+// marker (devswarmRoot(home)/wake-tick/<id>.json — written by devswarm.js's
+// cmdInboxTick) is fresh (within TICK_MARKER_FRESH_MS) AND reported a genuine
+// no-op (`unreadTotal === 0` AND `meshGapWithheld` falsy AND `known === true`
+// — the SAME three-part stop condition drainCmd's own prose uses, matching
+// G1's Fix Wave 3 fix so this can never treat a withheld-gap tick as
+// satisfaction). Wave F1 (P0) added the `known` conjunct: a store-unavailable
+// tick reports `known: false` alongside a numeric (often 0) `unreadTotal` —
+// without this check that silently satisfied "fresh zero" and skipped the
+// forced heartbeat on a session with mail the store just couldn't be read
+// for. `known` MUST be strictly `true` (not merely truthy/absent) so a marker
+// written by pre-Wave-F1 code (no `known` field at all, i.e. `undefined`) is
+// treated as known-unknown -> NOT fresh-zero -> the heartbeat is still
+// forced; this keeps the fail-open direction (never silently skip on an old
+// marker shape) rather than fail-closed. Fail-open throughout: ANY error
+// (missing/corrupt marker, unsafe id, unresolvable home) -> false — never
+// silently skips a heartbeat this gate would otherwise force.
+function tickMarkerFreshZero(env, home, now) {
+  try {
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return false;
+    const p = path.join(devswarmRoot(home), 'wake-tick', id + '.json');
+    const raw = fs.readFileSync(p, 'utf8');
+    const marker = JSON.parse(raw);
+    if (!marker || typeof marker !== 'object') return false;
+    if (!Number.isFinite(marker.ts)) return false;
+    if ((now - marker.ts) > TICK_MARKER_FRESH_MS) return false;
+    if (marker.unreadTotal !== 0) return false;
+    if (marker.meshGapWithheld) return false;
+    if (marker.known !== true) return false;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// ARCHIVED_STOP_KIND — the stable per-kind budget key (shared stop-policy.js,
+// same mechanism as 'heartbeat-report'/'inbox' below) that bounds the
+// archived-child block to ONCE per session; the budget re-opens only if the
+// condition is ever observed cleared (never on a timer).
+const ARCHIVED_STOP_KIND = 'archived-stop';
+const ARCHIVED_STOP_CAP = 1;
+
+// resolveArchivedGateContext(env, home, cwd) -> { id, worktreePath } | null.
+// A read-only twin of the id/worktree resolution devswarm-child-turn.js uses,
+// scoped to what this Stop hook needs: this child's own id, and its worktree —
+// preferring the ALREADY-REGISTERED descriptor's own worktreePath (the literal
+// on-disk location row-state.js's archived-marker match needs), falling back
+// to resolving cwd's git toplevel when no descriptor exists yet (mirrors
+// devswarm-child-turn.js's registerChildDescriptor resolution).
+function resolveArchivedGateContext(env, home, cwd) {
+  const id = env.DEVSWARM_BUILDER_ID;
+  if (typeof id !== 'string' || !isSafeId(id)) return null;
+  let worktreePath = null;
+  try {
+    const desc = JSON.parse(fs.readFileSync(path.join(devswarmRoot(home), 'workspaces', id + '.json'), 'utf8'));
+    if (desc && typeof desc.worktreePath === 'string' && desc.worktreePath) worktreePath = desc.worktreePath;
+  } catch (_) { worktreePath = null; }
+  if (!worktreePath) {
+    try { worktreePath = require('../companion/lib/identity.js').resolveContext(cwd, { home, missingPath: 'ancestor' }).toplevel || null; } catch (_) { worktreePath = null; }
+  }
+  if (!worktreePath) return null;
+  return { id, worktreePath };
+}
+
+// isArchivedChildStop(env, home, cwd, sessionId) -> { archived, id,
+// worktreePath } | null. Settings-gated (devswarm.archivedChildStop, default
+// on) — a pure no-op revert to the old forced-heartbeat behaviour when off.
+// Fail-open: any resolution/read error -> not archived.
+function isArchivedChildStop(env, home, cwd, sessionId) {
+  try {
+    if (!require('./lib/settings.js').enabled('devswarm', 'archivedChildStop')) return null;
+  } catch (_) { return null; }
+  const ctx = resolveArchivedGateContext(env, home, cwd);
+  if (!ctx) return null;
+  let archived = false;
+  try {
+    archived = require('../companion/lib/row-state.js').isRowArchived({
+      home, id: ctx.id, worktreePath: ctx.worktreePath, sessionId,
+    });
+  } catch (_) { archived = false; }
+  return { archived, id: ctx.id, worktreePath: ctx.worktreePath };
+}
+
+// MAILBOX CRON MISSING (0.117): a session cron (the ONLY thing that fires the
+// mailbox-wake `inbox tick` while this REPL is idle — see hooks/lib/
+// devswarm-wake.js's header) does NOT survive a DevSwarm crash, a session
+// restore, or a Claude restart, yet the Monitor watcher auto-arms regardless —
+// so nothing else notices the cron itself is gone. SessionStart's own
+// directive already says "CronList; create if absent" (devswarm-child-role.js
+// wakeDirective), but an agent can skip it. This is a DIFFERENT check from
+// tickMarkerFreshZero above (which asks "did the LAST tick find nothing" —
+// it requires a RECENT marker to even answer): this asks "has `inbox tick`
+// run AT ALL recently" — i.e. is the cron still ticking. Fail-open throughout:
+// any read/settings error -> null (never warns on an unknown state).
+//
+// CRON_MISSING_METRIC_* — same report-only JSONL-counter convention as
+// devswarm.js's cron-found-mail.jsonl (cmdInboxTick effect 3): one line per
+// warning actually shown, capped, read by doctor.js as a plain INFO count.
+const CRON_MISSING_METRIC_FILE = 'cron-missing-warned.jsonl';
+const CRON_MISSING_METRIC_CAP = 500;
+
+function recordCronMissingWarn(home, now) {
+  try {
+    const p = path.join(devswarmRoot(home), CRON_MISSING_METRIC_FILE);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    let lines = [];
+    try { lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch (_) { lines = []; }
+    lines.push(JSON.stringify({ ts: now }));
+    if (lines.length > CRON_MISSING_METRIC_CAP) lines = lines.slice(lines.length - CRON_MISSING_METRIC_CAP);
+    fs.writeFileSync(p, lines.join('\n') + '\n');
+  } catch (_) { /* fail-open: measurement only, never breaks the Stop hook */ }
+}
+
+// cronMissingWarning(env, home, now) -> the warning text, or null when
+// nothing is wrong (or it is too early to tell). A wake-tick marker that has
+// NEVER existed is ambiguous on its own — a brand-new workspace legitimately
+// has not ticked yet — so that case is judged against the EXISTING
+// heartbeats/<id>.json file's own `ts` (already written at SessionStart /
+// every turn by other paths, unrelated to the tick marker) as a proxy for
+// "how long has this workspace actually been running": only a workspace
+// whose heartbeat itself is older than the warn window, with STILL no tick
+// marker at all, counts as cron-missing. No heartbeat file either -> fail
+// open (too little signal to judge session age at all, never warn on an
+// unknown state). A marker that DID exist at some point is judged purely on
+// its own age instead — that case unambiguously means the cron stopped.
+function cronMissingWarning(env, home, now) {
+  try {
+    const wake = require('./lib/devswarm-wake.js');
+    if (!wake.isClaudeAgent(env)) return null; // CronCreate is a Claude-only tool
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return null;
+    let warnMin;
+    try { warnMin = require('./lib/settings.js').getWithEnv('devswarm', 'cronMissingWarnMin', 60, env); }
+    catch (_) { warnMin = 60; }
+    if (!Number.isFinite(warnMin) || warnMin <= 0) warnMin = 60;
+    const warnMs = warnMin * 60 * 1000;
+    const tickPath = path.join(devswarmRoot(home), 'wake-tick', id + '.json');
+    let ageMs = null;
+    try {
+      const marker = JSON.parse(fs.readFileSync(tickPath, 'utf8'));
+      if (marker && Number.isFinite(marker.ts)) ageMs = now - marker.ts;
+    } catch (_) { ageMs = null; } // absent/unreadable/malformed -> "never ticked"
+    if (ageMs !== null) {
+      if (ageMs <= warnMs) return null; // recently ticked -> fine
+      return 'MAILBOX CRON MISSING: no inbox tick for ' + Math.round(ageMs / 60000) + 'm — run `CronList`; '
+        + 'if no tick cron exists, `CronCreate` it with the tick prompt (see SessionStart directive).'
+        + wakeReassertLine(env, true);
+    }
+    // No marker has ever been written for this id: only a fair signal (this
+    // workspace's own heartbeat, already old) makes "never ticked" mean
+    // anything — a fresh workspace with no heartbeat history yet is simply
+    // too new to judge, not missing a cron.
+    let hbAgeMs = null;
+    try {
+      const hb = JSON.parse(fs.readFileSync(path.join(devswarmRoot(home), 'heartbeats', id + '.json'), 'utf8'));
+      if (hb && Number.isFinite(hb.ts)) hbAgeMs = now - hb.ts;
+    } catch (_) { hbAgeMs = null; }
+    if (hbAgeMs === null || hbAgeMs <= warnMs) return null;
+    return 'MAILBOX CRON MISSING: no inbox tick this session (heartbeat is ' + Math.round(hbAgeMs / 60000)
+      + 'm old) — run `CronList`; if no tick cron exists, `CronCreate` it with the tick prompt '
+      + '(see SessionStart directive).' + wakeReassertLine(env, true);
+  } catch (_) {
+    return null;
+  }
+}
+
+function main() {
+  // Settings switch devswarm.childGate (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'childGate')) return; } catch (_) { /* run */ }
+  // Read stdin (fd 0 — cross-platform; /dev/stdin is Windows-unsafe).
+  let raw = '';
+  try {
+    raw = fs.readFileSync(0, 'utf8');
+  } catch (_) {
+    return; // no stdin -> fail-open
+  }
+
+  // Escape hatch: honor an explicit, user-consented skip.
+  if (isSkipped('devswarm-child-gate')) return;
+
+  // ROLE GATE: only a DevSwarm child workspace with the supervisor active. A
+  // Primary / non-DevSwarm session is a byte-identical no-op (matches
+  // devswarm-child-role.js). Env-based, so it works even before stdin is parsed.
+  if (!isDevswarmActive(process.env)) return;
+  if (!isChildWorkspace(process.env)) return;
+  // defect a55d6b71a76f fix (root cause C): DEVSWARM_SOURCE_BRANCH alone can
+  // leak into a Primary's env with no corroborating on-disk evidence, which
+  // would gate the Primary as a child and force it into the child-only
+  // heartbeat loop below. Require on-disk corroboration (registered
+  // descriptor OR cwd under the real DevSwarm worktree layout) before
+  // treating this session as gate-eligible. No corroboration -> silent
+  // no-op (same as "not a child" — fail-open toward never blocking).
+  if (!isChildWorkspaceCorroborated(process.env, os.homedir(), process.cwd())) return;
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_) {
+    return; // malformed stdin -> fail-open (never block on a parse error)
+  }
+
+  const now = Date.now();
+
+  // NO turn-start-heartbeat-satisfaction check (reverted — see header): the
+  // child's turn-start heartbeat FILE is NOT proof it reported its stop-state.
+  // What CAN satisfy the gate (v0.58) is a REAL mesh report — see
+  // alreadyReportedThisEpisode below, evaluated AFTER the cap state is read
+  // (it needs state.lastBlockAt to bound "this stop episode").
+
+  // Session key: prefer session_id; fall back to a stable hash of the transcript
+  // path so the per-session cap still works when session_id is absent.
+  const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
+    (payload && payload.transcript_path
+      ? crypto.createHash('sha1').update(String(payload.transcript_path)).digest('hex').slice(0, 16)
+      : 'unknown');
+
+  // ARCHIVED CHILD CHECK (design B — "archive tells the live child to
+  // stop"): an archived workspace is NEVER forced through the normal
+  // heartbeat-report/inbox forcing below. It is blocked ONCE (a SEPARATE
+  // stopPolicy kind/budget, cap 1 — never shares a bucket with
+  // 'heartbeat-report'/'inbox') with a distinct "save a handover and stop"
+  // reason, then allowed to stop freely thereafter. Checked before the
+  // heartbeat-report cap state is even read.
+  {
+    const archivedGateHome = testHomeGuard.resolveHome(null, process.env);
+    const archivedGateCwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
+    let archivedStop = null;
+    try { archivedStop = isArchivedChildStop(process.env, archivedGateHome, archivedGateCwd, sessionId); } catch (_) { archivedStop = null; }
+    if (archivedStop && archivedStop.archived) {
+      const decision = stopPolicy.consume(archivedGateHome, sessionId, 'child-gate', [ARCHIVED_STOP_KIND], ARCHIVED_STOP_CAP, now);
+      let handoverWritten = false;
+      let flatHandover = null; // a flat handovers/*.md (legacy reader) with no canonical handover beside it
+      try {
+        const seat = require('../companion/lib/primary-seat.js');
+        const found = seat.archivedChildHandover(archivedStop.worktreePath, archivedGateHome, archivedStop.id);
+        handoverWritten = !!found;
+        if (found && found.sessionId == null && !seat.newestWorktreeHandover(archivedStop.worktreePath)) flatHandover = found.path;
+      } catch (_) { handoverWritten = false; }
+      let canonicalPath = null;
+      try { canonicalPath = require('./lib/auto-handover-text.js').expectedHandoverPath({ cwd: archivedGateCwd, session_id: sessionId }); } catch (_) { canonicalPath = null; }
+      canonicalPath = canonicalPath || '.anti-hall/handovers/<YYYY-MM-DD>/<session_id>/HANDOVER.md';
+      const archivedHandoverAsk = flatHandover
+        ? 'A flat handover file is not the handover format: MOVE `.anti-hall/handovers/' + path.basename(flatHandover)
+          + '` to `' + canonicalPath + '` (never leave it flat)'
+        : 'Save a handover (`/anti-hall:handover`) to `' + canonicalPath + '` (never a flat file) if you have not already';
+      try {
+        const metrics = require('../companion/lib/archived-child-metrics.js');
+        metrics.recordEvent(archivedGateHome, archivedStop.id, decision.block ? 'stop-blocked' : 'stop-cleared', { now, handoverWritten });
+      } catch (_) { /* metrics only, never blocks */ }
+      if (decision.block) {
+        emitBlock('DEVSWARM CHILD ARCHIVED: this workspace was archived. '
+          + archivedHandoverAsk + ', THEN stop — this workspace is '
+          + 'no longer tracked and you will not be asked again. Delete your own `inbox tick` '
+          + 'cron (CronList, CronDelete); the mailbox watcher is already silent.');
+      }
+      return;
+    }
+  }
+
+  const stateFile = stateFileFor(sessionId);
+  const state = readState(stateFile);
+
+  // SHARED STOP POLICY: already continuing because of a Stop block -> allow
+  // (never re-block back to back), before any probe. The one state write here
+  // records this check as `lastCheckAt`: without it the floor below stayed at
+  // the block time, so a report sent in the continuation turn kept satisfying
+  // every LATER turn's check however long ago it was sent (R2A1-CG-1).
+  if (stopPolicy.stopHookActive(payload)) {
+    state.lastCheckAt = now;
+    writeState(stateFile, state);
+    return;
+  }
+
+  // MAILBOX CRON MISSING (0.117, see cronMissingWarning's own header):
+  // independent of the heartbeat/inbox forced-ack logic below — fires even
+  // when the mailbox is empty and everything else here would happily allow
+  // the stop, because THAT is exactly the case where a dead cron would
+  // otherwise go unnoticed. Rides the SAME shared stop-policy budget as the
+  // rest of this gate, under its own kind, so it can never itself hard-loop.
+  const cronGateHome = testHomeGuard.resolveHome(null, process.env);
+  const cronWarn = cronMissingWarning(process.env, cronGateHome, now);
+  if (cronWarn) {
+    const cronDecision = stopPolicy.consume(cronGateHome, sessionId, 'child-gate', ['cron-missing'], MAX_BLOCKS, now);
+    if (cronDecision.block) {
+      recordCronMissingWarn(cronGateHome, now);
+      state.lastCheckAt = now;
+      writeState(stateFile, state);
+      emitBlock(cronWarn);
+      return;
+    }
+    // cap exhausted -> fall through to the rest of this gate's own logic
+    // (fail-open: never a perpetual block over a condition this gate cannot
+    // make the agent fix any faster than its own CronList/CronCreate turn).
+  } else {
+    // Condition observed CLEARED (a fresh tick landed) -> reopen the budget
+    // for the next time the cron actually goes missing, same convention as
+    // every other kind's clear() call in this gate.
+    stopPolicy.clear(cronGateHome, sessionId, 'child-gate', ['cron-missing']);
+  }
+
+  // defect E1 fix (root cause): episodeSince used to be `now - RESET_MS`
+  // (a fixed 5-minute rolling wall-clock window) whenever this session had
+  // never been blocked yet. A DevSwarm child's own turn — the interval
+  // between it sending `heartbeat --summary` mid-turn and this Stop hook
+  // firing at the turn's end — routinely runs longer than 5 minutes for real
+  // coding work, so that report's `ts` fell BEFORE `now - RESET_MS` and
+  // alreadyReportedThisEpisode/findRecentDropAttempt below treated a report
+  // sent moments ago (in turn-sequence terms) as if it never happened,
+  // forcing a spurious re-block right after a summary heartbeat was sent.
+  // Fix: anchor the floor to `prevCheckAt` — the wall-clock time of THIS
+  // session's own PREVIOUS Stop check (persisted below as `lastCheckAt`) —
+  // instead of a fixed window. Any report sent during the turn that just
+  // ended is, by construction, after the previous Stop check, so it is
+  // never pruned regardless of how long that turn ran. RESET_MS remains the
+  // fallback floor only for this session's very FIRST Stop check (no prior
+  // checkpoint exists yet), preserving the original "a stale/ancient report
+  // does not count forever" guard for that one case.
+  const prevCheckAt = state.lastCheckAt;
+  state.lastCheckAt = now; // persisted by every writeState call below (state is passed through)
+
+  // Already-reported satisfaction (v0.58, projection-only): "this stop episode"
+  // is bounded to the more recent of (a) the last time this gate actually forced
+  // a block, or (b) the previous Stop check for this session (or RESET_MS ago
+  // on the first check) — so a stale/ancient report never counts forever, while
+  // a report sent anywhere in the turn since the last check always does. If
+  // satisfied, skip the block UNLESS a KNOWN (durable, pure-fs, cheap) unread
+  // backlog is still pending — the INBOUND half of this gate (#29) stays
+  // intact; deliberately checks ONLY the cheap durable read here (never the
+  // STRICT native probe) so a healthy/reported child never pays the native
+  // spawn cost just to evaluate this satisfaction path.
+  const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
+  const episodeSince = Math.max(state.lastBlockAt, prevCheckAt || (now - RESET_MS));
+  const reported = alreadyReportedThisEpisode(process.env, os.homedir(), cwd, episodeSince);
+  // defect a55d6b71a76f fix (root cause A): a benignly-dropped broadcast never
+  // reaches recent[] (reported above stays false forever for it), so also
+  // treat a fresh local drop-attempt record as satisfying this episode — the
+  // child DID try; the drop was a security control doing its job, not a
+  // missed report. Still deliberately checked BEFORE the durable-unread guard
+  // below, same as `reported`, so a known pending inbox backlog still forces
+  // a block (the INBOUND half of this gate is untouched by this change).
+  const dropDiag = {};
+  const dropAttempt = reported ? null : findRecentDropAttempt(process.env, os.homedir(), cwd, episodeSince, dropDiag);
+  // Wave 3 P2: log ONCE per session (same dedup convention as
+  // lifetimeCapLogged below) when findRecentDropAttempt fails CLOSED on nonce
+  // derivation — this is a silent re-block otherwise (the child sees the SAME
+  // forced-heartbeat text as "never attempted", indistinguishable from every
+  // other null cause, with no diagnostic trail explaining why an attempt
+  // record that may well exist was not accepted).
+  if (dropDiag.nonceFailClosed && !state.nonceFailClosedLogged) {
+    state.nonceFailClosedLogged = true;
+    try {
+      process.stderr.write('[anti-hall] devswarm-child-gate: instance nonce could not be derived for session '
+        + JSON.stringify(sessionId) + ' — findRecentDropAttempt fails CLOSED (any existing drop-attempt '
+        + 'record is not accepted as authenticated; this Stop re-blocks as if no attempt was made).\n');
+    } catch (_) { /* best-effort diagnostic only */ }
+    // Best-effort immediate persist so this logs at most once per session even
+    // across multiple Stop invocations; a failed persist only degrades the
+    // dedup (never blocks/crashes — diagnostic only, downstream cap logic is
+    // unaffected either way).
+    writeState(stateFile, {
+      blocks: state.blocks, lastBlockAt: state.lastBlockAt,
+      totalBlocks: state.totalBlocks, lifetimeCapLogged: state.lifetimeCapLogged,
+      nonceFailClosedLogged: true, mismatchLogged: state.mismatchLogged,
+      lastCheckAt: state.lastCheckAt,
+    });
+  }
+  // Wave 3 addendum item 6: same ONE-per-session dedup convention, for the
+  // DIFFERENT diagnostic case — a genuine attempt record for THIS id exists
+  // in-window but authenticated against NEITHER this process's nonce nor its
+  // session (see findRecentDropAttempt's own header for why this is scoped
+  // to `row.id === id` only, and why it can legitimately fire after a
+  // process restart even with no forgery involved).
+  if (dropDiag.mismatch && !state.mismatchLogged) {
+    state.mismatchLogged = true;
+    try {
+      process.stderr.write('[anti-hall] devswarm-child-gate: an attempt record for this workspace\'s own id '
+        + 'exists for session ' + JSON.stringify(sessionId) + ' but authenticated against NEITHER this '
+        + 'process\'s nonce nor its session (row nonce prefix ' + JSON.stringify(dropDiag.mismatch.rowNoncePrefix)
+        + ' vs own nonce prefix ' + JSON.stringify(dropDiag.mismatch.ownNoncePrefix) + ') — treated as '
+        + 'unauthenticated; this Stop re-blocks as if no attempt was made.\n');
+    } catch (_) { /* best-effort diagnostic only */ }
+    writeState(stateFile, {
+      blocks: state.blocks, lastBlockAt: state.lastBlockAt,
+      totalBlocks: state.totalBlocks, lifetimeCapLogged: state.lifetimeCapLogged,
+      nonceFailClosedLogged: state.nonceFailClosedLogged, mismatchLogged: true,
+      lastCheckAt: state.lastCheckAt,
+    });
+  }
+  if (reported || dropAttempt) {
+    const durable = readDurableUnread(process.env, os.homedir());
+    // Phase 3: an UNKNOWN unread (store read error) is NOT satisfaction — the
+    // gate blocks with the reason (bounded by the caps below). Phase 5: the
+    // NATIVE queue is probed too (hasUnreadParentMessages) before the condition
+    // is cleared — never-pulled mail must not be waved through.
+    if (!durable.unknown && hasUnreadParentMessages(process.env, os.homedir()) === false) {
+      stopPolicy.clear(os.homedir(), sessionId, 'child-gate'); // condition CLEARED -> fresh budget next time
+      // Persist lastCheckAt even on the allow path — episodeSince on the
+      // NEXT Stop check must be able to anchor to THIS check's wall time,
+      // not fall back to a stale/absent one.
+      writeState(stateFile, state);
+      return;
+    }
+  }
+
+  // D13 (v0.97.0): a fresh, zero-unread `inbox tick` marker is ITSELF a
+  // liveness proof (the cron fired, drained, found nothing, and already
+  // refreshed heartbeats/<id>.json's ts) — forcing a SEPARATE heartbeat report
+  // on top is the exact overhead the D13 field measurement identified. Gated
+  // the SAME way alreadyReportedThisEpisode's satisfaction is above: never
+  // silences a KNOWN durable unread backlog (the cheap durable check only,
+  // never the STRICT native probe — a satisfied/ticked child never pays that
+  // spawn cost just to re-evaluate this).
+  if (tickMarkerFreshZero(process.env, os.homedir(), now)) {
+    const durable = readDurableUnread(process.env, os.homedir());
+    if (!durable.unknown && hasUnreadParentMessages(process.env, os.homedir()) === false) {
+      stopPolicy.clear(os.homedir(), sessionId, 'child-gate');
+      writeState(stateFile, state); // persist lastCheckAt on this allow path too
+      return;
+    }
+  }
+
+  // SHARED STOP POLICY cap (Phase 5, #14): MAX_BLOCKS per STABLE kind per
+  // session — 'heartbeat-report' (always owed here) and 'inbox' (known unread
+  // or UNKNOWN unread, the cheap durable check). Replaces the 5-min re-arming
+  // window + lifetime-6 counter: a kind's budget re-opens only when its
+  // condition is observed cleared (the satisfaction paths above), never
+  // because time passed or new mail changed a count.
+  const durablePre = readDurableUnread(process.env, os.homedir());
+  const unreadPendingPre = hasUnreadParentMessages(process.env, os.homedir());
+  // NATIVE-UNREACHABLE ONLY (field report: hivecontrol message-count times out /
+  // no localhost): the outbound half is ALREADY satisfied (a real report, a drop
+  // attempt, or a fresh known-zero `inbox tick`) and the durable store is fine;
+  // the ONLY open question is an unreachable native queue. Re-demanding a
+  // heartbeat here nagged right after one was sent, and prescribing `inbox pull`
+  // (which hits the same dead native channel) could not be satisfied. Warn ONCE
+  // (own kind, cap 1), inbound text only, with an exit that does not need the
+  // native channel.
+  // heartbeatSatisfied: a REAL report this episode, or a fresh known-zero tick, already
+  // proved liveness — so when this block is only about INBOUND state (known/unknown
+  // unread), it must not ALSO demand another heartbeat (field: 16:55:28 heartbeat ok,
+  // 16:55:31 Stop re-demanded one alongside the inbox pull). A drop attempt still
+  // gets its own drop-reason/remedy text, so it is not counted here.
+  const tickFresh = tickMarkerFreshZero(process.env, testHomeGuard.resolveHome(null, process.env), now);
+  const heartbeatSatisfied = !!(reported || tickFresh);
+  const outboundSatisfied = !!(reported || dropAttempt || tickFresh);
+  const nativeOnlyUnknown = outboundSatisfied && unreadPendingPre === 'unknown' && !durablePre.unknown;
+  const kinds = (nativeOnlyUnknown || heartbeatSatisfied) ? [] : ['heartbeat-report'];
+  if (unreadPendingPre === true) kinds.push('inbox');
+  else if (durablePre.unknown || unreadPendingPre === 'unknown') kinds.push('inbox-unknown');
+  if (kinds.length === 0) {
+    // nothing owed (heartbeat satisfied, inbound cleared) -> allow, and re-open the budgets of the
+    // kinds just satisfied, like the other allow paths (a stale count must not cap a later episode).
+    stopPolicy.clear(testHomeGuard.resolveHome(null, process.env), sessionId, 'child-gate', ['heartbeat-report', 'inbox', 'inbox-unknown']);
+    writeState(stateFile, state);
+    return;
+  }
+  const decision = stopPolicy.consume(os.homedir(), sessionId, 'child-gate', kinds, nativeOnlyUnknown ? 1 : MAX_BLOCKS, now);
+  if (!decision.block) {
+    if (decision.persisted && !state.lifetimeCapLogged) {
+      writeState(stateFile, Object.assign({}, state, { lifetimeCapLogged: true }));
+      try {
+        process.stderr.write('[anti-hall] devswarm-child-gate: forced-ack cap (' + MAX_BLOCKS
+          + ' per kind) reached for session ' + JSON.stringify(sessionId)
+          + ' — block cap reached for this reason; not blocking again until you send a report.'
+          + ' After that the limit starts over, so send a fresh heartbeat before each stop.\n');
+      } catch (_) { /* best-effort diagnostic only */ }
+    } else {
+      writeState(stateFile, state); // still persist lastCheckAt on this allow path
+    }
+    return; // cap exhausted, or cap state unpersistable -> fail open
+  }
+  // lastBlockAt bounds "this stop episode" for the report-satisfaction check.
+  writeState(stateFile, Object.assign({}, state, { lastBlockAt: now, lifetimeCapLogged: false }));
+
+  // INBOUND state: probed ONCE above (durable, then the native message-count)
+  // so the 'inbox' kind and this reason text agree.
+  const unreadPending = unreadPendingPre === true;
+  const nativeUnknown = unreadPendingPre === 'unknown';
+  const durableNow = unreadPending ? null : readDurableUnread(process.env, os.homedir());
+  const inboundPrefix = unreadPending
+    ? 'DEVSWARM CHILD INBOX — you have unpulled/unread parent message(s): run ' +
+      '`node ' + CLI + ' inbox pull ' + resolvedIdSafe(process.env) + '` (or `inbox read` ' +
+      'if already pulled), then `inbox ack` once addressed — BEFORE you stop. '
+    : (durableNow && durableNow.unknown)
+    ? 'DEVSWARM CHILD INBOX — your unread count is UNKNOWN (' + String(durableNow.reason || 'store-read-error') +
+      '): the store could not be read, so this gate cannot prove your inbox is empty. Run `node ' + CLI +
+      ' inbox count ' + resolvedIdSafe(process.env) + '` and read any mail BEFORE you stop. '
+    : nativeUnknown
+    ? (nativeOnlyUnknown
+      ? 'DEVSWARM CHILD INBOX — the native `hivecontrol workspace message-count` probe failed or timed out, so this '
+        + 'gate cannot prove your native queue is empty (your mesh inbox and report are fine). Try `node ' + CLI
+        + ' inbox pull ' + resolvedIdSafe(process.env) + '` once and handle any mail; if it fails the same way the '
+        + 'native channel is unreachable from here, so you may stop — this warning will not repeat.'
+      : 'DEVSWARM CHILD INBOX — your NATIVE unread count is UNKNOWN (the `hivecontrol workspace message-count` '
+        + 'probe failed or timed out), so this gate cannot prove your native queue is empty. Run `node ' + CLI
+        + ' inbox pull ' + resolvedIdSafe(process.env) + '` and handle any mail BEFORE you stop. ')
+    : '';
+
+  // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on
+  // this SAME forced block, bounded by the SAME MAX_BLOCKS cap above. Claude-only.
+  const wakeLine = wakeReassertLine(process.env, true);
+
+  // defect a55d6b71a76f fix (root cause A): if the child already ATTEMPTED to
+  // report and it was benignly dropped (findRecentDropAttempt above), and we
+  // are still blocking anyway (only possible here because of a KNOWN durable
+  // unread backlog — the `reported || dropAttempt` satisfaction path above
+  // already returned otherwise), name the actual drop reason + remedy
+  // instead of re-prescribing the exact heartbeat command that just failed
+  // for this same reason on this same episode.
+  const outboundLine = dropAttempt
+    ? 'DEVSWARM CHILD WORKSPACE — ' + describeDropAttempt(dropAttempt, process.env) + ', THEN stop.'
+    : 'DEVSWARM CHILD WORKSPACE — before you stop, emit a heartbeat / self-report to ' +
+      'your parent orchestrator so you do not silently drop off its radar and later ' +
+      'read as stale. Run `node ' + CLI + ' heartbeat ' + resolvedIdSafe(process.env) + ' ' +
+      '--summary "<status>"` with a one-line status (e.g. "done — awaiting next task", ' +
+      '"blocked on X", or "idle — reassign or archive me"), THEN stop. This keeps the ' +
+      'parent\'s task list honest instead of leaving you unnoticed.';
+
+  const reason = nativeOnlyUnknown ? inboundPrefix.trim()
+    : heartbeatSatisfied ? inboundPrefix + wakeLine
+    : inboundPrefix + outboundLine + wakeLine;
+
+  emitBlock(reason);
+}
+
+try {
+  main();
+} catch (_) {
+  // Fail-open: any error must never block the child.
+}
+process.exit(0);

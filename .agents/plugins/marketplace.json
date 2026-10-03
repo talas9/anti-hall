@@ -1,0 +1,17 @@
+{
+  "name": "anti-hall",
+  "plugins": [
+    {
+      "name": "anti-hall",
+      "source": {
+        "source": "local",
+        "path": "./plugins/anti-hall"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

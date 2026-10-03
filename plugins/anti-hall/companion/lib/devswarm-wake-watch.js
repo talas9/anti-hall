@@ -1,0 +1,2019 @@
+'use strict';
+// anti-hall :: devswarm-wake-watch — a PURE-READ Monitor() watcher for DevSwarm
+// mesh mail (KB-claude-monitor-tool.md). One watcher per orchestrator: one for
+// the Primary, one per child workspace. Inbound daemon->orchestrator wake is
+// this Monitor watcher; outbound orchestrator->daemon heartbeat MUST NOT move
+// here (a daemon-written heartbeat would keep reading "fresh" even while the
+// session it represents is wedged — devswarm-child-turn.js's "Heartbeat
+// authorship rule"). Destructive/mutating work stays where it already lives
+// (the daemon, hivecontrol, scripts/devswarm.js).
+//
+// ============================================================================
+// THE TRAP THIS FILE MUST NEVER FALL INTO
+// ============================================================================
+// This watcher must never invoke, shell out to, or require-and-call anything
+// that consumes/acks the very unread signal it exists to surface. Concretely:
+// no CLI subcommand that marks a mailbox read, pulls/drains a native queue,
+// reads-then-acks a mesh row, or force-acks a roster entry. Calling any of
+// those here would be a SELF-ERASING WAKE: the watcher destroys its own
+// trigger and the agent never learns anything. This module shells out to NO
+// mutating command anywhere, ever — it only fs.statSync/readFileSync plain
+// projection files that scripts/devswarm.js and the store layer already
+// produce as read-only artifacts. A source-scan test (see the paired test
+// file) asserts the five forbidden verb phrases never appear in this file's
+// own text (including comments) as a regression guard — so this comment
+// deliberately never spells them out verbatim.
+//
+// This module also NEVER opens the SQLite store directly — "HOOKS NEVER OPEN
+// THE DB" (devswarm-store.js / devswarm-inbox-paths.js). It reads only the
+// already-DERIVED projection: summaries/<hash>.json (written atomically by
+// deriveSummary — tmp+rename, so a read here can never observe a torn file)
+// and, for a child, its own durable inbox NDJSON + cursor file. It never reads
+// store/<hash>/devswarm.db(+ -wal/-shm) or store/<hash>/journal/*.ndjson.
+//
+// ============================================================================
+// v1 SCOPE — DIRECTS ONLY. BROADCASTS ARE AN EXPLICIT, DOCUMENTED GAP.
+// ============================================================================
+// This watcher edge-triggers ONLY on a workspace's own DIRECT message total
+// (workspaces[<id>].total for the Primary; the child's own inbox NDJSON count
+// for a child). It intentionally does NOT watch the shared broadcast feed
+// (summary.recent[]) for new roster-wide broadcasts.
+//
+// Why not: `recent[]` is capped (default 50) and, measured live on a real
+// project, was observed holding 49 rows from ONE idle sender's heartbeat
+// broadcast (same body, ~285s cadence, 1182 accumulated rows over 5.25 days)
+// and only 1 row from everyone else combined. That is the NORMAL steady state,
+// not a pathological edge case — heartbeats are broadcasts too, sent to the
+// same shared partition. A diff-over-`recent[]` design would silently evict
+// genuine broadcasts behind duplicate heartbeat noise and LOOK like it works
+// while dropping real messages. An honest gap beats a false guarantee, so v1
+// ships directs-only. Covering broadcasts correctly needs either an uncapped/
+// dedicated broadcast counter or a heartbeat-excluding store projection change
+// — both out of scope for this file (store projection changes are owned
+// elsewhere).
+//
+// One direct benefit of directs-only scope: heartbeats live entirely in the
+// broadcast partition and NEVER touch workspaces[<id>].total (computeSummary
+// derives `total` from `store.messageCount(d.id)`, the workspace's own DIRECT
+// partition — BROADCAST_PARTITION_ID is explicitly skipped in that loop). So
+// this watcher is immune to heartbeat-flood noise BY CONSTRUCTION, not by a
+// filter that could regress — see the paired test's heartbeat-immunity case.
+//
+// ============================================================================
+// IDENTITY FOOTGUN — id vs meshId, do not cross them
+// ============================================================================
+// A workspace descriptor / roster row carries TWO different ids:
+//   - `id`     — the descriptor id used as the summary's `workspaces` MAP KEY.
+//                For a child this is DEVSWARM_BUILDER_ID (a UUID). For the
+//                real Primary this is `primary-<8hex worktree hash>`.
+//   - `meshId` — always `primary-<worktree hash>`, derived from the CALLER's
+//                own worktree. This is a SENDER identity (what you'd address a
+//                message FROM/TO), not a `workspaces[...]` lookup key. A child
+//                has one too, and it looks exactly like a Primary's `id` would
+//                — do not use it as a lookup key for a child's own total.
+// This file only ever looks up `workspaces[id]` (never `workspaces[meshId]`),
+// and only ever derives `id` via DEVSWARM_BUILDER_ID (child) or
+// primaryWorkspaceId(resolveMainWorktree(cwd)) (Primary) — see resolveIdentity.
+//
+// ============================================================================
+// Structure: a PURE core (tick + its helpers — no fs/clock/process/random) and
+// an IO runner around it (identity resolution once at startup, then a plain
+// read-parse-tick loop). Both live in this one file and are both exported so
+// the pure half is directly unit-testable.
+//
+// ============================================================================
+// STAT-GATE OMISSION — deliberate, reviewed; do not re-add as an "optimization"
+// ============================================================================
+// The loop below is a plain read-parse-tick loop, NOT a stat-gate-then-parse
+// loop, even though an earlier design sketch called for stat-gating (statSync
+// the summary/NDJSON file's mtime+size first, re-parsing only on a change)
+// before every parse. That gate was deliberately dropped: an mtime/size-based
+// gate risks the exact failure this whole feature exists to prevent — a
+// MISSED WAKE — whenever mtime granularity or a same-tick write that happens
+// to leave size unchanged makes a genuinely new message look like "nothing
+// changed." Measured re-parse cost against a real summary file was ~0.058ms —
+// negligible against POLL_MS (default 2000ms) — so a stat-gate would only buy
+// an unnecessary re-parse avoidance, at the cost of a narrow but real chance
+// of silently missing a wake. Reviewed and agreed on the merits: always parse,
+// never gate on stat.
+//
+// ============================================================================
+// EXTERNAL PROJECTION DEPENDENCY — what refreshes the data this file reads
+// ============================================================================
+// This file never derives anything itself; it only reads whatever is
+// CURRENTLY on disk. What keeps that data fresh differs by role:
+//
+// Primary: reads summaries/<hash>.json. A mesh-direct send (`send --to` /
+// `--to-primary`) calls store.deriveSummary in the SAME operation that
+// appends the message (scripts/devswarm.js cmdSend), so that path is never
+// stale relative to the store. But messages arriving via the Primary's
+// NATIVE hivecontrol queue only reach the store — and therefore the summary,
+// and therefore this watcher — once companion/devswarm-ingest.js's daemon
+// (the ONE consumer of that queue, Primary-scoped) drains and
+// re-derives. If that daemon is not running, those messages sit undrained,
+// invisible to the store and to this watcher, until the daemon (re)starts
+// and catches up. This watcher's silence in that window is a faithful read
+// of an unprojected store, not a bug here — this file assumes no minimum
+// number of healthy ingest daemons and has no daemon-liveness logic of its
+// own.
+//
+// Child: reads ONLY its own durable inbox NDJSON (readUnread over
+// inboxPath/cursorPath) — it never reads the store or any summary file for a
+// child. That NDJSON is populated exclusively by the child-side one-shot
+// bounded native-queue drain CLI verb (companion/lib/devswarm-pull.js
+// pullOnce — see this module's own opening comment for why that verb, unlike
+// the forbidden ones, is safe: count-gated, at-most-one bounded read, never
+// a blocking monitor call), which folds the native parent->child hivecontrol
+// queue into the NDJSON. Nothing runs that drain on a fixed schedule: the
+// per-turn child-side reminder is advisory text only — the hook that prints
+// it deliberately never spawns hivecontrol itself on the per-turn hot path —
+// so the drain happens only when the agent acts on that reminder, or when a
+// supervisor/doctor reconcile sweep runs it as a subprocess per registered
+// worktree. A child's arrival latency for native-queue traffic is therefore
+// bounded by whichever of those two runs next, NOT by this watcher's poll
+// interval — a live watcher can sit correctly silent for an arbitrarily long
+// stretch if neither one runs.
+//
+// Separately: a mesh-direct message addressed to a child
+// (store.appendMeshMessage via a mesh `send --to <childId>`) is written ONLY
+// into the shared store's partition for that child's id — never into any
+// NDJSON file. THIS IS NOW COVERED (previously a documented blind spot; fixed
+// below): scripts/devswarm.js cmdSend opens store.openStore({..., hash:
+// repoKey}) and calls store.deriveSummary(...) in the SAME call that appends
+// the message — no daemon or drain in between — so the child's own
+// `workspaces[<childId>].total` in that project's summaries/<repoKey>.json
+// advances in lockstep with the send, exactly the guarantee the Primary path
+// already relied on. The child-role watcher now ALSO reads that summary
+// (readPrimarySnapshot reused verbatim, keyed by the child's OWN id via the
+// same repoKey-then-legacy-hash two-probe — see readChildCombinedSnapshot),
+// IN ADDITION TO its existing NDJSON read. The two channels are independent:
+// the NDJSON read remains the ONLY channel for the separate native
+// hivecontrol-queue traffic (still bounded by pullOnce/reconcile-sweep drain
+// timing as described above); the summary read is the ONLY channel for a
+// mesh-direct `send --to <childId>`. Each keeps its own seen-cursor in state,
+// and a single tick emits exactly one line even when both advance together.
+//
+// ============================================================================
+// SUPERVISOR PARENT-ESCALATION VISIBILITY
+// ============================================================================
+// A supervisor escalation (recovery.js notifyParentEscalation) appends into
+// `workspaceId: parentId` — the PARENT'S OWN partition key, the SAME key
+// computeSummary's workspaces loop iterates and messageCount(id) counts by.
+// So an escalation DOES increment `workspaces[parentId].total` and IS
+// visible to a `workspaces[<id>].total`-keyed watcher like this one, for any
+// Primary whose own `primary-<hash>` id is registered in that store — true
+// whenever its native-queue ingest daemon has ever started (it
+// self-registers its own primary id at startup) or `register-primary` was
+// run. This file previously assumed escalations land in a separate/legacy
+// partition the Primary two-probe exists to reach; that assumption was
+// checked against the actual append call and is WRONG — do not reintroduce
+// it.
+//
+// There is exactly one genuine boundary, and it is a SHAPE limit, not a bug
+// in the escalation write itself: if the parent's own id was NEVER
+// registered in that store, computeSummary's workspaces loop never visits
+// it at all, and the escalation instead surfaces only in `orphans[]`
+// (unregistered-partition detection) — which v1 deliberately does not read
+// (see below for why). This is permanent until orphans[] coverage is added,
+// separate from and NOT to be confused with a second, independent,
+// currently-true DEFECT elsewhere: notifyParentEscalation never re-derives
+// the summary after its append (no re-derive call anywhere in that
+// function or its caller), so even a correctly-keyed escalation sits
+// unprojected until something else re-derives that store — being fixed in
+// a separate workspace. One is a shape limit this file cannot fix; the
+// other is a missing-refresh defect this file did not cause and cannot fix
+// either, but the two must not be described as the same thing.
+//
+// orphans[] is deliberately NOT read here. `orphans.push` is gated on
+// `unread > 0` (devswarm-store.js) — the array is UNREAD-gated, so an
+// orphaned partition's entry disappears the moment its unread count reaches
+// zero (e.g. once read/acked). That makes `orphans[].messageCount` not
+// cleanly monotonic from a consumer's point of view (an entry can pop in
+// and back out), unlike `workspaces[].total`, which this file's whole
+// edge-trigger design depends on being append-only and never decremented.
+// Edge-triggering on orphans[] safely would need materially more care than
+// this file's current design. Deferred as a clean follow-up if the
+// unregistered-parent case is ever observed live — not attempted here.
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const role = require('../../hooks/lib/devswarm-role.js');
+const supervisor = require('../devswarm-supervisor.js');
+const ingest = require('../install-devswarm-ingest.js');
+const store = require('./devswarm-store.js');
+const repokey = require('./devswarm-repokey.js');
+const pull = require('./devswarm-pull.js');
+const inboxCursor = require('./devswarm-inbox-cursor.js');
+const { devswarmRoot } = require('./liveness.js');
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_POLL_MS = 2000;
+const POLL_MS_MIN = 250;
+const POLL_MS_MAX = 60000;
+const POLL_ENV_VAR = 'ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS';
+
+// ERROR_TOLERANCE consecutive failed ticks are silent; the (ERROR_TOLERANCE+1)th
+// emits immediately, then repeats are gated by ERROR_BACKOFF_MS: 1min, then
+// 5min, then 30min-forever (index clamped at the last entry).
+const ERROR_TOLERANCE = 3;
+const ERROR_BACKOFF_MS = [60 * 1000, 5 * 60 * 1000, 30 * 60 * 1000];
+
+// A watcher lock is long-lived (the whole Monitor's persistent lifetime), not
+// a one-shot pull's. acquireExclLock's default steal rule never touches a
+// live-pid holder regardless of staleMs (see devswarm-pull.js) — but THIS
+// watcher opts into `allowStaleLiveSteal` and re-stamps its own lock's `ts`
+// every poll tick (see `release.restamp()` below), so a healthy watcher's
+// lock never goes stale while a genuinely HUNG (frozen, not exited) watcher's
+// lock does, after this many ms of missed restamps (defect 8143ced316d3).
+const WATCH_LOCK_STALE_MS = 2 * 60 * 1000;
+
+// readInstalledPluginVersion() -> semver string | null. Mirrors
+// devswarm-ingest.js's own helper of the same name — best-effort read of THIS
+// watcher's installed plugin.json (resolved via __dirname so it always names
+// the build actually loaded into this process). Stamped into the lock file so
+// a refused watcher can report which build holds it. Fail-open to null.
+function readInstalledPluginVersion() {
+  try {
+    // F fix (P2): this file lives one level DEEPER than devswarm-ingest.js
+    // (companion/lib/ vs companion/) — a single '..' here resolved to
+    // companion/.claude-plugin/plugin.json, which does not exist (compare
+    // devswarm-ingest.js:1088's own `path.join(__dirname, '..',
+    // '.claude-plugin', 'plugin.json')`, correct FOR ITS OWN location one
+    // level up from companion/). Needs one more '..' to reach the real
+    // manifest at plugins/anti-hall/.claude-plugin/plugin.json.
+    const p = path.join(__dirname, '..', '..', '.claude-plugin', 'plugin.json');
+    const json = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return (json && typeof json.version === 'string') ? json.version : null;
+  } catch (_) { return null; }
+}
+
+// checkStaleVersion(ownVersion, env) -> { newestVersion, scriptPath: string|null, registered: bool, registeredVersion: string|null } | null.
+// (`registeredVersion` = the version installed_plugins.json names, or null.)
+// `registered` distinguishes two DISTINCT no-cache states (field repro
+// 2026-09-26: on-disk installed_plugins.json still named 0.110.0 while the
+// marketplace clone had already fast-forwarded to 0.111.0 with no cache dir
+// mirrored yet) — `newest` above is the MAX of three sources and previously
+// collapsed both into one "registered" message even when the harness had
+// NEVER seen the version at all:
+//   registered=true  -> installed_plugins.json itself already names
+//                        `newest` (or newer) — the harness knows about this
+//                        build, only the cache mirror is missing.
+//   registered=false -> `newest` came ONLY from the marketplace clone (or a
+//                        cache dir) that installed_plugins.json has not
+//                        caught up to — nothing is "registered" yet, and
+//                        telling the user to just restart/reload is false;
+//                        they need `/anti-hall:update` first (syncs the
+//                        cache AND runs the harness registration).
+// P0 field root cause (item 4c): a child auto-resumed BEFORE the harness
+// re-registered a newer anti-hall build keeps this watcher (and everything
+// else in its process) running the OLD build's code indefinitely — nothing
+// ever told it a newer build exists, so it just sat there silently stale.
+// This reuses update.js's OWN version-resolution chain (installed_plugins.json
+// -> newest cache dir -> marketplace plugin.json — the same three sources
+// doctor.js's harness-registration check already reads) rather than
+// re-deriving version comparison logic here. Pure fs reads, no git spawn —
+// cheap enough to run on every poll tick (same order of cost as the
+// snapshot/summary reads this loop already does each tick). Returns null
+// (never flags) when `ownVersion` is unknown/non-semver, or the newest known
+// version is not strictly ahead of it — fail-open toward staying armed, never
+// toward a false "stale" exit that would leave a workspace with NO watcher at
+// all over a transient/unreadable version-resolution failure.
+function checkStaleVersion(ownVersion, env) {
+  try {
+    const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
+    if (!upd.isSemver(ownVersion)) return null;
+    const home = os.homedir();
+    const paths = upd.resolvePaths(env || process.env, home);
+    const jsonVersion = upd.versionFromInstalledJson(paths.installedJson);
+    const candidates = [
+      jsonVersion,
+      upd.newestCacheVersion(paths.cacheRoot),
+      upd.versionFromMarketplace(paths.pluginJson),
+    ];
+    let newest = null;
+    for (const v of candidates) {
+      if (upd.isSemver(v) && (!newest || upd.compareVersions(v, newest) > 0)) newest = v;
+    }
+    if (!newest || upd.compareVersions(ownVersion, newest) >= 0) return null;
+    // See the header comment above: `registered` is true only when
+    // installed_plugins.json (the harness registry, read-only) itself
+    // already names `newest` or newer — never true just because `newest`
+    // happened to be the max across cache-dir/marketplace sources too.
+    const registered = upd.isSemver(jsonVersion) && upd.compareVersions(jsonVersion, newest) >= 0;
+    const scriptPath = path.join(paths.cacheRoot, newest, 'companion', 'lib', 'devswarm-wake-watch.js');
+    // Root-cause fix (field repro 2026-09-25): `newest` above is the MAX of
+    // three independent sources — installed_plugins.json, the newest CACHE
+    // dir, and the marketplace clone's plugin.json. The marketplace clone can
+    // fast-forward (a plain `git pull`) well before anything mirrors that
+    // version into the plugin cache, so `newest` can legitimately name a
+    // version with NO cache dir on disk at all. Building `scriptPath` from
+    // `newest` unconditionally then hands the caller a `node <path>` command
+    // that crashes with exit 1 the moment it runs (exactly what happened
+    // live: marketplace at 0.108.5, cache still only holding 0.108.4).
+    // A directive must only ever name a path that EXISTS — verify the exact
+    // file, not just the version directory, before returning it.
+    let scriptExists = false;
+    try { scriptExists = fs.statSync(scriptPath).isFile(); } catch (_) { scriptExists = false; }
+    return {
+      newestVersion: newest,
+      scriptPath: scriptExists ? scriptPath : null,
+      registered,
+      registeredVersion: upd.isSemver(jsonVersion) ? jsonVersion : null,
+    };
+  } catch (_) {
+    return null; // fail-open: a resolution failure must never falsely exit a healthy watcher
+  }
+}
+
+// formatStaleVersionLine(role, id, ownVersion, newestVersion, scriptPath) ->
+// the ONE line emitted when checkStaleVersion detects a newer build. Unlike
+// formatRefusalLine, this carries runtime-derived version/path text
+// DELIBERATELY (same posture as formatWakeLine/formatErrorLine above) — the
+// whole point is to name the exact re-arm command, not a closed-vocabulary
+// code.
+function formatStaleVersionLine(role, id, ownVersion, newestVersion, scriptPath) {
+  return '[wake-watch] STALE BUILD: this watcher for ' + (role || 'unknown') + ' ' + (id || 'unknown')
+    + ' is running anti-hall ' + (ownVersion || 'unknown') + ', but ' + newestVersion + ' is registered/cached. '
+    + 'Re-arm with `node ' + scriptPath + '` (Monitor tool, persistent: true if supported — '
+    + 'otherwise max timeout_ms + re-arm on the tool\'s final/expired event) to pick it up. '
+    + 'Exiting now — never running on as a silent stale watcher.';
+}
+
+// formatUpdateAvailableLine(role, id, ownVersion, newestVersion, registered) ->
+// the ONE line emitted when checkStaleVersion sees a newer version NAME but
+// has no existing path to re-arm against (its cache dir has not been
+// mirrored yet). Unlike formatStaleVersionLine, this NEVER tells the caller
+// to exit: there is nothing to re-arm against yet, and leaving a workspace
+// with no watcher at all over an update that has not finished syncing would
+// be strictly worse than staying on the current (still-working) build.
+// Edge-triggered by the caller (once per newestVersion) so it does not spam
+// every poll tick the way the stale-build check itself runs.
+//
+// `registered` (see checkStaleVersion's header comment) picks between two
+// DISTINCT states that were previously collapsed into one misleading
+// "registered" line:
+//   registered=true  -> installed_plugins.json genuinely already names this
+//                        version; only the cache mirror is pending — today's
+//                        wording (accurate: the harness knows about it).
+//   registered=false -> `newestVersion` is only known from the marketplace
+//                        clone (or a cache dir) that the harness has NOT
+//                        registered at all — saying "is registered" here is
+//                        false and just "restart" would not load it; the
+//                        fix is `/anti-hall:update` (syncs the cache AND
+//                        runs the harness registration), then /reload-plugins.
+function formatUpdateAvailableLine(role, id, ownVersion, newestVersion, registered) {
+  if (registered) {
+    return '[wake-watch] update available: anti-hall ' + newestVersion + ' is registered, but no cache directory for it '
+      + 'exists on disk yet (this watcher for ' + (role || 'unknown') + ' ' + (id || 'unknown')
+      + ' stays on ' + (ownVersion || 'unknown') + '). Not exiting — nothing to re-arm against yet; '
+      + 'this will be re-checked on the next update sync.';
+  }
+  return '[wake-watch] update available: anti-hall ' + newestVersion + ' is newer (seen via the marketplace clone) but '
+    + 'is not registered with the harness and has no cache directory yet (this watcher for ' + (role || 'unknown') + ' '
+    + (id || 'unknown') + ' stays on ' + (ownVersion || 'unknown') + '). Not exiting; run /anti-hall:update to sync '
+    + 'the cache and register it with the harness, then /reload-plugins — this will be re-checked on the next update sync.';
+}
+
+// ---------------------------------------------------------------------------
+// WATCHER HANDOFF (re-arm churn fix, field evidence 2026-09-26)
+// ---------------------------------------------------------------------------
+// Pre-fix, every STALE BUILD detection (checkStaleVersion above) printed one
+// line and exited, requiring the AGENT to manually re-arm Monitor on the new
+// build after every release — pure churn on every release cycle, and a real
+// gap: nothing wakes the agent to even NOTICE the watcher died until the next
+// mailbox check. Instead: when the newer build's watcher script genuinely
+// EXISTS on disk (staleVersion.scriptPath — checkStaleVersion already
+// existence-checked it), THIS process spawns it as a CHILD with stdio
+// 'inherit' — every line the child writes to stdout/stderr becomes this
+// process's own output, so Monitor's stream simply continues, uninterrupted,
+// on the new build — and passes through the child's exit code/signal, so
+// this process's own lifecycle looks, from Monitor's perspective, like
+// nothing happened except a version bump.
+const HANDOFF_ENV_VAR = 'ANTIHALL_WAKE_WATCH_HANDED_OFF';
+
+// `registered` (checkStaleVersion's flag): exactly false means the harness
+// registry still names an older build, so the handoff only moved THIS watcher
+// to the cached build — the session's hooks are unchanged. Said on the SAME
+// single line (every stdout line wakes the session); true/undefined keep the
+// original text.
+function formatHandoffLine(newestVersion, registered, registeredVersion) {
+  const base = '[wake-watch] handed off to ' + newestVersion;
+  if (registered !== false) return base;
+  const still = registeredVersion ? 'the harness still registers ' + registeredVersion : 'the harness has not registered it';
+  return base + ' (cached only: ' + still + ', so this session\'s hooks are unchanged until the plugin update is registered and plugins are reloaded)';
+}
+
+// canHandoff(ownVersion, newestVersion, env) -> bool. Two independent guards
+// against a runaway handoff chain:
+//   1. VERSION GUARD — newestVersion must be STRICTLY newer than ownVersion.
+//      Structurally redundant with checkStaleVersion's own compareVersions
+//      check (which only ever returns a scriptPath for a confirmed-newer
+//      version), but checked again here, independently, rather than trusting
+//      the caller — a handoff is a one-way, hard-to-undo action (a live
+//      process replaces itself), so it earns its own guard.
+//   2. LOOP GUARD (env var) — every handoff must target a version STRICTLY
+//      newer than the previous handoff's target. The spawned child inherits
+//      HANDOFF_ENV_VAR=<the version it was handed to>; a later release
+//      (newest > that stamp) may hand off again, but a chain that would
+//      re-target the same or an older version (a broken ownVersion
+//      resolution) is refused and falls back to print-and-exit, so the
+//      process chain stays strictly version-monotonic and bounded. Pre-fix
+//      this was a flat "one handoff per chain" (stamp '1'), which made every
+//      SECOND release in a long-lived chain end in STALE BUILD + a manual
+//      re-arm. A legacy/non-semver stamp (e.g. '1' from an older parent)
+//      still fails closed.
+// Fail-closed (never hands off) on any resolution error.
+function canHandoff(ownVersion, newestVersion, env) {
+  try {
+    const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
+    if (!upd.isSemver(ownVersion) || !upd.isSemver(newestVersion)) return false;
+    if (upd.compareVersions(newestVersion, ownVersion) <= 0) return false; // same/older -> never
+  } catch (_) { return false; }
+  const e = env || process.env;
+  const stamp = e && e[HANDOFF_ENV_VAR];
+  if (stamp) {
+    try {
+      const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
+      if (!upd.isSemver(stamp) || upd.compareVersions(newestVersion, stamp) <= 0) return false;
+    } catch (_) { return false; }
+  }
+  return true;
+}
+
+// attemptHandoff(opts) -> the spawned child process object when a handoff was
+// started, or null when the caller must fall back to the pre-fix
+// print-the-re-arm-line-and-exit behavior (loop guard tripped, version guard
+// tripped, or spawnFn threw SYNCHRONOUSLY).
+//
+// LOCK ORDERING (the "never two watchers" invariant): `opts.release()` is
+// called BEFORE spawnFn — the child acquires the SAME lock itself, via its
+// own ordinary main()/acquireExclLock call, so there is never a window where
+// two processes both believe they hold the watcher lock.
+//
+// Outcome once spawnFn has been called without throwing is resolved
+// ASYNCHRONOUSLY via the child's own 'spawn'/'error'/'exit' events (Node
+// gives no synchronous spawn-succeeded signal): 'spawn' -> print the ONE
+// handoff line; 'error' (e.g. an unusable interpreter/script at scriptPath)
+// -> print the SAME re-arm line the pre-handoff behavior always printed, so
+// a genuinely failed handoff is never silently swallowed; 'exit' -> forward
+// the child's exit code/signal onto this process so Monitor's view of this
+// watcher's lifecycle is unaffected by the handoff having happened at all.
+//
+// `opts.spawnFn` defaults to child_process.spawn; tests inject a fake to
+// exercise the synchronous-throw fallback deterministically.
+function attemptHandoff(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  if (!canHandoff(o.ownVersion, o.newestVersion, env)) return null;
+  const spawnFn = o.spawnFn || require('child_process').spawn;
+  // Release BEFORE spawning: see the header comment above.
+  try { if (typeof o.release === 'function') o.release(); } catch (_) {}
+  let child;
+  try {
+    child = spawnFn(process.execPath, [o.scriptPath], {
+      stdio: 'inherit',
+      env: Object.assign({}, env, { [HANDOFF_ENV_VAR]: String(o.newestVersion) }),
+    });
+  } catch (_) {
+    return null; // synchronous spawn failure -> caller falls back
+  }
+  if (!child || typeof child.on !== 'function') return null;
+  let settled = false;
+  child.once('error', () => {
+    if (settled) return;
+    settled = true;
+    try { emitLine(formatStaleVersionLine(o.role, o.id, o.ownVersion, o.newestVersion, o.scriptPath)); } catch (_) {}
+    process.exitCode = 1;
+  });
+  child.once('spawn', () => {
+    if (settled) return;
+    settled = true;
+    try { emitLine(formatHandoffLine(o.newestVersion, o.registered, o.registeredVersion)); } catch (_) {}
+  });
+  // Propagate the child's outcome as THIS process's exit, shell-style
+  // (128+signo for a signal death). Never re-raise the signal on ourselves:
+  // our own SIGTERM/SIGINT handlers would intercept it (they forward to the
+  // now-dead child) and the parent would exit 0, hiding the child's fate.
+  const exitFn = typeof o.exitFn === 'function' ? o.exitFn : (c) => process.exit(c);
+  child.once('exit', (code, signal) => {
+    exitFn(handoffExitCode(code, signal));
+  });
+  return child;
+}
+
+// handoffExitCode(code, signal) -> the exit code the parent uses to mirror
+// the handed-off child: the child's own code, or 128+signo when it died by a
+// signal (1 for an unknown signal name).
+function handoffExitCode(code, signal) {
+  if (signal) {
+    const signo = os.constants && os.constants.signals ? os.constants.signals[signal] : undefined;
+    return Number.isFinite(signo) ? 128 + signo : 1;
+  }
+  return code == null ? 0 : code;
+}
+
+// resolveOwnSessionId() -> string | undefined. Best-effort identifier for the
+// Claude Code (or Codex-companion) session that armed THIS watcher, stamped
+// into the lock file so a refused sibling can name WHICH session's watcher
+// holds the lock (v0.102.2). `undefined` (never `null`/`''`) when none are
+// set, so acquireExclLock's `typeof === 'string'` check omits the field from
+// the written lock JSON entirely rather than writing a placeholder.
+// CLAUDE_CODE_SESSION_ID is the var Claude Code actually sets on every
+// spawned process (see scripts/devswarm.js realSessionIdFrom / gate-intent
+// session resolution) — a live Claude Code session never sets bare
+// CLAUDE_SESSION_ID, so that check alone always fell through to `undefined`.
+// CLAUDE_SESSION_ID / ANTIHALL_SESSION_ID stay as legacy fallbacks (same
+// precedent scripts/defect.js reads for its own session-attribution field).
+function resolveOwnSessionId() {
+  const v = process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || process.env.ANTIHALL_SESSION_ID;
+  return (typeof v === 'string' && v) ? v : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// PURE CORE
+// ---------------------------------------------------------------------------
+
+// normalizeState(state) -> a well-shaped state object. Never throws; any
+// missing/malformed field falls back to a safe default so a garbage `state`
+// argument degrades to "fresh watcher" instead of crashing.
+function normalizeState(state) {
+  const s = state && typeof state === 'object' ? state : {};
+  return {
+    armed: !!s.armed,
+    lastTotal: Number.isFinite(s.lastTotal) ? s.lastTotal : 0,
+    // lastTotal2 — a SECOND, INDEPENDENT edge-trigger cursor, used only by the
+    // child role's mesh-direct (summary) channel alongside its existing
+    // lastTotal (NDJSON/native-queue channel). Never summed/conflated with
+    // lastTotal — they count two disjoint message sources. Primary snapshots
+    // never carry a `total2`, so this field simply never moves for Primary.
+    lastTotal2: Number.isFinite(s.lastTotal2) ? s.lastTotal2 : 0,
+    // lastBroadcastUnread — the THIRD, INDEPENDENT edge-trigger cursor (closes
+    // the v1 "broadcasts not covered" gap, defect #10 field report). Unlike
+    // lastTotal/lastTotal2 (both append-only, never decremented), the value it
+    // tracks (`workspaces[<id>].broadcastUnread`) can go DOWN — any other
+    // broadcast-cursor-advancing read elsewhere brings this workspace's own
+    // broadcast cursor forward. tickInner therefore always resyncs this cursor to the
+    // CURRENT observed value (not only on an increase, unlike the other two),
+    // so a later genuine new broadcast is still detected relative to wherever
+    // the count actually sits now, not a stale pre-ack high-water mark.
+    lastBroadcastUnread: Number.isFinite(s.lastBroadcastUnread) ? s.lastBroadcastUnread : 0,
+    // *Missing — true when loadSeenState found NO recorded history for that
+    // counter (older seen-file predating it, or no seen-file at all). Consumed
+    // ONLY by tickInner's firstTick path, which seeds the counter from its own
+    // first live observation instead of diffing it — see loadSeenState's own
+    // header comment for the false-wake this closes. Never persisted.
+    lastTotalMissing: !!s.lastTotalMissing,
+    lastTotal2Missing: !!s.lastTotal2Missing,
+    lastBroadcastUnreadMissing: !!s.lastBroadcastUnreadMissing,
+    consecErrors: Number.isFinite(s.consecErrors) ? s.consecErrors : 0,
+    errorBackoffIdx: Number.isFinite(s.errorBackoffIdx) ? s.errorBackoffIdx : 0,
+    lastErrorEmitMs: Number.isFinite(s.lastErrorEmitMs) ? s.lastErrorEmitMs : null,
+  };
+}
+
+// formatArmLine(snapshot) -> string. Emitted exactly once, on the very first
+// tick, regardless of ok/error/total — proves the watcher is alive so later
+// silence genuinely means "nothing new" (KB §3: silence is not success).
+function formatArmLine(snapshot) {
+  const r = (snapshot && snapshot.role) || 'unknown';
+  const id = (snapshot && snapshot.id) || 'unknown';
+  return '[wake-watch] armed: watching ' + r + ' ' + id
+    + ' for new direct mesh mail and new mesh broadcasts (read-only, poll-based).';
+}
+
+// REFUSAL_REASONS — closed vocabulary for formatRefusalLine. Every refusal
+// site below MUST pass one of these fixed values, never a dynamically-built
+// string — the line lands verbatim on stdout so it must carry no interpolated
+// runtime state (injection hygiene, same discipline command-guard.js's
+// buildDevswarmReason()/buildDevswarmSendReason() use for their block reasons).
+const REFUSAL_REASONS = {
+  NOT_DEVSWARM_SESSION: 'not-a-devswarm-session',
+  IDENTITY_UNRESOLVED: 'identity-unresolved',
+  LOCK_HELD: 'lock-held',
+  DISABLED: 'disabled-by-settings',
+};
+
+// formatRefusalLine(reason) -> the ONE stdout line emitted when the watcher
+// declines to arm. Stdout normally carries only genuine wake events (armed,
+// every line becomes a transcript event per KB-claude-monitor-tool.md) — a
+// refusal-to-arm is different in kind, not degree: it is information the
+// caller needs EXACTLY ONCE, at arm time, to tell "no coverage" apart from "a
+// healthy, quiet watcher armed and waiting." It is not a recurring emission
+// and does not pollute the wake channel the way a per-tick status line would.
+// `reason` MUST be a REFUSAL_REASONS value (closed vocabulary) — never cwd,
+// an id, an error message, or any other runtime-derived text.
+function formatRefusalLine(reason) {
+  return '[wake-watch] REFUSED TO ARM: ' + reason;
+}
+
+// ---------------------------------------------------------------------------
+// PARENT-DEATH DETECTION (field evidence 2026-09-26): a watcher started by a
+// test's intermediate parent (the Monitor's shell, or the stable-launcher
+// wrapper ~/.anti-hall/bin/wake-watch.js — see stable-launcher.js) never
+// exited when that parent died; ps showed it 19h later still running with
+// PPID 1. Nothing in the loop ever checked liveness of the process that
+// started it, so a crashed/killed parent silently orphans this watcher
+// forever (and it may keep holding the per-child watch lock — see
+// WATCH_LOCK_STALE_MS above — so the NEXT session's watcher either refuses to
+// arm or reports watcherArmed from a dead watcher). Same failure in
+// production, not just tests.
+//
+// parentGone(startPpid, io) -> bool. `startPpid` is process.ppid CAPTURED AT
+// STARTUP (main(), before any loop tick) — never re-read fresh each call,
+// because the only reliable orphan signal is "my ORIGINAL parent is gone",
+// not "my CURRENT ppid differs from some earlier observation of itself".
+// Two independent, either-is-sufficient checks:
+//   (1) the OS itself already reparented us — process.ppid no longer equals
+//       startPpid, or has become 1 (the universal orphan-reaper pid on
+//       Linux/macOS); cheap, no syscall.
+//   (2) startPpid, even if ppid somehow still reads unchanged (e.g. a
+//       platform that does not reparent onto 1), no longer resolves to a
+//       live process — process.kill(startPpid, 0) throws ESRCH.
+// Fail-closed toward NOT exiting on an unexpected error from the liveness
+// probe (e.g. EPERM means the pid exists but isn't ours to signal — still
+// alive) — a probe failure must never falsely kill a healthy watcher.
+function parentGone(startPpid, io) {
+  const ioo = io || {};
+  if (!Number.isFinite(startPpid) || startPpid <= 0) return false;
+  const currentPpid = Number.isFinite(ioo.ppid) ? ioo.ppid : process.ppid;
+  if (currentPpid !== startPpid || currentPpid === 1) return true;
+  const kill = ioo.processKill || process.kill;
+  try {
+    kill(startPpid, 0);
+    return false;
+  } catch (e) {
+    return !!(e && e.code === 'ESRCH');
+  }
+}
+
+// formatParentGoneLine() -> the ONE line emitted (to STDERR, same channel as
+// formatLockLostLine — a lifecycle diagnostic about THIS watcher's own
+// process tree, never a wake event) when parentGone() fires. Fixed text, no
+// runtime-derived content (same injection-hygiene posture as the other
+// closed-vocabulary lines in this file).
+function formatParentGoneLine() {
+  return '[wake-watch] parent gone — exiting';
+}
+
+// formatLockLostLine(reason) -> the ONE line emitted (to STDERR, never stdout
+// — this is diagnostic noise about THIS watcher's own lifecycle, not a wake
+// event) when a healthy-looking watcher discovers mid-loop that its lock was
+// stolen out from under it (F fix, defect 8143ced316d3's own restamp()
+// return value, previously ignored entirely at the call site). Same closed-
+// vocabulary discipline as formatRefusalLine: `reason` is a REFUSAL_REASONS
+// value, never runtime-derived text.
+function formatLockLostLine(reason) {
+  return '[wake-watch] LOCK LOST: ' + reason;
+}
+
+// formatWakeLine(snapshot, prevTotal, total, opts) -> string. The actionable
+// line — tells the agent WHAT happened and what to do next, without the
+// watcher ever running that drain itself. `opts.channelLabel` (optional) names
+// WHICH channel moved (e.g. 'ndjson' / 'mesh-direct') for a dual-channel child
+// snapshot; omitted entirely (undefined `opts`) for the single-channel Primary
+// case, which preserves the EXACT original wording byte-for-byte.
+//
+// EMIT-CONTRACT RULE (encoded here deliberately, not incidentally): never
+// decorate an event with a field that was not derived from the SAME
+// observation that produced the event. Concretely, this function reads
+// nothing from `snapshot` except role/id (identity, constant across ticks)
+// and the two total counters passed in explicitly — it never reaches for
+// `snapshot.working_on` or any other field that describes a DIFFERENT event
+// (e.g. a workspace's `working_on` is the last HEARTBEAT summary text, not the
+// body of whatever new direct message just landed; attaching it would show
+// confidently-wrong context — three different real messages could all render
+// with the SAME stale trailing text). An honest line with only the id + delta
+// beats a decorated line with the wrong content. If per-message content is
+// ever added, it must come from the SAME parsed projection at THIS emit for
+// THIS specific delta, or be omitted entirely. Same rule applies to the arm
+// and error lines below: each reports only what that tick's own observation
+// actually saw.
+function formatWakeLine(snapshot, prevTotal, total, opts) {
+  const r = (snapshot && snapshot.role) || 'unknown';
+  const id = (snapshot && snapshot.id) || 'unknown';
+  const delta = total - prevTotal;
+  const label = (opts && opts.channelLabel) ? (String(opts.channelLabel) + ' ') : '';
+  return '[wake-watch] new mesh mail for ' + r + ' ' + id + ': ' + label + 'direct total ' + prevTotal
+    + ' -> ' + total + ' (+' + delta + '). Drain your own inbox on your next turn.';
+}
+
+// formatDualWakeLine(snapshot, prevTotal, total, prevTotal2, total2) -> string.
+// Used ONLY when BOTH the child's channels advance in the SAME tick — collapses
+// what would otherwise be two separate wake lines into exactly one, naming both
+// channels and both deltas honestly (same emit-contract rule as formatWakeLine:
+// every value here comes from THIS tick's own two reads, nothing decorative).
+function formatDualWakeLine(snapshot, prevTotal, total, prevTotal2, total2) {
+  const r = (snapshot && snapshot.role) || 'unknown';
+  const id = (snapshot && snapshot.id) || 'unknown';
+  const delta = total - prevTotal;
+  const delta2 = total2 - prevTotal2;
+  return '[wake-watch] new mesh mail for ' + r + ' ' + id + ': ndjson total ' + prevTotal + ' -> ' + total
+    + ' (+' + delta + '), mesh-direct total ' + prevTotal2 + ' -> ' + total2 + ' (+' + delta2 + '). '
+    + 'Drain your own inbox on your next turn.';
+}
+
+// formatErrorLine(snapshot, consecErrors) -> string. Edge-triggered (never
+// every tick) — see the backoff schedule in tickInner.
+function formatErrorLine(snapshot, consecErrors) {
+  const r = (snapshot && snapshot.role) || 'unknown';
+  const id = (snapshot && snapshot.id) || 'unknown';
+  const err = (snapshot && snapshot.error) || 'unknown read error';
+  return '[wake-watch] ERROR watching ' + r + ' ' + id + ': ' + consecErrors
+    + ' consecutive read failures (' + err + '). Watcher still alive; will keep retrying.';
+}
+
+// tickInner — the real logic. Never call directly from a runner; wrapped by
+// tick() below so a thrown exception here can never escape and end the loop.
+function tickInner(state, snapshot) {
+  const st = normalizeState(state);
+  const lines = [];
+  const now = snapshot && Number.isFinite(snapshot.nowMs) ? snapshot.nowMs : Date.now();
+  const firstTick = !st.armed;
+  if (firstTick) {
+    st.armed = true;
+    lines.push(formatArmLine(snapshot));
+  }
+
+  const ok = !!(snapshot && snapshot.ok !== false);
+
+  // SEED MISSING BASELINES (arm/handoff false-wake fix): a counter with no
+  // recorded history (loadSeenState's *Missing flags — older seen-file
+  // predating it, or no seen-file at all) has never been diffed against a
+  // real observation. Seed it from the first SUCCESSFUL live read instead of
+  // the fabricated-0 default normalizeState gives it, so the moved1/moved2/
+  // moved3 checks below see a zero delta rather than a false "+N new mail"
+  // for history the watcher never actually had a baseline for. Gated on `ok`
+  // (not just `firstTick`) so an error on the very first tick does not skip
+  // seeding forever — the flag stays set (never cleared here) until a read
+  // actually succeeds, on this tick or a later one. A missing baseline is a
+  // migration, not new mail; a GENUINE new message that lands after this
+  // point still advances past whatever gets seeded here and wakes normally.
+  if (ok) {
+    if (st.lastTotalMissing && Number.isFinite(snapshot.total)) { st.lastTotal = snapshot.total; st.lastTotalMissing = false; }
+    if (st.lastTotal2Missing && Number.isFinite(snapshot.total2)) { st.lastTotal2 = snapshot.total2; st.lastTotal2Missing = false; }
+    if (st.lastBroadcastUnreadMissing && Number.isFinite(snapshot.total3)) { st.lastBroadcastUnread = snapshot.total3; st.lastBroadcastUnreadMissing = false; }
+  }
+
+  if (!ok) {
+    st.consecErrors += 1;
+    if (st.consecErrors > ERROR_TOLERANCE) {
+      const tier = Math.min(st.errorBackoffIdx, ERROR_BACKOFF_MS.length - 1);
+      const wasFirstEmission = st.lastErrorEmitMs === null;
+      const dueMs = wasFirstEmission ? 0 : ERROR_BACKOFF_MS[tier];
+      const due = wasFirstEmission || (now - st.lastErrorEmitMs) >= dueMs;
+      if (due) {
+        lines.push(formatErrorLine(snapshot, st.consecErrors));
+        if (!wasFirstEmission) {
+          // The immediate first emission does not consume a backoff tier —
+          // only a REPEAT that actually waited one out advances the schedule
+          // (1min -> 5min -> 30min-forever).
+          st.errorBackoffIdx = Math.min(st.errorBackoffIdx + 1, ERROR_BACKOFF_MS.length - 1);
+        }
+        st.lastErrorEmitMs = now;
+      }
+    }
+    return { state: st, lines };
+  }
+
+  // Recovery — reset error state SILENTLY (no line; KB: "recover silently
+  // when reads succeed again").
+  if (st.consecErrors > 0) {
+    st.consecErrors = 0;
+    st.errorBackoffIdx = 0;
+    st.lastErrorEmitMs = null;
+  }
+
+  // Edge-trigger on a monotonic total delta ONLY (directs-only v1 scope).
+  // Dropping any additional "unread > 0" gate is deliberate — total already
+  // only advances when a genuinely new direct message lands (append-only,
+  // never decremented), so gating on it too adds no safety and only risks a
+  // missed wake in a narrow ack-race window. Ack-driven unread flapping can
+  // never cause a false fire here because total never moves on an ack alone.
+  //
+  // TWO INDEPENDENT CHANNELS (child role only): `total` is the existing
+  // NDJSON/native-queue channel; `total2` (only ever present on a child
+  // snapshot — see readChildCombinedSnapshot) is the mesh-direct/summary
+  // channel. A Primary snapshot never sets `total2` at all (missing key, not
+  // null-vs-number), so `hasChannel2` is false and this collapses back to the
+  // original single-channel behavior byte-for-byte. Each channel's own
+  // "missing key ≠ zero" rule is preserved independently: a null total (resp.
+  // total2) never advances that channel's cursor and never emits for it.
+  const hasChannel2 = !!(snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'total2'));
+  const total = snapshot && Number.isFinite(snapshot.total) ? snapshot.total : null;
+  const total2 = snapshot && Number.isFinite(snapshot.total2) ? snapshot.total2 : null;
+
+  const moved1 = total !== null && total > st.lastTotal;
+  const moved2 = total2 !== null && total2 > st.lastTotal2;
+
+  // SINGLE-EMIT RULE: when both channels advance in the same tick, this must
+  // produce exactly ONE line (formatDualWakeLine), never two. Each channel's
+  // cursor still advances independently below regardless of which line fired.
+  if (moved1 && moved2) {
+    lines.push(formatDualWakeLine(snapshot, st.lastTotal, total, st.lastTotal2, total2));
+  } else if (moved1) {
+    lines.push(formatWakeLine(snapshot, st.lastTotal, total, hasChannel2 ? { channelLabel: 'ndjson' } : undefined));
+  } else if (moved2) {
+    lines.push(formatWakeLine(snapshot, st.lastTotal2, total2, { channelLabel: 'mesh-direct' }));
+  }
+
+  if (moved1) st.lastTotal = total;
+  if (moved2) st.lastTotal2 = total2;
+
+  // BROADCAST CHANNEL (closes the v1 "broadcasts not covered" gap, defect #10
+  // field report) — a THIRD, fully independent observation, never merged into
+  // the single-emit dual-channel logic above. `total3` is
+  // `workspaces[<id>].broadcastUnread` — an ALREADY heartbeat-excluded (D22)
+  // count computeSummary/deriveSummary derive, so this channel is immune to
+  // heartbeat-flood noise by construction, the same guarantee the direct
+  // channels have (see this file's own header note on why a naive recent[]
+  // diff was rejected). A separate line (never folded into formatDualWakeLine,
+  // whose exact two-channel wording predates this fix) keeps every existing
+  // direct-channel emission byte-for-byte unchanged.
+  const hasChannel3 = !!(snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'total3'));
+  const total3 = snapshot && Number.isFinite(snapshot.total3) ? snapshot.total3 : null;
+  const moved3 = total3 !== null && total3 > st.lastBroadcastUnread;
+  if (moved3) {
+    lines.push(formatWakeLine(snapshot, st.lastBroadcastUnread, total3, { channelLabel: 'broadcast' }));
+  }
+  // Not append-only (an ack anywhere else can lower it) — always resync to the
+  // CURRENT value, not only on an increase (see normalizeState's own note).
+  if (hasChannel3 && total3 !== null) st.lastBroadcastUnread = total3;
+
+  return { state: st, lines };
+}
+
+// tick(state, snapshot) -> { state, lines }. PURE: no fs, no clock read beyond
+// snapshot.nowMs, no process, no randomness. Never throws — any internal
+// failure (garbage/partial/null snapshot, corrupt state) degrades to a no-op
+// tick (state passed through normalizeState, zero lines) rather than
+// propagating, because an exception escaping the runner's loop would silently
+// END the Monitor — the exact deaf failure this whole feature exists to
+// prevent.
+function tick(state, snapshot) {
+  try {
+    return tickInner(state, snapshot);
+  } catch (_) {
+    return { state: normalizeState(state), lines: [] };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// IO HELPERS (runner side — fs/process/child_process touch points; each
+// exported individually so tests can exercise them without spawning the full
+// process loop)
+// ---------------------------------------------------------------------------
+
+// pollMsFromEnv(env) -> ms. Mirrors devswarm-wake.js's wakeCron() posture:
+// charset-validate untrusted env input, fail OPEN to the default on anything
+// malformed, clamp to a sane range. Digits only (no injection surface).
+function pollMsFromEnv(env) {
+  try {
+    const e = env || process.env;
+    try {
+      // This function's OWN legacy gate (below) only accepts a strictly
+      // positive digits-only env value — "0" is invalid, not "0, clamped up
+      // to the floor". Reproduce that before consulting settings.get().
+      const rawRaw = e[POLL_ENV_VAR];
+      let effectiveEnv = e;
+      if (typeof rawRaw === 'string' && /^[0-9]+$/.test(rawRaw.trim()) && parseInt(rawRaw.trim(), 10) <= 0) {
+        effectiveEnv = Object.assign({}, e);
+        delete effectiveEnv[POLL_ENV_VAR];
+      }
+      const n = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatchPollMs', DEFAULT_POLL_MS, effectiveEnv);
+      return Math.min(POLL_MS_MAX, Math.max(POLL_MS_MIN, n));
+    } catch (_) { /* fall through */ }
+    const raw = e[POLL_ENV_VAR];
+    if (typeof raw !== 'string') return DEFAULT_POLL_MS;
+    const trimmed = raw.trim();
+    if (!/^[0-9]+$/.test(trimmed)) return DEFAULT_POLL_MS;
+    const n = parseInt(trimmed, 10);
+    if (!Number.isFinite(n) || n <= 0) return DEFAULT_POLL_MS;
+    return Math.min(POLL_MS_MAX, Math.max(POLL_MS_MIN, n));
+  } catch (_) {
+    return DEFAULT_POLL_MS;
+  }
+}
+
+// realFormsOf(p, fsi) -> Set<string> of the raw-resolved AND realpath'd forms
+// of `p`. GOTCHA (verified): descriptor.worktreePath is written via
+// findGitToplevel() (devswarm-child-turn.js), which is NOT realpath'd, while
+// the primary/hash identity path DOES realpath. Comparing both forms on BOTH
+// sides is the only way a symlinked checkout doesn't silently fail to match.
+function realFormsOf(p, fsi) {
+  const F = fsi || fs;
+  const forms = new Set();
+  if (typeof p !== 'string' || p === '') return forms;
+  let resolved;
+  try { resolved = path.resolve(p); } catch (_) { return forms; }
+  forms.add(resolved);
+  try { forms.add(F.realpathSync(resolved)); } catch (_) { /* not on disk / no perms — raw form still compared */ }
+  return forms;
+}
+
+// resolveIdentity(env, cwd, io) -> { role, id, home, cwd, descriptor?, mainWorktree? } | null.
+// Env inheritance into a Monitor-spawned process is UNVERIFIED, so this never
+// depends on it alone: DEVSWARM_SOURCE_BRANCH/DEVSWARM_BUILDER_ID are tried
+// first, then a descriptor cwd-match fallback, then Primary as the default.
+function resolveIdentity(env, cwd, io) {
+  const ioo = io || {};
+  const e = env || process.env;
+  const wd = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd();
+  const F = ioo.fs || fs;
+  const home = ioo.home || os.homedir();
+
+  try {
+    if (role.isChildWorkspace(e)) {
+      const raw = e.DEVSWARM_BUILDER_ID;
+      const bid = typeof raw === 'string' ? raw.trim() : '';
+      if (bid) return { role: 'child', id: bid, home, cwd: wd };
+    }
+  } catch (_) { /* fall through to the descriptor-match fallback */ }
+
+  try {
+    const readDescriptors = ioo.readDescriptors || supervisor.readDescriptors;
+    const descriptors = readDescriptors(home, F) || [];
+    const cwdForms = realFormsOf(wd, F);
+    for (const d of descriptors) {
+      if (!d || !d.worktreePath || !d.id) continue;
+      const dForms = realFormsOf(d.worktreePath, F);
+      let hit = false;
+      for (const f of cwdForms) { if (dForms.has(f)) { hit = true; break; } }
+      if (hit) {
+        // A descriptor whose id is a Primary seat (`primary-<hash>`) is the
+        // Primary's OWN tracking record, not a child — armed from the repo
+        // ROOT this cwd-match branch is the one that fires (a subfolder
+        // never descriptor-matches d.worktreePath, which is always the repo
+        // root, so it falls straight to the `primary` default below). Without
+        // this check, the SAME Primary resolved as `child` from its repo
+        // root and `primary` from a subfolder — cosmetic since ecf5c2a fixed
+        // the functional wake-cursor bug this caused, but the role label
+        // itself stayed inconsistent. Confirm it against the actually
+        // REGISTERED primary id for this repo (not just the `primary-*`
+        // shape) before relabeling, so an unrelated stale/foreign descriptor
+        // that happens to look primary-shaped is never trusted blind.
+        if (typeof d.id === 'string' && /^primary-/.test(d.id)) {
+          try {
+            const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
+            const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
+            const main = resolveMainWorktree(wd, ioo.gitIo);
+            const registeredId = main ? primaryWorkspaceId(main) : null;
+            if (registeredId && registeredId === d.id) {
+              return { role: 'primary', id: d.id, home, cwd: wd, mainWorktree: main };
+            }
+          } catch (_) { /* fall through to the child label below */ }
+        }
+        return { role: 'child', id: d.id, home, cwd: wd, descriptor: d };
+      }
+    }
+  } catch (_) { /* fall through to the Primary default */ }
+
+  try {
+    const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
+    const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
+    const main = resolveMainWorktree(wd, ioo.gitIo);
+    if (!main) return null;
+    const id = primaryWorkspaceId(main);
+    if (!id) return null;
+    return { role: 'primary', id, home, cwd: wd, mainWorktree: main };
+  } catch (_) {
+    return null;
+  }
+}
+
+// ARCHIVED_RECHECK_MS — how often the running watcher re-asks "is my own child
+// workspace archived?" (the answer reads archived/<id>.json and the app DB, too
+// heavy for the ~2s poll cadence — it opens the app SQLite DB). A restore is
+// therefore noticed within this. The check never writes to stdout/stderr:
+// isOwnChildArchived swallows every error and the loop only reads its boolean.
+// ARCHIVED_RECHECK_ENV_VAR overrides it (test knob, same shape as the poll env).
+const ARCHIVED_RECHECK_MS = 120 * 1000;
+const ARCHIVED_RECHECK_ENV_VAR = 'ANTIHALL_DEVSWARM_WAKE_WATCH_ARCHIVED_RECHECK_MS';
+function archivedRecheckMsFromEnv(env) {
+  const n = parseInt(String((env || {})[ARCHIVED_RECHECK_ENV_VAR] || ''), 10);
+  return Number.isFinite(n) && n >= 100 ? n : ARCHIVED_RECHECK_MS;
+}
+
+// isOwnChildArchived(identity, env, io) -> boolean. True ONLY for a CHILD whose
+// descriptor is archived, through row-eligibility.js — THE one archived
+// projection (tests/hygiene/archived-predicates-single-projection.test.js).
+// An archived child can never act on mail (its Stop gate already told it once
+// to save a handover and stop; nothing kills it), so every wake line this
+// watcher printed only made it burn a turn answering "workspace is archived".
+// Same worktree resolution the archived Stop gate uses: the ACTIVE descriptor's
+// worktreePath when one exists, else cwd's git toplevel. Gated by the existing
+// devswarm.archivedChildStop switch (off = pre-fix behaviour). Fail-open: any
+// error or doubt -> false (watch exactly as before). Pure reads.
+function isOwnChildArchived(identity, env, io) {
+  try {
+    if (!identity || identity.role !== 'child') return false;
+    const e = env || process.env;
+    if (require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'archivedChildStop', true, e) === false) return false;
+    const ioo = io || {};
+    const F = ioo.fs || fs;
+    const home = identity.home;
+    const id = identity.id;
+    let worktreePath = null;
+    let activeDescriptor = false;
+    const activePath = path.join(devswarmRoot(home), 'workspaces', id + '.json');
+    try { activeDescriptor = F.existsSync(activePath); } catch (_) { activeDescriptor = false; }
+    if (activeDescriptor) {
+      try {
+        const d = JSON.parse(F.readFileSync(activePath, 'utf8'));
+        if (d && typeof d.worktreePath === 'string' && d.worktreePath) worktreePath = d.worktreePath;
+      } catch (_) { worktreePath = null; }
+    }
+    if (!worktreePath) {
+      try { worktreePath = require('./identity.js').resolveContext(identity.cwd, { home, missingPath: 'ancestor' }).toplevel || null; } catch (_) { worktreePath = null; }
+    }
+    if (!worktreePath) return false;
+    const projected = require('./row-eligibility.js').rowEligibility(
+      { id, worktreePath }, { home, env: e, fsi: F },
+    );
+    if (!projected) return false;
+    // TWIN / NEW-CHILD GUARDS (the projection alone over-reports archived):
+    //  - an ACTIVE workspaces/<id>.json exists (a live row that merely shares
+    //    an archived/<id>.json marker, or an id reuse): silent only when the
+    //    app DB positively says archived BY ID — never on the marker alone;
+    //  - no active descriptor: needs this id's OWN archived/<id>.json marker
+    //    (a brand-new, not-yet-registered child on a worktree that only has
+    //    archived builders is judged archived by the app-DB by-worktree rule,
+    //    and must keep emitting) and the app DB must not say it is active.
+    if (activeDescriptor) return !!(projected.appArchived && projected.archivedBy.indexOf('app-db') !== -1);
+    return !!(projected.markerArchived && !projected.appActive);
+  } catch (_) { return false; }
+}
+
+// resolvePrimaryHashes(cwd, io) -> { repoKey, fallbackHash, primaryId } | null.
+// TWO-PROBE, replicating scripts/devswarm.js cmdRoster's own fold (repoKey
+// bucket first, legacy primary-<8hex> hash bucket as fallback) — NOT optional.
+// A supervisor parent-escalation currently still writes the LEGACY hash bucket
+// until that projection gap is closed elsewhere (out of scope here), so a
+// Primary watcher that only ever checked the repoKey bucket could silently
+// miss an escalation. Called ONCE at startup (git spawn is cheap but not free
+// enough to repeat every poll tick).
+function resolvePrimaryHashes(cwd, io) {
+  const ioo = io || {};
+  const repoKeyForWorktree = ioo.repoKeyForWorktree || repokey.repoKeyForWorktree;
+  const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
+  const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
+  const hashFromWorkspaceId = ioo.hashFromWorkspaceId || store.hashFromWorkspaceId;
+
+  let repoKey = null;
+  try { repoKey = repoKeyForWorktree(cwd, ioo.gitIo ? { io: ioo.gitIo } : undefined); } catch (_) { repoKey = null; }
+
+  let primaryId = null;
+  let fallbackHash = null;
+  try {
+    const main = resolveMainWorktree(cwd, ioo.gitIo);
+    if (main) {
+      primaryId = primaryWorkspaceId(main);
+      if (primaryId) fallbackHash = hashFromWorkspaceId(primaryId);
+    }
+  } catch (_) { /* leave primaryId/fallbackHash null */ }
+
+  if (!repoKey && !fallbackHash) return null;
+  return {
+    repoKey: repoKey || null,
+    fallbackHash: (fallbackHash && fallbackHash !== repoKey) ? fallbackHash : null,
+    primaryId,
+  };
+}
+
+// resolveChildHashes(cwd, childId, io) -> { repoKey, fallbackHash } | null.
+// The CHILD-side counterpart of resolvePrimaryHashes — same repoKey-bucket-
+// first, legacy-hash-bucket-fallback two-probe, but keyed by the CHILD's OWN
+// id (never primaryId/meshId). Verified (devswarm-repokey.js): repoKey derives
+// from `--git-common-dir`, which is IDENTICAL across every worktree of one
+// project (Primary and every child), so a child's cwd resolves to the SAME
+// repoKey bucket scripts/devswarm.js cmdSend writes into via
+// store.openStore({..., hash: repoKey}) + store.deriveSummary(...) in that
+// same call. fallbackHash = hashFromWorkspaceId(childId) — the child's own
+// legacy per-id bucket (parity with the Primary path's stranded-row case),
+// suppressed when it would equal repoKey. Called once at startup, like its
+// Primary counterpart.
+function resolveChildHashes(cwd, childId, io) {
+  const ioo = io || {};
+  const repoKeyForWorktree = ioo.repoKeyForWorktree || repokey.repoKeyForWorktree;
+  const hashFromWorkspaceId = ioo.hashFromWorkspaceId || store.hashFromWorkspaceId;
+
+  let repoKey = null;
+  try { repoKey = repoKeyForWorktree(cwd, ioo.gitIo ? { io: ioo.gitIo } : undefined); } catch (_) { repoKey = null; }
+
+  let fallbackHash = null;
+  try {
+    if (childId) {
+      const h = hashFromWorkspaceId(childId);
+      if (h) fallbackHash = h;
+    }
+  } catch (_) { fallbackHash = null; }
+
+  if (!repoKey && !fallbackHash) return null;
+  return {
+    repoKey: repoKey || null,
+    fallbackHash: (fallbackHash && fallbackHash !== repoKey) ? fallbackHash : null,
+  };
+}
+
+// readPrimarySnapshot(home, hashes, primaryId, io) -> { ok, error, total }.
+// Reads the repoKey-bucket summary FIRST; falls back to the legacy hash bucket
+// only when the primary's own row is absent there (mirrors cmdRoster's fold —
+// see resolvePrimaryHashes). A MISSING summary file reads as "no data yet"
+// (total: null), NEVER as "zero messages" (readSummaryForHash already returns
+// null for an absent/unparseable file; this function must not coerce that into
+// 0, or the first real message would look like a fabricated delta from zero).
+function readPrimarySnapshot(home, hashes, primaryId, io) {
+  const ioo = io || {};
+  const readSummaryForHash = ioo.readSummaryForHash || store.readSummaryForHash;
+  try {
+    if (!hashes || !primaryId || (!hashes.repoKey && !hashes.fallbackHash)) {
+      return { ok: false, error: 'unresolvable-repo-identity', total: null };
+    }
+    const a = hashes.repoKey ? readSummaryForHash(home, hashes.repoKey, ioo.fs) : null;
+    const wa = a && a.workspaces && a.workspaces[primaryId];
+    if (wa && Number.isFinite(wa.total)) return { ok: true, error: null, total: wa.total };
+
+    const b = hashes.fallbackHash ? readSummaryForHash(home, hashes.fallbackHash, ioo.fs) : null;
+    const wb = b && b.workspaces && b.workspaces[primaryId];
+    if (wb && Number.isFinite(wb.total)) return { ok: true, error: null, total: wb.total };
+
+    return { ok: true, error: null, total: null }; // no data yet, never zero
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || 'read-failed', total: null };
+  }
+}
+
+// readBroadcastSnapshot(home, hashes, id, io) -> { ok, error, broadcastUnread }.
+// THE broadcast channel: reads the SAME already-derived
+// `workspaces[<id>].broadcastUnreadFromOthers` field readPrimarySnapshot
+// reads `.total` from (same two-probe fold: repoKey bucket first, legacy
+// hash-bucket fallback). `broadcastUnreadFromOthers` is
+// computeSummary/deriveSummary's own heartbeat-EXCLUDED (D22) AND
+// own-sender-EXCLUDED unread-broadcast count — exactly the "heartbeat-
+// excluding store projection change" this file's v1-scope header comment said
+// covering broadcasts correctly would need; it already existed for
+// `roster`/`diagnose`, this file simply had to start reading it too.
+// SENDER EXCLUSION (field report, defect: wake-watch woke a Primary on its
+// OWN `send --broadcast`): the sibling field `broadcastUnread` (used by
+// roster/diagnose/the broadcast-ack flow) is DELIBERATELY inclusive of a
+// workspace's own sends — that contract must not change. This watcher reads
+// the `...FromOthers` variant instead, which excludes rows sent by the
+// workspace's own identity family (devswarm-identity-family.js's
+// recipientFamilyIds — same helper resolveSenderRegistryId uses), so it can
+// only ever edge-trigger on SOMEONE ELSE's broadcast. A missing summary/row
+// reads as "no data yet" (null), never a fabricated zero, same rule as every
+// other read helper in this file.
+function readBroadcastSnapshot(home, hashes, id, io) {
+  const ioo = io || {};
+  const readSummaryForHash = ioo.readSummaryForHash || store.readSummaryForHash;
+  try {
+    if (!hashes || !id || (!hashes.repoKey && !hashes.fallbackHash)) {
+      return { ok: false, error: 'unresolvable-repo-identity', broadcastUnread: null };
+    }
+    // BUCKET CHOICE BY ROW, NOT BY FIELD (mixed-fleet false-wake fix). The
+    // bucket is picked exactly as readPrimarySnapshot picks it — the first
+    // bucket whose row carries a real `total` — and the count is read from
+    // THAT row only. A row that exists but lacks the field was written by an
+    // older build that predates it (a 0.115.2 hook rewrites the whole summary
+    // without `broadcastUnreadFromOthers`): that is "no data this tick"
+    // (null — tickInner neither fires nor resyncs), NEVER permission to read
+    // the other bucket's unrelated, stale count. Pre-fix, falling through per
+    // FIELD let an old writer's rewrite of the repoKey summary flip this
+    // channel onto the legacy hash-bucket row (0), tickInner resynced its
+    // cursor down to 0, and the next new-build rewrite (189) re-fired
+    // "broadcast direct total 0 -> 189 (+189)" — once per old/new write pair.
+    const a = hashes.repoKey ? readSummaryForHash(home, hashes.repoKey, ioo.fs) : null;
+    const wa = a && a.workspaces && a.workspaces[id];
+    let row = wa && Number.isFinite(wa.total) ? wa : null;
+    if (!row) {
+      const b = hashes.fallbackHash ? readSummaryForHash(home, hashes.fallbackHash, ioo.fs) : null;
+      const wb = b && b.workspaces && b.workspaces[id];
+      row = wb && Number.isFinite(wb.total) ? wb : null;
+    }
+    if (row && Number.isFinite(row.broadcastUnreadFromOthers)) return { ok: true, error: null, broadcastUnread: row.broadcastUnreadFromOthers };
+
+    return { ok: true, error: null, broadcastUnread: null }; // no data yet, never zero
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || 'read-failed', broadcastUnread: null };
+  }
+}
+
+// attachBroadcastChannel(snapshot, home, hashes, id, io) -> snapshot with
+// `total3` (= broadcastUnread) folded in, AND-fail-closed with whatever
+// ok/error the direct-channel snapshot already carried (same pattern
+// readChildCombinedSnapshot uses to fold its own two channels together).
+// Applies to BOTH roles — a Primary watches its own project's broadcast feed
+// exactly like a child watches the same shared partition.
+function attachBroadcastChannel(snapshot, home, hashes, id, io) {
+  const base = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const b = readBroadcastSnapshot(home, hashes, id, io);
+  const out = Object.assign({}, base, { total3: b.broadcastUnread });
+  const baseOk = base.ok !== false;
+  out.ok = baseOk && b.ok !== false;
+  if (!baseOk && b.ok === false) out.error = String(base.error || '') + '; broadcast: ' + b.error;
+  else if (!baseOk) out.error = base.error;
+  else if (b.ok === false) out.error = 'broadcast: ' + b.error;
+  return out;
+}
+
+// readChildSnapshot(paths, io) -> { ok, error, total }. `paths` = { inboxPath,
+// cursorPath }. Uses readUnread() purely for its `.total` (a monotonic count
+// of non-empty NDJSON lines) — this watcher never advances the cursor itself,
+// never acks, never drains; that stays entirely the agent's/CLI's job.
+function readChildSnapshot(paths, io) {
+  const ioo = io || {};
+  const readUnread = ioo.readUnread || inboxCursor.readUnread;
+  try {
+    const p = paths || {};
+    const r = readUnread(p.inboxPath, p.cursorPath, ioo.fs);
+    const total = r && Number.isFinite(r.total) ? r.total : null;
+    return { ok: true, error: null, total };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || 'read-failed', total: null };
+  }
+}
+
+// readChildCombinedSnapshot(paths, hashes, childId, home, io) -> { ok, error,
+// total, total2 }. Combines the child's TWO independent read-only sources into
+// one snapshot for tick(): `total` = the existing NDJSON/native-queue channel
+// (readChildSnapshot, unchanged); `total2` = the mesh-direct/summary channel —
+// REUSES readPrimarySnapshot verbatim (never duplicated), keyed by the
+// child's OWN id instead of a primaryId. Each read is independent: `total2`
+// stays null ("no data yet", never a fabricated zero) exactly when
+// readPrimarySnapshot's own missing-key rule says so, regardless of what the
+// NDJSON channel reports, and vice versa. `ok` is fail-closed AND (both reads
+// must succeed) — a read exception on EITHER channel surfaces as one error tick,
+// matching this module's existing single error-tolerance/backoff schedule
+// rather than adding a second one.
+function readChildCombinedSnapshot(paths, hashes, childId, home, io) {
+  const ioo = io || {};
+  const ndjson = readChildSnapshot(paths, ioo);
+  const mesh = readPrimarySnapshot(home, hashes, childId, ioo);
+  const ok = !!(ndjson.ok && mesh.ok);
+  let error = null;
+  if (!ndjson.ok && !mesh.ok) error = 'ndjson: ' + ndjson.error + '; mesh-direct: ' + mesh.error;
+  else if (!ndjson.ok) error = 'ndjson: ' + ndjson.error;
+  else if (!mesh.ok) error = 'mesh-direct: ' + mesh.error;
+  return { ok, error, total: ndjson.total, total2: mesh.total };
+}
+
+// ---- persisted watcher-private "seen" cursor (SEPARATE from the agent's ack
+// cursor — this file must never read/write the agent's own cursorPath as a
+// write target, only as a read-only input via readUnread for the child case).
+
+function seenPath(home, id) {
+  return path.join(devswarmRoot(home), 'wake', String(id) + '.seen');
+}
+
+// COUNTER-KEYED CURSORS (role-flip false-wake fix). One id can be watched
+// under BOTH roles: a Primary whose own descriptor (workspaces/<id>.json)
+// sits at the main worktree resolves as 'child' when armed from the worktree
+// root (descriptor cwd match) and as 'primary' when armed from a
+// subdirectory (no match -> Primary default). Both share this one seen file,
+// but the in-memory fields mean DIFFERENT counters per role:
+//   child   -> lastTotal = NDJSON inbox count, lastTotal2 = mesh summary total
+//   primary -> lastTotal = mesh summary total
+// Persisting them positionally let a primary re-arm compare the summary
+// total against a stale NDJSON-era/primary-era lastTotal (field: "direct
+// total 4691 -> 4883 (+192)" with unread 0), and a child re-arm compare it
+// against lastTotal2 = 0 (the reverse). So the file now also carries the two
+// COUNTERS by name — meshTotal (workspaces[id].total, same function and
+// partition set both roles poll) and ndjsonTotal (child NDJSON channel) — and
+// each role maps them back onto its own fields. The positional legacy fields
+// are still written (writer-role semantics, as before) so an older build in
+// a mixed fleet keeps reading the file it expects.
+function seenCountersFromLegacy(obj, role) {
+  const lt = Number.isFinite(obj.lastTotal) ? obj.lastTotal : 0;
+  const lt2 = Number.isFinite(obj.lastTotal2) ? obj.lastTotal2 : 0;
+  // Legacy (pre-fix) file: lastTotal2 is only ever the mesh summary total
+  // (child-written); lastTotal is the mesh total when a primary wrote last,
+  // or the NDJSON count when a child did — the writer is not recorded. A
+  // primary therefore takes the larger of the two as its mesh baseline (both
+  // are lower bounds of what was already reported, summary total is
+  // append-only); a child keeps the legacy reading unchanged.
+  if (role === 'primary') return { meshTotal: Math.max(lt, lt2), ndjsonTotal: null };
+  return { meshTotal: lt2, ndjsonTotal: lt };
+}
+
+// MISSING-BASELINE FLAGS (post-2e34633 false-wake fix): a counter absent from
+// a seen-file (an older build that predates it, e.g. lastBroadcastUnread
+// before the broadcast channel existed) is NOT the same fact as "baseline
+// 0" — it means "never observed, no baseline recorded." Diffing the CURRENT
+// live value against a fabricated 0 baseline on the very next arm/handoff
+// produces exactly the "armed" -> immediate "+N new mail" false wake this
+// fix closes (0.116.0 field report: an old lastTotal/lastTotal2-only file,
+// no lastBroadcastUnread key, re-armed against a live broadcast total and
+// fired +189 with unread 0). So each `*Missing` flag below marks a counter
+// this file has NO recorded history for; tickInner's firstTick path (below)
+// seeds that counter from its own first live observation instead of diffing
+// it, and only then starts comparing — a missing baseline is a migration,
+// never new mail. A counter this branch always derives a real number for
+// (mesh total from at least the legacy positional field) is never "missing"
+// — only lastBroadcastUnread and, in the child role's documented
+// unknown-ndjson-cursor case (a primary-role-written file being read back
+// under 'child'), lastTotal can be.
+function loadSeenState(home, id, fsi, role) {
+  const F = fsi || fs;
+  try {
+    const raw = String(F.readFileSync(seenPath(home, id), 'utf8'));
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === 'object' && Number.isFinite(obj.lastTotal)) {
+      // lastTotal2 (mesh-direct channel, child role only) persists ALONGSIDE
+      // lastTotal — without this, a restart would re-baseline it to 0 and
+      // falsely re-fire on every message the summary already reported before
+      // the restart (the exact fabricated-delta-from-zero bug this file's
+      // "missing key ≠ zero" rule elsewhere guards against).
+      // lastBroadcastUnread (broadcast channel) persists alongside the other
+      // two for the SAME restart-fabricated-delta reason.
+      const lastBroadcastUnread = Number.isFinite(obj.lastBroadcastUnread) ? obj.lastBroadcastUnread : 0;
+      const lastBroadcastUnreadMissing = !Number.isFinite(obj.lastBroadcastUnread);
+      if (role !== 'primary' && role !== 'child') {
+        return {
+          lastTotal: obj.lastTotal,
+          lastTotal2: Number.isFinite(obj.lastTotal2) ? obj.lastTotal2 : 0,
+          lastBroadcastUnread,
+        };
+      }
+      const legacy = seenCountersFromLegacy(obj, role);
+      const mesh = Number.isFinite(obj.meshTotal) ? obj.meshTotal : legacy.meshTotal;
+      if (role === 'primary') {
+        return {
+          lastTotal: mesh, lastTotal2: mesh, lastBroadcastUnread,
+          lastTotalMissing: false, lastTotal2Missing: false, lastBroadcastUnreadMissing,
+        };
+      }
+      // A counter-keyed file WITHOUT ndjsonTotal was last written by a
+      // primary-role watcher, whose positional lastTotal is the MESH total —
+      // never an NDJSON cursor. The NDJSON cursor is then simply unknown, which
+      // is exactly the fresh-file case (baseline 0), not the mesh number — so
+      // that case ALSO gets its lastTotalMissing flag set, same as the
+      // broadcast counter, so tickInner seeds it instead of diffing against 0.
+      const ndUnknown = !Number.isFinite(obj.ndjsonTotal) && Number.isFinite(obj.meshTotal);
+      const nd = Number.isFinite(obj.ndjsonTotal) ? obj.ndjsonTotal
+        : (Number.isFinite(obj.meshTotal) ? 0 : legacy.ndjsonTotal);
+      return {
+        lastTotal: nd, lastTotal2: mesh, lastBroadcastUnread,
+        lastTotalMissing: ndUnknown, lastTotal2Missing: false, lastBroadcastUnreadMissing,
+      };
+    }
+  } catch (_) { /* absent/corrupt -> fresh baseline below */ }
+  return {
+    lastTotal: 0, lastTotal2: 0, lastBroadcastUnread: 0,
+    lastTotalMissing: true, lastTotal2Missing: true, lastBroadcastUnreadMissing: true,
+  };
+}
+
+const SEEN_OWNED_KEYS = new Set(['lastTotal', 'lastTotal2', 'lastBroadcastUnread', 'meshTotal', 'ndjsonTotal']);
+
+function saveSeenState(home, id, state, fsi, role) {
+  const F = fsi || fs;
+  const p = seenPath(home, id);
+  try {
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    const lastTotal = Number.isFinite(state && state.lastTotal) ? state.lastTotal : 0;
+    const lastTotal2 = Number.isFinite(state && state.lastTotal2) ? state.lastTotal2 : 0;
+    let prev = null;
+    try { prev = JSON.parse(String(F.readFileSync(p, 'utf8'))); } catch (_) { prev = null; }
+    // MERGE-PRESERVE: keys this build does not own (written by a NEWER build
+    // sharing this seen file in a mixed fleet) are carried through verbatim,
+    // never dropped — an older-format rewrite must not erase a newer build's
+    // cursor. Keys this build owns are always (re)derived below.
+    const out = {};
+    if (prev && typeof prev === 'object' && !Array.isArray(prev)) {
+      for (const k of Object.keys(prev)) if (!SEEN_OWNED_KEYS.has(k)) out[k] = prev[k];
+    }
+    Object.assign(out, {
+      lastTotal,
+      lastTotal2,
+      lastBroadcastUnread: Number.isFinite(state && state.lastBroadcastUnread) ? state.lastBroadcastUnread : 0,
+    });
+    if (role === 'child') {
+      out.meshTotal = lastTotal2;
+      out.ndjsonTotal = lastTotal;
+    } else if (role === 'primary') {
+      out.meshTotal = lastTotal;
+      // Positional lastTotal2 carries the mesh total too, so an older
+      // child-role build reading this file never re-fires from a stale 0.
+      out.lastTotal2 = lastTotal;
+      // A primary never observes the NDJSON channel: carry the child's
+      // cursor through untouched rather than dropping or guessing it.
+      if (prev && Number.isFinite(prev.ndjsonTotal)) out.ndjsonTotal = prev.ndjsonTotal;
+    }
+    const payload = JSON.stringify(out);
+    const tmp = p + '.' + process.pid + '.tmp';
+    F.writeFileSync(tmp, payload);
+    F.renameSync(tmp, p);
+  } catch (_) { /* best-effort; a failed persist only risks one re-notify after a restart, never a crash */ }
+}
+
+// Once-per-newer-version announcement of the update-available line. The
+// in-process edge-trigger alone re-fired on every re-armed watcher chain
+// (Monitor expiry/handoff, ~30 min), and each stdout line wakes the session.
+// The last-announced version persists in the watcher's own seen file under a
+// key this build does not "own" for the counters, so saveSeenState's
+// merge-preserve carries it through. Returns true when `version` is strictly
+// newer than the last announced one (and records it); false otherwise.
+function claimUpdateAnnouncement(home, id, version, fsi) {
+  const F = fsi || fs;
+  const p = seenPath(home, id);
+  let obj = {};
+  try {
+    const parsed = JSON.parse(String(F.readFileSync(p, 'utf8')));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) obj = parsed;
+  } catch (_) { obj = {}; }
+  const prev = obj.updateAnnouncedVersion;
+  try {
+    const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
+    if (upd.isSemver(prev) && upd.isSemver(version) && upd.compareVersions(version, prev) <= 0) return false;
+  } catch (_) {
+    if (prev === version) return false;
+  }
+  try {
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    obj.updateAnnouncedVersion = version;
+    const tmp = p + '.' + process.pid + '.tmp';
+    F.writeFileSync(tmp, JSON.stringify(obj));
+    F.renameSync(tmp, p);
+  } catch (_) { /* best-effort: worst case one re-announce after a restart */ }
+  return true;
+}
+
+function lockPathFor(home, id) {
+  return path.join(devswarmRoot(home), 'locks', 'wake-watch-' + String(id) + '.lock');
+}
+
+// ---------------------------------------------------------------------------
+// Runner
+// ---------------------------------------------------------------------------
+
+function emitLine(line) {
+  const s = line.endsWith('\n') ? line : line + '\n';
+  // fs.writeSync(1, …) not process.stdout.write — repo-wide rule: on macOS
+  // node 18/20 a synchronous exit right after an async stdout write can race
+  // the pipe flush and truncate output; writeSync is atomic (command-guard.js,
+  // skills/update/scripts/update.js follow the same rule).
+  fs.writeSync(1, s);
+}
+
+// isDevswarmActiveGate(env, cwd, io) -> boolean. Runs before ANY mkdir, lock
+// acquisition, state read/write, git spawn, or stdout write in main() — a
+// non-DevSwarm session must produce zero stdout and create zero
+// files/directories (the P0 this gate exists to fix: monitors.json's "when":
+// "always" would otherwise start this watcher for every personal-scope
+// install, DevSwarm or not).
+//
+// ARMS ON ANY of four independent POSITIVE-EVIDENCE signals (never on a bare
+// tier-3 Primary default with none of them — that bare-default case is the
+// original P0: a stranger in any git repo must NOT arm):
+//   (a) isDevswarmActive(env) — the existing explicit opt-in signal
+//       (DEVSWARM_REPO_ID set, or ANTIHALL_DEVSWARM_SUPERVISOR=on). Covers a
+//       Primary whose env survived into this Monitor-spawned process.
+//   (b) resolveIdentity's own tier 1: role.isChildWorkspace(env) (a non-empty
+//       DEVSWARM_SOURCE_BRANCH) PLUS a non-empty DEVSWARM_BUILDER_ID. THE FIX
+//       for the proven regression: a genuine DevSwarm child whose
+//       DEVSWARM_REPO_ID specifically did not survive into this process still
+//       carries these two, and resolveIdentity already treats them as
+//       sufficient to resolve a child identity — the gate must not be
+//       stricter than the identity resolution it gates.
+//   (c) resolveIdentity's own tier 2: a registered child-workspace descriptor
+//       whose worktreePath matches cwd — needs ZERO DEVSWARM_* env at all.
+//   (d) this repo already has DevSwarm state on disk for its own repoKey — a
+//       summaries/<repoKey>.json written only by a real deriveSummary call
+//       (cmdSend / the ingest daemon; see resolvePrimaryHashes/
+//       readPrimarySnapshot, which read the exact same file). This is what
+//       lets a genuine Primary arm when DEVSWARM_REPO_ID did not survive into
+//       the Monitor subprocess and neither (b) nor (c) apply (a Primary has no
+//       DEVSWARM_BUILDER_ID and is not a registered child descriptor). Checked
+//       LAST on purpose: it is the only tier that spawns git
+//       (repoKeyForWorktree), so a genuinely non-DevSwarm session still
+//       short-circuits above it on a plain env/descriptor check in the common
+//       case.
+// FAIL OPEN TOWARD NOT ARMING: any tier that throws is treated as "did not
+// match" and falls through to the next tier; if every tier throws or none
+// match, this returns false — an unwanted arm is the bug being fixed, so a
+// broken gate must never accidentally arm.
+function isDevswarmActiveGate(env, cwd, io) {
+  const e = env || process.env;
+
+  // (a) explicit opt-in / existing feature-detect.
+  try {
+    const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
+    if (typeof isDevswarmActive === 'function' && isDevswarmActive(e)) return true;
+  } catch (_) { /* fall through to the positive-evidence tiers below */ }
+
+  const ioo = io || {};
+  const wd = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd();
+  const F = ioo.fs || fs;
+  const home = ioo.home || os.homedir();
+
+  // (b) tier 1 of resolveIdentity's own fallback.
+  try {
+    const roleLib = ioo.role || role;
+    if (roleLib.isChildWorkspace(e)) {
+      const raw = e.DEVSWARM_BUILDER_ID;
+      if (typeof raw === 'string' && raw.trim() !== '') return true;
+    }
+  } catch (_) { /* fall through */ }
+
+  // (c) tier 2 of resolveIdentity's own fallback.
+  try {
+    const readDescriptors = ioo.readDescriptors || supervisor.readDescriptors;
+    const descriptors = readDescriptors(home, F) || [];
+    const cwdForms = realFormsOf(wd, F);
+    for (const d of descriptors) {
+      if (!d || !d.worktreePath || !d.id) continue;
+      const dForms = realFormsOf(d.worktreePath, F);
+      let hit = false;
+      for (const f of cwdForms) { if (dForms.has(f)) { hit = true; break; } }
+      if (hit) return true;
+    }
+  } catch (_) { /* fall through */ }
+
+  // (d) on-disk DevSwarm state for this repo's own repoKey.
+  try {
+    const repoKeyForWorktree = ioo.repoKeyForWorktree || repokey.repoKeyForWorktree;
+    const summaryPathForHash = ioo.summaryPathForHash || store.summaryPathForHash;
+    const repoKey = repoKeyForWorktree(wd, ioo.gitIo ? { io: ioo.gitIo } : undefined);
+    if (repoKey && F.existsSync(summaryPathForHash(home, repoKey))) return true;
+  } catch (_) { /* fall through */ }
+
+  return false;
+}
+
+function main() {
+  const env = process.env;
+  // Captured BEFORE anything else (cheap, no disk/stdout touch) — see
+  // parentGone()'s header comment for why this must be the STARTUP ppid, not
+  // one re-read on each check.
+  const startPpid = process.ppid;
+  // process.cwd() itself touches no disk state (no mkdir/lock/read/write), so
+  // reading it before the gate is safe and lets the gate's tiers (c)/(d)
+  // evaluate against the real cwd.
+  const cwd = process.cwd();
+  // --auto = started by the harness via monitors.json ("when": "always"), at
+  // EVERY session start, not armed by the model. Every stdout line becomes a
+  // transcript event that wakes the session, so an auto-started watcher must
+  // stay SILENT on stdout for the expected not-applicable refusals
+  // (not-a-devswarm-session, disabled-by-settings) — otherwise every
+  // non-DevSwarm session burns a model turn on a no-op refusal. A
+  // model-armed watcher (no --auto) keeps the one refusal line: its caller
+  // needs it to tell "no coverage" from "armed and quiet".
+  const autoStarted = process.argv.includes('--auto');
+  const refuseQuietly = (reason) => {
+    if (autoStarted) return;
+    try { emitLine(formatRefusalLine(reason)); } catch (_) {}
+  };
+
+  // Settings switch devswarm.wakeWatch (0.108.4): off -> refuse to arm, one
+  // closed-vocabulary line, exit 0 (the cron wake fallback is unaffected).
+  // Reads config only (no disk writes). Fail-open: any error arms as before.
+  let wakeWatchOn = true;
+  try { wakeWatchOn = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatch', true, env) !== false; } catch (_) { wakeWatchOn = true; }
+  if (!wakeWatchOn) {
+    refuseQuietly(REFUSAL_REASONS.DISABLED);
+    process.exitCode = 0;
+    return;
+  }
+
+  // GATE — must be the very first disk/stdout-touching thing main() does (see
+  // isDevswarmActiveGate comment above). Refusal now ALSO gets exactly one
+  // closed-vocabulary line on stdout (see formatRefusalLine) so a caller
+  // watching only stdout can tell "refused" from "armed and quiet" — the
+  // detailed stderr notice stays for humans/logs. Exit 0: this is the
+  // NORMAL, expected outcome for the majority of invocations (any non-
+  // DevSwarm repo — monitors.json's "when": "always" starts this watcher
+  // unconditionally), not a fault.
+  if (!isDevswarmActiveGate(env, cwd, {})) {
+    try { process.stderr.write('[wake-watch] not a DevSwarm session; exiting quietly (not arming).\n'); } catch (_) {}
+    refuseQuietly(REFUSAL_REASONS.NOT_DEVSWARM_SESSION);
+    process.exitCode = 0;
+    return;
+  }
+
+  const identity = resolveIdentity(env, cwd, {});
+  if (!identity) {
+    // Unlike the gate above, isDevswarmActiveGate already confirmed this IS a
+    // DevSwarm session — failing to resolve an identity from here is a real
+    // anomaly, not an expected non-applicable case, so exit non-zero to make
+    // that distinction visible to anything that does check the exit code.
+    try { process.stderr.write('[wake-watch] could not resolve a DevSwarm identity for cwd=' + cwd + '; exiting quietly.\n'); } catch (_) {}
+    try { emitLine(formatRefusalLine(REFUSAL_REASONS.IDENTITY_UNRESOLVED)); } catch (_) {}
+    process.exitCode = 1;
+    return;
+  }
+
+  const home = identity.home;
+  const id = identity.id;
+  const watchedRole = identity.role;
+
+  // IDLE-SKIP (#39, devswarm.wakeWatchIdleSkip, default true): a Primary
+  // with 0 LIVE (non-archived) child workspaces gains nothing from this
+  // watcher — nothing will ever message it (only a child can send a Primary
+  // mesh mail). Never applies to a child watcher (it covers its own mail,
+  // never a roster). Checked here, AFTER identity resolution (needs
+  // identity.cwd/home to scope the live-children read) but BEFORE the lock
+  // is ever acquired — an idle-skip must never hold, or contend for, the
+  // per-id watch lock. Exit 0: this is a normal, expected outcome, not a
+  // fault (matches every other `refuse to arm` branch in this function).
+  if (watchedRole === 'primary') {
+    try {
+      let idleSkipOn = true;
+      try { idleSkipOn = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatchIdleSkip', true, env) !== false; }
+      catch (_) { idleSkipOn = true; }
+      if (idleSkipOn) {
+        const liveChildren = require('./devswarm-live-children.js');
+        if (!liveChildren.hasLiveChild(home, identity.cwd || cwd, { env, excludeHeldIgnored: true })) {
+          // Same rearm-cues.jsonl metric scripts/devswarm.js's cmdInboxTick
+          // writes for its own idle-skip (trigger 'idle-skip') — deliberately
+          // reimplemented here (append+cap) rather than requiring
+          // scripts/devswarm.js: this module never depends on the CLI (see
+          // this file's own header — pure reads, no shelling out), and
+          // scripts/devswarm.js already requires THIS file lazily inside
+          // cmdInboxTick, so the reverse require would be circular.
+          try {
+            const p = path.join(devswarmRoot(home), 'rearm-cues.jsonl');
+            fs.mkdirSync(path.dirname(p), { recursive: true });
+            let lines = [];
+            try { lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch (_) { lines = []; }
+            lines.push(JSON.stringify({ ts: Date.now(), id, trigger: 'idle-skip' }));
+            if (lines.length > 1000) lines = lines.slice(lines.length - 1000);
+            fs.writeFileSync(p, lines.join('\n') + '\n');
+          } catch (_) { /* fail-open: measurement only, never blocks the idle-skip itself */ }
+          // Never claim a cron we cannot verify: say what the tick marker shows.
+          // ONE stdout line (every stdout line of the watcher wakes the session).
+          let idleLine = '[wake-watch] idle-skip: no live child workspaces — not arming. No recent mailbox tick was seen: '
+            + 'check CronList and re-create the 7,37 tick; arm this watcher again after you spawn a workspace.';
+          try {
+            const cov = require('./devswarm-wake-coverage.js').wakeCoverage({ home, cwd: identity.cwd || cwd, id, env });
+            if (!cov.unknown && cov.lastTickAgeMin !== null && !cov.cronLikelyMissing) {
+              idleLine = '[wake-watch] idle-skip: no live child workspaces — not arming; the mailbox tick last ran '
+                + cov.lastTickAgeMin + 'm ago';
+            }
+          } catch (_) { /* keep the cautious stale-marker wording */ }
+          emitLine(idleLine);
+          process.exitCode = 0;
+          return;
+        }
+      }
+    } catch (_) { /* fail-open: any surprise here arms exactly as before #39 */ }
+  }
+
+  const lockPath = lockPathFor(home, id);
+  // Read once, reused both for the lock's own `version` field (unchanged) and
+  // the per-poll stale-build check below (item 4c) — never re-derived twice.
+  const ownVersion = readInstalledPluginVersion();
+  let refusalInfo = null;
+  const release = pull.acquireExclLock(lockPath, {
+    allowStaleLiveSteal: true,
+    version: ownVersion,
+    sessionId: resolveOwnSessionId(),
+    onRefused(info) { refusalInfo = info; },
+  }, WATCH_LOCK_STALE_MS);
+  if (!release) {
+    // Double-arm refused. A second watcher declining is CORRECT, not an
+    // error — exit 0. It still gets exactly one closed-vocabulary line on
+    // stdout (formatRefusalLine) so the caller can distinguish "another
+    // watcher already covers this" from "armed and quiet"; the detailed
+    // stderr line (with role/id, and now the holder's pid/session/acquired-at
+    // per this fix on top of defect 8143ced316d3's pid/age/version) stays for
+    // humans/logs since only the fixed reason may go on stdout — see
+    // formatRefusalLine's own header for why the stdout line stays
+    // closed-vocabulary (injection hygiene: never runtime-derived text).
+    //
+    // WHY THIS LINE EXISTS (v0.102.2): a peer session read a bare
+    // "REFUSED TO ARM: lock-held" as a stale/stuck lock and reported it as a
+    // bug, retracting only after manually checking `ps` — the single-
+    // consumer refusal was CORRECT (the lock was live, 24h-old, healthy).
+    // Naming the holder's pid/session/acquired-at here (stderr, so it is
+    // free to carry runtime-derived text) lets that same judgment be made
+    // from THIS line alone, without a separate `ps` lookup.
+    try {
+      const info = refusalInfo || {};
+      const ageStr = Number.isFinite(info.ageMs) ? Math.round(info.ageMs / 1000) + 's' : 'unknown';
+      const pidStr = info.pid == null ? 'unknown' : String(info.pid);
+      const versionStr = info.version || 'unknown';
+      const sessionStr = info.sessionId || 'unavailable';
+      // `info.ts` is only present when the CURRENT (v0.102.2+) shape wrote
+      // it — a lock left behind by an older watcher (pre-v0.102.2, no `ts`
+      // echoed through onRefused, or a session id the lock never carried at
+      // all) degrades to 'unavailable'/'unknown', never a crash or a made-up
+      // value.
+      let acquiredStr = 'unknown';
+      if (Number.isFinite(info.ts)) {
+        try { acquiredStr = new Date(info.ts).toISOString(); } catch (_) { acquiredStr = 'unknown'; }
+      }
+      // FIELD ORDER: `pid=... age=...` stays adjacent, byte-for-byte as
+      // before this fix — tests/companion/devswarm-fleet-8143ced316d3.test.js
+      // already asserts that exact substring (defect 8143ced316d3); the new
+      // session/acquired fields are appended after `age=`, before `version=`,
+      // so no existing assertion has to change.
+      process.stderr.write('[wake-watch] another watcher already holds the lock for '
+        + watchedRole + ' ' + id + ' (holder pid=' + pidStr + ' age=' + ageStr
+        + ' session=' + sessionStr + ' acquired=' + acquiredStr + ' version=' + versionStr
+        + '); that watcher is live, this is expected — exiting quietly (not double-arming).\n');
+    } catch (_) {}
+    try { emitLine(formatRefusalLine(REFUSAL_REASONS.LOCK_HELD)); } catch (_) {}
+    process.exitCode = 0;
+    return;
+  }
+
+  let paths = null;
+  let hashes = null;
+  if (watchedRole === 'child') {
+    const d = identity.descriptor || {};
+    paths = {
+      inboxPath: d.inboxPath || pull.inboxDefaultPath(home, id),
+      cursorPath: d.cursorPath || pull.cursorDefaultPath(home, id),
+    };
+    // Second, independent channel: the mesh-direct/summary bucket keyed by
+    // this child's OWN id (see resolveChildHashes / readChildCombinedSnapshot).
+    hashes = resolveChildHashes(cwd, id, {});
+  } else {
+    hashes = resolvePrimaryHashes(cwd, {});
+  }
+
+  let st = normalizeState(loadSeenState(home, id, fs, watchedRole));
+  const pollMs = pollMsFromEnv(env);
+
+  // Persisted-write dedup (P2 fix): saveSeenState only ever persists
+  // lastTotal/lastTotal2 (see its payload above), so track those two fields as
+  // last-WRITTEN-to-disk and skip the tmp-write+rename entirely whenever
+  // neither has moved since the last save — was previously called every tick
+  // unconditionally (~2s cadence, ~43k/day/session) even on a fully idle
+  // watcher. Never alters wake/emit semantics — lines are still emitted from
+  // `res.lines` exactly as before; this only gates the PERSISTENCE write. The
+  // saved-* trackers are only updated after a successful write, so a failed
+  // write leaves them stale and the next tick retries automatically.
+  let savedTotal = st.lastTotal;
+  let savedTotal2 = st.lastTotal2;
+  let savedBroadcast = st.lastBroadcastUnread;
+
+  // Edge-trigger dedup for the "update available, no cache dir yet" notice —
+  // checkStaleVersion() runs every poll tick, but this notice must fire at
+  // most once per distinct newestVersion, not every ~2s forever.
+  let notifiedUpdateVersion = null;
+
+  const archivedRecheckMs = archivedRecheckMsFromEnv(env);
+  let archivedCheckedAt = 0;
+  let ownArchived = false;
+
+  let lastRestampOkAt = Date.now();
+  let restampErrLogged = false;
+  let cleaned = false;
+  // fl-wave3 fix (item 7): `skipSave` — set true ONLY by the lock-lost exit
+  // path below. `st` at that point is THIS process's own (now-stale) view of
+  // seen-state; the NEW holder that stole the lock has ALREADY been running
+  // its own tick loop and has its own, more current seen-state on disk. This
+  // process persisting ITS stale `st` here would silently overwrite the new
+  // holder's fresher state with an older one the instant this process exits
+  // — corrupting the state the SURVIVING watcher relies on for wake dedup.
+  // `release()` is untouched by this flag: it is already a safe no-op once
+  // the lock token on disk no longer matches this process's own (see the
+  // loop() comment above), so it can never unlink/steal the new holder's
+  // lock — only the seen-state WRITE needs gating here.
+  function cleanup(opts) {
+    if (cleaned) return;
+    cleaned = true;
+    if (!(opts && opts.skipSave)) {
+      try { saveSeenState(home, id, st, fs, watchedRole); } catch (_) {}
+    }
+    try { release(); } catch (_) {}
+  }
+  // handoffChild — set (non-null) once attemptHandoff() below has actually
+  // spawned a successor. While set, this process forwards SIGTERM/SIGINT to
+  // the child instead of exiting directly, so the child (which holds the
+  // watcher lock) is never orphaned and gets to clean up; the child's own
+  // 'exit' listener (see attemptHandoff) then exits THIS process with the
+  // child's code (128+signo on a signal death).
+  let handoffChild = null;
+  process.on('exit', cleanup);
+  process.on('SIGTERM', () => {
+    if (handoffChild) { try { handoffChild.kill('SIGTERM'); } catch (_) {} return; }
+    cleanup(); process.exit(0);
+  });
+  process.on('SIGINT', () => {
+    if (handoffChild) { try { handoffChild.kill('SIGINT'); } catch (_) {} return; }
+    cleanup(); process.exit(0);
+  });
+
+  function loop() {
+    // PARENT-DEATH CHECK — first thing every tick, ahead of the restamp/
+    // stale-build checks below: a watcher whose starting parent is gone must
+    // never even try to keep the lock fresh, it must give the lock up. See
+    // parentGone()'s header comment for the field incident this closes.
+    if (parentGone(startPpid, {})) {
+      try { fs.writeSync(2, formatParentGoneLine() + '\n'); } catch (_) {}
+      cleanup();
+      return;
+    }
+
+    // Re-stamp the lock's `ts` every tick (defect 8143ced316d3) so a HEALTHY
+    // watcher's lock never reads as stale to another watcher's steal-check —
+    // only a genuinely hung watcher (stuck before reaching this line again)
+    // goes stale. F fix: restamp()'s own return value was previously
+    // discarded — `false` means the token on disk no longer matches this
+    // process's own (another watcher already stole the lock, e.g. after this
+    // one was hung past the stale window), and continuing to loop afterward
+    // means TWO watchers silently believe they hold the same lock. Re-check
+    // once (a single transient read race — e.g. catching the file mid-write
+    // by the very watcher that just stole it — must not be treated as a
+    // genuine loss) before concluding the lock is actually gone; only then
+    // print the LOCK_HELD line to STDERR and exit the loop CLEANLY — no kill
+    // of the new holder, no delete of anything (release() below is already a
+    // safe no-op once the token no longer matches, so cleanup() cannot ever
+    // unlink the new holder's lock file).
+    // restamp() is TRI-STATE: true | false (definitive loss) | 'error'
+    // (transient: torn read, write failure, a reclaimer holding the lock's
+    // sidecar — a crashed reclaimer can leave it for up to ~5 s). A transient
+    // result is NOT a lost lock: skip the restamp this tick and retry on the
+    // next one. Persisting longer than the lock's own stale threshold means
+    // another watcher may now legitimately steal it, so fall back to the
+    // lost-lock exit below (with a log line).
+    const restampOnce = () => { try { return release.restamp(); } catch (_) { return 'error'; } };
+    let restamped = false;
+    let r = restampOnce();
+    if (r === false) r = restampOnce(); // one re-check of a definitive loss
+    if (r === true) {
+      restamped = true;
+      lastRestampOkAt = Date.now();
+    } else if (r === 'error') {
+      if (Date.now() - lastRestampOkAt <= WATCH_LOCK_STALE_MS) {
+        restamped = true; // transient: keep running, retry next tick
+        if (!restampErrLogged) {
+          restampErrLogged = true;
+          try { fs.writeSync(2, '[wake-watch] lock restamp failed transiently (not lock loss) - retrying next tick\n'); } catch (_) {}
+        }
+      } else {
+        try { fs.writeSync(2, '[wake-watch] lock restamp failed transiently for longer than the lock stale threshold - treating the lock as lost\n'); } catch (_) {}
+      }
+    }
+    if (r === true) restampErrLogged = false;
+    if (!restamped) {
+      try { fs.writeSync(2, formatLockLostLine(REFUSAL_REASONS.LOCK_HELD) + '\n'); } catch (_) {}
+      // fl-wave3 fix (item 7): skip the seen-state write on a lock-lost exit
+      // — see cleanup()'s own header comment for why persisting this
+      // process's stale `st` here would corrupt the NEW lock holder's own,
+      // more current state.
+      cleanup({ skipSave: true });
+      return;
+    }
+
+    // ARCHIVED CHILD: stay alive but SILENT. Every stdout line is a wake event,
+    // and an archived child has nothing to act on (it was told once to save a
+    // handover and stop). Staying alive (not exiting) is deliberate: the lock
+    // stays fresh so nothing re-arms a second watcher, and on a restore the
+    // very next recheck resumes normal polling/wakes with no re-arm. No
+    // snapshot, tick, seen-state write or stale-build line happens meanwhile,
+    // so mail that arrives while archived is delivered after a restore.
+    if (watchedRole === 'child') {
+      const nowMs = Date.now();
+      if (nowMs - archivedCheckedAt >= archivedRecheckMs) {
+        archivedCheckedAt = nowMs;
+        ownArchived = isOwnChildArchived(identity, env, {});
+      }
+      if (ownArchived) {
+        setTimeout(loop, pollMs);
+        return;
+      }
+    }
+
+    // Stale-build check (item 4c) — every poll, so there is never a silent
+    // stale watcher: a child auto-resumed on an old cache path can otherwise
+    // run this exact code indefinitely with no signal that a newer build
+    // exists. One line, then exit cleanly (same clean-exit shape as the
+    // lock-lost path above — release()/cleanup(), no kill, nothing forced).
+    // The NEXT wake-watch arm (whenever the session next re-arms it, on this
+    // stale path or a fresh one) will simply resolve `checkStaleVersion`
+    // fresh again — this never leaves stale watcher-lock state behind either
+    // (cleanup() releases the lock normally, freeing a fresh arm to succeed).
+    const staleVersion = checkStaleVersion(ownVersion, env);
+    if (staleVersion && staleVersion.scriptPath) {
+      // A newer build is registered AND its cache dir/file genuinely exist on
+      // disk — hand off to it (see attemptHandoff's header) instead of the
+      // pre-fix print-and-exit churn.
+      const child = attemptHandoff({
+        ownVersion, newestVersion: staleVersion.newestVersion, scriptPath: staleVersion.scriptPath,
+        role: watchedRole, id, env, release,
+        registered: staleVersion.registered, registeredVersion: staleVersion.registeredVersion,
+      });
+      if (child) {
+        handoffChild = child;
+        // The child now owns stdout/the watcher lock/this process's
+        // lifecycle (its 'exit' listener drives this process's own exit).
+        // Run cleanup NOW with skipSave: it marks this process cleaned, so
+        // the process.on('exit', cleanup) hook becomes a no-op and this
+        // process's `st` — stale relative to the child's own — is never
+        // persisted over the child's fresher seen-state. release() inside is
+        // token-guarded, so it can never unlink the child's lock.
+        cleanup({ skipSave: true });
+        return;
+      }
+      // Loop/version guard tripped, or the spawn itself failed synchronously
+      // -- ORIGINAL print-the-re-arm-line-and-exit behavior.
+      try {
+        emitLine(formatStaleVersionLine(watchedRole, id, ownVersion, staleVersion.newestVersion, staleVersion.scriptPath));
+      } catch (_) {}
+      cleanup();
+      return;
+    } else if (staleVersion && staleVersion.newestVersion) {
+      // A newer version NAME is known (installed_plugins.json / marketplace),
+      // but nothing exists on disk yet to re-arm against (root cause of the
+      // field crash: exiting here and naming a nonexistent cache path would
+      // leave this workspace with NO watcher at all). Say so once per
+      // distinct version, and keep running on the current build.
+      if (staleVersion.newestVersion !== notifiedUpdateVersion) {
+        notifiedUpdateVersion = staleVersion.newestVersion;
+        try {
+          if (claimUpdateAnnouncement(home, id, staleVersion.newestVersion, fs)) emitLine(formatUpdateAvailableLine(watchedRole, id, ownVersion, staleVersion.newestVersion, staleVersion.registered));
+        } catch (_) {}
+      }
+    }
+
+    let snapshot;
+    try {
+      snapshot = watchedRole === 'child'
+        ? readChildCombinedSnapshot(paths, hashes, id, home, {})
+        : readPrimarySnapshot(home, hashes, identity.id, {});
+    } catch (e) {
+      snapshot = { ok: false, error: (e && e.message) || 'snapshot-failed', total: null };
+    }
+    snapshot.role = watchedRole;
+    snapshot.id = id;
+    snapshot.nowMs = Date.now();
+    snapshot = attachBroadcastChannel(snapshot, home, hashes, id, {});
+
+    const res = tick(st, snapshot);
+    st = res.state;
+    for (const line of res.lines) {
+      try { emitLine(line); } catch (_) { /* never let an output error kill the loop */ }
+    }
+    if (st.lastTotal !== savedTotal || st.lastTotal2 !== savedTotal2 || st.lastBroadcastUnread !== savedBroadcast) {
+      try {
+        saveSeenState(home, id, st, fs, watchedRole);
+        savedTotal = st.lastTotal;
+        savedTotal2 = st.lastTotal2;
+        savedBroadcast = st.lastBroadcastUnread;
+      } catch (_) {}
+    }
+
+    setTimeout(loop, pollMs);
+  }
+  loop();
+}
+
+module.exports = {
+  // pure core
+  tick,
+  normalizeState,
+  formatArmLine,
+  formatWakeLine,
+  formatDualWakeLine,
+  formatErrorLine,
+  formatRefusalLine,
+  formatLockLostLine,
+  parentGone,
+  formatParentGoneLine,
+  formatUpdateAvailableLine,
+  claimUpdateAnnouncement,
+  REFUSAL_REASONS,
+  ERROR_TOLERANCE,
+  ERROR_BACKOFF_MS,
+  // IO helpers
+  isDevswarmActiveGate,
+  pollMsFromEnv,
+  realFormsOf,
+  resolveIdentity,
+  isOwnChildArchived,
+  ARCHIVED_RECHECK_MS,
+  resolveOwnSessionId,
+  resolvePrimaryHashes,
+  resolveChildHashes,
+  readPrimarySnapshot,
+  readChildSnapshot,
+  readChildCombinedSnapshot,
+  readBroadcastSnapshot,
+  attachBroadcastChannel,
+  seenPath,
+  loadSeenState,
+  saveSeenState,
+  lockPathFor,
+  DEFAULT_POLL_MS,
+  POLL_ENV_VAR,
+  readInstalledPluginVersion,
+  WATCH_LOCK_STALE_MS,
+  // item 4c — stale-build per-poll check:
+  checkStaleVersion,
+  formatStaleVersionLine,
+  // re-arm churn fix — watcher handoff:
+  HANDOFF_ENV_VAR,
+  formatHandoffLine,
+  canHandoff,
+  attemptHandoff,
+  handoffExitCode,
+};
+
+if (require.main === module) main();

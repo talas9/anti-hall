@@ -1,0 +1,3438 @@
+'use strict';
+// anti-hall :: devswarm-store — the persistent WRITE/DERIVE side of the DevSwarm
+// substrate. ONE store API, TWO interchangeable backends, chosen by
+// FEATURE-DETECT (not a node-version comparison):
+//
+//     try { require('node:sqlite') }  -> sqlite backend (WAL)
+//     catch                           -> journal (append-only NDJSON) backend
+//
+// Node 22.5 shipped `node:sqlite` behind --experimental-sqlite and daemons launch
+// flagless, so a version check (node >= 22.5) would misdetect availability; the
+// require-and-catch probe is robust regardless of the exact flagless-backport
+// version (see PLAN.md Phase 2 — scope corrections, Fable P2-8). The journal
+// backend is dependency-free and green on node 18/20 where node:sqlite is absent.
+//
+// LAYERING (PLAN.md P1-B): HOOKS NEVER OPEN THE DB. The store is the write/derive
+// side only. It derives a `summary.json` PROJECTION (atomic tmp+rename) that hooks
+// read; `unreadBacklog()` / `computeLiveness()` in liveness.js keep their existing
+// path-addressed (fs/git) signatures — this module is the side that DERIVES the
+// projections, never a new read surface for those functions.
+//
+// DATA MODEL (append-only where it carries history — never lose the trail):
+//   messages : timestamped, append-only; idempotent by optional dedupe `hash`.
+//   registry : workspaces (id, worktreePath, sessionId, inboxPath, cursorPath,
+//              nudgeCommand); upsert (current mirror of the active descriptor set).
+//   cursors  : per-workspace consumed-count (mirrors liveness.js's cursor = number
+//              of consumed non-empty inbox lines).
+//   gates    : per-workspace named boolean COMPLETION GATES, timestamped +
+//              APPEND-ONLY (a set/clear appends a new {name,value,set_at,set_by}
+//              row; current value = latest row per name). anti-hall stays AGNOSTIC
+//              about what any consumer gate (e.g. `deployed`) MEANS — the consumer
+//              sets them; the store only tracks and derives.
+//
+// DERIVED archive_ready: true when ALL required gates are satisfied for an ACTIVE
+// workspace (present in the registry). The required-gate set is CONFIGURABLE
+// (default done,merged,tests_passed; override via ANTIHALL_DEVSWARM_REQUIRED_GATES)
+// — anti-hall hardcodes no consumer-specific gate name.
+
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const lockLib = require('./lock.js');
+const { devswarmRoot, isSafeId } = require('./liveness.js');
+
+// resolveHomeGuarded(o) -> the home dir to use for store I/O. Mirrors
+// `o.home || os.homedir()` in every caller below, but adds a STRUCTURAL
+// TEST-CONTEXT GUARD (defect be2c6c9e81a1, same class as ec33954162ef /
+// f3c1bc827d89): a test that forgets to pass an explicit `home` used to
+// silently fall through to the developer's REAL ~/.anti-hall and leak a
+// fixture registry row there. Node sets `NODE_TEST_CONTEXT` in every
+// `node --test` worker process AND inherits it into any spawnSync'd child
+// (same mechanism relied on by install-devswarm-ingest.js's own
+// NODE_TEST_CONTEXT_GUARD) — so under test, the real-home fallback is NEVER
+// legitimate: every test in this suite already passes `home` explicitly
+// (verified: grep across tests/ finds no bare `openStore({...})` lacking a
+// `home` key). Throw loudly instead of writing into the real machine home.
+// No opt-out: unlike the installer's dry-run swap, there is no safe silent
+// fallback for a store write — failing the leaky test is the correct outcome.
+function resolveHomeGuarded(o) {
+  if (o && o.home) return o.home;
+  const real = os.homedir();
+  if (process.env.NODE_TEST_CONTEXT) {
+    throw new Error(
+      'devswarm-store: refusing to fall back to the real home (' + real + ') while running under '
+      + '`node --test` (NODE_TEST_CONTEXT is set). This test never passed an explicit `home`, which '
+      + 'would leak a fixture store into the real ~/.anti-hall/devswarm/store/ (defect be2c6c9e81a1). '
+      + 'Pass { home: <tmp dir> } explicitly.'
+    );
+  }
+  return real;
+}
+const attribution = require('./devswarm-attribution.js');
+// identity grouping — pure, no fs/store/git (see its PURITY CONTRACT). Used by
+// resolveSenderRegistryId to keep a question's `from` out of the RECIPIENT's own
+// identity family; the SAME module/definition backs the clear side in
+// companion/lib/devswarm-reply-state.js's familyAwareUnanswered.
+const identityFamily = require('./devswarm-identity-family.js');
+// archived-stranded classifier (A2 split). This module require is CHEAP and
+// side-effect free; the heavy scripts/devswarm.js require it needs is LAZY, paid
+// only when a store actually has an unread orphan candidate. See its header.
+const orphanPolicy = require('./devswarm-orphan-policy.js');
+
+// worktreeRealPath (install-devswarm-ingest.js) — the CANONICAL real-path resolver
+// used for stale-worktree detection (A3). Required fail-open (the installer guards
+// its own `main()` behind `require.main === module`, so requiring it is side-effect
+// free — same precedent as lib/recovery.js's `require('../install-devswarm-ingest.js')`).
+// It NEVER throws / returns null: on a realpath failure it falls back to
+// path.resolve, so a vanished worktree still yields a (non-existent) resolved path —
+// which is exactly why staleRegistryPartitions must do an EXPLICIT fs.existsSync on
+// the resolved path rather than relying on this returning null.
+let ingestIdentity = null;
+try { ingestIdentity = require('../install-devswarm-ingest.js'); } catch (_) { ingestIdentity = null; }
+function resolveWorktreeReal(wt, fsi) {
+  const F = fsi || fs;
+  if (ingestIdentity && typeof ingestIdentity.worktreeRealPath === 'function') {
+    try { return ingestIdentity.worktreeRealPath(wt, { io: { fs: F } }); } catch (_) { /* fall through */ }
+  }
+  try { return path.resolve(String(wt == null ? '' : wt)); } catch (_) { return String(wt == null ? '' : wt); }
+}
+
+// sameRegistryWorktree(existingPath, incomingPath) -> true when the F2 id-collision
+// guard (upsertRegistry, both backends) must treat two worktree_path strings as the
+// SAME worktree, i.e. NOT a hash collision (mesh redesign Phase 2 B1). A raw string
+// compare refused — silently, returning false — every save whose path was merely
+// SPELLED differently: a symlinked vs physical path (D9), or a path registered from
+// a subdir/submodule of the worktree the identity resolver now keys it to (the same
+// self-correction rekeySubdirRegistryRows already performs with allowPathChange).
+// A genuine collision (two different physical worktrees) is still refused.
+function sameRegistryWorktree(existingPath, incomingPath) {
+  if (existingPath === incomingPath) return true;
+  const a = resolveWorktreeReal(existingPath);
+  const b = resolveWorktreeReal(incomingPath);
+  if (a === b) return true;
+  try {
+    // Canonical resolver, BOTH directions: a submodule/subdir path keys to its
+    // outermost superproject's worktreeRoot (child-turn persists the literal
+    // toplevel, e.g. <ws>/<submodule>, under the workspace-keyed id). Same worktree iff
+    // either side's root is the other side's real path (or both share one root).
+    const idn = require('./identity.js');
+    const ra = idn.resolveContext(existingPath, { memo: false }).worktreeRoot;
+    const rb = idn.resolveContext(incomingPath, { memo: false }).worktreeRoot;
+    return (!!ra && ra === b) || (!!rb && rb === a) || (!!ra && ra === rb);
+  } catch (_) {
+    return false;
+  }
+}
+
+const DEFAULT_REQUIRED_GATES = ['done', 'merged', 'tests_passed'];
+
+// ----- paths (PHYSICALLY PER-PROJECT) -----
+// Each project (worktree) gets its OWN physical store under store/<hash>/, where
+// <hash> is derived from the workspaceId the caller operates on. This replaces the
+// former ONE global store/devswarm.db (+ journal) keyed only on $HOME. The
+// workspace_id column is retained (harmless), but each per-project store now holds
+// one project's data. summary.json ALSO becomes per-project, deliberately placed
+// OUTSIDE store/ (under summaries/) so the inbox read-guard — which DENYs store/**
+// — still ALLOWs the derived projection hooks read.
+//
+// DEFAULT_HASH: a stable bucket for a store opened with NO workspaceId (legacy
+// callers/tests that write MANY workspace_ids into one column-partitioned handle).
+// sha256('') is deterministic and 8-hex, so the read-guard's hash regex matches it.
+const DEFAULT_HASH = crypto.createHash('sha256').update('').digest('hex').slice(0, 8);
+
+// hashFromWorkspaceId(workspaceId) -> 8 lowercase hex chars. `primary-<hash>`
+// (install-devswarm-ingest.js's per-worktree Primary id) unwraps to that exact
+// worktreeHash, so the ingest daemon, the CLI, the parent-inbox hook, and doctor
+// all agree on which per-project dir a Primary's reception queue lives in. Any
+// other id (a child workspace, an arbitrary CLI id) buckets by sha256(id) so it
+// still gets its own physical store. Absent/empty -> DEFAULT_HASH.
+function hashFromWorkspaceId(workspaceId) {
+  const id = String(workspaceId == null ? '' : workspaceId);
+  if (id === '') return DEFAULT_HASH;
+  const m = id.match(/^primary-([0-9a-fA-F]{8})$/);
+  if (m) return m[1].toLowerCase();
+  return crypto.createHash('sha256').update(id).digest('hex').slice(0, 8);
+}
+
+// ----- roots -----
+function storeRootDir(home) {
+  return path.join(devswarmRoot(home), 'store');
+}
+function summariesRootDir(home) {
+  return path.join(devswarmRoot(home), 'summaries');
+}
+
+// ----- hash-keyed (doctor/migration enumerate by hash) -----
+function storeDirForHash(home, hash) {
+  return path.join(storeRootDir(home), String(hash));
+}
+function sqlitePathForHash(home, hash) {
+  return path.join(storeDirForHash(home, hash), 'devswarm.db');
+}
+function journalDirForHash(home, hash) {
+  return path.join(storeDirForHash(home, hash), 'journal');
+}
+function summaryPathForHash(home, hash) {
+  return path.join(summariesRootDir(home), String(hash) + '.json');
+}
+
+// ----- workspaceId-keyed (the public/test convenience surface) -----
+function storeDir(home, workspaceId) {
+  return storeDirForHash(home, hashFromWorkspaceId(workspaceId));
+}
+function sqlitePath(home, workspaceId) {
+  return sqlitePathForHash(home, hashFromWorkspaceId(workspaceId));
+}
+function journalDir(home, workspaceId) {
+  return journalDirForHash(home, hashFromWorkspaceId(workspaceId));
+}
+function summaryPath(home, workspaceId) {
+  return summaryPathForHash(home, hashFromWorkspaceId(workspaceId));
+}
+
+// listStoreHashes(home, fsi, opts) -> string[] of per-project store subdir names
+// present under store/. Fail-open [] on any read error. Used by doctor/migration to
+// ENUMERATE per-project stores instead of one global file.
+//   Matches the LEGACY 8-hex shape (^[0-9a-fA-F]{8}$) AND, additively (D20), the
+//   NEW repoKey shape (^[a-z0-9-]{1,40}-[0-9a-f]{6}$) so doctor/enumeration is not
+//   blind to a post-migration repoKey store. Disjoint by construction (a repoKey
+//   always contains a literal '-' separator; a legacy hash never does).
+//   opts.shape === 'legacy' restricts to ONLY the 8-hex shape (D13/Phase 3 —
+//   migration source enumeration must never iterate the repoKey stores IT creates,
+//   avoiding self-migration noise / target==source double-open).
+const LEGACY_HASH_RE = /^[0-9a-fA-F]{8}$/;
+const REPOKEY_SHAPE_RE = /^[a-z0-9-]{1,40}-[0-9a-f]{6}$/;
+function listStoreHashes(home, fsi, opts) {
+  const F = fsi || fs;
+  const o = opts || {};
+  let names = [];
+  try { names = F.readdirSync(storeRootDir(home)); } catch (_) { return []; }
+  if (o.shape === 'legacy') return names.filter((n) => LEGACY_HASH_RE.test(n));
+  return names.filter((n) => LEGACY_HASH_RE.test(n) || REPOKEY_SHAPE_RE.test(n));
+}
+
+// ----- config -----
+// requiredGatesFrom(env) -> string[]. Default done,merged,tests_passed; a consumer
+// extends/replaces it via ANTIHALL_DEVSWARM_REQUIRED_GATES (csv). Gate names are
+// consumer-defined so they are trimmed but NOT normalized/lowercased (agnostic).
+function requiredGatesFrom(env) {
+  const e = env || process.env;
+  let csv;
+  try { csv = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'requiredGates', undefined, e); }
+  catch (_) { csv = e.ANTIHALL_DEVSWARM_REQUIRED_GATES; }
+  if (typeof csv === 'string' && csv.trim() !== '') {
+    const parts = csv.split(',').map((s) => s.trim()).filter((s) => s !== '');
+    if (parts.length) return parts;
+  }
+  return DEFAULT_REQUIRED_GATES.slice();
+}
+
+// heldPartitionIdsFrom(env) -> Set<string>. Owner-held mesh partition ids
+// (settings key devswarm.heldPartitions, csv, default empty; env override
+// ANTIHALL_DEVSWARM_HELD_PARTITIONS). A held partition is exempt from the
+// per-turn "ORPHANED MESH" warning (see the orphans[] loop below, which
+// filters into `heldPartitions[]` instead) and from `reap-orphans`
+// (scripts/devswarm.js collectOrphanCandidates) — it is still surfaced by
+// `doctor` as "held by owner" so it never silently vanishes from view. Same
+// trim/filter-empty parsing convention as requiredGatesFrom above.
+function heldPartitionIdsFrom(env) {
+  const e = env || process.env;
+  let csv;
+  try { csv = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'heldPartitions', undefined, e); }
+  catch (_) { csv = e.ANTIHALL_DEVSWARM_HELD_PARTITIONS; }
+  const ids = new Set();
+  if (typeof csv === 'string' && csv.trim() !== '') {
+    for (const part of csv.split(',')) {
+      const t = part.trim();
+      if (t !== '') ids.add(t);
+    }
+  }
+  return ids;
+}
+
+// selectBackend(opts) -> 'sqlite' | 'journal'. FEATURE-DETECT, force-overridable
+// (opts.backend or ANTIHALL_DEVSWARM_STORE_BACKEND=journal) so tests can exercise
+// the journal path even on a runtime that HAS node:sqlite.
+function selectBackend(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const forced = String(o.backend || env.ANTIHALL_DEVSWARM_STORE_BACKEND || '').trim().toLowerCase();
+  if (forced === 'journal' || forced === 'sqlite') {
+    if (forced === 'sqlite' && !sqliteAvailable()) return 'journal'; // asked-for-but-absent -> safe fallback
+    return forced;
+  }
+  return sqliteAvailable() ? 'sqlite' : 'journal';
+}
+function sqliteAvailable() {
+  try { require('./sqlite-quiet.js').requireSqlite(); return true; } catch (_) { return false; }
+}
+
+// ---- backend consistency (defect #10 field report) ------------------------
+// selectBackend() above is a PURE PER-PROCESS feature-detect: it has no memory
+// of what a given store dir was already opened as. Two processes that ever
+// open the SAME project's store dir with DIFFERING `node:sqlite` availability
+// (e.g. a DevSwarm Primary session and a child workspace's terminal launched
+// under a different Node/bun runtime — `node:sqlite` needs Node >=22.5, and
+// this project's own CI matrix already spans node 22/24) silently diverge onto
+// TWO DISJOINT physical stores under the identical repoKey dir: `devswarm.db`
+// (sqlite) vs `journal/` (journal) — each backend only ever reads/writes its
+// own file(s), so the writer's messages are invisible to the other backend.
+// Confirmed repro: forcing one process to 'sqlite' and a sibling to 'journal'
+// against the same store dir reproduces the exact field symptom — `mesh read`
+// returns `ok:true, count:0` for a project a sibling workspace has actually
+// been broadcasting into.
+//
+// FIX: pin the backend PER STORE DIR via a persisted marker file (`BACKEND`,
+// plain lowercase text), consulted BEFORE per-process feature-detection.
+//   - An explicit `--backend`/`ANTIHALL_DEVSWARM_STORE_BACKEND` override still
+//     wins outright (unchanged contract — tests rely on this to exercise the
+//     journal path even where sqlite is available).
+//   - Otherwise: an existing marker is honored; a store with NO marker yet
+//     (created before this fix, or never opened before) is inferred from
+//     ON-DISK REALITY (which physical file already holds data), never from
+//     this process's own feature-detection alone — a pre-existing journal-
+//     backed store must never suddenly read as an empty fresh sqlite store
+//     just because THIS process happens to have `node:sqlite`.
+//   - A marker naming 'sqlite' when this process genuinely lacks `node:sqlite`
+//     falls back to 'journal' — the same safe-fallback semantics an explicit
+//     `--backend sqlite` override already has, never a crash.
+//   - Read-only callers (Phase 4c #12) never write the marker or mkdir the
+//     store dir — inference is best-effort and non-persistent for them.
+function backendMarkerFile(dir) { return path.join(dir, 'BACKEND'); }
+
+function readBackendMarker(dir) {
+  try {
+    const raw = String(fs.readFileSync(backendMarkerFile(dir), 'utf8') || '').trim().toLowerCase();
+    return (raw === 'sqlite' || raw === 'journal') ? raw : null;
+  } catch (_) { return null; }
+}
+
+function writeBackendMarker(dir, backend) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = backendMarkerFile(dir) + '.' + process.pid + '.' + Date.now() + '.tmp';
+    fs.writeFileSync(tmp, String(backend));
+    fs.renameSync(tmp, backendMarkerFile(dir));
+    return true;
+  } catch (_) { return false; }
+}
+
+// inferBackendFromDisk(dir) -> 'sqlite' | 'journal' | null, from which
+// physical store already holds data. Read-only, no-delete, never guesses when
+// neither physical form is present (a genuinely fresh dir returns null and
+// the caller falls back to normal feature-detection).
+function inferBackendFromDisk(dir) {
+  try {
+    const st = fs.statSync(path.join(dir, 'devswarm.db'));
+    if (st && st.size > 0) return 'sqlite';
+  } catch (_) { /* no sqlite db here */ }
+  try {
+    const names = fs.readdirSync(path.join(dir, 'journal'));
+    if (names && names.length > 0) return 'journal';
+  } catch (_) { /* no journal dir here */ }
+  return null;
+}
+
+// resolveStoreBackend(dir, opts) -> 'sqlite' | 'journal', the backend
+// `openStore` actually dispatches to for `dir`. Wraps selectBackend() (kept
+// byte-identical for its own direct callers/tests) with the persisted-marker
+// consistency fix above. `dir` may be falsy (e.g. a bare workspaceId-only
+// open with no explicit/derivable dir at this call site) — resolveStoreBackend
+// then degrades to plain selectBackend(), matching pre-fix behavior exactly.
+function resolveStoreBackend(dir, opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const forced = String(o.backend || env.ANTIHALL_DEVSWARM_STORE_BACKEND || '').trim().toLowerCase();
+  if (forced === 'journal' || forced === 'sqlite') return selectBackend(o);
+  if (!dir) return selectBackend(o);
+  const marker = readBackendMarker(dir);
+  if (marker === 'journal') return 'journal';
+  if (marker === 'sqlite') return sqliteAvailable() ? 'sqlite' : 'journal';
+  let inferred = inferBackendFromDisk(dir);
+  // A prior process wrote real sqlite data to disk, but THIS runtime lacks
+  // node:sqlite (e.g. Node <22.5) — never infer 'sqlite' here: openSqlite
+  // would crash, and writing a 'sqlite' marker would pin every future open
+  // (including sqlite-capable ones) to a backend this process cannot even
+  // read from right now. Same safe-fallback semantics as the marker/forced
+  // paths above.
+  if (inferred === 'sqlite' && !sqliteAvailable()) inferred = 'journal';
+  const chosen = inferred || selectBackend(o);
+  if (!o.readOnly) writeBackendMarker(dir, chosen);
+  return chosen;
+}
+
+// hasBackendData(dir, backend) -> bool. Physical-presence check for ONE named
+// backend (never both/neither implied), unlike inferBackendFromDisk (which
+// PREFERS sqlite when both exist). Used to detect a genuinely SPLIT store —
+// both physical forms present with real data — the owner-reported repair
+// target (9 real machines observed: 053f0040, 2e126d49, 2faeb4df, 38770daf,
+// 63f9261d, 958e44cc, a51ee0be, ae2758cd, projA-a7a7a5).
+function hasBackendData(dir, backend) {
+  if (backend === 'sqlite') {
+    try { return fs.statSync(path.join(dir, 'devswarm.db')).size > 0; } catch (_) { return false; }
+  }
+  try { return fs.readdirSync(path.join(dir, 'journal')).some((n) => /\.ndjson$/.test(n)); } catch (_) { return false; }
+}
+
+// mergePath(dir) -> the no-delete completion marker this merge writes.
+function mergeMarkerFile(dir) { return path.join(dir, 'MERGE-STATE.json'); }
+function readMergeMarker(dir) {
+  try { return JSON.parse(fs.readFileSync(mergeMarkerFile(dir), 'utf8')); } catch (_) { return null; }
+}
+function writeMergeMarker(dir, rec) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = mergeMarkerFile(dir) + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(rec));
+    fs.renameSync(tmp, mergeMarkerFile(dir));
+    return true;
+  } catch (_) { return false; }
+}
+
+// nullHashDedupeKey(row) -> a string identity for a hash-less row, used ONLY
+// as a fallback dedupe key (sqlite's UNIQUE(hash)/journal's dedupe both skip a
+// null hash — "a null-hash row is a distinct message" per listMessages'
+// header — so re-running this merge on such a row would otherwise duplicate
+// it every time, breaking the required "second run is a no-op" contract).
+function nullHashDedupeKey(row) {
+  return [row.workspaceId, row.ts, row.sender, row.recipient, row.mtype, row.body].join('\u0000');
+}
+
+// mergeSplitBackendStore(home, hash, opts) -> the result of MERGING the
+// non-chosen physical backend's data (defect #10 follow-up: the backend-
+// consistency marker above picks ONE side going forward for an ALREADY-split
+// store, but a store split before this fix shipped still has real rows sitting
+// invisible on the other side). READ-ONLY from the other side, WRITE-ONLY into
+// the chosen side, NEVER deletes/renames/truncates either physical form —
+// "no-delete" per the owner's persisted-shape-migration rule. Idempotent: a
+// message already present (by hash, or by nullHashDedupeKey for a hash-less
+// row) is skipped; registry/cursor/reader-cursor merges are all naturally
+// idempotent (upsert-if-newer / max-only). opts.dryRun never opens the chosen
+// side for writing and reports counts only.
+function mergeSplitBackendStore(home, hash, opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const dryRun = !!o.dryRun;
+  const dir = storeDirForHash(home, hash);
+  const chosenBackend = resolveStoreBackend(dir, { env, readOnly: dryRun });
+  const otherBackend = chosenBackend === 'sqlite' ? 'journal' : 'sqlite';
+  const out = {
+    ok: true, hash: String(hash), dir, chosenBackend, otherBackend, dryRun,
+    split: false, pending: false,
+    messagesMerged: 0, messagesOnlyInOther: 0, registryMerged: 0, cursorsAdvanced: 0,
+    broadcastCursorsAdvanced: 0, readerCursorRowsMerged: 0, unreadOnlyInOther: 0,
+    error: null,
+  };
+  if (!hasBackendData(dir, otherBackend)) return out; // nothing split here
+  out.split = true;
+
+  const openFor = (backend, readOnly) => (backend === 'sqlite'
+    ? openSqlite(home, null, { hash, readOnly })
+    : openJournal(home, null, null, null, { hash, readOnly }));
+
+  let chosenHandle = null;
+  let otherHandle = null;
+  try {
+    otherHandle = openFor(otherBackend, true); // NEVER written to
+    if (!otherHandle) return out; // readOnly-null contract: no data after all
+    chosenHandle = dryRun ? openFor(chosenBackend, true) : openFor(chosenBackend, false);
+    if (!chosenHandle) { out.ok = false; out.error = 'chosen-backend-unopenable'; return out; }
+
+    const allIds = new Set([...(otherHandle.listWorkspaceIds() || []), ...(chosenHandle.listWorkspaceIds() || [])]);
+
+    for (const id of allIds) {
+      const otherRows = otherHandle.listMessages(id) || [];
+      if (!otherRows.length) continue;
+      const chosenRows = chosenHandle.listMessages(id) || [];
+      const seenHash = new Set();
+      const seenNullKey = new Set();
+      for (const r of chosenRows) {
+        if (r.hash != null) seenHash.add(r.hash);
+        else seenNullKey.add(nullHashDedupeKey(Object.assign({ workspaceId: id }, r)));
+      }
+      for (const row of otherRows) {
+        const withId = Object.assign({ workspaceId: id }, row);
+        const isDup = row.hash != null ? seenHash.has(row.hash) : seenNullKey.has(nullHashDedupeKey(withId));
+        if (isDup) continue;
+        out.messagesOnlyInOther += 1;
+        if (!dryRun) {
+          const r = chosenHandle.appendMeshRow(withId);
+          if (r.inserted) out.messagesMerged += 1;
+        }
+        if (row.hash != null) seenHash.add(row.hash); else seenNullKey.add(nullHashDedupeKey(withId));
+      }
+      // Cursors, broadcast cursors, and reader_cursors are DELIBERATELY NEVER
+      // copied from the other backend. The two sides use INDEPENDENT sequence
+      // numbering (row order/seq is per-physical-store), so a "max-only" copy
+      // of a raw cursor VALUE is not loss-free here the way it is for a shared
+      // sequence space elsewhere: a chosen side with 10 rows at cursor 2 next
+      // to an other side with 50 rows read (cursor 50) would, after a naive
+      // value-copy, land the chosen side at cursor 50 over its own (now) 60
+      // rows — silently marking that side's 8 real unread rows as read. The
+      // chosen side's own cursor position is left exactly as-is; newly merged
+      // rows simply append as unread there (a bounded re-delivery, never a
+      // lost read) instead of risking hidden unread loss.
+    }
+
+    // registry — union; a row missing on the chosen side is folded in as-is;
+    // a row present on both sides keeps the chosen side's unless the OTHER
+    // side is strictly newer (updatedAt, falling back to writeSeq), matching
+    // the store's own existing "freshest wins" convention elsewhere
+    // (pickFreshestLive/resolveSenderRegistryId) rather than inventing a new
+    // per-field merge rule this file does not otherwise have.
+    const chosenReg = new Map((chosenHandle.listRegistry() || []).map((d) => [String(d.id), d]));
+    for (const d of (otherHandle.listRegistry() || [])) {
+      const existing = chosenReg.get(String(d.id));
+      if (!existing) {
+        out.registryMerged += 1;
+        if (!dryRun) chosenHandle.upsertRegistry(d);
+        continue;
+      }
+      const otherNewer = (Number.isFinite(d.updatedAt) ? d.updatedAt : -1) > (Number.isFinite(existing.updatedAt) ? existing.updatedAt : -1)
+        || ((d.writeSeq != null && existing.writeSeq != null) && Number(d.writeSeq) > Number(existing.writeSeq));
+      if (otherNewer) {
+        out.registryMerged += 1;
+        if (!dryRun) chosenHandle.upsertRegistry(d, { allowPathChange: true });
+      }
+    }
+  } catch (e) {
+    out.ok = false;
+    out.error = (e && e.message) || String(e);
+  } finally {
+    try { if (chosenHandle) chosenHandle.close(); } catch (_) {}
+    try { if (otherHandle) otherHandle.close(); } catch (_) {}
+  }
+
+  // cursorsAdvanced/broadcastCursorsAdvanced/readerCursorRowsMerged are kept
+  // at 0 (never copied — see the note above) and deliberately excluded here:
+  // counting them would make `pending` true forever and re-run this migration
+  // on every pass with nothing left it could ever finish.
+  out.pending = out.messagesOnlyInOther > 0 || out.registryMerged > 0;
+
+  if (!dryRun && out.ok) {
+    // Re-derive so unread/gates/broadcastUnread reflect the merged messages
+    // immediately, same as any other writer of this store.
+    try {
+      const forDerive = openStore({ home, hash, env });
+      try { deriveSummary(forDerive, { home, env, now }); } finally { forDerive.close(); }
+    } catch (_) { /* fail-open: the merge itself already succeeded and is durable */ }
+    // No-delete completion marker — records what happened, touches neither
+    // physical form. Left in place forever (harmless if stale/re-merged).
+    writeMergeMarker(dir, {
+      mergedAt: now, fromBackend: otherBackend, intoBackend: chosenBackend,
+      messagesMerged: out.messagesMerged, registryMerged: out.registryMerged,
+      cursorsAdvanced: out.cursorsAdvanced, broadcastCursorsAdvanced: out.broadcastCursorsAdvanced,
+      readerCursorRowsMerged: out.readerCursorRowsMerged,
+    });
+  }
+  return out;
+}
+
+// mergeSplitBackendStoresAllStores(home, opts) -> aggregate across every store
+// hash (doctor/update all-stores sweep shape, matching foldMeshDuplicatesAllStores
+// et al.). opts.dryRun -> READ-ONLY, no writes to either side.
+function mergeSplitBackendStoresAllStores(home, opts) {
+  const o = opts || {};
+  const hashes = listStoreHashes(home);
+  const out = {
+    ok: true, stores: hashes.length, splitStores: 0, pending: 0,
+    messagesMerged: 0, registryMerged: 0, cursorsAdvanced: 0, broadcastCursorsAdvanced: 0,
+    readerCursorRowsMerged: 0, errors: 0, details: [],
+  };
+  for (const hash of hashes) {
+    let r;
+    try { r = mergeSplitBackendStore(home, hash, o); } catch (e) { r = { ok: false, hash, error: (e && e.message) || String(e), split: true, pending: true }; }
+    if (!r) continue;
+    if (r.split) {
+      out.splitStores += 1;
+      out.details.push(r);
+    }
+    if (r.ok === false) out.errors += 1;
+    if (r.pending) out.pending += 1;
+    out.messagesMerged += r.messagesMerged || 0;
+    out.registryMerged += r.registryMerged || 0;
+    out.cursorsAdvanced += r.cursorsAdvanced || 0;
+    out.broadcastCursorsAdvanced += r.broadcastCursorsAdvanced || 0;
+    out.readerCursorRowsMerged += r.readerCursorRowsMerged || 0;
+  }
+  return out;
+}
+
+// ============================================================================
+// Mesh (v0.57) shared constants — PLAN-v0.57-mesh.md D3-D7, D22, D23.
+// ============================================================================
+// BROADCAST_PARTITION_ID — the single shared `workspace_id` every broadcast /
+// heartbeat row lands in (D3). NOT a real workspace: it fails isSafeId (contains
+// '*'), so it can never be path.join'd into a liveness/registry file path, and
+// deriveSummary explicitly skips it if it were ever (mis-)registered.
+const BROADCAST_PARTITION_ID = '*mesh-broadcast*';
+const URGENCY_RANK = { low: 0, normal: 1, high: 2, urgent: 3 };
+// PREVIEW_MAX — chars of a pending question's text kept in the summary projection
+// (pendingQuestions[].preview), so a Primary's per-prompt line can show what it asks.
+const PREVIEW_MAX = 120;
+const DEFAULT_RECENT_CAP = 50; // O-D8 (broadcast retention) UNRESOLVED — sane default, overridable via opts.recentCap.
+// DEFAULT_PENDING_QUESTIONS_CAP — a BACKSTOP on the per-workspace pendingQuestions
+// array, overridable via opts.pendingQuestionsCap. It should be UNREACHABLE in
+// practice: the per-sender collapse in computeSummary already bounds the array by
+// the number of DISTINCT registered senders that ever asked this workspace a
+// question, which is a roster-sized number, not a history-sized one. This exists
+// only so a pathological store (a runaway registry, a corrupted projection) cannot
+// materialize an unbounded array into the summary JSON. UNLIKE recent[], truncation
+// here is NOT semantically free — dropping a genuinely-unanswered question would
+// silently unblock the decide-gate — so when it DOES bite, the oldest (most overdue)
+// entries are kept and the workspace carries an explicit truncation signal so no
+// consumer can mistake a truncated list for a complete one.
+const DEFAULT_PENDING_QUESTIONS_CAP = 200;
+
+// ARCHIVE_REQUEST_MARKER (v0.58, PLAN.md STORE + child-gate) — the mechanical
+// tag a parent's `scripts/devswarm.js archive-request <childId>` prefixes onto
+// a mesh-direct message so a receiving child (and, here, deriveSummary) can
+// recognize an archive request vs. ordinary chatter. This is the ONE canonical
+// copy: this file's own devswarm.js caller re-exports/reuses it via
+// `store.ARCHIVE_REQUEST_MARKER`, and hooks/devswarm-child-turn.js now IMPORTS
+// this exact constant (`require('../companion/lib/devswarm-store.js')`, for
+// the marker string only — it never opens the DB, so P1-B's "HOOKS NEVER OPEN
+// THE DB" layering still holds) rather than keeping a second local literal —
+// a single source of truth, no byte-identical-copy drift risk.
+const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
+
+// DONE_REPORT_MARKER (0.108.3) — the machine-readable kind a child's
+// `scripts/devswarm.js done` prefixes onto its ONE structured done message to
+// the Primary. The authoritative done fact is the `done` gate row the same
+// verb sets (auto-archive gate (a)); this marker only lets a reader tell the
+// report apart from ordinary chatter.
+const DONE_REPORT_MARKER = '[[ANTIHALL_DONE]]';
+// DONE_GATE_SETBY_PREFIX (0.108.3, P1-B) — the `done` verb records the worktree
+// HEAD it reported done at in the gate row's set_by metadata
+// ('devswarm-done@<sha>'); the gates table stores booleans only. deriveSummary
+// projects it as workspaces[id].doneHead, and auto-archive gate (a) honours the
+// done-report only while that sha is still the worktree's HEAD.
+const DONE_GATE_SETBY_PREFIX = 'devswarm-done@';
+// MERGED_VERIFIED_SETBY_PREFIX (0.108.3) — `gate --set merged` records the HEAD
+// its merge proof (devswarm-git-truth.js gitMergeProof) ran at in the
+// merged_verified row's set_by ('devswarm-merged@<sha>'). deriveSummary
+// projects it as workspaces[id].mergedVerifiedHead; auto-archive gate (b)
+// counts a verified merged gate only while that sha is still the HEAD.
+const MERGED_VERIFIED_SETBY_PREFIX = 'devswarm-merged@';
+
+// ensureMessagesMeshColumns(db) — additive migration for a `messages` table that
+// pre-dates the v0.57 mesh columns (an on-disk store created by <=0.56). A brand
+// new table already has them via CREATE TABLE; this is a no-op there. For an
+// EXISTING table missing them, ALTER TABLE ADD COLUMN (all nullable — never a
+// destructive rewrite, never touches an existing row's data).
+function ensureMessagesMeshColumns(db) {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(messages);').all().map((r) => String(r.name)); } catch (_) { return; }
+  const need = [
+    ['sender', 'TEXT'], ['recipient', 'TEXT'], ['mtype', 'TEXT'],
+    ['urgency', 'TEXT'], ['is_heartbeat', 'INTEGER'], ['seq', 'INTEGER'],
+    ['needs_reply', 'INTEGER'],
+    // orig_hash (defect 64861a623503, v0.90.0) — the ORIGINAL row's content
+    // hash carried onto a FORWARDED copy. Nullable and purely additive: a
+    // legacy row (and every non-forwarded row) reads back null, and NOTHING
+    // requires it (the forwarded-copy dedup reconstructs it from the row's own
+    // fields when absent — see scripts/devswarm.js forwardedOrigHashOf).
+    ['orig_hash', 'TEXT'],
+    // instance_nonce (defect d3d571495bf6, v0.98.0) — an ADDITIVE per-process
+    // instance discriminator stamped on outbound rows so two running
+    // processes that resolve the SAME session id (a `claude --resume` racing
+    // its own prior process) can be told apart on the mesh instead of both
+    // writing under one indistinguishable identity. Nullable and NEVER part
+    // of meshMessageHash/UNIQUE(hash) — a legacy row (and any row from a
+    // caller that could not derive one) simply reads back null; dedupe is
+    // completely unaffected. See devswarm.js's deriveInstanceNonce.
+    ['instance_nonce', 'TEXT'],
+  ];
+  for (const [name, type] of need) {
+    if (!cols.includes(name)) {
+      try { db.exec('ALTER TABLE messages ADD COLUMN ' + name + ' ' + type + ';'); } catch (_) { /* best-effort, fail-open */ }
+    }
+  }
+}
+
+// ensureRegistryWriteSeqColumn(db) — additive migration for a `registry` table
+// that pre-dates the v0.61.0 write_seq column (money-path residual close: a
+// same-millisecond re-register can't be distinguished from a stale phantom by
+// updated_at alone, since both land on the same ms — see removeRegistryIf).
+// A brand new table already has the column via CREATE TABLE; this is a no-op
+// there. For an EXISTING table missing it, ALTER TABLE ADD COLUMN (nullable —
+// never a destructive rewrite, never touches an existing row's data). Runs on
+// EVERY store open (idempotent PRAGMA check) so an old store transparently
+// gains the column the next time /update, doctor, or any CLI verb opens it.
+function ensureRegistryWriteSeqColumn(db) {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(registry);').all().map((r) => String(r.name)); } catch (_) { return; }
+  if (!cols.includes('write_seq')) {
+    try { db.exec('ALTER TABLE registry ADD COLUMN write_seq INTEGER;'); } catch (_) { /* best-effort, fail-open */ }
+  }
+}
+
+// meshMessageHash(fields) -> 'mesh:<sha256>'. The DISJOINT dedupe namespace for
+// STORE-DIRECT mesh sends (D7) — over sender+recipient+mtype+urgency+message+
+// timestamp+needsReply, so two DISTINCT broadcasts never collapse under
+// UNIQUE(hash)/journal dedupe. The 'mesh:' prefix keeps this namespace
+// structurally disjoint from the EXISTING native 'native:' messageHash
+// (devswarm-ingest.js) — no cross-path collision is even possible, by
+// construction.
+//
+// needsReply (EASY-WIN fix, Round 3 review): ADDITIVE — appended after the
+// pre-existing field list rather than interleaved, so this only changes what
+// NEW hashes look like; it is write-time-only dedupe (INSERT OR IGNORE keyed
+// on `hash`), never recomputed against/compared to an existing row's stored
+// hash, so no data migration is needed. Without this, two messages identical
+// in every OTHER hashed field but differing ONLY in `needsReply` (e.g. a
+// plain message and a `--question` message with byte-identical body text at
+// the exact same millisecond) would collide and dedupe, silently dropping
+// the flagged question (`sent:false`) so it is never recorded as pending.
+//
+// CONDITIONAL append (Fix Wave 4): the needsReply slot is only appended when
+// genuinely truthy (a `--question` message), rather than unconditionally as
+// an always-present (possibly empty) slot. `foldGroupIntoSurvivor`'s
+// idempotence depends on recomputing the SAME hash for the SAME logical
+// fields across repeated fold runs (so INSERT OR IGNORE correctly no-ops on
+// a re-run); an unconditional slot changes the hash for the overwhelmingly
+// common PLAIN-message case (needsReply false/absent) relative to the format
+// used before this needsReply hashing was introduced, defeating that
+// idempotence across an anti-hall upgrade straddling two fold runs. Keeping
+// the plain-message hash BYTE-IDENTICAL to the pre-needsReply format
+// preserves cross-upgrade idempotence for that overwhelmingly common case; a
+// genuine `--question` row's hash still changes relative to the pre-this-
+// effort format, which is an acceptable, self-limiting, one-time cost right
+// at the upgrade boundary (see foldGroupIntoSurvivor's doc comment).
+function meshMessageHash(fields) {
+  const f = fields || {};
+  const parts = [
+    f.from != null ? String(f.from) : '',
+    f.to != null ? String(f.to) : '',
+    f.type != null ? String(f.type) : '',
+    f.urgency != null ? String(f.urgency) : '',
+    f.message != null ? String(f.message) : '',
+    f.timestamp != null ? String(f.timestamp) : '',
+  ];
+  if (f.needsReply) parts.push(String(f.needsReply));
+  return 'mesh:' + crypto.createHash('sha256').update(parts.join(' ')).digest('hex');
+}
+
+// appendMeshMessage(store, {from,to,type,message,timestamp,urgency,hash,isHeartbeat,needsReply})
+// -> {inserted, seq}. The WIRE-CONTRACT-to-physical-row mapping (D3): a DIRECT row's
+// workspace_id is the CALLER-SUPPLIED `to` (the target's real read partition per D19
+// — the caller resolves meshId -> builder-id partition BEFORE calling this; this
+// layer does not know about meshId resolution) so the EXISTING per-workspace
+// messageCount/listMessages/cursor machinery works verbatim as that recipient's
+// inbox. A BROADCAST (or HEARTBEAT, D22) row's workspace_id is the single shared
+// BROADCAST_PARTITION_ID. `hash` is an EXPLICIT parameter (D7) — the caller decides
+// the dedupe namespace: a store-direct mesh send passes `meshMessageHash(fields)`;
+// a native-drained row (Phase 5) passes the EXISTING `native:`-prefixed
+// `messageHash`. `isHeartbeat` sets the orthogonal D22 marker; it does NOT change
+// `mtype` (a heartbeat is `mtype='broadcast'` + `is_heartbeat=1`, never a third
+// mtype value).
+function appendMeshMessage(store, fields) {
+  const f = fields || {};
+  const type = f.type === 'broadcast' ? 'broadcast' : 'direct';
+  const from = f.from != null ? String(f.from) : null;
+  const to = f.to != null ? String(f.to) : null;
+  const message = f.message != null ? String(f.message) : '';
+  const ts = Number.isFinite(f.timestamp) ? f.timestamp : Date.now();
+  const urgency = f.urgency != null ? String(f.urgency) : 'normal';
+  const hash = f.hash != null ? String(f.hash) : null;
+  const isHeartbeat = !!f.isHeartbeat;
+  const needsReply = !!f.needsReply;
+  // origHash (defect 64861a623503) — set ONLY by a forward site, which passes
+  // the ORIGINAL row's hash so a reader that already consumed that original can
+  // recognise the re-addressed copy as the same logical message. Deliberately
+  // NOT part of meshMessageHash: including it would change the hash of every
+  // forwarded row relative to prior builds and break the OR-IGNORE idempotence
+  // a re-run of any fold/forward depends on.
+  const origHash = f.origHash != null ? String(f.origHash) : null;
+  // instanceNonce (defect d3d571495bf6) — see ensureMessagesMeshColumns above.
+  // ADDITIVE, forwarded verbatim; deliberately NOT part of meshMessageHash (the
+  // caller passes an explicit `hash` computed over the pre-existing field set
+  // only, so this can never change dedupe for any hash the caller supplies).
+  const instanceNonce = f.instanceNonce != null ? String(f.instanceNonce) : null;
+  const workspaceId = type === 'direct' ? to : BROADCAST_PARTITION_ID;
+  const recipient = type === 'direct' ? to : null;
+  return store.appendMeshRow({
+    workspaceId, ts, hash, body: message,
+    sender: from, recipient, mtype: type, urgency, isHeartbeat, needsReply, origHash, instanceNonce,
+  });
+}
+
+// isSqliteBusyError(e) -> true for a SQLITE_BUSY / "database is locked" throw
+// from node:sqlite (errcode 5). PRAGMA busy_timeout (set in openSqlite below)
+// already makes ONE blocked statement wait (bounded) before sqlite gives up;
+// this only recognizes that specific give-up so retrySqliteBusy (below) never
+// masks a genuine, unrelated error.
+function isSqliteBusyError(e) {
+  if (!e) return false;
+  if (e.errcode === 5) return true; // SQLITE_BUSY
+  return /database is locked|SQLITE_BUSY/i.test(String((e && (e.message || e.errstr)) || ''));
+}
+// retrySqliteBusy(fn) — bounded retry on SQLITE_BUSY, mirroring the journal
+// backend's withRetriedMessagesLock (jittered backoff, small fixed attempt
+// cap; a non-busy error is never retried — fail closed). PRAGMA busy_timeout
+// already bounds the wait WITHIN a single statement attempt; this is the
+// outer safety net for when even that per-statement wait is exhausted under
+// sustained multi-process contention — observed live on windows-latest/
+// node24 CI (two 40-write processes; one `appendMeshRow` INSERT exceeded the
+// 3000ms busy_timeout and threw "database is locked", errcode 5). Retrying
+// the whole prepared-statement call is safe: `appendMeshRow`'s INSERT never
+// partially applies (a thrown statement inserts nothing), and the OR-IGNORE
+// dedupe-by-hash path makes any eventual re-attempt idempotent regardless.
+const SQLITE_BUSY_MAX_RETRIES = 5;
+function retrySqliteBusy(fn) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < SQLITE_BUSY_MAX_RETRIES; attempt++) {
+    try { return fn(); }
+    catch (e) {
+      if (!isSqliteBusyError(e)) throw e; // not contention -> fail closed, never mask
+      lastErr = e;
+      // jittered backoff, same shape as the journal backend's lockSleep.
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 + Math.floor(Math.random() * 40)); } catch (_) {}
+    }
+  }
+  throw lastErr;
+}
+
+// ============================================================================
+// SQLite backend (WAL). Touches a real db file (DatabaseSync has no fs injection);
+// tests point it at an isolated temp HOME.
+// ============================================================================
+function openSqlite(home, workspaceId, opts) {
+  const o = opts || {};
+  const hash = o.hash != null ? String(o.hash) : hashFromWorkspaceId(workspaceId);
+  const dir = o.dir || storeDirForHash(home, hash);
+  // busy_timeout (D6 — mesh writer-availability): mesh concentrates MANY concurrent
+  // writer PROCESSES on one shared db (daemon drain, per-turn heartbeats, mesh
+  // sends, registry upserts). node:sqlite's DatabaseSync throws SQLITE_BUSY
+  // IMMEDIATELY on writer contention with no busy handler set; PRAGMA busy_timeout
+  // makes a contended writer WAIT (bounded) instead of throwing. Overridable
+  // (opts.busyTimeoutMs) so tests can drive contention deterministically.
+  const busyTimeoutMs = Number.isFinite(o.busyTimeoutMs) ? o.busyTimeoutMs : 3000;
+  const { DatabaseSync } = require('./sqlite-quiet.js').requireSqlite();
+  const dbPath = path.join(dir, 'devswarm.db');
+  // readOnly (Phase 4c, #12 — "213 empty store dirs on the owner's machine"):
+  // a PURE-READ caller (liveness sweeps, unread checks, parent/child gate
+  // reads, doctor enumeration) must never conjure a store into existence just
+  // by looking at it. Verified live on node 22/24: `new DatabaseSync(path,
+  // { readOnly: true })` opens an EXISTING file without touching it and
+  // THROWS (rather than creating) when the file is missing — so the guard
+  // below (fs.existsSync BEFORE construction) is what actually prevents the
+  // create-on-open behavior; DatabaseSync's own missing-file error is never
+  // reached in the normal case. `readOnly: true` ALSO makes every write
+  // statement (CREATE TABLE, PRAGMA journal_mode, an accidental
+  // upsert/setGate/etc.) throw "attempt to write a readonly database" —
+  // real defense-in-depth, not just an optimization, if a future edit ever
+  // routes a write call through a read-only-opened handle.
+  const readOnly = !!o.readOnly;
+  let db;
+  if (readOnly) {
+    // Nothing to read if the db file itself was never written — return null
+    // (the SAME "no store yet" signal openStoreForUnread's existing
+    // null-on-any-failure contract already documents; every read-only call
+    // site below already null-checks this return before use). Never mkdir,
+    // never touch the fs at all in this branch.
+    if (!fs.existsSync(dbPath)) return null;
+    try {
+      db = new DatabaseSync(dbPath, { readOnly: true });
+    } catch (e) {
+      const err = new Error('devswarm store unavailable (' + ((e && e.code) || 'EUNKNOWN') + ') opening ' + dir + ': ' + ((e && e.message) || e));
+      err.code = 'ESTOREUNAVAILABLE';
+      err.storeUnavailableReason = (e && e.code) || 'EUNKNOWN';
+      throw err;
+    }
+    // No pragma writes, no CREATE TABLE/CREATE INDEX, no ALTER migrations
+    // below — a read-only connection cannot run any of them anyway (they'd
+    // throw "attempt to write a readonly database"), and the file already
+    // existing means a prior writer already established whatever schema it
+    // has. hasWriteSeq is still detected below via a PRAGMA (a read).
+  } else {
+    // fl-wave4 fix (item 2, "silent zero on a broken store"): a chmod-000
+    // store dir or an unparseable/corrupt db header throws SYNCHRONOUSLY here
+    // (mkdirSync on an inaccessible dir, or DatabaseSync failing to read the
+    // sqlite file header) — that already propagated as a genuine exception
+    // pre-fix, but as a RAW node:fs/node:sqlite error with no consistent shape
+    // callers could key on. Wrap it into the SAME typed failure the journal
+    // backend's getReadError() surfaces (a `code`/`storeUnavailableReason`
+    // pair), so scripts/devswarm.js's resolveWorkspaceStoreForRead can map
+    // EITHER backend's genuine open failure to the identical
+    // reason:'store-unavailable' shape. ENOENT is not expected here (mkdirSync
+    // recursive creates every missing ancestor; only a genuine permission /
+    // filesystem-shape problem reaches this catch) but is passed through
+    // unwrapped defensively rather than silently miscategorized.
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      db = new DatabaseSync(dbPath);
+    } catch (e) {
+      if (e && e.code === 'ENOENT') throw e;
+      const err = new Error('devswarm store unavailable (' + ((e && e.code) || 'EUNKNOWN') + ') opening ' + dir + ': ' + ((e && e.message) || e));
+      err.code = 'ESTOREUNAVAILABLE';
+      err.storeUnavailableReason = (e && e.code) || 'EUNKNOWN';
+      throw err;
+    }
+    // busy_timeout MUST be the FIRST statement on this connection, BEFORE even the
+    // journal_mode/foreign_keys pragmas and the CREATE TABLE IF NOT EXISTS calls
+    // below — those can ALSO throw SQLITE_BUSY under contention (e.g. two processes
+    // opening the same file for the first time, or a concurrent writer mid-WAL-
+    // checkpoint) since busy_timeout only protects statements issued AFTER it takes
+    // effect on this connection. Verified live: setting it after journal_mode still
+    // let 'PRAGMA journal_mode = WAL' itself throw 'database is locked' under a
+    // genuine two-process race.
+    db.exec('PRAGMA busy_timeout = ' + Math.max(0, Math.floor(busyTimeoutMs)) + ';');
+    db.exec('PRAGMA journal_mode = WAL;');
+    db.exec('PRAGMA foreign_keys = ON;');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS messages ('
+      + ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
+      + ' workspace_id TEXT NOT NULL,'
+      + ' ts INTEGER NOT NULL,'
+      + ' hash TEXT,'
+      + ' body TEXT,'
+      // mesh columns (v0.57, D3/D6/D7/D22) — ALL NULLABLE so a pre-existing table
+      // (created before this ALTER) and pre-migration rows stay valid; a legacy row
+      // simply reads back with these as null (edge_case: mtype null -> treated as a
+      // legacy direct by any mesh-aware reader).
+      + ' sender TEXT,'
+      + ' recipient TEXT,'
+      + ' mtype TEXT,'
+      + ' urgency TEXT,'
+      + ' is_heartbeat INTEGER,'
+      + ' needs_reply INTEGER,'
+      // orig_hash (defect 64861a623503) — see ensureMessagesMeshColumns. NULLABLE,
+      // never part of UNIQUE(hash): a forwarded copy keeps its OWN re-addressed
+      // hash as its identity and merely REMEMBERS the original's.
+      + ' orig_hash TEXT,'
+      + ' instance_nonce TEXT,'
+      + ' seq INTEGER,'
+      + ' UNIQUE(hash)'
+      + ');'
+    );
+    ensureMessagesMeshColumns(db); // additive migration for a table that pre-dates the mesh columns
+    // idx_messages_needs_reply — supports listNeedsReply's per-workspace needs_reply
+    // lookup (computeSummary calls it once PER REGISTRY ROW, every projection). Without
+    // it that query degrades to a full table scan of an append-only, never-pruned table.
+    // MUST run AFTER ensureMessagesMeshColumns: on a table that pre-dates the mesh
+    // columns, `needs_reply` only exists once that ALTER has run. Best-effort/fail-open
+    // in the same spirit as the migrations above — an index is a pure performance
+    // affordance, never a correctness precondition, so a read-only/locked DB that
+    // cannot create it still works (just slower). IF NOT EXISTS -> idempotent on an
+    // existing db, re-run safe on every open.
+    try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_needs_reply ON messages (workspace_id, needs_reply);'); } catch (_) { /* fail-open */ }
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS registry ('
+      + ' id TEXT PRIMARY KEY,'
+      + ' worktree_path TEXT, session_id TEXT, inbox_path TEXT,'
+      + ' cursor_path TEXT, nudge_command TEXT, updated_at INTEGER,'
+      // write_seq (v0.61.0, nullable) — a per-row monotonic write counter, bumped
+      // on EVERY upsert regardless of wall-clock ms. See removeRegistryIf below.
+      + ' write_seq INTEGER'
+      + ');'
+    );
+    ensureRegistryWriteSeqColumn(db); // additive migration for a table that pre-dates write_seq
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS cursors ('
+      + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
+      + ');'
+    );
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS gates ('
+      + ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
+      + ' workspace_id TEXT NOT NULL, gate_name TEXT NOT NULL,'
+      + ' value INTEGER NOT NULL, set_at INTEGER, set_by TEXT'
+      + ');'
+    );
+    // broadcast_cursors (D5) — a SEPARATE additive table (NOT a change to `cursors`'
+    // PRIMARY KEY, which would be a migration hazard). Mirrors `cursors` exactly;
+    // each workspace tracks broadcasts-seen independently of its direct-inbox cursor.
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS broadcast_cursors ('
+      + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
+      + ');'
+    );
+    // reader_cursors (mesh redesign Phase 3) — the ONE table of read positions.
+    // Additive: old builds never read it. Logic lives in reader-cursors.js; this
+    // backend only guarantees the storage rules (value is MAX-only, per key).
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS reader_cursors ('
+      + ' partition TEXT NOT NULL,'
+      + " ns TEXT NOT NULL CHECK (ns IN ('store','nd')),"
+      + ' reader TEXT NOT NULL,'
+      + ' value INTEGER NOT NULL CHECK (value >= 0),'
+      + ' retired_line INTEGER,'
+      + ' updated_at INTEGER NOT NULL,'
+      + ' PRIMARY KEY (partition, ns, reader)'
+      + ') WITHOUT ROWID;'
+    );
+  }
+  // readerCursorRowsOn(partition) — every reader_cursors row for one partition.
+  // A pre-Phase-3 db opened read-only has no such table: that is "no rows yet",
+  // never an error. Any other failure throws (callers map it to UNKNOWN).
+  function readerCursorRowsOn(partition) {
+    let rows;
+    try {
+      rows = db.prepare('SELECT partition, ns, reader, value, retired_line, updated_at FROM reader_cursors WHERE partition = ?;').all(String(partition));
+    } catch (e) {
+      if (/no such table/i.test(String((e && e.message) || ''))) return [];
+      throw e;
+    }
+    return rows.map((r) => ({
+      partition: String(r.partition), ns: String(r.ns), reader: String(r.reader),
+      value: Number(r.value), retiredLine: r.retired_line == null ? null : Number(r.retired_line),
+      updatedAt: Number(r.updated_at),
+    }));
+  }
+  // hasWriteSeq (fail-open capability probe): a PRAGMA is a read, safe on a
+  // read-only connection too. On the writer path, the ALTER above is
+  // best-effort (ensureRegistryWriteSeqColumn swallows its own errors) — this
+  // re-reads the ACTUAL schema rather than trusting the ALTER succeeded. If
+  // it failed for a reason OTHER than "column already exists" (locked/corrupt/
+  // read-only DB), `write_seq` genuinely does not exist and every write below
+  // MUST avoid referencing it, or the store would throw on the next upsert/
+  // delete instead of degrading to pre-0.61.0 behavior. On the read-only path
+  // this simply reports whatever schema the existing file already has.
+  let hasWriteSeq = false;
+  try {
+    hasWriteSeq = db.prepare('PRAGMA table_info(registry);').all()
+      .some((r) => String(r.name) === 'write_seq');
+  } catch (_) { hasWriteSeq = false; }
+
+  return {
+    backend: 'sqlite',
+    workspaceId: workspaceId != null ? String(workspaceId) : null,
+    hash,
+    // hasWriteSeq: observed (not assumed) — true only if PRAGMA table_info
+    // actually reported the column. Gates write_seq use in upsertRegistry/
+    // removeRegistryIf below so a store that could not gain the column (locked/
+    // corrupt/read-only DB) degrades to pre-0.61.0 behavior instead of throwing.
+    hasWriteSeq,
+    // listWorkspaceIds() -> distinct workspace ids present anywhere in this store
+    // (messages/registry/cursors/gates). Used by the global->per-project migration
+    // to split a legacy multi-workspace store file. Pure read.
+    listWorkspaceIds() {
+      const ids = new Set();
+      try { for (const r of db.prepare('SELECT DISTINCT workspace_id AS id FROM messages;').all()) ids.add(String(r.id)); } catch (_) {}
+      try { for (const r of db.prepare('SELECT id FROM registry;').all()) ids.add(String(r.id)); } catch (_) {}
+      try { for (const r of db.prepare('SELECT DISTINCT workspace_id AS id FROM cursors;').all()) ids.add(String(r.id)); } catch (_) {}
+      try { for (const r of db.prepare('SELECT DISTINCT workspace_id AS id FROM gates;').all()) ids.add(String(r.id)); } catch (_) {}
+      return Array.from(ids);
+    },
+    appendMessage(m) {
+      const hash = (m && m.hash != null) ? String(m.hash) : null;
+      const ts = Number.isFinite(m && m.ts) ? m.ts : Date.now();
+      const body = (m && m.body != null) ? String(m.body) : '';
+      const stmt = db.prepare(
+        'INSERT ' + (hash !== null ? 'OR IGNORE ' : '')
+        + 'INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);'
+      );
+      const r = stmt.run(String(m.workspaceId), ts, hash, body);
+      return { inserted: r.changes > 0 };
+    },
+    // appendMeshRow(m) -> {inserted, seq}. The mesh-aware insert (D3/D6/D7/D22) —
+    // called by the top-level appendMeshMessage(), never directly by a consumer.
+    // `seq` is computed INSIDE this single INSERT statement (D6 collision-safety):
+    // sqlite's writer serialization makes the COALESCE(MAX(seq),0)+1 subquery
+    // atomic across concurrent writer PROCESSES — a JS read-MAX-then-bind across
+    // processes would race and could assign a DUPLICATE seq, which is FORBIDDEN.
+    // COALESCE handles the all-NULL legacy-rows-only case (bare MAX() would be
+    // NULL, poisoning every subsequent seq).
+    appendMeshRow(m) {
+      const hash = (m && m.hash != null) ? String(m.hash) : null;
+      const ts = Number.isFinite(m && m.ts) ? m.ts : Date.now();
+      const body = (m && m.body != null) ? String(m.body) : '';
+      const sender = m && m.sender != null ? String(m.sender) : null;
+      const recipient = m && m.recipient != null ? String(m.recipient) : null;
+      const mtype = m && m.mtype != null ? String(m.mtype) : null;
+      const urgency = m && m.urgency != null ? String(m.urgency) : null;
+      const isHeartbeat = m && m.isHeartbeat ? 1 : 0;
+      const needsReply = m && m.needsReply ? 1 : 0;
+      const origHash = m && m.origHash != null ? String(m.origHash) : null;
+      const instanceNonce = m && m.instanceNonce != null ? String(m.instanceNonce) : null;
+      const stmt = db.prepare(
+        'INSERT ' + (hash !== null ? 'OR IGNORE ' : '')
+        + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
+      );
+      const r = retrySqliteBusy(() =>
+        stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat, needsReply, origHash, instanceNonce)
+      );
+      if (r.changes <= 0) return { inserted: false, seq: null }; // dedupe hit (OR IGNORE)
+      const got = db.prepare('SELECT seq FROM messages WHERE id = ?;').get(Number(r.lastInsertRowid));
+      return { inserted: true, seq: got ? Number(got.seq) : null };
+    },
+    upsertRegistry(d, opts) {
+      // F2 id-collision guard (P3, low-prob but in-scope): `id` is an 8-hex
+      // sha256(realpath) slice (primaryWorkspaceId) — a COLLISION between two
+      // DISTINCT worktree paths hashing to the same id is astronomically
+      // unlikely but possible, and a blind `ON CONFLICT(id) DO UPDATE` would
+      // silently clobber the FIRST path's descriptor with the second's. Guard:
+      // if a row already exists for this id with a DIFFERENT non-null
+      // worktree_path than the incoming one, do NOT overwrite — warn to
+      // stderr and skip (least-destructive: preserves the existing mapping
+      // rather than erroring out of a fail-open registration/reconcile path).
+      // A same-id/same-path update (the normal case — field refresh, ensure,
+      // re-home) is untouched; this only trips on an ACTUAL path mismatch for
+      // the same id.
+      //
+      // opts.allowPathChange (explicit opt-in, default false): rekeySubdirRegistryRows
+      // deliberately rewrites worktreePath for an EXISTING id (a subdir path -> its
+      // own git toplevel, same physical worktree, self-correcting a legacy
+      // mis-registration) — that is a KNOWN, intentional same-id path change, not a
+      // hash collision, so it passes this flag to bypass the guard. No other caller
+      // sets it; every other upsertRegistry call site writes either a brand-new id
+      // or the SAME worktreePath it already had.
+      const allowPathChange = !!(opts && opts.allowPathChange);
+      const incomingPath = nOrNull(d.worktreePath);
+      if (incomingPath != null && !allowPathChange) {
+        let existingPath = null;
+        try {
+          const row = db.prepare('SELECT worktree_path FROM registry WHERE id = ?;').get(String(d.id));
+          existingPath = row ? row.worktree_path : null;
+        } catch (_) { existingPath = null; }
+        if (existingPath != null && !sameRegistryWorktree(existingPath, incomingPath)) {
+          try {
+            process.stderr.write('[devswarm-store] upsertRegistry: id ' + JSON.stringify(String(d.id))
+              + ' already maps to worktree_path ' + JSON.stringify(existingPath)
+              + ' — refusing to overwrite with a DIFFERENT path ' + JSON.stringify(incomingPath)
+              + ' (possible id hash collision); existing mapping preserved.\n');
+          } catch (_) {}
+          return false; // F-B/F-C/F-D (v0.61.2): explicit false signals a guard-skipped
+          // write (as opposed to undefined, indistinguishable from a normal void
+          // return) so callers that assume success (cmdRegister/migrate/rehomeCore)
+          // can detect a silent skip instead of reporting a false ok:true/verified.
+        }
+      }
+
+      // write_seq (v0.61.0 money-path residual close): bumped on EVERY upsert,
+      // computed INSIDE this single statement so concurrent writer PROCESSES
+      // can't race a JS read-then-increment (same atomicity argument as
+      // appendMeshRow's seq subquery, D6). COALESCE(registry.write_seq,0)+1
+      // starts a pre-migration NULL row at 1 on its first post-migration upsert.
+      //
+      // hasWriteSeq false (fail-open): the column genuinely does not exist (the
+      // ALTER in ensureRegistryWriteSeqColumn failed for a non-"already exists"
+      // reason — locked/corrupt/read-only DB). Use the exact pre-0.61.0 INSERT/
+      // UPDATE shape WITHOUT the column, byte-identical to legacy behavior,
+      // instead of referencing a column that isn't there.
+      if (!hasWriteSeq) {
+        db.prepare(
+          'INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at)'
+          + ' VALUES (?, ?, ?, ?, ?, ?, ?)'
+          + ' ON CONFLICT(id) DO UPDATE SET worktree_path=excluded.worktree_path, session_id=excluded.session_id,'
+          + ' inbox_path=excluded.inbox_path, cursor_path=excluded.cursor_path,'
+          + ' nudge_command=excluded.nudge_command, updated_at=excluded.updated_at;'
+        ).run(
+          String(d.id), nOrNull(d.worktreePath), nOrNull(d.sessionId), nOrNull(d.inboxPath),
+          nOrNull(d.cursorPath), serializeCmd(d.nudgeCommand), Date.now()
+        );
+        return true;
+      }
+      db.prepare(
+        'INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, 1)'
+        + ' ON CONFLICT(id) DO UPDATE SET worktree_path=excluded.worktree_path, session_id=excluded.session_id,'
+        + ' inbox_path=excluded.inbox_path, cursor_path=excluded.cursor_path,'
+        + ' nudge_command=excluded.nudge_command, updated_at=excluded.updated_at,'
+        + ' write_seq=COALESCE(registry.write_seq,0)+1;'
+      ).run(
+        String(d.id), nOrNull(d.worktreePath), nOrNull(d.sessionId), nOrNull(d.inboxPath),
+        nOrNull(d.cursorPath), serializeCmd(d.nudgeCommand), Date.now()
+      );
+      return true;
+    },
+    removeRegistry(id) {
+      db.prepare('DELETE FROM registry WHERE id = ?;').run(String(id));
+    },
+    // removeRegistryIf(id, guard) -> true iff a row was deleted. The ATOMIC
+    // conditional tombstone that closes the fold's delete-race TOCTOU (P1a): the
+    // guard-check and the delete are ONE statement, so a row a child re-registered
+    // (a NEW session_id, or a re-written updated_at) in the window between the fold's
+    // classification and here CANNOT be deleted. The guard PINS the snapshot exactly:
+    //   { sessionId:<snapshot session|null>, updatedAt:<snapshot updatedAt|null> }
+    // Delete only if the CURRENT row still has that same session_id AND updated_at.
+    // `IS` is SQLite's NULL-safe equality, so a null snapshot updatedAt matches ONLY a
+    // row whose updated_at is STILL null — a null snapshot that gained a real timestamp
+    // is a re-register and the WHERE fails (P2). NB a store-only phantom legitimately
+    // carries a (stale) session_id; the "is this a distinct live child" question is
+    // answered upstream by the descriptor-file check, NOT by session_id here.
+    removeRegistryIf(id, guard) {
+      const g = guard || {};
+      const snapUpd = (g.updatedAt == null) ? null : Number(g.updatedAt);
+      const snapSess = (g.sessionId != null && String(g.sessionId) !== '') ? String(g.sessionId) : null;
+      // guardHasWriteSeq: the `writeSeq` KEY's presence on the GUARD OBJECT (not
+      // its value) gates whether the write_seq guard applies at all — a caller
+      // that never supplies the key (a pre-v0.61.0 call site) gets EXACTLY the
+      // old sessionId+updatedAt-only guard, byte-identical, so no existing
+      // caller/test regresses. A caller that DOES supply it (foldGroupIntoSurvivor,
+      // always — via listRegistry()'s writeSeq) gets the tightened check below —
+      // UNLESS the store itself lacks the column (hasWriteSeq false, capability
+      // probe from openSqlite), in which case a supplied writeSeq key is IGNORED
+      // and the store falls back to the legacy guard too (fail-open: never emit
+      // write_seq in SQL when the column is absent).
+      const guardHasWriteSeq = hasWriteSeq && Object.prototype.hasOwnProperty.call(g, 'writeSeq');
+      if (!guardHasWriteSeq) {
+        const r = db.prepare(
+          'DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ?;'
+        ).run(String(id), snapSess, snapUpd);
+        return r.changes > 0;
+      }
+      // snapWriteSeq (v0.61.0 P3 close): a SAME-MILLISECOND live re-register keeps
+      // updated_at identical, so the ms-based guard alone still matches and would
+      // wrongly delete the now-live row. write_seq is bumped on EVERY upsert
+      // regardless of wall-clock time, so a same-ms re-register still advances it,
+      // making the WHERE fail. `IS` is NULL-safe: a null snapshot (pre-migration
+      // row, never re-upserted) matches ONLY a still-NULL current write_seq.
+      const snapWriteSeq = (g.writeSeq == null) ? null : Number(g.writeSeq);
+      const r = db.prepare(
+        'DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;'
+      ).run(String(id), snapSess, snapUpd, snapWriteSeq);
+      return r.changes > 0;
+    },
+    setCursor(id, value) {
+      const v = clampInt(value);
+      db.prepare(
+        'INSERT INTO cursors (workspace_id, value, updated_at) VALUES (?, ?, ?)'
+        + ' ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;'
+      ).run(String(id), v, Date.now());
+    },
+    setGate(g) {
+      db.prepare(
+        'INSERT INTO gates (workspace_id, gate_name, value, set_at, set_by) VALUES (?, ?, ?, ?, ?);'
+      ).run(String(g.workspaceId), String(g.name), g.value ? 1 : 0,
+        Number.isFinite(g && g.setAt) ? g.setAt : Date.now(),
+        g && g.setBy != null ? String(g.setBy) : null);
+    },
+    // broadcast_cursors (D5) — mirrors cursors' get/set shape exactly, but tracks
+    // a workspace's OWN join point into the shared broadcast partition.
+    broadcastCursorValue(id) {
+      const r = db.prepare('SELECT value FROM broadcast_cursors WHERE workspace_id = ?;').get(String(id));
+      return r ? Number(r.value) : 0;
+    },
+    setBroadcastCursor(id, value) {
+      const v = clampInt(value);
+      db.prepare(
+        'INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?, ?, ?)'
+        + ' ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;'
+      ).run(String(id), v, Date.now());
+    },
+    // advanceBroadcastCursor(id) -> the new cursor value (D23 read/ack). Sets `id`'s
+    // broadcast cursor to the CURRENT head `seq` of the shared broadcast partition
+    // (ALL broadcast rows, heartbeats included — "read up to head" marks everything
+    // currently visible as seen). Consumed by the Phase-4 `mesh read` verb.
+    advanceBroadcastCursor(id) {
+      const r = db.prepare("SELECT MAX(seq) AS m FROM messages WHERE mtype = 'broadcast';").get();
+      const head = (r && Number.isFinite(Number(r.m))) ? Number(r.m) : 0;
+      db.prepare(
+        'INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?, ?, ?)'
+        + ' ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;'
+      ).run(String(id), head, Date.now());
+      return head;
+    },
+    listRegistry() {
+      return db.prepare('SELECT * FROM registry ORDER BY id ASC;').all().map(rowToDescriptor);
+    },
+    messageCount(id) {
+      const r = db.prepare('SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?;').get(String(id));
+      return r ? Number(r.c) : 0;
+    },
+    // listMessages(id, {sinceCursor}) -> ordered message rows INCLUDING body. The
+    // READ-BACK side of the store (the `body` column was written but never read
+    // until this). Ordered by insertion (id ASC) so `index` (1-based, PER-WORKSPACE
+    // positional index) aligns with the consumed-count cursor. sinceCursor (a
+    // consumed-count) skips the first N rows — the caller passes cursorValue(id) to
+    // get only the unread tail. Pure read; never mutates. sqlite has UNIQUE(hash) so
+    // no dup-hash rows to fold here; a null-hash row is a distinct message (matches
+    // messageCount's COUNT(*)). Additive mesh fields (sender/recipient/mtype/
+    // urgency/isHeartbeat/storeSeq) are null/false on a pre-mesh legacy row.
+    //
+    // `seq` FIX (TRACED — `seq` used to mean opposite things across sibling verbs:
+    // here it was the positional `i+1`, while `send`'s return and `cmdMeshRead`
+    // both use the PHYSICAL mesh `seq` column). `seq` now ALWAYS means the physical
+    // mesh seq (same value as `storeSeq`, kept alongside for backward compat with
+    // any existing reader of `storeSeq`); the positional ordinal moved to `index`.
+    listMessages(id, opts) {
+      const o = opts || {};
+      const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
+      const rows = db.prepare(
+        'SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq'
+        + ' FROM messages WHERE workspace_id = ? ORDER BY id ASC;'
+      ).all(String(id));
+      const out = [];
+      for (let i = 0; i < rows.length; i++) {
+        if (i < since) continue;
+        const physicalSeq = rows[i].seq != null ? Number(rows[i].seq) : null;
+        out.push({
+          index: i + 1,
+          seq: physicalSeq,
+          ts: Number(rows[i].ts),
+          hash: rows[i].hash != null ? String(rows[i].hash) : null,
+          body: rows[i].body != null ? String(rows[i].body) : '',
+          sender: rows[i].sender != null ? String(rows[i].sender) : null,
+          recipient: rows[i].recipient != null ? String(rows[i].recipient) : null,
+          mtype: rows[i].mtype != null ? String(rows[i].mtype) : null,
+          urgency: rows[i].urgency != null ? String(rows[i].urgency) : null,
+          isHeartbeat: rows[i].is_heartbeat === 1 || rows[i].is_heartbeat === 1n,
+          needsReply: rows[i].needs_reply === 1 || rows[i].needs_reply === 1n,
+          origHash: rows[i].orig_hash != null ? String(rows[i].orig_hash) : null,
+          // instanceNonce (defect d3d571495bf6) — reader FAIL-OPEN: absent on
+          // any row written before this fix (or by a caller that could not
+          // derive one), reads back null exactly like a legacy origHash-less
+          // row, never a throw.
+          instanceNonce: rows[i].instance_nonce != null ? String(rows[i].instance_nonce) : null,
+          storeSeq: physicalSeq,
+        });
+      }
+      return out;
+    },
+    // listNeedsReply(id) -> [{sender, ts, storeSeq}] — the needs_reply DIRECT rows of
+    // a workspace, in insertion order, and NOTHING else.
+    //
+    // WHY A SEPARATE METHOD AND NOT AN OPTION ON listMessages: listMessages' `seq` is
+    // a 1-based POSITIONAL index over the kept set, and the read cursor is a
+    // consumed-COUNT over that same positional space. A filter option would silently
+    // renumber `seq` for a filtered call and corrupt that contract for every other
+    // caller. This method deliberately emits NO positional `seq` at all — only the
+    // physical mesh `storeSeq` — so the trap cannot be reintroduced.
+    //
+    // WHY IT EXISTS: computeSummary's pendingQuestions is DELIBERATELY not
+    // cursor-scoped (cursor-scoping it was the original bug), so it needed EVERY row
+    // of the workspace's history on EVERY projection, for EVERY registry row — a full
+    // history read, all columns, all materialized into JS objects, just to keep a
+    // handful of them. Pushing the predicate into SQL (backed by
+    // idx_messages_needs_reply) reads only the rows that survive it and only the three
+    // fields the projection actually consumes. The RESULT must stay identical to
+    // `listMessages(id).filter((r) => r.mtype === 'direct' && r.needsReply)` — the
+    // predicate below is that expression verbatim: mtype exactly 'direct', and
+    // needs_reply exactly 1 (the same truth test listMessages' `needsReply` applies).
+    listNeedsReply(id) {
+      const rows = db.prepare(
+        'SELECT sender, ts, seq FROM messages'
+        + " WHERE workspace_id = ? AND needs_reply = 1 AND mtype = 'direct' ORDER BY id ASC;"
+      ).all(String(id));
+      const out = [];
+      for (let i = 0; i < rows.length; i++) {
+        // ts: null-safe, matching the journal twin's convention (and
+        // listMessages' own `storeSeq`-style null-on-absent pattern) — a
+        // non-finite/absent ts must normalize to `null` on BOTH backends, not
+        // `Number(undefined)`'s NaN here vs the journal's explicit null. The
+        // two are equivalent for pendingQuestionEffTs (which maps both to
+        // Infinity) and on-disk (JSON.stringify flattens NaN to null too), but
+        // an in-memory consumer comparing the two backends' output directly
+        // must see identical values, not NaN vs null for the same logical row.
+        const rawTs = Number(rows[i].ts);
+        out.push({
+          sender: rows[i].sender != null ? String(rows[i].sender) : null,
+          ts: Number.isFinite(rawTs) ? rawTs : null,
+          storeSeq: rows[i].seq != null ? Number(rows[i].seq) : null,
+        });
+      }
+      return out;
+    },
+    // needsReplyPreviews(id, storeSeqs) -> { <storeSeq>: <first PREVIEW_MAX chars of body> }
+    // for ONLY the named needs_reply rows of a workspace (a roster-sized set), so a
+    // pending question can be shown with a snippet without materializing history.
+    needsReplyPreviews(id, storeSeqs) {
+      const out = {};
+      const stmt = db.prepare("SELECT substr(body, 1, " + PREVIEW_MAX + ") AS b FROM messages WHERE workspace_id = ? AND seq = ? AND needs_reply = 1 AND mtype = 'direct' LIMIT 1;");
+      for (const s of storeSeqs || []) {
+        if (!Number.isFinite(s)) continue;
+        const r = stmt.get(String(id), Number(s));
+        if (r && typeof r.b === 'string') out[s] = r.b;
+      }
+      return out;
+    },
+    cursorValue(id) {
+      const r = db.prepare('SELECT value FROM cursors WHERE workspace_id = ?;').get(String(id));
+      return r ? Number(r.value) : 0;
+    },
+    // hasCursorRow(id) -> bool. Distinguishes "no cursors row exists yet"
+    // (never established a read cursor) from "cursor row exists with value 0"
+    // (established, nothing read yet) — cursorValue() alone returns 0 for
+    // BOTH, which the devswarm-liveness-select DRAIN ACTIVITY signal (b) needs
+    // to tell apart (a live drainer's cursor row is PRESENT; a dead/never-
+    // draining duplicate has none at all). Any error -> false via the caller's
+    // own try/catch (never disqualifying — see cursorEvidence's fail-open).
+    hasCursorRow(id) {
+      const r = db.prepare('SELECT 1 FROM cursors WHERE workspace_id = ?;').get(String(id));
+      return !!r;
+    },
+    currentGates(id) {
+      const rows = db.prepare('SELECT gate_name, value FROM gates WHERE workspace_id = ? ORDER BY id ASC;').all(String(id));
+      const out = {};
+      for (const row of rows) out[row.gate_name] = row.value === 1 || row.value === 1n;
+      return out;
+    },
+    // currentGateSetBy(id) -> { [gate]: set_by|null } of each gate's LATEST row
+    // (the row currentGates' value comes from).
+    currentGateSetBy(id) {
+      const rows = db.prepare('SELECT gate_name, set_by FROM gates WHERE workspace_id = ? ORDER BY id ASC;').all(String(id));
+      const out = {};
+      for (const row of rows) out[row.gate_name] = row.set_by == null ? null : String(row.set_by);
+      return out;
+    },
+    close() { try { db.close(); } catch (_) {} },
+    // getReadError() -> null, always. fl-wave4 fix (item 2): the sqlite
+    // backend has no deferred/lazy-open failure mode to report — a genuinely
+    // unreadable store (EACCES on the dir, an unparseable/corrupt db header)
+    // throws SYNCHRONOUSLY at open time (openSqlite below), before this
+    // handle object is ever constructed, so there is never a later read
+    // error to surface here. Present purely for call-site parity with the
+    // journal backend's getReadError() — a caller can call
+    // `storeHandle.getReadError && storeHandle.getReadError()` uniformly
+    // without a backend-specific branch.
+    getReadError() { return null; },
+    // getReadErrors() -> [], always. Parity with the journal backend's
+    // getReadErrors() (fl-wave7 addition, ~line 1534) for the same reason
+    // getReadError() exists above: the sqlite backend has no deferred read
+    // error to report (see that comment), so a caller that switched from
+    // the single-value getter to the plural one (e.g. to report every
+    // broken file) gets an empty array here rather than a missing method.
+    getReadErrors() { return []; },
+    // readerCursorRows(partition) -> [{partition, ns, reader, value, retiredLine, updatedAt}].
+    readerCursorRows(partition) { return readerCursorRowsOn(partition); },
+    // readerCursorTxn(fn) -> fn's result. ONE write transaction (BEGIN IMMEDIATE):
+    // fn({ rows(partition), put(rec) }). put never lowers `value` (MAX at the SQL
+    // level); `retiredLine` is replaced only when the record carries the key.
+    readerCursorTxn(fn) {
+      const put = db.prepare(
+        'INSERT INTO reader_cursors (partition, ns, reader, value, retired_line, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+        + ' ON CONFLICT(partition, ns, reader) DO UPDATE SET value = MAX(value, excluded.value),'
+        + ' retired_line = CASE WHEN ? THEN excluded.retired_line ELSE retired_line END,'
+        + ' updated_at = excluded.updated_at;'
+      );
+      const tx = {
+        rows: (partition) => readerCursorRowsOn(partition),
+        put: (rec) => {
+          const setRetired = Object.prototype.hasOwnProperty.call(rec, 'retiredLine');
+          const rl = setRetired && rec.retiredLine != null ? clampInt(rec.retiredLine) : null;
+          put.run(String(rec.partition), String(rec.ns), String(rec.reader), clampInt(rec.value), rl,
+            Number.isFinite(rec.updatedAt) ? Math.floor(rec.updatedAt) : Date.now(), setRetired ? 1 : 0);
+        },
+      };
+      return retrySqliteBusy(() => {
+        db.exec('BEGIN IMMEDIATE;');
+        let out;
+        try { out = fn(tx); }
+        catch (e) { try { db.exec('ROLLBACK;'); } catch (_) {} throw e; }
+        db.exec('COMMIT;');
+        return out;
+      });
+    },
+  };
+}
+function rowToDescriptor(r) {
+  return {
+    id: r.id,
+    worktreePath: r.worktree_path || null,
+    sessionId: r.session_id || null,
+    inboxPath: r.inbox_path || null,
+    cursorPath: r.cursor_path || null,
+    nudgeCommand: deserializeCmd(r.nudge_command),
+    // updatedAt (drain-recency signal for resolveMeshTarget's freshest-live tie-
+    // break): the wall-clock ms of the row's last upsert. A live session re-registers
+    // its OWN partition every turn, so its row's updatedAt keeps advancing; a
+    // stranded/stale duplicate stops advancing. Additive — legacy consumers ignore it.
+    updatedAt: Number.isFinite(Number(r.updated_at)) ? Number(r.updated_at) : null,
+    // writeSeq (v0.61.0 — the fold's same-ms race guard snapshot; see
+    // removeRegistryIf). null on a pre-migration row never re-upserted since.
+    // NB: `r.write_seq == null` (not Number.isFinite(Number(...))) — Number(null)
+    // is 0, which IS finite, so that pattern would wrongly turn a genuine SQL NULL
+    // (a pre-migration row never re-upserted since) into 0 instead of null.
+    writeSeq: (r.write_seq == null) ? null : Number(r.write_seq),
+  };
+}
+
+// ============================================================================
+// Journal backend (append-only NDJSON). Dependency-free; the guaranteed-green
+// path on node 18/20. fs is injectable for isolation/testing.
+// ============================================================================
+// lacksTrailingNewline (#26) — shared with the delivery WAL.
+const { lacksTrailingNewline } = require('./devswarm-read-wal.js');
+
+function openJournal(home, workspaceId, fsi, lockOpts, opts) {
+  const o = opts || {};
+  const hash = o.hash != null ? String(o.hash) : hashFromWorkspaceId(workspaceId);
+  const F = fsi || fs;
+  const L = lockOpts || {};
+  const dir = o.dir ? path.join(o.dir, 'journal') : journalDirForHash(home, hash);
+  // readOnly (Phase 4c, #12): the journal backend already never mkdirs at
+  // open time (append()/withMessagesLock() below create `dir` lazily, only
+  // on an actual write) — but with no store dir at all there is nothing to
+  // read, so a read-only caller gets the SAME "no store yet" null this
+  // backend's sqlite twin returns, rather than a handle whose every read
+  // silently reports empty (fail-open, but indistinguishable from "empty
+  // mailbox" to a caller that wants to tell the two apart, e.g. doctor
+  // enumeration deciding whether a hash is worth counting at all).
+  if (!!(o.readOnly) && !F.existsSync(dir)) return null;
+  const files = {
+    messages: path.join(dir, 'messages.ndjson'),
+    registry: path.join(dir, 'registry.ndjson'),
+    cursors: path.join(dir, 'cursors.ndjson'),
+    gates: path.join(dir, 'gates.ndjson'),
+    // broadcast_cursors (D5) — a SEPARATE file (NOT folded into cursors.ndjson),
+    // mirroring the sqlite backend's separate table. Each workspace tracks
+    // broadcasts-seen independently of its direct-inbox cursor.
+    broadcastCursors: path.join(dir, 'broadcast_cursors.ndjson'),
+    // reader_cursors (mesh redesign Phase 3) — append-only records, reduced with
+    // value = MAX per key; retiredLine last-write-wins. Additive: old builds ignore it.
+    readerCursors: path.join(dir, 'reader_cursors.ndjson'),
+  };
+  // append — #26: a crash mid-append can leave a torn final row with no '\n'.
+  // A plain append would then GLUE the next record onto it, and readAll would
+  // skip the glued line as torn — losing a good row alongside the torn one.
+  // Lead with '\n' when the file does not already end in one, so the torn
+  // bytes stay an isolated (skipped) line and the new row lands whole.
+  function append(file, obj) {
+    F.mkdirSync(dir, { recursive: true });
+    F.appendFileSync(file, (lacksTrailingNewline(F, file) ? '\n' : '') + JSON.stringify(obj) + '\n');
+  }
+  // withMessagesLock(fn) — serialize the messages dedupe check+append across
+  // processes. The journal has no UNIQUE(hash) constraint (unlike sqlite), so a
+  // bare scan-then-append lets two processes both scan (miss the hash) and both
+  // append the SAME hash -> duplicate rows. An O_EXCL lockfile makes check+append
+  // one critical section. A stale lock (crashed holder) is stolen so the journal
+  // can never permanently wedge.
+  //
+  // SOUNDNESS (v0.54.2): the critical section NEVER runs without the lock. If the
+  // contention budget is exhausted the fn is NOT executed unlocked (that would let
+  // two writers both check-then-append the same hash -> a duplicate row); instead a
+  // distinct ELOCKUNAVAIL is thrown so the caller can retry later (idempotent by
+  // hash). A genuine unexpected fs error opening the lock (e.g. EPERM) throws
+  // ELOCKFS — fail CLOSED, never race. appendMessage() layers a bounded retry on
+  // ELOCKUNAVAIL so transient contention self-heals without corrupting the trail.
+  const messagesLockPath = path.join(dir, 'messages.lock');
+  // reader_cursors.lock — the SAME O_EXCL shape as messages.lock, a separate file
+  // so a cursor ack never contends with a message append. Fails CLOSED.
+  const readerCursorsLockPath = path.join(dir, 'reader_cursors.lock');
+  const MESSAGES_LOCK_STALE_MS = Number.isFinite(L.staleMs) ? L.staleMs : 10 * 1000;
+  // A holder whose pid is still ALIVE is stolen from only past this much larger
+  // bound (a hung process); a long live txn past staleMs keeps its lock.
+  const MESSAGES_LOCK_LIVE_STALE_MS = Number.isFinite(L.liveStaleMs) ? L.liveStaleMs : 5 * 60 * 1000;
+  // Raised 500 -> 1000 + jittered backoff: slow FS (Windows NTFS + Defender) needs
+  // more headroom before an append is considered genuinely un-acquirable. Tunable
+  // for tests via openStore({ lock: { maxTries, appendRetries, staleMs } }).
+  const MESSAGES_LOCK_MAX_TRIES = Number.isFinite(L.maxTries) ? L.maxTries : 1000;
+  const MESSAGES_APPEND_MAX_RETRIES = Number.isFinite(L.appendRetries) ? L.appendRetries : 5;
+  function lockSleep(ms) {
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms | 0)); } catch (_) {}
+  }
+  function lockErr(code, msg) { const e = new Error(msg); e.code = code; return e; }
+  // withMessagesLock(fn, lockPath) — companion/lib/lock.js with this lock's
+  // contract: publish:'excl' (plain O_EXCL create — a genuine fs error opening
+  // it fails CLOSED as ELOCKFS), mtime torn-read guard (a live holder is
+  // briefly a 0-byte file between openSync('wx') and writeSync; a fresh mtime
+  // = live holder -> back off), TOKENIZED release, and PID-AWARE steal: past
+  // staleMs a holder is stolen only when its pid is provably dead or past
+  // MESSAGES_LOCK_LIVE_STALE_MS; a lock with no parseable pid keeps the
+  // mtime + staleMs rule. A stolen lock is reclaimed by rename-aside + token
+  // check, so two writers that judged the same stale holder never both win.
+  // Busy -> jittered 2-5ms backoff (desyncs writers), MESSAGES_LOCK_MAX_TRIES
+  // attempts, then ELOCKUNAVAIL (never runs fn unlocked).
+  function withMessagesLock(fn, lockPath) {
+    const messagesLock = lockPath || messagesLockPath;
+    let h;
+    try {
+      h = lockLib.acquire(messagesLock, {
+        fs: F,
+        publish: 'excl',
+        throwOnError: true,
+        staleMs: MESSAGES_LOCK_STALE_MS,
+        liveStaleMs: MESSAGES_LOCK_LIVE_STALE_MS,
+        maxTries: MESSAGES_LOCK_MAX_TRIES,
+        waitMs: Infinity,
+        stepMs: 2,
+        jitterMs: 4,
+        sleep: lockSleep,
+      });
+    } catch (e) {
+      // Genuine, unexpected fs error opening the lock (e.g. EPERM). Fail CLOSED —
+      // NEVER run the critical section unlocked.
+      throw lockErr('ELOCKFS', 'devswarm messages lock: fs error (' + (e && e.code || 'unknown') + ')');
+    }
+    if (!h) {
+      // Contention budget exhausted. Do NOT append unlocked (duplicates the dedupe
+      // hash). Signal a retryable failure; the caller re-attempts (idempotent).
+      throw lockErr('ELOCKUNAVAIL', 'devswarm messages lock unavailable after ' + MESSAGES_LOCK_MAX_TRIES + ' tries');
+    }
+    try { return fn(); }
+    finally { h.release(); }
+  }
+  // withRetriedMessagesLock(criticalFn) — bounded retry on ELOCKUNAVAIL (contention
+  // exhaustion), shared by appendMessage AND appendMeshRow. The critical section
+  // NEVER runs unlocked, so a retry can only ADD a row once — the dedupe hash makes
+  // every re-attempt idempotent (a prior success is seen and skipped). A genuine fs
+  // error (ELOCKFS) is NOT retried: fail closed, never race.
+  function withRetriedMessagesLock(criticalFn, lockPath) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < MESSAGES_APPEND_MAX_RETRIES; attempt++) {
+      try { return withMessagesLock(criticalFn, lockPath); }
+      catch (e) {
+        lastErr = e;
+        if (e && e.code === 'ELOCKUNAVAIL') { lockSleep(4 + Math.floor(Math.random() * 8)); continue; }
+        throw e; // ELOCKFS / unexpected -> fail closed
+      }
+    }
+    throw lastErr;
+  }
+  // fl-wave4 fix (item 2, "silent zero on a broken store"): readAll used to
+  // swallow EVERY fs error identically as "no rows yet" — ENOENT (genuinely
+  // no store written yet, the sanctioned fail-open case) is byte-for-byte
+  // indistinguishable at this call site from EACCES (a chmod-000 store dir),
+  // ENOTDIR/EISDIR (the journal dir replaced by a regular file, or vice
+  // versa), or any other genuine fs error — every one of them silently read
+  // back as an EMPTY store (0 registry rows, 0 messages), not as "this store
+  // exists but could not be read". A caller (`inbox count`/`read-primary`)
+  // then reported unreadTotal:0/known:true — a genuinely broken store looked
+  // exactly like an empty mailbox, with zero signal that anything was wrong.
+  // Fail-open is still correct for ENOENT (no store written yet); every OTHER
+  // error is recorded on `lastReadErrors` (keyed by file path — see fl-wave7
+  // fix below) — good enough for a caller that probes once right after open,
+  // the intended usage via getReadError()/getReadErrors() below) so a caller
+  // that cares can surface it as a typed failure instead of an
+  // indistinguishable empty read.
+  // Still returns `[]` at THIS call (never throws) — dozens of internal
+  // callers across this file depend on readAll never throwing; getReadError()
+  // is the deliberate, opt-in escalation point instead of an ambient throw.
+  //
+  // fl-wave7 fix (P1): `lastReadError` used to be ONE slot shared across
+  // every file this handle reads (registry.ndjson, messages.ndjson,
+  // cursors.ndjson, gates.ndjson, ...), cleared on ANY successful read —
+  // so a healthy read of messages.ndjson (which every count/read/messages
+  // call also performs) silently ERASED a genuine, still-unresolved EACCES
+  // recorded moments earlier for registry.ndjson. A caller that probed
+  // getReadError() right after (the documented, intended usage — see the
+  // no-descriptor probe in devswarm.js) saw null and reported the store as
+  // healthy even though registry.ndjson was still chmod-000. Fix: key the
+  // error by file path in a Map — a successful read of ONE file clears only
+  // THAT file's entry, never another file's still-live error.
+  const lastReadErrors = new Map();
+  // tornLines — per file, how many unparsable lines the LAST read skipped. A
+  // caller that must not act on an incomplete trail (rehome) checks it.
+  const tornLines = new Map();
+  function readAll(file) {
+    let raw;
+    try { raw = String(F.readFileSync(file, 'utf8')); }
+    catch (e) {
+      if (!e || e.code === 'ENOENT') return []; // no store yet — fail-open, unchanged
+      lastReadErrors.set(file, { code: (e && e.code) || 'EUNKNOWN', path: file });
+      return [];
+    }
+    // fl-wave6 fix (P2, item 3): a per-file error used to be "last one wins,
+    // forever" — set on a genuine fs error but NEVER cleared by a later
+    // successful read, so a store that recovered (e.g. a chmod-000 directory
+    // restored to readable) still reported getReadError() as if the error
+    // were ongoing. This raw read just succeeded (no exception), so this
+    // handle's most recent evidence about `file` is that it IS readable —
+    // clear ONLY this file's entry (fl-wave7: never another file's) so a
+    // caller probing getReadError() right after sees the store as healthy
+    // again once every file it touched is readable, matching the doc
+    // comment's own intent ("a caller that probes once right after open")
+    // rather than a permanently-latched failure flag.
+    lastReadErrors.delete(file);
+    const out = [];
+    let torn = 0;
+    for (const line of raw.split('\n')) {
+      if (line.trim() === '') continue;
+      try { out.push(JSON.parse(line)); } catch (_) { torn += 1; /* skip a torn line, keep the trail */ }
+    }
+    if (torn) tornLines.set(file, torn); else tornLines.delete(file);
+    return out;
+  }
+
+  // reduceRegistry() -> the current active descriptor set (unsorted). Latest op per
+  // id wins. An unconditional `remove` tombstones; a CONDITIONAL remove
+  // (`ifUpdatedAt`/`ifSessionId`, written by removeRegistryIf) tombstones ONLY if the
+  // surviving upsert STILL matches that snapshot's session_id AND updatedAt (NULL-safe)
+  // — so a live re-register that raced the fold's tombstone (landed just before the
+  // remove op in the log, or in the sub-syscall window) SURVIVES here (P1a/P2). Shared
+  // by listRegistry and removeRegistryIf's under-lock re-read.
+  function reduceRegistry() {
+    const latest = new Map();
+    // writeSeqById (v0.61.0 — money-path residual close, P3) — a running per-id
+    // counter bumped on EVERY upsert op encountered in log order (never on a
+    // remove). Mirrors the sqlite backend's write_seq column: a same-millisecond
+    // LIVE re-register still advances this counter even though updatedAt (ms) is
+    // unchanged, so the guard below can tell it apart from a genuinely stable
+    // phantom (see removeRegistryIf).
+    const writeSeqById = new Map();
+    for (const row of readAll(files.registry)) {
+      if (!row || row.id == null) continue;
+      const id = String(row.id);
+      if (row._op === 'remove' && (row.ifUpdatedAt !== undefined || row.ifSessionId !== undefined)) {
+        const prev = latest.get(id);
+        const prevLive = !!(prev && prev._op !== 'remove');
+        const prevUpd = prevLive && Number.isFinite(Number(prev.updatedAt)) ? Number(prev.updatedAt) : null;
+        const prevSess = prevLive && prev.sessionId != null && String(prev.sessionId) !== '' ? String(prev.sessionId) : null;
+        const prevWriteSeq = prevLive && writeSeqById.has(id) ? writeSeqById.get(id) : null;
+        const ifUpd = row.ifUpdatedAt == null ? null : Number(row.ifUpdatedAt);
+        const ifSess = row.ifSessionId == null ? null : String(row.ifSessionId);
+        // ifWriteSeq undefined -> a tombstone op written before this write_seq guard
+        // existed skips the write_seq check entirely (never regresses an
+        // already-shipped tombstone's matching behavior).
+        const ifWriteSeq = row.ifWriteSeq === undefined ? undefined : (row.ifWriteSeq == null ? null : Number(row.ifWriteSeq));
+        const writeSeqOk = ifWriteSeq === undefined || prevWriteSeq === ifWriteSeq;
+        if (prevLive && prevUpd === ifUpd && prevSess === ifSess && writeSeqOk) latest.set(id, { id, _op: 'remove' }); // guard matches -> tombstone
+        // else: guard no longer matches (re-registered/re-written) -> IGNORE, keep prev
+        continue;
+      }
+      if (row._op === 'upsert') writeSeqById.set(id, (writeSeqById.get(id) || 0) + 1);
+      latest.set(id, row); // upsert OR legacy unconditional remove
+    }
+    const out = [];
+    for (const [id, row] of latest.entries()) {
+      if (row._op === 'remove') continue;
+      out.push({
+        id: row.id,
+        worktreePath: row.worktreePath || null,
+        sessionId: row.sessionId || null,
+        inboxPath: row.inboxPath || null,
+        cursorPath: row.cursorPath || null,
+        nudgeCommand: (row.nudgeCommand === undefined ? null : row.nudgeCommand),
+        updatedAt: Number.isFinite(Number(row.updatedAt)) ? Number(row.updatedAt) : null,
+        writeSeq: writeSeqById.has(id) ? writeSeqById.get(id) : null,
+      });
+    }
+    return out;
+  }
+
+  return {
+    backend: 'journal',
+    workspaceId: workspaceId != null ? String(workspaceId) : null,
+    hash,
+    // listWorkspaceIds() -> distinct workspace ids present in any journal file.
+    // Used by the global->per-project migration. Pure read (fail-open []).
+    listWorkspaceIds() {
+      const ids = new Set();
+      for (const row of readAll(files.messages)) { if (row && row.workspaceId != null) ids.add(String(row.workspaceId)); }
+      for (const row of readAll(files.registry)) { if (row && row.id != null) ids.add(String(row.id)); }
+      for (const row of readAll(files.cursors)) { if (row && row.workspaceId != null) ids.add(String(row.workspaceId)); }
+      for (const row of readAll(files.gates)) { if (row && row.workspaceId != null) ids.add(String(row.workspaceId)); }
+      return Array.from(ids);
+    },
+    appendMessage(m) {
+      const hash = (m && m.hash != null) ? String(m.hash) : null;
+      // Serialize check+append so concurrent writers can't both miss the hash and
+      // both append it (the journal has no UNIQUE(hash) constraint). A null hash is
+      // always distinct, so it needs no dedupe scan — but still append under the
+      // lock so the appendFileSync itself can't interleave a torn line.
+      const critical = () => {
+        if (hash !== null) {
+          // idempotent by hash — scan existing (append-only, so a prior identical
+          // hash means already-recorded); preserves the trail without a duplicate.
+          for (const row of readAll(files.messages)) {
+            if (row.hash === hash) return { inserted: false };
+          }
+        }
+        append(files.messages, {
+          workspaceId: String(m.workspaceId),
+          ts: Number.isFinite(m && m.ts) ? m.ts : Date.now(),
+          hash,
+          body: (m && m.body != null) ? String(m.body) : '',
+        });
+        return { inserted: true };
+      };
+      // If the lock stays unavailable past the retry budget the error propagates so
+      // the ingest path re-attempts on its next monitor poll (replay is idempotent
+      // by hash).
+      return withRetriedMessagesLock(critical);
+    },
+    // appendMeshRow(m) -> {inserted, seq}. The mesh-aware insert (D3/D6/D7/D22) —
+    // called by the top-level appendMeshMessage(), never directly by a consumer.
+    // Reuses the SAME O_EXCL messages.lock as appendMessage (D6: "journal: a
+    // per-store counter written under the existing O_EXCL messages.lock, already
+    // serializes journal writers") — the per-store seq counter is computed by
+    // scanning the CURRENT max seq INSIDE the locked critical section (never a
+    // cross-process JS read-then-bind race, which D6 explicitly forbids: this scan
+    // is serialized by the SAME lock every other writer to this file must hold).
+    appendMeshRow(m) {
+      const hash = (m && m.hash != null) ? String(m.hash) : null;
+      const critical = () => {
+        const all = readAll(files.messages);
+        if (hash !== null) {
+          for (const row of all) {
+            if (row.hash === hash) return { inserted: false, seq: null };
+          }
+        }
+        let maxSeq = 0;
+        for (const row of all) {
+          if (Number.isFinite(row.seq) && row.seq > maxSeq) maxSeq = row.seq;
+        }
+        const seq = maxSeq + 1;
+        append(files.messages, {
+          workspaceId: String(m.workspaceId),
+          ts: Number.isFinite(m && m.ts) ? m.ts : Date.now(),
+          hash,
+          body: (m && m.body != null) ? String(m.body) : '',
+          sender: m && m.sender != null ? String(m.sender) : null,
+          recipient: m && m.recipient != null ? String(m.recipient) : null,
+          mtype: m && m.mtype != null ? String(m.mtype) : null,
+          urgency: m && m.urgency != null ? String(m.urgency) : null,
+          isHeartbeat: !!(m && m.isHeartbeat),
+          needsReply: !!(m && m.needsReply),
+          // orig_hash parity with the sqlite backend (defect 64861a623503).
+          origHash: m && m.origHash != null ? String(m.origHash) : null,
+          // instance_nonce parity with the sqlite backend (defect d3d571495bf6).
+          instanceNonce: m && m.instanceNonce != null ? String(m.instanceNonce) : null,
+          seq,
+        });
+        return { inserted: true, seq };
+      };
+      return withRetriedMessagesLock(critical);
+    },
+    upsertRegistry(d, opts) {
+      // F2 id-collision guard (P3, low-prob but in-scope) — mirrors the sqlite
+      // backend's guard (same rationale: an 8-hex sha256(realpath) slice id
+      // COULD collide between two distinct worktree paths). The journal backend
+      // is append-then-reduce rather than a blind SQL overwrite, but the effect
+      // at read time (listRegistry/reduceRegistry, "latest op per id wins") is
+      // the same silent clobber, so the guard belongs here too: if the CURRENT
+      // reduced row for this id already has a DIFFERENT non-null worktreePath
+      // than the incoming one, skip appending this upsert (warn to stderr)
+      // rather than let it become the new "latest" and silently displace the
+      // first path's mapping. A same-id/same-path update is unaffected.
+      //
+      // opts.allowPathChange — same explicit opt-in as the sqlite backend (see
+      // its comment): rekeySubdirRegistryRows's intentional same-id subdir->toplevel
+      // rewrite passes this to bypass the guard; no other caller sets it.
+      const allowPathChange = !!(opts && opts.allowPathChange);
+      const incomingPath = nOrNull(d.worktreePath);
+      if (incomingPath != null && !allowPathChange) {
+        let existingPath = null;
+        try {
+          for (const row of reduceRegistry()) {
+            if (row && String(row.id) === String(d.id)) { existingPath = nOrNull(row.worktreePath); break; }
+          }
+        } catch (_) { existingPath = null; }
+        if (existingPath != null && !sameRegistryWorktree(existingPath, incomingPath)) {
+          try {
+            process.stderr.write('[devswarm-store] upsertRegistry: id ' + JSON.stringify(String(d.id))
+              + ' already maps to worktreePath ' + JSON.stringify(existingPath)
+              + ' — refusing to overwrite with a DIFFERENT path ' + JSON.stringify(incomingPath)
+              + ' (possible id hash collision); existing mapping preserved.\n');
+          } catch (_) {}
+          return false; // F-B/F-C/F-D (v0.61.2): explicit false signals a guard-skipped
+          // write — mirrors the sqlite backend's return so callers can tell a
+          // silent skip apart from a normal successful append.
+        }
+      }
+      append(files.registry, {
+        id: String(d.id),
+        worktreePath: nOrNull(d.worktreePath),
+        sessionId: nOrNull(d.sessionId),
+        inboxPath: nOrNull(d.inboxPath),
+        cursorPath: nOrNull(d.cursorPath),
+        nudgeCommand: (d.nudgeCommand === undefined ? null : d.nudgeCommand),
+        _op: 'upsert',
+        updatedAt: Date.now(),
+      });
+      return true;
+    },
+    removeRegistry(id) {
+      append(files.registry, { id: String(id), _op: 'remove', updatedAt: Date.now() });
+    },
+    // removeRegistryIf(id, guard) -> true iff a tombstone was appended (an attempted
+    // removal that PASSED the guard). Closes the fold delete-race TOCTOU (P1a/P2) on
+    // the journal — an append-only log where "latest op per id wins" (listRegistry).
+    // The guard PINS the snapshot exactly ({ sessionId, updatedAt }). Two layers make
+    // it race-free:
+    //   1. Under the existing store lock, RE-READ the current reduced row; if its
+    //      session_id or updatedAt no longer equals the snapshot (NULL-safe — a null
+    //      snapshot updatedAt that gained a real timestamp is a re-register, P2), do
+    //      NOT tombstone (return false -> the fold LEAVES the row).
+    //   2. The tombstone is a CONDITIONAL remove op (`ifUpdatedAt`/`ifSessionId`):
+    //      reduceRegistry honors it ONLY if the surviving upsert STILL matches that
+    //      snapshot, so a live re-register that lands in the sub-syscall window between
+    //      the re-read and the append (or any time after) WINS at read time — never
+    //      lost. (A store-only phantom may carry a stale session_id; "distinct live
+    //      child?" is decided upstream by the descriptor-file check, not here.)
+    removeRegistryIf(id, guard) {
+      const g = guard || {};
+      const snapUpd = (g.updatedAt == null) ? null : Number(g.updatedAt);
+      const snapSess = (g.sessionId != null && String(g.sessionId) !== '') ? String(g.sessionId) : null;
+      // hasWriteSeq: the `writeSeq` KEY's presence (not its value) gates whether the
+      // write_seq guard applies at all — a caller that never supplies the key (a
+      // pre-v0.61.0 call site) gets EXACTLY the old sessionId+updatedAt-only guard,
+      // byte-identical (including the tombstone op's on-disk shape — no `ifWriteSeq`
+      // field appended), so no existing caller/test regresses. A caller that DOES
+      // supply it (foldGroupIntoSurvivor, always — via listRegistry()'s writeSeq)
+      // gets the tightened check below.
+      const hasWriteSeq = Object.prototype.hasOwnProperty.call(g, 'writeSeq');
+      // snapWriteSeq (v0.61.0 P3 close): a SAME-MILLISECOND live re-register keeps
+      // updatedAt identical, so the ms-based guard alone still matches and would
+      // wrongly delete the now-live row. write_seq is bumped on every upsert
+      // regardless of wall-clock time, so a same-ms re-register still advances it.
+      const snapWriteSeq = hasWriteSeq ? ((g.writeSeq == null) ? null : Number(g.writeSeq)) : undefined;
+      return withMessagesLock(() => {
+        let cur = null;
+        for (const d of reduceRegistry()) { if (String(d.id) === String(id)) { cur = d; break; } }
+        if (!cur) return false; // vanished -> nothing to tombstone
+        const curSess = (cur.sessionId != null && String(cur.sessionId) !== '') ? String(cur.sessionId) : null;
+        if (curSess !== snapSess) return false; // session changed (re-registered) in the window
+        const curUpd = Number.isFinite(Number(cur.updatedAt)) ? Number(cur.updatedAt) : null;
+        if (curUpd !== snapUpd) return false; // re-written in the window (null->value included, P2)
+        if (hasWriteSeq) {
+          const curWriteSeq = (cur.writeSeq == null) ? null : Number(cur.writeSeq);
+          if (curWriteSeq !== snapWriteSeq) return false; // re-registered SAME-MS in the window (P3)
+        }
+        const op = {
+          id: String(id), _op: 'remove',
+          ifUpdatedAt: snapUpd, ifSessionId: snapSess,
+          updatedAt: Date.now(),
+        };
+        if (hasWriteSeq) op.ifWriteSeq = snapWriteSeq;
+        append(files.registry, op);
+        return true;
+      });
+    },
+    setCursor(id, value) {
+      append(files.cursors, { workspaceId: String(id), value: clampInt(value), updatedAt: Date.now() });
+    },
+    setGate(g) {
+      append(files.gates, {
+        workspaceId: String(g.workspaceId),
+        name: String(g.name),
+        value: !!(g && g.value),
+        setAt: Number.isFinite(g && g.setAt) ? g.setAt : Date.now(),
+        setBy: g && g.setBy != null ? String(g.setBy) : null,
+      });
+    },
+    // broadcast_cursors (D5) — mirrors cursors' get/set shape exactly, but tracks
+    // a workspace's OWN join point into the shared broadcast partition.
+    broadcastCursorValue(id) {
+      const wid = String(id);
+      let v = 0;
+      for (const row of readAll(files.broadcastCursors)) {
+        if (String(row.workspaceId) === wid && Number.isFinite(row.value)) v = row.value;
+      }
+      return v;
+    },
+    setBroadcastCursor(id, value) {
+      append(files.broadcastCursors, { workspaceId: String(id), value: clampInt(value), updatedAt: Date.now() });
+    },
+    // advanceBroadcastCursor(id) -> the new cursor value (D23 read/ack). Sets `id`'s
+    // broadcast cursor to the CURRENT head `seq` of the shared broadcast partition
+    // (ALL broadcast rows, heartbeats included — "read up to head" marks everything
+    // currently visible as seen). Consumed by the Phase-4 `mesh read` verb.
+    advanceBroadcastCursor(id) {
+      let head = 0;
+      for (const row of readAll(files.messages)) {
+        if (row.mtype === 'broadcast' && Number.isFinite(row.seq) && row.seq > head) head = row.seq;
+      }
+      append(files.broadcastCursors, { workspaceId: String(id), value: head, updatedAt: Date.now() });
+      return head;
+    },
+    listRegistry() {
+      // Reduce the append-only log (shared reduceRegistry — conditional-remove
+      // aware), then id-ASC sort (drain-recency parity with the sqlite backend).
+      const out = reduceRegistry();
+      out.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+      return out;
+    },
+    messageCount(id) {
+      const wid = String(id);
+      const seen = new Set();
+      let n = 0;
+      for (const row of readAll(files.messages)) {
+        if (String(row.workspaceId) !== wid) continue;
+        if (row.hash != null) {
+          if (seen.has(row.hash)) continue; // dedupe identical hashes on read
+          seen.add(row.hash);
+        }
+        n++;
+      }
+      return n;
+    },
+    // listMessages(id, {sinceCursor}) -> ordered message rows INCLUDING body. Reads
+    // messages.ndjson in file (insertion) order, filtered by workspaceId, deduped by
+    // hash on read with the SAME rule messageCount uses (so the row indices agree
+    // with the consumed-count cursor). sinceCursor skips the first N kept rows. Pure
+    // read; never mutates the journal. `index` is the PER-WORKSPACE positional
+    // ordinal (1-based). `seq` is the PHYSICAL mesh `seq` field written by
+    // appendMeshRow (parity with the sqlite backend AND with `send`'s returned
+    // seq / cmdMeshRead's `seq` — TRACED fix: `seq` used to be the positional
+    // ordinal here, opposite of what `send`/`cmdMeshRead` mean by `seq`), also
+    // surfaced as `storeSeq` for backward compat; a legacy row without it reads
+    // back as null on both.
+    listMessages(id, opts) {
+      const o = opts || {};
+      const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
+      const wid = String(id);
+      const seen = new Set();
+      const kept = [];
+      for (const row of readAll(files.messages)) {
+        if (String(row.workspaceId) !== wid) continue;
+        if (row.hash != null) {
+          if (seen.has(row.hash)) continue; // dedupe identical hashes on read (parity with messageCount)
+          seen.add(row.hash);
+        }
+        kept.push(row);
+      }
+      const out = [];
+      for (let i = 0; i < kept.length; i++) {
+        if (i < since) continue;
+        const physicalSeq = Number.isFinite(kept[i].seq) ? Number(kept[i].seq) : null;
+        out.push({
+          index: i + 1,
+          seq: physicalSeq,
+          ts: Number.isFinite(kept[i].ts) ? kept[i].ts : null,
+          hash: kept[i].hash != null ? String(kept[i].hash) : null,
+          body: kept[i].body != null ? String(kept[i].body) : '',
+          sender: kept[i].sender != null ? String(kept[i].sender) : null,
+          recipient: kept[i].recipient != null ? String(kept[i].recipient) : null,
+          mtype: kept[i].mtype != null ? String(kept[i].mtype) : null,
+          urgency: kept[i].urgency != null ? String(kept[i].urgency) : null,
+          isHeartbeat: !!kept[i].isHeartbeat,
+          needsReply: !!kept[i].needsReply,
+          origHash: kept[i].origHash != null ? String(kept[i].origHash) : null,
+          // instanceNonce (defect d3d571495bf6) — fail-open, same as origHash.
+          instanceNonce: kept[i].instanceNonce != null ? String(kept[i].instanceNonce) : null,
+          storeSeq: physicalSeq,
+        });
+      }
+      return out;
+    },
+    // listNeedsReply(id) -> [{sender, ts, storeSeq}] — sqlite-parity twin (see that
+    // backend's comment for WHY this is a separate method rather than a listMessages
+    // option). NDJSON has no index, so this still walks the file — unavoidable — but
+    // it materializes ONLY the surviving rows and ONLY the three fields the projection
+    // consumes, instead of building a full row object (body included) for every
+    // message in history.
+    //
+    // THE DEDUP MUST MATCH listMessages EXACTLY or the two backends disagree: dedupe
+    // by hash across ALL of this workspace's rows, keeping the FIRST occurrence, and
+    // do it BEFORE the needs_reply/mtype filter — a duplicate-hash row is dropped
+    // because an EARLIER row already claimed that hash, which is a fact about the
+    // whole workspace history, not about the filtered subset. Filtering first would
+    // let a later duplicate survive whenever the first occurrence failed the
+    // predicate. (sqlite has UNIQUE(hash) so it has no duplicates to fold at all;
+    // this reproduces that same end state.)
+    listNeedsReply(id) {
+      const wid = String(id);
+      const seen = new Set();
+      const out = [];
+      for (const row of readAll(files.messages)) {
+        if (String(row.workspaceId) !== wid) continue;
+        if (row.hash != null) {
+          if (seen.has(row.hash)) continue; // dedupe identical hashes on read (parity with listMessages)
+          seen.add(row.hash);
+        }
+        // The predicate, verbatim from listMessages' projected shape:
+        // mtype exactly 'direct' (a null-mtype legacy row is NOT a mesh direct here)
+        // and needsReply truthy under the same `!!` coercion listMessages applies.
+        if (row.mtype !== 'direct') continue;
+        if (!row.needsReply) continue;
+        out.push({
+          sender: row.sender != null ? String(row.sender) : null,
+          ts: Number.isFinite(row.ts) ? row.ts : null,
+          storeSeq: Number.isFinite(row.seq) ? Number(row.seq) : null,
+        });
+      }
+      return out;
+    },
+    // needsReplyPreviews — journal twin of the sqlite method (same shape, same bound).
+    needsReplyPreviews(id, storeSeqs) {
+      const wid = String(id);
+      const want = new Set((storeSeqs || []).filter((s) => Number.isFinite(s)).map(Number));
+      const out = {};
+      if (!want.size) return out;
+      for (const row of readAll(files.messages)) {
+        if (String(row.workspaceId) !== wid || row.mtype !== 'direct' || !row.needsReply) continue;
+        if (want.has(Number(row.seq)) && typeof row.body === 'string' && !(row.seq in out)) out[row.seq] = row.body.slice(0, PREVIEW_MAX);
+      }
+      return out;
+    },
+    cursorValue(id) {
+      const wid = String(id);
+      let v = 0;
+      for (const row of readAll(files.cursors)) {
+        if (String(row.workspaceId) === wid && Number.isFinite(row.value)) v = row.value;
+      }
+      return v;
+    },
+    // hasCursorRow(id) -> bool. Journal-backend mirror of the sqlite backend's
+    // hasCursorRow — see its comment for why this is distinct from
+    // cursorValue()===0.
+    hasCursorRow(id) {
+      const wid = String(id);
+      for (const row of readAll(files.cursors)) {
+        if (String(row.workspaceId) === wid) return true;
+      }
+      return false;
+    },
+    currentGates(id) {
+      const wid = String(id);
+      const out = {};
+      for (const row of readAll(files.gates)) {
+        if (String(row.workspaceId) === wid && row.name != null) out[row.name] = !!row.value;
+      }
+      return out;
+    },
+    currentGateSetBy(id) {
+      const wid = String(id);
+      const out = {};
+      for (const row of readAll(files.gates)) {
+        if (String(row.workspaceId) === wid && row.name != null) out[row.name] = row.setBy == null ? null : String(row.setBy);
+      }
+      return out;
+    },
+    close() { /* no handle to close */ },
+    // getReadError() -> { code, path } | null. fl-wave4 fix (item 2): the
+    // opt-in escalation point for readAll's recorded non-ENOENT fs error (see
+    // that function's own header). Callers that need to tell "genuinely
+    // empty" apart from "unreadable, silently reported as empty" probe this
+    // right after opening (a cheap getter, not a read) — see scripts/
+    // devswarm.js resolveWorkspaceStoreForRead. fl-wave7 fix (P1): returns
+    // the FIRST remaining per-file error (Map insertion order) now that
+    // errors are tracked per file rather than in one shared slot — a caller
+    // that only wants "is anything broken" can keep using this single-value
+    // getter unchanged; getReadErrors() below returns the full set.
+    getReadError() {
+      for (const err of lastReadErrors.values()) return err;
+      return null;
+    },
+    // getReadErrors() -> Array<{ code, path }>. fl-wave7 addition: every
+    // currently-live per-file read error this handle has recorded (not just
+    // the first), for a caller that wants to report ALL broken files at
+    // once rather than only the first one Map iteration happens to yield.
+    getReadErrors() {
+      return Array.from(lastReadErrors.values());
+    },
+    // tornLineCount(name) -> unparsable lines skipped by the last read of
+    // <name>.ndjson (e.g. 'messages'). 0 when clean or never read.
+    tornLineCount(name) {
+      const f = files[name];
+      return f && tornLines.has(f) ? tornLines.get(f) : 0;
+    },
+    // readerCursorRows(partition) — reduced view. THROWS when the file exists but
+    // cannot be read (a read error must surface as UNKNOWN, never as "no rows").
+    readerCursorRows(partition) { return reduceReaderCursors(partition); },
+    // readerCursorTxn(fn) — the journal twin of the sqlite BEGIN IMMEDIATE txn:
+    // fn runs under reader_cursors.lock (fails CLOSED with ELOCKUNAVAIL/ELOCKFS —
+    // the caller then records nothing: re-delivery, never loss).
+    // ATOMIC: puts are buffered (tx.rows sees them) and the whole transaction is
+    // written as ONE line {"txn":[rec,...]} by ONE append after fn returns. A
+    // crash mid-write leaves a torn, unparsable line that readAll skips, so the
+    // transaction is either wholly present or wholly absent (an import stays
+    // needsImport; an ack never lands without its floor). A throwing fn writes
+    // nothing (ROLLBACK). The line starts with '\n' when the file does not end
+    // with one, so a torn tail can never swallow the next transaction.
+    readerCursorTxn(fn) {
+      return withRetriedMessagesLock(() => {
+        const pending = [];
+        const tx = {
+          rows: (partition) => reduceReaderCursors(partition, pending),
+          put: (rec) => {
+            const out = {
+              partition: String(rec.partition), ns: String(rec.ns), reader: String(rec.reader),
+              value: clampInt(rec.value),
+              updatedAt: Number.isFinite(rec.updatedAt) ? Math.floor(rec.updatedAt) : Date.now(),
+            };
+            if (Object.prototype.hasOwnProperty.call(rec, 'retiredLine')) {
+              out.retiredLine = rec.retiredLine == null ? null : clampInt(rec.retiredLine);
+            }
+            pending.push(out);
+          },
+        };
+        const result = fn(tx);
+        if (pending.length) {
+          let lead = '';
+          try {
+            const raw = String(F.readFileSync(files.readerCursors, 'utf8'));
+            if (raw.length && !raw.endsWith('\n')) lead = '\n';
+          } catch (_) { /* ENOENT: a fresh file needs no separator */ }
+          F.mkdirSync(dir, { recursive: true });
+          F.appendFileSync(files.readerCursors, lead + JSON.stringify({ txn: pending }) + '\n');
+        }
+        return result;
+      }, readerCursorsLockPath);
+    },
+  };
+  // reduceReaderCursors(partition, pending?) — MAX per key over every record: a
+  // plain row line (single-record form) or each rec of a {"txn":[...]} line, then
+  // the in-flight transaction's buffered puts (visible to tx.rows only).
+  function reduceReaderCursors(partition, pending) {
+    const want = String(partition);
+    const byKey = new Map();
+    const lines = readAll(files.readerCursors);
+    const err = lastReadErrors.get(files.readerCursors);
+    if (err) {
+      const e = new Error('reader_cursors unreadable (' + err.code + ')');
+      e.code = err.code;
+      throw e;
+    }
+    const recs = [];
+    for (const l of lines) {
+      if (l && Array.isArray(l.txn)) { for (const r of l.txn) recs.push(r); } else recs.push(l);
+    }
+    if (pending) for (const r of pending) recs.push(r);
+    for (const r of recs) {
+      if (!r || String(r.partition) !== want || (r.ns !== 'store' && r.ns !== 'nd') || r.reader == null) continue;
+      const k = r.ns + '\u0000' + String(r.reader);
+      const v = Number.isFinite(r.value) && r.value >= 0 ? Math.floor(r.value) : 0;
+      let cur = byKey.get(k);
+      if (!cur) {
+        cur = { partition: want, ns: r.ns, reader: String(r.reader), value: v, retiredLine: null, updatedAt: 0 };
+        byKey.set(k, cur);
+      }
+      if (v > cur.value) cur.value = v;
+      if (Object.prototype.hasOwnProperty.call(r, 'retiredLine')) {
+        cur.retiredLine = Number.isFinite(r.retiredLine) ? r.retiredLine : null;
+      }
+      if (Number.isFinite(r.updatedAt)) cur.updatedAt = r.updatedAt;
+    }
+    return Array.from(byKey.values());
+  }
+}
+
+// ----- shared helpers -----
+function nOrNull(v) { return v == null ? null : String(v); }
+function clampInt(v) {
+  let n = Number(v);
+  if (!Number.isFinite(n) || n < 0) n = 0;
+  return Math.floor(n);
+}
+// nudgeCommand may be an argv array (per recovery.js) — serialize/restore as JSON
+// in the sqlite TEXT column so it round-trips.
+function serializeCmd(cmd) {
+  if (cmd == null) return null;
+  try { return JSON.stringify(cmd); } catch (_) { return null; }
+}
+function deserializeCmd(raw) {
+  if (raw == null) return null;
+  try { return JSON.parse(raw); } catch (_) { return raw; }
+}
+
+// ============================================================================
+// Top-level store API
+// ============================================================================
+// openStore(opts) -> backend handle for ONE PROJECT's physical store. opts:
+//   { home, workspaceId, backend, env, fsi, lock, dir, hash }.
+//   workspaceId : selects the per-project store dir (store/<hashFromWorkspaceId>/).
+//                 Absent -> the DEFAULT_HASH bucket (legacy multi-workspace handle).
+//   dir/hash    : (advanced) open a store at an EXPLICIT dir (the legacy global
+//                 store/ for migration read-back) or force a specific hash subdir.
+//   backend     : force 'sqlite' | 'journal'; else feature-detect. `fsi` only
+//                 affects the journal backend (sqlite opens a real file). `lock`
+//                 (journal only) tunes the messages-lock budget.
+//   readOnly    : (Phase 4c, #12) true for a PURE-READ caller (liveness sweeps,
+//                 unread checks, parent/child gate reads, doctor enumeration,
+//                 summary reads). Never mkdirs a store dir or runs CREATE
+//                 TABLE/schema writes — if the store doesn't exist yet, returns
+//                 null instead (callers must null-check, same contract
+//                 openStoreForUnread already documents). A WRITER call site
+//                 (ingest, mesh send/registry/gates, migration) must NOT set
+//                 this — it needs the store to actually get created.
+function openStore(opts) {
+  const o = opts || {};
+  const home = resolveHomeGuarded(o);
+  // Resolve the physical dir the SAME way openSqlite/openJournal do (explicit
+  // `o.dir`, else the hash/workspaceId-derived per-project dir) so the
+  // backend-consistency marker (above) lives in the exact dir this call will
+  // actually read/write, for EVERY caller shape (hash-keyed mesh store,
+  // workspaceId-keyed legacy store, or an explicit migration `dir`).
+  const dir = o.dir || storeDirForHash(home, o.hash != null ? String(o.hash) : hashFromWorkspaceId(o.workspaceId));
+  const backend = resolveStoreBackend(dir, { backend: o.backend, env: o.env, readOnly: o.readOnly });
+  const meta = { dir: o.dir, hash: o.hash, busyTimeoutMs: o.busyTimeoutMs, readOnly: !!o.readOnly };
+  return backend === 'sqlite'
+    ? openSqlite(home, o.workspaceId, meta)
+    : openJournal(home, o.workspaceId, o.fsi, o.lock, meta);
+}
+
+// maxUrgencyOf(rows) -> the highest-ranked `urgency` value present across `rows`
+// (each {urgency}), or null when none carry a recognized urgency (a legacy/
+// native-drained row has urgency=null and does not contribute — it never LOWERS
+// an already-found max, it simply never raises one). Computed purely from the
+// `urgency` COLUMN (D22-adjacent: "computed WITHOUT reading bodies").
+function maxUrgencyOf(rows) {
+  let best = null;
+  let bestRank = -1;
+  for (const r of rows) {
+    const u = r && r.urgency != null ? String(r.urgency) : null;
+    if (u == null) continue;
+    const rank = URGENCY_RANK[u];
+    if (rank == null) continue; // unrecognized value -> ignored, never thrown
+    if (rank > bestRank) { bestRank = rank; best = u; }
+  }
+  return best;
+}
+
+// resolveSenderRegistryId(store, registry, meshId, home) -> registry row id | null.
+// Bug 2 / P0-B identity normalization (PLAN fix-wave): a question row's `sender`
+// is the SENDER's worktree-derived meshId (callerIdentity() in scripts/
+// devswarm.js), but a reply's echoed `toId` (cmdSend) is the REGISTRY ROW id
+// produced by resolveSendTarget/resolveMeshTarget — NOT necessarily the same
+// value. These two id-spaces diverge whenever a workspace is registered under a
+// DEVSWARM_BUILDER_ID different from its own derived meshId — a REAL, already-
+// documented case (every real child; see scripts/devswarm.js's
+// cmdInboxMessages "v0.57 mesh (P0 fix)" commentary around its `caller !== id`
+// check). Matches candidate rows by worktree-derived meshId (store-specific),
+// then delegates the freshest-LIVE selection to devswarm-liveness-select.js's
+// pickFreshestLive — the SAME evidence-based ranking scripts/devswarm.js's
+// resolveMeshTarget/pickSurvivor use (P0-A defect: this used to be a THIRD
+// independent copy of the same "freshest updatedAt among live rows" loop,
+// which could disagree with the other two on which duplicate row wins).
+// Returns null (never throws) when nothing matches or no meshId is derivable —
+// the CALLER decides how to treat null (see computeSummary's pendingQuestions
+// build below: a STRUCTURALLY unresolvable sender is now DROPPED, not kept
+// under its raw value — the permanent-deadlock fix, Round 2 review).
+//
+// ATTRIBUTION CONTRACT (defect f3b8f326bfc3, P2 — added `recipientId`). Because
+// `meshId` is worktree-derived, EVERY row on one worktree shares it: the
+// recipient's own anchor row, its uuid/builder-id twin, and any sub-agent
+// registered on the same path. Handing that whole set to pickFreshestLive
+// routinely picked the RECIPIENT'S OWN ROW, so the gate rendered "1 UNANSWERED
+// question from <the workspace being asked>" (or from a dormant sub-agent twin
+// that never sent anything) — the field symptom. The recipient's own identity
+// family (devswarm-identity-family.js's recipientFamilyIds — the SAME definition
+// devswarm-reply-state.js's familyAwareUnanswered uses on the clear side, so the
+// two surfaces cannot disagree) is therefore removed from the candidate pool
+// BEFORE any final-leg ranking, and within what remains the sender's OWN
+// identity wins outright: an exact id match on the stored sender first, then a
+// row cross-linked to it, and only then a DETERMINISTIC (liveness-free) pick
+// over what's left (devswarm-attribution.js's pickAttributionRow — see D8,
+// v0.94.0: the old final leg here delegated to pickFreshestLive, whose ranking
+// reads present-tense mutable signals (updatedAt, cursor, heartbeat), so when
+// N>1 sibling rows shared one worktree-derived sender meshId, `from` flipped
+// between computeSummary passes as those signals moved independently on each
+// row. Attribution must depend only on the row SET, never on which row is
+// live right now — liveness-based routing/selection (resolveMeshTarget,
+// pickSurvivor, the orphan policy) is UNCHANGED and still uses
+// pickFreshestLive).
+// When the exclusion empties the pool the stored sender id is returned VERBATIM
+// rather than re-attributed — showing the question under its raw origin is
+// honest, whereas naming the recipient is the phantom itself. That is NOT the
+// permanent-deadlock case the paragraph above describes: `null` (drop) is still
+// returned for a sender that matches NO registry row at all, which is the
+// structurally-unaddressable identity that fix was about.
+function resolveSenderRegistryId(store, registry, meshId, home, recipientId) {
+  if (!meshId) return null;
+  // v0.108.0: a pre-fix CHILD sender label (`primary-<childhash>`) resolves
+  // through sender-aliases.json to the child's registry id when that row
+  // exists — the raw-path hash below misses a row registered from a subdir,
+  // which dropped the question entirely.
+  try {
+    const a = home ? require('./devswarm-sender-alias.js').readAliases(home)[String(meshId)] : null;
+    if (a && String(a.to) !== String(recipientId) && (registry || []).some((d) => d && String(d.id) === String(a.to))) return a.to;
+  } catch (_) { /* no alias: fall through */ }
+  if (!ingestIdentity || typeof ingestIdentity.primaryWorkspaceId !== 'function') return null;
+  // Match candidates by worktree-derived meshId (store-specific — needs
+  // ingestIdentity), then rank what's left with devswarm-attribution.js's
+  // deterministic (liveness-free) pickAttributionRow — see D8 above for why
+  // this leg must not read present-tense liveness signals.
+  const candidates = [];
+  for (const d of registry) {
+    if (!d || !d.worktreePath) continue;
+    let derived = null;
+    try { derived = ingestIdentity.primaryWorkspaceId(d.worktreePath); } catch (_) { derived = null; }
+    if (derived == null || String(derived) !== String(meshId)) continue;
+    candidates.push(d);
+  }
+  // NO candidate at all -> the structurally-unresolvable sender the
+  // permanent-deadlock fix drops (unchanged).
+  if (!candidates.length) return null;
+
+  const sender = String(meshId);
+  let excluded = null;
+  try { excluded = identityFamily.recipientFamilyIds(recipientId, registry); } catch (_) { excluded = null; }
+  const eligible = excluded && excluded.size
+    ? candidates.filter((d) => d && d.id != null && !excluded.has(String(d.id)))
+    : candidates;
+  // Every row on the sender's worktree IS the recipient (or its twin): keep the
+  // stored sender id rather than attributing the question to its own recipient.
+  if (!eligible.length) return sender;
+
+  // The sender's OWN identity, strongest link first.
+  for (const d of eligible) {
+    if (d && d.id != null && String(d.id) === sender) return d.id;
+  }
+  const linked = eligible.filter((d) => {
+    try { return identityFamily.crossLinkedIdentity({ id: sender }, d); } catch (_) { return false; }
+  });
+
+  const row = attribution.pickAttributionRow(linked.length ? linked : eligible);
+  return row ? row.id : sender;
+}
+
+// deriveSummary(store, opts) -> summary object (also written to this project's
+// summaries/<hash>.json). opts: { home, workspaceId, requiredGates, env, now, fsi,
+// recentCap }. Iterates THIS store's ACTIVE registry set, projects unread
+// (messages - cursor), current gates, and archive_ready (all required gates
+// satisfied). The target summary file is chosen by opts.workspaceId, else the
+// store handle's own workspaceId/hash (so a per-project store writes its own
+// per-project summary). Write is ATOMIC (tmp + rename) so a hook read never
+// observes a partial file.
+//
+// MESH ADDITIVE fields (v0.57, D3-D5/D22/D23 — old readers ignore unknown keys):
+// per-workspace `directUnread` (alias of the existing `unread` — same value, the
+// wire-schema name), `broadcastUnread` (NON-heartbeat broadcast rows past this
+// workspace's OWN broadcast_cursors join point — heartbeats EXCLUDED per D22, else
+// it grows monotonically forever since every peer heartbeats every turn),
+// `urgencyMax` (highest urgency among this workspace's PENDING direct rows, from
+// the urgency column only), `broadcastUrgencyMax` (v0.58 P1 fix — the SAME
+// max-urgency computation as `urgencyMax`, but over this workspace's PENDING
+// NON-heartbeat broadcast rows instead of its direct rows; heartbeats excluded
+// for the same D22 reason as `broadcastUnread` — a heartbeat is a normal status
+// ping, never urgent. Without this, an urgent/high broadcast sitting unread for
+// a stale child could never force a supervisor escalation, since the escalation
+// path only ever consulted direct-row urgency), `working_on` (this workspace's latest heartbeat
+// summary — matched by `sender === d.id`; a caller supplies its own registered id
+// as `from` when heartbeating). Top-level `recent[]` = the last `recentCap`
+// (O-D8 UNRESOLVED broadcast-retention cap; default 50, overridable) broadcast
+// rows INCLUDING heartbeats, as `{from, summary, ts, urgency}` (roster state).
+// summaryHashFor(store, o) — which per-project hash this projection targets:
+// explicit opts.workspaceId wins, else the handle's workspaceId, else its hash (a
+// handle always carries a hash). Shared by computeSummary (to read the anti-spam
+// sidecar) and deriveSummary (to write both the summary and the sidecar).
+// pendingQuestionEffTs(q) — the ts unansweredQuestions ACTUALLY compares against
+// lastReplyTs: a finite ts verbatim, a non-finite one as +Infinity ("unparsable ts ->
+// treat as always-newer", devswarm-reply-state.js). The collapse below MUST order by
+// THIS value, not by the raw ts, or a non-finite-ts question (which is unanswerable
+// by construction, so permanently blocking) could be folded away behind a finite-ts
+// one that a reply has already cleared — turning a blocking set into an empty one.
+function pendingQuestionEffTs(q) {
+  return (q && Number.isFinite(q.ts)) ? q.ts : Infinity;
+}
+
+// collapsePendingQuestionsBySender(list) — fold a workspace's pendingQuestions to ONE
+// entry per sender: the entry with the MAXIMUM effective ts (tie-broken on the greater
+// storeSeq).
+//
+// WHY THIS IS LOSSLESS FOR THE BLOCKING DECISION (the whole justification — a naive
+// slice(-N) would NOT be, and must never be used here): downstream,
+// devswarm-reply-state.js's unansweredQuestions keeps q where
+// `effTs(q) > replyState[q.from].lastReplyTs`. For a FIXED sender, lastReplyTs is a
+// SINGLE value, so "sender S has any unanswered question" is EXACTLY equivalent to
+// "S's maximum-effTs question is unanswered" — max > L iff some element > L. Keeping
+// only that maximum therefore cannot change any blocking outcome in either direction,
+// while bounding the array by the number of DISTINCT senders (roster-sized) instead of
+// by the message history (unbounded, append-only, grows for the life of the project).
+//
+// ORDER is first-appearance order of each sender, so a list with no repeats comes back
+// in its original order, element-for-element unchanged.
+//
+// `occurrences` / `firstTs` / `lastTs` are emitted ONLY on an actually collapsed entry
+// (occurrences > 1) — the SAME convention recent[]'s run-collapse uses above — so a
+// projection where no sender asked twice is byte-identical to the pre-collapse output
+// for every existing reader.
+function collapsePendingQuestionsBySender(list) {
+  const order = [];
+  const byFrom = new Map();
+  for (const q of list) {
+    const key = String(q.from);
+    const prev = byFrom.get(key);
+    if (prev === undefined) {
+      order.push(key);
+      byFrom.set(key, { best: q, count: 1, minTs: Number.isFinite(q.ts) ? q.ts : null });
+      continue;
+    }
+    prev.count += 1;
+    if (Number.isFinite(q.ts)) prev.minTs = prev.minTs === null ? q.ts : Math.min(prev.minTs, q.ts);
+    const a = pendingQuestionEffTs(q);
+    const b = pendingQuestionEffTs(prev.best);
+    // Strictly-newer wins; on an exact tie the greater storeSeq wins (a later physical
+    // row). A null storeSeq sorts below any real one. The tiebreak cannot affect
+    // blocking (equal effTs answer the `> lastReplyTs` test identically) — it only
+    // makes the survivor deterministic.
+    const seqOf = (x) => (x && Number.isFinite(x.seq) ? x.seq : -Infinity);
+    if (a > b || (a === b && seqOf(q) > seqOf(prev.best))) prev.best = q;
+  }
+  const out = [];
+  for (const key of order) {
+    const g = byFrom.get(key);
+    const entry = g.best;
+    if (g.count > 1) {
+      entry.occurrences = g.count;
+      entry.firstTs = g.minTs;
+      entry.lastTs = entry.ts; // explicit alias: `ts` IS the newest of the group
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+// archivedOnlyIds(home, F) -> Set<string>. The READ-SIDE half of the archive
+// fold: the ids whose workspace is GENUINELY archived right now — archived/<id>.json
+// present AND workspaces/<id>.json absent. Delegates to row-state.js's
+// archiveCompleteIds — the SAME rule devswarm.js's isArchivedOnlyWorkspace uses
+// (mesh redesign Phase 4: one row-state derivation, no per-surface copies).
+//
+// WHY A READ FILTER AT ALL: foldArchivedRegistryRows is a WRITE migration that runs
+// only from doctor (hooks/lib/doctor-repair.js) and update (skills/update/scripts/
+// update.js) — never per turn. Until one of those runs, an archived workspace's
+// surviving registry row still projects as ACTIVE, inflating every per-turn DevSwarm
+// injection. Filtering on READ makes the ACTIVE projection correct immediately,
+// without paying a write on every refresh.
+//
+// STRUCTURALLY CANNOT BLIND A LIVE ROW: a live workspace has workspaces/<id>.json by
+// definition, so it fails the second half of the test and is never in this set. The
+// SIBLING half of the fold (rows sharing an archived worktree's real path) is
+// deliberately NOT replicated here — that one needs foldGroupIntoSurvivor's liveness
+// safety gate to avoid retiring a live child, and stays doctor-side.
+//
+// COST: ONE readdir of archived/ per projection, plus an existsSync only for ids that
+// are actually in archived/ — not two syscalls per registry row.
+//
+// FAIL-OPEN: any error yields an EMPTY set, i.e. nothing is filtered and the
+// projection degrades to exactly the pre-filter behaviour. An unreadable
+// registry/archived dir must never throw into a UserPromptSubmit turn.
+function archivedOnlyIds(home, F) {
+  try { return require('./row-state.js').archiveCompleteIds(home, F); }
+  catch (_) { return new Set(); }
+}
+
+// unionUnreadFor(d, store, F) — the ONE bridge from a registry descriptor to
+// the shared loss-free union primitive (defect 8f2aec40e2ff).
+//
+// LAZY + GUARDED require, deliberately NOT a top-level one: devswarm-unread.js
+// requires THIS module back (openStoreForUnread), so a top-level require here
+// would create a load cycle whose resolution order is a latent hazard. The lazy
+// form also keeps the fail-open contract total — a missing/broken module in a
+// partial package degrades to the pre-fix store-only count instead of throwing
+// out of a projection every read path depends on.
+//
+// Returns null when the union cannot be computed at all; the caller then keeps
+// its store-only count.
+// ndjsonHasUnread(d, F) -> boolean. The CHEAP pre-test that decides whether the
+// full union is worth paying for at all (PERF, Round 13 item 5).
+//
+// COST PROBLEM: unionUnread materialises this partition's ENTIRE store history
+// TWICE (`listMessages(id)` for the total dedup, `listMessages(id,{sinceCursor})`
+// for the unread dedup) — bodies included. computeSummary runs it once PER
+// REGISTRY ROW on EVERY projection; on a machine with 60 rows that is 120 full
+// history reads per projection.
+//
+// THE UNION IS PROVABLY REDUNDANT WHENEVER THE NDJSON SIDE HAS NO UNREAD LINES.
+// With zero unread NDJSON lines, `unreadNdjsonHashes` is empty, so nothing is
+// filtered out of the store's unread rows and `unread` reduces EXACTLY to
+// `storeUnreadRows.length` — the `total - cursor` value computeSummary already
+// has. (`total` differs, but computeSummary reads only `.unread`.) So: read the
+// NDJSON cursor + line count (one small file, no store reads) and skip the whole
+// union when the tail is empty. An absent/empty inbox, or a cursor already at
+// the line count, both land here — the overwhelmingly common shape.
+// Phase 3: the NDJSON tail is measured from the partition's nd FLOOR
+// (reader_cursors), not the descriptor cursor file — `ndFloor` is passed in.
+function ndjsonHasUnread(d, F, ndFloor) {
+  if (!d || (!d.inboxPath && !d.cursorPath)) return false;
+  try {
+    const { readUnread } = require('./devswarm-inbox-cursor.js');
+    const u = readUnread(d.inboxPath || null, d.cursorPath || null, F);
+    if (u && u.known && Number.isFinite(ndFloor)) return u.total > ndFloor;
+    return !!(u && Array.isArray(u.lines) && u.lines.length > 0);
+  } catch (_) { return true; } // fail-open: unknown -> pay for the union rather than under-report
+}
+
+// unionUnreadFor(d, store, F, home) — the summary is the FLOOR view by definition:
+// reader_cursors.countFor with reader null. Returns null when unknown/unavailable
+// (the caller then keeps its store-only count and reports the row unknown).
+function unionUnreadFor(d, store, F, home) {
+  if (!d) return null;
+  let rc;
+  try { rc = require('./reader-cursors.js'); } catch (_) { return null; }
+  const u = rc.countFor(store, { reader: null, partition: d.id, inboxPath: d.inboxPath || null, cursorPath: d.cursorPath || null, home, fsi: F });
+  return u && !u.unknown ? u : null;
+}
+
+// floorFor(store, id, home) -> the partition's stored floor (reader_cursors
+// '#floor', ns 'store'), or the legacy effective floor before its one-time
+// import. THE summary base (replaces store.cursorValue as a reader). A table
+// read error returns null = UNKNOWN (never the legacy shared cursor, which can
+// hold an old build's own position past a live reader's unread). Callers count
+// from 0 (conservative, never a false 0) and flag the row unreadUnknown.
+function floorFor(store, id, home, ns) {
+  try { return require('./reader-cursors.js').floorOf(store, id, ns || 'store', { home }); }
+  catch (_) { return null; }
+}
+
+function summaryHashFor(store, o) {
+  return (o && o.workspaceId != null)
+    ? hashFromWorkspaceId(o.workspaceId)
+    : (store && store.hash != null ? String(store.hash)
+      : hashFromWorkspaceId(store && store.workspaceId));
+}
+
+// computeSummary(store, opts) -> the summary PROJECTION object. PURE: zero disk
+// writes, zero mtime changes, no fs side effects at all (it only READS the store +
+// the on-disk worktree paths). This is the side-effect-free half of deriveSummary —
+// extracted so Phase B can build a read-only `diagnose` on top of it. `deriveSummary`
+// = this + the atomic summary write. Every existing projection field is produced
+// here BYTE-IDENTICALLY to the pre-split deriveSummary.
+//
+// ADDITIVE surface-only fields (A2/A3 — omitted entirely when empty so an existing
+// no-orphan/no-stale summary stays byte-identical for existing readers):
+//   orphans[]                 — {id, messageCount, unread}: partitions with real
+//                               unread but no live registry row, EXCLUDING the
+//                               archived-stranded ones below. This is the
+//                               ACTIONABLE stuck-mesh signal parent-inbox warns on.
+//   archivedStranded[]        — {id, messageCount, unread}: same shape, but the
+//                               workspace is archived AND its identity family has no
+//                               registry row — heal's `archived-no-family`, i.e.
+//                               provably unreadable forever. QUIET: kept for
+//                               doctor/diagnostics, never warned about per turn.
+//   forwardedDrained[]        — {id, messageCount, unread}: same shape, but the
+//                               workspace is archived, its identity family DOES have
+//                               a live survivor, and every currently-unread row has
+//                               been PROVEN (per row, by exact hash match) to have
+//                               already been forwarded into that survivor by
+//                               healOrphanPartitions' forward-only heal. Because that
+//                               heal never raises the source cursor, such an id would
+//                               otherwise nag in orphans[] forever with nothing left
+//                               to do. QUIET: same doctor/diagnostics-only posture as
+//                               archivedStranded.
+//   staleRegistryPartitions[] — {id, worktreePath, unread}: registry rows whose
+//                               worktreePath no longer exists on disk.
+// All are computed fresh each call from current store state (NO persisted cooldown
+// state). NEVER auto-forwarded / auto-deleted — surface only (owner no-delete rule).
+function computeSummary(store, opts) {
+  const o = opts || {};
+  const home = resolveHomeGuarded(o);
+  const F = o.fsi || fs;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const requiredGates = Array.isArray(o.requiredGates) ? o.requiredGates : requiredGatesFrom(o.env);
+  const recentCap = Number.isFinite(o.recentCap) && o.recentCap > 0 ? Math.floor(o.recentCap) : DEFAULT_RECENT_CAP;
+  const pendingQuestionsCap = Number.isFinite(o.pendingQuestionsCap) && o.pendingQuestionsCap > 0
+    ? Math.floor(o.pendingQuestionsCap) : DEFAULT_PENDING_QUESTIONS_CAP;
+
+  // The shared broadcast partition — read ONCE, reused for every workspace's
+  // broadcastUnread/working_on AND the top-level recent[]. Ordered by insertion
+  // (== storeSeq order, since a mesh row's physical seq is assigned at insert time
+  // under the same serialized write path).
+  const broadcastAll = typeof store.listMessages === 'function' ? store.listMessages(BROADCAST_PARTITION_ID) : [];
+  const broadcastNonHeartbeat = broadcastAll.filter((r) => !r.isHeartbeat);
+
+  const registry = store.listRegistry();
+
+  // Archived workspaces are NOT part of the ACTIVE projection — see archivedOnlyIds.
+  // archivedIds is computed BEFORE registryIds below because registryIds deliberately
+  // EXCLUDES archived ids: registryIds' only consumer is the A2 orphan pass
+  // (`if (registryIds.has(id)) continue;`), which treats "in the registry" as "not an
+  // orphan, skip it." If archived ids stayed in registryIds, a message addressed to a
+  // now-archived workspace would be silently invisible in ALL THREE projection
+  // fields (workspaces[], A2 orphans, A3 stale) until doctor runs — a stranded unread
+  // message going dark with no signal anywhere. Dropping archived ids from
+  // registryIds instead lets the A2 orphan pass see them as unregistered and report
+  // {id, unread} same as it would for any other unregistered partition.
+  // Net behaviour: an archived workspace with 0 unread is fully invisible (quiet,
+  // as it should be — nothing left to report). One with real unread surfaces
+  // (honest — someone messaged a dead workspace and that must not vanish) — in
+  // `orphans[]` while its identity family still has a live row to forward into, and
+  // otherwise in the QUIET `archivedStranded[]` (see the A2 split below: that shape
+  // is heal's `archived-no-family`, which can never be healed, so warning about it
+  // per turn is a permanent unactionable nag — but the count is never dropped).
+  // This also MATCHES the post-doctor end state: once foldArchivedRegistryRows
+  // tombstones the registry row, the A2 orphan pass reports the exact same thing —
+  // so the read path and the doctor path now agree instead of diverging until doctor
+  // runs.
+  const archivedIds = archivedOnlyIds(home, F);
+  const registryIds = new Set(
+    registry.map((d) => String(d.id)).filter((id) => !archivedIds.has(id))
+  );
+
+  // archivedRegistryRows (R18 critic fix) — the archived HALF of `registry`,
+  // projected verbatim alongside `workspaces` (additive summary field, no
+  // migration; every reader that doesn't know it yet just ignores it). A
+  // registry row for a child that is archived-but-still-live (archived/<id>.json
+  // present, session still running) is EXCLUDED from `workspaces` by design
+  // (see archivedIds's own header) but that exclusion made it invisible to
+  // hooks/devswarm-parent-gate.js's and hooks/devswarm-parent-inbox.js's
+  // `registryRows` projection too, since both build it from
+  // `Object.keys(summary.workspaces)` alone — the ONLY id space those hooks
+  // ever saw. partitionUnanswered (companion/lib/devswarm-reply-state.js) then
+  // treated a question from such a sender as coming from a fully RETIRED
+  // sender (no row anywhere) and marked it informational, even though
+  // `resolveSendTarget` in scripts/devswarm.js CAN still resolve `--to
+  // <that id>` and the sender can still ask again — a real, repliable
+  // question silently stopped being nagged about. Projecting these rows too
+  // (same {id, worktreePath, sessionId} shape as the active ones) lets the
+  // hooks fold them into `registryRows` and keeps "unrepliable" defined
+  // exactly the way `send --to` resolves it: known-anywhere (active OR
+  // archived) stays blocking; only a `from` in neither space is genuinely
+  // retired.
+  const archivedRegistryRows = [];
+  const workspaces = {};
+  for (const d of registry) {
+    if (!isSafeId(d.id)) continue; // never project an unsafe id
+    if (d.id === BROADCAST_PARTITION_ID) continue; // defense-in-depth: the shared broadcast partition is NEVER a real workspace (isSafeId already excludes '*', kept explicit)
+    if (archivedIds.has(String(d.id))) {
+      archivedRegistryRows.push({ id: d.id, worktreePath: d.worktreePath || null, sessionId: d.sessionId || null });
+      continue; // archived -> never projected ACTIVE
+    }
+    const total = store.messageCount(d.id);
+    const floor = floorFor(store, d.id, home);
+    const unreadUnknown = floor === null;
+    const cursor = unreadUnknown ? 0 : floor;
+    // UNREAD UNIFICATION (defect 8f2aec40e2ff, P1). `total - cursor` counts ONLY
+    // the store side. The parent Stop gate, liveness.js and the `inbox count`
+    // CLI all count the LOSS-FREE UNION (durable-NDJSON unread ∪ store-only
+    // unread, deduped by content hash) via companion/lib/devswarm-unread.js —
+    // so for the SAME row, minutes apart, a `roster` sweep reading this
+    // projection reported 15 while the gate reported 8. Two enforcing surfaces
+    // disagreeing about how much mail is outstanding is the whole defect.
+    //
+    // This now calls the SAME shared primitive (never a second implementation).
+    // `store` is passed as the caller-opened `storeHandle` unionUnread already
+    // expects; the function never opens or closes one. Fail-open by contract:
+    // unionUnread never throws, and with no inboxPath/cursorPath on the
+    // descriptor its NDJSON side reads as empty, leaving the union count equal
+    // to the store-only count — byte-identical to the pre-fix value for every
+    // NDJSON-less row.
+    //
+    // COST: unionUnread reads the descriptor's NDJSON and materialises this
+    // partition's FULL store history (it needs the total to dedupe against).
+    // computeSummary runs once PER REGISTRY ROW on EVERY projection, so that is
+    // a real cost on a long-lived project — the same cost class the
+    // listNeedsReply note below describes. It is therefore SKIPPED entirely for
+    // a row with no durable NDJSON path, where the union is PROVABLY equal to
+    // the store-only count already computed above (an absent inbox contributes
+    // zero lines and zero dedup hashes, so the union reduces to exactly the
+    // store's own unread rows). That is the overwhelmingly common shape, so the
+    // extra read is paid only by rows that genuinely have two sides to merge.
+    let unread = Math.max(0, total - cursor);
+    // PERF BOUND (Round 13 item 5): pay for the union ONLY when the NDJSON side
+    // actually has unread lines to merge — see ndjsonHasUnread's header for why
+    // an empty tail makes the union provably equal to `total - cursor`.
+    if ((d.inboxPath || d.cursorPath) && ndjsonHasUnread(d, F, floorFor(store, d.id, home, 'nd') || 0)) {
+      try {
+        const u = unionUnreadFor(d, store, F, home);
+        if (u && Number.isFinite(u.unread)) unread = Math.max(0, u.unread);
+      } catch (_) { /* fail-open: keep the store-only count rather than fail a projection */ }
+    }
+    const gates = store.currentGates(d.id);
+    const archive_ready = requiredGates.length > 0 && requiredGates.every((g) => gates[g] === true);
+
+    const unreadRows = unread > 0 ? store.listMessages(d.id, { sinceCursor: cursor }) : [];
+    const urgencyMax = maxUrgencyOf(unreadRows);
+    // oldestDirectUnreadTs (age/trend surfacing, item 6): the OLDEST unread
+    // row's ts for this workspace's own partition — zero extra store reads
+    // (computed over the ALREADY-fetched unreadRows above). null when there
+    // is no unread row, or no row carries a finite ts (fail-open to omitting
+    // age rather than fabricating one).
+    let oldestDirectUnreadTs = null;
+    // oldestDirectUnreadSender (peer-bug fix, 2026-09-26): the SENDER of that
+    // SAME oldest-unread row — zero extra store reads (same loop). Consumed
+    // by hooks/devswarm-parent-inbox.js's unreadIsGraced to decide whether
+    // the fresh-mail grace window applies to a KNOWN third-party sender
+    // (never graced) vs this Primary's own send or an unresolvable/legacy
+    // sender (graced, unchanged pre-fix behavior — fail-open toward the
+    // EXISTING lenient advisory posture, not toward blocking, since this is
+    // an advisory nag, never a hard Stop-gate block). null when there is no
+    // unread row or the oldest row carries no sender (pre-mesh legacy row).
+    let oldestDirectUnreadSender = null;
+    for (const r of unreadRows) {
+      if (r && Number.isFinite(r.ts) && (oldestDirectUnreadTs === null || r.ts < oldestDirectUnreadTs)) {
+        oldestDirectUnreadTs = r.ts;
+        oldestDirectUnreadSender = r.sender != null ? String(r.sender) : null;
+      }
+    }
+
+    // archive_requested (v0.58, additive): true when an UNREAD DIRECT row
+    // addressed to this workspace carries the archive-request marker — scanned
+    // over the ALREADY-fetched `unreadRows` above (zero extra store reads).
+    // Restricted to `mtype === 'direct'` (a mesh-direct send, e.g.
+    // `devswarm.js archive-request`) so a native-drained row (mtype null,
+    // devswarm-ingest.js/devswarm-pull.js) can never false-positive here even
+    // if its body happened to contain the literal marker text.
+    const archive_requested = unreadRows.some(
+      (r) => r && r.mtype === 'direct' && typeof r.body === 'string' && r.body.indexOf(ARCHIVE_REQUEST_MARKER) !== -1
+    );
+
+    // archive_request_only_unread (defect: URGENT/"not draining" nag every
+    // turn for an archive-ready row with no live reader): true when EVERY
+    // currently-unread row for this workspace is itself an archive-request
+    // marker send (same predicate as archive_requested above, just `.every`
+    // instead of `.some`, over the SAME already-fetched unreadRows — zero
+    // extra store reads). An archive-request is sent BY the Primary (cmdSend
+    // resolves `from` from the CALLER's own cwd/identity, and `archive-
+    // request <id>` is only ever run by the Primary against a child), so a
+    // row whose entire unread backlog is exactly that send is really "the
+    // Primary is waiting to hear back from itself" — the addressed child's
+    // own session has already ended and can never read/drain it. Consumed by
+    // hooks/devswarm-parent-inbox.js to keep such a row out of the per-turn
+    // urgent/attention nag (it still gets the existing, cooldown'd
+    // archive-ready recommendation). `false` when there is no unread row at
+    // all (`.every` on an empty array is vacuously true — guarded explicitly
+    // so "nothing unread" is never read as "unread, but all archive-request").
+    const archive_request_only_unread = unreadRows.length > 0 && unreadRows.every(
+      (r) => r && r.mtype === 'direct' && typeof r.body === 'string' && r.body.indexOf(ARCHIVE_REQUEST_MARKER) !== -1
+    );
+
+    // pendingQuestions (Bug 1 / P0-A fix — structural, needs_reply-flagged):
+    // computed from ALL of this workspace's messages ever marked needs_reply,
+    // NOT scoped by the read cursor like unreadRows above. "Unread" and
+    // "unanswered" are independent axes: `inbox read-primary` (the FIRST, still-
+    // required step so the Primary even learns what a question asks — see
+    // devswarm-parent-gate.js/devswarm-parent-inbox.js) advances the cursor via
+    // setCursor + deriveSummary, which used to shrink unreadRows past the
+    // question row and silently clear pendingQuestions on a bare READ, with
+    // ZERO reply ever sent — the exact bug this whole feature exists to fix.
+    // A question leaves this list ONLY by (a) falling out of the full message
+    // history (never happens — append-only) or (b) its sender resolving to no
+    // live registry row at all — a STRUCTURALLY unresolvable identity that can
+    // never be replied to, dropped below to avoid a permanent deadlock (see
+    // the resolveSenderRegistryId call's own comment). Otherwise "answered" is
+    // decided downstream, NOT here (devswarm-reply-state.js's
+    // unansweredQuestions cross-references this list against
+    // replyState[q.from].lastReplyTs). urgencyMax/archive_requested (above)
+    // correctly stay cursor/unread-scoped — those ARE genuinely about unread
+    // state, unlike pendingQuestions.
+    //
+    // READ PATH (perf): the needs_reply rows come from the DEDICATED
+    // store.listNeedsReply(d.id) — the predicate pushed down into the backend so a
+    // projection reads only the surviving rows and only the {sender, ts, storeSeq}
+    // this map consumes. It used to be `store.listMessages(d.id)` (FULL history, all
+    // columns, every row materialized) run once PER REGISTRY ROW on EVERY projection,
+    // which is the dominant cost of computeSummary on a long-lived project. The
+    // fallback below reproduces that exact expression for a partial store double that
+    // predates listNeedsReply — same defensive `typeof` style as the reads above.
+    const needsReplyRows = typeof store.listNeedsReply === 'function'
+      ? store.listNeedsReply(d.id)
+      : (typeof store.listMessages === 'function'
+        ? store.listMessages(d.id).filter((r) => r && r.mtype === 'direct' && r.needsReply)
+        : []);
+    const resolvedQuestions = needsReplyRows
+      .map((r) => {
+        // Bug 2 / P0-B identity normalization: resolve the sender's worktree-
+        // derived meshId to the SAME registry-row-id space a reply's echoed
+        // `toId` (cmdSend/resolveSendTarget) already uses, so
+        // unansweredQuestions' q.from <-> replyState[meshId] comparison lines
+        // up even when the sender is registered under a DEVSWARM_BUILDER_ID
+        // different from its own derived meshId.
+        //
+        // PERMANENT-DEADLOCK FIX (Round 2 review, supersedes the prior
+        // fix-wave's "fail toward keeping the original unresolved value"):
+        // resolveSenderRegistryId returning null here means the sender does
+        // NOT match ANY live registry row — not a transient resolution
+        // hiccup, a STRUCTURAL fact (the child was archived/deregistered, or
+        // its worktree path no longer resolves). A question from a sender
+        // that can never be resolved to a live, addressable recipient can
+        // never be replied to by construction (`send --to` fails closed on
+        // an unregistered recipient — devswarm.js's `unregistered-recipient`
+        // error — so the reply-tracker can never record anything for it
+        // either), which means pendingQuestions is now PERMANENT
+        // (see this function's own header above) — keeping such a row in the
+        // blocking set is therefore not "fail open toward safety", it is an
+        // UNCONDITIONAL, PERMANENT deadlock with no code path that can ever
+        // clear it. The prior "keep the raw sender" instruction was right for
+        // a temporary resolution hiccup (a live sender not yet found because
+        // of some other transient state) but wrong for a structurally
+        // unresolvable one; distinguishing the two isn't possible here (null
+        // means "no live registry row matched", full stop), so this row is
+        // DROPPED from the projection entirely rather than kept under a
+        // dead-end identity. `null` marks a row to drop; filtered out below.
+        // `d.id` — THIS workspace, the question's RECIPIENT — is passed so
+        // attribution can never land on the recipient's own row or a row
+        // cross-linked to it (defect f3b8f326bfc3; see the ATTRIBUTION CONTRACT
+        // in resolveSenderRegistryId's header).
+        const resolvedFrom = resolveSenderRegistryId(store, registry, r.sender, home, d.id);
+        if (resolvedFrom == null) return null;
+        return { from: resolvedFrom, ts: r.ts, seq: r.storeSeq };
+      })
+      .filter((q) => q !== null);
+
+    // PER-SENDER COLLAPSE (bounding fix). Without it this array grows for the life of
+    // the project — every question ever asked, forever, since nothing but a
+    // structurally-unresolvable sender ever leaves it (see the header above). The
+    // collapse is LOSSLESS for the blocking decision; see
+    // collapsePendingQuestionsBySender for the proof. A naive tail-slice is NOT lossless
+    // and is deliberately not used: it can drop a genuinely-unanswered question and
+    // silently unblock the decide-gate.
+    const collapsedQuestions = collapsePendingQuestionsBySender(resolvedQuestions);
+    // BACKSTOP CAP — second line of defence only; the collapse above already bounds the
+    // array by the distinct-sender count, so this should be unreachable in any healthy
+    // store. Truncation keeps the OLDEST entries (the array is in first-appearance
+    // order, so the head is the longest-outstanding questions — the ones most likely to
+    // be genuinely blocking) and, unlike recent[]'s cap, ALWAYS surfaces a signal:
+    // a truncated pendingQuestions is not a complete one and no consumer may treat it
+    // as such.
+    const pendingQuestions = collapsedQuestions.length > pendingQuestionsCap
+      ? collapsedQuestions.slice(0, pendingQuestionsCap)
+      : collapsedQuestions;
+    const pendingQuestionsDropped = collapsedQuestions.length - pendingQuestions.length;
+    // pendingQuestionPreviews (additive sibling of pendingQuestions, which stays
+    // byte-identical): { <seq>: <question text, <= PREVIEW_MAX chars> } for the
+    // surviving (roster-sized) entries — the question each entry's `ts` dates.
+    // Best-effort; any failure leaves it off.
+    let pendingQuestionPreviews = null;
+    if (pendingQuestions.length && typeof store.needsReplyPreviews === 'function') {
+      try {
+        const previews = store.needsReplyPreviews(d.id, pendingQuestions.map((e) => e.seq));
+        if (previews && Object.keys(previews).length) pendingQuestionPreviews = previews;
+      } catch (_) { pendingQuestionPreviews = null; }
+    }
+
+    // jevQuestionCandidates (JEV ADVISORY CANDIDATES for the `parentGateQuestion`
+    // integration — see hooks/devswarm-parent-gate.js): a child message can ask
+    // a real question WITHOUT `send --question` ever setting needs_reply, in
+    // which case it is invisible to `pendingQuestions` above no matter how long
+    // it sits unread. `hooks/lib/jev-triage.js` may have ALREADY classified this
+    // exact message (kind: 'question-needs-answer') when it was rendered
+    // elsewhere (the broadcast feed or `inbox messages`/read-primary) — this is
+    // a PURE CACHE LOOKUP over that already-classified label, reusing the SAME
+    // `unreadRows` already fetched above for archive_requested (zero extra
+    // store reads) and the SAME resolveSenderRegistryId/collapse machinery
+    // pendingQuestions itself uses, so the two lists share one identity
+    // resolution. ZERO NETWORK: never spawns jev-triage-worker.js from this
+    // store-layer read path — only a small JSON file read, best-effort,
+    // fail-open to an empty list on any error. Rows already needs_reply-flagged
+    // are excluded (already represented in `pendingQuestions`). The gate itself
+    // (not this projection) applies jev-assist's add-block trust math and mode
+    // gating (default "shadow" — this candidate list is emitted regardless of
+    // Jev mode; the GATE decides whether to act on it), so this field is purely
+    // additive and never changes `unread`/`pendingQuestions`/anything existing.
+    let jevQuestionCandidates = [];
+    try {
+      const jevTriage = require('../../hooks/lib/jev-triage.js');
+      const needsReplySeqs = new Set(needsReplyRows.map((r) => r && r.storeSeq));
+      const candidateRows = unreadRows.filter((r) => (
+        r && r.mtype === 'direct' && !needsReplySeqs.has(r.storeSeq) &&
+        typeof r.body === 'string' && r.body
+      ));
+      if (candidateRows.length) {
+        let cache = {};
+        try { cache = JSON.parse(F.readFileSync(jevTriage.cachePath(home), 'utf8')) || {}; } catch (_) { cache = {}; }
+        const resolved = [];
+        for (const r of candidateRows) {
+          const hash = jevTriage.hashMessage(r.body);
+          const label = cache[hash];
+          if (!label || label.kind !== 'question-needs-answer') continue;
+          const resolvedFrom = resolveSenderRegistryId(store, registry, r.sender, home, d.id);
+          if (resolvedFrom == null) continue; // same structural-deadlock guard as pendingQuestions above
+          resolved.push({ from: resolvedFrom, ts: r.ts, seq: r.storeSeq });
+        }
+        jevQuestionCandidates = collapsePendingQuestionsBySender(resolved);
+      }
+    } catch (_) {
+      jevQuestionCandidates = []; // fail-open: never let this candidate list break the projection
+    }
+
+    const bcCursor = typeof store.broadcastCursorValue === 'function' ? store.broadcastCursorValue(d.id) : 0;
+    const unreadBroadcastRows = broadcastNonHeartbeat.filter(
+      (r) => Number.isFinite(r.storeSeq) && r.storeSeq > bcCursor
+    );
+    const broadcastUnread = unreadBroadcastRows.length;
+    // broadcastUrgencyMax (v0.58 P1 fix) — reuses maxUrgencyOf, same helper
+    // urgencyMax uses, just scoped to this workspace's unread broadcast rows.
+    const broadcastUrgencyMax = maxUrgencyOf(unreadBroadcastRows);
+    // broadcastUnreadFromOthers (field report: wake-watch woke a Primary on
+    // its OWN `send --broadcast` — "new mesh mail for child primary-63f9261d:
+    // broadcast direct total 189 -> 190 (+1)"). `broadcastUnread` above is
+    // DELIBERATELY inclusive of a workspace's own sends (D3 full-visibility
+    // contract, `devswarm-store-mesh.test.js` "w1 sees the unread broadcast
+    // (own send included)") — roster/diagnose/the broadcast-ack flow all
+    // depend on that meaning, so it must not change. wake-watch's edge-
+    // trigger needs a DIFFERENT question — "did somebody ELSE broadcast" —
+    // so this is an ADDITIVE sibling field, never a redefinition of
+    // `broadcastUnread` itself. `ownFamily` is the SAME identity-family set
+    // (`recipientFamilyIds`) `resolveSenderRegistryId` above and
+    // `devswarm-reply-state.js`'s familyAwareUnanswered already use for "is
+    // this sender really someone else" — reused here so a UUID/hash alias
+    // pair for the SAME physical workspace is excluded too, not just an
+    // exact `d.id` match.
+    let ownFamily = null;
+    try { ownFamily = identityFamily.recipientFamilyIds(d.id, registry); } catch (_) { ownFamily = null; }
+    const broadcastUnreadFromOthers = unreadBroadcastRows.filter((r) => (
+      !(ownFamily && ownFamily.size && r && r.sender != null && ownFamily.has(String(r.sender)))
+    )).length;
+
+    let working_on = null;
+    for (const r of broadcastAll) {
+      if (r.isHeartbeat && r.sender != null && r.sender === d.id) working_on = r.body;
+    }
+
+    workspaces[d.id] = {
+      id: d.id,
+      worktreePath: d.worktreePath,
+      sessionId: d.sessionId,
+      inboxPath: d.inboxPath,
+      cursorPath: d.cursorPath,
+      nudgeCommand: d.nudgeCommand,
+      total, cursor, unread,
+      directUnread: unread,
+      oldestDirectUnreadTs,
+      oldestDirectUnreadSender,
+      broadcastUnread,
+      broadcastUnreadFromOthers,
+      urgencyMax,
+      broadcastUrgencyMax,
+      working_on,
+      gates,
+      archive_ready,
+      archive_requested,
+      archive_request_only_unread,
+      pendingQuestions,
+    };
+    // Additive: present only when the read position could not be read — the
+    // counts above are then the conservative total, not a measured unread.
+    if (unreadUnknown) workspaces[d.id].unreadUnknown = true;
+    // PUSH-STATE (report-only unpushed/no-upstream ground truth): threaded from
+    // the freshest per-workspace heartbeat (heartbeats/<id>.json — one file per
+    // id, always the latest turn's write, so "freshest" needs no extra logic
+    // here), NOT re-probed with a fresh git spawn on every projection read (this
+    // is a hot per-turn read path). Omitted entirely when the heartbeat has no
+    // push-state written yet (an older heartbeat, or a probe that itself
+    // fail-opened to omitting the keys) — never fabricated. See
+    // devswarm-child-turn.js's writeHeartbeat (the sole writer) and
+    // devswarm-git-truth.js (the probe itself).
+    let pushBeat = null;
+    try {
+      pushBeat = JSON.parse(F.readFileSync(path.join(devswarmRoot(home), 'heartbeats', String(d.id) + '.json'), 'utf8'));
+    } catch (_) { pushBeat = null; }
+    if (pushBeat && typeof pushBeat === 'object' && typeof pushBeat.noUpstream === 'boolean') {
+      workspaces[d.id].noUpstream = pushBeat.noUpstream;
+      workspaces[d.id].unpushed = (pushBeat.unpushed === null || Number.isFinite(pushBeat.unpushed))
+        ? pushBeat.unpushed : null;
+    }
+    // MERGED-GATE VERIFICATION (report-only): mergedVerified is carried as an
+    // ordinary gate row named `merged_verified` (scripts/devswarm.js cmdGate is
+    // the sole writer, alongside the real `merged` gate) rather than a new
+    // persisted-shape column — true/false only when cmdGate's git ancestry
+    // check actually resolved one way or the other; UNSET (never written) when
+    // the check came back null (unresolvable), so it is correctly absent here
+    // too, never fabricated. Deliberately excluded from DEFAULT_REQUIRED_GATES
+    // so archive_ready above is never gated on it (REPORT-ONLY doctrine).
+    if (Object.prototype.hasOwnProperty.call(gates, 'merged_verified')) {
+      workspaces[d.id].mergedVerified = gates.merged_verified;
+      const by = typeof store.currentGateSetBy === 'function' ? (store.currentGateSetBy(d.id) || {}).merged_verified : null;
+      if (typeof by === 'string' && by.startsWith(MERGED_VERIFIED_SETBY_PREFIX) && by.length > MERGED_VERIFIED_SETBY_PREFIX.length) {
+        workspaces[d.id].mergedVerifiedHead = by.slice(MERGED_VERIFIED_SETBY_PREFIX.length);
+      }
+    }
+    // doneHead (P1-B): the HEAD sha the child's `done` verb recorded with the
+    // CURRENT done row. Absent for a done set any other way (no sha) or cleared.
+    if (gates.done === true && typeof store.currentGateSetBy === 'function') {
+      const by = (store.currentGateSetBy(d.id) || {}).done;
+      if (typeof by === 'string' && by.startsWith(DONE_GATE_SETBY_PREFIX) && by.length > DONE_GATE_SETBY_PREFIX.length) {
+        workspaces[d.id].doneHead = by.slice(DONE_GATE_SETBY_PREFIX.length);
+      }
+    }
+    // Emitted ONLY when the backstop actually bit, so an untruncated workspace stays
+    // byte-identical for existing readers (same convention as orphans/recent's
+    // occurrences). `dropped` is how many DISTINCT SENDERS' questions are missing.
+    if (pendingQuestionPreviews) workspaces[d.id].pendingQuestionPreviews = pendingQuestionPreviews;
+    if (pendingQuestionsDropped > 0) {
+      workspaces[d.id].pendingQuestionsTruncated = {
+        cap: pendingQuestionsCap,
+        kept: pendingQuestions.length,
+        dropped: pendingQuestionsDropped,
+      };
+    }
+    // Additive-only, same convention as pendingQuestionsTruncated above: absent
+    // entirely (not even `[]`) when there is nothing to report, so a summary
+    // with no jev-triage-labelled unflagged question stays byte-identical to
+    // before this field existed.
+    if (jevQuestionCandidates.length > 0) {
+      workspaces[d.id].jevQuestionCandidates = jevQuestionCandidates;
+    }
+  }
+
+  // ---- recent[]: CONSECUTIVE-duplicate run collapse (heartbeat saturation) ----
+  // WHY: an idle child re-emits a BYTE-IDENTICAL heartbeat every turn — the
+  // devswarm-child-turn.js reminder is unconditional (no only-if-changed gate)
+  // and the */5 mailbox-wake cron keeps an idle workspace taking turns forever.
+  // MEASURED: 1182 byte-identical broadcast rows from ONE idle sender over 5.25
+  // days at ~285s intervals, occupying 49 of the 50 recent[] slots and EVICTING
+  // every genuine broadcast. Neither existing layer can filter it:
+  // meshMessageHash() includes the timestamp, so identical bodies never collide
+  // on UNIQUE(hash), and isNoiseText() matches only the literal '[Primary poke]'
+  // prefix. Collapsing HERE mirrors this project's own alert-kind rule — a
+  // stable kind + the subject in details + a BOUNDED occurrences count, never a
+  // fresh record per occurrence. PROJECTION-ONLY: the append-only `messages`
+  // table is untouched, no schema change, no migration.
+  //
+  // The collapse runs BEFORE the cap is applied, which is the whole point: the
+  // cap must budget DISTINCT broadcasts, not duplicate copies.
+  //
+  // TS SEMANTICS ARE DELIBERATELY UNCHANGED (LIVENESS SAFETY — see
+  // devswarm-child-gate.js:alreadyReportedThisEpisode, which asks
+  // `recent.some(r.from === id && r.ts >= episodeSince)`):
+  //   * A run merges only when rows are CONSECUTIVE **and** project identically
+  //     (from, summary, urgency) — a re-sent body separated by any other row
+  //     stays its own entry.
+  //   * A collapsed entry's `ts` is the MAXIMUM ts among the rows of its run —
+  //     always a ts that a REAL row from that SAME sender actually carries.
+  //     Nothing is synthesized, bumped, or carried across senders.
+  //   * Every row folded away had ts <= the surviving entry's ts, so if any
+  //     folded row satisfied `ts >= episodeSince`, the survivor does too. The
+  //     per-sender maximum ts in recent[] is therefore bit-for-bit what it was.
+  //   * The collapse only REMOVES older copies and frees cap slots, so it can
+  //     only reduce FALSE SILENCE (a genuine report evicted by duplicate noise).
+  //     It structurally cannot manufacture liveness: a wedged session whose
+  //     newest row predates episodeSince still has no qualifying entry.
+  //
+  // `occurrences` / `firstTs` / `lastTs` are emitted ONLY on an actually
+  // collapsed run (occurrences > 1), so a projection with no duplicate runs is
+  // byte-identical to the pre-collapse output for every existing reader.
+  const broadcastRuns = [];
+  // v0.108.0: a pre-fix CHILD broadcast carries its worktree label
+  // `primary-<hash>`; sender-aliases.json maps it to the child's real id so
+  // recent[] never shows a child as a Primary. The stored row is unchanged.
+  let senderAliases = {};
+  try { if (home) senderAliases = require('./devswarm-sender-alias.js').readAliases(home); } catch (_) { senderAliases = {}; }
+  for (const r of broadcastAll) {
+    const rawFrom = r.sender != null ? r.sender : null;
+    const from = rawFrom != null && senderAliases[String(rawFrom)] ? senderAliases[String(rawFrom)].to : rawFrom;
+    const summary = r.body != null ? r.body : '';
+    const urgency = r.urgency != null ? r.urgency : null;
+    const last = broadcastRuns.length > 0 ? broadcastRuns[broadcastRuns.length - 1] : null;
+    // Identity = the PROJECTED fields (from/summary/urgency). Two rows that
+    // would render as the same recent[] entry apart from `ts` ARE duplicates;
+    // any difference in urgency breaks the run rather than silently dropping it.
+    if (last !== null && last.from === from && last.rawFrom === rawFrom && last.summary === summary && last.urgency === urgency) {
+      last.count += 1;
+      if (Number.isFinite(r.ts)) {
+        last.maxTs = Number.isFinite(last.maxTs) ? Math.max(last.maxTs, r.ts) : r.ts;
+        last.minTs = Number.isFinite(last.minTs) ? Math.min(last.minTs, r.ts) : r.ts;
+      }
+      continue;
+    }
+    broadcastRuns.push({
+      from, rawFrom, summary, urgency, count: 1,
+      rawTs: r.ts, // the row's ts VERBATIM — used as-is for an uncollapsed entry
+      maxTs: Number.isFinite(r.ts) ? r.ts : null,
+      minTs: Number.isFinite(r.ts) ? r.ts : null,
+    });
+  }
+
+  const recent = broadcastRuns.slice(-recentCap).map((run) => {
+    // count === 1 -> `rawTs` verbatim (byte-identical to the pre-collapse shape,
+    // including a non-finite/absent ts). count > 1 -> the run MAXIMUM, falling
+    // back to rawTs if no row in the run carried a finite ts.
+    const ts = run.count > 1 && Number.isFinite(run.maxTs) ? run.maxTs : run.rawTs;
+    const entry = { from: run.from, summary: run.summary, ts, urgency: run.urgency };
+    if (run.rawFrom !== run.from) entry.fromLabel = run.rawFrom; // aliased: the label the row was written under
+    if (run.count > 1) {
+      entry.occurrences = run.count;
+      entry.firstTs = run.minTs;
+      entry.lastTs = ts; // explicit alias: `ts` IS the newest of the run
+    }
+    return entry;
+  });
+
+  const summary = { generatedAt: now, requiredGates: requiredGates.slice(), workspaces, recent };
+
+  // ---- A2 orphan detection (surface-only) --------------------------------
+  // orphan ids = listWorkspaceIds() − registry ids − BROADCAST_PARTITION_ID,
+  // filtered to messageCount > cursorValue (REAL unread). listWorkspaceIds() already
+  // enumerates every partition with any message/cursor/gate/registry row on BOTH
+  // backends — no new primitive. Surface only: NEVER auto-forwarded or deleted.
+  //
+  // ARCHIVED-STRANDED SPLIT (field defect — permanent false-positive warning):
+  // an orphan whose workspace was DELIBERATELY archived and whose identity family
+  // has no registry row can never be read by anyone — healOrphanPartitions
+  // classifies exactly that shape as `unhealable / archived-no-family` and writes
+  // NOTHING, so parent-inbox's "N partition(s) with unread but no live workspace to
+  // read them" warning re-fired every single turn with no action a human or a heal
+  // pass could ever take. Those ids move OUT of `orphans[]` (the ACTIONABLE stuck-
+  // mesh signal) and into `archivedStranded[]` — NOT dropped: the count and the ids
+  // stay in the projection for doctor/diagnostics, they just stop nagging.
+  // The predicate is NOT re-derived here — devswarm-orphan-policy.js calls heal's
+  // OWN exported helpers (see that file's header), so the two cannot drift apart.
+  const orphans = [];
+  const archivedStranded = [];
+  const forwardedDrained = [];
+  const heldPartitions = [];
+  const heldIds = heldPartitionIdsFrom(o.env);
+  const isArchivedStranded = orphanPolicy.makeArchivedStrandedTest(home, registry);
+  // B2 fix: an archived orphan whose identity family DOES have a live survivor
+  // (so isArchivedStranded above is false for it) but whose every unread row has
+  // already been PROVEN — per row, by exact hash match, never by count — to have
+  // landed in that survivor's partition via healOrphanPartitions' forward-only
+  // (never-cursor-raising) heal. See devswarm-orphan-policy.js's
+  // makeForwardedDrainedTest for the full defect writeup.
+  const isForwardedDrained = orphanPolicy.makeForwardedDrainedTest(home, registry, store, meshMessageHash);
+  let allPartitionIds = [];
+  try { allPartitionIds = typeof store.listWorkspaceIds === 'function' ? store.listWorkspaceIds() : []; } catch (_) { allPartitionIds = []; }
+  for (const raw of allPartitionIds) {
+    const id = String(raw);
+    if (id === BROADCAST_PARTITION_ID) continue;
+    if (registryIds.has(id)) continue;      // has a live registry row -> not orphaned
+    if (!isSafeId(id)) continue;            // defense-in-depth (parity with the workspaces loop)
+    let total = 0; let cursor = 0;
+    try { total = store.messageCount(id); } catch (_) { total = 0; }
+    cursor = floorFor(store, id, home) || 0; // unknown -> count from 0 (surfaces, never hides)
+    const unread = Math.max(0, total - cursor);
+    if (unread <= 0) continue;              // real unread only
+    // fail-open by contract: each classifier returns false on ANY doubt, so an id
+    // it could not positively prove unreadable/drained stays in `orphans[]` exactly
+    // as before. Order matters: archivedStranded (no family at all) is checked
+    // first — the two classifiers are mutually exclusive by construction (this one
+    // requires a live family survivor, that one requires there be none), but
+    // checking stranded first keeps the cheaper, more-common-shape check first.
+    if (isArchivedStranded(id)) { archivedStranded.push({ id, messageCount: total, unread }); continue; }
+    if (isForwardedDrained(id)) { forwardedDrained.push({ id, messageCount: total, unread }); continue; }
+    // Owner-held (devswarm.heldPartitions): checked LAST, after the other
+    // classifiers, so a held id that is ALSO archived-stranded/forwarded-drained
+    // still lands in the more specific bucket (this check only needs to divert
+    // what would otherwise be a plain, actionable orphan). Never dropped —
+    // surfaced in its own `heldPartitions[]` field, same shape/convention as
+    // archivedStranded/forwardedDrained, so `doctor`/diagnostics can still show
+    // it as "held by owner" instead of it silently vanishing.
+    if (heldIds.has(id)) { heldPartitions.push({ id, messageCount: total, unread }); continue; }
+    orphans.push({ id, messageCount: total, unread });
+  }
+
+  // ---- A3 stale-registry-partition detection (critic P1#3) ---------------
+  // registry rows whose worktreePath can no longer be verified on disk. Because
+  // worktreeRealPath falls back to path.resolve on realpath failure (never throws /
+  // null), detection is an EXPLICIT fs.existsSync on the resolved path — not a
+  // reliance on the resolver signalling absence. Surface only: never collapsed/routed.
+  const staleRegistryPartitions = [];
+  for (const d of registry) {
+    const id = String(d.id);
+    if (id === BROADCAST_PARTITION_ID) continue;
+    if (!isSafeId(id)) continue;
+    if (archivedIds.has(id)) continue; // archived rows are not "stale live rows"
+    const wt = d.worktreePath;
+    if (wt == null || String(wt) === '') continue; // no path recorded -> nothing to verify
+    let exists = true;
+    try { exists = F.existsSync(resolveWorktreeReal(wt, F)); } catch (_) { exists = true; } // fail-open: never false-flag on an fs error
+    if (exists) continue;
+    let total = 0; let cursor = 0;
+    try { total = store.messageCount(id); } catch (_) { total = 0; }
+    cursor = floorFor(store, id, home) || 0; // unknown -> count from 0 (surfaces, never hides)
+    const unread = Math.max(0, total - cursor);
+    // A DRAINED stale row (unread:0) is NOT stuck — surfacing it makes parent-inbox
+    // falsely warn it "still hold[s] unread". Only surface a stale row that genuinely
+    // still holds unread (parity with the orphans filter above).
+    if (unread <= 0) continue;
+    staleRegistryPartitions.push({ id, worktreePath: wt, unread });
+  }
+
+  // Surface the additive fields ONLY when non-empty, so a no-orphan/no-stale project
+  // produces a byte-identical summary for existing readers. Surface-only: never
+  // auto-forwarded / auto-deleted. (No persisted cooldown state — any surfacing
+  // de-dup is a trivial render-time cap in Phase D, not a state machine here.)
+  // Additive: presence of this key (even as []) tells readers the archived
+  // half of the registry was actually computed by THIS run — see
+  // partitionUnanswered's `archivedKnown` contract in devswarm-reply-state.js.
+  // A summary written by pre-fix code omits the key entirely, which those
+  // readers must tell apart from "computed and genuinely empty".
+  summary.archivedRegistryRows = archivedRegistryRows;
+  if (orphans.length) summary.orphans = orphans;
+  // QUIET diagnostic field (never rendered as a per-turn warning): the orphans that
+  // are provably unreadable-forever. Same {id, messageCount, unread} shape as
+  // orphans[], same omitted-when-empty convention, so a project with none produces a
+  // byte-identical summary. Surfacing them here (rather than dropping the count) is
+  // deliberate — a silent drop would BE the "success while dropping part of the job"
+  // defect shape this repo keeps re-learning.
+  if (archivedStranded.length) summary.archivedStranded = archivedStranded;
+  // QUIET diagnostic field (never rendered as a per-turn warning), same
+  // {id, messageCount, unread} shape and same omitted-when-empty convention as
+  // archivedStranded above: orphans that are provably fully forwarded into a
+  // live identity-family survivor (per-row hash-proven — see
+  // makeForwardedDrainedTest). The count/ids are surfaced here, never dropped —
+  // a silent drop would BE the "success while dropping part of the job" defect
+  // shape this repo keeps re-learning.
+  if (forwardedDrained.length) summary.forwardedDrained = forwardedDrained;
+  // QUIET diagnostic field (never rendered as a per-turn warning), same shape
+  // and omitted-when-empty convention: owner-held partitions (devswarm.
+  // heldPartitions) diverted out of orphans[] above. `doctor` reads this to
+  // show them as "held by owner" instead of them silently vanishing.
+  if (heldPartitions.length) summary.heldPartitions = heldPartitions;
+  if (staleRegistryPartitions.length) summary.staleRegistryPartitions = staleRegistryPartitions;
+
+  return summary;
+}
+
+// deriveSummary(store, opts) = computeSummary (pure) + the existing atomic
+// summary.json write. BYTE-IDENTICAL to the pre-split behavior for every existing
+// field/write (the additive orphans[]/staleRegistryPartitions[] keys are omitted
+// when empty, so a no-orphan/no-stale project produces the exact same on-disk
+// artifact as before). Write is ATOMIC (tmp + rename) so a hook read never observes
+// a partial file.
+//
+// FOOTGUN: the write target is chosen by summaryHashFor(store, opts) (above) —
+// and opts.workspaceId, when present, OVERRIDES the store handle's own `.hash`.
+// If a caller already holds a store opened on the correct bucket and ALSO passes
+// opts.workspaceId, the projection is redirected to a DIFFERENT (legacy,
+// hashFromWorkspaceId-derived) bucket than the one the handle uses. This fails
+// SILENTLY — no error, no warning — the summary lands somewhere nothing reads,
+// while the bucket the caller is actually operating on goes stale. Rule: when
+// the store handle is already correctly bucketed, OMIT opts.workspaceId so the
+// handle's own hash wins (production's cmdSend does this).
+function deriveSummary(store, opts) {
+  const o = opts || {};
+  const home = resolveHomeGuarded(o);
+  const F = o.fsi || fs;
+  const summary = computeSummary(store, o);
+  const hash = summaryHashFor(store, o);
+  writeSummaryAtomicForHash(home, hash, summary, F);
+  return summary;
+}
+
+// writeSummaryAtomic — tmp + rename (mirrors liveness.js writeVerdict). The tmp
+// path is UNIQUE PER CALL (pid + a monotonic counter), not a single shared
+// `summary.json.tmp`: concurrent derivers (CLI + ingest daemon) would otherwise
+// write the same tmp and race each other's rename (ENOENT / a half-written
+// publish). A unique tmp lets each writer stage independently; the rename onto the
+// final summary.json stays atomic (last writer wins a complete file).
+let summaryTmpCounter = 0;
+function writeSummaryAtomicForHash(home, hash, summary, fsi) {
+  const F = fsi || fs;
+  const p = summaryPathForHash(home, hash);
+  F.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = p + '.' + process.pid + '.' + (summaryTmpCounter++) + '.tmp';
+  try {
+    F.writeFileSync(tmp, JSON.stringify(summary));
+    F.renameSync(tmp, p);
+  } catch (e) {
+    try { F.unlinkSync(tmp); } catch (_) {} // never leak the staged tmp on failure
+    throw e;
+  }
+  return p;
+}
+// writeSummaryAtomic(home, workspaceId, summary, fsi) — workspaceId-keyed wrapper.
+function writeSummaryAtomic(home, workspaceId, summary, fsi) {
+  return writeSummaryAtomicForHash(home, hashFromWorkspaceId(workspaceId), summary, fsi);
+}
+
+// readSummary(home, workspaceId, fsi) -> object | null. Reads THIS project's
+// summaries/<hash>.json. TOLERANT: a missing, zero-byte, or partially-written
+// summary reads as null ("no data yet"), never a throw — hook readers fail open
+// on null. workspaceId absent -> the DEFAULT_HASH bucket.
+function readSummary(home, workspaceId, fsi) {
+  const F = fsi || fs;
+  try {
+    const raw = String(F.readFileSync(summaryPath(home, workspaceId), 'utf8'));
+    if (raw.trim() === '') return null;
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : null;
+  } catch (_) {
+    return null;
+  }
+}
+// readSummaryForHash(home, hash, fsi) — hash-keyed variant (doctor enumerates by hash).
+function readSummaryForHash(home, hash, fsi) {
+  const F = fsi || fs;
+  try {
+    const raw = String(F.readFileSync(summaryPathForHash(home, hash), 'utf8'));
+    if (raw.trim() === '') return null;
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// GC_STALE_SUMMARIES_DAYS_DEFAULT — a summary older than this (by its own
+// `generatedAt`) is a candidate for removal. 30 days: long enough that a
+// project someone touches even occasionally never loses its projection
+// between sessions, short enough to actually bound summaries/ growth (~150
+// modules-*.json files observed on one machine, one per repo x project ever
+// derived here, nothing ever pruning them). Env-overridable, matching the
+// sibling retention knobs in doctor-repair.js (ANTIHALL_DEVSWARM_*_RETENTION_DAYS).
+const GC_STALE_SUMMARIES_DAYS_DEFAULT = 30;
+
+// gcStaleSummaries({home, mode, days, env, io}) -> [{file, status, msg}].
+// AGE-BASED GC for summaries/<hash>.json, keyed on the summary's OWN
+// `generatedAt` (never mtime — a summary can be rewritten with a stale
+// `generatedAt` carried through a partial derive, and the reverse: an
+// untouched file's mtime is not itself meaningful once `generatedAt` exists).
+//
+// These are PER-(repo x project) PROJECTIONS, not duplicates — the same
+// workspace id can legitimately appear in several distinct summary files
+// (one per repoKey it was ever derived under), so this NEVER dedupes by an
+// id found inside a summary's `workspaces` map. The unit of GC is the
+// SUMMARY FILE itself, decided purely by its own age and its own hash.
+//
+// NEVER GC A repoKey CURRENTLY IN USE: "in use" is defined as
+// `store/<hash>/` still existing on disk (listStoreHashes) — the SAME hash
+// a summary's filename carries, since deriveSummary always writes
+// summaries/<hash>.json for the identical hash its store was opened under.
+// A live/recent project always has a store dir; an old summary whose store
+// dir is genuinely gone (the project was fully removed) is the only thing
+// ever removed here. This biases hard toward keeping: any store dir at all,
+// regardless of how stale, keeps its summary.
+//
+// mode 'check' (default) is read-only (`status:'pending'`); mode 'repair'
+// deletes ONLY a summary that is BOTH stale AND has no corresponding store
+// dir. Fail-open per file (an unreadable/corrupt summary, or one missing
+// `generatedAt` entirely, is left untouched rather than guessed at — no
+// `generatedAt` means this GC has no evidence of age, so it declines rather
+// than treating "unknown" as "old").
+function gcStaleSummaries(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const mode = o.mode === 'repair' ? 'repair' : 'check';
+  const F = (o.io && o.io.fs) || fs;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  let days;
+  if (Number.isFinite(o.days)) {
+    days = o.days;
+  } else {
+    try {
+      days = require('../../hooks/lib/settings.js').get('devswarm', 'summaryRetentionDays', GC_STALE_SUMMARIES_DAYS_DEFAULT, { env: o.env || process.env, home });
+    } catch (_) {
+      days = Number.isFinite(Number((o.env || process.env).ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS))
+        ? Number((o.env || process.env).ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS)
+        : GC_STALE_SUMMARIES_DAYS_DEFAULT;
+    }
+  }
+  const maxAgeMs = days * 24 * 60 * 60 * 1000;
+  const results = [];
+
+  const dir = summariesRootDir(home);
+  let names = [];
+  try { names = F.readdirSync(dir); } catch (e) {
+    if (e && e.code === 'ENOENT') return results; // routine: no summaries ever derived
+    return [{ file: dir, status: 'failed', msg: 'could not list ' + dir + ': ' + errMsg(e) }];
+  }
+
+  const inUse = new Set(listStoreHashes(home, F));
+
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const hash = name.slice(0, -'.json'.length);
+    const full = path.join(dir, name);
+    if (inUse.has(hash)) continue; // NEVER GC a repoKey currently in use
+
+    let raw;
+    try { raw = String(F.readFileSync(full, 'utf8')); } catch (_) { continue; } // vanished mid-sweep
+    let obj;
+    try { obj = JSON.parse(raw); } catch (_) {
+      continue; // unreadable/corrupt — fail-open, leave it, never guess at age
+    }
+    const generatedAt = obj && Number.isFinite(obj.generatedAt) ? obj.generatedAt : null;
+    if (generatedAt === null) continue; // no age evidence — decline rather than treat unknown as old
+
+    const ageMs = now - generatedAt;
+    if (ageMs <= maxAgeMs) continue; // inside the retention window
+
+    if (mode === 'check') {
+      results.push({ file: full, status: 'pending', msg: full + ' is stale (age ' + Math.round(ageMs / 86400000) + 'd, no store/' + hash + '/ in use)' });
+      continue;
+    }
+    try {
+      F.unlinkSync(full);
+      results.push({ file: full, status: 'fixed', msg: 'removed stale summary ' + name + ' (age ' + Math.round(ageMs / 86400000) + 'd, repoKey ' + hash + ' not in use)' });
+    } catch (e) {
+      results.push({ file: full, status: 'failed', msg: 'could not remove ' + full + ': ' + errMsg(e) });
+    }
+  }
+  return results;
+}
+
+// errMsg(e) -> string. Local copy (this module has no shared error-formatting
+// import) — mirrors the one-liner every other fail-open catch in this repo uses.
+function errMsg(e) { return (e && e.message) || String(e); }
+
+module.exports = {
+  DEFAULT_REQUIRED_GATES, DEFAULT_HASH,
+  hashFromWorkspaceId,
+  storeRootDir, summariesRootDir, listStoreHashes,
+  storeDir, sqlitePath, journalDir, summaryPath,
+  storeDirForHash, sqlitePathForHash, journalDirForHash, summaryPathForHash,
+  requiredGatesFrom, heldPartitionIdsFrom, selectBackend, sqliteAvailable,
+  resolveStoreBackend, readBackendMarker, writeBackendMarker, inferBackendFromDisk, backendMarkerFile,
+  hasBackendData, mergeMarkerFile, readMergeMarker, mergeSplitBackendStore, mergeSplitBackendStoresAllStores,
+  openStore, openSqlite, openJournal,
+  computeSummary, deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
+  archivedOnlyIds, sameRegistryWorktree,
+  // mesh (v0.57, D3-D7/D22/D23):
+  BROADCAST_PARTITION_ID, meshMessageHash, appendMeshMessage,
+  // v0.58 (archive-request store write, deriveSummary archive_requested):
+  ARCHIVE_REQUEST_MARKER,
+  // 0.108.3 (child `done` verb's structured done message):
+  DONE_REPORT_MARKER, DONE_GATE_SETBY_PREFIX, MERGED_VERIFIED_SETBY_PREFIX,
+  // GC — age-based summaries/ pruning, never touching an in-use repoKey:
+  gcStaleSummaries, GC_STALE_SUMMARIES_DAYS_DEFAULT,
+};

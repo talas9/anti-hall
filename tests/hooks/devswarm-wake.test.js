@@ -1,0 +1,577 @@
+'use strict';
+// lib/devswarm-wake.js — direct unit tests for the SHARED wake-directive text
+// builders (wakeDirective / wakeReassert). This is the SINGLE SOURCE of the
+// DevSwarm idle-wake directive; its 3 consumers are devswarm-child-role.js
+// (SessionStart), devswarm-parent-gate.js (Stop, Primary), devswarm-child-gate.js
+// (Stop, child) — each has its own consumer-level tests. This file tests the
+// shared builders directly (no process spawn needed: pure string functions).
+//
+// v0.6x "Monitor low-latency wake" adds a trailing `watcher` param to BOTH
+// builders. THE NON-NEGOTIABLE RULE under test throughout: Cron must be
+// UNCONDITIONALLY present in every Claude-branch output, regardless of whether
+// `watcher` is supplied — Monitor layers ON TOP, it never replaces or gates Cron.
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const path = require('node:path');
+
+const WAKE = require('../../plugins/anti-hall/hooks/lib/devswarm-wake.js');
+const { wakeDirective, wakeReassert, WAKE_CRON_DEFAULT, drainCmd } = WAKE;
+
+// fl-wave3 fix (item 3): a bare 38-char fixture path let the pre-fix 3x-
+// embedded CLI path in wakeReassert stay under 400 chars by accident, hiding
+// the real-world budget blowout — a realistic installed plugin path is far
+// longer (~80-100 chars). Use a realistic-length fixture so the LENGTH CAP
+// tests below actually exercise the contract.
+const CLI = '/Users/someone/.claude/plugins/cache/anti-hall/anti-hall/0.98.0/scripts/devswarm.js';
+// fl-wave4 fix (item 1): WATCHER now derived from the SAME root as CLI
+// (matches real consumer usage — devswarm-parent-gate.js/devswarm-child-gate.js
+// both build WATCHER via __dirname alongside CLI: `<root>/scripts/devswarm.js`
+// and `<root>/companion/lib/devswarm-wake-watch.js`), and lengthened to a
+// realistic ~100-char fixture — a short fixture path let the pre-fix
+// verbatim-embedded watcher literal in wakeReassert stay under 400 chars by
+// accident, hiding the real budget blowout the same way the pre-item-1 CLI
+// fixture did (see the item-3 comment above).
+const WATCHER = path.join(path.dirname(path.dirname(CLI)), 'companion', 'lib', 'devswarm-wake-watch.js');
+
+// ---------------------------------------------------------------------------
+// REQUIRED REGRESSION MATRIX (owner-named): the cron half must be present in
+// EVERY Claude-branch output. wakeDirective x wakeReassert x child x Primary x
+// (watcher present/absent) x (WAKE_CRON custom/unset/garbage). Deleting the
+// cron half from either builder must make this fail loudly.
+// ---------------------------------------------------------------------------
+
+const CRON_CASES = [
+  { label: 'custom valid cron', env: { DEVSWARM_AI_AGENT: 'claude', ANTIHALL_DEVSWARM_WAKE_CRON: '*/1 * * * *' }, expectedSchedule: '*/1 * * * *' },
+  { label: 'unset cron (default)', env: { DEVSWARM_AI_AGENT: 'claude' }, expectedSchedule: WAKE_CRON_DEFAULT },
+  { label: 'garbage cron (falls back to default)', env: { DEVSWARM_AI_AGENT: 'claude', ANTIHALL_DEVSWARM_WAKE_CRON: 'not a cron at all' }, expectedSchedule: WAKE_CRON_DEFAULT },
+];
+
+const WATCHER_CASES = [
+  { label: 'watcher present', watcher: WATCHER },
+  { label: 'watcher absent', watcher: undefined },
+];
+
+for (const isChild of [true, false]) {
+  const roleLabel = isChild ? 'child' : 'Primary';
+  for (const wCase of WATCHER_CASES) {
+    for (const cCase of CRON_CASES) {
+      test(`MATRIX wakeDirective: ${roleLabel} x ${wCase.label} x ${cCase.label} -> cron half always present`, () => {
+        const out = wakeDirective(cCase.env, isChild, CLI, wCase.watcher);
+        assert.ok(/`CronList`/.test(out), `must name CronList; out=${out}`);
+        assert.ok(/`CronCreate`/.test(out), `must name CronCreate; out=${out}`);
+        assert.ok(out.includes('`' + cCase.expectedSchedule + '`'), `must carry schedule ${cCase.expectedSchedule}; out=${out}`);
+      });
+
+      // C (hook-injection byte-budget trim): wakeReassert no longer re-states
+      // the full CronCreate prompt inline — it POINTS at `wake-directive <id>`
+      // (scripts/devswarm.js's on-demand reprint of the full SessionStart
+      // text) instead. So this half of the matrix checks for CronList + the
+      // schedule + the wake-directive pointer, never CronCreate itself.
+      test(`MATRIX wakeReassert: ${roleLabel} x ${wCase.label} x ${cCase.label} -> CronList + schedule + wake-directive pointer always present`, () => {
+        const out = wakeReassert(cCase.env, CLI, isChild, wCase.watcher);
+        assert.ok(/CronList/.test(out), `must name CronList; out=${out}`);
+        assert.ok(!/`CronCreate`/.test(out), `trimmed reassert must NOT re-state CronCreate inline; out=${out}`);
+        assert.ok(out.includes('`' + cCase.expectedSchedule + '`'), `must carry schedule ${cCase.expectedSchedule}; out=${out}`);
+        assert.ok(/wake-directive/.test(out), `must point at the wake-directive re-run; out=${out}`);
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GOLDEN: the NON-Claude branch is byte-identical to today's captured string,
+// and never contains Monitor or CronCreate — regardless of `watcher`.
+// ---------------------------------------------------------------------------
+
+// C1 fix (v0.86.0): drainCmd now gates the read/spawn-worthy step behind a
+// cheap inline `inbox count` check first, literal golden text kept
+// independent of drainCmd itself (not a call-through) so a regression in
+// drainCmd's own logic cannot silently rewrite its own expectation.
+function nonClaudeGolden(agent, cli, isChild) {
+  const id = '<DEVSWARM_BUILDER_ID>';
+  const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true` AND `known` is NOT `false`';
+  const otherwise = 'either `unreadTotal` is greater than 0, or `meshGapWithheld` is `true`, or `known` is `false`';
+  // fl-wave5 fix (item 4), broadened fl-wave6 (item 2): drainCmd's terminal
+  // `inbox read-primary` step now names its own ANY-`ok:false`-refusal stop
+  // condition — kept here as literal golden text too (not a call-through),
+  // matching this file's own "independent of drainCmd itself" convention
+  // above.
+  const storeUnavailableClause = ' — if that reports `ok:false`, '
+    + 'report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) '
+    + 'in one line and stop (do not loop, do not spawn a subagent)';
+  // Phase 5 ack split: read-primary is read-only; the prompt names the ack step.
+  const ackAfterRead = ' (read-only; after handling, run the `ackCommand` it returns)';
+  // 0.109 idle gate: the mailbox commands are asked for PLAIN (no pipes/filters).
+  const plain = ' (run plain: no pipes/filters)';
+  const plain2 = ' (both plain: no pipes/filters)';
+  const drain = isChild
+    ? 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
+      'anything waiting in your native queue) then `node ' + cli + ' inbox count ' + id +
+      '`' + plain2 + '; ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise (' +
+      otherwise + '), run `node ' + cli +
+      ' inbox read-primary ' + id + '`' + ackAfterRead + ' (delegate to a subagent only if the payload is large ' +
+      '— its ackCommand is the cursor-advancing step, matching devswarm-child-turn.js\'s own ' +
+      'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
+      'withheld gap)' + storeUnavailableClause
+    : 'first run `node ' + cli + ' inbox count ' + id + '`' + plain + '; ' + stopCond + ', say so ' +
+      'and stop — do NOT spawn a subagent; otherwise (' + otherwise + '), run `node ' + cli +
+      ' inbox read-primary ' + id + '`' + ackAfterRead + ' (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
+  return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
+    'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
+    'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +
+    'and again BEFORE you stop: ' + drain + '.';
+}
+
+for (const isChild of [true, false]) {
+  test(`GOLDEN: non-Claude branch (${isChild ? 'child' : 'Primary'}) is BYTE-IDENTICAL to today's text, with or without watcher`, () => {
+    const env = { DEVSWARM_AI_AGENT: 'codex' };
+    const expected = nonClaudeGolden('codex', CLI, isChild);
+    const withoutWatcher = wakeDirective(env, isChild, CLI, undefined);
+    const withWatcher = wakeDirective(env, isChild, CLI, WATCHER);
+    assert.strictEqual(withoutWatcher, expected, `non-Claude branch must be byte-identical; got=${withoutWatcher}`);
+    assert.strictEqual(withWatcher, expected, `watcher must NEVER affect the non-Claude branch; got=${withWatcher}`);
+    assert.ok(!/Monitor/.test(withWatcher), `non-Claude branch must never name Monitor; out=${withWatcher}`);
+    assert.ok(!/CronCreate/.test(withWatcher), `non-Claude branch must never name CronCreate; out=${withWatcher}`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Wave F1 (P0): known-guard. `count`/`tick` can report `known: false` (store
+// unreadable) alongside a numeric `unreadTotal` (e.g. 0, the NDJSON-only
+// component) — the stop condition text must require `known` is not `false`
+// on top of the existing unreadTotal/meshGapWithheld checks, for every
+// isChild x useTick combination, so an agent following this instruction
+// never treats a store-unavailable count as "nothing to do".
+// ---------------------------------------------------------------------------
+for (const isChild of [true, false]) {
+  for (const useTick of [true, false]) {
+    test(`KNOWN-GUARD: drainCmd(isChild=${isChild}, useTick=${useTick}) requires known is NOT false to stop`, () => {
+      const out = drainCmd(CLI, isChild, useTick);
+      assert.ok(/`known` is NOT `false`/.test(out), `stop condition must gate on known; out=${out}`);
+      assert.ok(/`known` is `false`/.test(out), `otherwise-branch must name known:false as a reason to keep draining; out=${out}`);
+    });
+  }
+}
+
+test('GOLDEN: wakeReassert is Claude-only by construction — callers gate on isClaudeAgent, never called for non-Claude', () => {
+  // wakeReassert itself has no agent branch (unlike wakeDirective) — its callers
+  // (devswarm-parent-gate.js / devswarm-child-gate.js) gate on isClaudeAgent()
+  // before ever invoking it. Documented here so a future refactor cannot quietly
+  // drop that external gate without a test noticing the contract changed.
+  assert.strictEqual(typeof WAKE.isClaudeAgent, 'function');
+  assert.strictEqual(WAKE.isClaudeAgent({ DEVSWARM_AI_AGENT: 'codex' }), false);
+  assert.strictEqual(WAKE.isClaudeAgent({ DEVSWARM_AI_AGENT: 'claude' }), true);
+});
+
+// ---------------------------------------------------------------------------
+// Monitor half: present when `watcher` is passed, ABSENT when it is not.
+// ---------------------------------------------------------------------------
+
+for (const isChild of [true, false]) {
+  test(`MONITOR: wakeDirective ${isChild ? 'child' : 'Primary'} -> Monitor arm text present iff watcher supplied`, () => {
+    const env = { DEVSWARM_AI_AGENT: 'claude' };
+    const withWatcher = wakeDirective(env, isChild, CLI, WATCHER);
+    const withoutWatcher = wakeDirective(env, isChild, CLI, undefined);
+    assert.ok(/`Monitor`/.test(withWatcher), `watcher present -> must arm Monitor; out=${withWatcher}`);
+    assert.ok(withWatcher.includes('node ' + WATCHER), `must emit the exact watcher path; out=${withWatcher}`);
+    assert.ok(/persistent/i.test(withWatcher), `must mention persistent:true; out=${withWatcher}`);
+    assert.ok(!/`Monitor`/.test(withoutWatcher), `watcher absent -> Monitor text must be ABSENT; out=${withoutWatcher}`);
+    // Absent watcher must not change the cron-only text at all vs. a call with no 4th arg.
+    const implicit = wakeDirective(env, isChild, CLI);
+    assert.strictEqual(withoutWatcher, implicit, 'explicit undefined watcher === omitted watcher arg');
+  });
+
+  test(`MONITOR: wakeReassert ${isChild ? 'child' : 'Primary'} -> Monitor arm text present iff watcher supplied`, () => {
+    const withWatcher = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, isChild, WATCHER);
+    const withoutWatcher = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, isChild, undefined);
+    assert.ok(/`Monitor`/.test(withWatcher), `watcher present -> must arm Monitor; out=${withWatcher}`);
+    // defect 7 (peer sweep, 0.116 candidate): the old fl-wave4 DERIVATION
+    // ($WATCH from $(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js)
+    // assumed CLI/WATCHER always share the raw plugin-root layout — false
+    // once devswarm.stableLauncher (default on) makes them SIBLING files
+    // under ~/.anti-hall/bin/ (devswarm.js + wake-watch.js), where that
+    // derivation points at a file that does not exist. wakeReassert now
+    // embeds the caller's own resolved `watcher` value directly, exactly
+    // like wakeDirective's drainCmd rearmClause already does — the two
+    // texts must name the SAME watcher path, not two different derivations.
+    assert.ok(withWatcher.includes('node "$WATCH"'), `must run the watcher via the $WATCH token; out=${withWatcher}`);
+    assert.ok(withWatcher.includes(WATCHER), `must embed the exact resolved watcher path; out=${withWatcher}`);
+    assert.ok(!withWatcher.includes('$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js'),
+      `must NOT use the stale plugin-root-only derivation (breaks under stableLauncher); out=${withWatcher}`);
+    assert.ok(!/`Monitor`/.test(withoutWatcher), `watcher absent -> Monitor text must be ABSENT; out=${withoutWatcher}`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// fl-wave4 fix (item 1): null-guard — neither a null/undefined `cli` NOR a
+// null/undefined `watcher` may ever leak a literal "undefined" string into
+// the output. `watcher` falsy already omits the Monitor clause entirely
+// (unchanged); `cli` falsy must render as an explicit placeholder, never the
+// string coercion of `undefined`/`null`.
+// ---------------------------------------------------------------------------
+for (const isChild of [true, false]) {
+  test(`NULL-GUARD: wakeReassert(isChild=${isChild}) never prints the literal string "undefined" for a null cli or watcher`, () => {
+    for (const cliVal of [null, undefined]) {
+      for (const watcherVal of [null, undefined]) {
+        const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, cliVal, isChild, watcherVal);
+        assert.ok(!/undefined/.test(out), `must never print the literal "undefined"; cli=${cliVal} watcher=${watcherVal} out=${out}`);
+        assert.ok(!/\bnull\b/.test(out), `must never print the literal "null"; cli=${cliVal} watcher=${watcherVal} out=${out}`);
+      }
+    }
+  });
+}
+
+test('MONITOR: instruction tells the agent to check whether one is already armed before arming a second', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'claude' }, true, CLI, WATCHER);
+  assert.ok(/already armed|double-arming/i.test(out), `must warn against double-arming; out=${out}`);
+});
+
+// ---------------------------------------------------------------------------
+// TOKEN-SAVING LEVER 1 (0.117.0, devswarm.rearmOnTickOnly): the cron tick's
+// own watcherArmed:false check is the ONE re-arm trigger by default — the
+// Monitor's own expiry/final event must get a <=1-line reply and NO inline
+// re-arm instruction. rearmOnTickOnly:false restores the pre-0.117.0 wording.
+// ---------------------------------------------------------------------------
+test('LEVER 1: rearmOnTickOnly default (true) -> reply in <=1 line on expiry, no inline re-arm-on-expiry instruction', () => {
+  const env = { DEVSWARM_AI_AGENT: 'claude' };
+  const out = wakeDirective(env, true, CLI, WATCHER);
+  assert.ok(/persistent/i.test(out), `must still mention persistent:true; out=${out}`);
+  assert.ok(!/max `timeout_ms`\s*\+\s*re-arm on/i.test(out),
+    `default must NOT use the old positive "+ re-arm on its final/expired event" wording; out=${out}`);
+  assert.ok(/do not re-arm inline when it emits its final.?\/?expired event/i.test(out),
+    `default must tell the agent NOT to re-arm inline on the expiry event; out=${out}`);
+  assert.ok(/reply in one line/i.test(out), `must tell the agent to reply in one line on expiry; out=${out}`);
+  assert.ok(/next `inbox tick` cron turn/i.test(out), `must point at the cron tick as the re-arm trigger; out=${out}`);
+});
+
+test('LEVER 1: rearmOnTickOnly explicit false -> restores the pre-0.117.0 inline re-arm-on-expiry wording', () => {
+  const env = { DEVSWARM_AI_AGENT: 'claude', ANTIHALL_DEVSWARM_REARM_ON_TICK_ONLY: '0' };
+  const out = wakeDirective(env, true, CLI, WATCHER);
+  assert.ok(/persistent/i.test(out), `must still mention persistent:true; out=${out}`);
+  assert.ok(/max `timeout_ms`\s*\+\s*re-arm on/i.test(out),
+    `false must restore the old positive "+ re-arm on its final/expired event" wording; out=${out}`);
+  assert.ok(!/do not re-arm inline when it emits its final/i.test(out),
+    `false must NOT include the tick-only "do NOT re-arm inline" wording; out=${out}`);
+});
+
+// ---------------------------------------------------------------------------
+// Unknown agent (DEVSWARM_AI_AGENT unset) -> '' for wakeDirective. wakeReassert
+// has no agent branch of its own (callers gate via isClaudeAgent), but must
+// still never throw and must still respect fail-open on garbage env.
+// ---------------------------------------------------------------------------
+
+test("UNKNOWN AGENT: DEVSWARM_AI_AGENT unset -> wakeDirective yields '' regardless of watcher", () => {
+  assert.strictEqual(wakeDirective({}, true, CLI, WATCHER), '');
+  assert.strictEqual(wakeDirective({}, false, CLI, undefined), '');
+});
+
+test('FAIL-OPEN: never throws for hostile env / watcher values', () => {
+  const hostile = [null, undefined, 42, 'x'.repeat(5000), { toString() { throw new Error('boom'); } }];
+  for (const w of hostile) {
+    assert.doesNotThrow(() => wakeDirective({ DEVSWARM_AI_AGENT: 'claude' }, true, CLI, w));
+    assert.doesNotThrow(() => wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, true, w));
+  }
+});
+
+// Watcher path sanity: absolute-path callers (the real consumers) always pass an
+// absolute path — verify our fixture constant actually is one, so the matrix
+// above is representative of real usage.
+test('sanity: WATCHER fixture used throughout this file is absolute (matches real consumer usage)', () => {
+  assert.ok(path.isAbsolute(WATCHER));
+});
+
+// ---------------------------------------------------------------------------
+// C1 fix (v0.86.0): every no-op mailbox drain used to unconditionally spend a
+// full subagent context (drainCmd emitted an unconditional drain instruction,
+// funneled by wakeDirective/wakeReassert into SessionStart/Stop/cron text).
+// Now drainCmd runs a cheap inline `inbox count` FIRST and tells the agent
+// explicitly not to spawn anything when it comes back empty.
+// ---------------------------------------------------------------------------
+
+// C1 MUTATION-CHECK (killed):
+//   1. Revert drainCmd to the pre-fix unconditional form (no `inbox count`, no
+//      "do NOT spawn") -> all 3 tests below fail. This is also the RED
+//      baseline verified against the pre-fix source.
+//   2. Swap the child branch's leading `inbox pull` for `inbox count` (so
+//      count would run before pull instead of after) -> the "keeps inbox pull
+//      unconditional" test below fails (pullIdx < countIdx assertion trips).
+test('C1: drainCmd(cli, false) [Primary] gates the drain behind an inline `inbox count` check and forbids spawning on empty', () => {
+  const out = drainCmd(CLI, false);
+  assert.ok(out.includes('inbox count'), `must run inbox count first; out=${out}`);
+  assert.ok(/do NOT spawn/.test(out), `must explicitly forbid spawning a subagent on empty; out=${out}`);
+  assert.ok(out.includes('inbox read-primary'), `must still name the drain verb for the non-empty branch; out=${out}`);
+});
+
+test('C1: drainCmd(cli, true) [child] also gates the READ step behind `inbox count`, but keeps `inbox pull` unconditional', () => {
+  const out = drainCmd(CLI, true);
+  assert.ok(out.includes('inbox count'), `must run inbox count; out=${out}`);
+  assert.ok(/do NOT spawn/.test(out), `must forbid spawning on empty; out=${out}`);
+  // inbox pull must NOT be gated behind count: count cannot see the native
+  // queue pull imports, so gating pull itself would make native-only mail
+  // permanently invisible (count would keep reporting 0 forever).
+  const pullIdx = out.indexOf('inbox pull');
+  const countIdx = out.indexOf('inbox count');
+  assert.ok(pullIdx !== -1 && countIdx !== -1 && pullIdx < countIdx,
+    `inbox pull must run BEFORE inbox count, unconditionally; out=${out}`);
+});
+
+// Wave 4 P1 fix: the child branch used to send bare `inbox read <id>` on the
+// "otherwise" (unreadTotal>0 || meshGapWithheld) leg — a NON-MUTATING peek
+// (devswarm.js cmdInbox `sub === 'read'` never calls ackTo/setCursor), so a
+// child could never clear a `meshGapWithheld:true` condition; the gate could
+// re-fire forever. Must now say `inbox read-primary` (the cursor-advancing
+// verb, matching devswarm-child-turn.js's own mesh-direct instruction) and
+// must NEVER emit the bare non-acking `inbox read <id>` form.
+test('P1 (Wave 4): drainCmd(cli, true) [child] names the cursor-advancing `inbox read-primary`, never the non-mutating bare `inbox read`', () => {
+  const out = drainCmd(CLI, true);
+  assert.ok(out.includes('inbox read-primary'), `child otherwise-branch must run inbox read-primary (cursor-advancing); out=${out}`);
+  const id = '<DEVSWARM_BUILDER_ID>';
+  assert.ok(!out.includes('inbox read ' + id), `must never emit the non-mutating bare "inbox read <id>" form; out=${out}`);
+});
+
+test('C1: unreadTotal field is the value gated on (matches `inbox count`s real JSON field name)', () => {
+  assert.ok(drainCmd(CLI, false).includes('unreadTotal'));
+  assert.ok(drainCmd(CLI, true).includes('unreadTotal'));
+});
+
+// ---------------------------------------------------------------------------
+// fl-wave5 fix (item 4), broadened fl-wave6 (item 2, P1): the terminal
+// `inbox read-primary` step drainCmd sends the agent to run can itself
+// refuse with `ok:false` for ANY reason — not just the literal
+// `store-unavailable` bucket (project-context-mismatch, unregistered-
+// workspace, an ownership-mismatch reason, … — every refusal
+// `resolveWorkspaceStoreForRead` can produce). Pre-fix (fl-wave5), drainCmd's
+// prose only named the terminal branch when `reason` was exactly
+// `store-unavailable`, leaving the agent free to loop or spawn a subagent
+// over every OTHER `ok:false` refusal. Present for EVERY isChild x useTick
+// combination — the terminal step is always the same `inbox read-primary`
+// verb regardless of which leading drain step ran.
+// ---------------------------------------------------------------------------
+for (const isChild of [true, false]) {
+  for (const useTick of [true, false]) {
+    test(`item4: drainCmd(isChild=${isChild}, useTick=${useTick}) names the ANY-ok:false terminal branch for its final inbox read-primary step`, () => {
+      const out = drainCmd(CLI, isChild, useTick);
+      assert.match(out, /`ok:false`/, `must name the ok:false outcome; out=${out}`);
+      assert.match(out, /`reason`/, `must tell the agent to report the reason; out=${out}`);
+      assert.match(out, /storeUnavailableReason/, `must tell the agent to report storeUnavailableReason; out=${out}`);
+      assert.match(out, /storeUnavailableDetail/, `must tell the agent to report storeUnavailableDetail; out=${out}`);
+      assert.doesNotMatch(out, /`reason`\s+`store-unavailable`/, `must NOT be scoped to the literal store-unavailable reason only; out=${out}`);
+      assert.match(out, /stop \(do not loop, do not spawn a subagent\)/, `must be an explicit stop — no loop, no spawn; out=${out}`);
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// C (hook-injection byte-budget trim): wakeReassert must stay a SHORT pointer
+// (name what CronList/Monitor must show, then send the agent to re-run
+// `wake-directive <id>` for the full text) — never balloon back into
+// re-stating the entire SessionStart prompt inline on every Stop-gate firing.
+// ---------------------------------------------------------------------------
+// fl-wave5 fix (item 3): the "<= 400 total" cap this replaces conflated the
+// FIXED pointer text with the caller-controlled embedded CLI path — a real
+// install path is not bounded by this function at all, so a flat total cap
+// either hid a real fixed-text blowout behind a short fixture (the pre-fix
+// state) or would be unmeetable for a long real path through no fault of
+// this text. The honest contract is on the FIXED text ONLY: total output
+// length minus the literal `cli` argument's own length (the path appears
+// in the output exactly once — proven by the separate "exactly ONCE" test
+// below) must stay <= 360 chars, at BOTH an 86-char and a 160-char cli
+// fixture, for child and Primary alike.
+// fl-wave6 fix (P2, item 5): raised from 320 to 360. Backslash escapes in
+// the emitted text (e.g. \`ok:false\`) count toward the MEASURED length the
+// same as any other character — the real fixed-text length already peaked
+// at 315 chars against the old 320 cap, only 5 chars of headroom. The raise
+// is NOT because this wave's own item 2 fix (widening drainCmd's
+// storeUnavailableClause wording) would have tripped it — wakeReassert
+// never calls drainCmd and carries no storeUnavailableClause at all, so
+// that fix could not have touched this text; the measured fixed length is
+// 315 chars both before and after item 2. The raise is headroom against
+// FUTURE backslash-escaped characters and wording changes to wakeReassert's
+// own text, given how thin 5 chars already was. The measurement method is
+// unchanged (output.length minus the literal cli length) — this only raises
+// the ceiling, and does not trim any existing wording.
+function cliOfLength(n) {
+  const suffix = '/devswarm.js';
+  const padLen = Math.max(0, n - suffix.length - 1);
+  return '/' + 'a'.repeat(padLen) + suffix;
+}
+const FIXED_TEXT_CAP = 360;
+for (const isChild of [true, false]) {
+  for (const wCase of WATCHER_CASES) {
+    for (const cliLen of [86, 160]) {
+      test(`FIXED TEXT LENGTH CAP: wakeReassert(isChild=${isChild}, ${wCase.label}, cli=${cliLen} chars) fixed text stays <= ${FIXED_TEXT_CAP} chars`, () => {
+        const fixtureCli = cliOfLength(cliLen);
+        assert.equal(fixtureCli.length, cliLen, 'test fixture setup sanity check');
+        const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, fixtureCli, isChild, wCase.watcher);
+        // defect 7 (peer sweep, 0.116 candidate): `watcher`, like `cli`, is
+        // now a caller-controlled path embedded directly (the correctness
+        // fix — see wakeReassert's own header comment for why the old
+        // $CLI-relative DERIVATION had to go), so it is excluded from the
+        // FIXED-text measurement the same way `cli` already is.
+        const watcherLen = wCase.watcher ? String(wCase.watcher).length : 0;
+        const fixedLen = out.length - fixtureCli.length - watcherLen;
+        assert.ok(fixedLen <= FIXED_TEXT_CAP,
+          `wakeReassert fixed text (excluding the embedded cli/watcher paths) must stay <= ${FIXED_TEXT_CAP} chars, got ${fixedLen}; out=${out}`);
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// defect 7 (peer sweep, 0.116 candidate): the Stop-gate wake re-verify text
+// (wakeReassert) and the SessionStart cron-create prompt text (wakeDirective,
+// via drainCmd) must describe the SAME actual `inbox tick` command and the
+// SAME actual watcher path — they are two different renderings of the SAME
+// live cron job / Monitor arm, not two independently-worded texts that can
+// silently drift.
+// ---------------------------------------------------------------------------
+
+for (const isChild of [true, false]) {
+  test(`defect 7: wakeReassert's tick command matches the ACTUAL --quiet cron job wakeDirective tells the agent to CronCreate (isChild=${isChild})`, () => {
+    const env = { DEVSWARM_AI_AGENT: 'claude' };
+    const directiveOut = wakeDirective(env, isChild, CLI, undefined);
+    const reassertOut = wakeReassert(env, CLI, isChild, undefined);
+    // wakeDirective's CronCreate prompt body is drainCmd(..., useTick:true, ...),
+    // which always appends --quiet (see drainCmd's own header comment).
+    assert.match(directiveOut, /inbox tick <DEVSWARM_BUILDER_ID>(?: --child)? --quiet/,
+      `sanity: wakeDirective's cron prompt must run --quiet; out=${directiveOut}`);
+    // wakeReassert's re-verify pointer must name that SAME command shape,
+    // not a different one lacking --quiet (pre-fix: the two texts disagreed).
+    assert.match(reassertOut, /inbox tick <DEVSWARM_BUILDER_ID>(?: --child)? --quiet/,
+      `wakeReassert must point at the same --quiet tick command wakeDirective creates; out=${reassertOut}`);
+  });
+
+  test(`defect 7: wakeReassert names the REAL stable-launcher watcher path, not a broken $CLI-relative derivation (isChild=${isChild})`, () => {
+    // Simulates devswarm.stableLauncher's (default-on) actual resolved
+    // shape: CLI and WATCHER are SIBLING files under ~/.anti-hall/bin/, not
+    // the raw plugin-root layout (<root>/scripts/.. + <root>/companion/lib/..)
+    // the old $(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js
+    // derivation assumed.
+    const stableCli = '/Users/someone/.anti-hall/bin/devswarm.js';
+    const stableWatcher = '/Users/someone/.anti-hall/bin/wake-watch.js';
+    const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, stableCli, isChild, stableWatcher);
+    assert.ok(out.includes(stableWatcher), `must name the real stable watcher path; out=${out}`);
+    const derived = '/Users/someone/.anti-hall/companion/lib/devswarm-wake-watch.js';
+    assert.ok(!out.includes(derived), `must NOT point at the non-existent derived path; out=${out}`);
+  });
+}
+
+test('wakeReassert points at the on-demand wake-directive CLI verb for the full SessionStart text', () => {
+  const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, true, WATCHER);
+  // fl-wave3 fix (item 3): the CLI path is now emitted ONCE, up front, as a
+  // `CLI=` assignment — every later reference (including this wake-directive
+  // pointer) uses the short `"$CLI"` token instead of re-embedding the long
+  // literal path a second/third time.
+  // fl-wave5 fix (item 3): the assignment is now DOUBLE-quoted (`CLI="<path>"`,
+  // a directly shell-runnable literal-string assignment), not backtick-quoted
+  // (`CLI=\`<path>\``) — backticks in an actual shell mean COMMAND
+  // SUBSTITUTION, so the pre-fix text told the agent to run something that
+  // would EXECUTE the path as a command instead of assigning it.
+  assert.ok(out.includes('CLI="' + CLI + '"'), `must name the CLI path exactly once, up front, as a shell-quoted assignment; out=${out}`);
+  assert.ok(out.includes('node "$CLI" wake-directive'), `must point at the wake-directive verb via the $CLI token; out=${out}`);
+  assert.strictEqual(out.split(CLI).length - 1, 1, `the long CLI path must appear exactly ONCE in the output, not repeated; out=${out}`);
+});
+
+// ---------------------------------------------------------------------------
+// defect 735b179362e8: drainCmd/wakeDirective/wakeReassert previously emitted
+// the LITERAL `<DEVSWARM_BUILDER_ID>` placeholder unconditionally, even
+// though the workspace's REAL id is available in `env` at every call site —
+// a child agent then had nothing to substitute and addressed the wrong id
+// (its own meshId) instead. resolvedId(env) now substitutes the real,
+// ID_FIELD-validated id when present, and falls back to the unchanged
+// placeholder otherwise (env absent, or an unsafe/malformed value).
+// ---------------------------------------------------------------------------
+const { resolvedId } = WAKE;
+
+test('resolvedId: env.DEVSWARM_BUILDER_ID set and safe -> the real id', () => {
+  assert.strictEqual(resolvedId({ DEVSWARM_BUILDER_ID: 'child-abc123' }), 'child-abc123');
+});
+
+test('resolvedId: env has no DEVSWARM_BUILDER_ID -> the literal placeholder', () => {
+  // Deliberately an explicit `{}`, never a bare `undefined` env — this test
+  // suite itself sometimes runs AS a DevSwarm child (this repo dogfoods its
+  // own plugin), in which case `undefined` would fall through to the REAL
+  // process.env.DEVSWARM_BUILDER_ID (same fallback convention wakeCron(env)
+  // above already uses) and make this assertion environment-dependent.
+  assert.strictEqual(resolvedId({}), '<DEVSWARM_BUILDER_ID>');
+  assert.strictEqual(resolvedId({ DEVSWARM_AI_AGENT: 'claude' }), '<DEVSWARM_BUILDER_ID>');
+});
+
+test('resolvedId: an UNSAFE id (path traversal / shell metacharacters / injection payload) -> the placeholder, never the raw value', () => {
+  for (const bad of ['../../etc/passwd', 'a`b`c', 'a$(rm -rf /)', 'a; DROP TABLE', 'a\nb', '']) {
+    assert.strictEqual(resolvedId({ DEVSWARM_BUILDER_ID: bad }), '<DEVSWARM_BUILDER_ID>', `must reject unsafe id: ${JSON.stringify(bad)}`);
+  }
+});
+
+test('drainCmd: 4th `id` param substitutes the real id; omitted -> unchanged placeholder (byte-identical to pre-fix callers)', () => {
+  const withId = drainCmd(CLI, true, false, 'child-abc123');
+  assert.ok(withId.includes('child-abc123'), `real id must appear in the drain command; out=${withId}`);
+  assert.ok(!withId.includes('<DEVSWARM_BUILDER_ID>'), `placeholder must not leak through once a real id is given; out=${withId}`);
+  const omitted = drainCmd(CLI, true);
+  assert.ok(omitted.includes('<DEVSWARM_BUILDER_ID>'), `omitting id must keep the pre-fix placeholder text; out=${omitted}`);
+});
+
+test('wakeDirective: DEVSWARM_BUILDER_ID set -> the real id is substituted into the emitted drain command (Claude cron branch)', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.ok(out.includes('inbox tick child-abc123 --child'), `must embed the real id in the tick command; out=${out}`);
+  assert.ok(!out.includes('<DEVSWARM_BUILDER_ID>'), `placeholder must not leak through; out=${out}`);
+});
+
+test('wakeDirective: DEVSWARM_BUILDER_ID unset -> the placeholder is preserved, byte-identical to pre-fix (Claude cron branch)', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'claude' }, true, CLI, '');
+  assert.ok(out.includes('inbox tick <DEVSWARM_BUILDER_ID> --child'), `must keep the placeholder when no real id is available; out=${out}`);
+});
+
+test('wakeDirective: DEVSWARM_BUILDER_ID set -> the real id is substituted (non-Claude turn-native branch)', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'codex', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.ok(out.includes('child-abc123'), `must embed the real id; out=${out}`);
+  assert.ok(!out.includes('<DEVSWARM_BUILDER_ID>'), `placeholder must not leak through; out=${out}`);
+});
+
+test('wakeDirective: DEVSWARM_BUILDER_ID unset -> the placeholder is preserved (non-Claude turn-native branch)', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'codex' }, true, CLI, '');
+  assert.ok(out.includes('<DEVSWARM_BUILDER_ID>'), `must keep the placeholder when no real id is available; out=${out}`);
+});
+
+test('wakeReassert: DEVSWARM_BUILDER_ID set -> the real id is substituted into the tick command and the wake-directive pointer', () => {
+  const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, CLI, true, '');
+  assert.ok(out.includes('inbox tick child-abc123 --child'), `must embed the real id in the tick command; out=${out}`);
+  assert.ok(out.includes('wake-directive child-abc123'), `must embed the real id in the wake-directive pointer; out=${out}`);
+  assert.ok(!out.includes('<DEVSWARM_BUILDER_ID>'), `placeholder must not leak through; out=${out}`);
+});
+
+test('wakeReassert: DEVSWARM_BUILDER_ID unset -> the placeholder is preserved, byte-identical to pre-fix', () => {
+  const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, true, '');
+  assert.ok(out.includes('inbox tick <DEVSWARM_BUILDER_ID> --child'), `must keep the placeholder in the tick command; out=${out}`);
+  assert.ok(out.includes('wake-directive <DEVSWARM_BUILDER_ID>'), `must keep the placeholder in the wake-directive pointer; out=${out}`);
+});
+
+// 0.109 idle gate: the auto-archive idle classifier ignores a wake turn only
+// when its mailbox commands are plain (companion/lib/devswarm-idle.js). Every
+// injected drain/wake text therefore tells the agent to run them as PLAIN
+// commands — no pipes or filters (the output is already small).
+test('0.109: every drain text (cron tick, child, Primary, Codex turn-native) says run the commands plain, no pipes/filters', () => {
+  for (const [isChild, useTick] of [[true, true], [false, true], [true, false], [false, false]]) {
+    const out = drainCmd(CLI, isChild, useTick, 'child-abc123');
+    assert.match(out, /plain: no pipes\/filters/i, `isChild=${isChild} useTick=${useTick}: ${out}`);
+    assert.match(out, /no pipes\/filters/i);
+  }
+  const cron = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.match(cron, /no pipes\/filters/i, cron);
+  const codex = wakeDirective({ DEVSWARM_AI_AGENT: 'codex', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.match(codex, /no pipes\/filters/i, codex);
+});
+
+test('tick prompt: the Primary decides on the FIRST printed line (later lines are a roster); the child prompt has no roster note', () => {
+  const primary = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'primary-abc123' }, false, CLI, '');
+  assert.match(primary, /FIRST printed line/, primary);
+  assert.match(primary, /informational roster/, primary);
+  assert.ok(!/if the printed line reads/.test(primary), 'the ambiguous single-line wording is gone from the Primary prompt');
+  // A --child tick never prints the roster, so the child prompt keeps the
+  // short wording (its injected payload is size-capped).
+  const child = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.match(child, /if the printed line reads/, child);
+  assert.ok(!/FIRST printed line/.test(child), child);
+  assert.ok(!/informational roster/.test(child), child);
+});

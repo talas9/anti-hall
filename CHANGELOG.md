@@ -1,0 +1,9532 @@
+# Changelog
+
+All notable changes to the anti-hall plugin are documented here. The plugin pins an
+explicit `version` in `plugin.json` only (the authority); the marketplace entry carries
+no `version` to avoid the silent-precedence trap where `plugin.json` wins silently. Every
+behavioral change MUST bump `plugin.json` `version` or installed users will not receive
+the update.
+
+## 0.122.2 (2026-10-03)
+
+### Fixed
+
+- **Two tests that failed only on Linux CI are now platform-independent** (the command-guard message-order differential and the wake-watch lock-stale-bound test). Test-only; no plugin behaviour change.
+
+## 0.122.1 (2026-10-03)
+
+### Added
+
+- **Shared-tree agent note:** the new setting `guards.sharedTreeAgentNote` (default on; env `ANTIHALL_SHARED_TREE_AGENT_NOTE`; settings file and env only) makes `swarm-guard` add one advisory sentence when a write-capable subagent is spawned without `isolation: "worktree"` while another write-capable agent is still running in the same working tree (two such agents can commit each other's uncommitted changes). Read-only agent types, isolated spawns and unknown agent state stay silent. Never blocks.
+
+### Changed
+
+- **command-guard "allow plain push" accepts `-u` / `--set-upstream`.** A session pushing its own branch with `git push -u origin <branch> [2>&1 | tail -N]` was blocked only because of the upstream flag. The flag is the single allowed flag slot (never combined with `-q` or any other flag) and requires an explicit remote AND ref; remote/ref vetting, the output-sink rules and the chain allow-list are unchanged (`rev-parse`/`ls-remote`/`node`/`echo` after a push stay blocked). `git-guard.js` is untouched.
+
+### Fixed
+
+- `doctor`: the live guard self-tests now run against an isolated temp home instead of the caller's `~/.anti-hall`, so an unexpired user skip or an exhausted Codex quota no longer makes a working guard's self-test report FAILED. The temp home is removed when the run ends; the context-footprint measurements keep the real home on purpose.
+- **Transcript-heavy hooks no longer hang at exit on Node 24+:** the 19 hooks that may parse 1.5 MB or more of the session transcript before exiting (`ask-guard`, `auto-handover`, `auto-handover-pause-nag`, `claim-ledger`, `codex-nudge`, `compact-advice-guard`, `compact-declaration-guard`, `devswarm-child-turn`, `devswarm-parent-inbox`, `dispatch-tier`, `edit-guard`, `limit-conserve-inject`, `precompact-snapshot`, `silent-agent-nudge`, `stale-agent-stop-note`, `task-guard`, `task-tracker`, `tasklist-guard`, `verify-first`) now run `node --no-concurrent-recompilation --no-concurrent-sparkplug`. This includes the four that use `emit-dedupe`, whose scan widens to a 4 MB tail. That is 19 of 64 Claude entries and the 14 matching Codex entries, including the commands `codex/install-codex.js` writes. Every other hook command is unchanged. On Node 24 and 26 such a hook could deadlock inside `process.exit()`: a V8 background compile (Maglev or Sparkplug) waited for a main-thread garbage collection while the main thread waited to join that thread (nodejs/node#54918, #64274). The hook then sat until its timeout (30 s for a Stop hook). Replaying a real 14.8 MB transcript through `silent-agent-nudge` on Node 24.14.0: 4/600 hangs without the flags, 0/600 with them. Node 22 never hung (Maglev is off there). The flags and the hook list live in `hooks/lib/node-hook-flags.js`. `doctor` reports whether the running Node accepts the flags, and a hygiene test checks that exactly the listed entries carry them. Existing Codex installs pick up the flags on the next `install-codex.js` run.
+- **task-guard idle-neglect message:** it now says how to mark a task an agent already covers (set the task's owner to the running agent).
+- **Heavy-command block message leads with the path that works:** every variant of the `command-guard.js` block text (plain, DevSwarm child, DevSwarm Primary with and without the workspace advice) now starts with one line, to run or re-check the command yourself write it to a scratchpad script and run `<interpreter> <script>` with `run_in_background`, then the rest, tightened (about 15% shorter for the plain text). Message only: what is blocked and what is allowed are unchanged, proven by a before/after exit-code table over 49 commands.
+- The compact `roster` unread column summed direct and broadcast unread, so a Primary with no
+  direct mail showed e.g. `34` while `inbox tick` / `read-primary` said 0. It now shows direct
+  unread only (the tick's definition) and appends `(+N bcast)` only when broadcasts are unseen.
+  `--json` is unchanged (`directUnread` stays direct-only; `broadcastUnread` stays separate).
+- **Dispatch-tier hints are calibrated toward `subagent`:** a `workspace` or `workflow` recommendation with Jev confidence below 0.6 is now shown as `subagent` (logged as `low-confidence-subagent`), and the classification question now says that a bug fix, a UI text change, any single-file or single-component task, and a priority label (P0/P1/P2) do not make a task a workspace or workflow task. Confident multi-step feature, release and sweep verdicts are unchanged. Verdicts already cached keep their stored answer, but the confidence floor applies to them too.
+
+## 0.122.0 (2026-10-03)
+
+### Added
+
+- **Optional "no blocking questions" guard (off by default):** the new setting `guards.noBlockingQuestions` (`off`, `advise` or `block`; env `ANTIHALL_NO_BLOCKING_QUESTIONS`) watches the `AskUserQuestion` tool. `advise` lets the question through and reminds the agent to take the recommended option, say which one, and carry on; `block` refuses the call. A question whose first entry starts with `DESTRUCTIVE:` or `CREDENTIAL:` (in the header or at the start of the question text) is always allowed and noted in `~/.anti-hall/logs/ask-guard.ndjson`. In a DevSwarm child workspace the message also says to send the question to the parent instead. Claude only (Codex has no ask tool). In block mode the skills that deliberately ask the user (`settings`, `deadly-loop`, `ship-it`, `flutter-debug`, `devswarm`) need that marker, or the setting turned off.
+- **Agents-in-flight note on questions:** the new setting `guards.questionAgentsNote` (default on; env `ANTIHALL_QUESTION_AGENTS_NOTE`) makes the same `AskUserQuestion` hook add one advisory line when background agents are provably in flight, naming how many and their short descriptions and saying they may act on an option before the answer arrives. Silent when none are running or the count cannot be proven. Never blocks and works with `guards.noBlockingQuestions` off. Claude only (Codex has no ask tool).
+- **Dispatch-tier text off switch and no-workspace-repo suppression:** the DevSwarm Primary dispatch-tier text (the workspace is the top fan-out tier) now goes through one gate used by `task-tracker.js`, `verify-first.js` and `verify-first-orch.js`. It is no longer injected in a repo whose `CLAUDE.md`/`AGENTS.md` forbids workspaces for real work, and the new setting `devswarm.dispatchTierText` (default on; env `ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT`) turns it off everywhere.
+- **Inline-work nudge for Primaries:** the new setting `devswarm.inlineWorkNudge` (default on; env `ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE`; threshold `devswarm.inlineWorkNudgeThreshold`, default 5) adds one note per session, via the existing `edit-guard.js` hook, when a Primary has made more than the threshold of direct edits while actionable tasks are pending and it has proven zero live child workspaces. Silent when liveness is unknown, in a child workspace, and in a no-workspace repo. Never blocks.
+- **Interval roster on the cron tick (off by default):** the new setting `devswarm.tickRosterEvery` (default 0; env `ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY`) makes every Nth `inbox tick --quiet` of a Primary append the compact roster table after the unchanged first line, when unread is 0 and a live child is proven. The JSON form of tick and `--child` ticks are unchanged.
+- **Pending child questions are harder to miss:** when a Primary has unanswered child questions, the per-prompt "own inbox" notice now starts with one line, `QUESTIONS AWAITING YOUR REPLY: N (oldest Xm) — <workspace title>: <first 80 characters of the question>`. The preview is cleaned of control characters and has secrets redacted; it is left out when the stored summary has no question text yet.
+- **`devswarm.js spawn` note:** when `--source` names a branch other than the default branch and the DevSwarm app already has a workspace (active or archived) on it, the result carries one line in `warnings` saying the app may show the new workspace nested under it. Output only; nothing else changes, and a failed lookup stays silent.
+- **Stale-agent stop note:** the new hook `stale-agent-stop-note` (PreToolUse `TaskStop`, advisory, never blocks) adds one line when TaskStop names an agent that was messaged or resumed after its last report and has not reported since. Setting `guards.staleAgentStopNote` (default on; env `ANTIHALL_STALE_AGENT_STOP_NOTE`; settings file and env only, no plugin option).
+
+### Changed
+
+- **Advanced settings now live in `/anti-hall:settings`:** the 25 advanced settings no longer have a `/config` row (the manifest `userConfig` goes from 154 to 129 keys). Non-advanced settings keep their `/config` rows; `/anti-hall:settings` shows and changes every setting. The new settings in this release (`guards.noBlockingQuestions`, `guards.questionAgentsNote`, `guards.staleAgentStopNote`, `devswarm.dispatchTierText`, `devswarm.inlineWorkNudge`, `devswarm.inlineWorkNudgeThreshold`, `devswarm.tickRosterEvery`) are advanced: set them via `/anti-hall:settings` (settings file or env); they have no `/config` row. `dispatchTierText` and `inlineWorkNudge` are independent switches.
+- **Stored plugin-option values are copied into `~/.anti-hall/settings.json` on update:** plugin-option values are now migrated into `~/.anti-hall/settings.json` for every plugin-option setting except the 10 headline switches, locked/home-only keys and the credential options, and only when the stored value is already the effective one (the migration never changes what resolves; it re-checks "still unset" under the settings lock). Stored options are read under both `pluginConfigs` keys (`anti-hall@anti-hall`, `anti-hall`) and both shapes. The 10 headline keys are flagged `headline` in the schema. New permanent default-equivalence test.
+- Both READMEs end with a "Links" section naming Documentation, Support and Privacy; `documentationUrl` now points at the documentation start page (`docs/README.md`).
+- Eight over-200-character tokens (seven regex literals in `model-routing-guard.js`, `command-guard.js`, `claim-ledger.js`, plus the command list in `devswarm.js`'s unknown-command error) are rebuilt from short joined parts so the directory scanner can read them. Behaviour is unchanged; `tests/hygiene/regex-source-equality.test.js` pins each rebuilt `RegExp.source` and `.flags` to the original.
+- The `icon` key is removed from the Claude manifest. The plugin icon ships at the directory's default path, `plugins/anti-hall/.claude-plugin/icon.png` (512x512 PNG, found without an `icon` key), and a copy is kept at `assets/anti-hall-icon.png`. The listing icon is whatever was uploaded in the directory portal; the repository copy is read only at first submission. `tests/hygiene/plugin-icon.test.js` checks the icon and that no other image or font file is tracked under the plugin folder.
+- Skill and model-policy documents refer to this repository's own docs by plain repository path (`docs/KB-….md`) instead of a full URL. Affected: the devswarm, jev, ship-it and update skills, their Codex counterparts (devswarm, doctor, jev, update) and both `MODEL-POLICY.md` copies. Vendor documentation URLs in the Jev skills are unchanged.
+- The devswarm skills point at the archived orchestration design and plan under `docs/archive/superpowers/` (the old path no longer existed).
+- The Jev skill leads with the plugin option for storing a key, marks the key file as an opt-in legacy path, and matches the real `set-key` output.
+- CI installs a pinned `networkx` in a virtual environment so the api-guard third-party tests run; a new hygiene test checks the paths declared in `hooks.json`, `monitors.json`, skills and plugin-root references.
+
+### Fixed
+
+- A DevSwarm Primary that has live workspaces but no way to be woken by their messages (its session cron died with a restart and its watcher exited when no child was live) is now told so. Each prompt shows a `NO MAILBOX WAKE PATH` line (or a shorter one naming just the missing watcher or tick), `spawn` adds the same instruction to its `warnings`, and the Stop gate blocks once per cap when both are missing. Session crons do not survive a restart; the line says what to re-arm.
+- The wake watcher's idle-skip line no longer says the cron covers you. It reports how long ago the mailbox tick last ran, or says no recent tick was seen and to check `CronList`.
+- A transient lock-heartbeat failure (the lock's reclaim sidecar briefly busy) no longer makes a healthy wake watcher exit. The watcher skips that restamp and retries next tick; it exits as lost only on a genuine lost lock, or when transient failures outlast the lock's 2-minute stale threshold (with a log line).
+- Releasing a lock now checks ownership and unlinks under the reclaim sidecar (waiting at most ~40 ms for a busy one, then the old behaviour), so a stealer that publishes at that moment cannot have its lock deleted.
+- **Unanswered-question nag and Stop block skip archived-and-dead, held and ignored askers:** the Primary's "N unanswered QUESTIONS" notice and "QUESTIONS AWAITING YOUR REPLY" line (`devswarm-parent-inbox.js`) and the Stop block on unanswered questions (`devswarm-parent-gate.js`) used to count questions from workspaces that are archived, held or archive-ignored. All three now share one filter and one set of inputs (`filterLiveAskers`, built on `row-eligibility.js`; active descriptors count as rows in both hooks): held and ignored askers are dropped; an archived asker is dropped only when its session is provably dead, so an archived-but-live child still blocks and nags (R18). A sender with no row stays counted when the summary is a legacy one without `archivedRegistryRows` (it may be archived-but-live), and is dropped as retired otherwise. The block's loop signature follows the filtered set.
+- **"QUESTIONS AWAITING YOUR REPLY" no longer names archived, held or ignored children:** the line now lists only questions whose sender row is not archived, held or archive-ignored (the parent gate's policy, via `row-eligibility.js`); a sender whose eligibility cannot be determined is left out. The rest of the per-prompt notice is unchanged.
+- **Roster counter survives non-quiet ticks:** a non-quiet `inbox tick` rewrote the wake-tick marker without its `seq`, resetting the `devswarm.tickRosterEvery` counter; the previous `seq` is now carried over.
+- **Cron tick prompt wording:** the prompt now says to decide on the FIRST printed line only and treats any lines after it (the optional `devswarm.tickRosterEvery` roster) as informational.
+- **Roster note only in the Primary's tick prompt:** the FIRST-printed-line wording is in the Primary's cron-tick prompt only. A `--child` tick never prints the roster, so the child prompt keeps its 0.121.8 wording and the injected child payload stays under its size budget.
+- **Edit-guard and command-guard advice in no-workspace repos:** the block message shown to a DevSwarm Primary no longer recommends spawning a child workspace when the repo forbids workspaces for real work (or `devswarm.dispatchTierText` is off); it goes through the same `primary-tier.js` gate as the other Primary tier text. Advice text only: the same edits and commands are blocked.
+- **agent-scan:** terminal evidence (a stop notification) stamped before an agent's latest resume no longer re-marks the resumed, running agent as finished; the resume check allows 2 s of clock skew. A named in-process teammate that was sent a message and has not reported since now counts as running (rows carry a `pendingMessage` marker).
+- **agent-scan:** a teammate report is recognised only as the harness-injected record. Typed or pasted text, a peer's cross-session message, a tool result, an assistant message, a report for a teammate this session never spawned, prose before the block, and an inner timestamp in the future of the record's own all no longer count, so a forged report cannot hide a running teammate. A teammate spawned outside the scanned window is "unknown", never "finished". A teammate named like a background agent id no longer replaces that agent's row or clears its terminal state.
+- **silent-agent-nudge:** a teammate whose only running evidence is an unanswered message never causes a Stop block, at any `guards.silentAgentNudgeMin`.
+- **Codex:** documented that `stale-agent-stop-note` is Claude-only (no agent-stop tool matcher is documented for Codex).
+- A "Repository not found" error from hivecontrol no longer silences a live workspace's mail for hours: live rows are always pulled and keep reporting the failure; archived, held or ignored rows (and a repo with no live row) are suppressed only after 3 identical sweeps in a row, and the match is limited to hivecontrol's own error line.
+- The workspace stop gate re-opens the stop budget for the kinds it just satisfied when nothing is owed any more.
+- The Primary gate says so (one non-blocking line) when it cannot determine its own unread count, instead of skipping its own row silently.
+- Key notices (hooks, `jev-setup`, migration) say "the plugin's options screen" instead of `/plugin config`.
+- Held and archive-ignored children no longer keep the wake watcher armed: the wake-watch and `inbox tick` idle-skip now use the parent gate's policy (live = not archived, not held, not ignored).
+- Archived or pruned workspace rows are no longer reported as errors by reconcile, and the supervisor log line lists an unchanged failure set once instead of repeating every row each sweep. Nothing is moved or deleted.
+- The workspace stop gate no longer re-demands a heartbeat beside an inbox pull after a report, and the Primary gate no longer nags a Primary whose own descriptor has no inbox path.
+- The one-time generic Jev key binding notice follows the effective transport (plugin option, env or settings), not only the home settings file.
+
+## 0.121.8 (2026-10-03)
+
+### Fixed
+
+- **Directory listing:** the plugin icon moved to the plugin's top level (`./icon.png`) and is now an original "AH" monogram; the display name is "Anti-Hall"; the description is shorter; the marketplace entry has a homepage and an author URL.
+- Skill front matter is valid strict YAML (three skill descriptions were not).
+- Literal NUL bytes removed from two source files; they now use the `\0` escape.
+- The monitor command quotes `${CLAUDE_PLUGIN_ROOT}`, so it works when the install path contains a space.
+
+### Added
+
+- README and PRIVACY have a "What it runs and writes" table.
+- Hygiene tests: strict skill front matter, no NUL bytes in shipped files, icon at the plugin's top level, quoted monitor command.
+
+## 0.121.7 (2026-10-03)
+
+### Changed
+
+- `devswarm.js roster` prints a compact table of live workspaces with a "+N archived" line; `--all` lists archived ones and `--json` gives the full data as before.
+
+### Fixed
+
+- The stale-handover reminder no longer makes a reply end with "refresh the handover first" after the handover was refreshed in that same turn.
+- The workspace stop gate's cap message no longer says there will be no further stop blocks; it now says the limit starts over after a report.
+
+### Added
+
+- The stalled-agent check records its phase timings when a run is slow, to diagnose a rare 30-second timeout whose cause is not yet known.
+- Orchestration guidance: Claude Code rejects subagent files named report, summary, findings or analysis; name them differently.
+
+## 0.121.6 (2026-10-02)
+
+### Fixed
+
+- **Stop-time task check:** it no longer guesses the state of a task whose records are far back in a long session (it wrongly nagged tasks marked as waiting on the owner and re-opened finished ones). It now recovers the real state, and says so in one line when it cannot.
+- **Stalled-agent check:** an agent that was stopped is no longer reported as silent. A resume, a launch and a finish now count only from real system records, not from text that merely quotes them.
+- **Quoted text is no longer mistaken for a real signal** in four other checks: the merge gate (only something the user types can sign off a hedge; the assistant can no longer clear its own), the "safe to compact" declaration (table rows are ignored), DevSwarm idle tracking, and the task-list reset check.
+- **Judge setting:** the `jev.semanticJudge` setting now actually enables the optional judge. Previously only the environment variable did.
+- **Docs corrected:** CI matrix, release guide, Codex hook-event count, Windows wording, activate skill.
+- A docs link check no longer fails on local, git-ignored files.
+
+### Added
+
+- **Handovers are never committed:** git-guard blocks a commit that includes a handover (setting `guards.handoverCommitGuard`, on by default). Doctor lists tracked or out-of-format handovers, and the archived-workspace message names the exact handover path.
+- The manifest declares the plugin icon. A code-owners file.
+
+### Changed
+
+- New files named `CONTINUE-HERE.md` are blocked (existing ones stay editable). The deadly-loop state record moves under `.anti-hall/`.
+- Historical plans and audit reports moved to `docs/archive/`. The test workflow pins its actions and declares read-only permissions.
+
+## 0.121.5 (2026-10-02)
+
+### Fixed
+
+- **Claim ledger and second-opinion judge:** both now check the reply actually being sent rather than the previous message, and a reply is never counted as evidence for itself.
+- **Marketplace listing text:** the listing now shows the current short description instead of an outdated long one.
+- **speculation-judge reads the reply being stopped:** the opt-in judge now sends the Stop payload's `last_assistant_message` to the model, not the previous transcript message. The transcript is only the fallback.
+- **claim-ledger judges the right message:** when the transcript is one message behind the Stop payload, the payload text is the reply, the transcript's last message counts as evidence, and `tools_this_turn` is the running tool count for this turn. The last message of a session is now judged too. When the transcript is up to date the record and its hash are unchanged.
+- **Jev turn pointer:** `speculation-guard` and `claim-ledger` no longer log a `turnRef` when the judged text came from the Stop payload, because the transcript's last line may be the previous turn. Nothing reads `turnRef` programmatically.
+
+### Changed
+
+- **License file:** the plugin folder now ships its own LICENSE file.
+- The privacy policy now states that the optional statusline reads your account email for display only.
+
+## 0.121.4 (2026-10-02)
+
+### Fixed
+
+- **Doctor twin-record repair:** the repair stage no longer reports "failed" on every run. Records it leaves untouched on purpose are now listed once each as "needs review", with the record id and the reason.
+- **Archived DevSwarm child:** an archived child workspace is no longer woken by its own mailbox watcher, and its tick no longer asks it to re-arm. It is told to delete its own mailbox cron. A live workspace is never silenced.
+- **Archived-workspace handover check:** it now recognises a flat handover file.
+- **Speculation check:** it now judges the reply actually being sent rather than the previous message. That mix-up caused false blocks and let the real reply go unchecked. If the helper that reads the reply cannot load, the check falls back to reading the transcript instead of allowing silently.
+- **Mailbox watcher handoff line:** the "handed off to <version>" line now says when that version is only cached and not yet registered.
+
+### Changed
+
+- **Plugin icon:** it is now 512x512 (under 256 KiB), so every shipped file is under the 256 KiB per-file limit.
+
+## 0.121.3 (2026-10-02)
+
+### Fixed
+
+- **DevSwarm ingest warning:** the "DEVSWARM INGEST FAILING" banner now appears once per episode instead of on every prompt. When the DevSwarm app's hivecontrol is timing out, it says so (the DevSwarm app is not answering, so check or restart it) instead of telling you to run doctor, which cannot fix a timeout. The doctor advice stays only for a real configuration fault.
+
+- **Stop-time open-task message:** it now names tasks that were created long before, which previously showed as "(subject unknown)". The name is recovered only from a real, paired task-creation record; otherwise it still shows "(subject unknown)".
+
+## 0.121.2 (2026-10-02)
+
+### Changed
+
+- **Docs:** the README is cut to about 70 lines. All the detail moved to `docs/GUIDE.md`; `docs/README.md` is now the single documentation start page, and the README links to it in one place. The plugin README and the Codex README are slimmed in the same way.
+- **Demo:** the README GIF is now a real Claude Code session. A force-push attempt is blocked by git-guard, and the agent falls back to a normal push. `assets/demo/README.md` documents how it was recorded.
+
+### Tests
+
+- Every doc must be reachable from the docs start page; the Jev recommendation's full text is pinned in the KB doc.
+
+## 0.121.1 (2026-10-02)
+
+### Added
+
+- **Jev: an optional backup vendor, `jev.fallbackTransport` (`none|vercel|typesafe`).** It retries once when the primary times out, returns a server error, or is rate-limited or out of balance. It never retries on a rejected key. A per-vendor circuit breaker skips a failing vendor; when both vendors are failing, Jev is skipped. The docs note that the two vendors likely share a backend, so this is not full redundancy.
+- **jev-setup `enable --fallback`.**
+- **Jev reporting:** every decision records the vendor that served it, and whether the backup was used. The report and the weekly scorecard break down per vendor. The Vercel per-request cost is read.
+
+### Changed
+
+- **Jev keys are vendor-bound:** `jev_vercel_api_key` and `jev_typesafe_api_key`. The legacy `jev_api_key` is bound to the vendor in the home-only setting `jev.genericKeyVendor` (default vercel), which is changed with `jev-setup bind-generic-key`. A key is never sent to a vendor it was not entered for. **Behaviour change:** a generic key used with the typesafe transport is no longer sent until it is bound, or re-entered as the vendor key.
+- **Jev: requests refuse redirects.** Secret redaction now happens once, inside the client. Error bodies are never logged.
+- **jev-setup reads and writes the effective configuration.** `enable` previously wrote a file that a newer settings file overrode. `status` warns when the two config files disagree, and doctor checks it. The balance is shown per vendor ("n/a" where a vendor has no balance endpoint). `set-key` no longer prints the key length.
+
+### Fixed
+
+- **Silent-agent warning:** agents launched far back in a long transcript are now seen. A queued follow-up message no longer counts as the agent having finished. A resumed agent is tracked from the time of the resume.
+
+## 0.121.0 (2026-10-02)
+
+### Changed
+
+- **Internal: `scripts/devswarm.js` is split.** It is now a dispatcher (about 80 KB) plus 15 modules under `scripts/devswarm-lib/` (the largest is about 156 KB). It is a pure move: the export surface (198 names), the CLI behaviour and the help output are unchanged. Every file is now under 256 KiB, and a hygiene test enforces that.
+- **Note for anyone patching the plugin locally:** the verb implementations moved to `devswarm-lib/`.
+
+### Tests
+
+- The mutation kit and the source-text checks treat the dispatcher plus `devswarm-lib` as one source unit. An export-surface snapshot test was added.
+
+## 0.120.15 (2026-10-02)
+
+### Fixed
+
+- **DevSwarm roster and plan display.** Shows "N/total done", plus "k doing" or "doing #i", instead of a last-touched step index that jumped backwards for plans worked in parallel. A re-opened or replaced plan shows the true count with "(plan changed)". Out-of-order completion no longer reads as all-done, which had silenced the stall, idle and burn signals.
+- **`archive`.** Completes the app-side archive for workspaces whose builder is closed but still listed. The branch-name fallback runs only when exactly one non-archived builder has that branch, and it is the one being archived. An empty target is never sent. Other builders on the same branch or worktree are snapshotted before and after, and any side effect is reported. `doctor --repair` matches by exact id only.
+
+### Added
+
+- **Jev recommendation.** A one-time recommendation notice when Jev is off (first session, then at most every 30 days; setting `jev.recommendNotice`), a doctor section, and a README "Enable Jev" block. The wording states only what is measured.
+
+### Security
+
+- **git-guard.** No verdict changes. 181 heredoc-scanning bypass forms are pinned as must-stay-blocked. The substitution block message now explains that heredoc bodies are scanned as shell, and suggests the Write tool. The GUIDE documents the limitation.
+
+## 0.120.14 (2026-10-02)
+
+### Changed
+
+- **BEHAVIOUR CHANGE: API keys come from sensitive plugin options.** Jev and Anthropic keys are read from the plugin's sensitive options. Reading a key from the machine environment or a key file is now off by default and needs the home-only opt-in `jev.allowLegacyKeyRead` (Jev) or `guards.allowAnthropicEnvKey` (Anthropic env key), set in your home settings. An update migration enables the Jev opt-in once for existing installs that already have a key file, so those keep working. If you use an env-var key, or an Anthropic env key, set the matching opt-in or move the key into the plugin option. Key files must live under `~/.config` or `~/.anti-hall` and hold a single token.
+- Previous release's Jev endpoint change (loopback-only test override) was hardening; it is not a feature change.
+
+### Added
+
+- **`.anti-hall/` gitignore check.** Doctor warns when `.anti-hall/` is not git-ignored; `--repair` writes `.git/info/exclude`; a one-time reminder; setting `guards.gitignoreHint`.
+- **Community files.** Issue forms, PR template, code of conduct, expanded CONTRIBUTING, and an issue-triage workflow (inactive until a repo secret is set).
+
+### Security
+
+- Known secret shapes are redacted from text sent to the classifiers (best-effort, not a guarantee).
+
+### Docs
+
+- **Privacy.** PRIVACY.md, the README "Network and data" section, and manifest privacy, documentation and support URLs.
+- **Directory and validator.** No shipped text names input-rewrite or permission-decision fields; the Codex manifest no longer references the icon file; skills link out-of-plugin docs by URL; settings descriptions spell no shell pipeline; the Jev skills are reworded.
+- Demo GIF re-recorded. AGENTS.md compacted to about 27 KB, with a 30 KB soft-budget test.
+
+### Tests and internal
+
+- devswarm source-unit test helper (split stage 1); the migration test pins the old build by commit SHA.
+- CI runs once per release, on `rc-v*` tags, sharded; main and PRs run a reduced matrix.
+
+## 0.120.13 (2026-10-02)
+
+### Security
+
+- **Jev test-endpoint override is loopback-only.** The Jev classifier's test-endpoint override (`ANTIHALL_JEV_TEST_ENDPOINT`) is now honoured only for loopback addresses. Previously, an environment value could redirect the request carrying the gateway API key to an arbitrary host. Users with a Jev key configured should update.
+
+### Fixed
+
+- **spawn submodule repair.** Reports a bare 40-hex sha; byte-identical set-aside files are no longer reported as conflicts (the duplicate copy is removed); differing files state which copy is in place; a leftover set-aside dir holding env or credential files produces a warning.
+
+### Docs
+
+- **Release policy.** `RELEASING.md` now states that rc tags are pruned after the release is published.
+
+### Tests
+
+- **Defect history.** Added a single-tag test for the defect-history backfill.
+
+## 0.120.12 (2026-10-02)
+
+### Added
+
+- Plugin icon (`plugins/anti-hall/.claude-plugin/icon.png`), also referenced from the Codex manifest interface (`composerIcon`, `logo`).
+- Short manifest description plus keywords in both manifests.
+- CONTRIBUTING, SECURITY and issue templates.
+
+### Changed
+
+- BEHAVIOUR CHANGE: scan-throttle is now advisory-only. It injects `additionalContext` and never rewrites the command or tool input.
+- Codex `anti-hall-activate` and `anti-hall-context-conserve` skills run shipped scripts (`codex/scripts/`) in place of inline `node -e` one-liners.
+
+### Fixed
+
+- The NUL dedup-key separator in `doctor-runtime.js` is written as an escape instead of a literal control byte.
+
+### Docs
+
+- README overhaul: demo, what-it-blocks table, verify and uninstall, glossary.
+- llms.txt uses absolute links.
+- The Windows claim is corrected.
+- Settings descriptions for `allowGcloudReads` and `allowBackgroundScratchScripts` reworded (text only, no detection change); GUIDE matches.
+
+## 0.120.11 (2026-10-02)
+
+### Fixed
+
+- silent-agent-nudge is no longer disarmed by an agent-list "running" row, and it survives compaction by adopting `task_status` attachments.
+- killed and cancelled agents are treated as terminal (notification and `task_status` shapes). An adopted agent with no timestamp and no output file is never nudged.
+- Orchestration rule I wording: no phantom heartbeat file, and "running" in an agent list is not progress.
+- limit-conserve honours the caller's home in `inbox tick`, so it no longer reads or writes the real home from in-process tests.
+- Hooks emit block JSON via a synchronous write.
+
+### Docs
+
+- Docs alignment: Jev mode count, hook table, monitors and `--auto`, `inbox tick` in llms.txt, the locked safety key, deadly-loop-multi marked Claude-only, the Windows snippet removed, private project names genericised, and a scratchpad volatility note in the orchestration skill.
+
+### Tests
+
+- LOCK LOST watcher test no longer races the watcher's own lock refresh (rare CI-only failure).
+
+## 0.120.10 (2026-10-02)
+
+### Fixed
+
+- The wake-watch update-available line is emitted once per new version, persisted across re-armed watchers, and says /reload-plugins.
+- The task-guard IDLE NEGLECT text tells you to set blockedBy for tasks waiting on an in-flight task.
+- command-guard allows chains of individually light segments with an allowed bounded form. Shell-wrapped and heavy segments still block.
+- Read-only filters before a bounded last stage (`... | grep -E x | head`) are treated as bounded.
+- Codex rate limits that surface only in background job logs are detected and recorded, so the Critic seat falls back and the Codex nudge stays quiet.
+- The stale-version notice says /reload-plugins.
+- A pipeline filter stage with any output redirect is never treated as read-only (fixes a Linux-only allowance).
+- Dormant roster rows no longer show STRAYING, and supervision skips stall/burn nudges for them.
+
+## 0.120.9 (2026-10-01)
+
+### Fixed
+
+- tasklist-guard demanded a progress header `started:` taken from its own clock, so it changed every Stop and could never be satisfied. It is now derived once from the transcript and persisted.
+- The running-agent count reads "unknown" instead of 0 when a launch is outside the transcript window, and never fires DISPATCH NOW on an unknown count.
+- parent-gate re-checks the live own-unread count before blocking on a cached one.
+- git-guard's command-substitution block suggests the Write tool for message text.
+
+### Added
+
+- `mesh read` also returns `messages`.
+- `mesh history` re-reads consumed broadcasts without moving cursors.
+- `inbox messages --with-broadcasts`.
+
+### Changed
+
+- After an update, `/reload-plugins` is the step to take. It was verified on 2026-10-01 to load new hooks and skills; restart only if a path still shows the old version.
+
+## 0.120.8 (2026-10-01)
+
+### Fixed
+
+- `devswarm.js spawn` repairs a submodule worktree DevSwarm failed to add. Root cause: DevSwarm's background, un-awaited `worktreeInclude` copy pre-creates the submodule dir before `git worktree add -b`. The repair sets the files aside, adds the worktree (attaching to an existing branch if needed) and restores the files without overwriting; conflicts are reported. The output includes a pinned-commit hint.
+- `send`/`mesh read`/heartbeat from a non-worktree cwd (e.g. the session scratchpad) fall back to `CLAUDE_PROJECT_DIR` for a Primary.
+- model-routing-guard no longer blocks a flagship on reasoning-heavy briefs (analyze/synthesize/read a PDF page by page), and never suggests haiku for them.
+- command-guard allows a background direct-exec of an executable script in the session's own scratchpad, and names the allowed shapes. `git pull` and mutating fetches are labelled as state-changing remote operations.
+
+## 0.120.7 (2026-10-01)
+
+### Changed
+
+- `/anti-hall:update` runs update.js (and the DevSwarm supervisor/ingest installer steps) IN the main session instead of delegating to a Sonnet subagent. Reason: it runs migrations, and the main session must judge the result, per the owner's rule that deploys and migrations are never handed to a delegated model by default.
+- command-guard exempts the anchored update.js and installer invocations.
+- model-routing-guard blocks a subagent spawn that would run the update (setting `guards.updateInSession`, default on).
+
+## 0.120.6 (2026-10-01)
+
+### Fixed
+
+- `devswarm.js archive` reported `appArchive.ok:true` from hivecontrol's exit code alone, without checking the DevSwarm app, so a workspace could stay live in the app while anti-hall treated it as archived. The app archive is now VERIFIED against the app-DB snapshot, or against hivecontrol's `archived:true` response when the DB isn't readable. Note in passing: `workspace list all` keeps archived rows, so it isn't an archived signal. An unverified archive returns `partial:true` with `manualCommand`.
+- `archive <branch|meshId|uuid>` archives the app side alone when the anti-hall descriptor is already archived.
+- roster rows carry `appArchived`; `appStillLive` and a one-time Primary note surface workspaces the app still shows after an anti-hall archive.
+- `doctor` detects that mismatch, and only an explicit `doctor --repair` runs the verified app archive.
+- Verified live against DevSwarm on throwaway workspaces.
+
+## 0.120.5 (2026-10-01)
+
+### Fixed
+
+- `devswarm.js roster` no longer lists an archived workspace twice. A native branch-name row whose worktree maps to an archived descriptor folds into the archived row (`hints:['archived']`). The output adds `liveCount`/`archivedCount`.
+- command-guard names state-changing remote operations (`gh pr create/merge`, `git push`) as such in its block reason, instead of "heavy". A `;`-joined `cd` that would qualify with `&&` gets a "use `cd <dir> &&`" hint. Behaviour is unchanged.
+
+## 0.120.4 (2026-10-01)
+
+### Security
+
+- git-guard now blocks launcher-dir writes via glob redirect targets and same-command variable targets (pre-existing).
+
+### Fixed
+
+- git-guard reads a redirect target as its first word (fewer false blocks after an odd quote).
+- command-guard allows `git push ... > <own scratchpad file>` (symlinks refused; newline-safe).
+- Test fixtures use neutral ids.
+
+## 0.120.3 (2026-10-01)
+
+### Fixed
+
+- The update's reconcile step: a DevSwarm native `message-count` timeout with nothing imported or lost is now "skipped (native unavailable: timeout)", reported in one aggregated summary line, with one retry after a backoff, instead of "failed" per worktree.
+- `devswarm.js archive`/`unarchive`/`archive-request` accept mesh ids, resolved like `send --to`. An ambiguous id lists the candidate UUIDs and archives nothing.
+- parent-gate: unread broadcast rows to a done (archive_ready) child no longer count as neglect, and the escalation suggests archiving when every flagged child is done or idle.
+- New regression tests for edit-guard handover writes and devswarm.js send loops.
+
+## 0.120.2 (2026-10-01)
+
+### Fixed
+
+- Compact advice/declaration guards no longer fire on a MENTION of the phrase: straight double-quoted text and backticked `/compact` mid-sentence are treated as quotes. Instruction forms ("Run `/compact …`", a standalone command line, a bare SAFE TO COMPACT line) still count.
+
+## 0.120.1 (2026-10-01)
+
+### Fixed
+
+- Compact-declaration guard deadlock: the auto-handover nag's mandated footer (`GOOD POINT TO /compact NOW`) and its pasteable `/compact focus: …` line were read as a SAFE TO COMPACT declaration, blocking every tool call in later turns; refreshing the handover (which the block itself demanded) was also blocked. Now only an explicit SAFE declaration counts, `.anti-hall/handovers/**` edits are always allowed, and leading hook reminders no longer stop a new user prompt from resetting the turn.
+
+## 0.120.0 (2026-10-01)
+
+Fixes from the second cross-project peer bug sweep (Primaries plus their workspaces), three rounds of adversarial security review of the command/git/edit guards, and DevSwarm identity, inbox and mesh fixes.
+
+### Fixed
+
+- **DevSwarm store id-collision guard no longer rejects a submodule path of the registered workspace.** The persisted toplevel of a child running in a submodule (e.g. `<ws>/sub`) was compared against the workspace-keyed id as if it were a different worktree. The guard now resolves both directions to the outermost superproject root and treats them as the same worktree.
+- **Child summaries and sends refresh the plan progress clock; identical repeats do not.** A child that was working (heartbeat `--summary`, mesh sends) but had not changed plan step was judged stalled. `noteActivity` now records activity with new text; text already among the recent signatures does not refresh, so a looping child still stalls.
+- **child-gate: one-time inbound-only warning when the native queue is unreachable and the outbound half is already satisfied.** The gate re-demanded a heartbeat right after one was sent and prescribed `inbox pull`, which hits the same dead native channel. It now warns once (own kind, cap 1) with an exit that does not need the native channel.
+- **Queued-prompt bursts no longer repeat COMMS OVERRIDE and the primary TASK-LIST block; task-guard accepts workspace branch/title owners.** N cron ticks delivered together showed the static block N times; it now collapses via `emit-dedupe` (keepalive = `guards.injectionRepeatEvery`). task-guard also accepts an owner spelled as the branch name or title of a live, non-archived workspace.
+- **No NOT DRAINING claim on graced fresh sends to stuck children; own-inbox escalation is count-free.** The Primary's own-inbox-only escalation is held while usage limits are at conservation, and the forced-ack state is cleared on a fully clean pass so new mail starts a fresh budget instead of escalating immediately.
+- **`mesh read`/`inbox` row shape is normalized; `mesh read --last/--since` added (peek-only); project resolves from `DEVSWARM_BUILDER_ID` outside a worktree.** The filters require `--peek` so they cannot consume unread rows.
+- **Guard housekeeping.** tasklist-guard ledger wording, heredoc/comms hook housekeeping, edit-guard matches `.anti-hall/**` allowlist names against the project root when cwd is a subdirectory, submodule or symlinked spelling (additive, never narrower), and a line starting with `RETRACT`/`RETRACTED`/`RETRACTING` is a free-form retraction. Docs: one git writer per worktree.
+- **DevSwarm roster step counter is monotonic; a done-reported child no longer shows STRAYING stall/burn.** The displayed plan step could move backwards, and a child that had reported done was flagged as stalled/burning while it was simply awaiting its parent.
+- **The devswarm-fold-mesh journal test no longer flakes on same-millisecond registry timestamps.** The 2+ LIVE fold guard now seeds the second live entry on a later millisecond.
+- **command-guard judges shell-loop bodies per command and tracks `cd`.** A `for ... do node .../devswarm.js send ...; done` loop was blocked while the single send passed, because the loop keyword stayed glued to the body and defeated start-anchored exceptions; the keyword is now stripped and each body segment is classified on its own. Bounded checks follow `cd`; path-qualified interpreters that exist as regular files are accepted; `[npx] vitest run` / `jest` on 1-2 explicit test files and a push of a HEAD sha are allowed (full suites, watch, `--coverage` stay heavy). The `devswarm.js` exemption now requires the file name to end at `devswarm.js`.
+- **git-guard: odd-quote heredoc prose no longer blocks the executed launcher.** Launcher-dir redirect targets are attributed per line, so an apostrophe in a heredoc body does not make the real command look like a launcher-dir write. `ditto` is now a copy verb for launcher-dir writes.
+- **codex-quota parses "try again at <ordinal date>" and codex-nudge stays quiet while limited.** A Codex usage-limit message giving a reset as an ordinal date ("try again at Oct 3rd, 2026 ...") was not parsed, so no quota record was kept and the nudge kept firing. The date is now parsed, an unparseable limit message falls back to a 6 h cooldown, and codex-nudge is skipped while a quota record is live.
+- **DevSwarm Primary registration and workspace listing no longer key a submodule cwd as its own worktree.** `register-primary`, `workspaces list`, archive-prefix and the ingest installer workdir used the submodule toplevel, minting phantom Primary rows. They now use the superproject-folding resolver. `doctor` detects existing phantom submodule Primary rows; only `doctor --repair` archives them (nothing is deleted).
+- **command-guard read-only-verify and push carve-outs tightened (review round 2).** `cd` is honoured only as an `&&`-chained step (not after `||`, in a pipe, or after `;`) and the cd target and script path are realpath'd, so symlinks cannot steer an anti-hall script past the refusal; the `vitest`/`jest` carve-out requires each operand to be an existing regular `*.test.*`/`*.spec.*` file (a bare `.test.ts` is a filter pattern); a short-sha push source must resolve through git to exactly HEAD (a tag named like the sha no longer matches); a leading `!` negation (`while ! npm test; ...`) no longer hides the heavy verb.
+- **work-detect: a `<<` after an unquoted `#` is a comment, not a heredoc.** The lines below it were dropped as heredoc body and hid real work from the housekeeping-only verdict.
+- **git-guard: the quote-blind launcher backstop is skipped unless the text can contain an `anti-hall` path; a backslash-newline collapses only after an odd backslash run.** The backstop made the 160 KB cd-chain PERF test about 10x slower; an O(n) precheck restores it. A launcher-dir-looking path with an escaped backslash before the newline no longer false-blocks.
+- **work-detect: an escaped `\<<` is not a heredoc, and a partly quoted delimiter (`<<E"OF"`) ends at its unquoted word.** Both dropped real commands from the housekeeping-only verdict.
+- **Defect channel: two concurrent `defect report` calls for the same fingerprint could lose one line.** The creating process opened the file without O_APPEND and overwrote the other's append. The file is now created with `'ax'` (O_CREAT|O_EXCL|O_APPEND).
+
+### Security
+
+- git-guard: a leading `!` negation was not treated as a wrapper word, so `if ! <push with a force flag>; then ...`, `while ! <force push>; ...` and `if ! <push of an empty-source refspec>; ...` slipped past the force-push and ref-deletion checks. `!` is now resolved like `if`/`then`.
+- git-guard: git accepts unique prefixes of long options, so abbreviated push deletion options (`--del`, `--dele`, `--pru`) and force/mirror options (`--force-w`, `--for`, `--mir`) were not recognised. `git push` long options are now resolved by unique-prefix match; an ambiguous prefix counts as every candidate (fail-closed, `--f` blocks as force).
+- git-guard: a launcher-dir write (cp/tee/mv/sed -i/install/ln/cd+write) placed after a heredoc body with an unbalanced apostrophe was not detected; a quote-blind per-line launcher backstop now blocks it.
+- git-guard: a quoted redirect target spanning a newline (`>"$HOME/<NL>/../<launcher dir>/x"`, also `>>`, `1>`, `&>`, `x>`) escaped the launcher-dir write block because the target was cut at the newline. Redirect words are now read from the raw text (a quoted span runs to its matching quote) in both the quote-aware pass and the backstop.
+- git-guard: a backslash-newline continuation in the middle of a launcher-dir path (`> ~/<dir>/\<NL>bin/y`) bypassed the launcher-dir write block; continuations are now removed (as bash does) before launcher analysis.
+- git-guard: `git push` deleting a remote branch/tag (`--delete`, `-d`, `origin :<ref>`, `--prune`) is now blocked with a reason naming the `skip.json` override; deleting published refs needs explicit owner confirmation.
+
+## 0.119.0 (2026-09-30)
+
+Fixes from a cross-project peer bug sweep plus Jev measurement fixes: the wake watcher, STALE
+DATA banner, reload/restart wording, guard hints and home isolation, and `jev report` gains
+rare-trigger counters and `--exclude-project`.
+
+### Fixed
+
+- **Wake watcher no longer wakes non-DevSwarm sessions.** `monitors.json` (`"when": "always"`) starts the watcher at every session start, and every stdout line is a transcript event, so a plain terminal session got `REFUSED TO ARM: not-a-devswarm-session` and spent a model turn on it. The harness-started entry now passes `--auto`; with it the expected refusals (`not-a-devswarm-session`, `disabled-by-settings`) go to stderr only. A model-armed watcher still prints its one refusal line.
+- **Wake watcher and companions no longer emit the `node:sqlite` ExperimentalWarning, and the watcher can hand off on every later release.** On Node 22.5+ the first `require('node:sqlite')` wrote an `ExperimentalWarning` to stderr, and under the harness Monitor every stderr line is a wake event, so each one cost the model a turn for noise. All companion and `devswarm.js` loads now go through `companion/lib/sqlite-quiet.js`, which swallows only that one warning during the load. Separately, the handoff loop guard allowed one handoff per process chain (stamp `1`), so every second release in a long-lived chain ended in `STALE BUILD` plus a manual re-arm. The stamp is now the target version, and a handoff is allowed whenever the newest version is strictly newer than the stamp; same-or-older targets and legacy or non-semver stamps are still refused.
+- **The ingest STALE DATA banner is emitted once per stale episode and says what is at risk.** The banner repeated on every turn and only told the user to run `/anti-hall:doctor`. It now goes through `staleBannerOnce` (a recovery clears the record; re-emits only when staleness crosses a coarser tier, with a 50-turn keepalive). The text names what may be stale (roster and app-state freshness) and notes that mesh sends are written directly to the store and are not affected. When `launchctl print-disabled` lists the ingest job as disabled, the banner says self-heal is skipped and gives the one-line `launchctl enable` command; anti-hall never runs it.
+- **The Primary no longer gets told a dead, older session "was active until" a recent time.** Session recency compared another session's start and its handover mtime against the current session's start, so a long-running live Primary was warned about an older dead session, and unconditionally when its own transcript was not matched. Both checks (`primary-seat` stale-resume and `anchorSessionDrift`) now compare transcript last-activity by `stat` only, and stay silent when the current session's activity is unknown. `handover-resume` also adds a `WRITER KEPT RUNNING` line when the handover's writer transcript was written more than 5 minutes after the handover.
+- **tasklist-guard no longer counts `.anti-hall/handovers` writes as work.** Writes to `.anti-hall/handovers/` (which the handover flow itself directs) and cwd-relative `.anti-hall/progress|history|handovers/` paths counted toward the work threshold. The exemption pattern now covers `handovers` and accepts a path with no leading slash.
+- **PARENT INBOX hints and update wording name the stable launcher and the right reload step.** Hints in `devswarm-parent-inbox` embedded the version-pinned plugin-cache path, which goes stale after `/reload-plugins` or once an update prunes that version directory. A shared `preferStableLauncher` (in `hooks/lib/stable-launcher.js`) now returns the `~/.anti-hall/bin` launcher when it already exists and `devswarm.stableLauncher` is on, and is used by the parent-inbox and child-turn hooks and the primary-seat conflict text in `devswarm.js`. The update skill, `version-alert`, and the registry-lag note now say `/reload-plugins` only when the plugin cache alone changed, and a full restart of Claude Code when the harness registry names a newer build than the running session. The update skill also respawns a Sonnet delegation with `model:"opus"` when Sonnet is unavailable or usage-exhausted (never Haiku).
+- **edit-guard's DevSwarm block text points at the exempt notes locations.** The block message now says session notes and reports can go in `.anti-hall/history/**` or the scratchpad (exempt), and that repo docs need a subagent or a trusted `.anti-hall/edit-allow.json`.
+- **command-guard blocked the background scratch-script shape its own block text recommends, and the `timeout` form of anti-hall CLI calls.** A `run_in_background` scratch script chained with a read sink (`script > out; wc -l out`) was refused because the allowance covered a single unbroken segment only. The check now accepts segments joined by `;`, `&&` or `|`, each either a scratch-script segment or a bounded sink (`wc`, `head`, `tail`, `grep -c` / `grep -m N`), with at least one script segment required. Separately, `timeout N node <dir>/devswarm.js roster | head` was blocked while the same line without `timeout` passed, because the anchored anti-hall CLI exemptions did not see through the wrapper; `isHeavySegment` now also matches the command with a leading `timeout [-flags] <duration>` removed. The heavy-pattern block text now names the working shape: use the literal absolute scratchpad path (not `$VAR`) and chain only `wc`/`head`/`tail`/`grep -c`/`grep -m N`.
+- **`askDetached` (Jev) defaults to the 3000ms ceiling instead of the 1500ms interactive budget.** A detached Jev call no longer inherits the shorter interactive timeout.
+- **Spawned hook children carrying the test-isolation marker can no longer resolve the real home.** `resolveHome` in `companion/lib/test-home-guard.js` now refuses a child whose HOME is missing or real instead of falling back to the developer's `~/.anti-hall`; covered by new cases in `no-real-home-entrypoints` and `git-guard` tests. The commit also bounds Jev row volume per git-guard invocation.
+- **Rare Jev triggers are counted and shown in `jev report`.** `speculationFramed` and `devswarmOnBrief` / `devswarmExtraSanctioned` occurrences are now recorded as counters and listed in the report.
+- **`jev-report --exclude-project <name>`** drops the raw rows of a leaked or synthetic project from the report.
+- **Test hygiene.** New `os.homedir()` call sites in `handover-resume.js` and `emit-dedupe.js` (`forget`) now go through `resolveHome` (the `homedir-call-site-ratchet` baseline stays 315), and the `handover-resume` test's git spawn isolates `HOME`/`USERPROFILE`.
+
+### Notes
+
+- git-guard still treats a launcher-dir write command quoted inside a heredoc body as a real write (fail-closed); a narrower exemption was tried and reverted after review found real bypasses — write such text with the Write tool.
+- workflow-drift-guard false positives on conditional `test.skip(cond, …)` come from oh-my-claudecode, not anti-hall.
+- the 2026-09-28 10:57–11:01Z jev-assist rows from project `v117-int` are synthetic; exclude them with `--exclude-project v117-int`.
+
+## 0.118.0 (2026-09-30)
+
+DevSwarm wake-watch/limit-skip and nudge/roster fixes, a codex-nudge scratchpad-exclusion
+fix, and further git-guard hardening — five field-reported fixes, each root-caused
+against a reproducing test before the fix.
+
+### Added
+
+- **`devswarm.wakeWatchIdleSkip` (default `true`, #39)** — a DevSwarm Primary with 0 LIVE
+  (non-archived) child workspaces gains nothing from an armed wake-watch Monitor (nothing
+  will ever message it), yet re-arming it every cron tick still costs a turn. When on and
+  the caller is a Primary with 0 live children, `inbox tick` reports `watcherArmed
+  idle-skip` (never the boolean `false`), so the cron prompt's "re-arm if `watcherArmed`
+  false" rule stays inert; if `devswarm-wake-watch.js` is started anyway it prints
+  `[wake-watch] idle-skip: no live child workspaces — not arming (cron fallback covers)`
+  and exits 0 without ever acquiring the watch lock. A live child (`companion/lib/
+  devswarm-live-children.js` `hasLiveChild`) leaves both paths unchanged; an
+  archived-only child still counts as 0 live. The cron fallback itself is never removed
+  or altered. Metric: `~/.anti-hall/devswarm/rearm-cues.jsonl` (trigger `idle-skip`),
+  surfaced by `doctor` as "wake-watch idle-skips: N". Codex mirror: `inbox tick`'s
+  `watcherArmed` documentation updated in `plugins/anti-hall/codex/skills/
+  anti-hall-devswarm/SKILL.md` (Codex has no Monitor tool, so a Codex workspace never
+  produces `idle-skip` itself).
+
+### Fixed
+
+- **`nudge <id>` escalated immediately ("poke-exhausted") on the very first call
+  after a child had been idle over an hour.** `computeLiveness`'s resolved-to-alive
+  paths (heartbeat-fresh, `nudged`→`alive` on advance, and the general recompute)
+  carried a stale `nudgeAttempts`/`nudgedAt` forward from an EARLIER episode instead
+  of resetting them — only the heartbeat-fresh branch reset the poke budget. A LATER,
+  unrelated stale spell then inherited an already-exhausted budget and escalated on
+  its first `pokeOrEscalate` call. `companion/lib/liveness.js`'s two remaining
+  resolved-to-alive returns now reset `nudgeAttempts`/`nudgedAt` on that episode
+  boundary too. The escalation notice into the parent's store now also tells the
+  owner to click/continue the workspace in the DevSwarm app (still allows
+  reassign/archive), and `lastNudgeError` is preserved unchanged.
+- **`nudge <child meshId>` failed `{"ok":false,"error":"no descriptor for workspace
+  ..."}` while `send --to <that same meshId>` worked.** `cmdNudge` looked up only
+  `readDescriptorFile(home, id)` (an exact builder-id match), with no meshId
+  resolution at all. It now falls back to the SAME resolution `send` uses
+  (`resolveSendTarget`: meshId match, then exact registry-id, then a one-hop
+  retired-redirect) before failing closed.
+- **`roster` from a cwd outside any project (e.g. a session's scratchpad) returned
+  bare `{"ok":false,"reason":"no-project"}` with no guidance.** `repoKey` is always
+  git-derived (there is no repoId→repoKey registry to fall back through —
+  `DEVSWARM_REPO_ID` is a caller-declared label, not a store key, and trusting it
+  here could silently read the wrong project's roster), so `roster` now returns an
+  actionable `error` string (same wording as `send`'s own no-project error) instead
+  of inventing a new resolution path.
+- **task-guard's IDLE NEGLECT block never mentioned delegating a task to a live
+  DevSwarm child workspace.** When at least one live (not-archived) DevSwarm child
+  workspace exists, the IDLE NEGLECT reason now adds one line: delegate the task by
+  setting its owner to the workspace id (`TaskUpdate owner`), which already counts
+  as attended via the existing `devswarmChildAttended` check — detection is
+  unchanged, this only documents the option.
+- **The "CHILD NOT DRAINING" nudge repeated every single turn for an idle child.**
+  `devswarm-parent-inbox.js`'s normal-tier unread segment (`buildUnreadSegment`)
+  passed no `keepaliveTurns` to its on-change dedupe call — unlike the urgent tier
+  just above it — so an UNCHANGED segment re-fired on every delivered turn once
+  the prior copy was consumed. It now passes `keepaliveTurns: 2` (same pattern the
+  urgent tier already uses), capping repeats to 2 before going quiet until the
+  content actually changes (new mail, a drained inbox, a status flip) or the
+  keepalive window resurfaces it. Suppressions are counted in a new
+  `not-draining-suppressed.jsonl`, reported by `doctor --check` alongside the
+  existing `cron-found-mail.jsonl` line.
+- **`codex-nudge.js` counted scratchpad-only and out-of-worktree edits as "substantial code
+  edits", nudging for a Codex review over disposable repro scripts.** Seen twice for `*.py`
+  files written to the session's own scratchpad (`/private/tmp/claude-<uid>/<encoded-cwd>/
+  <session>/scratchpad/`), and once for a scratchpad `.js` repro script. The edit counter now
+  excludes any edited path strictly inside the session's own scratchpad (reusing
+  `lib/scratchpad.js`'s `ownScratchpadDirs`/`isInsideDir`, derived from `transcript_path`'s
+  encoded-cwd segment — the same mechanism `edit-guard.js`/`command-guard.js` already use) and
+  any path outside the session's git worktree, when `payload.cwd` resolves to one (via
+  `companion/lib/identity.js`'s `resolveContext`, the single canonical worktree resolver — no
+  new filesystem walk). Both checks fail open when the needed payload fields are absent.
+- **git-guard: more force-push/wrapper bypasses closed (0.117.2 follow-up, A1-5/A1-6).**
+  None needed a quote desync. `git push --mirror` force-updates and deletes every remote
+  ref and is now treated as a force push. `time -p`/`command -p` used to resolve the
+  effective command verb to `-p` itself, skipping the wrapped command entirely - both now
+  skip their own `-p` flag. `coproc git push --force ...` is now recognized as a wrapper,
+  like `exec`. An `xargs`-run `git push` is now treated as a force push whether or not the
+  visible argv already carries `--force`: xargs appends words it reads from stdin as
+  trailing arguments, so a hidden `-f` (e.g. `echo -f | xargs git push origin main`)
+  cannot be ruled out statically. `env -S 'STRING'`/`--split-string` (which word-splits
+  STRING and runs it as a new command) is now unwrapped and re-scanned, and a `bash -c
+  $'...'` ANSI-C-quoted payload is now decoded before being re-parsed (it used to carry a
+  literal leading `$` into the recursed command, so the verb never resolved to `git`). A
+  literal string piped into a bare shell (`echo "git push --force origin main" | bash`)
+  or fed via a here-string (`bash <<< "git push --force origin main"`) is now recognized
+  as feeding that shell's stdin as its script, the same as `bash -c "..."`.
+- **git-guard: quadratic scan on many `git commit -F -` segments (0.117.2 follow-up,
+  A1-6).** `extractQuotedLiterals(cmd)` ran once per `-F -`/`--file=-` segment over the
+  FULL, unchanged command string; 20000 such segments took about 13s, over the hook's 10s
+  timeout (a fail-open miss of a trailing force push). It is now memoized per distinct
+  command string, computed once instead of once per segment; the same input now decides
+  in well under 100ms.
+- **emit-dedupe: a fixed-turn-count keepalive block (`parent-inbox-urgent`,
+  `keepaliveTurns: 10`; `NOT DRAINING`, `keepaliveTurns: 2`; `limit-conserve`;
+  `verify-first`; `task-tracker`) could go silent forever on Codex.** The fallback
+  window used when the transcript cannot confirm consumption (always true on Codex,
+  which has no hook-attachment transcript) doubled as BOTH the pending-suppression
+  window AND the "new turn" detector once `dedupeWindowMin` (default 20 min) replaced
+  the old fixed 15s constant for the former. A `dedupeWindowMin` of 20 minutes meant a
+  turn only counted as "new" every 20 minutes, so a `keepaliveTurns: 10` block needed
+  over 3 hours of unchanged content before it re-surfaced — effectively never, on a
+  normal cadence. The "new turn" check is now back on the original fixed 15s
+  threshold regardless of `dedupeWindowMin`, which continues to govern only the
+  initial pending-suppression window.
+- **git-guard: an xargs-run git command merely MENTIONED inside a quoted commit
+  message or redirect target was wrongly treated as a live command (A1-2, 0.117.2
+  follow-up).** `xargsGitVerdict` ran from the quote-BLIND backstop split (cuts at
+  every `|`/`;`, inside or outside a quoted string), so e.g. `git commit -m 'docs:
+  explain why ls | xargs git push is blocked'` or `echo '... | xargs git push
+  origin' > notes.txt` false-blocked. It now runs only from the quote-aware segment
+  scan and the quote-aware per-line backstop recovery pass; a real `echo -f | xargs
+  git push origin main` still blocks, and an xargs-run git command inside a heredoc
+  BODY line still blocks too (heredoc bodies are deliberately scanned as shell,
+  unrelated to this fix).
+- **DevSwarm `inbox tick`'s wake-watch idle-skip scoped "does this Primary have a
+  live child?" from the CALLING process's cwd instead of the tick id's own
+  registered worktree (A1-3).** A tick invoked from a different clone/checkout of
+  the same project than the one `id` is registered under resolves to a DIFFERENT
+  `repoKey` (repo-keyed off `--git-common-dir`, which is per-checkout), so
+  `hasLiveChild`'s project scoping silently missed every real sibling child and
+  idle-skip fired even with a live child present. The scope now comes from `id`'s
+  own registered descriptor's `worktreePath`; when that cannot be resolved, the
+  idle-skip check is skipped entirely (fail open, never idle-skip on an
+  unresolvable scope) rather than falling back to the calling cwd.
+- **git-guard: the `-F -`/`--file=-` stdin-commit-message scan was still O(N^2) on
+  many segments with quoted text (A1-4, 0.117.2 follow-up).** A1-6's memoization
+  cached only `extractQuotedLiterals`'s result ARRAY; the candidate-text `.join()`
+  and the self-credit regex test against that joined text still ran unmemoized on
+  every `-F -` segment, so a command with quoted text on each segment (e.g. `git
+  commit -F - <<<'m'; ` repeated 20000 times) still paid an O(cmd.length) join +
+  regex scan per segment. Both are now memoized per distinct command string
+  alongside the literal array.
+
+### Changed
+
+- **`command-guard.js`'s "Heavy command detected" delegation text now surfaces the
+  scratchpad-script path first.** The "write it to the scratchpad and run it with
+  run_in_background" option used to be the very last clause of the block message, easy to
+  miss before reading it as a plain "spawn a subagent" instruction. A one-line version now
+  appears right after the first sentence in both the DevSwarm-primary and non-DevSwarm
+  variants. Text only — no change to which commands are allowed or blocked inline.
+
+## 0.117.2 (2026-09-30)
+
+Security fix for git-guard.
+
+### Fixed
+
+- **git-guard could miss a force push that came after a heredoc or a stray quote (0.116.1
+  and 0.117.1).** git-guard splits a command into its separate commands while tracking
+  quotes. Some text threw that tracking off: an apostrophe in a heredoc body
+  (`It's done`), a quote in a `#` comment, or a heredoc inside a quoted `$( … )`. When
+  that happened, the rest of the command looked like one long quoted string, so a later
+  force push was allowed. git-guard now also runs a quote-blind check. It cuts the
+  whole command at every newline, `;`, `&`, `|`, `(`, `)`, `$(` and backtick, ignoring
+  quotes, heredocs and comments, and applies the git rules to each piece: force push in
+  every form, push arguments built by command substitution, command-valued git config,
+  and AI self-credit trailers on commit-creating commands. These pieces are also checked
+  inside `eval` and `bash -c` payloads. The command is blocked if either check blocks it.
+  Rules that are not about git, such as launcher-directory writes, still use only the
+  quote-aware check. Known and deliberate: quoted text that has a separator right before
+  a literal force push, such as `git commit -m "don't; git push --force"`, is now
+  blocked. A plain mention like `git commit -m "never git push --force"` is still
+  allowed.
+- **Slow arithmetic scan.** Long inputs with many `<<` inside `$(( … ))` took about 9 s
+  to check, close to the hook's 10 s timeout. The scan now continues from where it
+  stopped instead of starting again at the beginning, so a 96 KB input is checked in
+  about 30 ms.
+- **Follow-up hardening on the quote-blind check above.** The quote-blind check cuts a
+  command into pieces at every `; & | ( )` and backtick, so it could also cut INSIDE a
+  git command's own quoted argument - `git -C "$(pwd)" push --force-with-lease origin
+  main`, or a `-m`/`--trailer` message containing one of those characters (a
+  conventional-commit subject like `feat(x): y` opens with `(`). That split the piece
+  holding the git verb from the piece holding `--force`/the trailer, so the command was
+  allowed. The check now also re-reads each physical line on its own with the normal
+  quote-aware splitter and applies the git rules to it - a line is almost always
+  quote-balanced by itself even when the whole command is not. Also, a force push
+  inside the condition of an `if`/`while`/`until`/`elif` (e.g. `if git push -f origin
+  main; then …; fi`) was never checked at all; those are now recognized the same way
+  `then`/`do`/`else` already were. And a regex alternation grouped in parentheses (e.g.
+  `grep -E "(a|git push -f)" x`) was wrongly blocked, because the quote-blind check's
+  own `(`/`)` cuts split the still-open quoted pattern across more than one piece before
+  its closing quote; the check now tracks the quote state across pieces on the same
+  line instead of only the one piece right after a `|`.
+
+### Fixed
+
+- **UserPromptSubmit injection burst deduplicated by a configurable window (field
+  report)** — a DevSwarm Primary idle through a multi-day usage-limit outage had every
+  queued cron/wake prompt re-delivered together on resume, and each one re-triggered
+  anti-hall's full LIMIT CONSERVATION, TASK-LIST, DEVSWARM COMMS OVERRIDE and DEVSWARM
+  WORKSPACES injection blocks — one resumed turn carried ~60 identical copies (~150 KB).
+  `hooks/limit-conserve-inject.js`, `hooks/task-tracker.js` and `hooks/devswarm-
+  child-turn.js` already deduped their static blocks via `hooks/lib/emit-dedupe.js`
+  (as does `hooks/devswarm-parent-inbox.js`'s WORKSPACES table); the fallback window
+  used when a burst's consumption cannot be read from the transcript is now driven by
+  the new `context.dedupeWindowMin` setting (default `20` minutes, `0` = off/disables
+  emit-dedupe entirely) instead of a fixed 15s constant. Suppression counts (per
+  session and overall, with a last-suppressed age) now surface in `/anti-hall:doctor`
+  via `hooks/lib/emit-dedupe.js`'s new `summary()`.
+- **`inbox tick` reports `watcherArmed limit-skip` while LIMIT CONSERVATION is active**
+  — the mailbox-tick cron prompt tells the agent to re-arm a lapsed Monitor wake-watch
+  when `watcherArmed` reads `false`, which directly contradicted LIMIT CONSERVATION's
+  own "defer non-urgent work" instruction while both were active at once. `inbox tick`
+  (`scripts/devswarm.js` `cmdInboxTick`) now checks `hooks/limit-conserve.js`
+  `isConserving()` after the existing idle-skip check and, while conservation is
+  active, reports the string `watcherArmed limit-skip` instead of `false` — sibling
+  behavior to `devswarm.wakeWatchIdleSkip`'s `idle-skip`, no separate setting. The cron
+  prompt text (`hooks/lib/devswarm-wake.js` `drainCmd`'s `rearmClause`) now says both
+  `idle-skip` and `limit-skip` mean "do not re-arm"; the cron job itself is never
+  altered. Metric: same `~/.anti-hall/devswarm/rearm-cues.jsonl` ledger, trigger
+  `limit-skip`, surfaced by `doctor` as "wake-watch limit-skips: N".
+
+## 0.117.1 (2026-09-28)
+
+Four field-reported fixes from DevSwarm child workspaces, all root-caused against a
+reproducing test before the fix.
+
+### Fixed
+
+- **edit-guard's own-scratchpad exemption broke after an in-session `cd`.** The session
+  scratchpad directory is named after the session's ORIGINAL project cwd, but the
+  exemption re-derived it from the LIVE `cwd` on every call — after a `cd` (e.g. into a
+  DevSwarm child worktree), a legitimate `Write`/`Edit` into the session's own scratchpad
+  was wrongly blocked with the edit-delegation message. `lib/scratchpad.js`'s
+  `ownScratchpadDirs()` now prefers the encoding read off `transcript_path`'s parent
+  directory (the harness's own record of the session's original cwd), falling back to
+  `cwd` when the transcript path is absent, with no change to which session a scratchpad
+  belongs to (still scoped strictly to `session_id`).
+- **A child's first-ever `heartbeat --summary` (before any `register`) was silently
+  dropped — then the first fix for that opened an impersonation hole.** `cmdHeartbeat`'s
+  mesh-broadcast ownership check required a pre-existing registry row for the target id
+  before considering any ownership leg; a workspace's very first interaction is often a
+  direct `heartbeat <id> --summary ...` with no prior `register`, so the broadcast was
+  refused `caller-not-registered` and never reached the shared store —
+  `devswarm-child-gate.js`'s Stop gate then kept re-prescribing the same heartbeat
+  forever. The first cut of the fix gave `broadcastFamilyOwns` a first-claim leg that
+  granted ownership of ANY never-registered id to ANY cwd-resolved caller — which let an
+  unrelated caller impersonate a sibling's FUTURE id and lock the real owner out once
+  claimed (review finding B-a0-impersonation). First-claim now additionally requires
+  GROUND TRUTH: the DevSwarm app's own database (`builderForWorktree`, the same
+  ground-truth reader the register-path app-archive guard already trusts) must name a
+  builder for the caller's own resolved worktree whose id is exactly the id being
+  claimed — a bare `DEVSWARM_BUILDER_ID` declaration is never sufficient proof by itself.
+  No app-DB match (DB off/unreadable, no builder row for the worktree, or a different
+  builder id) fails closed, same as any other refusal. Also: a dropped `--summary` now
+  carries a plain top-level `note: 'summary NOT recorded: <reason>'` instead of only a
+  nested `dropped`/`dropReason` pair that was easy to miss.
+- **First-claim heartbeat ownership: follow-up hardening round (the app DB "ground
+  truth" was itself env-forgeable).** The fix above's own claim that the app-DB
+  ground-truth reader "never consults env" was wrong: its DB file path honors
+  `ANTIHALL_DEVSWARM_APP_DB` with no gating, and a real CLI invocation's `ctx.env`
+  defaults to `process.env` — the same process env the untrusted caller controls — so a
+  caller could point the "ground truth" DB at a throwaway sqlite file of its own and
+  claim any never-registered id through the very leg meant to stop that. The override is
+  now honored only when an in-process caller (tests, another in-process embedder)
+  supplied its own `env` explicitly; a real CLI invocation always resolves the fixed
+  per-OS app DB path. This leg also now matches an ACTIVE app-DB builder row only — an
+  archived/hidden-only row at the worktree no longer grants first-claim.
+- **A workspace could register itself with the exact id `system`.** Mesh code reads a
+  row's `sender`/`from` field to attribute a message; a workspace registered as `system`
+  would make its own outbound rows indistinguishable from a genuine system-authored one.
+  `'system'` is now a reserved EXACT id (never a substring match — an id that merely
+  *contains* "system", e.g. `ecosystem-service`, still registers normally) on a fresh
+  `register`, refused the same way the existing reserved-token ids are.
+- **`devswarm.js nudge <id>` gave no reason for "poke-exhausted."** A failing poke (e.g.
+  the session's channel is unreachable) was silently swallowed; `pokeOrEscalate` now
+  persists the failure as `lastNudgeError` (carried across sweep ticks) and, once attempts
+  are exhausted, the escalate result carries `lastNudgeError` plus a human line: "session
+  appears dead/unreachable — needs a manual continue in the DevSwarm app."
+- **Escalation notices into the parent's inbox showed a blank sender.** The synthetic
+  escalation row had no `sender` at all (rendered as an empty "from:" line) — root cause
+  was two-fold: the row literal was missing `sender: 'system'`, and the delivery path
+  itself (`via: 'message'`) only persists `{workspaceId, ts, hash, body}` and silently
+  drops every other field including `sender`; delivery now goes through the mesh-aware
+  `via: 'row'` insert (already used elsewhere) so `sender` is actually written.
+
+## 0.117.0 (2026-09-28)
+
+**Measured.** Every new judgment/automation surface in this release ships its own effectiveness report: DevSwarm dispatch demand (`scripts/dispatch-report.js`), Meeseeks supervision — plans, warnings, corrections, respawns, token burn (`devswarm.js supervision-report`), and Jev's own agreement-vs-deterministic-signal and follow/override counts (`jev-report.js`, folded into `supervision-report` per integration).
+
+### Added
+
+- **DevSwarm Meeseeks supervision: step plans (P1).** `spawn -p` turns a numbered list in the brief into the child's step plan (`~/.anti-hall/devswarm/plans/<key>.json`; a `Scope:` line becomes its file scope). A brief without a list is never refused. New verbs `plan set|show`; `heartbeat --step N --status doing|done|blocked`. The workspace table and roster show `step 3/7 · 42m · progress 18m ago`. Settings `devswarm.planTracking` (on) and `devswarm.planRequired` (off). Rows without a plan render exactly as before.
+- **Straying detection + correction (P2).** For planned children only, the supervisor sweep raises advisory signals: `stall` (busy, no step progress for `devswarm.stepStallMin`, 30 min), `off-scope` (`ready-check --allow` over scope ∪ extras), `idle` (stale liveness verdict) and `burn` (see below). Each episode warns once, capped at `devswarm.strayWarnMax` (2) per signal per step. The Primary gets one capped `DEVSWARM STRAYING` line per warning per session on Stop (stable alert kind `devswarm-straying`, never a block), `STRAYING: …` and `+N extras` on the table cell, and `plan.straying` on the roster. `devswarm.js correct <id> [--dry-run]` sends "step N '<text>': <reasons>. Return to step N or reply BLOCKED <why>" and records `warned_at` only after the send succeeds. Nothing is automatic; respawn stays manual.
+- **User-sanctioned extras.** `devswarm.js scope add <id> --glob G --note TEXT`: the child tags extra work a user asked for; tagged globs stop counting as off-scope and the Primary sees the note. The child-turn hook tells a planned child to do this.
+- **Token burn.** The sweep reads each planned child's own session transcript incrementally (byte offset per workspace, complete lines only, one count per message id) and computes weighted tokens: input + output + cache writes + `devswarm.burnCacheReadPct`% (10) of cache reads. A `burn` warning fires past `devswarm.burnTokensWarn` (2M) since the step last moved ("used 2.1M tokens since step 3 last moved", also in the correction text). The table and roster show `· 1.8M tok`; the table's change-dedupe ignores the rising figure. Codex children have no Claude transcript and get no burn figure.
+- **Five Jev supervision integrations, as recommendations.** `jevIntegrations.devswarmOnBrief`, `devswarmExtraSanctioned`, `devswarmWaitKind`, `devswarmLoop` and `devswarmStepMap` default `on`: asked detached from the sweep only when a deterministic precondition fires (one ask per input per `devswarm.supervisorBlockerLabelReaskSec`), inputs capped and secret-scrubbed, answer read from the cache next sweep. The verdict and confidence ride on the warning ("Jev: waiting on CI/owner/peer, not stuck 0.92"); Jev never suppresses a warning, blocks or kills, and the Primary decides. `shadow` logs only. `jev-setup.js mode` knows all five.
+- **Supervision effectiveness metrics.** `~/.anti-hall/logs/devswarm-supervision.ndjson` (1 MB × 5, daily rollups in `devswarm-supervision-daily/`) records plans, step changes, warnings, corrections, corrections followed by step progress, extras, done (time-to-done, steps done vs planned, tokens per completed step), token periods and Jev answers. `devswarm.js supervision-report [--days N] [--json]` reports warnings by signal and repeats, the correction follow rate, extras, tokens per workspace and per step, burn warnings and their corrected rate, and per Jev integration its agreement with the deterministic signal and the Primary's follow/override counts. `doctor` prints a one-line 7-day summary.
+- **Primary-run respawn that keeps progress (P3).** `devswarm.js respawn <id> [--dry-run]` replaces a straying child. It refuses unless the caller holds the Primary seat, the plan has `warned_at` (a `correct` was sent) and `devswarm.respawnGraceMin` (20) minutes have passed; nothing runs it automatically and it never kills. In order: it asks the child to commit and push its WIP and waits up to `devswarm.respawnWipWaitSec` (120 s); commits anything still dirty or unpushed through a private index onto a new `park/<branch>-<ts>` branch and pushes it (the child's worktree is untouched, nothing is stashed or discarded, and a failed park or push aborts the respawn with the local park branch kept); writes `plans/<id>.handover.md`; spawns `<branch>-r<N>` with `-s <default branch>` (not `-s <old branch>`, which would make the old branch the merge target) whose step 1 merges the old or park branch, followed by the remaining steps, scope and extras; archives the old id and asks the owner to close its app tab. `--dry-run` prints the plan with no side effects. Metrics: respawns, WIP parked or not, aborts, time to first step progress in the new workspace and whether it finished, in `supervision-report`.
+- **Token savings.** A 24h field measurement found idle DevSwarm wake turns re-paying ~620K-930K tokens each (mostly cache reads) against a ~90K fixed per-turn floor, with 48 Monitor-expiry turns and 45 mailbox-tick turns running on overlapping 30-minute cadences. Four owner-approved levers, each with a settings key:
+  - **Monitor re-arm only at the cron tick** (`devswarm.rearmOnTickOnly`, default `true`). The SessionStart wake directive (`hooks/lib/devswarm-wake.js` `monitorArmLine`) no longer tells the agent to re-arm a lapsed Monitor watcher inline on the tool's own final/expired event — it replies in ≤1 line and stops; the cron tick's own `watcherArmed:false` check (`drainCmd`'s `rearmClause`) is the one re-arm trigger. `false` restores the pre-0.117.0 wording. The cron fallback itself is never disarmed (unchanged, non-negotiable). Metric: `~/.anti-hall/devswarm/rearm-cues.jsonl` records each re-arm cue by trigger (`tick`/`expiry`; `scripts/devswarm.js` `recordRearmCue`), written from `inbox tick`'s existing `watcherArmed` computation.
+  - **Prune completed tasks** (`guards.pruneCompletedTasksAfter`, default `10`). Claude Code's own TaskCreate reminder re-prints the whole task list, completed tasks included, every few turns. Once completed/cancelled tasks exceed the threshold, `task-guard.js` emits a one-line advisory at Stop (never a block) to prune them via `TaskUpdate status=deleted` after recording them in the history ledger. Metric: the completed-task count at Stop (visible in the advisory itself). Advisory only — never gates the Stop hook.
+  - **Deadly-loop scales to risk.** `skills/deadly-loop`, `skills/ship-it` (and their Codex mirrors `codex/skills/anti-hall-deadly-loop`, `codex/skills/anti-hall-ship-it`) now lead with a decision table: the full Reviewer+Auditor+Critic trio only for guard/security/parser/schema/CI/shell changes, one reviewer for normal code, none for text/doc-only changes. Guidance only, no metric.
+  - **Periodic peer/check crons default to a longer cadence.** Verified (`git grep`/`command grep`, not the shell `grep` alias) against every `CronCreate` reference in `plugins/anti-hall/skills` and `plugins/anti-hall/hooks`: the only agent-created periodic cron in the plugin is the DevSwarm mailbox-wake tick, which this release deliberately leaves at its existing 30-minute cadence per the owner's mailbox-tick carve-out. No second periodic peer/check-in cron directive exists in the codebase to retune.
+- **Jev: `dispatchTier`, `speculationFramed`, and a durable review-due reminder.** `dispatchTier` is a shadow advisory on whether pending work belongs in a DevSwarm child workspace or a plain subagent. `speculation-guard`'s framed-expectation calls (`speculationFramed`) are now judged by Jev in shadow instead of the bare heuristic alone. A `JEV REVIEW DUE` reminder (SessionStart + `doctor`) resurfaces periodically so labelled-but-unreviewed Jev calls don't go stale.
+- **Orchestration: dispatch demand survives the machine-wide heartbeat, respects `maxParallelDispatch`, and honours `addBlockedBy`.** The parallel-dispatch nudge used to be blanket-suppressed by a single machine-wide heartbeat, so it could silently stop firing even with pending unblocked tasks; it now fires per pending/unblocked task and is capped by the new `maxParallelDispatch` setting. `SendMessage`-resumed agents now count as running (not orphaned) against that cap. Tasks are scoped to the current task-store epoch so a restored/reset store doesn't resurrect stale nudges, and nudges now show the task subject. `addBlockedBy` dependencies are honoured with an order-independent fixpoint (see the 0.116.0 cyclic-`blockedBy` fix); a live DevSwarm child workspace now counts as "attended" for IDLE NEGLECT purposes, and IDLE NEGLECT uses one consistent priority filter.
+- **DevSwarm misc:** a maintainer notice lets one post reach every project's Primary; `doctor`/wake now warn when the mailbox cron has stopped ticking (e.g. after a restore) instead of going silently dark; hivecontrol startup-state samples are captured to detect a crash-paused workspace; an archived child that tries to re-register is told to hand over and stop instead of continuing; hook wake text now points at one consistent CLI path and wake instruction everywhere it's quoted.
+- **Mesh read directive corrected.** The SessionStart `COMMUNICATION OVERRIDE` text grouped `mesh read` with the genuinely read-only `roster`/`inbox read-primary` calls; `mesh read` with no flags actually advances the caller's broadcast cursor and returns no `ackCommand`. The directive now flags `mesh read` as consuming (use `mesh read --peek` to preview without consuming) and scopes the `ackCommand` claim to `inbox read-primary`, where it's actually true.
+
+### Fixed
+
+- **Plan-file writes are locked (no lost step updates).** The supervisor sweep's Jev step-map write and the child's `heartbeat --step`, `scope add`, `plan set` and `done` (and the Primary's `correct`) each did an unlocked read-modify-write of `plans/<key>.json`, so a write landing between another writer's read and its rename was dropped. Every writer now goes through one read-modify-write under the plan's lock (`companion/lib/lock.js`) on the fresh on-disk plan.
+- `AGENTS.md` regenerated (`tools/gen-agents-catalog.js`) to cover the two new settings keys; still fits the Codex 32 KiB cap.
+- **work-detect: a housekeeping segment can no longer hide real work.** `isDevswarmHousekeepingOnly` classed a whole segment as pure DevSwarm/crontab housekeeping once its leading verb matched, even when that same segment also redirected into a real file (`crontab -l > src/app.js`, `node devswarm.js roster > README.md`) or hid work in a command substitution (`` crontab -l $(sed -i s/a/b/ src/x.js) ``). Each housekeeping-looking segment is now also checked for an escaping write/substitution before being excluded from the tasklist-guard work count; the legitimate mailbox-wake crontab install (redirect target under `/tmp` or the session scratchpad) still stays housekeeping-only.
+- **compact-declaration-guard/compact-advice-guard: the "SAFE TO COMPACT" matcher no longer fires on a quoted mention, a question, or a negated/conditional sentence.** `findAdvice` matched the bare phrase anywhere in the text, so a reply merely describing the guard (`` `SAFE TO COMPACT` is declared ``, `'SAFE TO COMPACT' must be last`), asking about it (`Is it safe to compact now?`), or ruling it out (`far from safe to compact`, `once this lands it will be safe to compact; first I need to …`) was misread as a live declaration. `stripQuoted` now blanks single-quoted and backtick-quoted spans (unless the quoted text itself names a `/compact`/`/clear`/`/new` invocation), matches inside a question-ending sentence are ignored, negation detection covers `far from`, `not yet`, and the `once … it will be … ; first …` conditional shape, and the bare `safe to compact/clear` wording only counts at a line/sentence start or as the unambiguous ALL-CAPS `SAFE TO COMPACT` form — the more specific forms (`good point to /compact`, `safe for a context reset`, `run/then/now /compact`, a standalone `/compact` line) are unaffected.
+- **`guards.compactDeclarationGuard` default reset to ON.** It shipped opt-in (default off) in 0.116.0 pending the false-positive fixes above; now that the shared matcher ignores quoted/question/negated/conditional mentions, the PreToolUse block is back on by default. Opt back out with `/anti-hall:settings` if needed.
+- **git-guard: a round of self-credit and force-push hardening.** Self-credit detection now covers pipes, variables, same-command files, `merge`/`commit-tree`/`rebase -x`, `interpret-trailers`, `gh pr merge --body-file`, hook-authored trailers, and `git tag -m`/`-F` (with a widened `-F` stdin trailer scan); force-push detection covers command-valued config/env values and quoted code-string literals passed to a call, and an alias-body force flag is now found however its body is quoted (splitting on quotes/parens/braces/shell separators, not whitespace alone). Writes into the `~/.anti-hall/bin` launcher directory are blocked (best-effort; a launcher-dir bypass gap closed in a follow-up round). The `>|` clobber-redirect tokenizer bug (pre-existing) is fixed, a dangling-symlink target no longer false-blocks, and Write/Edit now gets a hint to use those tools instead of a Bash heredoc-to-file, with Write/Edit itself denied on a matching block. **The heredoc mailbox-message exemption (added mid-release to let a legitimate mailbox heredoc through) was removed after it failed security review** — no heredoc-shaped exemption ships in 0.117.0.
+- **git-guard: follow-up hardening rounds (self-credit Jev consults, tokenizer, rm-through-symlink, project `.anti-hall/` copies).** Jev self-credit consults are now memoised, capped (8 distinct texts per hook call) and bounded to 4 s total consult time per invocation, so a pathological command can no longer exceed the PreToolUse hook timeout. The escaped-operator tokenizer now handles `\>|` and `\>&` correctly. `rm` through a symlinked parent directory into `~/.anti-hall/bin` is blocked (a real file/dir reached via a symlinked parent component previously bypassed the launcher-dir guard). Ordinary project-local `.anti-hall/` copies (a project's own `.anti-hall/`, not the launcher dir) are no longer false-blocked.
+- **command-guard: plain-push and read-only carve-outs tightened.** A colon-bearing plain-push ref (`push origin :refs/...`) now requires an explicit remote instead of being silently accepted; `allow-plain-push` now also accepts `HEAD:refs/heads/<current>`, a trailing `2>&1`, and a final `| tail`/`head` filter without losing its narrow scope.
+- **devswarm respawn: secret-shaped untracked files are excluded from the WIP park branch.** `.env`, key/credential-shaped filenames and similar are never committed onto a `park/*` branch by the respawn WIP-park step, even when they're dirty/untracked in the straying child's worktree.
+- **tasklist-guard:** a reset task store after a session restore now gets an explanation instead of a bare nudge; the progress-freshness path now keys on the session's project root, not a submodule cwd, so progress recorded from inside a submodule is found correctly.
+- **wake-watch: consistent primary role from repo root or subfolder** — armed from a subdirectory no longer flips role detection relative to being armed from the worktree root.
+- **work-detect:** anti-hall's own bookkeeping and scratch writes are no longer counted as "work" for freshness purposes, and real work chained onto a housekeeping command (e.g. `crontab -l && sed -i ... src/app.js`) still counts — closing both directions of the false-classification gap the earlier housekeeping-segment fix opened.
+- **limit-conserve:** an expired reset window no longer injects a stale "conserve tokens" reminder.
+- **mcp-reaper:** recognises `<name>-mcp`-suffixed server process names; orphan-kill rules are unchanged.
+- **doc coverage + regenerated catalogs.** Doc-coverage gaps closed and ratchet baselines bumped for the v117 merge; `AGENTS.md` and `docs/KB.md` counts regenerated to match.
+
+## 0.116.1 (2026-09-28)
+
+### Fixed
+
+- **wake-watch: no more false "+N new mail" wake after a version handoff, or when an older hook rewrites the mailbox summary.** A counter with no recorded history (an older seen-file predating it, or none at all) was diffed against a fabricated 0 baseline on the very next arm, producing an immediate false wake for history the watcher never actually had. That counter is now seeded from its own first live observation instead. A related flap: the broadcast channel's bucket is now chosen per row (the first bucket whose row actually carries a `total`), matching how the primary snapshot picks it, instead of falling through per field — an older build rewriting the summary without one field no longer flips the channel onto an unrelated, stale bucket and re-fires a false wake on the next new-build rewrite. The seen-file merge also now preserves any keys a newer build wrote that this build doesn't own, instead of dropping them on rewrite.
+- **Handoff tests reap their child processes.** The handoff-forwarding test suite was leaking orphaned watcher processes; it now reaps its own children.
+- **The update skill runs `update.js` on a sonnet subagent**, matching the model-routing floor instead of a heavier default.
+- **The post-handover new-work gate nudge skips scheduled housekeeping prompts** (a mailbox-wake tick, a DevSwarm peer-check tick, a broadcast bug-sweep tick) — these fire on every prompt and can't act on a "park this work" nudge, so gating them was pure noise. Real user prompts are unaffected. A new `autoHandover.gateHousekeepingMarkers` setting adds extra markers on top of the built-in defaults.
+
+## 0.116.0 (2026-09-27)
+
+### Added
+
+- **compact-advice-guard (Stop): no /compact recommendation at low context or right after a compact.** Field defect: a reply declared "SAFE TO COMPACT NOW" and repeated a `/compact focus: …` line a few turns after a manual `/compact`, at low context, with "no background agents running" as its only reason. The guard blocks once per declaration when the final reply recommends compacting and either context % is below `autoHandover.pct - guards.compactAdviceMarginPct`, or a compact boundary (Claude `compact_boundary`; Codex `compacted`/`context_compacted`) is within `guards.compactAdviceRecentTurns` turns. The threshold-fired auto-handover path stays allowed; double-quoted spans, fenced code blocks, and phrasing immediately preceded by "not"/"n't"/"never"/"no need"/"no reason"/"retract(ed/ing)" are excluded from matching (single-quoted/backticked mentions and other negated or questioning phrasing are not — see the opt-in note below). Registered for Claude and Codex.
+- **compact-declaration-guard (PreToolUse, opt-in — off by default): no new work in the turn after declaring SAFE TO COMPACT.** Field defect: after the declaration the model started a background agent and a state-changing shell command in the same turn. Agent/Task spawns, Write/Edit/MultiEdit/NotebookEdit and state-changing Bash are blocked while the current turn holds an active declaration; read-only tools pass. The next user message or an explicit `RETRACT SAFE TO COMPACT — <why>` line clears it (task notifications do not). Codex: Bash only, matching the port's PreToolUse policy. **Ships with `guards.compactDeclarationGuard` defaulting to `false` in 0.116.0**: a reviewer probe found the shared quote-stripping/negation matcher it uses (`lib/compact-advice.js`) still hard-blocks a turn on harmless single-/backtick-quoted mentions, questions ("Is it safe to compact now? No"), and negated phrasing outside its narrow lookbehind ("far from safe to compact", "will be safe to compact") — false positives are too costly on a hard PreToolUse block. Opt in with `/anti-hall:settings` once you've read the caveat; the Stop-time compact-advice-guard above stays on by default (a soft, once-per-declaration, recoverable block).
+- The shared compact-advice matcher also recognizes the Codex handover wording ("GOOD POINT FOR /compact OR /new NOW", "SAFE for a context reset") and its retractions.
+- **Handover skill (Claude + Codex):** a quiet background queue is necessary, not sufficient, to declare SAFE TO COMPACT — declare it only on the auto-handover threshold or genuinely high context, never within `guards.compactAdviceRecentTurns` turns of a compact, and retract before doing more work.
+- **Jev: daily rollups and longer log retention.** `jev-assist.ndjson` kept one 1MB backup (about a day) and `jev-triage.ndjson` truncated itself at 1MB, so no audit could see more than a day. `jev-assist.ndjson` now rotates at 2MB and `jev-triage.ndjson` at 1MB into `.1 … .N` (`jev.logRotatedFiles`, default 10, about 20 days); lowering N never removes generations already on disk. Before each rotation every retained row is folded into `~/.anti-hall/logs/jev-daily/<YYYY-MM-DD>.json` (per id × backend × mode: counts, fresh calls, changed-vs-baseline, timeouts, failures, cost, p50/p95 latency, outcomes). Rollups are never removed by default; `jev.rollupRetentionDays` is an opt-in.
+- **jev-report reads history.** It reads every rotated generation (not only live + `.1`), and summarises days the raw logs no longer cover from the daily rollups (`rollupHistory` in `--json`, an "Older history" text section). A day is never counted twice; rolled-up p50/p95 are labelled approximate.
+- **`settings show --section jev`** lists every Jev integration's effective mode (master switch and env kill switches folded in), the stored value, its source tier and the log it writes to (`jevEffectiveIntegrations` in `--json`).
+
+### Fixes
+
+From a peer workspace sweep:
+
+- **Scratchpad exemption encodes the cwd like the harness.** The harness names the per-project scratchpad dir by replacing every non-alphanumeric cwd character with `-`; the shared helper replaced only `/`, so any cwd containing `.` or `_` (e.g. dotted worktree paths) computed a dir that never exists and the own-scratchpad exemption never matched in edit-guard or command-guard. One shared encoder now mirrors the harness; the session id is still required, so sibling sessions stay blocked.
+- **command-guard: `2>&1` / `>&2` / `&>` are redirections, not background separators.** The splitter split on every lone `&`, so `x 2>&1 | tail` never reached the bounded-check allowance. An `&` after `>`/`<` (fd dup) or before `>` now stays in the word; a real background `&` still splits. Only `2>&1` is ignored when judging a check's shape; any other `>&` routes output around the sink and disqualifies it, and `&>file` targets go through the write-redirect rule.
+- **command-guard: the delegation hint names the exact inline-allowed shapes** instead of promising any "bounded single-target check": `python3 -m pytest -q <one file>`, `node --test <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, a non-heavy command with `--check`/`--dry-run`/`--list`, or an interpreter on an existing script with `--check`, each piped to `tail`/`head`/`wc`/`grep -c`/`grep -m N`; scratchpad scripts are `run_in_background` only. The `guards.allowReadOnlyVerify` descriptions (GUIDE, `/config`, settings schema) now say the same.
+- **tasklist-guard: progress freshness is relative to the last work, not wall-clock.** An idle turn (cron tick, status check) more than 30 min after the last progress write was blocked although no work had happened since. Freshness is now judged against the newest file-changing action when known; new work after the progress write still blocks.
+- **task-guard: a self-referential or cyclic `blockedBy` no longer counts as an honest block.** `A` blocked by `A`, or `A`/`B` blocking each other, satisfied the old membership check and silenced the generic drain nudge for tasks that are not honestly blocked at all. an order-independent set fixpoint over the `blockedBy` graph now requires a blocker to name a different open task whose own chain reaches something that can actually progress (no honest blocker, or an owner/user/external `blockedOn`): self-references, pure cycles and dangling ids never count as honest blockers, and the verdict no longer depends on task order.
+- **speculation-guard: quote/blockquote masking can no longer hide the session's own hedge.** A `>` line is now masked only up to the earliest sentence-break after quoted text (em dash, `"; so"`, `", so"`, …), so a hedge appended after a quote on the same line is still caught; a reply that is 100% blockquoted/fenced is no longer masked into nothing, and neither is a reply that is a single straight-quoted or inline-code hedge with nowhere else to hide (masking to nothing falls back to matching the unmasked text). Straight `"` pairing is now per-line with an even-count guard, so a stray unpaired quote no longer mispairs across the line.
+- **devswarm send: a no-project failure explains the fix** (run from inside the repo) instead of returning a bare reason code, like `relay` and `reap-orphans`.
+- **command-guard: narrow read-only `gcloud` reads accept a `2>&1` stderr merge.** A trailing, unquoted, space-separated `2>&1` is now the one redirection a `gcloud` read may carry (whole-command carve-out and per-segment inspect exemption); every other redirection, and a redirect glued to a flag value, is still refused.
+- **devswarm: stale-main spawn refusal names the submodule it refers to.** Run from inside a submodule, the refusal now leads with `submodule <name>:` (the path in the superproject, else the `.git/modules` dir) instead of pointing at the meta-repo.
+- **devswarm: WAL-health tick performance.** `health()` re-scanned the full `os.tmpdir()` per WAL (123 `readdirSync` calls on a 33k-entry tmpdir per tick, ~96% of `inbox tick` CPU); it now lists tmpdir once per call and threads the filtered list through, cutting a tick from ~5.5s to ~0.15s CPU with unchanged behavior.
+- **devswarm-wake-watch: a false wake on role flip.** A Primary whose descriptor sits at the main worktree resolves as `child` when armed from the worktree root and `primary` when armed from a subdirectory; both roles shared one `lastTotal` field but meant different counters (NDJSON count vs. mesh summary total), so a re-arm under the other role compared against a stale, wrong-shaped baseline and fired a false wake. The seen file now carries `meshTotal`/`ndjsonTotal` by name and each role reads/writes its own; legacy files migrate on read.
+- **devswarm reconcile: archived/pruned worktrees are skipped, not reported as failures with no detail.** An archived-but-present row reached the app-DB archive guard, which refuses with a `reason` and no `.error` field, so the fallback printed "unknown error"; an archived+pruned row hit the missing-worktree path with no concept of "archived". `cmdReconcile` now classifies archived rows (via the DevSwarm app DB or anti-hall's own archived marker) as `skipped` with a `skipReason`, separate from genuine failures, and the per-target error now falls back through the parsed reason and the hivecontrol exit code/stderr before ever saying "unknown error". `update.js` and `doctor-repair.js` report skipped counts separately.
+
+Review-wave hardening (a second pass over the peer sweep above):
+
+- **task-guard and speculation-guard above are all second-pass hardening from this same review wave** (self/cyclic `blockedBy`, blockquote/quote masking).
+- **compact-advice-guard/compact-declaration-guard: prefer `last_assistant_message`, block like sibling PreToolUse guards.** Claude/Codex Stop payloads carry `last_assistant_message` — the exact text the model just produced — which is now preferred over the transcript-tail fallback; `compact-declaration-guard` now blocks via exit 2 like `command-guard.js`/`edit-guard.js` instead of a flat `{decision:'block'}` on exit 0.
+- **compact-advice-guard: declaration matching requires explicit forms only.** "safe to clear the cache" and a bullet merely mentioning `/compact` (or a fenced-code example of it) no longer count as a declaration; only explicit forms (`SAFE TO COMPACT`, `safe to /compact`, `good point to /compact`, `/compact now`, `run /compact`, the Codex skill's `GOOD POINT FOR /compact OR /new`) match, and fenced code blocks are blanked before matching alongside the existing blockquote/quoted-text stripping. A tokens-latch handover (`firedVia:'tokens'`, or `'stop-tokens'` from the Stop-time nag) may now declare SAFE below the pct threshold too, as long as no compact has happened since the latch fired.
+
+Wave-2 fixes (a second peer sweep):
+
+- **devswarm: `inbox messages --since` filters before the per-source row cap.** A `--since` window on an inbox with more rows than the cap could come back empty even though matching rows existed, because the cap truncated the source before the since-filter ever ran; the filter now applies first, so a recent window is never emptied by an oversized old inbox. Behavior change: a plain (non-acking) `inbox messages` read that the cap truncates now returns the NEWEST rows per source instead of the oldest; `read-primary` and its non-mutating preview `peek-primary` keep the oldest prefix (cursor safety), so `peek-primary` still shows exactly what `read-primary` will deliver.
+- **devswarm-wake-watch: a sender's own broadcast/direct send no longer wakes it.** A send loop back to the sending session's own inbox counted as new mail and re-armed its own wake, producing a self-triggered wake cycle; a sender's own outgoing message is now excluded from what counts as new mail for it.
+- **devswarm: emitted `ackCommand` uses the stable launcher** instead of a raw path, matching every other devswarm-emitted command shape and staying correct across install layouts.
+- **devswarm-child-gate (Stop): a `--summary` heartbeat sent earlier in the turn now satisfies the gate.** The gate's activity window was a fixed 5-minute wall-clock interval, so a heartbeat sent earlier in a turn longer than 5 minutes read as stale and the gate re-demanded one. The window is now anchored to this session's previous Stop check (persisted `lastCheckAt`), with the 5-minute floor only for a session's first check. The continuation Stop right after a block also records its check time, so a report sent in that continuation does not keep satisfying later turns.
+- **tasklist-guard: sees an early `TaskCreate`, and devswarm/cron/agent spawns no longer count as file changes.** A `TaskCreate` issued before any file-changing tool call wasn't picked up by the freshness check; housekeeping tool uses (`Agent`, `Task`, `CronCreate`, `CronDelete`, devswarm stable-launcher chains) are now excluded from what counts as work, so they no longer mask genuinely stale progress or falsely satisfy it.
+- **devswarm: one consistent inbox-drain instruction.** `read-primary` and the emitted `ackCommand` previously implied two different drain sequences; both paths now point at the same instruction.
+- **devswarm-comms-guard: no unresolved-advisory for in-process subagent targets.** A send addressed to an in-process subagent id was flagged as an unresolved target even though it never needed mesh resolution; subagent ids are now recognized and skipped.
+
+Deadly-loop round-2 fixes:
+
+- **git-guard: a force flag inside a `!shell` alias body is found however it is quoted.** `git -c alias.x='!sh -c "git push --force"' x`, `'!f() { git push --force; }; f'`, `'!eval "…"'`, the reversed-quote form and `'!(git push --force)'` were allowed because the body was split on whitespace only, leaving `--force"`, `--force;` or `--force)`. Alias bodies are now split on quotes, parens, braces and shell separators too, and an inner `--` of another command in a shell body no longer disarms the check. This gap predates 0.116.
+- **devswarm-comms-guard: the session-index lookup runs before the agent-id silent allow.** The widened agent-id pattern (bare `a<hex>`) was tested first, so a workspace-backed peer session whose name happened to be agent-id-shaped was silently allowed. The target is now looked up first; a workspace-backed match is blocked whatever its shape, and only unresolved or non-workspace agent-id targets are silently allowed.
+
+Jev logging:
+
+- **parentGateQuestion decisions were never logged.** The triage and assist caches evict the lowest `_seq` first, but `_seq` came from a per-process counter that restarted at 1 in every hook process; once a cache reached 500 entries each new entry sorted lowest and was evicted in the same write. The triage cache froze, the question-needs-answer lookup never found a label, and parentGateQuestion never reached its decision. `_seq` is now seeded from the stored max; an already-frozen cache heals in place.
+- **`jevIntegrations.triage: off` now disables triage labelling** (it only checked `jev.triage`); `ANTIHALL_JEV_TRIAGE=0` does too.
+- modelRouting is consulted only on routing blocks, so a window with no blocks correctly logs zero rows (documented, fixture-tested).
+
+### New settings
+
+| Key | Default | `/config` |
+|---|---|---|
+| `guards.compactAdviceGuard` | `true` | `guards_compact_advice_guard` |
+| `guards.compactAdviceRecentTurns` | `10` | `guards_compact_advice_recent_turns` |
+| `guards.compactAdviceMarginPct` (advanced) | `10` | — |
+| `guards.compactDeclarationGuard` | `false` (opt-in) | `guards_compact_declaration_guard` |
+| `jev.logRotatedFiles` (advanced) | `10` | — |
+| `jev.rollupRetentionDays` (advanced) | `0` (keep all) | — |
+
+## 0.115.2 (2026-09-27)
+
+### Fixes
+
+- **command-guard: a shell comment containing `)` no longer triggers a false heavy-command block** (peer-reported). The segment splitter split on `)`, `;`, `|`, `&` even inside comment text, so `# 1) go to x` produced a bogus `go to x` segment classified as the heavy verb `go`. An unquoted `#` that starts a word (start of input, or after unescaped whitespace, `;`, `&`, `|`) at nesting depth 0 and outside backticks is now dropped to end of line, as the shell does. A `#` that is not a comment stays code (`a#b`, `$#`, `${#x}`, `${x#y}`, `${x:- #}`, `(( 2 #))`, `$[1 #]`, backticks, `$(echo a)#b`, escaped/quoted `#`, continuation lines); the newline still ends the comment; the existing `#` refusal for the allowlist/bounded-sink paths is unchanged.
+- **command-guard: four splitter bypasses closed (latent, not new regressions).** Each let a real chained command (e.g. `; go build`) reach the shell unclassified:
+  - ANSI-C `$'…'` quoting was read as plain `'…'`, so an escaped `\'` closed the quote early and hid what followed — in both the segment splitter and the `$( … )` substitution extractor.
+  - A `<<<` here-string was parsed as a heredoc on its operand (`<<< "#"`), swallowing every following line as "body".
+  - A heredoc delimiter was cut at the first non-identifier character (`<<EOF#x` read as `EOF`), so the body never terminated. The delimiter is now the full shell word with quote removal; words the parser cannot model exactly are not treated as heredocs (nothing is skipped).
+- **command-guard / git-guard: `<<` inside arithmetic (`$(( … ))`, `(( … ))`, `$[ … ]`) is a left shift, not a heredoc.** A letter-led operand (`$((1<<y))`) opened a fake heredoc whose "body" hid every following line. The shared heredoc parser now rejects `<<` whose innermost enclosing context is arithmetic, so every caller (both guards' heredoc scans and the substitution extractor) is covered.
+
+## 0.115.1 (2026-09-26)
+
+### Fixes
+
+- **devswarm-wake-watch: orphaned watchers never exited when their starting parent (Monitor shell, or the stable-launcher wrapper `~/.anti-hall/bin/wake-watch.js`) died.** Field evidence: a watcher started by a test's intermediate parent 19 hours earlier was still running with PPID 1, holding its per-child watch lock — the same shape can leave a live session's next watcher refusing to arm (`REFUSED TO ARM: lock-held`) or reporting `watcherArmed` from a dead process. `devswarm-wake-watch.js` now captures its startup `process.ppid` and checks every poll tick (`parentGone()`): it exits cleanly (releasing its lock) the moment it is reparented (ppid changed / became `1`) or `process.kill(startPpid, 0)` throws `ESRCH`.
+- **stable-launcher: the generated `~/.anti-hall/bin/` wrapper forwards `SIGTERM`/`SIGINT`/`SIGHUP` to its target and spawns asynchronously**, instead of blocking synchronously with no way to react to a graceful shutdown signal; stdio and exit code passthrough are unchanged.
+- **A fleet test (`devswarm-fleet-8143ced316d3.test.js`) no longer leaks a live watcher process on assertion failure** — the spawned watcher child is now cleaned up unconditionally, not only on the success path.
+
+## 0.115.0 (2026-09-26)
+
+### Changed
+
+- **`doctor --prune-cache` warns that a cron or Monitor job naming a
+  versioned cache path directly will break once that version is pruned**,
+  and points it at the version-independent `~/.anti-hall/bin/` launchers
+  (`devswarm.js`, `wake-watch.js`) instead.
+
+### Fixes
+
+- **`doctor --prune-cache` keeps versions referenced in recent session
+  transcripts.** A `CronCreate`/`Monitor` job created during a session
+  (hooks cannot read `CronList`) could still literally name a versioned
+  cache path; pruning that version left the job failing silently on every
+  tick. Prune now does a cheap, bounded (<=2s, <=20 files, 512 KB tail
+  each), read-only best-effort scan of the newest recent (<=7 day) session
+  transcripts under `~/.claude/projects/*/` for any versioned cache path
+  they mention, and keeps those versions. The scan is bounded and
+  fail-safe: if the scan fails, nothing is removed.
+
+## 0.114.1 (2026-09-26)
+
+### Fixes
+
+- **command-guard: P0 — the version-independent stable-launcher form (`~/.anti-hall/bin/devswarm.js` / `wake-watch.js`) was wrongly blocked as a heavy command.**
+  Since 0.109 (`devswarm.stableLauncher`, default on), every hook-emitted
+  directive — the mailbox wake cron prompt, the Monitor re-arm command, the
+  DevSwarm comms-override role text, and Stop-gate drain/handover pointers —
+  names the version-independent launcher under `~/.anti-hall/bin/` instead
+  of the plugin-relative `scripts/devswarm.js` path. The command-guard
+  allowlist only ever anchored `scripts/devswarm.js`, so every one of those
+  emitted commands fell through to the generic `node <file>.js`
+  HEAVY_PATTERN and was blocked in coordinator context — breaking every
+  Primary's cron tick and inline mesh command that used the launcher form
+  (peer-reported by the SkyCrew Primary). Added
+  `anchoredAntiHallStableLauncher()`, a home-anchored carve-out (accepts
+  `~`, `$HOME`, `"${HOME}"`, and the resolved absolute home directory
+  immediately followed by `/.anti-hall/bin/devswarm.js` or
+  `/.anti-hall/bin/wake-watch.js`, no other prefix) with the same
+  whole-invocation scope as the existing `scripts/devswarm.js` carve-out. A
+  look-alike path (`evil/.anti-hall/bin/devswarm.js`,
+  `/tmp/x/.anti-hall/bin/devswarm.js`) is still NOT exempt, and chaining a
+  second heavy command after the launcher invocation still blocks on that
+  segment.
+
+## 0.114.0 (2026-09-26)
+
+### Fixes
+
+- **command-guard: P1 — the leading-`cd` carve-out let a nested repo (submodule or untracked nested `.git`) hijack a push.**
+  `cd realsub && git add z && git commit -m x && git push origin subbr`
+  qualified for the plain-push carve-out whenever `realsub` merely lived
+  under the outer repo's directory tree, even when it was a git submodule or
+  any independently-`git init`'d nested repo with its own .git/remote/branch
+  — branch/remote resolution then ran against the WRONG repository. Path
+  containment was never a repo-identity check. `resolvedLeadingCdTarget` now
+  requires the cd target to share the payload cwd's `git-common-dir` (the
+  real `.git` store) — linked worktrees of the same repo share it and still
+  qualify, but a submodule or untracked nested repo never does. Fails closed
+  on any git error.
+
+- **command-guard: "allow plain push" missed three common shapes.**
+  Peer-reported: `cd <repo> && git add a b && git commit -q -m "fix: x" &&
+  git push -q origin main && git log --oneline -1` was blocked as
+  "heavy-pattern" even though it should have qualified for the carve-out.
+  Root-caused to three independent gaps, all reproduced first with the
+  exact command via a real PreToolUse payload: (a) `-q`/`--quiet` on push
+  was not recognized by `PLAIN_PUSH_SEGMENT_RE`; (b) a leading `cd <path>`
+  segment was not recognized at all; (c) a trailing read-only segment
+  (`git log`/`status`/`show`) was not recognized at all. `isAllowedPlainPushChain`
+  now accepts `-q`/`--quiet` on push (still refusing it combined with
+  `--force` or any other flag), ONE optional leading `cd <path>` — only when
+  it realpaths to the payload cwd's own repo toplevel or a directory inside
+  it (fails closed on another repo, a `$()` argument, or an unresolvable
+  path) — and optional trailing `git log --oneline [-N]` / `git status
+  [--short|-s]` / `git show --stat [-N|HEAD]`, only after a push segment has
+  already appeared in the chain.
+
+- **doctor: orphaned-workspace-process remedy now runs anti-hall's own `archive` verb, not raw hivecontrol.**
+  The re-archive remedy for an archived/app-archived hit printed `hivecontrol
+  workspace archive <id>` directly. It now prints `node <cli> archive <id>`
+  (the stable-launcher path when available, falling back to the plugin's own
+  `scripts/devswarm.js`) — anti-hall's own verb carries the app-archive
+  retry-once fix above plus the app-DB target-gate verification, neither of
+  which a bare hivecontrol call gets.
+
+- **doctor: orphaned-workspace-process report gave the wrong remedy for an ARCHIVED (not gone) workspace.**
+  Peer report: the claude process in an archived DevSwarm tab stays alive, and
+  killing it just relaunches it from the pty shell — the only real remedy is
+  re-archiving the workspace in the app. `orphanedWorkspaceProcessCheck`
+  previously suggested `kill <pid>` for every hit regardless of reason. It now
+  prints the exact safe remedy line (`hivecontrol workspace archive <full
+  id>`) with an explicit "do not kill it — the pty shell relaunches it"
+  warning for `archived`/`app-archived` hits, and keeps the plain kill
+  suggestion for a genuinely `gone` workspace (worktree removed from under a
+  still-registered row, no relaunch mechanism). Still report-only — never
+  kills or archives anything itself.
+
+- **devswarm: app-archive retry regex missed a reworded DevSwarm error text.**
+  `attemptAppArchive`'s single retry only fired on the exact phrase "could not
+  confirm terminal process boundary"; a later DevSwarm build rewords the same
+  transient failure as "Could not confirm terminal <id> stopped", so every
+  first archive attempt failed and the built-in retry never triggered.
+  `APP_ARCHIVE_RETRYABLE_RE` now matches the stable "could not confirm
+  terminal" prefix, covering both wordings while still excluding unrelated
+  hivecontrol errors from the retry.
+
+## 0.113.0 (2026-09-26)
+
+### Features
+
+- **command-guard: narrow read-only gcloud in the main thread (owner-approved).**
+  Three shapes now run inline instead of being delegated:
+  `gcloud auth print-access-token` on its own;
+  `gcloud <group…> <describe|list|get-iam-policy|read> … --format=json|yaml|value(...)`,
+  optionally piped into `tail`/`head`/`wc`/`grep -c`/`grep -m N`/`jq`; and
+  `T=$(gcloud auth print-access-token); curl -s|-sS [-H "Authorization: Bearer $T"] <https URL>`
+  (`;` or `&&`). The URL's parsed host must be `googleapis.com` or a subdomain of it (no
+  userinfo, no IP literal, no other host), and `-L`/`--location`, `--resolve`, `--connect-to`,
+  `-x`/`--proxy`, `--url` and `-K`/`--config` are refused, so the token never leaves Google. The curl must be a GET, and its output must be piped into a bounded
+  sink or `jq`, or capped with `--max-filesize`. Everything else stays blocked:
+  create/delete/deploy/set/update/add-iam-policy-binding/remove-*/patch/import/export/
+  rollback/start/stop/ssh/scp/submit/run/apply, `curl -X` other than GET,
+  `-d`/`--data*`/`-F`/`-T`/`--upload-file`/`-o`/`-O`/`--output`, `@file`, any other
+  curl flag, redirects, and any chained segment. `$T` may appear only in the
+  Authorization header. Subagents are unaffected. New setting
+  `guards.allowGcloudReads` (default `true`).
+- **command-guard: background scratch scripts in the main thread (owner-approved).**
+  A Bash call with `run_in_background: true` may run ONE segment
+  `<python3|node|sh|bash> <script file> [args…]` inline when the file is an existing
+  regular file in the session scratchpad or a tmp root (`os.tmpdir()`, `/tmp`,
+  `/private/tmp`). The path is checked on its realpath, so a symlink out is refused.
+  Refused: an interpreter option before the file (`-c`/`-e`/`-m`), an env prefix or
+  wrapper, chaining, pipes, `$`/backtick/backslash/process substitution, a stdin
+  redirect, and a write redirect outside the scratchpad/tmp. Foreground runs keep
+  today's verdict, and Monitor is unchanged. New setting
+  `guards.allowBackgroundScratchScripts` (default `true`).
+- **`doctor --prune-cache` (opt-in plugin cache prune, owner-approved).** It never runs
+  automatically: update.js, the supervisor, crons, SessionStart and hooks never call it.
+  Without `--confirmed` it lists the old
+  `~/.claude/plugins/cache/anti-hall/anti-hall/<semver>/` dirs it would remove and
+  their total size. `--confirmed` removes them and logs each removal. It always keeps
+  the newest 3, every dir holding an `installPath` registered in
+  `installed_plugins.json`, every version a live process runs from (process cwd via the
+  0.111 doctor scan, or the cache path in its argv), the running version, and anything
+  it cannot parse. Symlinks and paths outside that root are refused, both when listing
+  and again just before each removal. If the live-process scan is unavailable, nothing
+  is removed. New setting `updates.allowCachePrune` (default `true`), which only
+  enables the verb.
+
+### Security fixes
+
+- **command-guard gcloud reads: the read verb must be the last command-path word (P1).**
+  The new read-only gcloud carve-out, and the older read-only cloud-inspect exemption,
+  accepted `read`/`list`/`get-iam-policy` in ANY position. That included a separated flag
+  value, so `gcloud compute instances reset vm1 --zone read --format=json`,
+  `gcloud secrets versions access latest --secret read …`, `gcloud kms decrypt … read …`
+  and similar ran inline. Both paths now accept only
+  `gcloud <group…> <verb> [≤1 positional] [--k=v…]`. The verb is the last path word.
+  Every flag is `--k=v` or a known boolean (`--quiet`, `--uri`); a separated value is
+  refused. No path word may be access/reset/suspend/resume/publish/call/execute/decrypt/
+  encrypt/sign/print-*/attach-*/detach-*/add-*/set-*/remove-*/delete/create/update/
+  deploy/ssh/scp/run, nor a hyphenated form of a mutating action (`delete-access-config`,
+  `reset-windows-password`, …). `run` is allowed only as the product group, and `read`
+  only as `logging read`. This also closes a pre-existing hole in the older read-only
+  cloud-inspect list exemption, which took the same separated-flag-value bypass.
+
+- **command-guard gcloud token curl: closed set of token variable names (P2).** The token
+  may only be assigned to `T`, `TOKEN`, `ACCESS_TOKEN` or `GCLOUD_TOKEN`. Any other name
+  (`HTTPS_PROXY`, `http_proxy`, `CURL_CA_BUNDLE`, `SSLKEYLOGFILE`, …) could be an env var
+  curl itself reads, and is refused.
+
+- **doctor --prune-cache: registered installPath compared canonically (P2).** Both sides go
+  through `fs.realpathSync.native`, and the comparison is case-insensitive on darwin. A
+  registered path spelled in a different case, or reached via `/tmp`, `..` or a trailing
+  slash, is kept.
+
+- **doctor --prune-cache: live-process match on the cache suffix (P3).** A process cwd or
+  argv now counts as live when it names `plugins/cache/anti-hall/anti-hall/<ver>` followed
+  by a path boundary, whatever the prefix (`/tmp` vs `/private/tmp`, a symlinked home).
+  `<ver>.bak` never matches.
+
+- **command-guard gcloud read sinks: no env/input/file access (P3).** A `jq` filter
+  after a gcloud read or the token curl may not use `env`, `$ENV`, `input`, `inputs`,
+  `input_filename`, `import`, `include` or `$__loc__`. `grep -f`/`--file`, including in a
+  short-flag cluster, is refused.
+
+- **command-guard background scratch scripts: same F1 rule as the script check (P3).** A
+  script whose realpath is inside any anti-hall plugin root (this install, a cache copy,
+  or a dev checkout), or any `--confirmed` argument, never qualifies.
+
+- **command-guard gcloud token curl: canonical ASCII host only.** The raw URL host must be
+  plain ASCII and equal to the parsed host, with no curl URL globbing (`{…}`, `[…]`).
+  This refuses percent-encoded and full-width lookalike hosts.
+
+### Changed
+
+- **command-guard gcloud reads: separated flag values are no longer read-only.**
+  `gcloud … describe foo --region r` (a value in its own argv word) is no longer treated
+  as read-only inline; write it `--region=r` to keep running inline. This closes the
+  separated-flag-value gap the P1 fix above found in both the new gcloud read carve-out
+  and the older read-only cloud-inspect exemption.
+
+## 0.112.0 (2026-09-26)
+
+### Features
+
+- **edit-guard: a per-project doc-edit allowlist (owner-approved).** A repo may list
+  repo-relative globs in `.anti-hall/edit-allow.json`
+  (`{"paths":["docs/**","PLAN.md","*.md"]}`). The main thread (a DevSwarm Primary or
+  coordinator) may then Edit/Write matching files directly instead of delegating them.
+  It uses the 0.111 command-allowlist trust model and the same `lib/command-allow.js`
+  machinery. It applies only after `settings.js trust-edit-allow <repo> --confirmed`
+  records the sha256 of the exact file bytes in `~/.anti-hall/trusted-edit-allow.json`.
+  Any edit to the file revokes trust, and a symlinked file is refused. Absolute, `..` and
+  match-everything globs are ignored. A match never covers a path outside the repo
+  (checked on real paths), `.git`, `.anti-hall`, `.claude`, `.codex`, hook config,
+  `~/.claude`, or a symlinked or hard-linked target. Each path segment is folded with
+  NFKC plus lowercase before these checks, so `hookſ.json` (long s) and `.huſky` are
+  denied like the plain spellings the filesystem treats them as. The main thread can never edit
+  `.anti-hall/edit-allow.json` itself. Subagents are unaffected. Doctor reports untrusted,
+  changed or ignored entries. New setting `guards.projectEditAllow` (default `true`).
+  Codex registers no Edit-family hooks, so this is Claude-only. The Codex settings skill
+  documents the trust command.
+- **`inbox tick --quiet`** (peer ask, SkyCrew/tf3 Primaries 2026-09-26). `inbox tick`'s
+  JSON carries duplicate legacy+new field names (`unread`/`unreadTotal`,
+  `cursor`/`cursorNdjson`, `storeCursor`/`cursorStore`), which made a cron-prompt
+  directive eyeballing raw JSON error-prone. `--quiet` prints one line: `tick <id>:
+  unread N, known true|false, meshGap true|false, watcherArmed true|false` on success,
+  or a loud `ok:false ...` line + non-zero exit on failure. The JSON default (no
+  `--quiet`) is unchanged. The DevSwarm wake-cron prompt now uses `--quiet` and words
+  its stop condition against that line.
+- **`devswarm.js send` takes several recipients.** `--to <id1>,<id2>[,…]` or a repeated
+  `--to` sends the same body to each recipient (duplicates dropped), so a caller no longer
+  needs a shell `for` loop, which command-guard treats as heavy. Every recipient is
+  attempted even after one fails. The result lists per-recipient `ok`/`seq`/`bytes`, and
+  the exit is non-zero if any recipient failed. `--quiet` prints one line per recipient.
+  A list does not combine with `--broadcast`, `--to-primary` or `--cc-primary`.
+  Documented in the devswarm skill (Claude and Codex) and `help`. New setting
+  `devswarm.sendMultiRecipient` (default `true`; `false` keeps "last `--to` wins").
+
+### Fixes
+
+- **DevSwarm wake-cron default moved off :00/:30** (peer ask, SkyCrew/tf3 Primaries
+  2026-09-26). `WAKE_CRON_DEFAULT` was `*/30 * * * *`, which fires exactly on `:00`/`:30`
+  — every other machine's `*/N` cron piles onto the same wall-clock instant. Now
+  `7,37 * * * *`: same 30-minute cadence, off-minute offset. The MAILBOX WAKE
+  CronCreate directive also now states plainly that ANY existing job already running
+  `inbox tick` for the workspace — any schedule, id, or partition UUID — counts as
+  present; never create a second one.
+- **`handover-resume.js` GUIDED RESUME PATH is now adaptive.** It used to
+  unconditionally tell the agent to run a "section-10 resume-verification checklist"
+  and read state.md/decisions.md/trials.md — a handover written without that section
+  or those files left nothing to follow. It now detects (fail-open) what the
+  referenced HANDOVER actually has and only mentions what exists, falling back to a
+  generic 3-step check (`git status --short --branch`, `pwd`, CLAUDE.md/AGENTS.md
+  re-read) when the checklist section is absent — still requiring the
+  `resume-verified:` line either way.
+- **model-routing-guard: deploys, migrations and secret work are never pushed to haiku.**
+  An opus spawn that ran a production deploy (`wrangler … cors set`, `deploy_webui.sh prod`)
+  was blocked with "respawn with haiku", which is the wrong advice for deploys, migrations,
+  rollbacks and secret/credential work. A spawn is deploy-shaped when it has one action
+  signal: deploy, migrate, rollback, token rotation, or wrangler/terraform/`kubectl apply`/
+  `firebase deploy`/`db migrate`. Two distinct context words out of prod, secret and
+  credential also count; one stray "no secrets" does not. At or above a floor, the rows
+  that push toward haiku are skipped and every other row still runs. Below the floor, or
+  with no explicit model, the spawn gets an advisory naming the floor instead. It is never
+  blocked. New setting `guards.modelRoutingDeployFloor` (`sonnet` default, `opus`, or `off`
+  for the old table).
+
+- **command-guard: a read-only `--check` run of a real script file is allowed again.**
+  0.111 refused every interpreter verb on the check-flag path, so
+  `python3 tools/gen_contract.py --check | tail -5` blocked. The main thread may now run
+  `<python*|node|ruby|perl|php> <existing script file> --check|--dry-run|--list` piped to a
+  bounded sink. The script must be an existing regular file named right after the
+  interpreter. Inline code (`-c`/`-e`/`-m`/`-p`/`--eval`/`--require`), stdin or heredoc
+  scripts, `$`/backtick/process substitution, env-assignment prefixes and wrapper verbs
+  (sh/bash/eval/exec/xargs/env/nice) never qualify, and the remaining arguments must be
+  non-heavy. An anti-hall script (this plugin, or any other anti-hall install found by
+  its `plugin.json`) never qualifies, and neither does any command carrying `--confirmed`,
+  so the main thread cannot flip a safety switch or trust an allowlist this way. Claude and Codex share the hook. New setting
+  `guards.allowReadOnlyVerifyScripts` (default `true`).
+
+- **`devswarm.js spawn` refuses a flag value that is really the next option.**
+  `spawn b -s main -t -p "brief"` made `-p` the workspace title and dropped the brief
+  without a word. Spawn now refuses before fetching or creating anything, and the message
+  names the flag. It checks `-s/--source`, `-a/--agent`, `-t/--title` or `-p/--prompt` with
+  no value, or with a value that starts with `-`. For `-p`, only a single option-shaped
+  token counts, so a brief that opens with a `- ` bullet is still accepted. New setting
+  `devswarm.spawnStrictFlagValues` (default `true`).
+- **`devswarm-parent-gate.js`: the fresh-mail grace window (`parentGateNeglectGraceMin`,
+  0.111.0) now covers mesh-direct `send --to` messages, not just the native NDJSON
+  inbox.** A Primary that ran `devswarm.js send --to <child>` and ended its turn seconds
+  later still got hard-blocked with `DEVSWARM NEGLECT` (peer field report), because the
+  grace window's own scoping blanket-excluded every STORE-ONLY-union row (a mesh-direct
+  send is store-only, no NDJSON line at all) regardless of who sent it. The exclusion now
+  keys on the row's `sender`: a store-only row this Primary itself sent, still within the
+  grace window, is downgraded to a stderr advisory — `"N unread — awaiting child pickup
+  (Ns)"` — exactly like a fresh native-inbox send; a row from anyone else (or with no
+  resolvable sender) still blocks unconditionally, unchanged. The pre-existing busy-child
+  downgrade already applied to store rows and needed no change. New tests in
+  `tests/hooks/devswarm-parent-gate-neglect-grace.test.js` cover a fresh own mesh-direct
+  send (advisory), an old own send (still blocks), a fresh send plus an unanswered child
+  question (still blocks), a fresh third-party mesh-direct row (still blocks), and an
+  unresolvable sender (fail-open, still blocks).
+- **`devswarm-parent-inbox.js`'s "CHILD NOT DRAINING" per-turn nag: the 120s grace
+  window (`unreadIsGraced`) was defeated by a busy child's own heartbeat.** A field
+  report showed the exact scenario the grace window exists to fix still reproducing
+  verbatim: a 9-second-old own mesh-direct send to an actively-working (uuid-addressed)
+  child, whose heartbeat was 1 second old, still produced "CHILD NOT DRAINING" and blocked
+  the next Stop. Root cause: `unreadIsGraced` disqualified grace the instant the child
+  recorded ANY heartbeat after the send — but a heartbeat file is rewritten on every
+  `inbox tick`/turn cycle regardless of whether the specific message was ever read, so a
+  busy, continuously heartbeating child (precisely who this window protects) almost always
+  fails that check within its very first tick. The heartbeat check is removed entirely and
+  replaced with the same sender-keyed predicate used in the Stop-gate fix above: grace
+  applies while the message is within the window UNLESS its sender is positively known to
+  be someone other than this Primary (an unresolvable/legacy sender still gets grace,
+  matching the pre-fix lenient default). `devswarm-store.js`'s summary projection now
+  additively emits `oldestDirectUnreadSender` (the sender of the oldest unread row,
+  computed alongside `oldestDirectUnreadTs` at zero extra cost) so the hook can make this
+  call without a second store read. New/updated tests in
+  `tests/hooks/devswarm-parent-inbox-grace-window.test.js` reproduce the exact field
+  shape (fresh own send, fresh child heartbeat -> still graced) and cover a known
+  third-party sender (never graced, however fresh).
+
+### Security
+
+Hardening for the new 0.112.0 command-guard/edit-guard/model-routing surfaces above,
+found and fixed before release (F1–F4):
+
+- **F1 — command-guard script `--check`: an anti-hall script, or any command carrying
+  `--confirmed`, never qualifies for the read-only allowance**, closing a path where the
+  main thread could otherwise flip a safety switch or self-trust an allowlist through the
+  new script-check exemption.
+- **F2 — edit-guard project allowlist: path segments are folded with NFKC + lowercase
+  before the deny-list check**, so unicode-confusable spellings (`hookſ.json` long-s,
+  `.huſky`) are denied exactly like their plain-ASCII equivalents.
+- **F3 — command-guard read-only verify: a comment or an unbounded check no longer
+  passes.** `x --check #| tail -5` was allowed because the comment hid the sink from the
+  shell, and so was `x --check && x --check | tail`, where the first check is unbounded.
+  An unquoted `#` now disqualifies the line, as does a background `&`; every pipeline that
+  runs a check must end in a bounded sink.
+- **F4 — model-routing deploy floor: weak single-word context no longer counts as
+  deploy-shaped.** One stray "no secrets" in an otherwise mechanical opus task used to
+  count toward the floor; it now takes two distinct context words (out of prod, secret,
+  credential) to qualify, keeping the original BLOCK for the weak case while still letting
+  genuinely deploy-shaped spawns through.
+
+### Fixed
+
+- **`mcp-reaper`: `GRACE=0` honored via a deterministic `parseGrace()`, not a
+  wall-clock e2e bound.** The e2e test asserted elapsed time < 2500ms for a real
+  subprocess run (spawnSync + two real `ps` scans) to prove `GRACE=0` wasn't
+  coerced to the default 3 by a `0 || 3` gotcha; that bound is
+  wall-clock/scheduler-dependent and flaked under heavy local CPU load. The
+  grace-parsing logic is now a pure, exported `parseGrace()` (used in production
+  at `mcp-reaper.js:569`) covered by exact-equality unit tests (no subprocess, no
+  timing); the e2e test keeps only a generous-deadline poll for the orphan's
+  actual death.
+- **"Restart" advice no longer implies harness registration that hasn't happened.**
+  Two sites could tell a user to just reload/restart to pick up a newer anti-hall build
+  even when the Claude Code harness (`installed_plugins.json`) had not actually
+  re-registered it yet — restarting alone does not load a version the harness has never
+  seen (`claude plugin update anti-hall@anti-hall` is required first; see doctor.js's own
+  harness-registration check). Field repro (2026-09-26): the marketplace clone had
+  fast-forwarded to 0.111.0 while `installed_plugins.json` still reported 0.110.0 and no
+  cache dir existed for 0.111.0 — `devswarm-wake-watch.js`'s "update available" line said
+  the version "is registered" when it was only known from the marketplace clone.
+  - `plugins/anti-hall/companion/lib/devswarm-wake-watch.js`: `checkStaleVersion()` now
+    returns a `registered` flag (true only when `installed_plugins.json` itself already
+    names the newest version or newer); `formatUpdateAvailableLine()` branches wording
+    accordingly — pointing at `/anti-hall:update` instead of claiming "is registered"
+    when the harness has not caught up.
+  - `plugins/anti-hall/hooks/version-alert.js`: CASE 2 ("already downloaded ... run
+    /reload-plugins") now checks the harness's own `installed_plugins.json` (read-only,
+    reusing `update.js`'s resolver) before claiming a reload/restart is enough; when the
+    harness lags the mirrored cache dir it instead tells the user to run
+    `/anti-hall:update` first.
+
+## 0.111.0 (2026-09-26)
+
+### Security
+
+A security review of the three new main-thread command-guard allowances (read-only
+verify, per-project allowlist, plain push) reproduced nine bypasses; each is fixed with
+regression tests (`tests/hooks/command-guard-security.test.js`), and every reproduced
+case blocks again (or more strictly than 0.110.0).
+
+- **Splitter: an unquoted backslash is an escape.** `git commit -m \" ; npm test ; echo \"`
+  hid `npm test` inside a fake quoted argument (bash reads `\"` as a literal quote), and
+  every allowance inherited the gap. The shared splitter and its quote scanners now treat
+  `\x` outside quotes as a literal pair. No shell-scan differential or command-guard
+  corpus verdict changed.
+- **Read-only verify: a check flag never launders a wrapped payload.**
+  `sh -c "npm test" --check | tail`, `bash -lc '…' --dry-run`, `eval "…" --check` and
+  `node -e "…execSync('npm test')" --check` were allowed. The check-flag path refuses
+  shell/interpreter/wrapper verbs and `-c`/`-e`/`--eval`/`-lc`, and the segment minus the
+  flag must be non-heavy under the full unwrapping classifier.
+- **Project allowlist: no shell expansion in a matched command.** `npm run deploy --
+  "$(npm${IFS}test|sh)"` matched `^npm run deploy -- \S+$`. Any `$`, backtick, backslash
+  or `<(`/`>(` anywhere (quoted or not) disqualifies the command.
+- **Project allowlist: `^.*$` is not an anchored rule.** A pattern now needs a literal
+  command word after `^`, a closing `$`, no unbounded wildcard (`.*`, `.+`, `[^;]*`,
+  `[\s\S]+`, quantified wide groups) and no top-level `|`; doctor reports each ignored
+  pattern with its reason (its allowlist report also never printed before — a TDZ read of
+  `cwd`, fixed).
+- **Project allowlist requires per-user trust.** A cloned repo's working-tree
+  `.anti-hall/command-allow.json` could authorize itself. It now applies only while
+  `~/.anti-hall/trusted-command-allow.json` maps the repo's real path to the sha256 of the
+  file bytes (any edit → untrusted); symlinked files/dirs are refused. New verb:
+  `node scripts/settings.js trust-command-allow [<repo>] --confirmed` (prints the patterns;
+  records nothing without `--confirmed`). doctor reports untrusted/changed allowlists with
+  that command.
+- **Plain push: the remote must be a configured remote name.** `git push ../other-repo
+  main` and `git push host/evil main` qualified; the remote must be one of `git remote`
+  (fail closed).
+- **Allowlist audit log: no symlink follow, secrets redacted.** The log dirs are lstat-checked,
+  the file is opened `O_NOFOLLOW` (mode 600), and the logged command is redacted (secret-named
+  flag values, then the existing `scrubSecrets`).
+- **Verify redirect/clone targets are resolved first.** `| tail > …/scratchpad/../../etc/x`
+  passed a raw substring test. Targets are resolved and realpath'd and must land inside the
+  session's own scratchpad or a tmp root (helpers shared with edit-guard via
+  `hooks/lib/scratchpad.js`).
+- **Verify clone: only `git clone --depth 1 https://… <tmp dest>`.** The local-path clone
+  form and non-https `--depth 1` sources no longer qualify.
+
+### Features
+
+- **command-guard per-project command allowlist** (owner-approved 2026-09-26). A repo may
+  declare its own sanctioned exact commands — e.g. a deploy script the project's own rule
+  says must never be delegated to a subagent — in `<repo-toplevel>/.anti-hall/command-allow.json`
+  (`{"patterns":["^anchored regex$", ...]}`). Applies in the MAIN THREAD ONLY (a subagent
+  never reaches this carve-out; it already passes through command-guard before this point).
+  Every pattern must be literally anchored (`^...$`) or it is ignored, never matched. The
+  WHOLE command must be exactly one unbroken segment (no chaining, pipes, subshells,
+  backticks, or `$( )` command substitution — reuses the guard's own `splitSegmentsDetailed`,
+  no new parser) and carry no unquoted redirect anywhere, or it never qualifies regardless
+  of the pattern. A qualifying match writes one audit line to
+  `~/.anti-hall/logs/command-allow.ndjson`. Default config is empty (no behavior change for
+  a repo that never opted in). New setting `guards.projectCommandAllow` (default on).
+  `doctor` reports an unanchored/invalid pattern in a repo's own config as a warning.
+- **command-guard "allow plain push"** (owner-approved 2026-09-26). In the MAIN THREAD
+  ONLY, `git add`/`git commit`/a plain `git push [remote] [ref]`, and `&&`/`;` chains made
+  up only of those three, run inline instead of being delegated. `ref` must be omitted,
+  `HEAD`, or the current branch (resolved fresh via `git symbolic-ref --short HEAD`,
+  fail-closed if unresolvable). `--force`/`-f`/`--force-with-lease`/`--force-if-includes`/
+  `--mirror`/`--delete`/`-d`/`--all`/`--tags`/`+refspec`/`src:dst` to another branch, any
+  other chained segment, and pipes/redirects/subshells stay exactly as blocked as before.
+  `git-guard.js` keeps its own independent force-push/AI-credit checks, untouched. New
+  setting `guards.allowPlainPush` (default on).
+
+### Changed
+
+- **Roster wording: "no upstream" no longer reads as an error.** A workspace `spawn`
+  creates a branch with no upstream until it is pushed — normal, not a problem — but the
+  Primary's per-turn workspace table (`devswarm-parent-inbox.js`'s `riskMarker()`) rendered
+  it with a warning glyph, `⚠ no upstream`. Now renders `local only (not pushed)`, no glyph.
+  The underlying `noUpstream` field and its priority over a stale unpushed count are
+  unchanged.
+
+- **command-guard "narrow allow": bounded read-only verification for the coordinator.**
+  The coordinator may now run a short, single-target, read-only verification command
+  inline instead of delegating it — e.g. re-running one delegated test file to verify a
+  subagent's "done" claim — when it is a `--check`/`--dry-run`/`--list` flag, a
+  `-fsyntax-only` compile check, one `python3 -m pytest -q <file>`, one or two explicit
+  `node --test <files>`, `ctest -R <name>`, or a scratchpad-scoped `git clone`, AND its
+  output is piped to `tail`/`head`/`grep -c`/`grep -m N`/`wc`, AND no write redirect
+  targets a path outside the scratchpad/tmp, AND every other segment on the line is
+  trivially safe (`cd`/`pwd`/`true`) or the piped sink itself — any other segment
+  (including a chained second heavy command, or a `--check` hidden inside a still-heavy
+  invocation) keeps the whole line blocked. Full suites, builds, installs, deploys and
+  pushes stay gated. New setting `guards.allowReadOnlyVerify` (default on).
+- **`devswarm.js relay <seq|receipt> --to <id> [--note-file <path>]`.** Forwards a
+  message the caller already received (its own inbox) to another workspace,
+  verbatim, prefixed with a provenance header (`relayed from X, seq N, M
+  bytes`). `<receipt>` (an `inbox read-primary` readReceiptId) resolves only
+  when it covers exactly one message; otherwise it refuses ambiguous rather
+  than guessing. Verifies the relayed byte length against the source and
+  refuses (`ok:false`) on a mismatch or an empty source body — never a silent
+  partial relay.
+- **`devswarm.js inbox read-primary --format text`.** Prints one
+  `from/seq/body` block per message instead of the raw JSON. The default
+  two-step read-then-`ack-primary --receipt` flow is unchanged; the new,
+  opt-in `--ack-after-print` flag acks immediately after printing instead.
+- **`devswarm.js send --quiet`.** Prints one line (`sent seq N -> X, B bytes,
+  ok`) instead of the full JSON; failure still prints a loud `ok:false ...`
+  line and keeps the non-zero exit code.
+- **`devswarm.js send --to <id> --cc-primary`.** A direct `--to` send also
+  copies the Primary with the identical message body, best-effort — reported
+  under the result's `ccPrimary`, never flips the primary send's own
+  `ok`/exit code.
+- **`spawn` help text now documents the real hivecontrol args.**
+  `devswarm.js help spawn` names every `hivecontrol workspace create` flag
+  (`-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`)
+  plus anti-hall's own `--from-local`, with an example and pointers to
+  `send`/`roster`/`inbox` for following up with a spawned child.
+- **`devswarm.js help --short`.** Peer request: a DevSwarm Primary spent a day
+  driving raw hivecontrol because it never discovered `devswarm.js archive`
+  existed. Prints one line per verb (`verb — purpose`), generated from the
+  SAME source of truth as the full `help`/`help <verb>` listing (the
+  dispatcher's own verb list + `VERB_HELP`), so it can never drift out of
+  sync. A hygiene test independently scans the dispatcher's `case '<verb>':`
+  statements and asserts every one appears in the short list. The Primary's
+  SessionStart directive now names it as the pointer to the full verb list.
+- **`devswarm.js ready-check <sha>`.** A generic, read-only readiness verdict
+  for a child's "READY \<sha\>" claim — works against any git repo, not
+  DevSwarm-specific. Reports `ff` (is `--base`, default `origin/main`, an
+  ancestor of `sha`), the `base...sha` file diff (`files`), submodule pointer
+  bumps (`gitlinks`), deletions under `--watch-deletions` dirs
+  (`deletions_under`), files outside `--allow` globs (`outside_allowed`), and
+  a `verdict:'ok'|'review'|'block'` + `reasons[]`. Runs git read-only; no
+  `fetch` unless `--fetch` is passed.
+- **`devswarm.js inbox tick` reports `watcherArmed`.** Whether a live Monitor
+  wake-watch currently covers this workspace (fresh lock, pid alive) — the
+  Claude-branch CronCreate prompt body now checks this field and tells the
+  agent to re-arm `Monitor` when it reads `false` (the harness caps a Monitor
+  at 30 minutes; this cron's own 30-minute fallback cadence is exactly when
+  it would have lapsed).
+- **`devswarm.js roster`/the parent gate now name what a child is waiting
+  on.** A row (or block reason) whose transcript is paused on an unresolved
+  `AskUserQuestion`/`ExitPlanMode` now carries a truncated (~120 char)
+  preview of the actual question/plan text, not just "waiting on a human" —
+  reusing the SAME `childBusyState` detector both surfaces already relied on.
+- **`doctor` reports live processes leaked into archived/gone DevSwarm
+  workspaces.** A bounded (≤2s), report-only scan cross-references every live
+  process's cwd against archived (anti-hall's own marker, or the DevSwarm app
+  DB's) or gone (worktree removed) workspace paths and prints pid, command
+  name, cwd, and a suggested manual `kill` — never kills anything itself.
+
+### Fixes
+
+- **DevSwarm store migration's "SOME COUNTS UNVERIFIED" no longer false-flags
+  every workspace that has ANY native mesh traffic.** `migrateOne`'s
+  count-verify used to require the store's TOTAL message count for a
+  workspace to EQUAL today's legacy-inbox line count — but a workspace's
+  store also accumulates rows from native mesh writes that have nothing to
+  do with the legacy inbox, so that equality permanently breaks the instant
+  any such row exists (not a data-integrity signal; confirmed on a live
+  store where 100% of an actively-used project's workspaces failed the old
+  check despite complete data). Verification now checks legacy-line
+  COVERAGE (every legacy line is represented in the store, freshly imported
+  or already covered by another path's row) via the same cross-path
+  identity `migrateLegacyInbox` already used correctly. `migrate-state.js`'s
+  CLI output now names each still-unverified workspace (title/id + the
+  specific field that failed), capped at 10 with a "...and K more", and
+  states plainly that sources are never deleted so no data can be lost —
+  re-running the (idempotent) migration re-verifies.
+- **`silent-agent-nudge.js` could block Stop with no subagent involved at all.**
+  `~/.anti-hall/agents/` is a single home-scoped directory shared by every
+  project/session on the machine, but `heartbeatCandidates()` globbed EVERY
+  `*.json` in it and treated each as a subagent heartbeat, falling back to the
+  filename as `id` when one was missing. That misread `phase-tracker.js`'s
+  rolling `recent-spawn.json` (`{ts}` only, a 20-minute "orchestration live"
+  marker, not an agent) and other projects'/workspaces' `devswarm-<branch>.json`
+  files as silently-dead agents. A heartbeat candidate now requires its OWN
+  `id` and `status` fields (never the filename) plus a `session` field that
+  matches the session about to Stop; `recent-spawn.json` and `devswarm-*.json`
+  are also excluded by name as defense-in-depth. The heartbeat convention
+  (`skills/orchestration/SKILL.md`) gained a required `session` field
+  (`session_id` of the spawning session); a heartbeat written before this
+  field existed has no owner to verify and is now treated as not-ours
+  (fail-open toward no nudge, never toward blocking on an unverified file).
+- **The parent Stop gate no longer force-blocks a Primary seconds after it
+  sends a child a message, before the child has had any chance to read it.**
+  New setting `devswarm.parentGateNeglectGraceMin` (default 1 minute): a
+  plain, native-inbox unread backlog younger than this never counts as
+  neglect by itself, independent of whether the child is separately busy.
+  Never applies to a store-only (mesh-direct send, or dead/foreign-descriptor)
+  row, and never suppresses an unanswered child question or a corroborated
+  stale/escalated verdict.
+- **`task-guard`'s IDLE NEGLECT check now recognizes an explicit owner-blocked
+  marker instead of forcing a fake `blockedBy` dependency to silence it.** A
+  task with `metadata.blockedOn` (or top-level `blockedOn`) === `'owner'` /
+  `'user'` / `'human'` (case-insensitive), or a subject starting with
+  `"OWNER:"` / `"OWNER DECISION"` (case-insensitive), is excluded from the
+  ACTIONABLE-NOW set and never nags. New setting
+  `guards.taskGuardOwnerBlockedMarker` (default on). Documented in
+  `docs/TASK-WORK.md`, `docs/KB.md`, and the nudge text itself.
+- **Static per-turn reminder blocks (VERIFY-FIRST, the DEVSWARM PRIMARY
+  dispatch-tier and top-fan-out-tier suffixes) no longer repeat every single
+  turn.** They now follow the same once-per-session / once-after-compact-or-
+  clear / once-every-N-turns cadence as the existing DevSwarm workspace-table
+  dedupe, via `lib/emit-dedupe.js`'s keepalive rule. New setting
+  `guards.injectionRepeatEvery` (default 10 turns; 0 restores every-turn
+  injection). `task-tracker.js`'s own FULL/SHORT + freshness-note logic and
+  `devswarm-child-turn.js`'s COMMS OVERRIDE reassertion are unchanged (the
+  latter is deliberately per-turn — DevSwarm's `--system-prompt-file` erases
+  the child's system prompt at every spawn, so per-turn reassertion is the
+  only lever against that erasure).
+- **A Codex quota/rate-limit exhaustion is now recorded once and shared,
+  instead of every lane rediscovering it independently.** New PostToolUse
+  hook `codex-quota-detect.js` (matcher `Agent`) detects a quota-exhaustion
+  message in a `codex:codex-rescue` Agent result and records
+  `{available:false, until, reason}` into
+  `~/.anti-hall/codex-availability.json` (`lib/codex-quota.js`, merged with
+  the existing PATH-probe fields, never clobbering them). The SessionStart
+  `codex-availability.js` hook now also surfaces a live outage even when the
+  PATH probe alone found nothing to report, with the routing fallback
+  ("Codex unavailable until X; route correctness review to Sonnet"). New
+  setting `guards.codexQuotaDetect` (default on). The exact Codex CLI quota
+  message wording was not found verified anywhere in this repo or machine at
+  authoring time, so detection matches conservatively on quota/rate-limit
+  exhaustion vocabulary rather than one fixed string.
+- **Nudge-class Stop hooks now take a per-signature session ack, instead of
+  re-blocking on the same confirmed-false condition.** `silent-agent-nudge.js`
+  and `tasklist-guard.js` had no user-triggered ack at all (only automatic
+  same-snapshot dedup); `devswarm-parent-gate.js` already had one (its own
+  `intents`/`intentAcks` state, driven by `devswarm.js gate-intent --reason`)
+  but it is deeply coupled to that gate's own escalation shape, so it was left
+  untouched rather than force-generalized. New shared `hooks/lib/stop-ack.js`
+  gives the two gap hooks a documented skip-file entry
+  (`~/.anti-hall/stop-ack/<session>.json`, keyed `"<hook>:<signature>"`) the
+  agent writes once the user has explicitly confirmed a condition is a false
+  positive — that exact signature then stays advisory (never blocks again)
+  for the rest of the session; a genuinely changed condition is a new
+  signature and blocks normally. New setting `guards.stopAck` (default on).
+- **A stale, already-fixed nudge no longer keeps blocking after `claude plugin
+  update` has re-registered a newer build.** `installed_plugins.json`
+  (harness-owned) can be re-registered at a newer version while the CURRENT
+  session's hooks keep executing the OLD build until a full restart —
+  `/reload-plugins` does not pick this up (doctor.js's own harness-
+  registration check; `claude plugin update --help` documents "restart
+  required to apply"). New shared `hooks/lib/stop-version-gate.js` (reusing
+  `skills/update/scripts/update.js`'s own version-resolution exports, never
+  reimplementing `installed_plugins.json` parsing) lets `silent-agent-
+  nudge.js`, `tasklist-guard.js`, and `devswarm-parent-gate.js`'s plain
+  NEGLECT nag detect this and downgrade their block to advisory until
+  restart. Deliberately NOT applied to `devswarm-parent-gate.js`'s
+  unanswered-question / truncation / escalation paths, which bypass the cap
+  unconditionally by design, nor to any safety guard (command-guard/edit-
+  guard/git-guard stay out of scope). Prospective only: a hook build that
+  predates this file has no way to run the check. New setting
+  `guards.stopHookVersionDowngrade` (default on).
+- **Investigated (peer complaint #3, batching/re-fire):** how Claude Code
+  combines several Stop hooks that each return `decision:block` in one turn
+  (one continuation vs. several) is **not documented in this repo's own
+  `docs/KB-claude-code-hooks.md`, and no existing test in this repo answers
+  it either** — recorded as unverified rather than guessed at. What WAS
+  verified: `silent-agent-nudge.js` already had a per-exact-snapshot dedup
+  plus a hard once-per-agent-per-session cap; `tasklist-guard.js` already
+  short-circuits on `hash === lastHash` before blocking again. Both already
+  satisfied "no re-block for an identical snapshot within a session" before
+  this change — no fix was needed there. `devswarm-parent-gate.js`'s own
+  stable-kind cap (`hooks/lib/stop-policy.js`) also already resets only on an
+  observed-clear condition, not on content churn.
+- **DevSwarm directive text (mailbox wake cron, Monitor re-arm, comms
+  override, drain nudge) now names a version-independent launcher instead of
+  a version-pinned plugin-cache path.** Every printed `node <path>` command
+  was baked from the CURRENTLY RUNNING hook's own `__dirname` — a path like
+  `~/.claude/plugins/cache/anti-hall/anti-hall/0.109.1/scripts/devswarm.js`.
+  That path was correct the instant it was printed, but crons, Monitors, and
+  handovers keep the literal text around across releases, so after the next
+  update the printed command pointed at an old (sometimes deleted) version
+  directory and showed a stale version number in the text itself — forcing a
+  manual recreate of every cron/Monitor and a handover edit on every release
+  (peer report: SkyCrew Primary). Fixed by installing two tiny, self-
+  contained launchers under `~/.anti-hall/bin/` (`devswarm.js`,
+  `wake-watch.js`) that resolve the CURRENTLY REGISTERED anti-hall install
+  (`installed_plugins.json` -> the marketplace clone -> the path baked in at
+  generation time) EVERY TIME THEY RUN and delegate to it with full
+  argv/exit-code passthrough; `devswarm-child-role.js`, `devswarm-parent-
+  gate.js`, `devswarm-child-gate.js`, and `devswarm-child-drain.js` now embed
+  those stable paths in their directive text instead of the raw version-
+  pinned one. Idempotent (only rewrites the launcher when its content
+  actually changes) and fail-open throughout (an install failure, or
+  `devswarm.stableLauncher = false`, falls straight back to the previous
+  version-pinned path — byte-identical to pre-fix behavior).
+
+## 0.110.0 (2026-09-26)
+
+### Features
+
+- **Bug history for the defect channel.** `defect.js` has three new maintainer verbs:
+  - `backfill [--repo <path>] [--dry-run]` imports every `fix:` / `fix(scope):` commit
+    from git history as a fixed record. The component comes from the source file with the
+    most changed lines (tests and docs are ignored). `fixedIn` is the earliest release tag
+    that contains the commit. The cause comes from keyword rules. The matching CHANGELOG
+    bullet is linked when found. Records are keyed by commit sha, so a re-run adds nothing.
+    They are stored in `~/.anti-hall/defects/history/` and never appear in
+    `list --open` or the defect nudge.
+  - `recurring [--since <version|date>] [--top N] [--json]` groups reported and imported
+    fixes by component and by cause. It flags hotspots (a component fixed 3+ times, or
+    the same component and cause 2+ times) and likely regressions (the same component
+    and cause fixed again within 5 releases, or an explicit `regressionOf`).
+  - `similar <text…> [--component X]` lists the 10 past fixes closest to a new bug.
+- `report` and `rule` accept optional `--component`, `--cause` (a fixed 12-class
+  root-cause list) and `--regression-of <fp>`. Existing records without these fields
+  still load unchanged.
+- The `root-cause` skill (Claude and Codex) now runs `defect.js similar` before an
+  anti-hall fix. If the component is a hotspot, fix the class of bug, not just this
+  instance. The `defects` skill documents the new verbs on both ports.
+- The command guard exempts the two new read-only verbs, `defect.js recurring` and
+  `defect.js similar`, alongside `report`/`list`/`show`, so the root-cause skill's
+  `similar` step runs on the main thread. `backfill` writes history records and stays
+  gated.
+
+### Changed
+
+- **One row-eligibility projection (`companion/lib/row-eligibility.js`).** Every workspace row is now judged once for archived (anti-hall marker, DevSwarm app DB, active-list absence, with `archivedBy` provenance), held (`devswarm.heldPartitions`), ignored (archive-ignore marker) and live/busy/waiting-on-user. It has a memoized per-invocation context and a batch API. The parent Stop gate, the per-turn parent-inbox table (plus its archive-ready nudge and stale-registry filter), and the CLI's routing, `roster` and `diagnose` read it instead of combining the predicates one axis at a time. There is no behavior change.
+- **Hygiene ratchet** (`tests/hygiene/archived-predicates-single-projection.test.js`). A direct call to an archived/held predicate outside the projection and the helpers it wraps now fails CI. The remaining partition-level and app-DB write-guard call sites are allowlisted with exact counts and reasons.
+- **One lock primitive.** New `companion/lib/lock.js` replaces 12 hand-written cross-process locks: swarm-guard, repair-on-reload, settings, recovery per-id, supervisor sweep, ingest (plus its orphan sweep and legacy probe), migrate, pull/wake-watch, the store journal, log rotation and retention. It keeps recovery.js's design: write-then-link publish, with an O_EXCL fallback on filesystems without hard links (SMB/exFAT), atomic rename-aside reclaim, and token-checked release. It adds a host-scoped owner record, an mtime torn-read guard, and per-caller steal policy. Each caller keeps its timeouts, stale windows, retry budgets and fail-open/fail-closed contract.
+- A hygiene ratchet (`tests/hygiene/lock-single-primitive.test.js`) forbids new O_EXCL, linkSync or lock-unlink code outside lock.js.
+
+### Fixes
+
+- **Lock reclaim race.** Two processes that judged the same dead or stale lock holder both deleted it. The second deletion removed the first process's fresh lock, so both ran the critical section. Affected: supervisor sweep, migrate, pull/wake-watch, retention, log rotation, store journal (duplicate dedupe rows), ingest (two monitor consumers), settings (lost key), swarm-guard (spawns past the cap) and repair-on-reload (two `doctor --repair` spawns).
+- **Lock torn-read steal.** An empty lock file is normal while its live holder is still writing it. The supervisor sweep, retention, settings and repair-on-reload locks read that empty file as ownerless and stole it.
+- **Lock blind release.** The settings lock released by deleting the file without checking the owner token, so it could delete a successor's lock. It now checks the token.
+- **Ingest orphan-sweep race.** The ingest orphan sweep and legacy-lock probe re-read a lock and then deleted it. A fresh lock published between those two steps was deleted. Both now reclaim atomically.
+- **Lock three-way reclaim race.** Two processes could judge the same stale holder. A reclaimed and published, then B renamed A's live lock aside and C published into the empty path. B's restore then failed, so B deleted A's lock and A and C both held it. Reclaimers are now serialized by an O_EXCL `<lock>.reclaim` sidecar. It uses the same publish path, so it works without hard links, and it goes stale after 5 s or when its pid is dead. Under the sidecar the holder is re-read and re-judged before any rename.
+- **Lock hostname drift.** macOS renames the host when the network changes, so a live local lock holder was treated as belonging to an unknown machine. Migrate and pull could then steal it once it was stale by age, and recovery and the supervisor lost the immediate dead-holder reclaim. Lock records now carry the boot time and, on Linux, the pid namespace. A holder with a different hostname but a matching boot time and namespace is on this machine, so its pid is checked. Holders on other machines are still judged by age only.
+- **Lock scratch sweep covers every lock directory.** `doctor --repair` removed leftover lock scratch files only from `devswarm/locks/`. The shared lock primitive also leaves `*.lock.tmp-*`, `*.lock.reap-*` and heartbeat `.hb.` temp files in `~/.anti-hall/`, `logs/` and the store journal directories. The sweep now covers all of these plus the `.reclaim` sidecar. It removes only lock scratch files older than 15 minutes and lists every file it removed.
+- **Handover's terminal line is now trigger-aware, not an unconditional compact signal.**
+  HANDOVER.md must record a `Trigger:` line (`auto-threshold` / `user-request` /
+  `restart-pending` / `task-boundary`, plus context % from the statusline or
+  `~/.anti-hall/auto-handover/<tag>.json`'s `firedPct`). The terminal line only claims
+  "🟢 HANDOVER COMPLETE — GOOD POINT TO /compact NOW" for `auto-threshold` or an explicit
+  compact/clear request; any other trigger below the threshold gets a neutral
+  "📝 Handover saved (proactive, ...): no need to compact now" line instead. Fixes a field
+  incident where a proactive handover below the 85% auto threshold was misread as a
+  signal to stop/compact. Mirrored in the Codex port
+  (`plugins/anti-hall/codex/skills/anti-hall-handover/SKILL.md`).
+- **`shell-scan-differential.test.js` no longer misreads a timed-out/killed
+  guard spawn as ALLOW.** `spawnGuard` compared `spawnSync`'s `res.status`
+  directly against `2` (BLOCK); under load, a child killed by the 10s timeout
+  or a signal returns `status: null`, which the bare comparison counted as
+  ALLOW, producing false "SAFETY REGRESSION base=BLOCK new=ALLOW" failures.
+  `spawnGuard` now retries a null status up to 2 more times with a longer
+  (30s) timeout, and classification is a small pure function
+  (`classifyGuardResult`) that returns `'INCONCLUSIVE'` — never `'ALLOW'` or
+  `'BLOCK'` — for a still-null result after retries; the test then fails with
+  an explicit "INCONCLUSIVE (timeout/killed) — not a verdict" message instead
+  of silently misclassifying. A genuine exit-0-where-base-blocked regression
+  is unaffected — it returns a real status on the first attempt.
+- **Canonical `resolveHome()` guard added for shared home-fallback helpers.**
+  `os.homedir()` is called directly at ~300+ sites across the plugin; a test
+  that forgets to pass an explicit home/env can silently fall through to the
+  REAL developer machine home instead of an isolated fixture (the recurring
+  "tests never touch the real home" defect class). Added
+  `companion/lib/test-home-guard.js#resolveHome(explicitHome, env)` — the
+  same `explicitHome || os.homedir()` fallback in production, but it refuses
+  (throws) under `node --test` (or explicit `ANTIHALL_TEST=1`) when that
+  fallback would resolve to the real user home, with an
+  `ANTIHALL_ALLOW_REAL_HOME_TEST=1` escape hatch for a test that deliberately
+  needs it. Migrated `hooks/lib/settings.js` (`homeDir`/`homeFromEnv`) and
+  `hooks/lib/jev-assist.js` (`homeDir`) — the two shared helpers most other
+  hooks/companion code routes settings/jev config reads through — to use it.
+  Added `tests/hygiene/homedir-call-site-ratchet.test.js`, which counts
+  remaining direct `os.homedir()` call sites and fails if the count grows,
+  so new code can't reintroduce the gap while the rest of the call sites are
+  migrated incrementally.
+
+## 0.109.5
+
+### Fixes
+
+- **DevSwarm MAILBOX WAKE directive now names the right id.** The SessionStart
+  and Stop-gate wake directives were telling the agent to poll an unregistered
+  id (the raw session/builder id, or — in a repo whose Primary seat had never
+  been registered — an id with no history at all), so the inbox check the
+  directive told the agent to run always came back "unregistered" even though
+  wake-watch itself had armed correctly on the real, resolved Primary id.
+  Fixed by threading the resolved id through both directives and by
+  registering a Primary seat on its very first use, not only when it is
+  adopted from a previously closed one.
+  First-use registration happens only under real DevSwarm (`DEVSWARM_REPO_ID`
+  set) — forcing `devswarm.supervisorMode=on` alone never registers a seat.
+- **A corrupt Primary seat descriptor is reported, not overwritten.** An
+  unparseable `workspaces/<id>.json` now reads as seat state `unknown` with a
+  SessionStart warning naming the file, instead of being re-registered over.
+- **DevSwarm wake-watch no longer needs a manual re-arm after every release.**
+  When a newer build's watcher is available, the running watcher now hands
+  the stream off to it automatically instead of printing a re-arm instruction
+  and stopping — Monitor keeps streaming through the handoff. Guarded so a
+  build can only hand off to a newer version, and only once per watch chain,
+  with a safe fallback to the old print-and-stop behavior if the handoff
+  itself fails.
+- **Wake-watch handoff hardening.** After handing off, the old watcher no
+  longer overwrites the new one's seen-state on exit, exits with the new
+  watcher's own code (128+signal when it was killed), and forwards SIGTERM /
+  SIGINT to it so the new watcher is never left orphaned holding the lock.
+- **Edit guard now allows the harness plan file outside plan mode too.**
+  `~/.claude/plans/*.md` is exempt from the delegation block unconditionally,
+  not only while the session is in plan mode.
+- **Tasklist guard no longer blocks Stop in plan mode.** Plan mode cannot
+  write the progress file the guard was demanding, which previously caused a
+  stuck loop.
+- **Speculation guard no longer flags "must be"/"should be" used as a
+  requirement.** Obligation phrasing in requirement or acceptance-criteria
+  context (e.g. "the result must be idempotent") is exempted; real
+  speculative claims are still caught.
+  The exemption covers only true obligation verbs (measured/verified/tested/...):
+  state claims like "should be done by now" or "should be deployed" are still
+  flagged, every must-be/should-be in a reply is checked, and the
+  requirement-label context counts only at the start of a line.
+- **Command guard allowlists read-only/append-only defect commands.**
+  `node scripts/defect.js report|list|show` no longer requires approval;
+  `rule` and `archive` remain gated.
+- **Command guard's own-CLI allowlist is anchored to the segment start
+  everywhere, not just for defect.js.** `jev-setup.js`, `settings.js`,
+  `jev-report.js`, `doctor.js`, `phase.js`, `agent-watchdog.js`, and
+  `devswarm.js` previously matched anywhere in the segment, so a heavy
+  command mentioning one as trailing args (`npm run build -- node
+  scripts/devswarm.js list`) slipped through unblocked; every entry now goes
+  through one shared anchoring helper so a future addition can't forget it.
+
+### Added
+
+- **New setting: `autoHandover.decisivePrompt`** (default `true`). At a
+  turn-ending Stop point, once the current session's handover exists and is
+  fresh, the agent is told to end its reply with one prominent line naming
+  the exact `/compact` (or `/clear`, or Codex `/new`) command to run next —
+  or, if the handover has gone stale since it was written, to refresh it
+  first. Turn it off to revert to the plain handover wording.
+- **Decisive prompt freshness uses the tasklist guard's own work detection.**
+  Subagent edits and Bash writes (`cp`, `mv`, `rm`, `>` redirects, ...) after
+  the handover now mark it stale; with no readable transcript (including
+  Codex) the line is a neutral "📝 Handover saved at ..." instead of 🟢; and
+  "Next action" means done only when it reads exactly none/done/complete/nothing.
+
+## 0.109.4
+
+### Fixes
+
+- **DevSwarm Stop gate: archived workspaces no longer block the Primary.** A
+  workspace archived in the DevSwarm app, archived by anti-hall, or marked with
+  `archive-ignore` no longer stops the Primary's turn, even if it still has unread
+  mail. Its mail is also no longer counted toward the NEGLECT warning or escalation.
+  At most one summary line is shown instead: "N archived workspace(s) still have
+  unread mail (ignored)". This check also reuses the cached copy of the DevSwarm
+  app's archived list.
+- **Owner-held workspaces no longer block the Primary either.** An id listed in the
+  `devswarm.heldPartitions` setting is skipped by the Stop gate, even when it is an
+  old twin of the Primary. The Primary's own current mailbox is never skipped.
+- **"Waiting on a human answer" now requires a running session.** A workspace is
+  only reported as waiting on a human answer if its session is still running and
+  its transcript shows the unanswered question. The gate used to report this for
+  sessions that had already ended.
+- Active workspaces are unchanged. Unread mail with no transcript still blocks the
+  Primary, as in 0.109.0.
+
+## 0.109.3
+
+### Fixed
+- **Silent-agent nudge no longer blocks every Stop for a finished agent.** A background agent whose completion notice arrived as an `attachment` or `queue-operation` transcript entry was treated as still running and reported as "silent", and the Stop hook then blocked on every attempt. The nudge now reads all three completion shapes (reusing the idle gate's parser), treats an agent whose result was later delivered as finished, and hard-caps nudges at one per agent per session.
+
+## 0.109.2
+
+### Fixes
+
+- Heartbeats reuse a cached copy of DevSwarm's archived-workspace list instead of
+  opening the app database on every call.
+
+## 0.109.1
+
+### Fixes
+
+- **DevSwarm roster: a relaunched terminal can no longer revive an app-archived
+  workspace.** Field bug: two workspaces archived in the DevSwarm app
+  (`isActive=0`, `isHidden=1`) had their terminal tabs left open; when the
+  running `claude` process was killed, the tab's login shell relaunched
+  `claude` within ~10s, and the new session's routine `ensure` + explicit
+  `register` + `heartbeat` calls all flipped both rows back to `active` on
+  the roster — one even broadcast "idle — awaiting task brief". Anti-hall's
+  own resurrection guard only checks its OWN `archived/<id>.json` marker,
+  which is never written when a workspace is archived from the DevSwarm app
+  UI instead of anti-hall's own `archive` verb. `register`/`ensure`/
+  `heartbeat` now consult the DevSwarm app DB's own archived verdict first
+  and refuse to reactivate a row it reports archived — "regardless of new
+  heartbeats or registrations" (owner rule: the app DB is ground truth over
+  anti-hall's own markers). `heartbeat`'s base file write still always
+  succeeds; only the liveness-verdict clear-to-alive and the mesh
+  `--summary` broadcast are suppressed. The roster's `archived` hint gains a
+  `live session in archived workspace` flag when a fresh heartbeat still
+  exists for an archived row. If the app DB can't be read, behavior is
+  unchanged (fail-open).
+- **`doctor` reports (never kills) a live `claude` session left running in an
+  app-archived workspace.** New report-only check: `claude session alive in
+  an archived workspace: <title> (pid N)`, resolved from the app DB's own
+  AI-terminal session id through the same harness session-file mapping
+  `liveness.js` already used elsewhere. Never kills the process, never
+  archives or deletes anything — it names the leak and the two safe ways to
+  close it (close the DevSwarm tab, or `hivecontrol workspace archive <full
+  id>`). One aggregated WARN, never one per workspace. (Auto-archive was
+  already unaffected: `gatherCandidates` only considers `isActive=1`
+  builders, so an app-archived row was never an auto-archive candidate.)
+
+## 0.109.0
+
+### Features
+
+- **Post-handover new-work gate (on by default).** Once context is past the auto-handover
+  threshold and this session's handover has been written, the agent now sizes each new
+  request before starting it. If the request would need more than about 5% of the context
+  window, it offers you two choices: park it in the task list and the handover and start
+  it after `/compact` or `/clear`, or go ahead anyway if you insist. Quick questions,
+  finishing the task already in flight, and spawning a DevSwarm workspace pass straight
+  through. Works the same on Claude Code and Codex.
+- **One-shot budget reminder after a handover.** If usage grows more than the budget past
+  the point where the handover was saved, you get one reminder per handover: refresh the
+  handover, and offer to park the rest of the work.
+- **New settings:** `autoHandover.gateNewWork` (boolean, default `true`) and
+  `autoHandover.gateBudgetPct` (1-50, default `5`), both also in `/config`.
+- **New Jev integration `postHandoverGate` (advisory, default `off`).** It logs whether
+  Jev thinks a request fits in the remaining post-handover budget; it never changes what
+  the gate says. It has its own `jevIntegrations.postHandoverGate` row, like the other Jev
+  integrations. It ships off by default: an offline benchmark (n=299) found park-recall
+  17.6% vs 28.8% for the agent's own size judgment plus the measured budget backstop, no
+  gain over the baseline.
+- **Mechanical nudge on a silent background subagent.** anti-hall already documented the
+  heartbeat convention for a coordinator to notice and re-dispatch a stale subagent, but
+  nothing forced it to happen and nothing wrote the heartbeat automatically. A new Stop
+  hook (shared with the Codex port) instead watches the signal the harness always
+  produces: every background agent launch and its eventual terminal notification. An
+  agent counts as silent once its own output has gone stale (or never appeared) past the
+  threshold with no terminal notification seen, and you get one nudge per stale snapshot —
+  advisory only, it never stops or re-dispatches the agent itself. The
+  `~/.anti-hall/agents/<id>.json` heartbeat file, when a subagent does self-report it,
+  is kept as an additional secondary signal.
+- **New settings:** `guards.silentAgentNudge` (boolean, default `true`) and
+  `guards.silentAgentNudgeMin` (minutes, default `20`), both also in `/config`.
+
+### Changed
+
+- **DevSwarm auto-archive: a finished workspace's own status pings no longer keep it
+  "active" forever.** A done child workspace is woken periodically by its own mailbox
+  cron, the Monitor watcher, and a Stop-hook heartbeat reminder — each wake used to reset
+  the idle timer, so a finished child could never go idle and was never auto-archived.
+  The idle timer now reads the child's own transcript turn by turn and skips only those
+  wake/ping/heartbeat/status turns; any other activity (real work, read-only work
+  included, a new direct message, or a commit) still resets the timer, and a turn that is
+  still doing real work blocks the archive outright. If the transcript can't be read, the
+  older, more conservative rule applies, so this change can only delay an archive, never
+  make one happen early. Archives stay reversible, only by the exact workspace id, and
+  never triggered from a hook.
+- **New setting:** `devswarm.autoArchive.ignorePings` (boolean, default `true`), also in
+  `/config`.
+- **`devswarm.js spawn` is faster and more deterministic.** A cached workspace title from
+  hivecontrol's raw branch-name default could clobber an already-confirmed, different
+  title, giving a "sometimes branch, sometimes brief" spawn-title race — fixed. The
+  roster/per-turn "finish" column now shows the actual done-rule state in plain words
+  (`done ✓ merged` / `done, merge unverified` / `done, not merged` / `working`) instead
+  of a raw gate-count ratio. Spawn now skips the redundant origin fetch when the remote-tracking ref is
+  already fresh, fetches submodule updates on demand only when it does fetch, and puts a
+  timeout on the underlying `hivecontrol create` call, reporting per-phase timings. It
+  also now detects and reports (never auto-repairs) a submodule worktree that failed to
+  create during an otherwise-successful workspace create.
+- **New settings:** `devswarm.spawnFetchTtlSec` (seconds, default `300`) and
+  `devswarm.spawnCreateTimeoutMs` (milliseconds, default `180000`), both also in
+  `/config`.
+
+### Fixes
+
+- **The DevSwarm ingest daemon no longer freezes, dies silently, or reads healthy while a
+  slow `hivecontrol` drains nothing.** Under heavy machine load the monitor call timed out
+  (`spawnSync … ETIMEDOUT`), but `spawnSync`'s `timeout` only sends SIGTERM and then keeps
+  blocking until the child actually exits. A `hivecontrol` that was slow to die froze the
+  whole daemon, heartbeat included, for minutes. The daemon (`companion/devswarm-ingest.js`)
+  now runs each monitor call with a non-blocking `child_process.spawn`: SIGTERM at the hard
+  timeout, SIGKILL after a grace period, and a hard upper bound after that. While a call is
+  in flight, a timer keeps the lock and liveness heartbeat fresh. The heartbeat is also written
+  on the backoff paths that skipped it before (a blocked delivery WAL, a retryable store
+  error), and it carries a new `lastMonitorAttemptMs`. Transient failures back off
+  exponentially (2s, 4s, 8s …) up to a 5-minute cap instead of retrying every 2s. Every exit
+  now leaves a reason in `~/.anti-hall/devswarm-ingest.log`: SIGTERM/SIGINT/SIGHUP are logged
+  (and the in-flight `hivecontrol` child is killed), as are uncaught exceptions and unhandled
+  rejections (with the stack) and the final exit code. An exit with no line at all is now the
+  signature of a SIGKILL. Health (`monitorFaultFor` / `daemonHealth`): when no monitor poll has
+  succeeded since the daemon started, or since the last success, for longer than the new
+  `devswarm.monitorNoOkFailMin` window (default 10 minutes), health reads FAILING even when no
+  failures have been counted. That was the field case: `lastMonitorOkMs` stayed null with 0
+  failures for 15+ minutes and read as healthy. Inside that window a freshly started daemon
+  reports "starting up" (`startingUp: true`, status still healthy, so no repair restarts it).
+  The failing banner now says which condition tripped, the heartbeat age, and the last error
+  in plain words.
+- **New setting:** `devswarm.monitorNoOkFailMin` (minutes, default `10`), also in `/config`.
+- **`doctor --repair` no longer reinstalls a healthy-but-slow ingest daemon, and the
+  installer stopped churning launchctl on every workspace spawn.** A monitor fault only
+  fires once the daemon's base liveness signals already passed, so a merely slow/timed-out
+  `hivecontrol` call (`ETIMEDOUT`, no resolvable spawn-error code) is a live daemon, not a
+  broken one — `doctor --repair` used to reinstall/restart it anyway, which only interrupts
+  an otherwise-healthy process. `isMonitorConfigFault()` now reinstalls only for a genuine
+  config fault (`ENOENT`/`EACCES`/`ENOTDIR`); a slow/transient fault is reported via the new
+  `monitorSlowReason()` and left alone — a genuinely dead daemon still reinstalls either way.
+  Separately, `install-devswarm-ingest.js` (which runs on every DevSwarm workspace spawn) no
+  longer unloads already-reaped legacy per-worktree launchctl units it never installed, and
+  skips the unload+load of the live per-project unit entirely when the on-disk plist already
+  matches what would be written and the label is already loaded.
+- **`jev report`'s triage rows leaked across `--project`/`--by` groups, and a settings
+  write could slip past its own risky-change lock.** `jev-report.js` filtered `triageRows`
+  by time window only, never by the same `groupKeyOf()` used for every other row, so every
+  project's or session's triage counts showed every OTHER project's/session's triage
+  decisions mixed in; a project-less triage row now buckets under `unknown` like any other
+  row instead of leaking everywhere. `settings.js set()`'s locked-key risky-change check
+  read `settings.json` and decided before acquiring `withSettingsLock` — the same TOCTOU
+  `reset()` already had fixed — so a concurrent writer could change `settings.json` between
+  that stale read and this call's own write, letting a risky change through unconfirmed;
+  the check now runs inside the same lock, reusing the same load.
+- **The silent-background-agent nudge could stay silent, and the handover scan it
+  triggers is no longer a full recursive walk.** `silent-agent-nudge.js`'s terminal-status
+  match lacked a case-insensitive flag, so a differently-cased status was misread as
+  still-silent; its task-id/status parsing was first-match-only against the whole text leaf,
+  so when several agents finished together in one leaf only the first agent's id/status pair
+  was ever read and every later agent stayed flagged as silent. Each
+  `<task-notification>` block is now parsed separately, paired with its own id and status,
+  and the displayed nudge is deduped by agent id across the transcript and heartbeat
+  sources so an agent visible through both never produces two lines for the same thing.
+  Separately, the handover lookup this nudge (and the post-handover gate) relies on used
+  to do a full recursive walk of `.anti-hall/handovers` — every date dir × every session
+  dir × every file — just to find one session's own handover; it's now bounded to
+  `<date>/<sessionId>/` per date dir via the new `findNewestHandoverForSession()`.
+  `findNewestHandover()`'s cross-session fallback (used by handover-resume and the
+  pre-compact snapshot) is unchanged.
+- **The DevSwarm auto-archive idle gate could archive a workspace mid-work, or never fire
+  at all.** A safety review of the 0.109 idle gate found it treated every wake/ping turn as
+  proof of idleness, when a false "ping" archives a child mid-work (an extra reset only
+  delays, so every doubt now counts as real work): a background Agent/Bash launch with no
+  matching final `<task-notification>` (completed/failed/stopped, matched by task id or
+  tool-use id), or a `turn_duration` pending-background-agent count above zero, now blocks
+  archive outright, and a ping turn never hides it. The mailbox-ping classifier first went
+  too strict (a bare allowlisted `node devswarm.js inbox|heartbeat|roster|mesh` command,
+  nothing else) — since real children pipe their pings through `grep`/`head`/`tail`/`wc`,
+  that made the gate inert in practice, every wake turn counting as real work — so it now
+  also accepts exactly one `2>&1` plus a chain of those read-only filters with plain-word
+  arguments only; anything with a file redirect, `<(`, `$(`, a pipe reader like `python3`/
+  `sed`/`awk`/`jq`/`tee`/`xargs`, or a shell chain still counts as real work. Native
+  mailbox-drained rows (no `mtype`) now count toward the inbound floor, and a cron-wake
+  flag now only ever attaches to the very next meta prompt so a human prompt can't be
+  misclassified as a wake. The wake text asks children to run mailbox commands plain, with
+  no pipes or filters.
+- **6 DevSwarm spawn-review fixes: timeout detection, freshness, submodule fetch, and an
+  honest merge label.** A real `spawnSync` timeout (`ETIMEDOUT`, `SIGTERM`, null status)
+  never reached `cmdSpawn`'s timeout detection because the error branch returned before the
+  signal check ran; it's now propagated with an explicit `timedOut` flag, and a timeout now
+  reports plainly, including that a partial workspace may already exist for the branch
+  (never auto-cleaned). Remote-ref freshness no longer consults `FETCH_HEAD` (it moves on
+  ANY fetch of ANY ref), only the ref's own reflog/loose-ref mtime. A submodule-recursive
+  fetch that fails now retries once with `--no-recurse-submodules` before being reported as
+  failed. The submodule-worktree-failure regex now only matches `fatal:` lines actually tied
+  to submodule worktree creation, instead of sweeping in an unrelated fatal error. The
+  roster/finish-column label now distinguishes "done, merge unverified" from "done, not
+  merged" instead of collapsing both into the same dishonest label.
+- **DevSwarm no longer flags an ordinary process restart as a concurrent-instance split.**
+  The instance-split check only confirmed each instance nonce had a row somewhere in the
+  15-minute freshness window, not whether two nonces were ever alive at the same time — and
+  a nonce legitimately changes on every restart, so an ordinary restart (old process's last
+  heartbeat still under 15 minutes old, new process's first heartbeat landing minutes later)
+  always read as two concurrent instances even though only one was ever alive. Each nonce's
+  activity span is now padded by 60s and swept for the peak number of nonces overlapping at
+  any point in time; only that peak counts toward instances/instance-split, shared
+  identically by the roster and diagnose paths.
+- **`.anti-hall/handovers|progress|history` paths could double when the session's cwd was
+  already inside one of those directories.** `precompact-snapshot`, `handover-resume`,
+  `tasklist-guard`, `task-lifecycle-log`, `progress-prune`, and `migrate-state` all joined
+  `.anti-hall/...` onto the raw session cwd instead of the git toplevel, so a cwd already
+  under `.anti-hall/handovers/` (or any repo subdirectory) doubled the path and
+  handover-resume could never find what precompact-snapshot had just written. All of them
+  now resolve through the repo's git toplevel first (a submodule and a DevSwarm child
+  worktree each keep their own state), falling back to the raw cwd outside a git repo.
+- **`mcp-reaper` can now also detect abandoned Codex `app-server-broker.mjs` helpers —
+  report-only, never killed.** These are spawned detached and unref'd on purpose, so
+  PPID 1 is normal for a live one — not evidence of death like it is for the reaper's
+  ordinary MCP-server matcher — so a helper is only listed as abandoned once its `--cwd`
+  directory no longer exists, or no live claude/codex process's cwd is equal to, an
+  ancestor of, or a descendant of it (realpath'd, and excluding the broker's own child
+  processes; so a session at a workspace root still owns a broker whose `--cwd` is inside
+  a submodule beneath it), and only once it's older than the new minimum age. Matched by
+  an exact script-name + codex-plugin-path signature, kept fully separate from the
+  reaper's generic MCP parent-death matcher so that invariant never loosens. Detected
+  brokers are listed in the reaper log only — the reaper never terminates them. Opt-in,
+  and only takes effect when the companion reaper is installed and running.
+- **New settings:** `guards.reaperCodexBroker` (boolean, default `true`; report abandoned
+  brokers) and `guards.reaperCodexBrokerMinAgeS` (seconds, default `1800`), both also in
+  `/config`.
+- **DevSwarm's wake-watch/doctor re-arm could name a path that doesn't exist on disk.**
+  The version check that picks the "newest" build took the max across the installed
+  plugin list, the newest cache directory, and the marketplace clone's own
+  `plugin.json` — but the marketplace clone can fast-forward before that new version is
+  actually mirrored into the plugin cache, so the re-arm command it printed could point
+  at a cache directory that was never created, crashing the moment it ran. Both the
+  wake-watcher's version check and doctor's shared version-check helper now verify the
+  target script file actually exists on disk before returning a path; when a newer
+  version is merely known but not yet cached, they print an update-available notice
+  once and keep running instead of exiting with nothing left watching.
+- **A settings `reset()` could silently disarm a safety guard under a race, and a
+  DevSwarm supervisor blocker label could go silently blank.** `settings.js reset` now
+  re-checks the safety-switch confirmation gate inside the same lock it uses for the
+  write, closing a window where a concurrent writer could arm a guard and have `reset`
+  quietly disarm it without `--confirmed`. Separately, the DevSwarm supervisor's
+  blocker-label dedupe now reads back the `mode` field it already writes; previously
+  that field was dropped on read, so every deduped (skipped) re-ask treated an
+  already-promoted label as unset, silently blanking it for the rest of the re-ask
+  interval.
+- **Jev's own `triage` integration was invisible in `jev report`, and its agree%
+  swung wildly across identical time windows.** Triage decisions were logged to a
+  separate file with a different schema, so the report's per-integration table never
+  showed them at all rather than showing them with a bad value — they now appear as
+  their own `triage` row. The agree% denominator now counts distinct, fresh decisions
+  only (a cache-hit retry of the same decision no longer adds an extra vote), which was
+  the actual cause of agreement swinging between 99%/77.5%/37% across windows on the
+  same underlying data; the table now also prints the sample size inline. The same
+  blocker-label read-back fix noted above is included here too, proven with a fixture
+  repro (10 sweeps: label once, then null the other nine before the fix).
+- **The DevSwarm ingest daemon now keeps `hivecontrol`'s error output when a monitor call
+  fails or is killed.** The daemon used to run each monitor call with stderr discarded
+  (`stdio: [..., 'ignore']`), so a non-zero exit or an external signal (not the daemon's
+  own timeout kill, which already had its own stable message) carried no diagnostic text
+  at all. Stderr is now piped and kept as a bounded last-2 KB tail, folded into the
+  resolved error message on a non-zero exit or a signal with no prior spawn error; the
+  existing ok/fail classification is unchanged, only the missing diagnostic text.
+- **The progress/history guard now names the absolute path in its block message.** The
+  Stop-hook guard reads and writes the root-joined absolute `.anti-hall/progress|history`
+  path, but its block message named the bare relative path — from a repo subdirectory
+  cwd, following that message literally wrote into the subdirectory instead, a location
+  the guard never checks. The message now names the absolute path.
+- **Repo-root resolution no longer climbs to a parent repo when the session cwd was
+  deleted, and no longer resolves to the home folder when `~` is itself a git repo.** A
+  cwd that no longer exists (for example a removed nested worktree) used to climb to a
+  surviving ancestor repo and write that session's state there; it now falls back to the
+  raw, nonexistent cwd like any other unresolvable case. Separately, a dotfiles repo
+  checked out at `$HOME` could resolve its toplevel to the home directory itself, which
+  would redirect every write into anti-hall's own global `~/.anti-hall/` store; that case
+  now also falls back to the raw cwd.
+- **Correction: Jev integration `postHandoverGate` defaults to `off`, not `shadow`.**
+  Replace the earlier "New Jev integration `postHandoverGate` (shadow only, default
+  `shadow`)" bullet: the row exists (`jevIntegrations.postHandoverGate`), but it ships
+  `off`. Set it to `shadow` to log Jev's view without changing what the gate says.
+- **DevSwarm parent Stop gate: "busy" now needs real evidence.** A child with unread mail
+  only gets the non-blocking `busy, N queued` line when its own transcript was written in
+  the last `devswarm.parentGateBusyFreshMin` minutes (default 5) and its latest turn is
+  real work. A live process or a fresh heartbeat no longer counts, so an idle child
+  sitting at its prompt with old mail blocks and escalates again. A missing or unreadable
+  transcript (including a Codex child) also blocks.
+- **Waiting children always block.** A child stuck on an unanswered question, a plan
+  approval (`ExitPlanMode`), or any tool call while its transcript has gone quiet (a
+  permission prompt or a hung tool) blocks with a "waiting on a human answer" line. In a
+  family of twin descriptors, one waiting member makes the whole family block.
+- **Age cap on the busy advisory.** Even a busy child blocks once its oldest unread is
+  older than `devswarm.parentGateBusyMaxAgeMin` (default 60): "<title>: busy but hasn't
+  read mail in Xm". A busy pass no longer resets the forced-ack count, so escalation
+  still fires after the usual number of blocks.
+- **New settings:** `devswarm.parentGateBusyFreshMin` (minutes, default `5`) and
+  `devswarm.parentGateBusyMaxAgeMin` (minutes, default `60`), both also in `/config`.
+
+## 0.108.5
+
+### P0: anti-hall could move a git-tracked `.planning/` folder in child worktrees
+
+anti-hall could move a git-tracked `.planning/` folder in child worktrees (and
+submodules). This is now never automatic, it is copy-only, and `doctor` shows how to
+restore.
+
+- **Cause.** `hooks/lib/doctor-repair.js` registered the GSD `.planning/` fold as an
+  automatic repair, so `repair-on-reload` ran it in every session, DevSwarm child
+  worktrees included. `scripts/migrate-state.js migrateGsdPlanning` copied each file
+  into `.anti-hall/history/legacy/planning/` and then deleted the source, which moved
+  git-tracked files.
+- **Never automatic.** The fold is gone from doctor's repair pass, so repair-on-reload,
+  `doctor --repair` and the updater never run it. It is also no longer part of the
+  capability scan's pending-migration check. It runs only as the explicit, human-typed
+  `migrate-state.js --planning`.
+- **Copy-only.** Even when run explicitly it never unlinks, renames or removes a source,
+  and never overwrites a different existing legacy copy. It skips the whole tree, and
+  prints why, when `.planning/` is git-tracked, when the directory is a linked/child
+  worktree rather than the main checkout, when it is inside a submodule, or when the git
+  location cannot be confirmed.
+- **Restore.** `doctor` now reports (it never restores) every worktree of the repo, and
+  their submodules, where tracked `.planning/` files are missing and a legacy copy
+  exists. It prints `git -C <worktree> checkout -- .planning`. The opt-in
+  `node scripts/migrate-state.js --restore-planning [--dir <worktree>]` restores only
+  files that are missing, tracked, and whose legacy copy is byte-identical to `HEAD`.
+  It never deletes the legacy copies.
+- **Audit.** No other automatic migration deletes or moves repo content. The remaining
+  unlink/rm/rename calls in `migrate-state.js`, `migrations.js`, `doctor-repair.js` and
+  `devswarm-migrate.js` act on temp-file renames, lock files, or `~/.anti-hall` state.
+
+### Fixes
+
+- **Every jev-assist call site now threads `sessionId`/`turnRef` into the logged row.**
+  Live speculation decisions (the `speculation` add-block integration, the only one that
+  can actually add a block while "on") were logging `sessionId: null` for every row,
+  making them unjoinable to the transcript that produced them. `hooks/lib/jev-assist.js`
+  now threads `sessionId` through every `ask()`/`askSync()`/`askDetached()`/`consultRelax()`
+  call, and adds an optional `turnRef` (the transcript's last-line ISO timestamp, or a
+  line-count fallback via the new `turnRefFromTranscript()`) so a decision row can be
+  pinned to which turn it was about. Every integration call site (`speculation-guard`,
+  `claim-ledger`, `task-tracker`, `merge-gate`, `output-verify-guard`, `model-routing-guard`,
+  `codex-nudge`, `tasklist-guard`) now passes both fields where a session/transcript is
+  available; `devswarm-supervisor.js`'s background sweep intentionally stays session-less.
+- **`supervisorBlockerLabel` no longer re-asks/re-logs an unchanged input every sweep.**
+  The DevSwarm supervisor's ~90s liveness sweep re-asked (and re-logged) the exact same
+  blocker-label decision on every tick as long as the child's jev-triage pending entry
+  stayed unchanged — one real input produced 382 `jev-assist.ndjson` rows in 24h. A new
+  per-workspace state file under `~/.anti-hall/devswarm/blocker-label-ask/` now hashes the
+  input (childId + kind + ts) and skips the ask/log entirely when it matches the last one
+  asked, re-asking only when the input changes or the configurable re-ask interval
+  (`devswarm.supervisorBlockerLabelReaskSec`, default 6h) elapses.
+- **`jev report` now prints its effective time window and row counts.** `--since`/`--until`/
+  `--exclude-window` already filtered every metric (including the agreement metric) and
+  already read the rotated `.1` log alongside the live one — but the report never showed
+  WHICH window it actually used or how many rows were counted vs excluded, so two runs
+  against "the same window" could not be verified as comparable. `jev report` (and
+  `jev report --by project|session`) now print a `window: <since> .. <until> exclude: <…>
+  rows: N in window / M total (K excluded)` line (also included as `window` in `--json`
+  output), via the new `describeWindow()`/`printWindow()`.
+
+## 0.108.4
+
+### Features
+
+- **Every Jev integration now has its own dedicated setting.** A new `jevIntegrations`
+  settings-schema section gives each of the 12 integration ids (`speculation`, `triage`,
+  `newRequest`, `claimLedger`, `outputVerifyGuard`, `gitGuardSelfCredit`, `modelRouting`,
+  `tasklistTrivial`, `codexNudgeSubstantial`, `mergeGateHedge`, `parentGateQuestion`,
+  `supervisorBlockerLabel`) its own row/setting (`jevIntegrations.<id>`), instead of only
+  5 of them living as `advanced` sub-keys of the `jev` section. Each is its own table row
+  in `/anti-hall:settings` (`settings.js show --section jevIntegrations`) and its own
+  `/config` row, titled "Jev integration · <name>". Defaults are unchanged: `speculation`
+  and `triage` default `on`, every other integration defaults `shadow`.
+- **Full back-compat, nothing deleted.** A pre-existing `~/.anti-hall/jev.json`
+  `integrations.<id>` value, and a pre-0.108.4 `~/.anti-hall/settings.json`
+  `jev["integrations.<id>"]` value, both keep working and forward-migrate automatically
+  into the new `jevIntegrations.<id>` key (`companion/lib/migrations.js`
+  `migrateJevIntegrationsSection`, idempotent, fail-open, never deletes the old key).
+  Resolution precedence is unchanged: env > settings.json > `/config` > jev.json legacy >
+  default. `jev-setup.js mode <id> on|shadow|off` now writes the new canonical
+  `jevIntegrations.<id>` settings.json key (still also writes `jev.json` for back-compat).
+- Docs: `docs/GUIDE.md`, the `jev`/`settings` skills (Claude + Codex), and the
+  system-briefing operator guide (Claude + Codex) all cover the new section/keys.
+- **New Jev integration: `findingDedup`, wired into deadly-loop.** `scripts/finding-dedup.js`
+  groups deadly-loop TRIO (Reviewer/Auditor/Critic) findings that Jev judges to describe the
+  SAME underlying issue, via `jev-assist.js`'s `ask()` path (id `findingDedup`, trust
+  `advisory`) — candidate pairs are same-file within ±40 lines or the same id recurring
+  across rounds, capped at 200 pairs/run, concurrency 4, union-find grouped at confidence
+  ≥0.85. Offline benchmark (2026-09, 3 projects, 30 days of real reviews): Jev answered the
+  exact "same underlying issue?" question 65/65 correct at confidence ≥0.85, vs 45%
+  precision for a same-file ±10-lines heuristic baseline — the 13th `jevIntegrations`
+  settings row, defaulting `on` (unlike every other 0.108.4 integration, which defaults
+  `shadow`) on the strength of that result. Fail-open throughout: Jev off/unconfigured/
+  erroring → no groups, exit 0. `deadly-loop`/`deadly-loop-multi` (Claude + Codex mirror)
+  show its output as an advisory hint after each round's findings are collected — it never
+  auto-collapses; the agent still decides.
+- **Every feature is now controllable from settings.** Each hook anti-hall registers
+  (Claude and Codex) has an on/off switch whose default is the old behaviour. The hook
+  checks it first and does nothing when it is off; a settings error always leaves the
+  hook running. New sections: `safety` (4 keys), `context` (7: the verify-first
+  injections, task tracker, handover resume, defect nudge) and `maintenance` (5:
+  repair-on-reload, progress prune, pre-compact snapshot, task lifecycle log, session-end
+  MCP reaper). `guards` gains 7 (`modelRouting` strict/advisory/off, `apiGuard`,
+  `speculationGuard`, `claimLedger`, `taskGuard`, `tasklistGuard`, `scanThrottle`) and
+  `devswarm` gains 12 (parent/child gates, the roster and inbox injections, reply
+  tracker, comms and inbox-read guards, the wake watcher, app-DB sync, screenshot sync).
+  The env-only switches `ANTIHALL_MODEL_ROUTING`, `ANTIHALL_REPAIR_ON_RELOAD`,
+  `ANTI_HALL_SCAN_THROTTLE`, `ANTI_HALL_SESSION_END_REAPER` and
+  `ANTIHALL_DEVSWARM_APP_SYNC` keep working as the env tier of those settings.
+  `userConfig` grows from 39 to 76 `/config` rows (still no `options` field).
+- **Safety guards need a confirmed change, not a hard refusal** (owner decision: no
+  guard needed — a human direct command, or a confirmation after a clear, plain
+  warning, is enough). `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`,
+  `safety.swarmGuard`, and the knobs that weaken a safety guard (`guards.stashGuard`,
+  `guards.editGuardAllow`, `guards.allowSubagentMailbox`) work through `settings.js
+  set`/`reset` like any other key, but need `--confirmed`. Without it, nothing
+  changes and the call returns one short, factual, human-readable line — "Turning off
+  `<guard>` means `<what it protects, in one plain sentence>`. Ask the user to
+  confirm, then re-run with --confirmed." (calm facts, not alarming) — and
+  `{ok:false, needsConfirmation:true, warning}` on `--json`. The warning text comes
+  from a new per-key `safetyNote` in the schema. Normal precedence (env >
+  `~/.anti-hall/settings.json` > `/config` > legacy > default) is restored for these
+  keys — the confirmation is the protection now, not an ignore rule. The `settings`
+  skill (Claude + Codex) and system-briefing: a direct user ask to change a guard IS
+  the confirmation (apply with `--confirmed` right away); otherwise show the warning
+  and ask (`AskUserQuestion` on Claude, a numbered yes/no on Codex) before applying —
+  never infer consent, never confirm on the agent's own initiative. The `skip.json`
+  escape hatch is unchanged, and `"all"` still does not cover git-guard.
+- `settings.js show` lists every section, marks the safety rows (`needs --confirmed`),
+  and ends with the parts that have no switch on purpose (skip-guard,
+  coordinator-detect, omc-detect, phase-tracker, fable-availability,
+  codex-availability, emit-dedupe-reset, agent-watchdog, command-guard's data-safety
+  sub-guards) and why.
+- **`devswarm.heldPartitions` (owner-held mesh partitions).** A new csv settings key
+  (env override `ANTIHALL_DEVSWARM_HELD_PARTITIONS`) lets an owner permanently exempt
+  specific mesh partition ids from the per-turn "ORPHANED MESH" warning and from
+  `reap-orphans`. Held ids are diverted out of `orphans[]` and into their own
+  `heldPartitions[]` field by `computeSummary` — never dropped, still visible via
+  `devswarm diagnose`/`devswarm healthcheck` as owner-held. `reap-orphans` refuses them
+  even under `--apply` as an extra belt; the reaper already never auto-deletes anything
+  (dry-run default, human-only, `--apply --max N` required).
+
+### Changed
+
+- A boolean env switch now accepts every true/false token (`0`/`off`/`false`/`no`), not
+  only the one literal it used to check. The wake watcher's refusal vocabulary gains
+  `disabled-by-settings`.
+
+### Fixes
+
+- **`devswarm.js spawn` no longer hands a child stale tooling.** hivecontrol branches the new
+  workspace from a LOCAL branch name (`-s`, else the caller's current branch), so a Primary whose
+  local `main` had fallen 25 commits behind `origin/main` spawned a child with an old deploy script
+  that lacked a newer CI gate. When the source is the default branch (resolved from origin/HEAD),
+  spawn now runs `git fetch origin <default>` and fast-forwards the local branch to it before
+  `create`: a guarded ref update when it is not checked out, `merge --ff-only` when it is checked
+  out and clean. It never rebases, resets or forces, and touches no other branch. Offline, it warns
+  and continues. When local `<default>` is behind and cannot be fast-forwarded (diverged, or
+  checked out with local changes) spawn refuses with a one-line reason ("local main is N commits
+  behind origin/main; spawning from it would give the child outdated tools") unless `--from-local`
+  is passed; that flag is anti-hall's own and is not forwarded to hivecontrol. The result carries a
+  `sourceCheck` object.
+- New setting `devswarm.spawnFromOrigin` (default `true`, a /config row) turns the check off.
+- **`command-guard.js` no longer forces a subagent spawn just to read one value.**
+  Trivial READ-ONLY commands in the main coordinator thread — `git ls-remote`/
+  `fetch`/`merge-base`/`ls-tree`, `sqlite3 -readonly`, `gcloud/gh/kubectl
+  describe|list|get|view` (and `gcloud logging read`), and anti-hall's own
+  read-only CLI subcommands (`jev-setup.js status`, `settings.js show|get`,
+  `hooks/doctor.js` without `--repair`/`--fix`, `jev-report.js` without
+  `label`/`prune-audit`) — tripped the generic heavy-verb/`node *.js` heuristic
+  and were blocked with "Heavy command detected", forcing a subagent spawn for
+  a one-line lookup. Added a narrow, per-segment read-only allowlist evaluated
+  BEFORE the heavy-command check (same place/discipline as the existing
+  `devswarm.js` carve-out), plus a conservative `isSafeNodeEval()` classifier
+  for `node -e`/`--eval` payloads (deny-listed write/spawn Node APIs only).
+  State-changing variants (`git push/pull`, `settings.js set`, `sqlite3`
+  without `-readonly`, `doctor.js --repair`, `jev-report.js label`, `gcloud
+  ... delete`) stay blocked — the allowlist is scoped to the specific
+  read-only subcommand, never the whole script/verb.
+- **`model-routing-guard`'s planning-shaped-on-haiku advisory false-positived on
+  mechanical work.** Row 4 matched the broad `COMPLEX` word list (bare `review`,
+  `audit`, `design`, `plan`, `root cause`, `regression`, `logic`, `security`)
+  anywhere in the spawn's description/prompt, including inside backtick-quoted
+  config keys/CLI flags (`` `jev.audit.snippets` ``) and inside ledger content
+  being copied verbatim. A 316-spawn field sample from this project's own
+  transcripts measured a 24% false-positive rate on haiku spawns that were
+  correctly mechanical (status checks, report reads, ledger appends, defect
+  filing, CI watching). Row 4 now uses a stricter `PLANNING_INTENT_RE` (an
+  actual planning verb phrase: `design a/the`, `plan a/the`, `architecture`,
+  `brainstorm`, `deep/code/security review`, `root cause analysis`, `security
+  audit`, etc.), matched with backtick-quoted spans stripped, and suppressed
+  when the corpus marks itself read-only/mechanical/verbatim/fixed-command
+  (`READONLY_SUPPRESS_RE`). Measured false-positive rate on the sampled corpus:
+  24.1% → 0%; recall on genuine planning-shaped fixtures (design/plan/review/
+  audit/root-cause tasks) unchanged at 100%. Rows 1-3's `COMPLEX`-anywhere veto
+  is untouched — it stays broad because being generous there only prevents a
+  block, the safe direction.
+- **`jev-assist.test.js` no longer reads the real machine's home.** The `getMode`
+  test for `codexNudgeSubstantial`/`tasklistTrivial` called `getMode(id, cfg)`
+  without the 3rd `home` argument; both ids have a `settings-schema.js`
+  `integrations.<id>` entry, so `getMode` resolved them via
+  `schemaIntegrationMode(id, home) -> settings.js get(..., { home })`, and a
+  missing `home` fell back to `os.homedir()` — reading the real
+  `~/.anti-hall/settings.json`/`jev.json`. Failed on any machine with a
+  customized Jev mode for those ids. Fixed by passing an isolated `home` from
+  `makeHome()`. Extended `tests/hygiene/settings-home-injection.test.js` with a
+  `getMode` regression guard that points `HOME` at a poisoned settings.json and
+  proves `getMode(id, cfg, home)` never reads it.
+- **A child's `primary-<hash>` label no longer comes back as a live "ghost" roster row
+  under the Primary's session.** Root cause: `reconcile` (run by `update` or doctor-repair
+  inside a Primary session) spawns `inbox pull <id>` for each row with cwd set to that
+  row's worktree, but it passed the Primary's own environment through. Inside that
+  subprocess the cwd made the child's label look like the caller's own row, so
+  auto-ensure re-created the label's tombstoned descriptor and promoted it to the
+  Primary's `CLAUDE_CODE_SESSION_ID`. The sweep subprocess now drops
+  `CLAUDE_CODE_SESSION_ID`/`DEVSWARM_BUILDER_ID` and never promotes a session. Additional
+  safeguards: `inbox pull` of a child label (or of a label whose `retired/` redirect
+  names another id) now pulls under the canonical id and writes nothing under the
+  label. `heartbeat`/`register`/`ensure` refuse a retired label even when no row is left
+  to check. `roster` and the per-turn table fold a label row into its canonical row
+  (via the sender alias, the retired redirect, or the DevSwarm app's builder for that
+  worktree) and carry its unread count over. `repair-child-sender-labels` now folds a
+  label whose live session is running on a different worktree instead of leaving it
+  pending forever, and it moves the label's leftover descriptor into
+  `archived-retired/` rather than deleting it. Messages sent to the alias are
+  forwarded, and they stay readable under the alias.
+- **`cmdArchive` claimed hivecontrol "has no teardown command" — false on DevSwarm >= 2.5.3.**
+  A live substrate test (2026-09-25) proved `hivecontrol workspace archive <id>` exists and
+  works (sets isActive=0/isHidden=1). When the capability gate allows it, `devswarm.js archive`
+  now ALSO archives the workspace in the DevSwarm app, explicit id always, retrying once on
+  the known-flaky "Could not confirm terminal process boundary" error; dormant/failed falls
+  back to an accurate manual-step instruction instead of the old false claim. Also fixed: the
+  post-archive "child session still live" warning fired off a heartbeat file alone, which can
+  be stale (e.g. the workspace was already deleted in the app); it now cross-checks the app
+  DB's own builder rows and suppresses the warning when there is no row for that id at all.
+
+- **`output-verify-guard.js` false positive on zero-count summaries.** A clean `cargo test`
+  summary line ("test result: ok. 5 passed; 0 failed") was flagged as a mixed pass/fail
+  result because the dual-signal regex matched the literal "0 failed" text. Count-bearing
+  fail/pass patterns now require a non-zero count; plain marker patterns (`FAIL`, `PASS`,
+  `--- FAIL:`) are unaffected. Covers pytest, jest, cargo, go test, and mocha summary lines.
+
+- **`devswarm-parent-inbox.js` re-instructed re-sending an already-pending archive-request.**
+  A child the Primary had already sent `archive-request` to kept triggering the CHILD NOT
+  DRAINING nag and the cooldown'd ARCHIVE-READY reminder every turn, even hours later, even
+  while the child's session was still live — the child was simply waiting on its own user,
+  not neglected (field report: SkyCrew, 399105fe/e75cade3). Both are now suppressed while
+  `computeSummary`'s `archive_request_only_unread` is true, resuming automatically once the
+  request is answered/drained or the child resumes other work, or after a new
+  `devswarm.archiveRequestRenagHours` settings key (default 24h) elapses. The dead-session
+  ARCHIVE-READY reminder stays exempt (`archive-request` auto-archives a dead target on its
+  next run, so it is never redundant there); a genuinely `stuck`/escalated status is unaffected.
+
+- **Jev cost tracking logged `costUsd: null` forever ("not configured").** `computeCostUsd`
+  only ever computed a real per-token cost from an owner-populated `jev.prices` table, so
+  every row stayed null until an owner manually filled it in. It now falls back to a
+  BUILT-IN default rate (new `jev.priceUsdPerMInput`/`jev.priceUsdPerMOutput` settings,
+  default `0.042`/`0` — verified: typesafe.ai, vercel.com/ai-gateway/models/jev,
+  openrouter.ai/typesafe) whenever `jev.prices` has no matching entry, so real cost is
+  populated out of the box. `jev-report.js --by project|session` now also prints a
+  real-cost summary (total + per-integration) scoped to that project/session; the gateway
+  credit balance is still read exactly as before.
+
+- **Auto-archive gate (h)'s no-re-archive record depended solely on a general-purpose log
+  file.** `~/.anti-hall/logs/devswarm-auto-archive.ndjson` is a LOG other log-rotation/
+  pruning paths in this codebase could legitimately remove, which would silently re-open
+  the hole gate (h) exists to close (an owner-unarchived workspace getting auto-re-archived
+  once the focus/idle windows pass again). Moved to a durable, never-rotated/pruned state
+  file (`~/.anti-hall/devswarm/auto-archived.json`, `{id: [{doneHead, at}]}`, append-only).
+  An idempotent forward-migration seeds it from existing ndjson records (wired into both
+  `doctor --repair` and `update.js`'s post-pull pass); the ndjson log itself is still
+  written on every archive and still read as a fallback for any pre-migration record.
+- **`settings.js reset` could silently disarm a human-armed safety guard.** `reset()` never
+  asked for `--confirmed` on the assumption that removing an override is always the safe
+  direction — false for `guards.stashGuard`, whose default is `false`: resetting a
+  human-armed `true` fell back to the default and disarmed it with no warning. `reset()`
+  now computes the effective value the key will have AFTER its settings.json override is
+  removed (env, `/config`, legacy, default) and gates it through the same risky-direction
+  check as `set`; a reset that leaves the value unchanged or restores a safe default
+  (e.g. `safety.gitGuard` back to `true`) still needs no confirmation.
+- **`cmdArchive`'s new app teardown could reach `hivecontrol workspace archive` with a
+  wrong target, and from a hook.** DevSwarm 2.5.3's archive/delete verbs default to the
+  CURRENT workspace when no id is given, and the phantom-descriptor retire in
+  `devswarm-child-turn.js` (a UserPromptSubmit hook) calls `cmdArchive` with a truncated
+  id. The app call now runs only when the app DB (read-only, fresh read) holds a builder
+  with that EXACT full id that is open and whose `builderType` is known and not
+  `primary`; a truncated id, a `primary-<hash>` label id, an unknown builderType, a
+  closed builder, or an unreadable app DB means no spawn at all (not even the capability
+  probe). `cmdArchive` takes `{appArchive:false}` for a local-only archive, and the hook
+  passes it, so no hook ever spawns hivecontrol or spends its timeout budget on it.
+- **A settings.json `jev.integrations.<id>` value lost to a conflicting jev.json value
+  during migration.** `migrateSettingsFromLegacy` ran the jev.json legacy loop first, which
+  claimed the empty `jevIntegrations.<id>` key, so the later settings.json forward-migration
+  saw the key as set and skipped it — inverting the precedence (settings.json outranks
+  jev.json). `migrateJevIntegrationsSection` now runs first. Nothing is deleted; both old
+  values stay where they were.
+- **The roster fold dropped a ghost row's unread when the canonical row's `directUnread`
+  was null.** Folding a `primary-<hash>` ghost into, e.g., an archived child row (whose
+  `directUnread` is null) kept the null and lost the ghost's unread directs and its hints.
+  The canonical row now receives both (unread summed from 0, hints unioned), so the
+  roster's total unread is the same before and after the fold.
+- **`devswarm-parent-inbox.js` lost a folded ghost row's unread.** A `primary-<hash>`
+  ghost folded under its canonical row was skipped outright, so its unread directs never
+  reached the canonical row's nag. The fold is now resolved in a pre-pass and the ghost's
+  unread is added to the canonical row (table, attention, own-checkout path alike),
+  whichever order the two rows appear in.
+- **`finding-dedup.js` reported false duplicate groups, including with Jev off.** The same
+  finding id recurring across rounds was pushed into the union-find id list twice, so
+  it formed a `[X, X]` "group" with no Jev edge at all, and a cross-round pair of one id
+  was unioned with itself. Findings are now keyed by id+round (exact repeats dropped,
+  first wins), a finding is never paired with itself, an id that recurs across rounds is
+  reported as `<id>@round<N>`, and Jev off means no groups and no per-pair calls. The
+  Jev cache key now also includes each finding's round and text, so a reused id never
+  gets another finding's cached answer.
+- **`model-routing-guard`'s read-only suppression hid genuine planning on haiku.** The
+  Row-4 fix above suppressed the advisory whenever the spawn said "read-only", so a
+  "read-only code review / security audit of X" on haiku got no advisory. Row 4 is now
+  suppressed only when the spawn is read-only AND mechanical (fixed commands, "run
+  exactly", "return ≤N lines") AND carries no review/design/audit/analysis verb. The
+  intent set also covers "review this PR/diff", "audit the/this …" and root-cause asks
+  ("find/identify/diagnose the root cause", "root cause why …"); a bare "root cause:"
+  noun in ledger content does not count. Re-measured: 0/316 false positives on the same
+  316 real mechanical haiku spawns (0.0%; the pre-0.108.4 guard fired on 75/316, 23.7%),
+  and 18/18 on a genuine-planning set that includes the read-only review/audit, PR/diff
+  review, "audit the" and root-cause cases (the earlier 0.108.4 fix caught 8/18).
+- **Docs described the safety-key gate wrongly.** The `safety` section description in the
+  schema still said `settings.js set/reset` refuses these keys and a settings.json value is
+  ignored, and `llms.txt` said they are never changed via `settings.js set` or
+  `settings.json`. The schema, the CLI usage text, `llms.txt`, `docs/GUIDE.md`, the
+  `settings` skill and the system briefing (Claude + Codex) now say the same thing as the
+  code: a risky `set` and a `reset` whose fallback value is risky need `--confirmed`,
+  re-arming never does, and a settings.json value counts like any other. They also note
+  that nothing mechanically stops an agent from writing settings.json directly — the owner
+  chose consent over an extra guard.
+
+## 0.108.3
+
+### Features
+
+- **Every non-advanced setting is now a row in Claude Code's native `/config` panel.**
+  `plugin.json` `userConfig` grows from 19 to 39 entries (existing keys unchanged). Titles
+  are prefixed with the section ("Guards · Stash guard") since `userConfig` has no grouping
+  field. Enum settings are `type: "string"` fields whose description lists the allowed
+  values (a `userConfig` `options` picker would break loading on Claude Code versions
+  before v2.1.271, per the plugin manifest reference, and anti-hall is a public plugin),
+  and numbers carry the schema's `min`/`max`. A drift test
+  (`tests/hooks/settings-schema.test.js`) fails if `userConfig` stops matching the
+  schema's non-advanced set, or if any field declares `options`. Each exposed key
+  round-trips through `CLAUDE_PLUGIN_OPTION_<KEY>` and `pluginConfigs` and shows Source
+  `/config`. `/config` rows need Claude Code ≥ 2.1.269; older versions still work via the
+  skill. Codex has no `userConfig` equivalent and still uses the `anti-hall-settings`
+  skill.
+- Three settings used to read only their env var and skipped the settings chain. They now
+  go through `settings.js` (env > file > `/config` > default), so the new `/config` rows
+  take effect: `guards.emitDedupe` (`hooks/lib/emit-dedupe.js`), `jev.judgeModel`
+  (`hooks/speculation-judge.js`, `hooks/lib/jev-triage-worker.js`) and
+  `defects.defaultProj` (`scripts/defect.js`).
+- The `settings` skill (Claude and Codex) now points the user to `/config` by default.
+  It applies a named change with a single `set` and prints the full table only when asked.
+
+### Fixes
+
+- **Auto-archive never archived anything (`candidates:10, wouldArchive:[]`).** Gate (a)
+  "done" required `archive_ready` (every required gate: `done,merged,tests_passed`), and
+  those rows are only written by a manual `devswarm.js gate --set`. Gate (a) now also
+  passes on the child's structured done-report: the `done` gate on its own
+  (`devswarm.js gate <id> --set done`). `tests_passed` is not required, because gate (b)
+  still has to prove the merge, and gates (c)-(g) are unchanged. Chat text such as "DONE"
+  never counts. Only the auto-archive decision changed; `archive_ready` means the same for
+  the parent gate and the merge gate.
+- **A stale `done` gate could auto-archive unmerged commits.** The gate was never cleared,
+  so a child that reused its branch after a squash-merged PR kept `done`, the PR fallback
+  matched the old merged PR, and new commits were eligible. The `done` verb now records
+  the worktree HEAD with the gate (`set_by` `devswarm-done@<sha>`, projected as
+  `doneHead`), and gate (b)'s app PR row counts only for a done-report tied to HEAD and
+  only when git ancestry can't be determined. When git says "not an ancestor" the lane
+  stays blocked, so a reused branch with new commits never auto-archives. The DevSwarm app
+  DB's `pull_requests` table has no head/commit sha column (15 columns, checked on a live
+  DB), so a merged PR row can't be tied to HEAD and a squash-merged child still needs a
+  manual archive. A `done` set any other way (`gate --set done`, no sha) still works for
+  the Primary, but needs the git proof.
+- **Gate (b) called merges "unproven" that `gate --set merged` had just verified.** The
+  verb checked HEAD against the remote default branch (`origin/HEAD`'s target, e.g.
+  `origin/main`); gate (b) checked the LOCAL source branch first and stopped there when it
+  said "not an ancestor", so a stale local `main` (behind `origin/main`) hid every merge.
+  Both now call one function, `devswarm-git-truth.js` `gitMergeProof`: HEAD must be an
+  ancestor of the remote default branch (`origin/HEAD`'s target), and a local branch ref
+  never counts, so a local `main` with unpushed
+  commits can't prove a merge either. The verb records the HEAD it verified at in the
+  `merged_verified` row (`set_by` `devswarm-merged@<sha>`, projected as
+  `mergedVerifiedHead`). When git can't decide, a `merged` gate verified at the current
+  HEAD proves gate (b); an unverified `merged` gate, or one verified at an older HEAD,
+  never does. A resolved "not an ancestor" always blocks. Gate (b) proves against the
+  remote now, so a repo with no `origin` never auto-archives.
+- **Nothing made a child set the `done` gate, so auto-archive still never fired.** New
+  child verb `devswarm.js done [<id>] [--summary "..."]`: it sets the `done` gate on the
+  caller's own workspace id (never `merged`/`tests_passed`) and sends the Primary one
+  `[[ANTIHALL_DONE]]` message (`kind:'done'`). A re-run on the same HEAD adds nothing; a
+  foreign id or the Primary checkout is refused. The child SessionStart directive
+  (`devswarm-child-role.js`, Claude and Codex) now tells a child to run it once its work is
+  merged, and the roster shows such a child with the `done` + `archive-pending` hints.
+  Auto-archive then retires it once the merge is proven and gates (c)-(g) pass, so the user
+  no longer archives finished workspaces by hand.
+- **Auto-archive treated a child as the Primary.** Gate (e) counted any `primary-<hash>`
+  descriptor id sharing a builder's worktree as the Primary, and a legacy child descriptor
+  carries exactly that label, so a standard child was never archived. The app DB's
+  `builderType` is now the authority; without that column, or when the row's value is NULL,
+  empty or whitespace-only (gate (e) and `primary-seat.js` both trim it), the Primary seat's
+  main-checkout rule decides; a `primary-` id prefix never does. An unreadable app DB still archives
+  nothing.
+- **A stale anti-hall archived marker overrode the DevSwarm app.** A workspace open in the
+  app (`isActive=1`, `isHidden=0`) but still holding `archived/<id>.json` kept counting as
+  archived and triggered a screenshot ask. The supervisor's app-DB sync now trusts the app
+  for a marker anti-hall wrote from app evidence (`archivedBy` `devswarm-app`,
+  `devswarm-app-deleted` or `devswarm-ui-sync`; same id and worktree, older than 10 min):
+  it first restores the workspace to active with the same logic `unarchive` uses (puts the
+  descriptor back in `workspaces/` if it is missing, revives the registry row), and only
+  then moves the marker to `archived-retired/<id>.<ms>.json` with a `retired` record
+  (when, by whom, why, `restored`). It is never deleted. If a restore step fails, the
+  marker stays in `archived/`, so the workspace is never left in neither directory. A
+  marker from anti-hall's own `archive` verb is never restored automatically, at any age:
+  an open app row there only means the owner hasn't archived it in the app yet. It stays
+  archived, is reported as `openButMarkedArchived`, and `unarchive` undoes it. The new
+  migration `retire-stale-archived-markers` (`doctor --repair`) applies the same rules
+  to existing markers. The screenshot ask now fires only when the app DB is unreadable.
+  Nothing is unarchived in the app itself.
+- **Auto-archive re-archived a workspace the owner had just unarchived.** The owner's only
+  undo is unarchiving in the DevSwarm app (there is no CLI), but the `done` gate at that HEAD
+  stayed set, so the sweep archived it again once the focus and idle windows passed. Each
+  successful auto-archive now logs `{id, doneHead, at}` in
+  `~/.anti-hall/logs/devswarm-auto-archive.ndjson`, and new gate (h) (`h-rearchive`) never
+  auto-archives the same workspace again at that HEAD. A new `done` at a new HEAD makes it
+  eligible again. The log is append-only and no retire/restore path touches it.
+- **A local branch named `origin/main` could prove a merge.** `gitMergeProof` shortened
+  `refs/remotes/origin/<b>` to `origin/<b>` before calling `rev-parse`/`merge-base`, and git
+  resolves that short name to a local branch literally called `origin/<b>` first. It now
+  passes the full `refs/remotes/...` ref to git (an explicit `origin/...` ref too); `via`
+  still shows the short name.
+- **The screenshot ask never named a real conflict.** The parent-inbox scoping of
+  `openButMarkedArchived` kept an entry only when its `worktreePath` equalled the Primary's
+  own checkout (`gitTop`), but every conflict is a CHILD worktree, so all of them were
+  dropped. It now scopes by repo identity like the D29 filter: the entry's worktree must
+  resolve to the Primary's `repoKey`. Entries without a `worktreePath`, or whose worktree no
+  longer resolves, still fail closed. The test fixture had stamped the conflict with the
+  Primary's own path, which hid the bug; it now uses a real child worktree plus a
+  foreign-repo entry that must stay hidden. `doctor` was not affected (it compares the
+  app-DB `repositoryId`).
+- **An unresolvable `origin/HEAD` fell back to guesses.** `gitMergeProof` then proved the
+  merge against `origin/<sourceBranch>` (a workspace's source branch need not be the default
+  branch), and gate (b) could then accept an app PR row matched by branch name alone. It now
+  fails safe: `gitMergeProof` returns `merged: null`, `via: 'default-branch-unknown'`, and
+  gate (b) blocks with `default-branch-unknown` unless a `merged` gate was verified at the
+  current HEAD. Run `git remote set-head origin --auto` in such a checkout to restore
+  auto-archive.
+- **The Stop-time handover pause nag could repeat the same text with no progress.**
+  `hooks/auto-handover-pause-nag.js` stored `nagStepPct` and `lastNagPct` but never compared
+  them. It now re-nags only when context has risen at least `nagStepPct` points since the
+  last nag (inside the quiet window too, advancing the baseline), or at a quiet pause after
+  `nagQuietMin`, and never repeats the identical percentage within the same step
+  (`lastPauseNagPct`). Shared by the Codex port.
+- **`recordOutcome()` (`hooks/lib/jev-assist.js`) never populated `project`
+  on its `type:'outcome'` rows**, unlike every decision row `ask()`/`askSync()`/
+  `askDetached()` log via `finalize()`. `triage`'s answer-latency join
+  (`hooks/lib/jev-triage.js`'s `recordAnswered`) and `speculation`'s
+  evidence-added/user-override outcomes are the two current callers, so
+  their `jev-assist.ndjson` rows silently grouped under `unknown` for `jev
+  report --by project`/`--project <name>`. `recordOutcome()` now applies the
+  same cwd-basename fallback (`defaultProject()`) `finalize()` already uses,
+  and accepts an explicit `project` override for future callers. Rows logged
+  before this fix cannot be repaired (no source cwd to recover) and keep
+  grouping under `unknown` — this is expected, not a bug.
+- **`jev.audit.snippets` never wrote a snippet for a shadow-mode decision, even
+  with snippets on.** `maybeWriteAuditSnippet` (`hooks/lib/jev-assist.js`)
+  gated on the `changed` direction, which is null-by-construction whenever
+  `mode !== 'on'` — and shadow is the DEFAULT mode for every integration
+  under evaluation, so the exact would-change decisions an owner/agent needs
+  to label had no snippet to show. It now also writes when the row's
+  `wouldChange` signal (the same would-change computation `jev-report.js`
+  already reads) is truthy, marking that row `shadow: true` so `label`
+  readers can tell a would-have-changed decision from an actual one.
+  `jev-report.js`'s `readAuditSnippet` already read by hash only, with no
+  filter on `changed`, so shadow rows surface via `label <hash>` unchanged.
+- **`jev-report.js`'s per-integration table showed a bare `0.0%` in the
+  `changed%` column (and `0 changed` in the headline) for label-only
+  integrations** (a `choice`/string classifier with no boolean baseline to
+  diff against, e.g. `newRequest`, `supervisorBlockerLabel`) — indistinguishable
+  from "Jev never changed anything here" when the real story is "there is
+  nothing boolean to compare". The table now prints `n/a (N distinct)`, a new
+  `label-only integrations` note below the table (and the `headlines` section)
+  spells out the real signal — `label-only: no boolean outcome to compare; N
+  distinct decisions (M fresh)`, deduped by content hash so repeated cache
+  hits of the same decision count once. KEEP/REMOVE/REVIEW verdict gating is
+  unchanged.
+- **`jev-report.js` never counted owner-delegated tp/fp labels on a label-only
+  integration's would-change decisions, so such an integration could NEVER
+  reach KEEP/REMOVE.** For a `choice`/string classifier (e.g. `newRequest`),
+  `effectiveDirection` was forced to `null` for every row, so its would-change
+  hashes never entered `changedHashByFresh` — the map the tp/fp/precision loop
+  and the `known === 0` label-only short-circuit both read. Labels were read
+  but silently dropped, and `bucket.labeled > 0 && known === 0` always won
+  first, permanently returning `REVIEW (label-only, no outcome signal yet)`.
+  Fixed: a would-change (`wouldChange`/`changed` truthy), fresh, hashed choice
+  row now joins a label-candidate set that feeds the same
+  `humanTP`/`humanFP`/`autoTP`/`autoFP`/`labeledSample` pipeline a boolean
+  integration's changed decisions use — reported additively via JSON as
+  `labelWouldChangeUnique`. `changed%`/`changedUnique` stay untouched (0; a
+  choice answer has no added/relaxed/changed semantics), the label-only
+  short-circuit now only fires when `labeledSample` is also 0, and KEEP for a
+  choice integration is gated on its own would-change rate in place of the
+  (always-0) changed-decision rate. KEEP/REMOVE thresholds themselves
+  (≥20 labelled, ≥50/≥200 calls, ≥60%/≥80% good-outcome) are unchanged.
+
+### Docs / tests
+
+- **Codex parity audit of the six Jev-bearing hooks named in the 0.108.3
+  census** (`output-verify-guard.js`, `model-routing-guard.js`,
+  `speculation-guard.js`/`speculation-judge.js`, `tasklist-guard.js`,
+  `devswarm-parent-gate.js`, `claim-ledger.js`): verified against the live
+  `plugins/anti-hall/codex/hooks/hooks.json`,
+  `plugins/anti-hall/codex/install-codex.js`, and
+  `tests/hygiene/manifest-drift.test.js`'s `CLAUDE_ONLY_ALLOWLIST` that a
+  decision already exists for all six — the census was stale. Five
+  (`speculation-guard.js`, `speculation-judge.js`, `tasklist-guard.js`,
+  `devswarm-parent-gate.js`, `claim-ledger.js`) are already registered under
+  `Stop` in both hooks.json files with platform-neutral payloads
+  (`session_id`/`cwd`/`transcript_path`, no Claude-specific `tool_name`
+  reads). `model-routing-guard.js` and `output-verify-guard.js` are correctly
+  documented Claude-only — Codex has no `PreToolUse` Agent/Task-tool call
+  (subagent spawn is a separate `SubagentStart`/`SubagentStop` event with no
+  pre-spawn `tool_input` to classify), and the Codex shell tool's
+  `PostToolUse` `tool_response` shape is unverified, so wiring either would
+  register a trigger that never fires as intended. Added
+  `tests/codex/codex-jev-hooks-parity.test.js`, spawning each of the five
+  already-wired hooks with a Codex-shaped Stop payload to prove they run and
+  fail open (exit 0) — closes the runtime-behavior gap
+  `tests/hygiene/manifest-drift.test.js` (structure-only) does not cover.
+  Added a Claude/Codex parity column to the Jev "All integrations" table in
+  `plugins/anti-hall/skills/jev/SKILL.md` and the equivalent note in the
+  Codex mirror `plugins/anti-hall/codex/skills/anti-hall-jev/SKILL.md`.
+- **`openButMarkedArchived` (app-state.json) was HOME-GLOBAL and reached the
+  Primary's screenshot ask unfiltered.** `syncAppState` (`scripts/devswarm.js`)
+  collects this conflict list across EVERY repo the DevSwarm app knows about,
+  but `hooks/devswarm-parent-inbox.js`'s `uiSyncAsk` passed it straight
+  through — the Primary of one repo could be asked for a screenshot about
+  workspaces belonging to entirely different repos. The writer now stamps
+  each entry with `repositoryId` and its canonical `worktreePath`.
+  `companion/lib/doctor-devswarm.js` scopes the list by `repositoryId` (the
+  current repo resolved via `companion/lib/identity.js` `resolveContext` + the
+  app-DB's `repositoryForWorktree`); the parent-inbox hook, whose ask fires
+  only when the app DB is unreadable, scopes by the `repoKey` of the entry's
+  `worktreePath` (see the screenshot-ask fix above). An entry missing the
+  field its reader needs (written by 0.108.0-0.108.2) or an unresolvable
+  current repo fails CLOSED: it is never shown. `syncAppState` regenerates
+  app-state.json on every supervisor tick, so pre-fix entries self-repair on
+  the next sync — no migration needed.
+- **`primary-session-drift.js` picked "newest session" by transcript START
+  time, not last activity.** Three sessions started within ~90s could rank an
+  abandoned transcript (no writes since) as "newer" than the session still
+  actively being written to, because `sessionsForWorktree` sorted by the
+  transcript's first embedded timestamp. It now sorts by the transcript
+  file's mtime (last activity, already collected for the MAX_SCAN bound), and
+  `anchorSessionDrift` only surfaces "a newer session exists" when that
+  most-recently-active session is actually more recently active than the
+  CURRENT running session's own last activity.
+
+### Docs
+
+- **Every `docs/*.md` file now linked from both README.md and docs/KB.md.**
+  `docs/KB.md` was missing `KB-claude-code-hooks.md`, `KB-devswarm-app-db.md`,
+  `archive/devswarm-layered-recovery-history.md`, and two `superpowers/`
+  design/plan docs; the root `README.md`'s Documentation section only linked
+  ~5 of 52 tracked docs. Both now link the full set, grouped by topic. New
+  hygiene test `tests/hygiene/readme-doc-links.test.js` guards this going
+  forward (every git-tracked `docs/*.md` linked from README.md AND
+  `docs/KB.md`; every relative docs/ link in README.md resolves).
+- **Auto-archive gate (d) blocked a finished lane on its own broadcast backlog.**
+  Field evidence: `d-unread (to=197 from=0)` on a done, merged, clean, idle child — all
+  197 were mesh-wide broadcast/FYI rows in the child's own inbox, not mail addressed to
+  it, so gate (d) could never clear and the Primary couldn't ack another partition's
+  cursor either. `devswarm-lifecycle.js`'s `unreadFact` was summing `w.unread` (direct)
+  AND `w.broadcastUnread` (the shared mesh partition, `computeSummary`'s own split) into
+  gate (d)'s blocking count. Gate (d) is now DIRECT-only: it blocks only on unread
+  DIRECT rows addressed to the child, or unread rows FROM the child in another partition
+  (e.g. its done report) — never on broadcast/mesh-wide rows. The plan's blocker detail
+  now reports the split, e.g. `to_direct=0 to_broadcast=197 from=0`. Scoped to gate (d)
+  alone: the separate `prune-archived` unread check is unchanged.
+
+## 0.108.2 (2026-09-25)
+
+### Fixes
+
+- **DevSwarm mailbox-wake Monitor instruction assumed `persistent: true` is
+  always accepted.** Some Claude Code builds' `Monitor` tool schema is
+  `{command, description, timeout_ms, ws}` with `additionalProperties:false`,
+  so passing an unsupported `persistent` field fails validation outright. The
+  wake-arm instruction (`hooks/lib/devswarm-wake.js`'s `monitorArmLine`,
+  `skills/update/scripts/update.js` and `companion/lib/doctor-devswarm.js`'s
+  `armCmd`, and the stale-build re-arm line in
+  `companion/lib/devswarm-wake-watch.js`) now tells the agent to arm with
+  `persistent: true` only if its Monitor tool supports that field, otherwise
+  set `timeout_ms` to its maximum and re-arm on the tool's final/expired
+  event — never running two watchers at once (the watcher's own lock still
+  guards that), with the cron mailbox job staying the fallback either way.
+  `docs/KB-claude-monitor-tool.md`'s two illustrative Monitor examples carry
+  the same caveat. No Codex-side mirror exists for this instruction (the
+  Codex port has no Monitor tool), so dual-platform parity is unaffected.
+- **Read receipts (`inbox read-primary` / `ack-primary`) were keyed by the
+  literal caller id, so a Primary registered under two aliases on the SAME
+  worktree — a DevSwarm-native builder-id UUID row and anti-hall's own minted
+  `primary-<hash>` row, the exact pair `resolveMeshPartitionIds` already
+  widens reads across — could read via one alias and never ack via the
+  other.** `writeReadReceipt`/`readReadReceipt` (`scripts/devswarm.js`) now
+  file the receipt under a new `canonicalReceiptId` — the SAME
+  identity/alias-family resolution `meshPartitionIds` already uses (the
+  lowest sorted id in the resolved mesh group), so any alias in the family
+  can look it up. Backward compatible: a lookup always falls back to the
+  literal-id directory too, so a receipt written before this fix (or when
+  family resolution is unavailable) is still found. `ackCommand` is
+  unaffected — it still names the id the read was addressed to. Also fixed a
+  related latent bug this surfaced: `applyReadAckOps`'s `'own'` op branch
+  committed the ack against the outer `ack-primary` caller's id instead of
+  `op.partition` (the partition the op was actually computed against at read
+  time) — harmless when read and ack use the same id, but silently acked the
+  WRONG partition's cursor for a cross-alias ack. Now uses `op.partition`,
+  matching the `'sibling'` branch's existing pattern. A new forward-migration,
+  `fold-read-receipts` (`companion/lib/migrations.js`, applying
+  `foldReadReceiptsAllStores`), repairs receipts written BEFORE this fix
+  existed — it copies (never moves/deletes) each literal-id-only receipt into
+  its resolved canonical alias-family directory too. Idempotent, fail-open,
+  no-delete, runs from `doctor --repair` and `update` like every other
+  default migration.
+- **The same cross-alias bug also hit `applyReadAckOps`'s `'nd'` op branch
+  (the NDJSON descriptor channel's own cursor, a third namespace alongside
+  the `'own'`/`'sibling'` store ops)**: it always committed against the outer
+  `ack-primary` caller's id instead of `op.partition` (already recorded at
+  read time by the NDJSON ackOps push site), so a cross-alias ack-primary
+  filed the nd ack under the wrong alias's cursor. Fixed to mirror the
+  `'own'` branch (`ndPartitionId = op.partition != null ? op.partition :
+  id`); falls back to `id` for a legacy op with no `partition` recorded.
+  `meta.callerId` keeps the real caller for audit/logging — only
+  `commitNdAck`'s partition-key argument changed.
+- **Default ceiling removed: `autoHandover.maxTokens` now defaults to `0`
+  (off) — the trigger fires at 85% of the session's REAL context window, not
+  a fixed 170000-token assumption.** `autoHandover.pct` (default 85%) is
+  already measured against this session's actual context window
+  (`hooks/lib/context-pct.js`: the statusline's real `context_window`, a
+  Codex rollout's `model_context_window`, or an estimate), so it already
+  scales correctly to a 1M+ window; a fixed absolute `maxTokens` default
+  fired an EARLY, unrelated handover on a genuinely large window instead
+  (the exact G3 gap this ceiling was meant to close, re-opened by hardcoding
+  its value — see `docs/KB-handover-research.md`). `maxTokens` is now
+  opt-in only (`ANTIHALL_AUTO_HANDOVER_MAX_TOKENS`, `settings.json`
+  `autoHandover.maxTokens`, or `scripts/auto-handover-config.js set
+  maxTokens <n>` — all still work exactly as before) for a user who wants an
+  absolute token floor regardless of window size. `hooks/lib/settings-schema.js`
+  and `hooks/lib/auto-handover-config.js`'s `DEFAULT_MAX_TOKENS` both moved
+  from `170000` to `0`. Also fixed the fire-directive wording
+  (`hooks/lib/auto-handover-text.js`): a token-ceiling fire (only reachable
+  when a ceiling is opted in) now leads with "CONTEXT: ~NK tokens ≥ your
+  configured autoHandover.maxTokens ceiling (NK)" instead of the pct-framed
+  "CONTEXT AT ~N%" line, which read confusingly small/unrelated next to
+  "REQUIRED" when the session was nowhere near the pct threshold.
+
+## 0.108.1 (2026-09-25)
+
+### Fixes
+
+- **jev report: shadow-mode yield was invisible to KEEP/REMOVE verdicts.** A
+  shadow-mode row's `changed` field is always `null` by construction
+  (`jev-assist.js`'s `finalize()` only applies a change when `mode==='on'`), so
+  reading only `row.changed` meant a shadow integration's changed-decision rate
+  was always 0 — it could hit REMOVE at >=200 calls no matter how good Jev's
+  shadow answers actually were. `finalize()` now also logs `wouldChange` — the
+  same trust-rule outcome computed WITHOUT the mode gate — and `jev-report.js`
+  reads it for shadow/off rows. Label-only integrations (a `choice` classifier
+  with no boolean baseline, e.g. `newRequest`) are excluded from changed-rate
+  entirely, regardless of mode.
+- **jev report: REMOVE/KEEP could fire with zero labelled outcomes.** A
+  changed-rate<1% or a high failure rate alone used to earn REMOVE with no
+  labelled outcomes behind it (observed: 3 changed / 304 fresh hit REMOVE via
+  changed-rate alone). KEEP and REMOVE now both require a labelled sample
+  (tp+fp, human+auto) of at least `MIN_LABELED_FOR_VERDICT` (20); below that,
+  `REVIEW (needs labels: n/20)`. Changed-rate<1% is now a low-yield note only,
+  never a REMOVE trigger by itself. The label-only guard now runs BEFORE
+  REMOVE/KEEP are evaluated (it used to run after REMOVE, so it could never
+  actually fire once REMOVE's changed-rate<1% path caught a label-only row
+  first).
+- **jev report: `--since`/`--until`/`--exclude-window`** exclude a known-bad
+  run from the report by `ts`, without editing `jev-assist.ndjson` directly —
+  e.g. excluding an accidental `supervisorBlockerLabel` run.
+- **DevSwarm: `acquireLock` TOCTOU let two sessions both adopt the same closed
+  Primary seat.** `companion/lib/recovery.js`'s per-id advisory lock published
+  its holder via `openSync(p, 'wx')` immediately followed by a SEPARATE
+  `writeSync(fd, ...)` call; a second `acquireLock` that hit EEXIST in the
+  window between those two syscalls could read the lock file while it was
+  still empty, misread the unparseable/null holder as unconditionally stale,
+  and steal a lock its rightful, live, milliseconds-old owner was still
+  writing — breaking the "ONE Primary per project" invariant under real
+  concurrent adoption. Fixed by publishing the lock via write-then-link (full
+  content written to a private temp file, then made visible atomically with
+  `linkSync`), which can no longer expose partial content. This was the real
+  root cause of the `devswarm-primary-seat.test.js` "concurrent adoption" test
+  flaking once on macOS CI; that test was also hardened (barrier + bounded
+  retry instead of a bare timing-dependent race) as defense in depth.
+- **DevSwarm: two code-review follow-ups to the `acquireLock` fix above, same
+  release.**
+  - *Regression the write-then-link fix itself introduced:* a `linkSync`
+    failure for any reason OTHER than EEXIST (EPERM/ENOTSUP/EXDEV/ENOSYS —
+    e.g. `~/.anti-hall` mounted on SMB/exFAT, where hardlinks don't work even
+    though a normal local disk supports them) used to be treated as
+    fail-open/no-lock, meaning EVERY acquire on such a filesystem returned
+    null and `withIdLock` refused every DevSwarm mutation it gates,
+    permanently. `acquireLock` now falls back to the pre-fix create-then-write
+    (`openSync(p, 'wx')` + `writeSync`) for that one attempt instead.
+  - *Pre-existing, not introduced by the fix above:* the stale-holder RECLAIM
+    step used a blind `unlinkSync(p)`, which deletes WHATEVER currently sits
+    at that path, not specifically the dead/stale holder just read. Two
+    callers that both read the same dead holder concurrently could both
+    decide to steal it; whichever unlinked second deleted the first's
+    brand-new, legitimately-published lock, and both then "won". Fixed by
+    moving the file aside atomically with `renameSync` first, re-reading the
+    moved copy, and only discarding it if its token still matches the one
+    read before the rename — a token mismatch (a real racer's fresh lock)
+    restores it and respects it instead.
+  - `doctor --repair` now sweeps stale `*.lock.tmp-*` / `*.lock.reap-*`
+    scratch files (both fixes' own temp artifacts, normally self-cleaning)
+    under `devswarm/locks/` older than 15 minutes — a belt-and-suspenders
+    backstop for a crash/kill mid-acquire, never touching an actual lock file.
+
+## 0.108.0 (2026-09-24)
+
+> **UPGRADE NOTE — coming from 0.107.x or earlier:** run
+> `claude plugin update anti-hall@anti-hall` once, then restart Claude Code. The
+> 0.107.x `update.js` has no post-pull re-exec, so it cannot run 0.108.0's harness
+> registration; without this step Claude Code keeps loading the old build. From 0.108.0
+> on, `update` does it for you. The Codex port loads from the marketplace clone and needs
+> no extra step.
+
+### New features
+
+- **Auto-handover (on by default).** When the main agent's context first crosses
+  `autoHandover.pct` (85%), `hooks/auto-handover.js` tells it, without asking first, to
+  write an anti-hall handover itself, tell the user and list the saved paths, and urge
+  `/compact` or `/clear`. After that: a short reminder every `nagStepPct` (5) further
+  points, and a Stop-time reminder at a quiet pause (no open tasks, no recent spawn) at
+  most once per `nagQuietMin` (15) minutes (`hooks/auto-handover-pause-nag.js`). Context %
+  comes from the statusline's real `context_window` figure (persisted by
+  `statusline/phase-bar.js`), a Codex rollout's `model_context_window`, or a transcript
+  estimate whose window is the env override, the session's last-seen statusline window, or
+  "inferred 1M" once usage passes 200k. With a genuinely unknown window it sends one soft
+  advisory instead of the mandatory directive. `ANTIHALL_AUTO_HANDOVER_PCT` overrides the
+  threshold (`0` = off). Shared with the Codex port.
+  - **Absolute token ceiling** `autoHandover.maxTokens` (default 170000 = 85% of a 200k
+    window; env `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS`; CLI `max-tokens <n>`; `0` = off):
+    fires on whichever comes first, so a 1M session hands over at ~170k instead of ~850k.
+    The token count is real, so a ceiling crossing gets the full directive even with an
+    unknown window. The directive prints an exact `/compact focus: …` line; the handover
+    skill ships a CLAUDE.md "Compact Instructions" snippet.
+  - **Stop-side fire:** a long autonomous turn that never reaches a new prompt gets the
+    directive once at a Stop (shared latch, never while `stop_hook_active`).
+  - **PreCompact safety net** (`hooks/precompact-snapshot.js`, Claude + Codex): before
+    every compaction a mechanical `.anti-hall/handovers/<date>/<session>/PRECOMPACT-<n>.md`
+    (pwd, git state, task list from the transcript, last 10 user messages verbatim, newest
+    handover pointer). Always exits 0 and prints nothing, so it never blocks compaction.
+  - **Resume:** `handover-resume.js` names the snapshot, adds git facts measured at resume
+    (HEAD, commits since the handover, dirty files) and asks the agent to read back goal,
+    next action and session rules before acting. All messages are platform-aware (Claude:
+    `/anti-hall:handover`, `/compact focus: …`; Codex: `anti-hall-handover`, `/compact` or
+    `/new`, `AGENTS.md`).
+  - **Handover content:** a verbatim "Session rules" slot; seq N>1 carries forward rules
+    and verified/not-verified rows verbatim. Research: `docs/KB-handover-research.md`.
+- **One settings store for everything.** `~/.anti-hall/settings.json`, with a declarative
+  schema (`hooks/lib/settings-schema.js`) and API (`hooks/lib/settings.js`); front ends
+  `/anti-hall:settings` (Codex: `anti-hall-settings`) and
+  `scripts/settings.js show|get|set|reset [--json]`. Precedence: env → settings.json →
+  `/config` (a `plugin.json` `userConfig` value that differs from its manifest default) →
+  legacy file (e.g. `jev.json`; outranks `/config` until the one-time migration is
+  stamped) → default. Every setting is wired to the code that reads it, including
+  auto-archive, retention and the Jev budget/prices/audit settings; resolvers that take an
+  `env` derive `home` from that env (`settings.getWithEnv`). Dotted keys can be written
+  flat (`"autoArchive.mode"`) or nested. A corrupt settings.json is backed up before any
+  write. The old `auto-handover-config` skill is folded into `/anti-hall:settings`;
+  `scripts/auto-handover-config.js` stays as a CLI alias.
+- **Repairs run on every reload.** `hooks/repair-on-reload.js` (SessionStart + a
+  UserPromptSubmit fallback, since `/reload-plugins` is not shown to re-fire SessionStart)
+  starts one detached `doctor.js --repair --migrations-only` whenever a repair is not yet
+  stamped for the running version. It runs only the data migrations and store repairs;
+  statusline, Codex hooks and the supervisor are never installed by a reload (that stays
+  behind a user-typed `doctor --repair`). The legacy-state and GSD migrations do write the
+  project's `.anti-hall/history/legacy/`, and GSD `.planning/` files are deleted once their
+  copy is verified. A stamp at the running version or newer counts as
+  done (the newest cached doctor stamps its own version), runs are at most hourly per running
+  version (a failed spawn never starts the wait), only the
+  newest 5 logs are kept, and the child runs at nice 19. Lock-guarded, never blocks, no-op when nothing is pending.
+  `ANTIHALL_REPAIR_ON_RELOAD=off` disables it.
+- **Version alerts say update or reload.** If the plugin-cache mirror already holds a
+  newer version than the running one, the agent is told to reload (with that version's
+  changelog headline); if the remote is newer, to update and then reload. Both are explicit
+  "tell the user now" directives, once per session per case, on Claude and Codex.
+- **Jev metrics.** Real per-call cost (gateway-reported, else tokens × `jev.prices`; a
+  cache hit costs $0; never invented); `jev-report.js` shows cost windows (`--window
+  24h|7d`), precision from `label <hash> tp|fp` (plus derived AUTO labels), yield, cost
+  efficiency, overhead and a one-line headline per integration; the Vercel AI Gateway
+  credit balance (report/status time, 15-min cache). Opt-in budget watch
+  (`jev.budget.mode=watch` + `usdPerDay`/`usdPerWeek`/`minCreditUsd`) only warns and never
+  disables Jev. Opt-in audit snippets (`jev.audit.snippets`) keep a redacted ~200-char
+  snippet for decisions Jev changed; `jev-report.js prune-audit --days N` trims them.
+- **Jev: five more integrations** (settings `jev.integrations.<id>`, default `shadow`;
+  `jev-setup.js mode <id> on|shadow|off`):
+  - `gitGuardSelfCredit` (git-guard): paraphrased AI self-credit in commit/PR text the
+    regex misses ("written with help from Claude"); `askSync` 1.5 s, add-block only — it
+    can never relax git-guard.
+  - `parentGateQuestion` (parent gate): an unread child message triage already labelled a
+    question counts as awaiting a reply; cache-only, no network.
+  - `supervisorBlockerLabel` (supervisor report): waiting-on-parent vs wedged from cached
+    triage labels; advisory, after poke/escalate already ran.
+  - `tasklistTrivial` (tasklist-guard) and `codexNudgeSubstantial` (codex-nudge): is the
+    nudge about to fire worth it? Logged fire-and-forget in shadow; in `on` asked
+    synchronously (1.5 s cap, fail-open to the nudge) and a confident "trivial" skips it.
+- **Jev report:** `--by project|session` and `--project <name>` (rows carry the cwd
+  basename and session id); `--weekly` compact 7-day scorecard; the classifier-call
+  latency (p50/p95 ms) and the triage reply turnaround are separate figures, locked by
+  tests. **Weekly notice:** `hooks/jev-weekly-scorecard.js` (SessionStart, Claude + Codex,
+  Jev enabled only, never in a DevSwarm child) names, at most once a week, one integration
+  whose report says KEEP or REMOVE but whose mode does not match yet; it never changes a
+  mode (`jev.weeklyNotice`, default true). `jev-setup.js status` lists every integration.
+- **DevSwarm: the app database is the ground truth.** One read-only snapshot of the
+  DevSwarm app's own SQLite DB (`companion/lib/devswarm-app-db.js`) feeds the per-turn
+  table, `roster`, identity, `doctor` and the supervisor: archived/open state, full titles
+  (app renames propagate), sidebar order, `[pinned]`, `[on screen]` (nags for the focused
+  workspace are suppressed for 2 min), PR state (`PR #N merged, checks failed`, only when
+  synced after the branch last moved), and `[⚠ brief not delivered]`/`[⚠ brief withheld]`.
+  It never reads message bodies, brief text or credential tables. The Primary's anchor
+  self-ack and `register-primary` takeover follow the app's session map when Claude's own
+  transcript confirms it. A pinned schema makes `doctor` warn when the app drops a column
+  anti-hall reads. Evidence per field: `docs/KB-devswarm-app-db.md`.
+- **DevSwarm: supervisor app sync every tick.** Archived markers for workspaces the app
+  archived or deleted (never a delete), title refresh, `app-state.json` (session map,
+  drift, pending app deletions, a report-only message-gap cross-check); about 0.1 s per
+  sweep. `devswarm.js app-state [--json]` and `app-sync`; `ANTIHALL_DEVSWARM_APP_SYNC=0`
+  disables it.
+- **DevSwarm: capability gate.** Every DevSwarm surface anti-hall touches — each
+  `hivecontrol workspace` verb, every app-DB table and column, and the app files it stats —
+  is checked by minimum version and runtime detection (`--help` parsing, `PRAGMA
+  table_info`, existence), cached per hivecontrol build
+  (`companion/lib/devswarm-capabilities.js`). A missing surface puts its feature to sleep
+  and `doctor` names it; without DevSwarm everything sleeps silently.
+  The gate is default-deny: a `hivecontrol` invocation that maps to no registered
+  capability is refused with a dormant reason (never spawned, never thrown); only
+  explicit `ungated` entries (`--version`, `--help`, `workspace --help`) skip the check.
+- **DevSwarm: auto-archive of done workspaces** (default on, DevSwarm ≥ 2.5.3). The
+  supervisor archives a child only when all are proven: finish gates set, branch merged
+  (git ancestry or the app's PR row), clean worktree, no unread either way, not the
+  Primary, not viewed in the app for 10 minutes, idle ≥ `idleMin`. It always names the
+  workspace id, tells the Primary with an undo hint, and replaces the archive-ready nag for
+  those workspaces. `devswarm.js auto-archive` shows the plan.
+- **DevSwarm: owner-approved prune.** `devswarm.js prune-archived --older-than <days>`
+  lists archived workspaces with evidence and a 15-minute plan nonce; deletion runs only
+  with `--confirm-ids <exact ids> --plan <nonce>` from an interactive caller. Each row is
+  re-checked, logged (`logs/devswarm-prune.ndjson`) and tombstoned; no store rows are
+  deleted. A hygiene test keeps every automated path away from it.
+- **DevSwarm: message retention.** The supervisor archives old message bodies to
+  `~/.anti-hall/devswarm/archive/<store>/<yyyy-mm>.ndjson.gz`, then clears them (rows,
+  read positions, hashes and seq numbers stay, so unread counts and gates do not change).
+  Only bodies older than `retention.days` (30) that every reader has read, outside the
+  newest `keepPerPartition` (200) rows and not an open question; a store over `maxStoreMB`
+  (100) is pruned oldest first; `VACUUM` reclaims space; the archive is never evicted
+  unless you set `archiveMaxMB` (default 0 = no cap; `doctor` warns past 500 MB).
+  **Pruning is automatic:** the first run on a machine only writes a dry-run report
+  (`~/.anti-hall/devswarm/retention-dry-run.json`, flagged by `doctor`); after that, sweeps
+  prune for real. To keep every body, set `devswarm.retention.days` to 0 before then. `devswarm.js retention
+  status | run [--dry-run] | restore --store X --month yyyy-mm`.
+- **DevSwarm: screenshot sync.** When the app DB is unreadable or disagrees, the per-turn
+  hook asks once per session for a sidebar screenshot; `devswarm.js sync-ui` plans it
+  against the app DB and the owner confirms. It archives only what the app DB proves,
+  never unarchives by itself, never deletes.
+- **Operator guide.** `/anti-hall:system-briefing` (and the Codex mirror) is now the
+  agent-facing guide: glossary, hard rules, every skill, CLI verb and setting with its
+  default, plus the live inventory. The SessionStart foundation points agents at it.
+
+### Fixes
+
+- **P0: tests could register real launchd jobs.** `doctor-repair`'s installer spawn passed
+  a caller's partial env (`env: {}`) straight to `spawnSync`, which replaces the child
+  environment: the installer ran with no `HOME` (so the real home) and no test marker, and
+  loaded a real supervisor/ingest job. Installer spawns (doctor, `devswarm` self-heal,
+  `update`) now merge onto the parent env and always carry the test markers; the
+  supervisor, ingest and reaper installers route `launchctl`/`systemctl`/`crontab` through
+  one seam that refuses them under a test; the statusline and Codex installers refuse user
+  config outside a temp dir under a test. Test helpers set `ANTIHALL_TEST_ISOLATION=1`, and a
+  hygiene test fails any hand-built env passed to a doctor/installer spawn without it. The
+  reaper installer gained the same temp-HOME guard as supervisor/ingest
+  (`ANTIHALL_REAPER_ALLOW_TMP_HOME=1` to opt out).
+- **P0: `update.js` ran the old version's post-pull stages.** After pulling a newer
+  version it now re-execs the freshly pulled `update.js --post-pull-only`, so stages that
+  exist only in the new version run in the same update; any failure falls back to the
+  local results with a note. `repair-on-reload` likewise uses the newest cached
+  `doctor.js`.
+- **P0: the harness never loaded an updated build.** Claude Code loads anti-hall from
+  `installed_plugins.json`'s `installPath`, which `update` never touched. `update` now runs
+  `claude plugin update anti-hall@anti-hall` whenever that record is behind (reported as
+  `harnessRegistered`; never auto-accepts a confirmation — it prints the exact command
+  instead), and then says **RESTART** Claude Code (a registry change is not picked up by
+  `/reload-plugins`). From 0.108.0 on, the post-pull re-exec means the newly pulled `update.js`
+  performs the registration even when a later release changes it; a registration done by
+  the parent is never hidden by the child's no-op. This does NOT cover the hop from 0.107.x
+  or earlier (that `update.js` has no re-exec) — see the upgrade note above.
+  When `claude` is not on `PATH` it retries with `CLAUDE_CODE_EXECPATH` (the running
+  Claude Code binary); if registration still fails, `action` gives the exact manual
+  command plus a restart instead of `/reload-plugins`. The re-exec child's timeout is now the post-pull
+  budget + the registration timeout + a 60 s margin (was a fixed 120 s, below the
+  default 90 s budget + 20 s registration). `doctor` warns when `installed_plugins.json` lags the
+  newest cache/marketplace version.
+- **Identity: a child's messages were labelled as a Primary.** Every sender's `from` was
+  `primary-<worktree hash>`, children included, so a resumed Primary could see another
+  "Primary" and stand down. `send`, `archive-request` and the `merge` broadcast now label a
+  child worktree with its workspace id; only the Primary checkout (the app's `primary`
+  builder, else the main worktree) sends as `primary-<hash>`. `register-primary` refuses in
+  a child worktree (`not-primary-checkout`; `--force` overrides). `heartbeat`, `register`
+  and `ensure` refuse a child worktree's label (`child-label-id`, naming the real id), so a
+  placeholder row can no longer look like a live twin. Questions and broadcasts sent under
+  an old child label are attributed to the child (`mesh read` keeps the stored
+  `fromLabel`).
+- **Identity: the Primary anchor follows the running session** after a `/clear`: `inbox
+  tick`/`heartbeat` re-point it (Primary checkout only, never while the recorded session is
+  still running), and the briefing names a newer session on the Primary's worktree
+  (read-only).
+- **New: the Primary seat survives a session change.** At SessionStart a new session in
+  the Primary checkout adopts `primary-<hash>` (same partitions and cursors) when the
+  holder has closed, and is told which handover to read. While the holder is still live
+  nothing is taken over; the conflicting session is warned and its `send`, `inbox ack`,
+  `ack-primary`, `spawn` and `merge` are refused (`primary-seat-conflict`) until
+  `devswarm.js primary takeover`; `primary status` shows the seat. The refusal sits on the cursor-write
+  doors themselves, so no path (`drain-primary-legacy`, `--legacy-ack-now`, `mesh read`,
+  `roster --ack`, …) lets a non-holder advance the Primary's read positions. Liveness: harness
+  session pid, then the app's active terminal, then heartbeat age; unknown → warn only.
+- **Stale-build children looked neglected.** `heartbeat`/`inbox tick` stamp the running
+  anti-hall version; the roster, parent-inbox table and nag, and `doctor` show
+  `stale anti-hall <v>: restart this session` instead of `not-draining` when a workspace
+  runs an older build than this machine has (an app-archived row stays plain `archived`).
+  `devswarm-wake-watch.js` exits with one line when a newer version is installed.
+- **The parent inbox flagged a just-sent message within seconds.** The unread-only nag now
+  waits for a grace window (`devswarm.inboxGraceSec`, 120 s) unless the child heartbeats
+  first; stuck/not-draining signals are unaffected.
+- **Three directories grew without bound** (measured 133 MB / 34k files, 62 MB, 27 MB):
+  per-session `devswarm/child-gate/` state is swept after `devswarm.childGateRetentionDays`
+  (14); that sweep and the existing `reaped/` sweep now also run from a periodic supervisor
+  housekeeping sweep (`devswarm.housekeepingSweep`, every `housekeepingSweepSec` = 1 h);
+  the supervisor rotates its own log at `supervisorLogRotateBytes` (10 MB, 2 generations).
+- **Version alert missed multi-release days**: the 24 h cache TTL served a stale `latest`
+  all day; now 2 h, plus the network-free plugin-cache check above.
+- **`update.js --check` trusted a lagging `installed_plugins.json`**; it now takes the
+  higher of that and the newest cache dir and says when to `/reload-plugins`.
+- **Three `doctor` false failures**: the parent-inbox self-test resolved its repoKey from
+  the plugin dir (and a skip counted as a failure); a `register-primary` Primary row was
+  poked/escalated like a child (the supervisor now skips Primary rows); doctor's own
+  context-footprint probe no longer triggers `repair-on-reload`. doctor's version-alert
+  self-test matches the new directive wording.
+- **Parent-inbox**: the app's own primary builder row on the Primary's checkout (proven by
+  `builderType`) folds into the own-unread line instead of a false child nag; an
+  app-archived row with a stored not-draining flag renders plain archived.
+- **`jev report`**: "agreement" compared Jev to a trust constant — it now uses the caller's
+  own heuristic verdict (`compare`) and reports `n/a` without one; changed decisions and
+  cost are counted once per content hash (a fresh call plus its cache hits); TypeSafe's
+  `usage.input_tokens`/`output_tokens` are read.
+- **`settings.js show --all`** dropped four Jev advanced keys and listed `budget.*` twice
+  (headline/advanced split by position); object settings now render as JSON.
+- **command-guard allowed read-only `--help`/`-h`**: `hivecontrol workspace
+  read-messages --help`, `monitor -h` and `message-child --help` only print usage, so a
+  segment carrying a bare `--help`/`-h` token is no longer blocked as a destructive read
+  or native send; a real call chained on another segment still blocks.
+- **The supervisor installer could register a real unit for a test or scratch HOME.**
+  `install-devswarm-supervisor.js` now has the same guards as the ingest and reaper
+  installers: forced dry-run under `node --test` or with HOME under a temp root
+  (`ANTIHALL_SUPERVISOR_ALLOW_TMP_HOME=1` for a deliberate one). The shared temp-root check
+  also recognises macOS `/var/folders` when `TMPDIR` is not set.
+- **Settings writes could lose each other's keys.** `set`/`reset` read-modify-write the
+  whole `settings.json`; they now hold `settings.json.lock` (bounded wait, a dead or stale
+  holder is reclaimed, busy → `{ok:false, lockBusy}`, never throws). Known limitation,
+  documented: a `/config` value equal to its manifest default counts as unset.
+- **Jev audit snippets redact more:** AWS key ids, any `*KEY`/`*SECRET`/`*PASSWORD`/
+  `*TOKEN`= identifier, JWTs, `user:pass@` URLs and PEM blocks.
+- **edit-guard's handover redirect** now names `.anti-hall/handovers/**` as the exempt
+  place to write.
+- **`update.js` split-store summary** now states how many already-handled rows were
+  re-delivered as unread, and why (no behaviour change).
+- **DevSwarm 2.5.3**: `workspace archive|delete [idOrBranch]` default to the CURRENT
+  workspace and have no `--yes`; anti-hall now always passes the explicit workspace id and
+  makes no call without one. Help fixtures are the real 2.5.3 text.
+- **Tests could touch the real home.** `update.js` `runUpdate`, doctor's `runRepairs` and
+  `runMigrations` now refuse (throw) under `node --test` when their home is the real
+  user home (`companion/lib/test-home-guard.js`); this caught two more test files calling
+  `runUpdate` against the real home, now isolated.
+- **Docs**: full `docs/README.md` index and link check (`tests/hygiene/docs-links.test.js`);
+  `llms.txt` is now the condensed catalog of every hook, skill, script and setting;
+  `tests/hygiene/docs-coverage.test.js` fails the build when anything shipped is
+  undocumented. GUIDE's 560-line DevSwarm version history moved to
+  `docs/archive/devswarm-layered-recovery-history.md`; GUIDE keeps a current-state summary.
+
+### Data repairs (update + `doctor --repair`, idempotent, never delete)
+
+- **`repair-child-sender-labels`** (update + `doctor --repair`): maps each child's old
+  `primary-<hash>` label (with or without a registry row) to its id in
+  `sender-aliases.json`; a non-live phantom `primary-<childhash>` row has its unread mail
+  forwarded to the child's partition, then is retired with a redirect and an archived
+  marker (a live one is retried next run). Stored messages are not rewritten; nothing is
+  deleted.
+- **Settings migration**: legacy config (`~/.anti-hall/jev.json`, including nested
+  `budget`/`audit` keys) is forward-migrated into `settings.json` once per version; the
+  legacy file is never deleted, and file-only `prices` keeps being read from it.
+- **Escalated Primary verdicts**: `doctor --repair` clears an already-stale `escalated`
+  verdict left on a `register-primary` Primary row.
+- **App-archived/deleted workspaces**: the supervisor's app sync writes the archived
+  marker for workspaces the app archived or deleted (marker only; nothing is deleted).
+- **State retention**: `doctor --repair` sweeps auto-handover latches and context-% state
+  older than 30 days (`ANTIHALL_AUTO_HANDOVER_STATE_RETENTION_DAYS`,
+  `ANTIHALL_CONTEXT_PCT_STATE_RETENTION_DAYS`).
+- **Repairs now also run on reload** (`repair-on-reload.js`), not only on update.
+
+### Owner decisions
+
+- Auto-handover is on by default at 85% or 170k tokens, whichever comes first.
+- Auto-archive (`devswarm.autoArchive.mode`) defaults to `on` (`dry-run`/`off` available).
+- Retention defaults: 30 days, 100 MB per store, 200 newest per partition kept, archive
+  on, no archive cap (`archiveMaxMB` 0 — archived bodies are evicted only when you set one).
+- Spawn titles are no longer truncated (the 60-char cap is gone).
+- Deleting DevSwarm workspaces is never automated: only `prune-archived` with an
+  owner-approved exact list.
+
+## 0.107.1 (2026-09-24)
+
+- **Fixed: phantom "N unread" on the Primary's own mailbox.** When a store's
+  reader-position import ran without the legacy inbox cursor, it seeded the NDJSON floor
+  at 0, so a fully read legacy inbox counted as unread again. The NDJSON floor is now
+  never lower than the legacy descriptor cursor. The `repair-reader-floors` repair also
+  raises import-seeded rows and the floor to that cursor. It only raises values and
+  deletes nothing, and running it twice changes nothing.
+- **Fixed: `update` skipped the reader-floor repair outside a DevSwarm session.** It is a
+  store repair, so it now runs on every update; `doctor --repair` runs the same pass.
+- **Fixed: a resumed Primary disagreed with itself by one message.** A resumed session
+  gets a new session id, but the anchor row kept the old one. So the Primary's own builder
+  partition looked like a foreign live sibling and was never acked. The anchor now counts
+  as the caller's own when its recorded session has no running process and the caller's
+  session does, which is the same rule `register-primary` uses. Existing watermarks heal
+  on the next read, with nothing lost.
+- **Fixed: workspaces archived in the DevSwarm app kept nagging.** `hivecontrol workspace
+  list all` lists archived builders too, so detecting them by absence never fired. Archive
+  state now comes from the app's own database: a read-only query that falls back to the old
+  path if the file or schema is missing, with an `ANTIHALL_DEVSWARM_APP_DB` override
+  (`off` disables it). Archived rows and twin rows on an archived worktree no longer nag or
+  raise archive-ready prompts, and they are still listed in the table. A new
+  `mark-app-archived` repair writes the archived marker for those workspaces. It never
+  overwrites an existing marker and never touches descriptors.
+- **Safety: `reconcile-active` no longer archives a workspace just because it is missing
+  from `--active`.** A scrolled or partial list would archive live workspaces. A candidate
+  is now archived only when the DevSwarm app database confirms it is archived. Anything
+  else is kept and listed in `keptNotArchivedInApp`, and an unreadable app DB archives
+  nothing. The skill docs no longer suggest a roster screenshot as the source.
+
+## 0.107.0 (2026-09-24)
+
+- **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live
+  session on the machine a reader of every partition, and the DevSwarm gate double-counted
+  the Primary's own mailbox against that; an updater repair now retires the affected floors
+  on already-updated stores.
+- **Fixed: one mailbox for a session's two partitions**, with a repair for stores where the
+  split had already duplicated acks.
+- **Changed: one persisted storage backend per store**, plus a merge of any store that had
+  already split before that marker fix shipped (so a child on the non-chosen backend could
+  not see broadcasts) — `doctor` (plain) now reports split stores found; `--repair` /
+  `update` merge them. Children now wake on broadcasts.
+- **Changed: no more archive-ready nag when only your own request is outstanding**, plus an
+  ignore list; spawn titles are applied to new workspaces.
+- **Fixed: an app-archived workspace stops reading as active**; a dead archive-ready
+  workspace is now archived directly instead of nagged forever.
+- **Changed: per-turn hook blocks (urgent/stale/limit-conservation) are re-emitted only
+  when their content changes**, not every turn. The archive-ready reminder keeps its own
+  cooldown instead (it must re-surface identical text once that cooldown elapses, which
+  content-change dedupe would otherwise suppress).
+- **Fixed: tasklist-guard no longer re-nags after a real progress update** — a scratchpad
+  write never counts as project work, but a transcript-observed progress write always does,
+  regardless of file mtime.
+- **Changed: edit-guard allows the session's own tmpdir scratchpad.**
+- **Changed: output-verify is scoped to test runners.**
+- **Added: Jev**, a shared LLM-assist layer with shadow metrics and a `jev` skill
+  ("activate jev") that asks for a Vercel AI Gateway or TypeSafe key, installs it, enables
+  Jev, and runs a test call (also: status / disable / mode). Ships shadow integrations for
+  the claim ledger, merge-gate hedges, new-request classification, and output-verify
+  (scoped to test runners), speculation-outcome tracking, model-routing in relax-only
+  (shadow) mode, and a `jev report` command (KEEP / REVIEW / REMOVE) over the metrics log.
+
+## 0.106.0 (2026-09-24)
+
+- **Changed: DevSwarm reader positions live in one SQLite table** with one unread count and
+  one writer. This retires the phantom-unread and floor-drift class of defects, and closes
+  several pre-existing message-loss paths: a rehome/fold race, the orphan forward, a torn
+  journal import, and a lock steal.
+- **Changed: row state comes from one reducer**; every surface derives it the same way.
+- **Changed: `doctor` is read-only by default** — repairs run only with `--repair` / `--fix`.
+  One migration registry now owns every one-time sweep and never stamps a version done
+  while work is left (errors, deferred stores, pending rows, forward failures).
+- **Added: advisory Jev triage labels** for mesh messages (opt-in via `~/.anti-hall/jev.json`);
+  labels are advisory only and never change delivery or any unread count.
+- **Added: crash-safe delivery through a read WAL.** Every destructive native read is
+  fsynced before it is ingested and replayed until closed, closing the pull-crash and ingest
+  lock-contention losses. The remaining native-dequeue window is documented.
+- **Changed (action needed): `inbox read-primary` no longer acks.** After handling the mail,
+  run the `ackCommand` it returns (`inbox ack-primary <id> --receipt <rid>`).
+  `inbox drain-primary-legacy` keeps the old read-and-ack behavior for one release.
+- **Changed: one shared Stop policy** for the gates, honoring `stop_hook_active`, with
+  per-kind caps.
+- **Changed: a send to a stale twin is rerouted only on proof** that the twin is stale.
+- **Fixed: a torn journal row no longer corrupts the next append.**
+- **Fixed: heal-orphan-partitions no longer stamps a pass done** when its deadline deferred
+  orphans; the deferred ids count as pending and the next run finishes them.
+- **Fixed: the ingest daemon writes through the locked partition door** (the per-id lock
+  plus a registration recheck). A busy or unregistered partition leaves the batch pending
+  in the WAL for replay instead of writing unlocked.
+
+## 0.105.3 (2026-09-24)
+
+- **Fixed: the optional Jev check now backs speculation-guard** (the always-on hedge
+  check) instead of the opt-in LLM judge, and is trusted only to block. Its question was
+  worded so a hedged guess could never count as speculative, so a clearly speculative
+  reply got a confident allow; with the corrected question it scored 10/10 on labelled
+  replies (8/10 confidently). Any other Jev outcome falls through to the regex check;
+  with Jev off, the hedge check sees exactly the same text as before (the de-duplicated
+  text extraction is used only as Jev's input, not the regex path). The LLM judge
+  (`ANTIHALL_SEMANTIC_JUDGE`) is back to its pre-Jev form.
+- **Fixed: Jev's time limit (default 1.5s, clamped to at most 3s) now covers the whole
+  response, including the body** — previously the deadline only bounded the initial
+  request/headers, so a server that stalled after sending headers could hang past the
+  configured timeout.
+
+## 0.105.2 (2026-09-24)
+
+- **Changed: command-guard and git-guard share one shell-scanning library**
+  (`hooks/lib/shell-scan.js`) for heredoc and substitution parsing. Duplicated parsing
+  had produced repeated guard defects; behaviour is unchanged, proven by a 138-command
+  differential against the previous release plus an independent 65-command adversarial
+  check (0 differences).
+- **Fixed: the Codex port was missing the progress-prune SessionStart hook.** It is now
+  registered.
+- **Added: a hygiene test** that fails when the Claude and Codex manifest versions
+  differ, or a platform-neutral hook is missing from the Codex hook list.
+
+## 0.105.1 (2026-09-24)
+
+- **Fixed: the orphaned-mesh warning no longer lists archived, closed workspaces with no
+  live identity family.** `devswarm.js` assigned `module.exports` after `main()` had
+  already run and exited, so the orphan policy's lazy self-require got an empty module
+  when devswarm.js was run as the CLI entrypoint; the archived-workspace check failed
+  open and every such partition stayed in the orphan list. Exports are now assigned
+  before `main()` runs, and the policy retries a load that came back unusable instead of
+  caching it. A regression test drives the real CLI entrypoint (the prior equivalence
+  test only exercised `require()`).
+
+- **Fixed: statusline renders its own renderers in-process instead of forking a shell
+  plus two node processes, each of which spawned git.** The 3s outer watchdog was
+  shorter than the 10s inner spawn timeouts it wrapped, so under load the output
+  silently truncated before those inner budgets were reachable. Inner work is now
+  bounded at 2.5s (git calls at 1.5s) under the unchanged 3s watchdog; a foreign base
+  command still spawns. Measured: p50 153ms to 104ms at rest, 245ms to 163ms under
+  load; output is byte-identical.
+
+## 0.105.0 (2026-09-24)
+
+- **Added: optional Jev backend for `speculation-judge`.** An opt-in Jev (TypeSafe
+  System One, via the Vercel AI Gateway) judge can now run before the existing Haiku
+  judge — **off by default**, enabled via `~/.anti-hall/jev.json` (`{"enabled": true}`)
+  or `ANTIHALL_JEV=1` (`ANTIHALL_JEV=0` always wins). A verdict at or above the
+  confidence threshold (0.85) is used directly in either direction; a low-confidence
+  verdict or any failure (no key, timeout, HTTP error, bad response) falls back to the
+  unchanged Haiku judge. Disabled, behavior is byte-identical to before Jev existed and
+  writes no log; the key is never logged. Documented in `docs/KB-jev-classifier.md`
+  with the benchmark behind the defaults.
+
+- **Fixed: `git-guard` now scans commit messages passed via `-F -` / a heredoc, or
+  `-F <file>`, for AI self-credit trailers.** Previously only the inline `-m` /
+  `--message` form was inspected, so the same trailer could land via `-F` unblocked.
+  The guard now extracts heredoc bodies from the raw command and reads `-F` files
+  (relative to a preceding `cd` in the same command), running the existing trailer
+  check over them. Purely additive — command segmentation and every existing block
+  behave exactly as before; an unreadable file still fails open.
+
+## 0.104.0 (2026-09-24)
+
+**First structural step of a mesh redesign.** Recurring project-context defects traced back to
+~16 separate "which project am I in" resolvers scattered across hooks and the CLI, each answering
+the worktree/repoKey/meshId question slightly differently. This release collapses the resolution
+path into one module (`companion/lib/identity.js`) and moves the first batch of callers onto it.
+
+- **Fixed: a lane in a submodule inside a linked worktree minted a phantom `modules-<hash>` key
+  and its inbox refused with `project-context-mismatch`.** `devswarm-repokey`'s resolvers now shim
+  over `identity.resolveContext`, which keys every submodule kind to the outermost superproject
+  instead of stopping at the submodule's `.git` file. Nested-repo git answers are cached per path
+  (5-minute TTL); the registry path guard compares realpaths.
+
+- **Fixed: inbox reads refused when git timed out under load while the caller's cwd was inside the
+  registered worktree.** The read guard no longer refuses when the caller's project key can't be
+  resolved (e.g. a git timeout) but the caller's cwd is inside the workspace's registered worktree;
+  a cwd that resolves to a genuinely different project is still refused. `resolveContext` gains
+  `missingPath:'ancestor'` for caller cwds (row paths keep `'null'`).
+
+- **Fixed: `doctor --quiet` took 745s and 41,587 git spawns on a 385-store home.** `resolveCallerWorktree`
+  spawned git twice per registry row with no memo, and doctor's three all-store sweeps called it for
+  every row of every store, including rows whose worktrees were long deleted. It now takes **27s and
+  514 spawns**, with identical resulting registry/cursor/message state. Deleted worktree paths resolve
+  to null and are never folded onto an enclosing repo.
+
+- **Fixed: reading a store created an empty store directory.** `openStore({readOnly:true})` never
+  creates a store: a missing store returns null, and an existing sqlite store opens read-only. Used
+  by the unread read path and doctor's enumeration sweeps — 213 empty store dirs had piled up before
+  this.
+
+- **Fixed: the installer would install a launchd unit for a temp working directory.** An e2e run
+  installed a real ingest unit whose `WorkingDirectory` was a scratchpad fixture repo under
+  `/private/tmp`; once the fixture was cleaned up, launchd failed to spawn it (`EX_CONFIG`) and
+  restarted it **34,584 times**. The installer already refused a temp `HOME` but not a temp worktree.
+  It now forces a dry run for a `WorkingDirectory`/main worktree under a temp root unless
+  `ANTIHALL_INGEST_ALLOW_TMP_HOME=1`, and `doctor` reports (never removes) any other worktree's
+  installed unit that points under a temp root, with the exact bootout + quarantine command.
+
+- **Changed: statusline and wake-watch identity resolution.** The statusline resolves its toplevel
+  through `identity` (no git spawn). `wake-watch` reads `CLAUDE_CODE_SESSION_ID` (the variable Claude
+  Code actually sets) before falling back to the legacy `CLAUDE_SESSION_ID`.
+
+- **Added: `task-lifecycle-log` hook (Claude-only).** Appends `TaskCreated`/`TaskCompleted` events to
+  the session history ledger. Log-only: never blocks, never injects context. Codex has no task
+  lifecycle hook events, so this is not mirrored to the Codex port.
+
+- **Added: `doctor` read-only `identity-rekey-candidates` report.** Lists stores written under the
+  old wrong project keys, with message counts. Nothing is moved automatically. On the author's
+  machine, only 2 real messages were affected.
+
+- **Added: `tests/mesh-invariants.harness.test.js`, a model-based test harness for mesh invariants.**
+  Known defects are `todo` in normal runs and fail under `ANTIHALL_HARNESS_STRICT=1`, so they stay
+  visible without breaking CI until fixed.
+
+- **Pending (landing next, B3):** the six hook-local `findGitToplevel` copies (`command-guard`,
+  `parent-gate`, `child-gate`, `child-turn`, `parent-reply-tracker`, `parent-inbox`) will resolve
+  through `identity` too. A hook whose cwd was deleted will resolve from its nearest existing
+  ancestor; nested submodules will no longer get a phantom `meshId`; child descriptors will keep
+  the literal git toplevel as `worktreePath`.
+
+**Known, not yet fixed.** The MIN-floor phantom unread count and the pull-crash message-loss
+defect are now reproduced by the harness above (`ANTIHALL_HARNESS_STRICT=1`); both will be
+addressed in the next phases of the mesh redesign.
+
+- **Fixed: a message written through a quoted heredoc was blocked as a heavy command.** The
+  command guard extracted backtick and `$(...)` substitutions from the whole raw command without
+  recognising heredocs, so prose such as a backticked `pytest tests -k x` inside a `<<'EOF'`
+  message body was treated as an executed command (field report: blocked as "verb: pytest").
+  Bodies of quoted-delimiter heredocs are now skipped, as bash does; an unquoted `<<EOF` body
+  still expands, so substitutions there are still checked. The guard also now sees heavy
+  commands behind the `taskpolicy` and `xargs` wrappers.
+
+
+## 0.103.0 (2026-09-23)
+
+- **Fixed: UserPromptSubmit context repeated up to 27× in one delivered turn.** Claude Code
+  runs the UserPromptSubmit hook once per QUEUED prompt — hooks fire at queue time, not at
+  delivery — and then delivers the queued prompts together, so every hook's identical block
+  repeated N times in one turn. Measured on a field transcript: bursts span a median 26s / max
+  137s (too wide for a fixed time window to collapse), 12.8M chars injected total, and the
+  worst single turn carried 93,220 chars with the DevSwarm workspaces table repeated 11 times.
+  Fix (`hooks/lib/emit-dedupe.js`): a block is suppressed while its previous copy is still
+  undelivered, checked against the transcript itself (a UPS `hook_additional_context`
+  attachment matching the emitted content by sha1, never by prefix) — not against a timer. State
+  resets on every SessionStart source (startup/resume/`/clear`/compaction, via the new
+  `emit-dedupe-reset.js` hook) so a genuine context loss re-sends everything the fresh context
+  no longer holds. The unchanging parts (the DevSwarm workspaces table, the orphaned-mesh
+  banner) are additionally re-sent only on change (volatile ages like "3m ago" are ignored) or
+  every 10 delivered turns, whichever comes first — heartbeat staleness alone no longer forces a
+  re-send. Fail-open: any error in the dedupe path emits, same as before. Kill switch:
+  `ANTIHALL_EMIT_DEDUPE=0`. As a side effect of instrumenting this, segment-read errors in
+  `devswarm-parent-inbox.js` are now logged to `~/.anti-hall/logs/parent-inbox-segment-errors.ndjson`
+  — the orphan banner was observed to vanish for one turn during the investigation and the cause
+  is not yet known; this gives it a place to leave evidence next time.
+
+- **Changed: Codex models are no longer pinned.** `gpt-5.4`, `gpt-5.4-mini`, and
+  `gpt-5.3-codex(-spark)` were silently removed from Codex's own model catalog and now return
+  400 on use — every anti-hall Codex routing reference to those slugs went dead at once,
+  including the default "cheap seat" named across 23 shipped and doc files. Routing is now by
+  category — **frontier** / **workhorse** / **fast** — resolved at call time from Codex's own
+  live catalog (`~/.codex/models_cache.json`, matched on description text and `priority`,
+  never a hardcoded slug map: `plugins/anti-hall/companion/lib/codex-models.js`). When a
+  category cannot be resolved (missing cache, no match), the caller omits `-m` entirely and
+  Codex falls back to its own configured default rather than failing. `deadly-loop`/`ship-it`'s
+  Critic seat also now accepts `args.codexCriticModel` to override the resolved model per call.
+
+- **Changed: the DevSwarm roster's `finish` column showed `0/3` for every workspace that had
+  never had a gate set, not just the ones genuinely at zero.** Only the manual `devswarm.js
+  gate` verb ever writes a gate row; an untouched workspace has an empty gate map, which is a
+  different state from "every required gate checked and failing." `finishingRate()`
+  (`hooks/devswarm-parent-inbox.js`) now renders `—` when the gate map is empty/absent for that
+  workspace, and the real ratio once any gate has ever been set — unchanged from before in that
+  case.
+
+- **Process:** `RELEASING.md` — a release commit must now pass CI on an `rc-v<version>` tag
+  before it moves onto `main`. The marketplace fast-forwards `main` on every push, so a red
+  main commit is installed immediately; 0.102.2 shipped exactly that way (see the 0.102.3
+  entry below).
+
+## 0.102.3 (2026-09-23)
+
+**0.102.2 was pushed to `main` but failed CI and was never tagged.** Because the marketplace
+clone fast-forwards `main`, it was installed anyway on machines that ran an update in the
+window. This release is the first green one carrying the 0.102.2 changes, plus two fixes to
+them. Installs that picked up 0.102.2 must move to a new version number to receive these — the
+updater only copies a version into the plugin cache when that version's directory is absent.
+
+- **Fixed: the 0.102.2 cursor-parity change was inert for every child descriptor.** It derived
+  the instance nonce from each descriptor's own worktree (`cwd: d.worktreePath`), but
+  `deriveInstanceNonce` matches the CALLING process's ancestry against the cwd it is given. For
+  any descriptor whose worktree is not the gate's own cwd, that match fails and it falls back to
+  `self:<parentPid>:<startMs>` — a namespace no reader declares — so the count dropped straight
+  back to the cross-instance MIN floor the change was meant to escape. Measured: one process,
+  one reader, two cwds, two different nonces. The gate now derives the nonce from its own cwd:
+  the nonce identifies the READER, not the partition. It had only ever worked for the gate's
+  own row.
+
+- **Fixed: the 0.102.2 vacuity test could not run in CI.** It rebuilt the pre-fix hook with
+  `git show <sha>:<path>`, which fails on the depth-1 clone CI uses, so all four matrix jobs
+  failed. The test now reconstructs the old naive resolver inline and asserts that it and the
+  shipped `resolveWorktreeNoSpawn` DISAGREE on the same real submodule fixture — which is the
+  defect itself, proven with no dependency on git history. Verified on a simulated shallow
+  clone before release.
+
+## 0.102.2 (2026-09-21)
+
+Two fixes from a defect filed by a peer session, plus the diagnostic that would have let that
+session self-diagnose one of them.
+
+- **Fixed: the parent gate reported unread counts that contradicted the CLI, and escalated on
+  them.** Root cause was one divergence, not several: the gate derived the Primary's own id from
+  a pure-fs walk (`findGitToplevel`) while the family grouping key used `canonicalMeshId` ->
+  `resolveCallerWorktree` (git rev-parse). **Inside a git submodule those disagree**, because a
+  submodule's `.git` is a FILE — `statSync` succeeds and the fs walk stops at the submodule
+  instead of reaching the superproject. From a cwd inside a submodule the gate minted an own id
+  that was a bare path hash of that directory: no descriptor, no registry row, `known:false` to
+  the CLI. It then synthesised a self-row for that id with no store-existence check, and an
+  unconditional survivor-force transplanted the real Primary's unread count onto it — printing a
+  `read-primary <phantom-id>` command that could not run. The same wrong id defeated the
+  self-sent filter (`row.sender === own.id`), so a child's count swung between its filtered and
+  unfiltered value depending on which cwd the gate fired from. Reported as 325 unread on a
+  nonexistent id while three independent CLI reads returned 0, and a child shown as 1 that a
+  direct peek put at 82.
+  Three changes: the gate now resolves its own id through the same canonical derivation the
+  family key uses; the survivor is forced to the self-row only when that id actually appears in
+  `registryRows`; and the gate's `unionUnread` call — the only one in the repo passing neither
+  `storeBaseCursor` nor the per-instance `#nd-` cursor — was migrated onto the v0.102.0 cursor
+  namespace so gate and CLI agree by construction.
+  NOT a v0.102.0 regression: the resolver line dates to v0.73.0 and the survivor-force to
+  v0.100.0. v0.102.0 only added the `cached`/`live-resolved` label (which mislabels provenance on
+  a number that did not come from the cache) and made the child count cwd-sensitive.
+
+- **Added: `resolveWorktreeNoSpawn`, a zero-spawn submodule-aware toplevel resolver**
+  (`companion/lib/devswarm-repokey.js`). It tells the two `.git`-file shapes apart without
+  invoking git — a submodule's gitdir carries a `.git/modules/<name>` segment, a linked
+  worktree's carries `.git/worktrees/<name>` — and does not stop walking at a submodule boundary.
+  Measured cold in a fresh process, which is how a hook always runs: **3.0 ms** against **380 ms**
+  for the spawning path. So the fix removes a ~127x cost rather than adding one, and keeps the
+  15,700-line `scripts/devswarm.js` require off the common hot path. The spawning resolver
+  remains as the fallback.
+
+- **Fixed: `REFUSED TO ARM: lock-held` gave no way to tell a live holder from a stale lock.**
+  The refusal now names the holder's `sessionId` and absolute acquire time alongside the existing
+  `pid`, `age` and `version`. A peer session read a bare `lock-held` as a stale lock and filed it
+  as a defect before checking `ps`; the lock was live and correctly held, and the single-consumer
+  guarantee had worked exactly as designed. The new `sessionId`/`ts` fields are ADDITIVE to the
+  lock JSON — a lock written by a pre-0.102.2 watcher parses with them absent and degrades to
+  'unavailable' rather than crashing. That backward compatibility is load-bearing: long-lived
+  watchers pin the plugin version that armed them, and five 0.101.1 watchers were resident on the
+  author's machine at release time.
+
+**Note on deployment.** Long-lived companions (wake-watch, supervisor, ingest) run from a
+version-pinned cache path and keep running the version that armed them until their session
+restarts. Hooks re-execute from disk per event, but the entry point resolves through a cache dir
+bound at session start. So this release takes effect per session on `/reload-plugins` or a
+restart — not the moment it is tagged.
+
+## 0.102.1 (2026-09-20)
+
+Three fixes, each with a proven root cause. All were found while auditing a live install,
+not from a report.
+
+- **Fixed: the periodic supervisor never drained `heal-registry-rows`, so that stage only
+  advanced when a human happened to run `update` or `doctor`.** `DEFERRED_SWEEP_STAGES`
+  listed only `fold-all-stores`, `heal-orphan-partitions` and `fold-archived-rows`, and the
+  supervisor runs exactly one of those per tick. `heal-registry-rows` was wired into
+  `update.js`'s `healRegistryPostUpdate` but was absent from the rotation, so nothing ever
+  selected it. Observed on a live machine: 204 stores pending, with each explicit `update`
+  run rehoming ~6 before hitting its 20s budget. A deferred stage whose convergence depends
+  on someone remembering to run a command does not converge. The stage is now in the
+  rotation and is selected like the other three.
+
+- **Fixed: the central logger ignored `ctx.home`, so tests wrote into the real
+  `~/.anti-hall/logs/devswarm.jsonl`.** `anti-hall-log.js`'s `logDir()` resolved from
+  `ANTI_HALL_LOG_DIR` or fell straight back to `os.homedir()`, never consulting the home
+  passed to a verb. Any test exercising a failing CLI verb reached `logVerbOutcome` ->
+  `alog.logError` and appended a real line to the user's own log. This is the fourth
+  instance of the same class (see the HOME-isolation fixes in 6687c11). Two test files
+  proven to hit the path now set an isolated `ANTI_HALL_LOG_DIR`, and `logDir()` throws a
+  tagged error when `NODE_TEST_CONTEXT` is set without it — mirroring the existing
+  `resolveHomeGuarded` pattern in `devswarm-store.js`. Production logging stays fail-open:
+  the throw is swallowed by `writeEntry`'s own catch and surfaced on stderr only.
+
+- **Fixed: `doctor` reported a false FAIL under CPU load, and made the test suite flaky.**
+  The unconditional Statusline section spawned `statusline.js` with `timeout: 5000`. Under
+  load that spawn can lose the contention race with no bug and no hang; `spawnSync` then
+  SIGTERMs the child and returns `status: null`, which fell through to the "produced no
+  output" branch, incremented `fail`, and flipped the exit code to 1. Every `runDoctor()`
+  call reaches that section regardless of flags, which is why the failing test file moved
+  between runs. Commits fe0d901 and b99eafb fixed this same class twice by raising the
+  OUTER test-harness timeout to 60000ms; neither touched this INNER product-code spawn.
+  Both it and the shared `runHook()` helper (backing ~15 other self-test sections) now use
+  30000ms, and a SIGTERM'd spawn is reported as a load-related warning naming the real
+  cause rather than counted as a failure. A genuine "ran but produced no output" result is
+  still a failure.
+
+## 0.102.0 (2026-09-20)
+
+Six DevSwarm mesh defects were reported by three independent sessions. Two of the six
+did not survive verification and are recorded here so they are not re-chased.
+
+- **Fixed: `inbox read-primary` and `inbox tick` used different NDJSON cursors, so a
+  child could be woken forever by unread mail that `read-primary` could never clear.**
+  `read-primary` read and acked the raw descriptor cursor, while `count`/`read`/`ack`/
+  `tick` used the per-instance cursor from `resolveNdCursorPath`
+  (`cursors/<id>#nd-<short>.json`). Nothing reconciled the two: the per-instance file is
+  seeded from the descriptor once at creation, `projectNdDescriptorCursor` only pushes
+  instance -> descriptor, and `reconcileOrphanCursor` explicitly excludes the NDJSON
+  cursor. `read-primary` now uses the same resolver as every other verb and projects the
+  MIN back to the descriptor afterwards, preserving the sibling invariant that stops one
+  reader advancing past another reader's unread mail. A doctor repair step
+  (`reconcileStuckNdCursors`) raises already-stuck per-instance cursors toward
+  `min(descriptor, real inbox line count)` via `ackTo`, which re-clamps to a freshly read
+  line count and refuses to lower — it can never skip mail.
+- **Fixed: a Primary's own outbound messages counted as the Primary's own neglect.**
+  The store path already filtered rows whose sender is the Primary itself; the NDJSON
+  path could not, because the NDJSON wire carried no sender field at all. Rows drained by
+  `devswarm-pull.js` now carry `sender`, and the gate applies the same filter. The field
+  is appended after `_h` is computed, so dedupe hashes and line positions are unchanged,
+  and rows written before this release (which have no `sender`) parse and count exactly
+  as before.
+- **Fixed: a blocked Primary could not tell whose mail it was blocked on.** The Primary's
+  own row is synthetic and keyed on its worktree; identity-family collapse then groups
+  every descriptor sharing that worktree and SUMS them under one id. So
+  `primary-<id> — N unread` could be a sum over sibling descriptors while the Primary's
+  own contribution was zero — which is exactly what two reporters hit. The gate now names
+  each contributor, its count, whether it is archived or its worktree is gone, and the
+  exact command that clears it (`inbox ack <id> --ack-as-owner`). Counting and every
+  blocking decision are unchanged.
+- **Fixed: `send` failed with `lockBusy` under ordinary concurrency.** A bounded retry
+  (3 attempts, jittered backoff) now wraps the per-workspace lock. The retry is safe
+  because the timestamp and message hash are computed once before the loop and
+  `withIdLock` never runs the append when the lock is busy, so the append happens at most
+  once. `send` already exited non-zero on `lockBusy`; that was verified, not assumed.
+- **Added: byte-length fields on `inbox read-primary`.** Nothing in this plugin truncates
+  message bodies, but the ack is content-blind: `read-primary` emits and acks in one call,
+  so if anything downstream of the CLI's stdout clips bytes, the cursor has already moved.
+  Each row now carries `bodyLength` (UTF-8 bytes) and the payload carries
+  `totalBodyBytes`, so a clipped consumer can detect a short read, plus a hint naming the
+  recovery path. The ack was deliberately NOT made conditional on a delivery receipt:
+  that would break the positional invariant the partition and sibling cursor arithmetic
+  depend on.
+- **Added: age-based GC for stale summary projections.** `summaries/*.json` accumulated
+  one file per (repo x project) ever derived with nothing pruning them. GC is keyed on
+  `generatedAt` (default 30 days, `ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS`) and never
+  removes a summary whose store directory still exists.
+
+**Reported but NOT defects** — verified against the code and recorded so they are not
+re-investigated:
+- "The gate double-counts unread across ~150 duplicate summary shards." It does not. The
+  gate opens exactly one summary file per repoKey and enumerates children from
+  descriptors, which carry no duplicate ids. The "duplicate shards" are per-repo
+  partitions of one multi-repo workspace: the same workspace id legitimately appears under
+  each repo it spans, derived at different times.
+- "Mesh messages truncate silently and a truncated message is unrecoverable once acked."
+  Nothing truncates bodies anywhere in send, store or read — every cap found is a row
+  count. Acked mail is re-servable: `inbox messages <id>` is read-only and not
+  unread-scoped, rows persist in both the NDJSON inbox and the store, and an ack is a
+  watermark, never a delete. The real gap was that the receiving agent had no way to know
+  that, which the byte-length fields and the recovery hint above address.
+
+**Deliberately not done:**
+- Excluding archived or gone-worktree descriptors from the gate's count. This was
+  attempted and reverted: 45 existing tests encode the opposite contract on purpose —
+  archiving suppresses the liveness axis only, never the unread axis, and a gone
+  worktree's mail is real and drainable. Excluding it would have hidden real mail.
+- Letting `reap-orphans --apply` run non-interactively. It deletes mesh partitions and its
+  human gate is deliberate. The attribution fix above removes the need to delete anything
+  to clear a false block.
+
+**Known, not fixed in this release:**
+- `resolveSelfId` projects through the main worktree while the gate's own id does not, so
+  if a Primary ever runs from a linked worktree the two ids diverge and the self-sent
+  filter no-ops. It fails toward counting, never toward hiding.
+- Rows written before this release carry no `sender`, so a pre-existing backlog of a
+  Primary's own outbound still counts until it drains.
+- `gcStaleSummaries` has a narrow window where deleting a summary as a store directory
+  appears could read as "no unread" for one cycle.
+
+## 0.101.1 (2026-09-19)
+
+- **Fixed: DevSwarm ingest daemons ignored SIGTERM, so duplicates piled up.**
+  `devswarm-ingest.js` registered SIGTERM/SIGINT listeners, which disables Node's
+  default terminate-on-signal, but its loop is fully synchronous (`spawnSync` and an
+  `Atomics.wait` sleep), so the event loop never ran the handler: SIGTERM was ignored
+  forever. `launchctl unload` therefore never stopped the old daemon, and each reload
+  started another beside it. Observed live: 12 duplicate daemons for 5 units, 7-12 days
+  old, stoppable only by SIGKILL. The listeners are removed so the default disposition
+  applies. This is safe because the lock is already reclaimed immediately from a holder
+  whose PID is confirmed dead. A regression test sends a real SIGTERM to a real child
+  process and requires it to exit; it fails against the old handler. Three older tests
+  that "proved" the handler worked by firing a simulated signal on a fake process object
+  were removed: they passed while a real signal could never reach that code.
+- **Fixed: a daemon that lost its lock kept running as a second consumer.** The loop
+  discarded `release.heartbeat()`'s result. `heartbeat()` now returns `true` (refreshed),
+  `false` (definitive loss: the lock file is gone, or it parsed cleanly with another
+  owner's token) or `'error'` (a transient read, parse, write or rename failure). The
+  loop exits only on `false`; a transient error is logged once and the daemon keeps
+  running, so a filesystem blip cannot take down a healthy daemon.
+- **Fixed: the installer reloaded a unit without waiting for the old daemon.**
+  `macInstallProject` now reads the old daemon's PID, unloads, and waits (bounded, 10s)
+  for it to exit before loading the new plist. If it outlives the deadline it is
+  SIGKILLed, but only after re-reading that PID's command line and confirming its
+  shape: the executable is `node` and an argument ends in `/companion/devswarm-ingest.js`.
+  A PID reused by any other process, including `tail -f` on `devswarm-ingest.log` or an
+  editor holding the script open, is never killed. `stopLegacyUnitEntry` now deletes a
+  legacy lock file only after confirming its holder is dead. Every step fails open and
+  none can block indefinitely.
+
+## 0.101.0 (2026-09-19)
+
+- **Fixed (P0): `UserPromptSubmit hook timed out after 10s` on every prompt in
+  repos with many DevSwarm workspace rows.** `devswarm-parent-inbox.js` spawned a
+  `git` process PER workspace row, per prompt — in two separate loops. The #36
+  repo-scope filter (`repoKeyOfWorktree`) ran `git rev-parse --git-common-dir` for
+  each row, and the unanswered-question family collapse (`resolveMeshId` ->
+  `canonicalMeshId` -> `resolveCallerWorktree`) spawned `git` twice per distinct
+  worktree. The in-process `repoKeyCache` never hit, because it is keyed per worktree
+  path and every prompt is a fresh process. CPU profile: `spawnSync` was 74% of the
+  hook's time. Under machine load the hook crossed its 10s timeout and its injection
+  was silently discarded. Both loops now derive repo identity from git's own on-disk
+  worktree metadata with no spawn (`gitCommonDirNoSpawn` / `repoKeyForWorktreeFast` in
+  `companion/lib/devswarm-repokey.js`): `.git` as a directory (main checkout) or a
+  `gitdir:` file plus `commondir` (linked worktree). A worktree path that no longer
+  exists spawns nothing. The spawn-based path remains only as a fallback for
+  submodule and malformed shapes. repoKey/meshId output verified byte-identical to the
+  git-derived values for main-checkout, linked-worktree, submodule and missing-path
+  shapes, and the #36 filtering decision is unchanged for every row. Measured on the
+  worst-affected repo: 8,935 ms before; 1.4-3.1 s after at machine load ~100.
+  This hook's own header forbids spawning on the hot path; it now honours that.
+- **Removed: graphify and Obsidian integration, entirely.** Owner decision to retire
+  both tools.
+  - Deleted hooks `graphify-session.js` (SessionStart), `graphify-guard.js`
+    (PreToolUse on Bash/Grep/Glob) and `graphify-reminder.js` (Stop), plus their tests,
+    and all their registrations in the Claude `hooks.json`, the Codex `hooks.json`,
+    and `codex/install-codex.js`.
+  - Removed the injected `E2. GRAPHIFY-FIRST` orchestration rule
+    (`verify-first-orch.js`), the graphify-first phrase in `verify-first-full.js`,
+    doctor's Graphify section (later sections renumbered), graphify steps in the
+    `orchestration`, `ship-it` and `deadly-loop` skills and both Codex skills, and
+    `.graphifyignore`.
+  - `scan-throttle.js` now ships with **no built-in patterns**. Its only built-in was
+    graphify. It remains a generic throttle driven by `ANTI_HALL_THROTTLE_PATTERNS`
+    and matches nothing unless that is set.
+  - **Migration for existing Codex installs.** `install-codex.js` writes hook
+    registrations into the user's own `~/.codex/hooks.json` (or project `.codex/`), so
+    existing installs still registered the deleted hooks. `update.js`
+    (`codexGraphifyHooksMigratePostUpdate`) and a new AUTO-SAFE doctor repair step
+    (`codex-graphify-cleanup`) remove only those stale groups. Every other
+    registration and top-level key is preserved; the file is backed up to
+    `.bak-<timestamp>` before any write; a file with nothing to migrate is left
+    byte-identical; a malformed config is left alone; the file is never deleted. The
+    doctor step exists because the existing codex-refresh check is per-EVENT and would
+    report "already wired" while a stale graphify group remained.
+  - Claude side needs no migration: Claude Code loads anti-hall's hooks from the
+    plugin's own shipped `hooks.json`, and nothing writes them into user settings.
+  - Historical CHANGELOG entries and dated plans/audits in `docs/` are left as they
+    were written.
+- **Known follow-up:** `scripts/devswarm.js` `resolveCallerWorktree` still spawns
+  `git` before its pure-fs fallback (backwards for a hot path) and always spawns a
+  second `--show-superproject-working-tree` check. It is a fixed once-per-turn cost,
+  not per-row, so it does not cause the timeout above, but it still costs the
+  own-reader, child-turn and parent-gate hooks every turn. Fix: try the fs resolver
+  first and skip the superproject spawn unless `.git` is `.git/modules/`-shaped.
+
+## 0.100.0 (2026-09-11)
+
+- **New (LEDGER-ONLY): `claim-ledger.js`, a Stop hook that measures confident-but-
+  unverified factual assertions the lexical `speculation-guard` cannot see** — a claim
+  with NO hedge word at all (e.g. "the spawn is still running", "you are on task 3 of
+  your queue"). It builds a cumulative evidence string from everything the session
+  actually observed (tool results, tool inputs, user prompts, hook attachments),
+  extracts checkable tokens from the final assistant message (numbers with unit
+  nouns, hex SHAs, `task N of`, `N days ago`, state words in a turn with zero tool
+  calls), and records any token with no referent in that evidence to
+  `~/.anti-hall/claim-ledger/<session>.jsonl` (class `hard`/`soft`). This release it
+  NEVER blocks, never emits a decision, never prints, and always exits 0 — the point
+  is to measure the real false-positive rate before anyone considers a blocking tier.
+  Tuning carries over from a 5-transcript/1326-message prototype: per-turn evidence
+  flagged 269 (20%, useless); cumulative evidence + a no-tool-call gate flagged 22.
+  Reads only a 2 MB transcript tail at a file offset (0.17s against a 254 MB
+  transcript). `speculation-judge.js` is untouched and remains opt-in and inert.
+- **Fixed (P0, D4): `devswarm.js` had NO subcommand that recognized `--help`/`-h` —
+  a help request fell straight through to real dispatch.** `migrate -h` genuinely ran
+  the migration; `merge --help` genuinely forwarded to hivecontrol AND sent a live,
+  unconditional mesh broadcast to other people's sessions (surfaced when a
+  read-only-fenced diagnostic agent triggered exactly this). `run()` now intercepts a
+  help request — `--help`, `-h` anywhere among the positionals, or a bare
+  `help [verb]` — BEFORE the switch statement, so it covers every verb including the
+  two raw-argv-tail pass-throughs (`spawn`/`merge`), with zero store opens, zero
+  filesystem writes, zero child processes. The verb list backing `help` output is
+  derived from `run()`'s own switch statement rather than hand-typed, closing a
+  pre-existing drift (`reconcile-registry`/`wake-directive` were real, dispatched
+  verbs missing from the old hand-typed error-message list). Each verb's usage line
+  names its concrete side effects when actually run, so a caller can tell before
+  running one whether it's safe to explore.
+- **Fixed (D1): archived DevSwarm workspaces were consuming roster table slots that
+  live workspaces needed.** An `archived`-label row competed for `MAX_TABLE_ROWS`
+  slots on equal footing with every live row, so a project with several archived
+  workspaces could push genuinely live ones into the `+N more` overflow line. An
+  archived row is now dropped BEFORE sort/cap (never after), default ON via new env
+  var `ANTIHALL_ROSTER_HIDE_ARCHIVED` (`0` restores the old behavior) — a row still
+  genuinely coordinating (`not-draining`, rank 1.5) is a different label and is never
+  caught by this filter, so nothing that still needs attention is ever hidden; the
+  hidden count is always named via a `+N archived` note, never silently dropped. The
+  table cap itself is now configurable via new env var `ANTIHALL_ROSTER_MAX_ROWS`
+  (default 12, was hardcoded).
+- **Fixed (D2): the per-turn broadcast feed was inflating the injection and
+  repeating itself verbatim every turn.** The advisory `recent[]` broadcast feed
+  rendered `r.summary` — the FULL message body — verbatim on every turn with no
+  memory of what had already been shown; a single sent broadcast could re-inject in
+  full for the rest of the session (the real cause of a reported 10-12KB per-turn
+  injection). Bodies are now capped to 200 chars with an ellipsis; a broadcast older
+  than new env var `ANTIHALL_BROADCAST_MAX_AGE_MS` (default 24h) is dropped; and each
+  row is deduped per session (by a stable `from`+`ts`+`summary` key) against a
+  bounded, 200-key state file
+  (`~/.anti-hall/devswarm/parent-inbox-broadcast-seen/<session>.json`) so a broadcast
+  injects at most once per session. Any dedup-state read/write failure fails OPEN to
+  the age-capped set — never a hard crash, never a silent full suppression.
+
+**KNOWN FOLLOW-UPS (not fixed in this release, flagged honestly):**
+- `devswarm.js` still silently ignores unknown CLI flags rather than rejecting them.
+  The design for a fix is settled — a mechanically-derived per-verb allowlist,
+  warning-first (not a hard block), with `spawn`/`merge` exempt as documented
+  pass-throughs — but deferred to a follow-up release so help support and
+  flag-rejection don't land blind together in one release.
+- `inbox messages --tail N` under truncation returns `ok:false` with no `messages`
+  key. That's unambiguous for a caller that checks `ok` first, but ambiguous for one
+  that does `(r.messages || []).length` without checking `ok` — it would read a
+  truncated response as an empty mailbox. No in-repo consumer does this today.
+- `ownReaderDelta` (`companion/lib/devswarm-own-reader.js`) has two paths that
+  silently leave the raw (phantom) count uncorrected: a `stale:true` result returns
+  `null` with no correction applied, and a missing instance file (the nonce derives
+  from `{home, cwd}`, so a drain issued from a different cwd won't find it) returns
+  `{delta: 0}` with no signal that the count is uncorrected. Not touched in 0.100.0.
+- Phantom unread in the per-turn DevSwarm injection is NOT fixed in this release.
+  The parent-inbox projection can over-report unread relative to the authoritative
+  `inbox count`/`inbox tick` — trust the CLI over the injected banner. A fix was
+  written and REVERTED before release: it used the legacy shared-pair cursor as a
+  live per-call floor in `computeSummary`, the exact pattern
+  `scripts/devswarm.js:1668-1692` documents as tried, proven live to lose mail
+  across a mixed-version fleet ("the old build received 3, and a DECLARED 0.99
+  instance then received 0"), and reverted. The defect over-reports (visible,
+  harmless); the reverted fix risked under-reporting (silently hidden mail) — not a
+  trade worth making. Investigated root cause, retained for a future safe fix:
+  `commitInstanceAck` writes the legacy cursor file BEFORE the store cursor row, so
+  the projection under-counts consumption in that window. The safe shape is to fix
+  it at the WRITE ORIGIN in `commitInstanceAck` (keep file and store in agreement
+  by construction where both were just written and provenance is known) rather
+  than re-deriving a floor later on the read side from files whose writing build
+  cannot be determined.
+- `computeSummary`'s main per-workspace loop has no exception handling around
+  `messageCount()`/`cursorValue()`. A single workspace's cursor read failure
+  crashes the whole call, taking down the live table, own-unread, and every other
+  workspace's row for that turn, propagating uncaught through `deriveSummary`.
+- The journal backend's `cursorValue()` never throws on a genuine read error —
+  `readAll()` swallows non-ENOENT errors and returns `[]`, so the cursor returns 0
+  silently, yielding `unread = total` (a false-maximum alarm). `getReadError()`
+  exists to surface this; nothing consults it. An exception-based guard cannot
+  catch this path.
+
+## 0.99.2 (2026-09-11)
+
+- **Known issues, carried (pre-existing, shared with every other caller of
+  the same primitives — NOT fixed this release, flagged by the Critic during
+  the f061789267c1 own-reader review):**
+  - `readInstanceBaseline` can WRITE `cursors/<id>#base.json` on what is
+    conceptually a READ path (the ambiguous-branch live resolution in
+    `companion/lib/devswarm-own-reader.js` calls `siblingBaseCursor`, which
+    calls `readInstanceBaseline`, which seeds the baseline file on first
+    touch). Every other caller of `siblingBaseCursor` (`inbox count`/`read`/
+    `ack`, `devswarm-child-drain.js`, `devswarm-child-gate.js`) already has
+    this same side effect; it is not new here.
+  - `openStoreForUnread` (called from the same ambiguous branch) passes no
+    `backend`, so it inherits whatever the environment resolves to rather
+    than an explicit choice — again shared with every existing caller of
+    `openStoreForUnread`, not introduced by this fix.
+- **Resolved the ambiguous stale-cache case with one live read** (Critic
+  GO-with-fix, on the P1 fix below): a bare UNKNOWN for `ownCursor ===
+  entry.total` left the reporter's exact configuration blocked forever on a
+  healthy summary. That one branch now opens the store (never the common
+  path) and computes the real number via the live message count minus
+  `siblingBaseCursor` — a genuinely-drained reader now opens the gate, a
+  reader behind real new mail still blocks, and a live read that cannot run
+  still fails to UNKNOWN. Also fixed: `buildReason` no longer sends an
+  operator into daemon healthcheck/logs triage for this cause — it now names
+  the cache-vs-live mismatch and prescribes `inbox count`/`read-primary`.
+- **Fixed (P1): the f061789267c1 own-reader fix below could HIDE real unread
+  mail on a stale cache.** `companion/lib/devswarm-own-reader.js` compared a
+  LIVE instance cursor against a CACHED summary snapshot; once a reader's own
+  live position caught up to or passed the snapshot's own `total`, the
+  subtraction floored to 0 even though mail could have arrived after the
+  snapshot that the reader had not actually seen — worse than the phantom the
+  original fix replaced, since a Stop-gate hiding real mail fails in the
+  dangerous direction. `ownReaderUnread`/`ownReaderDelta` now return `null`/
+  `{stale:true}` in that regime; every consumer (parent-gate, parent-inbox,
+  child-turn) treats `null` as UNKNOWN — parent-gate routes it into its
+  pre-existing `unknown:true` fail-safe (blocking) path, the two report-only
+  nudge surfaces fall back to the raw pre-fix number.
+- **Fixed (P2): `doctor --repair-ingest-orphans --repair-test-stores` (a
+  combined invocation) silently ran only the first flag's section** — the
+  early-exit fix below called `emitVerdictAndExit()` unconditionally inside
+  each flag's block, so the first one to run always exited before a later
+  flag's block was reached. Each exit is now gated on no later repair flag
+  also being set; a combined invocation runs every requested section, then
+  exits once.
+- **Fixed: `doctor`'s resurrected-registry-rows warning was ambiguous about
+  the total row count.** Two independent readers misread
+  "N candidate(s), M needing manual review" as "M of N need review" (implying
+  N was the total). `candidates` and `unhealable` are disjoint under the
+  dry-run call this check always makes, so the message now states the sum up
+  front: `"44 resurrected registry row(s): 24 repairable, 20 need manual
+  review (no safe forward target)"`.
+- **Fixed: `doctor --repair-ingest-orphans` / `--repair-test-stores` /
+  `--repair-resurrected` never exited after their own section**, so their
+  verdict line was buried behind every later report section and the full
+  unconditional summary — field-observed at line 562 of 571 total output
+  lines for `--repair-resurrected`. Each of the three now calls a shared
+  `emitVerdictAndExit()` right after its own section instead of falling
+  through.
+
+- **Fixed (P0): the parent gate (and roster/reminder surfaces) could show a
+  Primary or child a phantom unread backlog it had already drained**
+  (defect f061789267c1 / a77b85571dfa). 0.99.0's per-instance-cursor fix
+  (defect 8b211241bbe9) deliberately made the SHARED cursor pair track the
+  MIN across every live `<id>#inst-<nonce>` instance file, so no reader's
+  mail is ever lost — correct for that pair's own cross-instance-safety
+  contract. But `devswarm-store.js`'s `computeSummary()` sizes
+  `workspaces[id].unread` from `total - <that shared min>`, and every
+  per-reader display (`devswarm-parent-gate.js`'s Stop-hook gate,
+  `devswarm-parent-inbox.js`'s "Primary's OWN inbound unread" segment,
+  `devswarm-child-turn.js`'s per-turn mesh-direct nudge, and the live-store
+  reads in `devswarm-child-drain.js`/`devswarm-child-gate.js`) was reading
+  that same min-floor number as if it were ITS OWN read position. A slower or
+  stale sibling instance file is routinely still present (evicted only after
+  the 7-day `gcInstanceCursors` window — well inside any ordinary multi-day
+  gap), so a reader that had genuinely drained everything could still be
+  blocked on mail it had already read. Live proof: a fresh reader's own
+  instance file at 929, a 3-day-old sibling's at 859, total 930 — the shared
+  floor gave `unread:71` though the fresh reader's true position left only 1
+  row unread. A cheaper GC cadence does NOT fix this: the stale file sits
+  inside the SAME (unchanged) 7-day window no matter how often GC runs (see
+  `tests/companion/devswarm-own-reader.test.js`'s GC-cadence test, a standing
+  proof against re-proposing that shortcut).
+  Fix: a new shared helper, `companion/lib/devswarm-own-reader.js`, computes
+  each of the five per-reader surfaces' own number by subtracting this
+  reader's own lead over the shared floor (`ownCursor - entry.cursor`, always
+  >= 0 by construction) from the already union-computed `unread`/`directUnread`
+  — never re-deriving unread from scratch, never opening the store DB on the
+  Stop-hook's cheap-read path, and failing open to the pre-fix number on any
+  resolution failure (so a legacy/older summary shape, or a nonce-derivation
+  failure, is byte-identical to before). `devswarm-child-drain.js` and
+  `devswarm-child-gate.js` already had a live store handle open, so those two
+  instead pass `scripts/devswarm.js`'s own `siblingBaseCursor` (the exact
+  primitive `inbox count`/`read`/`ack` already use) as `storeBaseCursor` —
+  the precise fix, not an approximation. No persisted-shape change: every
+  input this fix reads (`entry.cursor`, `entry.unread`) was already part of
+  the existing summary projection, so no forward-migration is needed in
+  `update.js` or `doctor`. Monitoring/roster surfaces that show OTHER
+  workspaces' unread (the child rows in `devswarm-parent-inbox.js`'s table,
+  `roster`/`diagnose`'s CLI output, `doctor-runtime.js`'s stuck-ingest sweep,
+  `liveness.js`'s drain-activity check) are deliberately UNCHANGED — those are
+  cross-instance monitoring signals ("has ANY reader of this workspace drained
+  it"), not a per-reader read position, and the min-floor is the CORRECT,
+  conservative answer there.
+
+## 0.99.1 (2026-09-08)
+
+- **Fixed (P1): the store migration re-registered archived workspaces**
+  (defect df54edf54804). `migrateToStore`/`migrateOne` upserted the registry
+  row for every id found in `workspaces/` unconditionally, never consulting
+  `archived/<id>.json` or the registry tombstone `devswarm.js archive <id>`
+  had already appended — `removeRegistry` is not a permanent marker (the
+  sqlite backend hard-deletes the row, the JSONL backend appends an
+  unconditional `remove` op that a later upsert simply outraces), so migration
+  reviving the row was a genuine resurrection, not a no-op. A field report
+  (SkyCrew) had 4 workspaces archived on 0.97.1 come back `archivedInApp:
+  false` after the 0.99.0 update, re-entering the parent-inbox table and
+  parent gate. Root cause: a still-running child terminal can recreate
+  `workspaces/<id>.json` for an already-archived id via the explicit
+  `register`/`register-primary` verb (the auto-`ensure` path's resurrection
+  guard, field defect a48db2e0ea08, deliberately does not cover it), and
+  migration then blindly trusted that recreated descriptor. The migration now
+  defaults to NEVER resurrecting an archived id (`archivedSkipped` in its
+  report), and migrates a recreated descriptor as live only with positive
+  proof of a genuine later reuse: a differing sessionId from the archived
+  marker, a demonstrably newer descriptor file (by mtime — `archived/<id>.json`
+  is a hardlink of the id's OWN pre-archive descriptor, so its mtime is
+  whatever that descriptor's last write was BEFORE it was archived, never
+  later — archiving itself never rewrites it), and CURRENT liveness proof for
+  the descriptor's own sessionId. That proof is the shared
+  `isSiblingPartitionLive` predicate (`companion/lib/liveness.js`), not a bare
+  fresh-heartbeat check — a bare heartbeat check reproduces the exact root
+  cause that predicate's own header documents and replaced elsewhere: a
+  Primary never writes a heartbeat at all, `register` writes none, and a
+  child mid-long-turn's heartbeat goes stale well before the session does.
+  Every other uncertainty (a corrupt/unreadable marker, an unresolvable
+  mtime) fails toward skip, never toward resurrection, and the check is
+  fully idempotent across repeated migration runs.
+  Residual, by design (unchanged from 0.97.0/7e1ae67): a live child that
+  re-registers an archived id after its Primary archived it is still treated
+  as a legitimate re-registration by `register`/`register-primary` themselves
+  — `devswarm.js archive` now warns loudly when the target still has a fresh
+  heartbeat at archive time ("child session still live... it may re-register"),
+  and the per-turn parent-inbox table labels a superseded-but-not-confirmed-live
+  row `archived-superseded (live child)` instead of silently falling back into
+  the ordinary dormant/escalated ladder as if it had never been archived —
+  discriminated by worktree path (not a bare marker-file existsSync), so a
+  genuinely new, unrelated workspace that merely reuses an old archived id at
+  a DIFFERENT worktree is never mislabelled.
+  **Extended (worktree-group siblings):** `cmdArchive`'s
+  `retireArchivedWorktreeGroup` tombstones the STORE REGISTRY row of every
+  sibling id sharing the archived id's physical worktree, but never writes
+  those siblings their own `archived/<id>.json` marker or touches their
+  descriptor file — so the direct per-id marker check above could not catch a
+  sibling like this, and neither store backend leaves anything queryable to
+  distinguish "tombstoned sibling" from "never registered" (sqlite
+  hard-deletes the row with zero trace; the JSONL backend's `remove` op just
+  makes the id absent from a `listRegistry()` read). The gate now also
+  matches a sibling's worktree path against every OTHER id's archived marker
+  (indexed once per run) and defaults to skipping it too, migrating it as
+  live only on the SAME liveness proof — but never on mtime: a sibling's
+  descriptor file is never touched by the archive of a different id, so its
+  mtime has no relationship to that unrelated marker's and proves nothing
+  either way.
+  **Decision logic extracted** into a new shared module
+  (`companion/lib/devswarm-archive-gate.js`) and reused by
+  `scripts/devswarm.js`'s `healOrphanPartitions` doctor repair, which was the
+  SAME class of bug (a bulk re-registration path consulting only a bare
+  `hasArchivedCounterpart` marker check) and would otherwise silently
+  re-adopt a group sibling the migration correctly refuses.
+  **Field aftermath, forward hygiene:** an install that already ran the
+  pre-fix migration once is left holding the resurrected rows regardless (one
+  SkyCrew install measured ~43 legacy-slug rows across a whole retired
+  worktree-group family). `scripts/devswarm.js`'s new
+  `reRetireResurrectedRows`/`reRetireResurrectedRowsAllStores` forward any
+  unread mail into a same-worktree archived id, then remove ONLY the
+  resurrected registry row (never a file), for a row that has a PROVEN
+  archive link (its own marker, or a worktree-group match to a DIFFERENT
+  id's marker) AND is NOT live by `isSiblingPartitionLive` — deliberately
+  stricter than, and not a duplicate of, the pre-existing
+  `foldArchivedRegistryRows` migration (an older, unrelated fix whose own
+  safety gate protects any row with a self-consistent-sessionId descriptor
+  regardless of actual liveness, by design, so it does not — and was never
+  meant to — catch this shape). A row with NO archive link at all is NEVER a
+  candidate (that stays healOrphanPartitions' job — a live-run repro found
+  the first version wrongly removed such a row with its unread mail simply
+  stranded); a candidate whose only "archive link" is its own marker (no
+  other id at that worktree to forward into) or whose forward attempt fails
+  or leaves mail unaccounted for is classified `unhealable` and left in
+  place, reported, never guessed at. Each candidate's classify+forward+remove
+  runs under the SAME per-id lock (`withIdLock`) heal/fold/group-retire use,
+  with the row re-read fresh inside the lock, so a concurrent register/ensure
+  is never raced.
+  Decision logic is shared with `companion/lib/devswarm-orphan-policy.js`
+  (the parent-inbox "orphaned mesh" warning suppressor), which now calls the
+  SAME `resolveArchiveGate` heal calls instead of the bare marker check it
+  used to mirror — keeping its own documented NON-DRIFT contract intact
+  (verified against `tests/companion/devswarm-orphan-policy-equivalence.test.js`).
+  Removal is HUMAN-INITIATED ONLY, via a NEW explicit, opt-in doctor flag —
+  `doctor --repair-resurrected [--apply]` — same posture as
+  `--repair-ingest-orphans`/`--repair-test-stores`: default (no `--apply`) is
+  a dry-run that prints the plan and writes nothing, `--apply` executes it.
+  **R3 fix:** this pass was FIRST wired into doctor's default AUTO-SAFE repair
+  pass (`migrationFix`), which meant a BARE `doctor` invocation — the exact
+  command the anti-hall-activate skill runs — removed resurrected rows with
+  NO operator intent, contradicting its own "human-initiated only"
+  documentation. It has been REMOVED from the default repair pass entirely
+  and the new flag added to `DO_REPAIR`'s own exclusion list (alongside
+  `--repair-ingest-orphans`/`--repair-test-stores`), so the NEW
+  `--repair-resurrected` pass itself can never fire under a bare/`--fix`/
+  `--repair`/`--dry-run` doctor run — that scoping covers only this new pass,
+  not resurrected rows in general: the pre-existing `fold-archived-rows`
+  migration (`foldArchivedRegistryRows`, unchanged since before 0.99.1) still
+  runs automatically inside `DO_REPAIR` on a bare doctor invocation, and
+  retires any descriptor-less row whose worktree carries a matching archived
+  marker via its own forward-then-tombstone (unread mail forwarded first,
+  then the row removed) — it is the one automatic path that already existed
+  for this shape; `--repair-resurrected` is additive, for the stricter
+  liveness-proven shape `foldArchivedRegistryRows`'s own gate does not cover.
+  A new unconditional,
+  report-only DETECT section (`checkResurrectedRows`, "check mode included")
+  surfaces the candidate count and the exact `--repair-resurrected` command on
+  every plain `doctor` run AND `doctor --check`, without writing anything.
+  `update.js`'s `reRetireResurrectedPostUpdate` is REPORT-ONLY: it detects on
+  every update (one-time per-version stamped, same shape as
+  `cursorHygienePostUpdate` — the report itself prints once, not the removal)
+  and tells the operator the candidate count plus the exact command
+  (`doctor --repair-resurrected --apply`) to run; it never calls the write
+  path itself.
+- **Fixed (P1): the ingest daemon's launchd/systemd unit never pinned HOME, so
+  a daemon installed under a non-default HOME wrote into the real
+  `~/.anti-hall` store** (defect d1c57e67998f, field-verified — a review
+  agent's temp-HOME experiment, label `...r3repo-bare-i7ycii-cc6261`,
+  registered a real launchd job whose live process then wrote into the
+  operator's real store, because `devswarm-ingest.js` resolves its store root
+  via `os.homedir()` and the scheduler hands its unit the SCHEDULER's own
+  default HOME, not the installer's). `unitEnvFor` (`companion/
+  install-devswarm-ingest.js`) now unconditionally pins `HOME`/`USERPROFILE`
+  (the installer's own resolved `os.homedir()`) into every unit shape —
+  launchd's `EnvironmentVariables`, systemd's `Environment=`, and the cron
+  fallback's assignment prefix — even when hivecontrol/exec cannot be
+  resolved (previously PATH/HIVECONTROL alone gated whether ANY environment
+  was baked at all). The installer also now REFUSES (forces dry-run, prints a
+  loud stderr notice) when the resolved HOME is under `os.tmpdir()` OR under
+  `/tmp`/`/private/tmp` (checked explicitly — on macOS `os.tmpdir()` resolves
+  to the per-user `$TMPDIR` under `/var/folders/...`, not `/tmp`, so a HOME
+  planted directly under `/tmp`/`/private/tmp`, e.g. a session scratchpad
+  path, previously sailed past the guard entirely), unless
+  `ANTIHALL_INGEST_ALLOW_TMP_HOME=1` — closing the class the existing
+  `NODE_TEST_CONTEXT` guard cannot see (a non-`node --test` run, e.g. a
+  manual or agent experiment, under a scratch HOME). `doctor` now WARNs
+  (report-only, never auto-repairs) when an already-installed unit's
+  plist/service lacks a `HOME` key, naming reinstall as the fix.
+
+## 0.99.0 (2026-09-08)
+
+- **Fixed (P0): one cursor per row id was shared by every process reading under
+  that id, so whichever instance acked first consumed the mail for all of them**
+  (defect 8b211241bbe9). A second instance's `read-primary` returned 0 while the
+  cursor had already advanced past rows it was never shown; twin rows (a meshId
+  row and its uuid twin) made this routine rather than exotic. Each INSTANCE now
+  keeps its own cursor at `cursors/<id>#inst-<short6>.json`, keyed by the
+  existing per-process `instanceNonce`. A reader's window is
+  `max(baseline, own instance cursor)`, and the shared pair is raised only to
+  the MIN across instances (a running max of that min — `ackTo` is monotonic, so
+  it never rewinds) rather than to any one reader's position, so a lagging peer
+  is never skipped. No liveness oracle is consulted anywhere — none is available,
+  since `inbox tick` refreshes only the heartbeat file and a quiet-but-live
+  reader would age out of any outbound-row test.
+- **Added: a loss-free baseline** at `cursors/<id>#base.json`, moved ONLY by
+  writers whose advance is loss-free by construction (a fold, after rows are
+  forwarded into the survivor; reap-orphans, after a verified archive) and
+  seeded once from the pre-fix `max(cursors/<id>.json, store cursor)`. Every
+  pre-0.99 installation therefore resumes exactly where it left off, and an
+  instance that has never read starts from the baseline rather than from a
+  peer's position.
+- **Fixed: a cross-worktree caller could ack a cross-linked twin's partition.**
+  `siblingAckGate`'s SELF short-circuit compared only ids and sessionIds — no
+  location component — so a caller standing in the parent's worktree while
+  holding a child's meshId consumed that child's mail. SELF now additionally
+  requires the caller's cwd to resolve to the partition row's own worktree,
+  failing OPEN to the previous verdict when the row carries no worktree path.
+  `--ack-as-owner` is unaffected.
+- **Added: a cursor write journal** at `cursor-log/<repoKey>.ndjson` (append-only,
+  capped at 2000 records with tail-preserving rotation). Every partition-cursor
+  mutation records id, partition, callerId, namespace, from, to, delivered, pid,
+  instance nonce, gate, verb and cwd. `callerId !== partition` and an advance
+  with `delivered:0` are the two signatures that name a cursor eater the moment
+  it recurs — this defect was diagnosed twice from symptoms alone because no
+  writer left a trace. Broadcast cursors, the migrate-time cursor merge, and
+  `.seen-` watermark writes are deliberately OUT of scope.
+- **Fixed: the migrate-time baseline raise could consume a declared instance's
+  mail.** The raise added for the migrate cursor merge was unbounded, and the
+  value it passes is `max(dst.cursorValue, src.cursorValue)` — shared-pair
+  numbers an older build's own-position ack can have written. Migrate copies rows
+  between backends and makes nothing reachable for a 0.99 instance, so that raise
+  is not loss-free. Reproduced live: a declared instance sitting at 0 received 0
+  rows instead of 3. Every non-fold, non-reap raise is now BOUNDED by the
+  declared floor (the min across existing instance cursors); fold and reap keep
+  the unbounded raise because they forward or archive the rows first.
+- **Fixed: the retired-redirect override refused a survivor with no live owner.**
+  The guard used the fail-toward-live liveness predicate, so an undetermined
+  verdict read as live and refused the override — breaking the one path it
+  exists to serve. It now requires POSITIVE evidence (a fresh heartbeat for the
+  survivor) before refusing. Note the direction this cuts: `--ack-as-owner`
+  now acks a survivor whenever its heartbeat is stale or missing, so a live
+  twin mid-long-turn (the heartbeat only refreshes once per prompt) can lose
+  mail to an explicit human override. That is the intended behavior for a
+  stuck-child override — a human invoking it is asserting the survivor is not
+  actually consuming, and the override is not meant to defer to a heartbeat
+  that simply hasn't ticked yet.
+- **Fixed: the cursor journal reported `delivered: 0` on a store-only read.**
+  The count was gated on the union flag, which `--ack` sets even when no union
+  runs, so no row was ever tagged and a read that delivered rows recorded zero —
+  a false positive of the exact signature the journal exists to make
+  trustworthy. Own rows are now counted by what they are, not by which flag was
+  set.
+- **Added: doctor names pre-release cursor files in the old dot shape**
+  (`<id>.inst-<6hex>.json`, `<id>.base.json`) and never deletes them — such a
+  name can equally belong to a real workspace, so removing it could destroy a
+  live read position.
+- **Fixed: an older build in a mixed fleet could consume a 0.99 instance's mail.**
+  The baseline briefly re-adopted the shared cursor as a LIVE floor on every
+  read. That is safe only within this version: a 0.98.3 session's ack writes the
+  shared pair to its own position with no min-projection, so re-adopting it
+  raised every 0.99 instance's floor. Reproduced against the real cached 0.98.3
+  build — the old build received 3 messages and a declared 0.99 instance then
+  received 0. The baseline is now seeded ONCE (upgrade continuity) and never
+  re-adopts the shared value; the writers whose advances are genuinely loss-free
+  raise it at their own call sites instead, including the migrate-time cursor
+  merge in `companion/devswarm-migrate.js`.
+- **Fixed: a workspace id could collide with anti-hall's own cursor filenames.**
+  `isSafeId` permits dots, so a workspace legitimately named `w.base` had the
+  legacy cursor path `cursors/w.base.json` — byte-identical to workspace `w`'s
+  baseline path under the first cut of this feature. Acking that workspace's
+  cursor to N made `w`'s baseline read N and silently skipped N rows of `w`'s
+  mail (reproduced live). The three cursor namespaces introduced here now use
+  `#` as their separator (`<id>#base.json`, `<id>#inst-<6hex>.json`,
+  `<id>#nd-<6hex>.json`), and `#` is a character `isSafeId` forbids — so the
+  collision is impossible by construction rather than by a validator every
+  future call site must remember. A FRESH registration also refuses an id
+  carrying `#`, `.seen-`, `.inst-`, `.nd-` or a trailing `.base`; an install that
+  already holds such a row keeps working.
+- **Added: bounded hygiene for instance cursor files**, shipped in BOTH
+  `update.js` (one-time per version) and doctor (report-only unless repairing).
+  Both cursor namespaces are swept (`#inst-` for store rows and `#nd-` for the
+  descriptor's NDJSON lines, grouped separately because they count in different
+  index spaces); missing the second left a dead instance pinning the descriptor
+  cursor forever. Only a STALE file (mtime past
+  `DEFAULT_INSTANCE_CURSOR_STALE_MS`, 7 days) is
+  ever a candidate — a fresh file is a live reader's position. A stale file is
+  deleted when removing it does not advance the floor past another instance, and
+  otherwise evicted with a journaled `gc-evict` record. Note what deletion costs
+  in the SOLE-file case: with no other instance file left, that id falls back to
+  its baseline, so the next read replays everything since the baseline. That is
+  redelivery, never loss, and it is journaled. Names this code could not have
+  written are never touched: the parser requires a six-hex nonce.
+- **Added: `doctor --repair-test-stores [--apply]`** (defect be2c6c9e81a1). Doctor
+  already inventories store entries whose recorded repo path is under the system
+  temp dir and no longer exists; this adds the explicit, opt-in removal path for
+  exactly that subset. Dry-run by default (it prints the plan and deletes
+  nothing); `--apply` executes it, re-verifying each entry's eligibility
+  immediately before deleting. Never folded into a plain `doctor`, `--fix` or
+  `--dry-run` pass — same narrow, human-invoked posture as
+  `--repair-ingest-orphans`. Contributed alongside this release; the broader
+  task-#10 inventory work ships separately.
+- **Changed (behaviour): the devswarm store refuses to fall back to the real
+  home while running under `node --test`.** `openStore`, `computeSummary` and
+  `deriveSummary` previously resolved `o.home || os.homedir()`, so a test that
+  forgot to pass an explicit `home` silently wrote a fixture registry row into
+  the developer's own `~/.anti-hall/devswarm/store/`. Under `NODE_TEST_CONTEXT`
+  (set by `node --test` and inherited by spawned children) that fallback now
+  throws instead, naming the missing `home`. Outside a test run nothing changes.
+  This is a deliberate behaviour change: a leaky test now FAILS rather than
+  quietly polluting the machine.
+- **NOT fixed in this release, characterized only: report item 3** — a sibling
+  ack advancing past rows that were never delivered (`part.cursor +
+  physicalConsumed`, where `physicalConsumed` can exceed the delivered count for
+  hash-suppressed or unparseable rows). This is a SEPARATE mechanism from the
+  shared-cursor defect above and per-instance cursors do NOT fix it. The
+  behavioural fix (quarantine an undeliverable row before the cursor passes it)
+  needs the suppressed ROWS, and the code currently carries only a COUNT, so it
+  ships separately. This release pins the mechanism with characterization tests
+  and makes a recurrence mechanically detectable: every cursor record carries
+  `delivered`, so an advance with `delivered:0` is visible without re-derivation.
+- **Fixed: the retired-sender hint offered a substitutable `<id>` placeholder.**
+  `devswarm-parent-inbox.js` printed `inbox ack <id> --ack-as-owner` while naming
+  the retired sender only in the surrounding prose. Since `--ack-as-owner` is
+  exempt from every ownership gate, an agent filling that placeholder with a live
+  child's id would consume that child's mail. The exact retired id is now
+  interpolated into the command, with an explicit warning never to ack a live
+  child id.
+
+## 0.98.3 (2026-09-08)
+
+- **Fixed: a test file leaked real LaunchAgent registrations onto the host
+  machine** (defect ec33954162ef). `tests/scripts/devswarm-fleet-2e8653787945.test.js`
+  built a `selfHeal` ctx with no `ctx.io.spawnInstaller` mock, so `selfHeal`'s
+  stale-daemon branch fell through to the REAL `defaultSpawnInstaller`
+  (`scripts/devswarm.js`), which spawned `install-devswarm-ingest.js` for
+  real under a throwaway temp `HOME`. That subprocess registered a genuine
+  `KeepAlive` LaunchAgent whose `WorkingDirectory` pointed into the temp
+  HOME; teardown deleted the HOME but never unloaded the registration, so
+  launchd retried it forever (exit 78, "program gone") — confirmed live on
+  the maintainer machine as 50+ loaded `com.anti-hall.devswarm-ingest.*`
+  labels against 6 real on-disk plists. Fixed with an `io.spawnInstaller`
+  mock (the same pattern `tests/companion/ingest-health.test.js` already
+  used) plus a belt-and-braces regression test proving
+  `install-devswarm-ingest.js`'s existing `ANTIHALL_INGEST_DRY_RUN=1` seam
+  makes even the REAL, unmocked spawn path a no-op.
+- **Added: a structural test-context guard closes the CLASS of the LaunchAgent
+  leak above, not just the one fixed instance** (same defect, fix-wave R2 item
+  7). `install-devswarm-ingest.js` now ALSO forces its own dry-run seam
+  whenever `process.env.NODE_TEST_CONTEXT` is present — Node sets this in
+  every `node --test` worker, and a `spawnSync`'d child inherits it by
+  ordinary env inheritance (verified live with a probe test before relying on
+  it). So a FUTURE test that makes the identical mistake (forgets
+  `ctx.io.spawnInstaller`/`ANTIHALL_INGEST_DRY_RUN=1`) is still safe, with no
+  opt-out and no per-test convention to remember. Prints one stderr line
+  naming the defect, but only at the moment a real write/rm/spawn call is
+  actually intercepted (not at module load) — so merely `require()`-ing this
+  module under `node --test` stays silent, and the notice appears only when
+  a real mutation was genuinely prevented. New regression test spawns the real
+  installer `main()` under an isolated HOME with neither `--dry-run` nor
+  `ANTIHALL_INGEST_DRY_RUN` set and asserts zero plist/service files written.
+- **Fixed: two installer paths still bypassed the structural test-context
+  guard above** (Critic R2, same defect class). `install-devswarm-ingest.js`'s
+  `installCron`/`uninstallCron` called `spawnSync('crontab', ['-'], {input})`
+  directly instead of through `planRun`, so on Linux neither `--dry-run` nor
+  the `NODE_TEST_CONTEXT` guard protected the crontab (only the plist/service
+  writes were covered) — now routed through `planRun`. `install-reaper.js`
+  had no `NODE_TEST_CONTEXT` guard at all (`DRYRUN` was
+  `args.includes('--dry-run')` only); it now applies the identical
+  `EXPLICIT_DRYRUN || NODE_TEST_CONTEXT` guard, with the same once-per-process
+  stderr notice, as `install-devswarm-ingest.js`. The structural fix now spans
+  every installer path that can register a real launchd/systemd/cron job:
+  `install-devswarm-ingest.js` (plist/service writes AND the crontab
+  fallback) and `install-reaper.js` (plist/service writes).
+- **Added: `doctor` detects and can repair orphaned launchd/systemd ingest
+  registrations** (same defect, ec33954162ef). A plain `doctor` run now
+  always prints an "Orphaned launchd/systemd ingest registrations" table —
+  enumerated from the SCHEDULER'S OWN registration list (`launchctl list` /
+  `systemctl --user list-units`), not from disk, so it catches a loaded
+  label with no matching plist/service file at all — exactly the class the
+  existing `git worktree list`-driven reap (D9) is structurally blind to
+  once the worktree is gone. Silent when everything classifies `healthy`.
+  `doctor --repair-ingest-orphans` previews the exact unload plan (dry-run
+  by default, and no longer also triggers doctor's unrelated full auto-repair
+  pass — fix-wave R2 usability fix); `doctor --repair-ingest-orphans --apply`
+  executes it (`launchctl bootout gui/$(id -u)/<label>` / `systemctl --user
+  stop <unit>.service` — never `kill -9`, never deletes a file). **Eligibility
+  is exactly ONE class: `orphan-no-plist` (no plist/service file on disk at
+  all) AND no live heartbeat/lock for that project/worktree.**
+  `orphan-path-gone` and `duplicate-label-same-project` are ALWAYS
+  report-only — a plist DOES exist on disk for both, so unloading either
+  remains the EXISTING `reapLegacyUnitsForRepo`/`stopLegacyUnitEntry` job,
+  never this new label-only path. (Fix-wave R2, same defect: the first pass
+  had a P0 — the duplicate-detection cross-check could mark BOTH members of a
+  plist-present, worktree-present group eligible, which would have booted
+  out real registrations; caught by review before merge, fixed with a single
+  point of eligibility assignment plus a fail-closed invariant check. Also
+  fixed: legacy per-worktree liveness now ORs a fresh heartbeat with the lock
+  check, matching the per-project branch.) New exports on
+  `install-devswarm-ingest.js`: `listLoadedIngestLabels`, `classifyLoadedLabel`,
+  `orphanReapPlan`, `bootoutLoadedLabel`, `stopLoadedUnit`; new
+  `doctor-repair.js` function `runIngestOrphanRepair`. Documented in
+  `docs/KB-devswarm-hivecontrol.md` §44 and both Claude/Codex DevSwarm
+  `SKILL.md` files.
+
+## 0.98.2 (2026-09-08)
+
+- **Fixed: `roster`/`diagnose`/`healthcheck` failed open on an unreadable
+  registry** (defect 77d5a5bbf614). `computeDiagnosis` and `cmdRoster` called
+  `listRegistry()`/`computeSummary()` directly with no `getReadError()` probe
+  — devswarm-store.js's `readAll()` swallows a genuine registry.ndjson read
+  error (EACCES on a chmod-000 store dir, etc.) to an empty array, so a
+  registry.ndjson outage read back as "0 workspaces, healthy" instead of
+  surfacing the failure. All three commands now probe `getReadError()` right
+  after their own registry-read call and report `known:false`,
+  `storeUnavailable:true`, `storeUnavailableReason:<code>`; `diagnose` and
+  `healthcheck` also flip `degraded:true`/`status:'store-unavailable'` so an
+  unreadable store can never look like a clean report.
+- **Partial: `devswarm-parent-inbox.js` (the per-turn workspace table)
+  skips the expensive transcript-mtime liveness read for an already-archived
+  row** (defect bf965e5729c5, ruled `partial`). An archived row's
+  dormant/idle-alive result is never consulted by its `archived`/
+  `not-draining` display branch, so `readActivityTs`/`rowLivenessState` are
+  now skipped for it; the cheap heartbeat read itself stays unconditional so
+  the table's "last" column never goes stale for an archived row that still
+  emits heartbeats. A cross-turn disk cache was tried and then **removed**
+  on review (net cost for this hook's actual per-turn cadence, plus two
+  correctness bugs — see the defect's ruling for detail). The field-reported
+  1.07s/turn-under-load latency this defect describes was **not reproduced
+  locally** and remains open.
+- **Added: a `git-stash-guard` command-guard branch blocks a mutating `git
+  stash` (push/pop/drop/clear/apply/save, or the bare `git stash` == push
+  shorthand, including flag-only forms like `-u`/`-k`/`-m`/`-p`/`-q`/`-a`
+  and invocations using git's own global options like `-C <path>`/
+  `--git-dir=X`)** (defect b08b26566b92). The guard only fires once ARMED —
+  a `.anti-hall/protected-stashes` marker at the repo's git toplevel, or
+  `ANTIHALL_STASH_GUARD=1` — in both subagent and coordinator context (no
+  unconditional default block). `git stash list` is unaffected, and a
+  command that merely *mentions* "git stash" in a quoted argument (a grep
+  pattern, a commit message) is never misclassified as an invocation. The
+  guard's own skip name is in skip-guard.js's `DESTRUCTIVE` set (same
+  protection level as `git-guard` — a blanket `"all"` skip cannot silence
+  it).
+
+## 0.98.1 (2026-09-08)
+
+- **Fixed: `devswarm-child-gate.js`'s Stop hook re-fired every turn even
+  though the child had followed the gate's own instructed heartbeat**
+  (defect a55d6b71a76f). Three compounding root causes:
+  1. When `heartbeat --summary` was benignly refused (an unresolvable/
+     unregistered caller identity, or an ownership mismatch —
+     `BENIGN_MESH_BROADCAST_REASONS`), the broadcast never reached the
+     shared store's `recent[]` projection, so the gate's
+     `alreadyReportedThisEpisode()` (which reads only `recent[]`) could
+     never see that the child DID attempt to report — the same failing
+     heartbeat command was re-prescribed forever. `cmdHeartbeat` now appends
+     a local, bounded (last 50 lines, trimmed only once a file passes 100) row
+     to a PER-WRITER-ID attempt file —
+     `devswarm/summary-attempts/<repoKey>/<writerId>.ndjson`, never one file
+     shared by every writer for a repoKey (that shape was a read-modify-
+     write-rename race: two concurrent sibling writers could silently drop
+     each other's row) — stamped with the WRITING process's own
+     `instanceNonce` and a `sessionId` derived from the cwd-verified
+     process-tree walk, with `CLAUDE_CODE_SESSION_ID` accepted only when the
+     walk corroborates it (omitted otherwise), NEVER the caller-supplied
+     `--session` flag (a prior shape trusted the flag
+     directly and was provably forgeable: `heartbeat <victim-id> --summary x
+     --session <victim's own sessionId>` produced a record the victim's own
+     gate accepted). A record is accepted iff it is nonce-authenticated, or
+     matched to the workspace's registered session across its id forms (its
+     own `workspaces/<id>.json` descriptor, or — when that descriptor is
+     absent, e.g. a child heartbeating under its meshId while its env id is
+     a separately-unregistered UUID — a descriptor provably the SAME
+     identity on the SAME physical worktree: a uuid-prefix re-registration
+     of the env id, or one whose worktree resolves to the same canonical
+     meshId — never any same-worktree descriptor unconditionally), matched
+     **regardless of the record's own `id` field**; an unauthenticated
+     record does not satisfy. When a record for this exact id exists but
+     authenticates against neither check (e.g. a genuine record from a
+     PRIOR OS process — the nonce fallback changes on every restart), or
+     when the gate's own nonce cannot be derived at all, it now logs ONE
+     stderr diagnostic per session instead of silently re-blocking with no
+     trail. If a block still fires anyway (e.g. a known unread-inbox
+     backlog), the block text names the drop reason from a fixed whitelist
+     only (never the raw stored string, which is not trusted input) and its
+     remedy, instead of re-prescribing the exact command that just failed.
+     `warnIdMismatch` (the separate `heartbeat`/`inbox tick` id-mismatch
+     stderr warning) now gates on `isChildWorkspaceCorroborated`, not the
+     bare env-only `isChildWorkspace`, so a Primary with a leaked
+     `DEVSWARM_SOURCE_BRANCH` is never told to switch ids.
+  2. The per-window forced-ack cap (`MAX_BLOCKS=2`) fully reset every
+     `RESET_MS` (5 min), so it could re-arm indefinitely across a long
+     session. A new, never-reset `MAX_BLOCKS_PER_SESSION=6` lifetime bound
+     stops all further blocking for the rest of the session once reached
+     (logged once to stderr).
+  3. `isChildWorkspace()` trusted `DEVSWARM_SOURCE_BRANCH` alone, so a
+     Primary that inherited a leaked env var could be gated as a child. A
+     new `isChildWorkspaceCorroborated()` (`hooks/lib/devswarm-role.js`)
+     additionally requires on-disk evidence — a registered
+     `workspaces/<id>.json` descriptor, or cwd under the real DevSwarm
+     worktree layout (`~/.devswarm/repos/...`) — before `devswarm-child-
+     gate.js` treats a session as gate-eligible; no corroboration is a
+     silent no-op. Codex needs no separate fix — `devswarm-child-gate.js`
+     and `devswarm-role.js` are shared files, registered unmodified in
+     `codex/hooks/hooks.json`.
+
+- **Fixed: a child substituted the WRONG id (its own meshId) into
+  wake/heartbeat/tick instructions** (defect 735b179362e8) — every emitted
+  wake/tick/heartbeat/read-primary instruction (`hooks/lib/devswarm-wake.js`'s
+  `drainCmd`/`wakeDirective`/`wakeReassert`, and `hooks/devswarm-child-turn.js`'s
+  `REMINDER`/`RECEIVE_NUDGE`) previously embedded the literal
+  `<DEVSWARM_BUILDER_ID>` placeholder unconditionally, even though the real id
+  is available in `env` at every call site — a child then had nothing to
+  substitute and addressed the wrong mesh partition. Both files now substitute
+  the REAL `DEVSWARM_BUILDER_ID` (validated against the same safe-id charset
+  every other workspace id in this codebase is checked against) whenever it is
+  present; the placeholder is kept, byte-identical to before, when the env var
+  is absent or fails validation — never a bad/unsafe value is interpolated.
+  Additionally, `cmdInboxTick`/`cmdHeartbeat` (`scripts/devswarm.js`) now warn
+  (stderr, once per call, fail-open — never refuse) and set `idMismatch:true`
+  in their JSON result when a CHILD workspace addresses an id other than its
+  own real `DEVSWARM_BUILDER_ID`, naming both ids so the mismatch is visible
+  without blocking a caller that has a legitimate reason to address a
+  different id.
+
+- **Added: a subagent inside a DevSwarm child workspace can no longer touch
+  the shared mailbox** (defect f0958b13fe2b, field-measured by SkyCrew
+  2026-09-08 — 155 executions across 120 subagent transcripts in one
+  workspace ran `devswarm.js inbox pull/ack` directly, each advancing the
+  shared cursor and causing the workspace's own main thread to silently miss
+  mail; brief-level prohibitions alone were proven non-mitigating). Hardened
+  over three review rounds; the final blocked-verb set and mechanism:
+  1. `hooks/command-guard.js`'s new `devswarm-subagent-mailbox-guard` block
+     blocks any Bash invocation of `devswarm.js`'s `inbox pull|ack|read|
+     read-primary|tick`, top-level `heartbeat`, top-level `reap-orphans`
+     (writes cursors on reap), `inbox messages ... --ack`/`--ack-as-owner`
+     (the documented, cursor-advancing expansion of `read-primary` — NOT the
+     same as the safe non-acking `inbox messages`), `mesh read` without
+     `--peek`/`--seq` (advances the broadcast cursor by default),
+     `roster --ack` (an alias of `mesh read`, D23), and top-level
+     `register`/`archive` (both advance cursors through
+     `foldGroupIntoSurvivor` — a subagent never legitimately registers or
+     archives a workspace; the separate `register-primary` and
+     `archive-request`/`archive-ignore`/`archive-unignore`/`unarchive` verbs
+     are unaffected). Read-only verbs stay allowed: `inbox count`,
+     `inbox messages` (incl. `--tail`, without an ack flag),
+     `inbox peek-primary`, `mesh read --peek`/`--seq N`, plain `roster`,
+     `send`. Detection runs per shell segment with a flag-skip
+     pattern that consumes an optional VALUE after each flag (a valued flag
+     BEFORE the verb — `--session X inbox ack Y` — previously broke the
+     match entirely and bypassed the guard). Two overrides:
+     `~/.anti-hall/skip.json` under `devswarm-subagent-mailbox-guard`, or env
+     `ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1`.
+  2. `hooks/verify-first-subagent.js` appends one line to its SubagentStart
+     injection when `isChildWorkspace(env)` is true, telling the subagent
+     the main thread owns the mailbox and to report findings to its parent
+     instead.
+  3. **Root cause of the field incident, fixed directly:**
+     `hooks/devswarm-child-drain.js` (PostToolUse, matcher Bash, CHILD-ONLY)
+     was the hook actually TELLING subagents to drain the mailbox — it gated
+     only on `isDevswarmActive(env) && isChildWorkspace(env)`, both env-based
+     and therefore true for a subagent's own tool calls too (the child's env
+     is inherited), and its injected text literally read `Drain NOW via
+     \`inbox pull ... && inbox ack ...\``. This is the exact command the three
+     field-measured subagent runs executed. Now silently no-ops for subagent
+     context instead of injecting anything — a subagent already gets the
+     one-line rule from `verify-first-subagent.js` at spawn, and repeating it
+     on every Bash call would be exactly the per-call noise this hook's own
+     THROTTLE design exists to avoid. Swept every other PreToolUse/
+     PostToolUse-registered DevSwarm hook gated on child env alone for the
+     same hole: `devswarm-child-turn.js` (UserPromptSubmit) and
+     `devswarm-child-gate.js` (Stop) are NOT subagent-reachable at all
+     (neither event fires for a Task-tool subagent — `SubagentStop` is a
+     distinct, unregistered event); the two Primary-side hooks
+     (`devswarm-parent-gate.js`, `devswarm-parent-reply-tracker.js`) return
+     early for a child and are unaffected. `devswarm-child-drain.js` was the
+     only live hole.
+  4. **Payload-only subagent signal for both blocking gates above:** both (1)
+     and (3) now key off a new `isSubagentByPayload(payload)`
+     (`hooks/coordinator-detect.js`) — `agent_id`/`agent_type` in the hook
+     payload ONLY, no `CLAUDE_CODE_ENTRYPOINT=agent_tool` env fallback. The
+     general-purpose `isSubagent()` (used by command-guard's normal
+     coordinator-only gate, unchanged) legitimately uses that env fallback,
+     but a child workspace's env is inherited by its entire process tree —
+     using the same fallback for a BLOCKING gate could let a leaked
+     `agent_tool` value (from how the child session itself was originally
+     spawned) permanently misclassify that workspace's own main-thread cron
+     tick / Monitor wake as a subagent, blocking it from its own mailbox.
+  5. **Codex parity, precisely stated:** both guards are registered via
+     SHARED hook files in `codex/hooks/hooks.json` — no separate Codex code
+     path. Their DENY behavior, however, depends on the harness actually
+     supplying `agent_id`/`agent_type` in the hook payload; this has been
+     **verified on Claude Code only**. A grep of `plugins/anti-hall/codex`
+     for `agent_id`/`agent_type` returns 0 hits (`codex/README.md:48`
+     confirms no such payload-marker mapping exists there), so whether
+     Codex's harness populates these fields the same way is unverified — the
+     guards are registered either way (fail-open if the markers are absent,
+     same as any unmatched context), but blocking a Codex subagent
+     specifically has not been demonstrated.
+  6. **Known, harmless (deferred):** a Wave R3 review pass flagged echo
+     noise around this guard's deny path; triaged as known and harmless
+     rather than fixed in this round — see KB §42 for the note.
+  See `docs/KB-devswarm-hivecontrol.md` §42 for the full mechanism.
+
+## 0.98.0 (2026-09-06)
+
+- **Changed: `inbox count`/`inbox read`'s `storeUnavailable` field is now a
+  BOOLEAN, not an object** — 0.97.1 and earlier returned `storeUnavailable`
+  as a richer OBJECT (`{reason, error, registeredRepoKey, callerRepoKey,
+  storeUnavailableReason}`) on `count`/`read`, while `read-primary`/
+  `peek-primary`/`messages`/`ack` already reported it as a bare boolean —
+  two different shapes for the same field name depending on which verb you
+  called. 0.98.0 unifies every read verb on the SAME shape: `storeUnavailable`
+  is always a boolean (`true` only for a genuinely unreadable store —
+  `store-unavailable`/`store-open-failed`; `false` for a more specific,
+  non-genuine refusal like `project-context-mismatch`), the underlying fs
+  error code is a sibling top-level `storeUnavailableReason` (string|null),
+  and the full former object — `reason`/`error`/`registeredRepoKey`/
+  `callerRepoKey`/`storeUnavailableReason` — is preserved verbatim under a
+  NEW `storeUnavailableDetail` key on `count`/`read`/`ack` (no information
+  lost, just relocated). No in-repo consumer (hook, skill, or script) read
+  the old object shape directly — this is a heads-up for any EXTERNAL JSON
+  consumer parsing `inbox count`/`inbox read` output that this field's type
+  changed.
+- **Fixed: a fold-time retired tombstone no longer strands a re-registered
+  id's mail** — a read of an id whose only descriptor is a retired-redirect
+  tombstone (73303d4c098b) now takes the one-hop redirect a caller with
+  nothing live behind `id` needs, the read-side mirror of the existing
+  send-side redirect fix; a caller with its own live row is never redirected.
+- **Fixed: `register-primary` refuses a `live-primary-conflict` instead of
+  silently double-registering** — registering as Primary over a provably-live
+  OTHER session for the same worktree now refuses with `live-primary-conflict`
+  naming the live session; `--force` overrides it explicitly (7d0a948031cd).
+- **Added: `mesh read --peek`/`--seq`** — a non-mutating peek at the shared
+  mesh broadcast log and per-message sequence numbers for precise resume
+  points (d68c561e1649).
+- **Fixed: repoKey keying inside a git submodule now resolves to the
+  superproject** — a caller invoked from inside a submodule used to key
+  identity/repoKey to the submodule instead of the superproject, flipping
+  `registeredRepoKey` between a submodule invocation and a superproject one
+  and failing closed as `project-context-mismatch` (d56bfaac2da0).
+- **Added: a `forwarded` flag** on a row relayed through a fold/redirect, so a
+  reader can tell a forwarded row from an original one (e9e7c99ec924).
+- **Added: `retryAfterMs` and `possiblyStaleRegistry`** on a transient
+  registry-read failure, so a caller can distinguish "retry shortly" from a
+  genuine refusal (2e8653787945).
+- **Added: per-process `instanceNonce`, roster `instances`/`instance-split`,
+  `diagnose instanceSplits`, and an `@short` sender tag on `read-primary`** —
+  two live processes of the SAME session id (a `claude --resume` racing its
+  own prior process, or a fork) no longer have their mesh rows/messages
+  silently attributed to each other; roster/diagnose now surface the split so
+  it is visible instead of silent (d3d571495bf6).
+- **Fixed: `wake-watch` now takes over a stale-live lock, restamps its own
+  liveness, and exits cleanly on a lost lock** — the REFUSED stderr line now
+  also names the CURRENT lock HOLDER's pid/age/version (not the refused
+  watcher's own), so an operator sees who actually holds the lock
+  (8143ced316d3).
+- **Added: a shared `computeRowLive` helper and a `phantom` hint** on a
+  registry row that looks live but carries no verifiable liveness evidence
+  (298b79969409).
+- **Fixed: `isArchivedForRouting` now keys on `sessionId`** so an archived
+  marker left by a PREVIOUS occupant of a reused id no longer shadows routing
+  decisions for the CURRENT live occupant of that same id (d386d8a610b7).
+- **Added: `send --answers`** — reply correlation so a direct reply to a
+  blocking question can be matched back to the question it answers
+  (93c41cc09ff6).
+- **Fixed: an app-archived partition no longer stays listed as a STALE
+  WORKSPACE in the parent-inbox notification** — `devswarm-parent-inbox.js`'s
+  `staleRegistryPartitions` table now also recognizes an app-level archive
+  marker (the owner archiving the workspace in the DevSwarm app), not only
+  anti-hall's own internal archive tombstone, before naming a row "STALE
+  WORKSPACE" (a9ac2fc7e368). Scoped to that one table — `diagnose`/roster's
+  separate `orphans[]` surface is NOT covered by this fix (see Known).
+- **Fixed: read-side `known`/withheld-state fields and `repoKey`/`storePath`
+  meta are now consistent across `count`/`read`/`messages`/`read-primary`/
+  `peek-primary`, and a meshId `send --to` can resolve is now accepted by
+  those same read verbs (`resolvedFrom`)** — `count`/`read` previously folded
+  `meshGroupUnresolved` inconsistently into `known`, and `messages`/
+  `read-primary`/`peek-primary` carried none of `repoKey`/`storePath`/`known`/
+  `meshPartitionIds` at all, so a caller checking those alongside a refusal's
+  `reason` saw `undefined`. A same-worktree twin-sibling row read now also
+  returns a real, non-null `reason` (`ownership-mismatch`) with the same B1
+  meta instead of a bare refusal. `read-primary`'s ownership-gated ack path
+  now resolves a bare meshId BEFORE opening its store (matching what
+  `peek-primary`/`count` already did), so the two verbs can no longer diverge
+  on the SAME meshId input (902d3c5e7531, 1932b53a3ace).
+- **Fixed: the Codex installer's `ANTI_HALL_HOOKS` now lists every hook
+  `codex/hooks/hooks.json` lists** — still a manually-maintained list (not
+  dynamically derived from `hooks.json`), but a new parity test now enforces
+  the two stay in sync so a drift can't ship silently again; also bumped the
+  doctor's minimum Node to >=22 to match CI, and the scan-throttle write path
+  now carries an explicit flag (GPT-6 audit findings AH01/AH03/AH07).
+- **Changed: the Stop-gate mailbox-wake reassert is now a short pointer, not
+  a re-stated prompt** — every Stop-gate firing used to re-inline the FULL
+  CronCreate prompt paragraph (the same text SessionStart already delivered
+  once); it now names the CronList/Monitor conditions in a MEASURED bound
+  (`wakeReassert`'s own fixed text — everything except the one embedded CLI
+  path — stays `<= 360 chars` by test, verified against both an 86-char and
+  a 160-char cli fixture, for child and Primary, so the contract holds
+  regardless of how long a real install path happens to be; raised from an
+  initial 320 — the measured fixed text peaked at 315 chars, only 5 chars of
+  headroom for future wording changes and backslash-escaped characters, not
+  because any widened clause had tripped it: `wakeReassert` carries no
+  drain/refusal clause at all, and the measured fixed length is 315 both
+  before and after this release's other wording changes)
+  and, on a miss,
+  points at the new `wake-directive <id>` CLI verb (an on-demand reprint of
+  the full SessionStart text) instead of repeating it inline on every block.
+  The watcher script path is derived from the already-emitted `$CLI`
+  (`WATCH="$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js"`)
+  rather than re-embedded as a second long literal, for the same budget
+  reason the CLI path itself is emitted once — and the `CLI=` assignment
+  itself is now double-quoted (`CLI="<path>"`), not backtick-quoted
+  (`CLI=\`<path>\``, which in an actual shell means command substitution
+  and would have executed the path as a command instead of assigning it).
+- **Changed: a read verb (`count`/`read`/`ack`/`messages`/`read-primary`/
+  `peek-primary`) now refuses a genuine id collision the SAME way `send`
+  already does — EXCEPT an EXACT registered-id match, which always wins as
+  a no-op and is never redirected or refused** — `resolveReadArgToId` used
+  to short-circuit to the exact-id row the MOMENT any row's id exactly
+  matched the literal arg, never even checking whether that same arg ALSO
+  collides with a different live row's derived meshId; `send --to` already
+  refused that shape as `ambiguous-target`, so a read verb on the SAME arg
+  silently used the shadowed row instead of refusing. A later pass made
+  read delegate to the same resolution `send` uses unconditionally — but
+  that reintroduced a DIFFERENT bug: a `register-primary` row and a
+  same-worktree "twin" derive the identical meshId (`canonicalMeshId` IS
+  `primaryWorkspaceId`), so an EXACT read of the Primary's own id could
+  silently land on the twin's partition instead (1932b53a3ace). The rule is
+  now: an exact registered-id match ALWAYS wins as a no-op on a read (never
+  redirected, never reported ambiguous). A non-exact arg resolves the same
+  way `send` resolves one — the freshest LIVE row among same-worktree twins
+  (`resolveMeshTarget`) — but can never hit `send`'s own `ambiguous-target`
+  refusal on this path: that refusal fires ONLY on an exact-id collision,
+  and resolveReadArgToId already resolves any exact match as the no-op
+  above before delegation ever runs.
+- **Fixed: a store that genuinely EXISTS but cannot be READ (`EACCES`,
+  `ENOTDIR`/`EISDIR`, a corrupt sqlite header) no longer reads back
+  indistinguishable from an empty/never-written store, for ANY id —
+  registered or not.** Every read verb
+  (`count`/`read`/`ack`/`messages`/`read-primary`/`peek-primary`) now
+  reports `storeUnavailable` as a boolean with the underlying error code in
+  the sibling `storeUnavailableReason` field (string|null), and
+  `known:false`; `emitKnownWarning`'s stderr line names `store-unavailable
+  (<code>)` instead of the tautological `storeUnavailable
+  (store-unavailable)`. A never-written store dir (`ENOENT`) stays fail-open,
+  unchanged (902d3c5e7531 extended). The two remaining gaps are now also
+  closed: an UNREGISTERED id (no descriptor) sharing a repo whose
+  `registry.ndjson` is unreadable while `messages.ndjson` stays readable now
+  reports `store-unavailable` via `messages`/`read-primary`/`peek-primary`
+  too, not just `count`/`read`/`ack` — `resolveWorkspaceStoreForRead`'s
+  existence guard now re-probes `getReadError()` AFTER its own
+  `listRegistry()` call, not just before it. And the `read-primary`/`inbox
+  messages --ack` ownership check, which resolves the caller's OWN registry
+  row via the same `listRegistry()`-backed `resolveMeshTarget`, no longer
+  misreports a caller that genuinely owns `id` as `caller-not-registered`
+  when that same registry read fails — it now reports `store-unavailable`
+  too. Scoped to the six READ VERBS above — `roster`, `diagnose`, and
+  `healthcheck` still read the registry fail-open (see Known).
+- **Fixed: the retired-sender INFORMATIONAL ack hint now says
+  `--ack-as-owner`** — the hint in both `devswarm-parent-gate.js` and
+  `devswarm-parent-inbox.js` told the Primary to run plain `inbox ack <id>`,
+  which fails ownership for a genuinely retired sender and never actually
+  clears the hint; both now match the sanctioned cross-workspace-ack
+  override already used elsewhere in `devswarm-parent-gate.js`.
+- **Fixed: `meshRowCopy` no longer stamps an explicit `undefined`-valued key
+  for a field the source row never had** — a verbatim/forward copy of an
+  old row (no `origHash`/`instanceNonce`) now stays byte-identical to the
+  source's own key set instead of gaining phantom `origHash: undefined`/
+  `instanceNonce: undefined` own-properties.
+- **Known:** per-row cursor shared across instances (8b211241bbe9), parent-
+  inbox hook latency under load (bf965e5729c5), Stop-gate escalation on dead
+  rows (9aaaf2c5e7b0), `diagnose`/roster's `orphans[]` surface still lacks
+  the app-archived-marker recognition `staleRegistryPartitions[]` gained this
+  release (a9ac2fc7e368 scope note above) — needs its own, separate fix;
+  a0b7dfba1803/b48016f88bc1/af2b580f1b7b/084dee6b6e20 still need field
+  captures before a fix — carried to the next release. Also carried: a
+  2-hop retired redirect refuses as `unregistered-workspace` naming the
+  second hop rather than a dedicated dead-end reason; `count`/`read`/`ack`
+  on an unregistered id still report a probe `storePath` instead of null;
+  the retired-redirect ack ownership gate checks only the freshest live row
+  on the survivor's worktree, so a legitimate caller on a twin-split worktree
+  may see `retired-redirect-unresolvable-caller` (fail-closed; use
+  `--ack-as-owner` as the hint says); `roster`/`diagnose`/`healthcheck` fail
+  open on an unreadable registry (`healthcheck` reports `ok:true` on
+  `EACCES`); when only `cursors.ndjson` is unreadable, `messages` reports
+  `known:true` while `peek-primary` reports `EACCES` and `inbox read`
+  returns the full backlog with `storeUnavailable:true` — the three verbs
+  disagree about one store.
+
+## 0.97.1 (2026-09-06)
+
+- **Fixed: a store-unavailable inbox count no longer stops the drain loop or
+  skips the heartbeat** — `inbox count` / `inbox tick` report `known: false`
+  when the mesh store could not be read, but still carry a numeric
+  `unreadTotal` (often 0, the NDJSON side alone). The mailbox-wake stop
+  condition treated that as "nothing to do", so a Primary or child whose
+  store was briefly unreadable stopped draining and the child gate skipped the
+  heartbeat. The injected stop condition now also requires `known` is not
+  `false` (an absent field still counts as known, so older `count` shapes are
+  unaffected), `inbox tick` records `known` in the wake-tick marker, and the
+  child gate refuses to treat a `known: false` zero as a genuine no-op.
+  Reported by the SkyCrew fleet (c37ff1269685).
+
+## 0.97.0 (2026-09-06)
+
+- **Fixed: a reused-id archived marker no longer marks a live row archived** —
+  an archived marker left by a previous occupant of a reused workspace id (a
+  different session id than the live descriptor) was outranking the live
+  descriptor, so diagnose and the roster reported the row as archived
+  (`live:false`/`archivedInApp:true`) even though its session was live; this
+  affected a Primary's own anchor since 0.96.0 (reported on 0.96.1). Diagnose
+  and roster now follow the live descriptor, and `doctor` lists superseded
+  markers (report-only).
+- **Changed: mailbox-wake defaults tuned for lower idle cost** — the cron
+  fallback now fires every 30 minutes instead of every 5 (`Monitor` remains
+  the primary wake path; cron is never disarmed; `ANTIHALL_DEVSWARM_WAKE_CRON`
+  is unchanged for anyone who has already overridden it). Each cron tick now
+  runs a single `inbox tick` command that writes one wake-tick marker, so an
+  empty tick costs one command and one line with no forced heartbeat. `doctor`
+  now reports a cron-found-mail counter (ticks that found unread mail while a
+  watcher lock was live), making the fallback's actual value measurable.
+
+## 0.96.2 (2026-09-05)
+
+- **Fixed: app-side archive detection is now repo-scoped** — hivecontrol's
+  workspace listing is global, so the supervisor attributes each record to
+  its own repo via its worktree path (same-repository siblings whose
+  worktree cannot be resolved are kept, foreign or unattributable records
+  are dropped and logged as `active-scope-drop` with per-tick `activeScope`
+  counts) and stores only matching records per repo; records carry
+  `repositoryId`/`label`/`branch` so the cross-repo archive guard can fire;
+  probe and reconcile failures now log `error`/`status`/`signal`/`stderr`
+  (200 chars) (`3cb559cb48d5`).
+- Also from 0.96.1 but missing from its notes: defensive explicit
+  `existsSync` guard when choosing a repo's representative worktree
+  (`24a1ff3`).
+- **Known:** an archived-probe failure observed twice on one machine
+  remains unreproduced (now instrumented; `3e000e49fe1b`); ack from an
+  unresolvable caller still fails open; leaked fixture stores remain
+  report-only.
+
+## 0.96.1 (2026-09-05)
+
+- **Fixed: the supervisor no longer escalates a row whose harness session is
+  alive** — the idle-alive suppressor now consults the session pid directly,
+  closing the 15-30 minute window where the dormancy gate (30 min) never
+  reached the pid check while the stale gate (15 min) fired first
+  (`90711586ecb1`). Rows already stuck in the terminal escalated state
+  self-heal on the next supervisor pass when the session pid is alive
+  (`recovery.log` reason `session-alive`); sticky escalated verdicts now
+  carry measured `pending`/`notDraining`/`oldestUnreadAgeMs` instead of
+  hardcoded `false`. `doctor` reports "escalated while session alive".
+- **Added: the supervisor re-runs deferred post-update stages one per
+  pass** — `fold-all-stores`, `heal-orphan-partitions`, and
+  `fold-archived-rows` are now driven by their resume markers, budgeted by
+  `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default 20s), with a rotation
+  cursor in `deferred-sweep-state.json`; the supervisor JSON line gains
+  `deferredSweep` (closes the 0.96.0 Known item).
+- **Docs:** KB §26 gap sentence corrected.
+- **Known:** app-side archive detection may still lack a cache entry for a
+  repo whose active probe fails (`3e000e49fe1b`, under investigation); ack
+  from an unresolvable caller still fails open; leaked fixture stores
+  remain report-only.
+
+## 0.96.0 (2026-09-05)
+
+- **Fixed: routing sites select targets by heartbeat-aware liveness, not a
+  bare non-empty session id (`f56dcc08f048`, routing half).**
+  `resolveMeshTarget` and `pickSurvivor` now require a row to actually be
+  alive (heartbeat-checked) before treating its session id as a valid
+  target; `rehomeMiskeyedRow` is intentionally unchanged.
+- **Fixed: `callerOwnsRow` grants ownership of a lone same-worktree row
+  only when it is unclaimed.** A same-worktree row already claimed by
+  another session is no longer silently treated as owned by the caller.
+- **Fixed: watermark write and read+unlink now serialize under one lock**,
+  closing a race where a concurrent read and write could interleave.
+- **Added: `send`/`heartbeat` results carry additive `identity:{id,kind}`**
+  so callers can tell which kind of identity answered without guessing
+  from shape.
+- **Fixed: post-update sweeps honour deadlines mid-sweep**
+  (`foldMeshDuplicates`, `healOrphanPartitions`); fold-archived stages now
+  get per-pair deadlines with resume markers, and
+  `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS` (default 90s) caps the whole
+  devswarm stage sequence, deferring entire stages when the budget runs
+  out (`e7307778b614`).
+- **Fixed: reconcile requires a resolvable git root before per-row work**,
+  counted against the same budget; submodule/broken paths are now skipped
+  and reported as `skippedNotGitRoot` (`6ef55fd42cc9`).
+- **Fixed: `inbox ack` checks ownership before either cursor namespace
+  moves** and refuses a resolvable ownership mismatch; `read`'s refusal
+  message now names the verb and points to `peek` (`66c7c4e9973e`).
+- **Fixed: `diagnose` adds `archivedInApp`** and reports app-archived rows
+  as not live (`07e01aee4f1f`); app-archive matching now requires
+  `repositoryId` agreement and normalizes paths before comparison.
+- **Docs:** KB §36 ownership line added.
+- **Known:** the three deferred post-update stages (fold-all-stores,
+  heal-orphan-partitions, fold-archived-rows) are not yet re-run by the
+  supervisor when a budget defers them — they only run on the next update
+  (tracked as a follow-up); `ack` from an unresolvable caller still fails
+  open; leaked fixture stores remain report-only (see KB §38).
+
+## 0.95.0 (2026-09-05)
+
+- **Fixed: `diagnose` resolves a row's sessionId through the descriptor when
+  the registry is stale (`2c4ae6576fab`).** When the registry row is absent
+  or still carries the `unclaimed:` marker, `diagnose` falls back to the
+  descriptor's session id and reports `descriptorSessionId` on disagreement,
+  so a stale registry no longer silently misattributes a row.
+- **Fixed: `unclaimed:` promotion derives the caller's session id from the
+  harness process tree (`54a6539e2d69`).** Promotion first tries `--session`,
+  then the `CLAUDE_CODE_SESSION_ID` env var, and — only for rows still
+  carrying the `unclaimed:` marker — walks the parent-pid chain to find the
+  harness session file, verified with a cwd-in-worktree realpath check and a
+  pid-liveness/pid-reuse guard. The fallback fails closed: a stale or reused
+  pid rejects promotion rather than guessing a session id.
+- **Fixed: descriptor/registry marker divergence is repaired both ways** for
+  the caller's own row once a session id is confirmed by either path above.
+- **Fixed: registry write failures during promotion are surfaced, not
+  swallowed.** Inbox pull/read output now reports
+  `promotion.registryWriteError` plus one stderr line on a failed write, and
+  the promotion is retried on the next read instead of being lost silently.
+- **Docs:** KB §40 added; hooks KB documents the env-var launch-path
+  fallback; SKILL docs updated to match.
+- **Known:** leaked fixture stores remain report-only (see KB §38 for manual
+  cleanup); remaining open defects are tracked in the defect channel.
+
+## 0.94.1 (2026-09-05)
+
+- **Fixed: reconcile budget tests no longer race the wall clock** —
+  `cmdReconcile` samples an injectable clock (`ctx.reconcileNow`). v0.94.0's
+  tag exists but was never published because both CI runs failed on that
+  flaky test; v0.94.1 is the first published build of the 0.94 line.
+
+## 0.94.0 (2026-09-05)
+
+- **Fix: deterministic sender attribution for pending questions
+  (`f3b8f326bfc3`).** `companion/lib/devswarm-attribution.js` now picks a
+  stable `pendingQuestions[].from` id across repeated summary passes instead
+  of drifting with liveness churn: it prefers a real live-session row, then
+  the row matching the worktree's branch slug, then falls back to the
+  lexically smallest candidate id. Slug matching tolerates a trailing
+  separator on either side, so `wave9-A` and `wave9-A-` resolve to the same
+  attribution.
+- **Fix: unbounded reconcile could run indefinitely on a large repo set
+  (`f3c1bc827d89`).** Reconcile now defaults to a 60-second wall-clock
+  budget (`ANTIHALL_RECONCILE_BUDGET_MS`, `0` = unlimited); rows whose
+  worktree is already missing are skipped before a subagent is spawned.
+  Rows deferred by the budget are saved to `reconcile-resume.json` and are
+  processed first on the next run. Output gains additive fields only —
+  no existing field changes shape or meaning.
+- **Improvement: `update.js` reports per-stage progress on stderr** so a
+  long update doesn't look hung; `ANTIHALL_UPDATE_QUIET=1` silences it.
+  stdout output is unchanged, so scripts parsing it are unaffected.
+- **Fix: `repoKey` git spawn had no timeout** and could hang on an
+  unresponsive filesystem/remote; it now times out after 10 seconds.
+- **Feature: doctor §6l reports leaked test-fixture DevSwarm stores**
+  (report-only — no automatic cleanup). Surfaces fixture directories left
+  behind by prior test runs so they can be cleaned up manually.
+- **Tests:** four tests fixed to isolate `HOME` so they no longer read or
+  write the real user store; a new hygiene lint flags tests that spread or
+  `Object.assign` a bare `process.env` into a child env instead of isolating
+  it.
+- **Docs:** KB §38/§39 added; `RELEASING.md` step 4 now also runs
+  `doctor.js --check` as part of the release gate.
+- **Known:** leaked fixture stores are currently report-only (see KB §38 for
+  manual cleanup); `2c4ae6576fab` and `54a6539e2d69` remain open, targeted
+  for 0.95.0.
+
+## 0.93.0 (2026-09-05)
+
+- **Feature: app-side archive detection by absence, not by a field.**
+  Measured on hivecontrol 2.5.1 (maintainer machine): `workspace list all`
+  exposes no archive field, so archive status can't be read directly. The supervisor
+  sweep now caches the active set (`hivecontrol-active.json`) whenever the
+  list call succeeds with at least one record; a registry row under the
+  DevSwarm repos root that is absent from that cache by both id and
+  worktree path, and older than the snapshot by a 10-minute grace, is
+  treated as app-archived while the cache stays fresh (within 2x the
+  reconcile cooldown). This is a liveness-axis signal only — a genuine
+  unread question still gates regardless of archive status.
+- **Fix: unanswered-question attribution never resolved to the recipient's
+  own identity family (`f3b8f326bfc3`).** The sender of a pending question
+  is now resolved with the recipient and its cross-linked twins excluded
+  first: the stored sender id wins, then a cross-linked row, then the
+  shared freshest-live ranking. With no live sender-family row left, the
+  raw sender id is kept rather than mis-attributed. A reply from the true
+  sender's identity family now clears the question; a reply from the
+  recipient itself or a twin does not. Forwarded copies keep `needsReply`
+  set, since the copy is the only carrier once the source row retires.
+  The per-turn notice and the Stop gate share the same identity-family-aware
+  clearing path, including store-registry rows that carry no descriptor.
+  **Contract change:** `pendingQuestions[].from` is now the true sender's
+  identity-family id (or the raw sender id when no live family row exists)
+  instead of the freshest live row on the worktree; consumers of
+  `summary.json` that keyed on the old value should expect different ids for
+  existing stores.
+- **Fix: union counts migrate covered legacy lines exactly once.** A new
+  body-multiset tier in the union path covers NDJSON lines with no `_h`
+  hash whose legacy hash is also absent, reusing the migration helpers
+  already shared with `devswarm-unread.js`.
+- **Docs:** KB re-test recipe added for `0a668d81c0c6`; the identity-family
+  attribution contract is now documented.
+- **Known:** a question from a retired sender whose identity family has no
+  live row is listed under the raw sender id and cannot be cleared by a
+  reply yet (under review). A watermark read-then-unlink residual window
+  remains. The tail-cap refusal stays in place as defense in depth. An
+  active-list snapshot smaller than half the previous one for a repo is
+  refused (partial-list guard); a question whose sender has no registry row
+  of any kind (removed) is informational and must be acked after inspection;
+  archived-but-live senders still block.
+
+## 0.92.0 (2026-09-05)
+
+- **Feature: session-sourced row liveness.** anti-hall now classifies a
+  DevSwarm row as `active`, `idle-alive`, or `dormant` instead of a single
+  stale/alive split. An interactive Primary sitting at its prompt with a live
+  harness session pid now reads `idle-alive` — it is never called dormant and
+  never escalated (prompted by a field report; `699a236129c5`).
+- **Fix: ghost same-path registry rows now age out.** A row with a null
+  session id and no descriptor, heartbeat, cursor, or ack, older than 72
+  hours (tunable via `ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H`), now retires
+  through the existing forward-then-tombstone fold — but only when exactly
+  one non-ghost survivor exists for that path (`76891c157288`).
+- **Fix: archived rows never alert.** A row archived through anti-hall's own
+  archive verb now carries an `archived` label and is excluded from the
+  stale/escalated/dormant axis entirely. Limit: an archive performed only in
+  the DevSwarm app writes no marker anti-hall can see yet, so that path is
+  not detected (planned: a supervisor-cached hivecontrol archived list).
+- **Fix: broadcast ownership recognizes identity families.** `heartbeat
+  --summary` now accepts same-worktree or cross-linked identity-family rows
+  as owned instead of dropping them; a genuine mismatch still keeps
+  `dropped`/`dropReason` (`ecd7ad60e4cc`).
+- **Hardening (Round 15):** same worktree alone no longer grants broadcast
+  ownership — an identity link (cross-linked rows, the caller's real session
+  id on the target, or a true placeholder) is required; `archived` never
+  hides a `not-draining` backlog in the per-turn table; the watermark is
+  deleted only when the ack covers its freshly re-read value; the supervisor
+  sweep honors idle-alive; a reused pid (started after the session file) no
+  longer reads alive.
+- **Fix: live-to-dead sibling handoff no longer re-delivers the covered
+  backlog.** The watermark is now read unconditionally, the ack is anchored
+  on the delivery frontier (not an unconditional read), and the watermark
+  file is retired once a covering ack lands — closing the one-time
+  re-delivery gap on that transition.
+- **Hardening: watermark filenames.** Ids containing `.seen-` are now
+  refused outright; the filename parser is an exact inverse of the writer;
+  doctor's sweep is existence-based instead of pattern-guessing.
+- **Deferred:** app-side archive detection (see limit above); a
+  migrate-skipped-legacy-line double-count (P2, tracked not fixed); the
+  tail-cap hard refusal is now unreachable in practice and kept only as
+  defense in depth; `callerOwnsRow` clause 3 can promote a lone foreign
+  `unclaimed:` row in the caller's worktree (capped by the promotion
+  idempotence guard).
+
+## 0.91.0 (2026-09-05)
+
+- **Fix (P0): recurring sibling re-delivery.** `inbox read` (primary) and
+  `inbox count` now size a sibling's delivery window from the max of its JSON
+  ack file and its store cursor, instead of trusting either alone; fold and
+  `reap-orphans` write both cursor namespaces in lockstep so the two never
+  drift apart again. `reconcileOrphanCursor` no longer folds the NDJSON line
+  cursor into the store-row minimum and never rewinds from an untrusted zero.
+  A new caller-scoped seen-watermark stops perpetual re-delivery from a live
+  (non-ackable) sibling without touching that sibling's own cursors.
+  Fold-forward now skips rows the survivor's reader already consumed and
+  stamps `origHash` on the forwarded copy, closing the same hole in the
+  supervisor's periodic fold, `update.js`, and doctor-repair. A non-ackable
+  sibling on an acking read now takes the structural (contiguous) prefix
+  instead of an arbitrary cursor.
+- **Feature: exact dedup of forwarded copies.** An additive, nullable
+  `orig_hash` column identifies a forwarded row's original message; legacy
+  rows without the column are reconstructed for comparison. Weak-key
+  duplicates are consumed (not left to re-accumulate) with a log line
+  (`64861a623503`).
+- **Fix: unread-count unification.** `computeSummary` now uses the shared
+  loss-free union instead of a second counting path; legacy-line hashing is
+  unified, fixing a double-count of legacy lines (`8f2aec40e2ff`).
+- **Feature: `unclaimed:` session-id promotion.** A row still tagged
+  `unclaimed:<id>` is promoted to the real session id on read/pull, but only
+  ever for the caller's own row, never the row being read. Ships with a
+  forward migration in both `update.js` and doctor-repair (idempotent,
+  fail-open, no-delete).
+- **Feature: send receipts.** `cmdSend` writes a `repoKey`-scoped receipt for
+  each send; the reply tracker credits from a matching receipt before falling
+  back to stdout parsing.
+- **Clarified: `inbox read` is read-only by design.** It now reports
+  `cursorAdvanced: false` plus an `ackHint` naming the exact `inbox ack <id>`
+  command when something is outstanding; a plain read never advanced a
+  cursor (`56ba248504d0`).
+- **Feature: doctor repair mode** now runs the drain-marker, reaped-log,
+  receipt, and `unclaimed:` promotion sweeps in one pass. The
+  authority-override log honors the configured home, and a cross-project
+  override now warns about the orphan it leaves behind.
+- **Fix:** `computeSummary` skips the union entirely when the NDJSON tail has
+  no unread, avoiding needless work on the common case.
+
+Deferred to v0.92.0: a session-sourced liveness axis (`699a236129c5`), ghost
+same-path row ageing (`76891c157288`), archived-workspace rows must not
+alert, heartbeat broadcast ownership by identity family (`ecd7ad60e4cc`), and
+migrate-skipped legacy lines still double-counted (P2).
+
+**Operator note:** after updating, the first read-primary pass may deliver a
+sibling backlog once as cursors reconcile — this is expected, not a
+regression. Use `inbox messages <id> --tail N` to inspect a channel without
+moving any cursor.
+
+## 0.90.0 (2026-09-05)
+
+- **Feature: `inbox messages` gains `--since <index|date>` and `--tail N`** as a
+  post-delivery projection window. Every ack-bearing verb refuses the window
+  flags outright, and `--tail` under truncation refuses with
+  `tail-under-truncation` (pointing callers at `--since`) instead of silently
+  returning the last N rows of the oldest surviving batch as if they were the
+  newest.
+- **Fix: `cmdSend` now reports the UTF-8 byte length** of the sent payload in
+  its receipt, instead of a character count that undercounts multi-byte text.
+- **Fix: `cmdSpawn` reports `launched: true | 'unknown'`** from positive
+  post-spawn evidence within a bounded, clamped poll, rather than conflating
+  "created" with "launched." A prior occupant's still-fresh heartbeat on a
+  reused worktree is no longer misread as the new spawn's own launch signal.
+- **Fix: fold anchor guard now cross-references liveness.** The liveness half
+  of the guard uses heartbeat- and reader-evidence together
+  (`isSiblingPartitionLive`); a cross-referenced anchor keeps both heartbeat
+  and reader-evidence protection so a live anchor row is never folded away as
+  a candidate.
+- **Fix: a same-worktree UUID twin is now classified as the Primary's own
+  identity family**, not a neglected child, closing a false-positive
+  escalation path in the parent gate.
+- **Feature: in-flight drain marker.** A writer marks an ack-bearing read at
+  entry and clears it in a `finally`; the parent-gate consumer now treats a
+  downgrade from an active marker as non-escalation-spending, so a crashed
+  drain can no longer silence the gate for a TTL. A doctor sweep removes
+  stale (TTL-expired) markers.
+- **Feature: `reap-orphans`** (dry-run by default; `--apply --max N` required
+  for a live pass) archives a DevSwarm partition's unread rows to
+  `reaped/<id>.ndjson` and verifies the archive before advancing its cursor —
+  no message row is ever deleted. Gated to human-only invocation (refuses
+  under automation env or non-TTY stdin without an explicit human flag).
+- **Feature: `--force-cross-project <id>`** on `archive`, accepted only when
+  the value matches the target id exactly, audited to a dedicated log file.
+  Deliberately archive-only — it does not reopen ack/gate cross-project data
+  movement.
+- **Feature: `reconcile-registry`**, a report-only verb that surfaces
+  registry/hivecontrol drift in both directions plus `worktreePath`
+  mismatches, failing soft (not crashing) on an unrecognized hivecontrol JSON
+  shape.
+- **Feature: `heartbeat --summary`** now reports `dropped`/`dropReason` when
+  an ownership refusal discards a summary, instead of silently reporting
+  `ok: true` with no indication anything was dropped.
+- **Feature: a new PreToolUse hook additively throttles repeat-prone,
+  repo-wide scan commands** (e.g. a knowledge-graph update) by rewriting them
+  to run at background priority (`taskpolicy -c utility nice -n 19` on macOS,
+  `nice`/`ionice` on Linux) via `hookSpecificOutput.updatedInput`. Prefix-only
+  and idempotent, extendable via an environment variable allowlist, with a
+  kill switch, and it fails open when the platform's throttling tool isn't
+  available.
+- **Feature: a new SessionEnd hook sweeps orphaned MCP server processes left
+  by prior crashes.** Claude Code shuts down its own MCP children on a normal
+  SessionEnd, and SessionEnd never runs on SIGKILL, so any leaked MCP process
+  it finds is necessarily left over from an earlier crash. The sweep only
+  matches processes already reparented to PID 1 (a genuine init), requires a
+  minimum process age, caps how many it will touch per run, and is on by
+  default with a kill switch; it skips processes under a launchd/systemd
+  supervisor. (Corrects an earlier internal note: the SessionEnd payload's
+  field is `reason`, not `end_reason`.)
+- **Fix: a latent bug** where `heartbeatTs` was never imported into the
+  DevSwarm CLI module, left over from an earlier refactor.
+
+Deferred to v0.91.0: unread-count unification, `unclaimed:` session-id
+promotion + migration, delivery/send receipts, exact dedup of
+archived-then-forwarded message copies, and a retention sweep for the
+`reaped/` archive directory.
+
+## 0.89.0 (2026-09-04)
+
+- **Fix (P0): the parent-gate reply tracker silently dropped credited
+  replies.** `devswarm-parent-reply-tracker.js` parsed a Bash tool's ENTIRE
+  stdout as one JSON value; a compound command (heredoc + `grep -c` + a
+  `devswarm.js send`) printed a `0` line before the send's JSON, the parse
+  threw, and the reply vanished with no log — defeating the 0.88.0
+  identity-family fix regardless of cause. `parseSendResponse` now scans
+  stdout line-by-line and keeps the LAST line that parses to a JSON object
+  and is itself send-shaped, tolerating a trailing JSON line from a chained
+  command; a total parse failure now writes one bounded NDJSON diagnostic
+  (`event: 'reply-parse-drop'`) to `~/.devswarm/parent-inbox.log`, gated
+  behind the arming check so unarmed sessions log nothing.
+  `hooks/lib/devswarm-detect.js` gained `hasOnDiskDevswarmState()` as a
+  second arming path alongside the env-var gate.
+- **Fix (P0): `foldOne` could fold a live Primary's own mesh row as a fold
+  *candidate*, eating its mail every child turn.** `devswarm.js`'s
+  `foldGroupIntoSurvivor` protected the anchor only when it was the FOLD
+  CALLER; a co-located child's self-register
+  (`hooks/devswarm-child-turn.js` → `retireWorktreeDuplicates`) could still
+  fold the anchor in as a candidate and advance its cursor. The guard now
+  protects only an ATTENDED anchor (a live session id, or an on-disk
+  descriptor) rather than blocking on bare identity, so unattended archive
+  fixtures still retire correctly while a live anchor is protected —
+  restoring both the field regression fix and all 14 previously-failing
+  `devswarm-archive-group.test.js` cases.
+  "Attended" is decided by three independent signals: a live session id, an
+  on-disk descriptor, or READER EVIDENCE (store cursor > 0, or a primary
+  cursor file exists) — the last one added after a field report showed a
+  live Primary row carrying a synthetic `unclaimed:` session id, so its
+  only protection had been the descriptor, which `archive` deletes without a
+  liveness check. Rows the guard leaves are now reported as
+  `mesh-anchor-attended` by the archive/fold sweeps instead of the misleading
+  `raced-re-register`. Regression tests use the exact field row shape.
+- **Change (owner-mandated): parent↔workspace `SendMessage` must go through
+  the mesh, not `ListAgents`.** New `hooks/devswarm-comms-guard.js` on
+  `PreToolUse`/`SendMessage` resolves a target's cwd via
+  `~/.claude/sessions/<pid>.json` and blocks any target whose cwd sits under
+  a DevSwarm workspace root, closing a path where a workspace-backing
+  session was addressable directly as a peer. Allows `main`, agentId-form
+  targets, and any unresolved name (fails open); a name-match allow
+  backstop was removed as a loophole once regression-tested. Active only
+  while DevSwarm is detected as running.
+- **Fix: three guard false positives.** `command-guard.js` had no heredoc
+  awareness, so heredoc body lines starting with a heavy verb (e.g. "make
+  sure…") were matched as commands; it also matched heavy patterns against
+  grep/sed/awk *search-pattern* operands instead of only the command shape.
+  `edit-guard.js` had no exemption for the harness-assigned per-session
+  scratchpad and, separately, compared paths without resolving `/tmp` vs
+  `/private/tmp` on macOS, so the harness's own scratchpad path could fail
+  closed.
+- **Fix: union-read's never-read sibling cap could pin a non-ackable
+  partition to its oldest 200 messages forever.** The cap gated on the
+  partition's own cursor being zero, which never advances for a partition
+  the caller cannot ack. It now gates on backlog size instead, keeps the
+  newest capped rows for a non-ackable partition, hard-refuses any ack
+  against a capped read, and surfaces a `neverReadCapHint` pointing at
+  `inbox messages <pid>`.
+- **Fix: the twin-aware sibling ack gate stranded a caller's own twin's
+  cursor**, causing perpetual re-delivery of messages already folded into
+  the caller's own reads. The SELF-twin branch now advances the twin's
+  cursor using the same ack-target arithmetic as the caller's own ack.
+- **Fix: an escalated verdict could not be cleared for a DONE child**, and
+  the supervisor reported a fresh spawn as "idle 0m" before its first
+  heartbeat. `devswarm-parent-gate.js` now reads `archive_ready` off the
+  derived summary; `devswarm-supervisor.js` gives a 2-minute grace on
+  descriptor mtime and excludes already-done children from the idle check.
+- **Fix: `defect-store.js` could lose a record on write overflow** instead
+  of failing closed; overflow now spills as a distinct `t:'overflow'` line
+  that every reader filters on explicitly.
+- **Fix (doctor §6k): flag MCP server children orphaned under a live
+  broker.** The existing PPID==1 reaper cannot see children reparented
+  under a still-running app-server broker rather than PID 1 — correct
+  conservatism, but it leaves a real leak invisible. Doctor gained a
+  read-only, warn-only check (`checkOrphanedMcpUnderBroker`) that never
+  gates pass/fail and stays silent when `ps` is unavailable. Not anti-hall's
+  own leak; reported so it can be tracked upstream.
+- **Fix: the gone-worktree gate hint recommended a destructive override on
+  a weak signal.** `devswarm-parent-gate.js`'s hint suggested
+  `inbox ack --ack-as-owner` whenever a worktree read as gone via a bare
+  ENOENT stat — a MOVED worktree reads identically to a retired one, and
+  `--ack-as-owner` has no liveness check on its target. The hint now says
+  to inspect with `inbox read <id>` first and warns explicitly that a moved
+  worktree can read as gone before recommending the override.
+- **Fix: the reply tracker could pick a trailing non-send JSON line** (e.g.
+  a chained `inbox count`) over the actual send response; it now requires
+  the send's own shape. The arming-gate check was also reordered ahead of
+  parse/diagnostic logging so an unarmed session never writes a drop-log
+  line for stdout it wasn't tracking.
+- **Perf: `canonicalMeshId` is now memoized per fold pass** instead of
+  spawning `git` once per fold candidate.
+- **Docs:** added `docs/KB-claude-code-hooks.md` (hook event reference,
+  including the measured 10k-char injection cap and `FileChanged`
+  behavior).
+- **Field report:** the P0 reply-tracker and P0 fold-anchor fixes above
+  were both driven by an external field report of live mail loss in a
+  DevSwarm-coordinated session; both are reproduced locally and covered by
+  regression tests in this release.
+
+**Known / deferred to v0.90.0:**
+- The comms guard's liveness predicate uses `isLiveSessionId` rather than
+  `isSiblingPartitionLive`; these can diverge for a partition that is live
+  but not the calling session's direct sibling.
+- `isStaleCrossReference`'s bypass for anchor rows needs a narrower
+  definition than "any anchor."
+- Phantom-rescue can self-block under specific same-worktree spawn timing.
+- No in-flight drain marker exists between "message accepted" and
+  "message durably persisted," leaving a narrow window unaddressed.
+- `cmdSpawn` can leave a row registered-but-never-launched past its normal
+  cleanup path in one ordering; the 6-hour dead-classification deadline
+  (shipped in 0.88.0) bounds but does not eliminate this.
+
+## 0.88.0 (2026-09-03)
+
+- **Fix: `inbox ack` and `read-primary` sibling acks could each independently
+  consume a live sibling child's mail on stale-looking liveness signals.**
+  Both surfaces now route through a single shared `siblingAckGate` that
+  requires positive evidence of death before an ack is allowed to drain a
+  sibling's messages, instead of two separately-maintained gates that could
+  diverge. **This gate controls whether an ack is allowed to happen — it is
+  not a display-only signal.**
+- **Fix: `inbox ack` re-counted the live file tail at ack time (both the
+  NDJSON and store code paths), racing a concurrently-arriving message.** A
+  message that landed between the initial read and the ack call could be
+  acked-away undelivered. `inbox ack` now acks only the snapshot captured at
+  the initial read.
+- **Fix: a registry row that registered but never launched could resurface
+  its backlog forever.** Such a row is now classified dead after a 6-hour
+  deadline, allowing its partition to be drained instead of blocking
+  indefinitely. Known limitation: the deadline reads a descriptor file mtime
+  that several routine operations legitimately rewrite (`ensure` on every
+  `inbox pull`, rehome/heal, archive/unarchive round-trips,
+  `migrateOwnerKeys` via doctor-repair or the updater) — a repair, update
+  migration, or archive round-trip can extend the 6h window. The fail
+  direction is toward protection (no mail loss), never toward premature
+  drain.
+- **Change: child wake/drain instructions now use the cursor-advancing
+  `read-primary` instead of the non-mutating `inbox read`.** `inbox read`
+  could never clear a withheld gap on its own.
+- **Fix: the parent gate could report an already-answered question as
+  unanswered.** Replies are now matched across an agent's full identity
+  family instead of by raw string equality against a single id.
+- **Test infra: mutation tests now run against a scratch copy of the plugin
+  tree.** Previously a green `node --test` run could leave an injected
+  mutant sitting in the working tree's real source.
+
+## 0.87.1 (2026-08-29)
+
+- **Fix: the parent gate never consulted the mesh store on a live worktree's
+  mid-teardown inbox ENOENT, treating it as neglect it could not clear.**
+  `devswarm-parent-gate.js`'s un-clearable-axis rule only recognized a dead
+  descriptor when `worktreeIsGone()` fired on a definitive ENOENT stat of the
+  worktree path itself. A worktree that still existed on disk but whose
+  native `inbox.ndjson` was absent (mid-teardown, or before the first
+  message) fell straight to `unreadUnknown = true` and never asked the
+  store — the actual source of delivery truth (`storeSeq`) — even when the
+  Primary's own messages had already been delivered there. Added a new
+  branch, `reason === 'inbox-missing' && !foreignProject`, that opens the
+  store and requires REAL, non-empty message history
+  (`cursorValue` + `listMessages().length > 0`) before clearing the unknown
+  axis; a bare store open is not sufficient evidence, since `openStore`
+  auto-creates the partition on first touch and the real per-turn
+  registration path already opens it for unrelated bookkeeping. EACCES and
+  every other non-ENOENT reason, plus foreign-project descriptors, still
+  fall through and fail closed exactly as before. Ships alongside 0.87.0's
+  verdict-corroboration gate in the same file; both fixes coexist (110/110
+  tests in `devswarm-parent-gate.test.js` pass).
+
+## 0.87.0 (2026-08-29)
+
+- **Fix: a stale/escalated liveness verdict alone could hard-block the Primary
+  indefinitely, even after a workspace had genuinely finished.**
+  `readVerdictStatus()` in `devswarm-parent-gate.js` discarded the verdict
+  file's own `pending`/`notDraining` flags and returned only the bare
+  `status` string. Because `escalated` is STICKY (`liveness.js`'s terminal
+  short-circuit returns it unchanged until a fresh heartbeat a finished
+  session will never emit again), a persisted verdict of
+  `{"status":"escalated","pending":false,"notDraining":false}` — the verdict
+  itself saying nothing was outstanding — force-blocked the Primary on
+  ~20 consecutive turns. `readVerdict()` now threads `pending`/`notDraining`
+  through to `main()`, and a bare `stale`/`escalated` status can no longer
+  drive a hard block by itself: it now needs corroboration from at least one
+  of four independent axes (the verdict's own `pending` flag, a real
+  union-unread backlog, an unreadable unread axis — fail-open toward
+  blocking, never toward silence — or an unanswered question from that
+  family). An uncorroborated status degrades to a one-time stderr advisory
+  instead of a hard block; a family with any other real signal still blocks
+  normally. See `docs/KB-devswarm-hivecontrol.md` for the corroboration
+  invariant this generalizes: **a bare verdict label is not evidence.**
+- **Fix: `liveness.js`'s own union-unread signal double-counted a caller's own
+  outbound message as evidence the target was neglecting inbound work.** A
+  message the Primary itself just sent into a child's mailbox, still sitting
+  unread pending the CHILD's own read, was being read as the child "not
+  draining." `resolveSelfId()` resolves the caller's real Primary id
+  (mirroring `recovery.js`'s addressee-hash fix — `primaryWorkspaceId()` is a
+  pure hash of the path handed to it, and a linked worktree's own root hashes
+  to that worktree's id, not the real Primary's, unless resolved through
+  `resolveMainWorktree()` first). A new `pendingInbound` value excludes
+  store-only rows sent by that resolved self id from the staleness gate,
+  while the pre-existing `pending` value is unchanged and still reports full
+  mailbox depth for drain/ack accounting elsewhere.
+- **Fix: the DevSwarm wake instruction unconditionally told an agent to run
+  the full mailbox drain+read sequence on every wake turn, which the
+  agent's own cron prompt routinely delegated to a subagent even when the
+  mailbox was empty.** `drainCmd()` in `devswarm-wake.js` now runs the
+  cheap, inline, non-mutating `inbox count` first and only pays for a
+  drain/read (optionally delegated) when `unreadTotal > 0`. The child branch
+  still pulls its native queue unconditionally (cheap and the only way a
+  native-queue-only backlog becomes visible to a later count); only the read
+  step is gated on the count.
+- **Fix: `ackTo()` (the durable-inbox cursor primitive) was callable unlocked
+  from multiple sites, so two overlapping drains could race a cursor
+  backward** — a slow writer's lower `ackTo()` landing after a fast writer's
+  higher one regressed the cursor, causing re-delivery. `ackTo()` is now
+  monotonic by default (raises the write target to at least the current
+  on-disk cursor). `reconcileOrphanCursor()` in `scripts/devswarm.js` is the
+  one proven legitimate exception — a MIN-only reconciliation across three
+  cursor namespaces that must be able to lower a namespace stuck above the
+  others — and opts in explicitly via `{ allowRewind: true }`.
+- **Fix: a fold pass never advanced a folded-away candidate's own cursor**,
+  even after every one of its unread rows had fully forwarded to the
+  survivor, so an already-forwarded backlog kept rendering as "N unread /
+  not draining" on a `left` (never-tombstoned) candidate indefinitely. The
+  cursor now advances once the fold's forward loop completes with no
+  exception; a partial/failed forward still leaves the cursor untouched so
+  the next pass safely re-forwards idempotently (hash dedupe) instead of
+  silently dropping rows off the read frontier. The supervisor's reconcile
+  sweep is unaffected by the same stale-cursor condition as a result.
+- **Fix: the orphan-entry classifier treated a forwarded entry as orphaned
+  without checking whether it had also been drained by the consumer.** A
+  forwarded entry that is later drained is not an orphan; the classifier and
+  the store's forwarded/drained bookkeeping now agree on entry state.
+- **Docs:** every hard-coded remediation/usage string that told an agent to
+  run `send --to <id> --message "..."` (the command-guard block reason, the
+  child role/turn per-turn reminders, the parent-inbox unread/urgent/
+  unanswered nudges, and the gate's unanswered-question segment) now points
+  at `--message-file <path>` (or `--message-stdin`) instead — a
+  shell-quoted `--message` body with embedded newlines/quotes, exactly the
+  shape a structured question/reply tends to have, is prone to
+  shell-quoting mangling. Also documents the `seq` (durable, store-wide,
+  comparable across calls) vs `index` (page-local positional ordinal, the
+  unit `--to N`/the ack cursor advance in) distinction on every returned
+  message row, in both `SKILL.md` docs, to prevent a future caller from
+  comparing `index` values across separate calls.
+
+## 0.86.0 (2026-08-28)
+
+- **Fix: the ingest/supervisor daemon units emitted a `PATH` that could not resolve
+  `node`, so every `hivecontrol` grandchild died exit 127 and reconciliation
+  silently healed nothing.** The installers bake an ABSOLUTE node path as the unit's
+  interpreter (`process.execPath` at install time — commonly a version-manager
+  directory such as `~/.nvm/versions/node/vX/bin`, which is on no scheduler's default
+  `PATH`), but built the unit's `PATH` from the resolved `hivecontrol` directory plus
+  a minimal fallback only. The node bin dir was in neither. The daemon itself
+  therefore always started and passed every "is it running" check (absolute
+  `argv[0]`); the failure lived one process lower, because `hivecontrol` is a SCRIPT
+  whose shebang re-resolves `node` THROUGH `PATH`. Measured on a live install before
+  the fix: **23,928 `env: node: No such file or directory` failures across 1,757
+  supervisor sweeps spanning three repoKeys, with `healed:0` on every single sweep** —
+  reconciliation had never once succeeded, for any scope, for as long as the units had
+  existed. Fixed at the single chokepoint all six plist/service/cron emitters across
+  both installers derive from (`install-devswarm-supervisor.js` imports this very
+  function): `unitEnvFor` now prepends `dirname(execPath)` and takes `execPath` as a
+  REQUIRED argument, with each emitter passing the very `exec` it writes — so a unit's
+  `PATH` structurally cannot disagree with the interpreter baked into that same unit.
+  This completes the v0.65.0/v0.66.0 `hivecontrol`-path fixes, which addressed finding
+  the CLI but not running it. See `docs/KB-devswarm-hivecontrol.md` §31 for the
+  generalized invariant.
+- **Also closed in the same pass:** the unit environment used to be suppressed
+  ENTIRELY when `hivecontrol` could not be resolved, coupling two independent facts —
+  a `PATH` that resolves `node` is worth emitting even when the CLI path cannot be
+  pinned, so an environment is now omitted only when NEITHER input is usable. And
+  install refuses outright if the node binary at `EXEC` is not a real file, rather than
+  baking a permanently unstartable unit whose only symptom is a line in a scheduler
+  log.
+- **Fix: the ingest auto-heal was gated so it could never fire when it was needed.**
+  `runUpdate` attempted `healIngestDaemon` only when that run had synced new bytes into
+  the version cache. But a daemon's baked script path goes stale with NO version bump —
+  the plugin manager relocating or `.bak`-ing the version-pinned cache dir the unit was
+  built from, which is precisely the case the heal function's own header describes. In
+  that steady state the installed version already equals latest, `syncCache` no-ops,
+  and `classifyIngestUnit` — the one thing that would notice the dangling `scriptPath` —
+  was never reached. The heal now ALSO fires when the installed unit fails to classify
+  `ok`, via the extracted `inspectInstalledIngest` so the heal DECISION and the heal
+  ACTION read the same unit through the same lookup and cannot drift. On a no-sync run
+  the added arm is read-only (a unit enumeration plus a few `statSync`s — no spawn, no
+  writes) and fail-open. `absent` is deliberately NOT a trigger: first-installing an
+  opt-in daemon is the update skill's own documented step, so treating it as "needs
+  heal" would spawn an installer on every no-op update for every user who never enabled
+  the daemon.
+- **Fix: `devswarm-store-leak-report.js` advertised itself as read-only but wrote a
+  file on every run.** The script's own banner promises it "deletes, moves, renames,
+  and truncates NOTHING", yet `--out` defaulted to a timestamped path under
+  `.anti-hall/reports/`, so merely asking a question about the store deposited a JSON
+  file in the tree. The write is now OPT-IN — no `--out`, no file — and the summary
+  says plainly that nothing was written and how to ask for the artifact. Every `--out`
+  safety property is unchanged and still applies whenever a path is named (realpath
+  containment against the store root, the `.json` requirement, the
+  `O_EXCL`/`O_NOFOLLOW` create, and the report-marker check before any overwrite). The
+  audit/classification logic is untouched.
+
+## 0.85.0 (2026-08-25)
+
+- **Fix: archiving a workspace now retires its whole identity family, so the
+  Primary's Stop gate can no longer be blocked forever by an inbox that cannot
+  exist.** `archive` tombstoned by `<id>` only, but a descriptor's identity family
+  can be cross-linked by `sessionId` instead (one row's `sessionId` IS the other
+  row's `id`), so the twin stayed live in `workspaces/` after its sibling was
+  archived. `devswarm-parent-gate.js` then nagged every turn about the missing
+  inbox file of a workspace that by design could never produce one — un-clearable
+  without editing state by hand. `cmdArchive` now retires the whole family at
+  archive time, and `foldArchivedFamilyDescriptors` is a forward migration for the
+  descriptor sets already split by the bug (wired into BOTH
+  `skills/update/scripts/update.js` and `doctor`'s AUTO-SAFE
+  `fold-archived-family-descriptors` repair, per this repo's persisted-shape rule).
+  It is the descriptor-file counterpart of v0.70.0's `foldArchivedRegistryRows`,
+  which only covered the registry half.
+- **The parent gate distinguishes a dead descriptor from neglect.** The rule used
+  to be that `known:false` on the unread read ALWAYS blocked, unconditionally,
+  including an absent inbox file. That absolute was the defect: an `inbox-missing`
+  (ENOENT, and only ENOENT) on a descriptor whose `worktreePath` is ALSO provably
+  gone from disk is not neglect, it is a dead descriptor, and no action the Primary
+  can take would ever clear it. That one conjunction no longer raises the unknown
+  axis. **Nothing is hidden:** a gone worktree with store-side unread still blocks
+  on `unionUnread`, a stale/escalated verdict still blocks, and every other
+  unreadable reason (`inbox-unreadable`/EACCES/EISDIR, `cursor-*`, `no-inbox-path`,
+  `read-threw`) still blocks regardless of the worktree. "Gone" requires a
+  definitive ENOENT `lstat` on an ABSOLUTE path — a missing/empty `worktreePath`, a
+  relative path, a dangling symlink, or a stat failing for any other reason is NOT
+  provably gone and therefore still blocks.
+- **A descriptor is retired only against PROVEN write authority.** Adversarial
+  review of the first pass found three ways the retire path could delete a LIVE
+  descriptor instead of the intended tombstone twin: a classification made before
+  the lock and acted on after it, a race with the non-locking child-turn descriptor
+  writer, and a reused id whose old tombstone was accepted as authority over a
+  brand-new unrelated descriptor. All three are closed by proving authority before
+  any write — a coherent inode+bytes generation fingerprint
+  (`descriptorFileGeneration`/`sameDescriptorGeneration`) re-read INSIDE the per-id
+  lock and compared against the scan-time snapshot, a per-id lock now taken by
+  `devswarm-child-turn.js` around its own descriptor rename (bounded ~1s, fail-open,
+  no nested acquisition), and `worktreeIsProvablyGone`'s fail-closed gate on the
+  migration path. A generation mismatch or unproven gone-ness REFUSES the retire
+  rather than guessing. Grouping uses the id/`sessionId` cross-link only, never bare
+  worktree equality, so two legitimately-live tabs on one worktree are never
+  retired.
+- **Safety refusals are reported, not rendered as a clean no-op.** A pass that
+  declines to retire a twin (tombstone bytes differ, lock busy, descriptor changed
+  since the scan, worktree still present) now surfaces those in `left[]` — through
+  `update`'s summary line and through a doctor `notice` rendered on both the pending
+  and the not-pending path — and a run that raised reports `ok:false`. Reporting
+  only the retire count made every refusal look identical to "nothing to migrate".
+- **Worktree paths are persisted absolute, and legacy relative paths fail closed.**
+  A relative `worktreePath` is only meaningful against the cwd it was registered
+  from, which the descriptor does not record; resolving it from the Primary's cwd
+  answers a different question. `scripts/devswarm.js` now writes absolute paths, and
+  both readers treat a non-absolute path as "not provably gone" — i.e. keep
+  blocking, keep the descriptor.
+- **Fix: `npm test` no longer writes into the developer's real HOME.**
+  `tests/hooks/flutter-debug.test.js` spawned the REAL `hooks/doctor.js` with a
+  wholesale `process.env` spread and no HOME override, and `doctor.js` defaults to
+  repairs ON with `dryRun:false`. None of the 12 `migrationFix` passes in
+  `hooks/lib/doctor-repair.js` sit inside the `gateOpen` block, so running the suite
+  folded store DBs, rewrote registry rows, migrated owner keys, and touched
+  recovery-intent markers against the real `~/.anti-hall/` and
+  `~/.claude/settings.json`. CI was never affected (a fresh runner has no state), so
+  this was a developer-machine-only hazard, and it predates this release. The test
+  now runs doctor with `--check` plus an isolated disposable HOME, and
+  `tests/helpers/spawn-hook.js`'s `testHook`/`testHookRaw` fall back to a
+  per-process `mkdtemp` dir instead of the real machine home. The regression guard
+  that should have caught it was a hardcoded 4-file allowlist that missed this fifth
+  spawner entirely; it is now a scan over the whole `tests/` tree for anything that
+  spawns `doctor.js` as a child process, with a self-check so a broken scan fails
+  loudly instead of silently protecting nothing.
+
+## 0.84.0 (2026-08-23)
+
+- **Fix: a mesh partition now resolves from the workspace's own registered
+  project, not from the directory the command happened to run in.** `inbox
+  read-primary`/`inbox count` derived the store partition from the caller's
+  working directory, so a Primary could be told — by anti-hall's own Stop gate —
+  to drain mail it structurally could not see, and running the prescribed command
+  from the wrong directory risked writing a read cursor into an unrelated
+  project's partition. Resolution now comes from the workspace's registered
+  `repoKey`, via one shared helper (`companion/lib/devswarm-repokey.js`
+  `registeredRepoKey`, precedence: fresh key → recorded `repoKey` → a non-hash
+  `ownerKey`) that the CLI and the Stop hook both call, so the two can no longer
+  disagree about which workspaces a session owns. Closes the gate/verb scope
+  mismatch recorded as a known open issue in the DevSwarm KB.
+- **Fix: cross-project commands no longer move a foreign project's workspace
+  before deciding they are not allowed to touch it.** `gate`, `ensure`, and
+  `archive` re-homed a workspace registered to another project — copying messages
+  and registry rows and rewriting its `ownerKey` — *before* their own ownership
+  guard ran, so even an invocation that ended in `ok:false` had already mutated
+  another project's state; `archive` additionally removed the live descriptor.
+  The ownership check now runs first, and a refused call writes nothing.
+- **Fix: `inbox ack` on a workspace the caller does not own no longer skips that
+  workspace's mail.** The cursor advanced even after the resolver had already
+  refused the read, permanently stepping over messages nobody had seen.
+- **Fix: the Primary Stop gate no longer hides genuinely drainable mail.** Two
+  paths could make real unread invisible to the gate: a persisted `repoKey` that
+  had gone permanently stale, and a descriptor carrying only an `ownerKey`. Both
+  now resolve through the same shared helper the CLI uses.
+- **`inbox count`/`inbox read` fail honestly instead of returning a silent zero.**
+  When the caller's project does not match the workspace's, the result now
+  carries `known:false` plus the named `registeredRepoKey` and `callerRepoKey`,
+  so "I cannot read this from here" can no longer be misread as "there is no
+  mail".
+- **Fix: defect fields are no longer silently truncated.** The shared clamp cut
+  over-length values at their cap and reported plain success, with nothing in the
+  result or the stored record to show text had been lost — a survey of the live
+  store found 41% of ruling notes and 27% of `observed` values sitting exactly at
+  the cap, i.e. amputated. Truncation is now named in `scripts/defect.js`'s JSON
+  result and on stderr, and marked inside the persisted value (`[truncated from N
+  chars]`). The caps for `note` (300 → 1200), `claimed`, and `observed` were
+  raised, bounded so a maximum-length field still cannot push a record past
+  `MAX_LINE_BYTES`. The write itself never fails.
+- **Fix: archived partitions nothing can ever read no longer warn every turn.**
+  The orphan detector counted an archived child's own outbox copy as unread mail
+  with no reader, producing a permanent, unactionable per-turn warning (12
+  partitions in one real store). It now excludes exactly the set
+  `healOrphanPartitions` classifies as `unhealable/archived-no-family`, by calling
+  heal's own exported helpers rather than re-implementing the rule — with an
+  equivalence test that fails CI if the two predicates ever drift. The count is
+  preserved in a new quiet `archivedStranded` field rather than dropped, and the
+  classifier fails open, so it can only ever quiet a warning it positively proved
+  is unactionable.
+
+## 0.83.0 (2026-08-23)
+
+- **DevSwarm child workspaces can no longer update the knowledge graph.** A
+  child workspace may still query the graph freely, but any command that
+  writes or rebuilds it (`graphify update`, `--update`, `--obsidian`) is now
+  refused there — maintaining the graph is the Primary's job. Previously
+  every child workspace carried the same doctrine text and built its own
+  duplicate copy of the graph, so many copies of the same data accumulated
+  and none of them were ever read. Detection reuses the existing DevSwarm
+  child-workspace signal, and the check fails open, so a Primary is never
+  blocked.
+- **The query-the-graph-first guard no longer blocks — it's advisory now.**
+  The guard already exempted subagents, and under anti-hall's own
+  delegation-first doctrine essentially all code search happens inside
+  subagents, so the block could never reach the work it was aimed at while
+  still adding friction to the coordinator and occasionally blocking
+  legitimate commands. The recommendation stays; the block is gone.
+- **Write detection sees through more wrapping.** `bash -c`, `eval`, and
+  `$()`/backtick wrapping are now unwrapped up to a bounded depth before the
+  write check runs, and a write flag takes precedence over the subcommand —
+  `graphify query --update` counts as a write, not a query.
+- **Fix: mesh routing is now deterministic when no workspace in a group is
+  live.** This closes the non-determinism noted as a known limitation in
+  0.82.0 — the send target used to fall back to whatever the registry
+  happened to enumerate first, so successive sends from one session could
+  land in different partitions minutes apart. The fallback now selects by
+  most-recently-updated with a stable tiebreak, so the same set of rows
+  always yields the same target. Live-workspace selection is unchanged.
+- **Fix: a send now verifies the message is actually readable before
+  reporting success.** Earlier releases reported success straight from the
+  write call; a claimed fix in an earlier version only added echo fields to
+  the response and never verified anything. The send now re-reads the
+  target partition and confirms the message is there. A verification
+  *error* (couldn't check) is reported as unverified, not as failure — only
+  a positive absence of the message is reported as a failed send.
+- **Merged inbox reads are now bounded.** A read that merges several
+  registry partitions plus the file-based channel had no size limit. There
+  is now a generous default limit with an override. A truncated read never
+  advances a cursor past a withheld message, and the response says
+  explicitly that it was truncated and how many messages were withheld.
+- **Fix: archiving a workspace could be silently undone.** Routine
+  per-turn re-registration could recreate an archived workspace's
+  descriptor and registry row, quietly reversing the archive. Re-registering
+  an archived workspace id is now refused — unless the registration is for
+  a genuinely different workspace that happens to reuse the same id, which
+  is allowed and reported as such.
+- **`diagnose` now surfaces a partition that has exactly one live
+  workspace.** The condition was already detected internally but nothing in
+  the output showed it, so a genuinely split mesh could still look healthy
+  at a glance. Adds a degraded/warning field plus a human-readable line.
+- **Fix: acknowledging mail now reports when the read cursor could not be
+  saved.** A store-side cursor write failure was previously swallowed
+  behind a success result, so already-read messages could silently
+  reappear as unread. The failure is now reported, naming the partition and
+  channel that failed to persist. Delivery behavior is unchanged — messages
+  are still acknowledged on the durable channel.
+- **The defect CLI now rejects unknown flags instead of ignoring them.**
+  Previously an unrecognised flag was accepted, its value silently dropped,
+  and success reported — which repeatedly produced defect records with
+  empty fields. Also adds a `partial` ruling status for a fix that shipped
+  in part, and documents that only `--sym-file`/`--repro-file` accept file
+  paths (other value flags do not).
+- **Fix: the status line no longer drops its second line under load.** A
+  too-short internal timeout made a healthy-but-slow render fail open into
+  a misleading single-line status.
+
+Known limitations:
+
+- Write detection does not see through `source <(...)` process substitution,
+  shell aliases, or an absolute path straight to the `graphify` binary. This
+  is a guardrail, not a security boundary — a determined bypass is still
+  possible. Heredoc wrapping is now unwrapped for the common forms, but
+  nested or multiple heredocs on one line, and `<<<` here-strings, fall back
+  to prior behavior, erring toward allowing.
+- A merged inbox read's returned count may exceed the stated limit when
+  truncation occurs — per-source boundaries are deliberately widened so
+  that no cursor ever advances past a withheld message.
+
+## 0.82.0 (2026-08-23)
+
+- **Fix: a Primary could not see mail delivered to it.** anti-hall addresses
+  a workspace by a logical mesh id, but one logical Primary can legitimately
+  have two registry rows — one keyed by the host tool's own workspace id,
+  one by anti-hall's derived id. Sending resolved that group dynamically
+  (picking the live row); the Primary's own inbox read used a fixed derived
+  id and looked at only one partition. Mail delivered to the other row was
+  invisible to the reader. The Primary's own inbox read verbs (`read-primary`,
+  `peek-primary`, and any `--ack` read) now cover every partition in the mesh
+  group, so a Primary using those verbs sees all of its mail regardless of
+  which row a sender resolved to.
+- **Fix: `peek-primary` and `read-primary` only read one of the two message
+  channels.** anti-hall keeps a file-based inbox and a store partition; the
+  counting verbs already merged both, but the two verbs a Primary uses to
+  actually read its mail did not — so the unread count and the visible
+  mailbox could disagree substantially. Both now use the same merge.
+- **Fix: cursor safety.** A read cursor is only ever advanced past messages
+  that were actually delivered to the caller — derived from what the read
+  returned, never from a partition total. Prevents the failure where a
+  cursor claims mail was read that was never delivered.
+- **Fix: honest reporting when a read is incomplete.** If a cursor cannot be
+  persisted, the result now says so and names the partition and channel
+  instead of reporting plain success. If the set of sibling partitions
+  cannot be determined, the result marks the group unresolved and the
+  totals partial, rather than silently reading a narrower set and
+  presenting the total as complete.
+- **By design: duplicate delivery over suppression.** Where two messages
+  cannot be proven to be the same message, both are delivered — a duplicate
+  is visible and recoverable, while a dropped message is neither.
+
+Known limitations:
+
+- The counting/reading verbs that take an explicit workspace id (`inbox count <id>`,
+  `inbox read <id>`, `inbox messages <id>`) still resolve a single partition and can
+  under-report mail sitting in the sibling row, unlike the Primary's own read verbs above.
+- When no row in a mesh group is currently live, which row a send resolves to is not
+  deterministic — it falls back to registry enumeration order rather than a stable rule.
+
+## 0.81.0 (2026-08-23)
+
+- **Fix: a Primary's own inbox could be permanently unreachable.** A
+  `primary-*` descriptor created without an explicit inbox path kept
+  `inboxPath: null` forever — child descriptors self-heal this every turn,
+  but Primary rows had no equivalent, so reconcile failed the same way on
+  every run and mail addressed to that mailbox was undeliverable. The
+  register ensure-path now backfills `inboxPath`/`cursorPath` from the
+  caller's defaults (only when empty, never overwriting an existing value),
+  and the inbox pull now derives the standard default path instead of
+  erroring — matching what three sibling call sites already did.
+- **Fix: `diagnose` could report a dead workspace as live, and a live one as
+  dead.** Liveness came from a bare session id string with no expiry and no
+  heartbeat correlation: a closed workspace's row stayed "live" forever,
+  while a running workspace whose session id was never stamped read as
+  dead. `diagnose`/`healthcheck` now derive the displayed liveness from the
+  heartbeat instead. This is a **display-only** change — routing,
+  fold/retire/adopt, and tombstone decisions still use the previous signal
+  unchanged, deliberately, so no fold can newly happen as a result of this
+  fix.
+- **Fix: a workspace with a fresh heartbeat but an unclaimed session id
+  showed as dead.** A fresh heartbeat now takes precedence for the
+  displayed liveness field; a row that is unclaimed with no (or a stale)
+  heartbeat still shows not-live, and routing still treats "unclaimed" as
+  never-live, unchanged.
+- **Fix: small stores could starve behind large ones during update
+  sweeps.** Store processing order was raw directory order under a
+  wall-clock budget, so one large store could consume the entire budget and
+  leave trivial ones unprocessed run after run. Sweeps now process
+  smallest-first.
+- **Fix: unfixable orphan stores burned sweep budget and were invisible.**
+  Orphan stores with no descriptor — which anti-hall refuses to adopt,
+  because adopting one would mean inventing ownership it can't verify — are
+  now processed last and skipped cheaply once the budget is spent, and a
+  capped sample of which ones and why is now reported instead of just a
+  count. Nothing about an orphan is persisted: a store whose descriptor
+  reappears is still adopted normally on the next pass.
+- **Docs: `lastCompletedHash` in the sweep state file is observability-only,
+  not a resume cursor** — `pendingHashes` is the authoritative resume list.
+  Documented to prevent a future reader from treating it as one.
+
+## 0.80.0 (2026-08-22)
+
+- **New: a `/anti-hall:defects` skill on both ports** — the durable defect
+  channel shipped in v0.78.0 worked but had no discoverable entry point: no
+  skill described it, and the runtime nudge that told an operator to run it
+  pointed at a skill that did not exist, on both the Claude and Codex ports.
+  It was only documented in files an agent doesn't load. The `devswarm`
+  skill now also points at it, since that's the skill a DevSwarm session
+  actually loads. A test now pins every `/anti-hall:<name>` reference in the
+  plugin to a skill that actually exists, on both ports, with no allowlist.
+- **New: `--sym-file`/`--repro-file` on `defect.js report`.** A report body
+  can now be passed as a file instead of a shell argument, so a caller
+  reporting a bug about shell quoting doesn't have to fight shell quoting to
+  file it.
+- **New: regression detection, derived from the reporter's installed
+  version.** A report matching a defect the maintainer already ruled
+  `fixed` is now classified automatically: on a build at or past the
+  version that claimed the fix, it's a genuine `regressed` reappearance; on
+  an older build, it stays `fixed` and is flagged `staleBuild` instead — a
+  report from someone who just needs to update, not a new regression. A
+  regressed defect never auto-archives as resolved.
+- **Fix: reporter identity no longer depends on the current directory.** It
+  used to come from the cwd basename, so a report filed from a scratch
+  directory got an identity nothing else could match — silently breaking
+  `--mine`, the only way a reporter sees rulings on their own reports. It
+  now prefers an explicit flag, then an environment variable, then the
+  project's repo key, matching old cwd-basename reports too so nothing
+  already filed stops matching.
+- **Fix: a Primary that explains itself is no longer escalated like one
+  ignoring the gate.** The parent gate invited a Primary to say a block was
+  intentional but never used the answer — a stated reason accumulated
+  toward escalation at the same rate as silence. A stated intent now
+  suppresses escalation while the condition that triggered it is unchanged;
+  the first block always still fires, and escalation resumes the moment the
+  condition actually changes.
+- **Fix: the wake watcher no longer declines in silence.** Its three
+  decline paths (not a DevSwarm session, an identity it couldn't resolve, a
+  lock another watcher already holds) wrote to stderr and exited zero —
+  indistinguishable from a healthy, quiet watcher to a Monitor caller who
+  only sees stdout. Each refusal now prints one line on stdout naming the
+  reason, so a caller who thinks they have wake coverage can tell they
+  don't.
+- **Fix: a partition with exactly one live row is now visible.** The mesh
+  split check recognized two-or-more-live and zero-live groups but missed
+  the shape where one row of two is live — sends could land on a row nobody
+  was draining while the diagnostic reported healthy. `send` and `diagnose`
+  now also agree on which rows belong to a group (previously grouped by
+  different identities), and `send` reports how many candidates it had and
+  which row it chose.
+- **Fix: "inbox unreadable" now says which file failed and why.** A
+  descriptor with no inbox path, an absent file, and an unreadable file all
+  used to collapse into one unhelpful message, and a family member's
+  failure could be misattributed to the Primary's own id. The gate now
+  names the actual cause (missing field, absent file, or a read/parse
+  failure with path and errno) and the actual workspace it happened to.
+- **Fix: the updater no longer reports "unknown error" for a reconcile
+  failure it already had the real cause for** — it now surfaces the
+  per-target error, matching a fix the doctor already had.
+
+## 0.79.0 (2026-08-22)
+
+- **New: anti-hall now notices when its own knowledge goes stale.** It
+  already probed the installed DevSwarm version against its baseline; it now
+  also compares the installed Claude Code CLI version against the version
+  its harness KB was audited on, and compares the hook/skill counts
+  `docs/KB.md` CLAIMS against what is actually on disk. All three probes are
+  advisory, SessionStart only, deduped so they cannot nag, and fail open and
+  silent.
+- **Why the model check is a date, not a network probe:** model facts (the
+  current lineup, pricing) are not discoverable from the local machine, so a
+  probe that cannot verify its claim would either invent an answer or fail
+  constantly. Instead it records when the model KBs were last audited and
+  advises past 60 days — an honest "not checked in N days" instead of a
+  guess.
+- **Both fired on their first run:** the repo self-drift probe caught
+  `docs/KB.md` claiming 49 hooks when there were actually 53, and the model
+  KB staleness clock read 85 days.
+- **Model KBs re-audited:** Opus 4.8 is deprecated (superseded by Opus 5,
+  June 2026); Fable 5 is the current flagship; Sonnet 5 held its
+  introductory price; cache multipliers and current per-model pricing
+  recorded. MODEL-POLICY routes by tier token and resolves to the newest
+  family member at runtime, so executable routing was never affected — only
+  the prose was stale.
+- **New: downshift guidance.** Moving off the flagship to conserve limits
+  still needs 1M context, so Sonnet 5 is the target; Haiku 4.5 is
+  disqualified at 200k despite being cheaper (still right for trivial leaf
+  work).
+
+## 0.78.0 (2026-08-22)
+
+- **New: a durable defect channel between agents and the maintainer.** Any
+  agent running anti-hall in any repo can now file a structured defect
+  report via a CLI (`scripts/defect.js report`), and the maintainer session
+  drains reports and writes back rulings (`scripts/defect.js rule`). Reports
+  live in
+  `~/.anti-hall/defects/`, one append-only NDJSON file per defect —
+  cross-repo, survives session death, and never enters a git worktree.
+- **Why not the mesh:** bug reports about anti-hall's own messaging layer
+  should not travel through that layer.
+- **No stored state:** status, occurrence count, and first/last-seen are
+  derived from a defect file's own lines on every read, so two fields can
+  never disagree — there is only one field. Status is the last ruling in
+  append order (not by timestamp), so clock skew between writers cannot
+  flip it.
+- **Writes are verified:** every append is re-read and matched byte-exact
+  against the file; a write that cannot be confirmed reports
+  `write-unverified` and exits non-zero instead of claiming success.
+- **Nothing is deleted:** acking and resolving both append a ruling line;
+  rotation renames ruled-and-stale files into an archive directory. An
+  open defect never moves regardless of age.
+- **Bounded from the start:** at most 200 open defects, 20 reports per
+  defect, 64 KiB per file, 4 KiB per line, 1000 archived files — every cap
+  refuses with a distinct outcome instead of silently dropping a report.
+- **Discovery is quiet:** one SessionStart line, at most once per day,
+  never a Stop hook and never a forced acknowledgement — and it carries no
+  reporter-supplied text, only counts and ages.
+- New CLI verbs on `scripts/defect.js`: `report`, `list [--mine|--open]`,
+  `show <fp>`, `rule <fp> --status ack|fixed|wontfix|notabug|dup`,
+  `archive`.
+
+## 0.77.1 (2026-08-22)
+
+- **Fix: a partition nobody was draining could have its mail moved the wrong
+  way.** When every row in a mesh identity group failed the liveness check,
+  the fold fell through to whichever row sorted first in the registry —
+  which for a real case would have forwarded a drained row's backlog into
+  the row nobody reads. The fold now refuses to fold such a group and
+  records it as needing attention. Refusing is deliberate: with no live
+  row, a cursor-based tiebreak cannot tell an actively-drained row from one
+  advanced once and abandoned. An unfolded group self-heals once a row goes
+  live; a wrong-direction forward does not.
+- **Fix: the check meant to catch that reported it as healthy.** A split
+  required two or more LIVE rows, so the dangerous shape — two rows, nobody
+  draining either — never appeared, while the benign case of two live tabs
+  on one worktree was flagged degraded. Diagnose now reports `liveSplit`
+  and `deadSplit` separately; healthcheck counts dead splits, treats them
+  as degraded, and prints a distinct warning.
+
+## 0.77.0 (2026-08-22)
+
+- **Fix: a DevSwarm workspace could be counted twice in "needs attention."**
+  Two descriptor files sharing one worktree — a builder-id descriptor and a
+  slug descriptor — each produced their own row, including duplicating the
+  Primary's own row; a live session saw 3 where the app showed 2. Reads now
+  collapse rows by identity family at read time. Nothing is retired or
+  deleted — the store layer's refusal to retire a descriptor-backed row is
+  deliberate, protecting two live tabs open on the same worktree.
+- **Fix: unread mail stranded in an unregistered mesh partition.** A Primary
+  drained one row, saw "0 unread," and was technically right — four real
+  messages sat unread in a different, unregistered partition for hours. The
+  heal now adopts an unregistered partition and folds it into its identity
+  family. Cursor reconciliation takes the MINIMUM across namespaces and only
+  ever lowers a cursor, never raises one — taking the maximum would mark
+  messages read that nobody had actually seen.
+- **Fix: archived mail was unreachable.** Descriptors move to `archived/` on
+  workspace retirement, but the orphan lookup only ever read `workspaces/` —
+  105 of 110 reported "no descriptor" orphans actually had one, just in the
+  wrong directory. Archived orphans are now forwarded (never adopted, never
+  deleted), carrying provenance and capped at 30 days old.
+- **Fix: mesh read/ack values meant different things in different places.**
+  `seq` was a positional ordinal in one verb and the physical mesh sequence
+  number in its sibling; `unread` was a boolean in one place, a count in
+  another, and a two-channel sum in a third; `read`/`ack` returned `ok:
+  true` after acking nothing on an unregistered id; `send` silently
+  discarded the hash it had already computed. Every value is now named
+  explicitly, with the old keys kept as aliases so nothing that reads them
+  today breaks.
+- **New: `--message-file` and `--message-stdin` for `devswarm` message
+  sends**, so a body with newlines, quotes, or shell-special characters
+  survives verbatim instead of being mangled by argv escaping. `send` now
+  also echoes the `bytes` and `hash` it computed for the sent message.
+- **New: counters name their own scope.** `orphansWithUnread` (this repo's
+  orphans with unread mail) is now reported separately from
+  `orphanPartitions` (all stores, any repo), and the healthcheck output
+  states which `repoKey` it scoped its counts to.
+- **New: `ANTIHALL_DEVSWARM_ARCHIVE_FORWARD_MAX_AGE_DAYS`** tunes the
+  archived-orphan forwarding age cap (default 30 days).
+
+## 0.76.0 (2026-08-21)
+
+- **Security/data-loss fix: the DevSwarm parent gate could mark a child's
+  question read without the child ever seeing it, with no way to undo it.**
+  `devswarm-parent-gate.js` counted the Primary's OWN just-sent outbound
+  messages toward a workspace's "neglect" score, so a Primary that had just
+  messaged a child could still trip the neglect check — and the remediation
+  it then suggested, `inbox read-primary <child-id>`, advances that child's
+  read cursor. Following the guard's own advice would silently mark the
+  child's real, unread question as read, with no un-ack and no recovery.
+  Fixed by excluding own-sender rows from the neglect count and pointing the
+  remediation at the read-only `inbox peek-primary <id>` instead, which
+  inspects the inbox without moving the cursor. A Primary genuinely reading
+  its own inbox for the first time still correctly uses `read-primary`.
+- **Fix: doctor's `[reconcile]` check collapsed every failure into
+  `unknown error`, discarding the real per-target error.** Root cause: one
+  failing target had a `worktreePath` that no longer existed on disk, and
+  Node reports a missing `cwd` passed to a spawned child as an `ENOENT` on
+  the *executable*, not the directory — a generic message that gave no hint
+  which target or why. `doctor-repair.js` now surfaces the real per-target
+  errors (bounded, with a "+N more" summary for large batches) instead of
+  swallowing them. A missing `worktreePath` is now a recognized benign skip
+  (`worktreeMissing`), alongside the existing `locked` / `hivecontrolMissing`
+  skips, and a descriptor with an existing archived counterpart is now
+  detected and reported as `archivedDuplicate` — detection only; nothing is
+  ever deleted.
+- **Security: DevSwarm destructive-verb blocks bypassed via the `devswarm`
+  alias.** `command-guard` anchored its four DevSwarm destructive-command
+  blocks on the literal verb `hivecontrol`, but `hivecontrol` is a thin shim
+  that execs `devswarm` — the primary command name, equally on PATH. Running
+  `devswarm workspace monitor`, `read-messages`, `message-child`, or
+  `message-parent` directly therefore bypassed every block. Fixed with a
+  shared verb set and an alternation that matches either name; both the
+  Claude and Codex ports share the same hook file, so both are covered.
+  Latent since the blocks were added, not a new regression.
+- **New: DevSwarm version drift detection.** anti-hall had no visibility into
+  which DevSwarm version was installed, so its integration silently drifted
+  from a 2.3.5 baseline to 2.5.1 without anyone noticing — a real risk
+  because `command-guard` matches DevSwarm subcommands by literal string, so
+  a renamed verb in a future release would make a block silently stop
+  matching. A new SessionStart hook (`devswarm-version.js`, backed by a
+  detached background refresh so session start is never blocked) probes the
+  installed DevSwarm version, compares it against the shared baseline, and
+  advises on a major/minor drift (patch-only stays silent; a downgrade is
+  worded accordingly). The advisory dedupes on (installed, baseline) so it
+  never nags twice for the same drift. Absent DevSwarm or unparseable output
+  fails open and silent. Registered once, shared by both ports; also wired
+  into the doctor health check.
+- **Fix: `graphify-guard` recommended a wiki index file that doesn't exist.**
+  The guard's block message pointed agents at `<graph>/wiki/index.md`, but
+  `graphify update` never produces a `wiki/` directory — only `graph.json`,
+  `GRAPH_REPORT.md`, and `manifest.json` — so every block sent the agent to
+  a dead path. Fixed with an existence-checked fallback cascade (wiki index
+  → `GRAPH_REPORT.md` → `manifest.json` → the bare `/graphify query`
+  command) so the guard never names a path that isn't there. The block
+  itself is unchanged, only the recommendation text.
+- **Fix: unbounded per-session state growth under `~/.anti-hall`.** Every
+  per-session state file (task-tracker, speculation-guard, tasklist-guard,
+  codex-nudge) was kept forever and never read back once its session ended.
+  On a heavy multi-session machine this reached 47,000+ files across 71
+  days — and anti-hall's own `doctor.js` self-tests made it worse, orphaning
+  one file per hook on every run. A shared `pruneStale()` helper is now
+  wired into each hook's existing write path (no new hook, no new event): it
+  removes same-prefix files older than 7 days, throttled to once per 6 hours
+  so the cleanup scan never sits on the hot path, never touches the current
+  session's own file, and fails open if pruning itself errors. This run
+  pruned 42,236 orphaned files (`~/.anti-hall` 58,803 → 583 entries).
+- **Docs.** Recorded DevSwarm 2.5.x findings in the knowledge base: the
+  unauthenticated local HTTP API surface, Claude Code harness messaging
+  semantics, the v2.5.0 chat surface (a cloud-relayed, non-persisted feature
+  distinct from workspace messaging), and the `transcriptByteOffset`
+  agent-liveness signal.
+
+## 0.75.1 (2026-08-08)
+
+- **Updater performance + UX.** The `update` skill's post-update DevSwarm sweeps
+  (`fold-all-stores`, `heal-registry-rows`) could turn a routine update into a
+  minutes-long stall on a heavily-used machine with hundreds of per-project
+  stores, since each sweep re-enumerated and re-walked every store in full on
+  EVERY run regardless of whether anything had changed. Fixed with a
+  run-once-per-version stamp (`~/.anti-hall/update-sweep-state.json`) so a
+  re-run at the same version skips a completed sweep entirely (idempotent,
+  fail-open, no-delete); a single shared store-hash enumeration reused across
+  both post-update sweeps instead of each doing its own full directory
+  listing; and per-store throttling via a bounded time budget
+  (`ANTIHALL_UPDATE_SWEEP_BUDGET_MS`, default 20s) with a persisted
+  resume list so a sweep that hits the budget stops cleanly mid-list and
+  picks up where it left off next run, never re-walking already-processed
+  stores. The one-time `ownerKey` migration and the ingest-daemon heal are
+  similarly stamped per-version to skip a redundant re-run. Separately, git
+  calls inside the updater (`gitState`, `gitPullFfOnly`) now time out after
+  20s instead of 60s, so a hung or slow remote fails fast into the existing
+  fail-open path (report + continue with local state) rather than blocking
+  the update for up to a full minute per call.
+
+## 0.75.0 (2026-08-08)
+
+- **DevSwarm: partition-split identity family fix — evidence-based row-liveness
+  ranking + unified freshest-live primitive.** Two or more workspace rows could
+  describe the same partition (mesh ID + workspace ID + repo path), creating
+  silent state divergence when a parent restarted, drained, or the workspace was
+  accessed across sessions. Root causes: (1) row-liveness ranking used only
+  recency (`lastHeartbeatMs`), conflating activity with live-ness and demoting
+  proof of active drains or session-authored heartbeats; (2) no unified
+  selection primitive, causing three callers to independently pick rows with
+  drifting tie-break rules. Fixed with a three-tier evidence-based ranking
+  (`companion/lib/devswarm-liveness.js`, `rankRowLiveness`): session-reference
+  integrity (does the row's `sessionId` exist?), drain-activity proof (explicit
+  `draining` heartbeat + wall-time staleness within 20s), session-authored
+  heartbeats (a heartbeat from the exact session listed in the row) — recency is
+  now a final tie-break only. `devswarm-store.js`'s `selectFreshestLiveRow`
+  centralizes that ranking (replaces three independent pickers in fold, read
+  paths, and the parent table); all callers thread through it, eliminating
+  drift. `fold` operation now merges realpath-proven duplicate rows
+  (forward-before-tombstone, zero data loss): reads the full partition set,
+  scores each row, merges older rows into the freshest-live row via
+  `mergeHeartbeatRows`, and prunes obsolete copies. Parent inbox now applies a
+  non-acking `peek-primary` read variant (reads the primary durable NDJSON
+  inbox first, then the store-only backlog) and re-runs liveness against the
+  union before rendering. Parent-gate carries a two-axis escalation ceiling
+  (bounded plain-backlog nag count AND a separate bounded unanswered-question
+  count) so a persistently-neglected workspace or an unanswered question can
+  never nag forever without a human being told to look. Titles-not-ids
+  instruction added to primary-facing injections (parent table + prose
+  guidance) so end-users see `Workspace: "Fix the parser gate…"` not
+  `Workspace: "mesh-abc123def"`; mesh IDs remain in CLI operations. Two new
+  self-heal migrations (both platforms, idempotent, fail-open, no-delete):
+  `update.js`'s and `doctor-repair.js`'s `migrateOwnerKeys` backfill the
+  `ownerKey` descriptor field and re-home an active hash-bucket split across
+  both active and archived descriptors. Heartbeat callers instrumented
+  (`heartbeatCallersLogPath`/`appendHeartbeatCallerLog`) so an unidentified
+  caller invoking `heartbeat` without `--session` is logged for attribution.
+
+  **[CORRECTION 2026-08-22]** An audit (`git log -S` against every named
+  symbol, cross-checked against the actual shipped files) found this entry
+  mis-describes what `db5822b` actually shipped. Corrected, without deleting
+  the original text above:
+  - `companion/lib/devswarm-liveness.js` never existed under that name — the
+    file is `companion/lib/devswarm-liveness-select.js`.
+  - `rankRowLiveness` never existed under that name — the exported function is
+    `pickFreshestLive`.
+  - `selectFreshestLiveRow` never existed under that name — the store-side
+    function is `resolveSenderRegistryId` (`companion/lib/devswarm-store.js`),
+    which delegates to `pickFreshestLive`.
+  - **`mergeHeartbeatRows` was never built.** It exists in no commit and no
+    file — grep of the full tree and `git log -S` both return zero hits
+    outside this CHANGELOG's own prose. This was announced and never shipped;
+    flagged as the most serious item per this repo's false-completion stance.
+  - "all callers thread through it, eliminating drift" is **false as
+    written**: `hooks/devswarm-parent-gate.js` (verified via `grep`) has zero
+    references to `devswarm-liveness-select.js`, `pickFreshestLive`, or
+    `resolveSenderRegistryId`. The 0.75.0 work landed in the
+    store/registry-row layer only — the descriptor layer that renders the
+    parent gate table never adopted it.
+  - Signal (b), described above as "drain-activity proof (explicit `draining`
+    heartbeat + 20s wall-time staleness)", did not ship as described. The
+    actual shipped signal (verified in `devswarm-liveness-select.js`) is
+    comparative cursor-row evidence (`hasCursorRow`/`cursorValue`/
+    `messageCount`) — there is no `draining` field and no 20-second window
+    anywhere in the file.
+  - Signal (a), described above as "session-reference integrity (does the
+    row's `sessionId` exist?)", is mis-described. The shipped check is alias
+    detection: `sidStr !== String(d.id) && groupIds.has(sidStr)`.
+  - Accurate as originally written (no correction needed): signal (c)
+    session-authored heartbeats, `peek-primary`, `migrateOwnerKeys`, and
+    `heartbeatCallersLogPath`/`appendHeartbeatCallerLog`.
+  - The descriptor-layer gap this entry implied was already fixed is now
+    actually fixed, in `d1c8625` ("fix(devswarm): collapse identity families
+    so one workspace is counted once" — reader-side identity-family
+    collapse).
+
+- **Agent-reliability rails.** Three small, independently fail-open additions
+  hardening background/teammate-agent and session-resume reliability:
+  - `verify-first-subagent.js` (SubagentStart) now tells every spawned agent to
+    `SendMessage` its final report to the coordinator BEFORE finishing (a bare
+    turn-end silently loses it) and to never end a turn waiting on a background
+    task (its completion notification routes to the main session, not to the
+    waiting agent — run long commands foreground or poll the output file).
+  - `tasklist-guard.js`'s "tracked NO tasks" nudge now points at a PRIOR
+    session's `.anti-hall/handovers/<today>/*/state.md` snapshot (if one
+    exists) so a session resuming with an empty task list recreates it from
+    the snapshot instead of inventing one from scratch.
+  - Resume-verification enforcement: `handover-resume.js` now records a small
+    per-session marker whenever it injects a guided-resume pointer, and its
+    injected instructions ask the agent to append a `resume-verified: <ISO
+    timestamp> -- <summary>` line to the HANDOVER file after running the
+    checklist. `tasklist-guard.js` backs this up mechanically — if a resume
+    injection happened this session, file-changing work then occurs, and no
+    `resume-verified:` marker ever lands in the referenced file, ONE capped
+    Stop-hook block fires naming it. The handover skill (both platforms)
+    documents the new marker line and its enforcement.
+
+## 0.74.0 (2026-08-08)
+
+- **DevSwarm: unpushed/no-upstream risk surfacing + git-verified merged gate
+  (report-only).** A child could self-declare `merged` while its work sat
+  unpushed and un-reviewable — nothing detected the single-copy-on-disk state.
+  Two independent, fail-open git ground-truth probes land in
+  `companion/lib/devswarm-git-truth.js` (`gitPushState`, `gitMergedInto`),
+  both using the same argv-array `spawnSync` convention as
+  `liveness.js`'s `defaultGitCommitTs`: never shell-interpolated, a 4s
+  timeout, and `null` (never a fabricated fact) on any probe failure.
+  `devswarm-child-turn.js`'s `writeHeartbeat` attaches one `gitPushState`
+  probe per turn (`noUpstream`/`unpushed`, omitted entirely when unresolved);
+  `devswarm-store.js`'s `computeSummary` threads that into each workspace
+  projection along with a new `merged_verified` gate row (never a new
+  persisted-shape column); `devswarm-parent-inbox.js` renders a `⚠ no
+  upstream` / `⚠ N unpushed` / `merged (unverified)` marker next to the
+  workspace title in the roster table. `scripts/devswarm.js`'s `cmdGate`
+  runs the ancestry check whenever `--set merged` fires and persists
+  `merged_verified` alongside `merged`, warning on stderr when the check
+  resolves false (a squash/rebase merge legitimately breaks ancestry even
+  though the work IS merged) — the gate is set either way. Strictly
+  REPORT-ONLY throughout: nothing here blocks, kills, or archives; it only
+  makes an existing self-declared state visible before a human acts on it.
+
+## 0.73.0 (2026-08-07)
+
+- **DevSwarm child inbox-neglect, fixed (SkyCrew field incident).** Root cause
+  had three parts: (1) `send --to` writes ONLY to the store — never the
+  durable NDJSON inbox — so any reader checking NDJSON alone (liveness's
+  unread backlog, the child/parent Stop gates) was blind to a mesh-direct
+  backlog that could climb 14→15 while every gate read 0; (2) a child has no
+  mid-turn re-entry point — `devswarm-child-turn.js` fires once per
+  UserPromptSubmit, never during a long autonomous task, so a poke never
+  re-surfaced; (3) the existing remedy path silently mutated state instead of
+  reporting. Fixed with a shared LOSS-FREE UNION unread primitive
+  (`companion/lib/devswarm-unread.js`, NDJSON ∪ store-only, hash-deduped —
+  `scripts/devswarm.js`'s CLI now delegates to it too instead of a third
+  drifting copy), wired into liveness and both Stop gates so `notDraining`
+  and `oldestUnreadAgeMs` are computed against the true union; and a new
+  throttled `devswarm-child-drain.js` PostToolUse/Bash hook (child-only,
+  mirrors the Primary-only reply-tracker) that gives a child a re-entry point
+  on every tool call, re-injecting only when the unread count changes or a
+  10-minute window elapses. The child/parent Stop-gate messages now split
+  "CHILD NOT DRAINING" from "YOUR INBOX" and name the workspace by title, and
+  the heartbeat verdict path is unified with the union read. Registered on
+  both platforms (`hooks/hooks.json` and `codex/hooks/hooks.json`).
+- **Handover skill hardening (7 threads, owner amendments 2026-08-07).**
+  Self-write mandate: the handover skill now states explicitly that the
+  agent holding session context must write it — never delegate to a
+  subagent, which loses decision/trial fidelity — and documents this as the
+  explicit exception to delegation-first (edit-guard already allows direct
+  writes under `.anti-hall/handovers/**`). `model-routing-guard.js` adds a
+  capped-once-per-session advisory that fires independently of model-tier
+  routing when a spawn looks like it's being asked to write/prepare a
+  handover. `state.md`'s template gains a Task list snapshot table, and both
+  `HANDOVER.md`'s Open items and the next-session usage steps point at it so
+  a fresh session reconciles its task list before working. `edit-guard.js`
+  now redirects a NEW handover-named `.md` write outside
+  `.anti-hall/handovers/**` back to the correct location instead of silently
+  allowing it anywhere under cwd (existing files and ambiguous cwd are
+  unaffected). `handover-resume.js` emits a one-line negative report on a
+  clear/compact source when no handover is found at all, naming the
+  wrong-location write as the likely cause. `tasklist-guard.js` adds two
+  capped, ride-along (never a new block on their own) Stop advisories:
+  boundary-surfacing when a block is about to fire with no handover dir yet,
+  and a staleness rail when file-changing work happened after the newest
+  `HANDOVER*.md`'s mtime. The skill also adds an explicit quiesce gate
+  (enumerate/await/park every running background item, `⏳`/`✅` status
+  format) and a terminal declaration rule — the `✅ SAFE TO COMPACT` line is
+  the last act of the turn; any work after it makes the handover stale and
+  requires refresh + re-declare.
+- **Fix:** `devswarm-supervisor.js`'s `sweepOnce` built the object literal
+  passed to `computeLiveness` without `env` (it was computed locally but
+  never threaded through), so liveness always fell back to `process.env`
+  instead of honoring an injected/test env.
+
+## 0.72.0 (2026-08-07)
+
+- **New `handover` skill (Claude + Codex).** Writes a comprehensive, multi-file session
+  handover under `.anti-hall/handovers/` — task state, decisions, open threads, and
+  verification status — with a global index and sequence chaining across handovers, so a
+  fresh session can resume without re-deriving or guessing anything. Mirrored for Codex
+  under `plugins/anti-hall/codex/skills/anti-hall-handover/`.
+- **New `handover-resume` SessionStart hook.** On session start (including after
+  `/clear` or compaction), surfaces the latest handover and guides a structured resume,
+  superseding the lossy default compact summary. Registered on both the Claude
+  `hooks.json` and the Codex hook subset (`install-codex.js`, Codex `hooks.json`).
+- **New KB doc:** `docs/KB-session-handover.md` (24+ sources) documenting the handover
+  design and resume flow.
+
+## 0.71.4 (2026-08-05)
+
+- **New always-apply `autonomous-execution` discipline (both platforms).** Once the user
+  authorizes a scope ("do all" / "yes" / "go", a task list, or a named process), the agent
+  now runs the WHOLE scope to done — driving each item build → review → fix → deploy →
+  verify and acting on background results as they land — instead of pausing to re-confirm
+  steps the authorization already covered. Naming/wording, running an already-requested
+  process, shipping already-reviewed work, and picking between roughly-equivalent options
+  are no longer check-in points; the agent picks the better one, notes it, and proceeds,
+  reporting ONE consolidated end result. Injected via `verify-first-full.js` (SessionStart)
+  and `verify-first-subagent.js` (SubagentStart, phrased for the worker framing: the
+  assigned task IS the authorization), and mirrored for Codex as a new
+  "Autonomous execution (always apply)" section in `AGENTS.md`.
+- **The discipline lowers no existing bar.** It explicitly cross-references, rather than
+  overrides, the stop-points that already existed: a credential/secret the agent cannot
+  supply, any destructive or irreversible action, deletions still requiring explicit
+  confirmation, `DONE` still meaning VERIFIED (Positive Rule 6), and scope expansion past
+  what was authorized still requiring confirmation (SCOPE & FIDELITY).
+- **Output-style guidance strengthened (rule K + its mirrors).** The rich, scannable
+  presentation (tables for status/comparisons, **bold** verdicts, `code` for flags/paths,
+  a single leading status glyph as SIGNAL) is now stated as the DEFAULT for every
+  user-facing report rather than an occasional flourish, and sliding back to bare plain
+  text over a long session is named as DRIFT to correct. Applied to `verify-first-orch.js`
+  rule K, the `verify-first-subagent.js` scannability line, the `AGENTS.md` scannability
+  bullet, and the Codex `anti-hall-orchestration` skill mirror. Emoji-as-signal-never-
+  decoration is unchanged.
+
+## 0.71.3 (2026-08-04)
+
+- **DevSwarm ingest installer resolves hivecontrol via a robust tiered chain.**
+  `install-devswarm-ingest.js` now resolves hivecontrol via `ANTIHALL_DEVSWARM_HIVECONTROL`
+  → a persisted last-known-good cache at `~/.anti-hall/devswarm/hivecontrol-path.json` →
+  a login-shell lookup → known install locations, and caches every success, so a
+  reinstall from a minimal-env caller (hook, doctor repair, bare subagent shell) no
+  longer silently bakes a PATH-less daemon that ENOENTs and stops ingesting; on total
+  miss it now prints a loud stderr warning instead of failing silently, while still
+  installing fail-open.
+
+## 0.71.2 (2026-08-04)
+
+- **DevSwarm installer rejects unknown/mistyped flags.** `install-devswarm-ingest.js`
+  now rejects unknown/mistyped flags and handles `--help`/`-h` by printing usage and
+  exiting, instead of silently running a full daemon install on an unrecognized flag.
+
+## 0.71.1 (2026-08-04)
+
+- **DevSwarm ingest daemon busy-spin fix (elapsed-aware pacing, `7242575`).** The ingest
+  daemon's success-path loop spun as fast as the OS would schedule it instead of
+  respecting `intervalSec`, causing a `data.kalloc.1024` macOS kernel-allocator leak and
+  ~11% idle CPU. The loop now sleeps for the remaining time in the interval (elapsed-aware,
+  ~1 iteration per `intervalSec`), clamped to a finite `MAX_PACE_MS` ceiling so a
+  misconfigured interval can't overflow back into busy-spinning.
+- **Delivery to running installs (`c09cf9f`, `3d0d03e`).** The daemon now stamps its
+  plugin `codeVersion` into the heartbeat; `doctor-repair` restarts an alive daemon found
+  running stale code (self-clearing — no restart-bounce once it's current), and the
+  updater force-restarts the ingest daemon after `update.js` runs so an already-running
+  unbounded-loop daemon actually re-execs onto the paced code instead of persisting until
+  its next natural restart.
+- Measured in a controlled harness: ~362x fewer fork/exec spawns per second (busy-spin
+  ~384/s -> paced ~1/s).
+
+## 0.71.0 (2026-08-04)
+
+- **Append-only reply-state redesign (`recordReply`, merge `adfd61c`).** DevSwarm parent
+  decide-gate reply-state moved from a lockfile read-modify-write of a merged JSON object
+  to an append-only JSONL log — `recordReply` is now one `O_APPEND` write with no lock,
+  `readReplyState` folds the log on read, a fail-closed newline separator guards partial
+  records, each record is capped at 480 bytes, and the fold accumulator uses
+  `Object.create(null)` so a `__proto__`-named sender survives the fold instead of
+  polluting the prototype. Ships with a loss-safe forward migration (`migrateReplyState`)
+  wired into both `update.js` and `doctor-repair`, with an accepted, documented residual
+  in the final write window. Structurally eliminates the disclosed steal-branch TOCTOU
+  rather than patching around it.
+- **Emoji-as-signal rule propagated to subagents + Codex (`e6f6e3f`).** Rule K (status
+  glyph as SIGNAL, never decoration) is now also injected at `SubagentStart` and in the
+  Codex orchestration skill, not just the orchestrator's `SessionStart`.
+- **Test-store-leak hardening + read-only leaked-bucket audit (merge `9b89fdd`).** Fixed
+  4 doctor tests' `HOME`-default landmine, where an unset test override silently fell
+  back to the real home directory. Added a new READ-ONLY store audit/classifier
+  (REAL/GARBAGE/UNKNOWN) and a leak-report CLI whose `--out` is guarded (realpath
+  canonicalization against the store root, `O_EXCL`/`O_NOFOLLOW` write, a distinctive
+  report marker) so it can never overwrite a production `devswarm.db`; ambiguous or
+  unreadable evidence degrades to UNKNOWN, never GARBAGE. Detection-only — it never
+  deletes.
+- **`register-primary` records the real Claude `session_id` (merge `dfad611`).**
+  `--session` now defaults to `CLAUDE_CODE_SESSION_ID` (previously the workspace hash),
+  so Primary registry rows resolve their transcript for liveness reads. Also corrected a
+  KB doc's broken `$CLAUDE_SESSION_ID` reference.
+
+## 0.70.1 (2026-08-04)
+
+- **Liveness-aware roster read — dormant-tier demotion (`7f253cd`).** A DevSwarm mesh/
+  registry row outlives its workspace — closing a workspace in the DevSwarm app deletes
+  nothing (registry row, worktree, descriptor, `hivecontrol workspace list` entry all
+  survive) — so a row whose newest known activity signal (heartbeat timestamp,
+  transcript mtime, or supervisor verdict) is at least `ANTIHALL_DEVSWARM_DORMANT_MS`
+  old (default 30 min) is now labeled `dormant` (rank 5, sorts last, below `active`)
+  instead of reading as still-active forever. Demotes, never hides — a dormant row
+  still renders with its unread count, only ranked last; never overrides
+  `escalated`/`stale`/`archive-ready`; fail-open on any read error. `scripts/devswarm.js`
+  `roster` carries the identical hint so the two surfaces can't disagree.
+- **Edit-guard: coordinator handover/compact-prep doc exclusion (`f6e2931`).** The
+  Primary write-block now excludes coordinator handover / compact-prep `.md` docs from
+  the block, closing a false-positive that stopped a Primary from writing its own
+  session handoff. Bypass-safe: gated by basename + `.md` extension, cwd-containment
+  checked, hardlinks rejected.
+- **DevSwarm `archive`: shortId/prefix resolve (`78425ae`).** `archive <id>` now
+  resolves the workspace id by an unambiguous shortId/prefix, so the id shown in the
+  roster/injection table is directly archivable without pasting the full id. An
+  ambiguous prefix (matches more than one row) archives nothing and lists the
+  candidates instead; exact full-id behavior is unchanged; `isSafeId` still gates
+  (no `/`).
+
+## 0.70.0
+
+- **DevSwarm mesh/store hardening — message-loss fix (merge `5856eb9`).** `archive` used
+  to tombstone exactly one registry row per archive, so a worktree that had been
+  archived-and-reregistered across multiple generations could still hold LIVE sibling
+  rows sharing that worktree — and a live row is what makes a message get forwarded
+  there instead of to a genuinely-live partition. `foldArchivedRegistryRows` (new,
+  `scripts/devswarm.js`) now folds ALL same-worktree registry rows for an archived id
+  and picks the forward survivor by LIVENESS (`pickArchiveForwardSurvivor`), fixing a
+  P0 where a real unanswered question could be forwarded into a dead partition nothing
+  drains. Ships as a dual-path persisted-shape migration — wired into BOTH `update`
+  (`skills/update/scripts/update.js`) and `doctor --fix`
+  (`hooks/lib/doctor-repair.js`'s `migrationFix('fold-archived-rows', ...)`) — and is
+  idempotent (a retired row is gone, a second run is a no-op), fail-open-honestly
+  (never silently reports success on a raised error), and no-delete (message rows are
+  never deleted; only registry rows are tombstoned after their unread is forwarded).
+  Also in this merge: decide-gate follow-ups — durable per-project reply-state, cap
+  escalation, and a `recordReply` lock closing a lost-update race under concurrent
+  writers. Hardened via a multi-round deadly-loop.
+- **Injection token / archived-row read-filter fixes (merge `58c307d`, incl. `f4d26ef`).**
+  A NEW `archivedOnlyIds`/read-side filter in `companion/lib/devswarm-store.js` excludes
+  a genuinely archived workspace (`archived/<id>.json` present, `workspaces/<id>.json`
+  absent) from the LIVE per-turn projection immediately — without needing a `doctor`
+  run first, closing the window where a stale ACTIVE row inflated every DevSwarm
+  injection. An archived workspace with real unread still surfaces as an `orphans[]`
+  entry instead of going dark (no lost signal); the predicate structurally cannot hide
+  a live row (a live workspace has its own descriptor by definition) and fails open to
+  an empty set on any read error. `cmdArchive` (`scripts/devswarm.js`) gained a
+  descriptor-conflict self-heal (`archivedTombstoneIsOrphaned`, decided by inode not by
+  registry state, fail-closed on any incomplete scan) that unblocks re-archiving an id
+  whose `archived/<id>.json` was a stale leftover from a prior archive generation. The
+  per-turn parent-inbox STOP imperative (`hooks/devswarm-parent-inbox.js`) is softened
+  to advisory wording for the normal tier; the loud (urgent/high) tier is untouched.
+- **Test-flake hardening (`fe0d901`, `b99eafb`).** 5 doctor/limit test files hardened
+  against contention-killed subprocesses (`spawnSync` timeout + signal tolerance); no
+  assertion was weakened.
+- **Emoji-as-signal orchestration guidance (`873467d`).** Rule K in `verify-first-orch.js`
+  now names the exact signal glyphs (✅/❌/⚠️) instead of a vague "emoji = signal, not
+  decoration" — same intent, less ambiguity for the model to over-apply.
+
+## 0.69.0
+
+- **Harness Phase-1 hooks: `output-verify-guard` + `failure-root-cause-nudge`, plus a sandbox doc
+  section.** Adopted from the Fable-reviewed harness-feature adoption plan
+  (`docs/superpowers/specs/2026-08-01-harness-feature-adoption.md`). `output-verify-guard.js`
+  (PostToolUse, matcher Bash) scans a Bash tool call's own output for a passing signal (e.g. "8
+  passed", "PASS") alongside a failing signal (e.g. "2 failed", a confirmed non-zero exit) in the
+  SAME run — the shape of a partial-pass summary that is easy to mis-report as a clean "tests
+  pass" — and annotates (never blocks). `failure-root-cause-nudge.js` (PostToolUseFailure, matcher
+  Bash) adds one short reminder pointing at `/anti-hall:root-cause` when a Bash command exits
+  non-zero, deliberately terse since OMC already injects its own root-cause nudges in this
+  harness. Both are advisory-only and fail-open. `AGENTS.md` gained a SANDBOXING sub-bullet
+  recommending the harness's `/sandbox` mode for autonomous build-heavy sessions (doc-only, no
+  mechanical enforcement).
+- **DevSwarm parent decide+reply gate.** The Stop-gate (`devswarm-parent-gate.js`) could previously
+  be satisfied by a Primary merely *reading* a child's blocking `--question` — it now requires an
+  OBSERVED reply: a new `devswarm-parent-reply-tracker.js` (PostToolUse, matcher Bash, Primary
+  only) watches for a successful `devswarm.js send --to <id> --question`-style direct send and
+  records it via a new durable, per-project reply-state store
+  (`companion/lib/devswarm-reply-state.js`, keyed by a repo-scoped `repoKey` so it survives a
+  read/ack and new Claude sessions, not a short-lived `session_id`). The forced-ack cap
+  (`MAX_BLOCKS`) can no longer silence an unanswered question forever — once exhausted it
+  escalates once with distinct wording instead of going quiet. Every Primary turn also re-asserts
+  the decide+reply obligation. `recordReply`'s read-modify-write is now lock-protected (an O_EXCL
+  lock with retry/backoff) after a reproduced race lost entries under concurrent writers. New
+  persisted shape: a `needs_reply` column on mesh rows (sqlite: additive `ALTER TABLE ADD COLUMN`,
+  idempotent + fail-open + no-delete, applied on every store open; journal backend: absent field
+  reads as `false`) plus the new reply-state JSON file (fails open to `{}` when absent — no prior
+  shape to migrate from). Hardened via a 6-round deadly-loop (Reviewer/Auditor/Critic) that found
+  and fixed a read-vs-reply lifetime mismatch, an identity-space mismatch, 3 row-copy paths
+  dropping the new flag, a Codex upgrade-detection gap, and the concurrent-write race above.
+- **DevSwarm child self-continue directive.** A child in a multi-round autonomous task (deadly-loop,
+  iterative fix waves) previously had no mechanical push to keep working between rounds — ending
+  its turn to "check in" cost a full wake-cycle (supervisor cron) before it resumed. A new per-turn
+  directive in `devswarm-child-turn.js` tells the child to keep issuing tool calls across rounds
+  within the same turn, reserving `Stop` for a genuine block, final completion, or an unrecoverable
+  error. Shared verbatim with the Codex port (registered unmodified from `hooks/devswarm-child-turn.js`).
+- **Windows support dropped.** Removed `windows-latest` from the CI matrix (ubuntu-latest +
+  macos-latest remain) and corrected support-claim language across `plugin.json`, `README.md`,
+  `llms.txt`, and `AGENTS.md` from "runs on Windows/macOS/Linux" to macOS + Linux supported,
+  Windows untested and not officially supported. Pure-Node cross-platform code is unchanged —
+  Windows may still work, it's just no longer tested or claimed as supported.
+
+## 0.68.2
+
+- **Doctor's install-divergence check now walks the full shipped tree instead of a 2-file sample.**
+  0.68.1 added the installed-vs-source comparison (below) but only checked two files (the wake
+  watcher and `monitors.json`), so real drift elsewhere — e.g. a stale `hooks/api-guard.js` — went
+  unreported: exactly the silently-frozen-cache failure the check exists to catch. It now
+  sha256-hashes every shipped file under the plugin root and reports content mismatches plus files
+  present in only one of the two roots (installed vs marketplace source), bounded by per-file size
+  (5 MB) and total-diff (20) caps so a pathological tree can't run away. Regression test covers
+  `api-guard.js` drift, asymmetric file presence, and a clean tree.
+
+## 0.68.1
+
+This release exists primarily so the 0.68.0 gate fix can actually reach installed users.
+
+- **Direct messages sent with `send --to` are readable by their recipient.** They were written
+  to the store while `inbox read`/`count` read a per-workspace NDJSON that only the native queue
+  populates; with native messaging unavailable, nothing wrote it, so messages were unreadable
+  while the projection counted them as unread — a workspace was told to commit finished work,
+  never saw it, and the work was abandoned. Both channels are now unioned and deduped by content
+  hash; `ack` advances the store cursor under the existing ownership check; `read` stays
+  non-mutating.
+- **Doctor detects an installed copy that diverged from its source.** The harness runs a
+  version-pinned cache dir, and the updater never overwrites an existing one — so a cache
+  populated mid-release freezes pre-release code under the released version number and no later
+  update can refresh it. That happened to 0.68.0: the executed copy carried an already-fixed gate
+  bug and nothing reported it. Doctor now compares installed against source at the same version
+  and names the differing files and the remedy. It also reports whether monitors.json is present
+  in the installed root, since its absence removes the only mechanical arming path.
+- **Note for anyone whose 0.68.0 install predates this release:** a version-pinned cache cannot be
+  refreshed in place by the updater, which is why this is a version bump rather than a silent
+  re-sync.
+
+Known limitations:
+
+- The 0.68.0 limitations still apply (see below).
+- If a native message reaches the NDJSON but the best-effort store parity write fails, the union
+  reports more unread than the store-only projection.
+
+## 0.68.0
+
+DevSwarm idle-wake gains a Monitor-tool path that wakes an idle orchestrator the moment new direct mesh mail lands, instead of waiting up to 5 minutes for the cron fallback. The cron fallback is never removed — the Monitor path is strictly additive, so nothing regresses if it is unavailable.
+
+- **Monitor-based wake watcher.** New `companion/lib/devswarm-wake-watch.js` plus a `monitors/monitors.json` plugin manifest. Pure `tick(state, snapshot)` core split from the IO runner so the logic is unit-testable without spawning a process. Edge-triggers on a monotonic per-workspace message counter, never on file mtime — an mtime trigger fires on every heartbeat write and would exhaust the ~19-20 event notification budget.
+- **Mechanical single-instance lock.** A duplicate watcher self-refuses: zero stdout (stdout is what wakes the agent), a one-line stderr notice, exit 0.
+- **Four projection and silent-failure fixes** merged alongside it: devswarm-pull no longer ignores a subprocess exit status (and no longer broadcasts "merge completed" on a FAILED merge); duplicate heartbeat broadcasts no longer saturate the projection; a corrupt truncated archived descriptor is surfaced instead of silently dropped; and the test suite no longer registers real launchd jobs on the host.
+- **The wake watcher is gated on an active DevSwarm session.** `monitors.json` declares `"when": "always"`, so without a gate the watcher would start for every personal-scope install — including users who never touched DevSwarm — costing them a polling process, an unsolicited transcript line, and state directories. It now exits quietly unless the session is genuinely DevSwarm-active, and fails closed if the check itself errors.
+
+Known limitations:
+
+- Monitor-based wake is verified by construction, not by a live end-to-end runtime test. The monitors manifest test asserts schema and shape only and says so explicitly.
+- Project-scope (`@skills-dir`) plugin installs do not load background monitors at all. Those users keep the cron wake path and get no Monitor path.
+- Watcher identity is derived from the git worktree, so two orchestrators in the same repository resolve to the same identity; the second watcher refuses its lock and only the lock winner gets low-latency wakes. The loser still has cron.
+- If a summary file is missing or unreadable, the watcher's counter reads as absent rather than as an error, while a PID-based liveness check still reports the process as live. A wedged watcher can therefore look healthy. Cron remains the backstop.
+- Wake notifications are subject to the same ~19-20 event budget as any monitor; past that, low-latency wakes stop and only cron remains.
+
+## 0.67.1
+
+Fixes the DevSwarm supervisor escalation path for a Primary that has self-registered from the true main worktree — it had never delivered end-to-end. A Primary that has not self-registered that way still has its escalation land in the orphans list: the informational parent-inbox hook surfaces orphans, but the blocking parent-gate hook does not, so such a Primary can stop unblocked on an escalation the informational hook would have shown it. That gap is not fixed in this release.
+
+- **Supervisor escalations now actually reach the parent.** Four stacked defects, any one of which alone would have silently swallowed an escalation: the projection was never refreshed after an escalation was appended, so the parent-facing view stayed stale; the store was opened without a hash and wrote to a legacy bucket instead of the repoKey store; the parent id was derived from the child's own worktree path rather than resolved to the true parent, so escalations landed in the child's own bucket; and two fold/rehome paths skipped their projection refresh entirely on specific branches.
+- **Hardened the roster's native fold against cross-repo env hijack.** `hivecontrol workspace list children` resolves its scope entirely from `DEVSWARM_REPO_ID`/`DEVSWARM_BUILDER_ID`, never from cwd — a process holding a foreign repo's env gets that repo's children back with exit 0 and valid JSON. Each record's `repositoryId` is now cross-checked against a separate cwd-anchored, env-stripped `list all` lookup; mismatches are dropped and logged. Fails open unfiltered (older hivecontrol without `repositoryId`, no ground truth, spawn error) — the fold is never hard-failed.
+- **Added `devswarm.js skip <guard> [--ttl <minutes>]`**, the CLI entry point edit-guard's own block message already pointed agents at but which did not exist — agents were hand-rolling `node -e` scripts to write `~/.anti-hall/skip.json` directly. Also fixed edit-guard's block message itself, which titled its reason "DEVSWARM EDIT-DELEGATION RULE" while the skip key it actually checks is `edit-guard`, so following the message's own wording wrote a useless key and got blocked anyway.
+- **Guarded the `devswarm-repokey.js` require** in `recovery.js` — it is loaded top-level by both `devswarm-supervisor.js`'s sweep loop and `devswarm.js`'s CLI entry, neither of which wraps its own top-level requires in the fail-open guarantees that cover their call sites. A throwing require (corrupt or deleted `devswarm-repokey.js`) would have crashed both consumers before any fail-open path could engage.
+
+## 0.67.0
+
+DevSwarm workspaces get human-readable names, a lost review seat can no longer report a clean gate, and model routing goes version-agnostic.
+
+- **DevSwarm workspaces are now shown by human-readable name instead of raw UUID.** The parent orchestrator previously surfaced workspaces as bare UUIDs (e.g. "archive 13531615…"), which meant nothing to a human reader. hivecontrol already exposed a free-text `label`, but `parseChildrenList` dropped it, mapping only `{branch, id, path}`. `devswarm.js` now sets a title after a successful `hivecontrol workspace create`, via a SEPARATE best-effort `hivecontrol workspace update-title -b <branch> "<title>"` call — derived from the `-p` brief (first non-empty line, one leading markdown marker stripped, whitespace collapsed, 60-char word-boundary truncation). A caller-supplied `-t/--title` is never overridden. New shared module `plugins/anti-hall/companion/lib/devswarm-names.js` owns an fs name cache (atomic tmp+rename; reads fail open). The parent-inbox hook renders `name (shortid)`, reading ONLY the fs projection — it never spawns hivecontrol, preserving its per-turn hot-path contract. `spawn` remains a strict thin pass-through: the argv forwarded to `hivecontrol workspace create` is untouched, so future hivecontrol flags keep working without anti-hall changes. `reconcile` caches whatever label hivecontrol actually has for pre-existing workspaces — it deliberately does NOT invent titles for workspaces with no brief on record, since an ungrounded label would be written into a real user-facing field.
+- **Review-seat integrity: a lost seat can no longer report a clean gate.** `ship-it`'s per-phase gate previously ignored dead seats entirely, so FEWER live seats produced FEWER findings and therefore `converged: true` — missing review coverage actively produced a PASSING gate. The gate now carries `totalSeats`, `liveSeats`, `deadSeats`, `degraded`, and `seatReports`, and `converged` requires `deadSeats === 0`. **Behavior change:** a phase that loses a seat will now correctly fail to converge where it previously passed silently. `ship-it` now also honors `args.codexAvailable` (mirroring `deadly-loop`, including the Opus adversarial-persona fallback). `codex-availability.js` now instructs the coordinator to thread its result into `ship-it`/`deadly-loop` Workflow invocations, the same way `fable-availability.js` already does — workflow scripts have no filesystem access and cannot read the JSON themselves. Corrected three docs that claimed an "enforced codexUp probe" gating the Critic seat: no probe existed, it is a caller-supplied flag that fail-opens to true, and a null Codex spawn remains the real backstop.
+- **Model routing is now version-agnostic.** Removed pinned model versions ("Sonnet 5", "Fable 5", "Opus 4.8") across skills, hooks, statusline docs, READMEs, and the Codex port; routing goes by tier token (`opus`/`sonnet`/`haiku`/`fable`), which the harness resolves to the newest model in each family. Added a standing MODEL-POLICY rule: never pin a model version. The statusline doc's model-id table now shows family globs (`claude-opus-*` etc.) rather than pinned ids. One deliberate exception remains: `speculation-judge.js` calls the Anthropic Messages API directly, which requires an exact model id (there is no "-latest" alias) — it stays overridable via `ANTIHALL_JUDGE_MODEL`.
+- Replaced a raw NUL byte in `scripts/devswarm.js` (offset 81252) with the `\x00` escape. It was a deliberate collision-proof sentinel key, but as a literal byte it made `grep` treat the 245KB file as binary. Runtime string unchanged.
+- Fixed a `hasFlag` redeclaration collision in `devswarm.js` where a new helper silently shadowed the pre-existing one and broke `--yes`/`--confirm` detection across `reconcile-active` and `reap-stale`.
+
+## 0.66.1
+
+CI-green patch for v0.66.0 — a genuine Windows bug in the reconcile spawn path, no behavior change on POSIX.
+
+- **Fixed a real Windows bug in `devswarm reconcile`'s spawned pull.** The reconcile sweep spawns `inbox pull` as a subprocess and threads the caller's `home` through by setting only the `HOME` env var. Node's `os.homedir()` does not read `HOME` on win32 (it reads `USERPROFILE`), so on Windows that subprocess silently fell back to the real OS home directory instead of the one the caller intended — breaking the guarantee that the spawned pull observes the same devswarm root (including the same per-id lock) as its caller whenever the two differ. Now sets `USERPROFILE` alongside `HOME`, matching the precedent already used elsewhere in this codebase for the identical reason.
+- Two supervisor reconcile-sweep tests spawn the real entry script with an overridden `HOME` to isolate themselves; they had the same one-sided `HOME`-only gap, so on Windows they silently operated against the real OS home directory instead of their own isolated fixture — observing stale state (or none) rather than what the test set up. Fixed the same way, in the tests themselves.
+- Swept the rest of v0.66.0's new/changed tests for the same class (binary spawns, cwd-based project resolution, path-separator assumptions); no other instances found.
+
+## 0.66.0
+
+Closes a family of failure classes found by design review rather than by tripping over them: code that reported success it had not observed, and recovery that only ran if something else happened to trigger it.
+
+- **A destructive read can no longer lose messages silently.** The native queue is consume-on-read, so a monitor batch that arrived but failed to parse — a shape change, stderr contamination, a timeout truncating the JSON mid-print — was gone with nothing logged. Such a batch is now logged and quarantined to disk. A well-formed empty result is still treated as normal, so an idle poll does not create an error storm.
+- **Health is no longer asserted from a weaker second definition.** Doctor carried its own daemon-health check that omitted the pid guard and the monitor-fault check, and used it to reap a unit as "confirmed running and healthy" — which meant a daemon that was alive but ingesting nothing could authorize reaping the only real drainer. There is now one definition, used by every consumer.
+- **Project identity resolves properly, or refuses.** Identity was derived from the working directory, so from inside a submodule it keyed off the submodule, and from a non-git directory it fell back to a legacy store and reported live workspaces as unregistered — a confident wrong answer with no error. Submodules now resolve via the superproject, and an unresolvable context refuses instead of quietly reading somewhere else.
+- **Success no longer hides a nested failure.** `heartbeat` returned ok while its mesh broadcast had failed; reconcile's aggregate reported success while individual targets had crashed or timed out; several paths returned ok from a caught exception. These now reflect what actually happened, with a genuinely absent hivecontrol treated as a known-benign skip rather than a failure.
+- **Recovery runs on its own.** Stranded messages previously sat until an update or an explicit repair happened to invoke reconcile. A cooldown-gated sweep now runs on the existing supervisor, using the same single-consumer lock as the drains so it cannot race a live one.
+- **Smaller repairs.** `devswarm logs` and `doctor --logs` now read rotated history, so the highest-volume period of an incident is no longer the part that is missing; the log rotation lock records its owner instead of being stolen on age alone; the Primary's own unreadable inbox is surfaced instead of silently counting zero; the singleton supervisor unit now carries the same resolved binary path as the per-project units, which is why its subprocesses kept failing after those were fixed.
+
+2382 tests, 0 fail. Verified with the tooling binary both present and absent, since several of these paths behave differently when it cannot be found.
+
+## 0.65.0
+
+DevSwarm daemon reliability — the ingest daemon now recovers itself, reports honestly when it cannot, and children never block the swarm on a question.
+
+- **Root cause fixed: the ingest daemon was alive but ingesting nothing.** It spawned `hivecontrol` by bare name while its service manager supplied only a minimal PATH, so every monitor cycle failed with ENOENT — invisibly, because the error was swallowed. The binary is now discovered at install time and baked into the generated launchd/systemd/cron unit (never a hardcoded path), and the daemon resolves it from an explicit option, the `ANTIHALL_DEVSWARM_HIVECONTROL` env var, or PATH. Found by the error logging shipped in v0.64.0.
+- **Permanent faults no longer storm.** ENOENT/EACCES/ENOTDIR are configuration faults, not transient ones: they now escalate through a capped backoff and log on state transitions plus a periodic rollup instead of once per retry. The backoff is sliced so the heartbeat keeps being written — a backing-off daemon is never mistaken for a dead one.
+- **Stale locks self-heal.** Orphaned ingest locks are swept on daemon start, a recycled pid no longer blocks restart forever, and a zombie holder is reclaimed without signalling anything. Every removal requires positive OS confirmation of death, reuse, or defunct state; an inconclusive read never authorizes removal, and unknown holder states block by default rather than falling through.
+- **`doctor --reclaim-ingest-lock`** — an explicit, opt-in path to sweep orphaned locks and reclaim a contended ingest lock, then reinstall. Never runs automatically.
+- **Health stops lying.** The heartbeat now records the monitor outcome, so a daemon that is alive but failing every cycle is reported as a FAILURE by `doctor` and surfaced in-session by a one-line banner, instead of reading as RUNNING. Heartbeats written by older daemons lack these fields and are treated as unknown, never as a fault.
+- **Reaper detection.** Installing now detects a memory-guard/reaper script that would kill the daemon (a service-managed daemon is parented to init, so orphan sweeps target it) and reports the file and the exact allowlist entry to add. Detect-and-report only — it never edits anything outside the repo.
+- **Children never block the swarm on a question.** A child now forwards a decision to its parent with its options, its recommendation and the default it will take, keeps working every other item, and proceeds on that stated default if unanswered — flagging the assumption loudly. Only an unauthorized destructive action is a hard stop. The ladder is child -> parent -> human, never child -> human. Injected into every workspace session, and documented in the devswarm skill on both ports.
+
+2329 tests, 0 fail. Minor bump — daemon self-heal, honest health reporting, one new opt-in doctor flag; all new paths are fail-open and no path removes registry or message data.
+
+## 0.64.0
+
+DevSwarm self-heal reliability + observability, plus an edit-guard plan-mode fix.
+
+- **Reconcile self-heal now works on the first pass.** `rehomeMiskeyedRow` normalizes a genuinely mis-keyed row's stored `worktree_path` to the descriptor's verified current path before rehoming, so a row stranded in a legacy bare-hash store no longer no-ops on the first `healRegistry` pass. No-delete, idempotent, fail-open; regression-tested for single-pass rehome + zero message loss.
+- **Doctor daemon-liveness gate.** `doctor --fix` no longer reports the ingest daemon "healthy" from install-shape alone — it checks the two-signal liveness primitive (fresh heartbeat + live-pid lock) and, when install-ok-but-dead, takes the reinstall path with a distinct dead-daemon reason instead of masking it. Win32's documented no-op is respected.
+- **Structured error logging wired in.** The ingest/lock/send/reconcile/inbox/register error paths (including a previously-swallowed top-level catch) now emit to the central JSONL logger, and two read-only surfaces expose it: `devswarm.js logs` (filter by --repo/--component/--min-level/--since/--limit) and `doctor --logs` — so a Primary can analyze a child project's recent failures from one place.
+- **`inbox messages --ack-as-owner` UX guard.** Passing `--ack-as-owner` without `--ack` now warns clearly that it did NOT ack (and points to `read-primary … --ack-as-owner`) instead of silently staying read-only.
+- **Child ack-path e2e coverage.** Added the missing test: a child with a distinct `DEVSWARM_BUILDER_ID` self-registers via `inbox pull` then acks via `read-primary --ack-as-owner`.
+- **edit-guard plan-mode false-positive fixed.** The coordinator edit-guard no longer blocks the orchestrator's own plan/scratch/handoff/memory writes (added `plan.md`, `*.continue-here.md`, and the out-of-cwd Claude memory store to the allowlist) and exempts plan mode — while STILL blocking undelegated source-file edits in any mode (symlink-honesty preserved).
+
+2224 tests, 0 fail. Minor bump — self-heal reliability + observability + a guard-UX fix; all new paths are fail-open and control-flow-neutral.
+
+## 0.63.1
+
+CI-green patch for v0.63.0 — two test-only fixes; no production behavior change.
+
+- **Hermetic migration-gate test.** `update-skill.test.js`'s "healRegistry runs inside a DevSwarm session" test no longer depends on the ambient machine having real `~/.anti-hall/devswarm/store/` entries — it now seeds an isolated temp `home` (matching its sibling tests), so it exercises the gate deterministically on a clean checkout instead of passing by accident of local state.
+- **Windows skip for the daemonHealth-healthy H4 case.** On Windows the ingest daemon is a documented no-op (`daemonHealth()` returns `unsupported`), so the "healthy daemon → don't refresh summary" assertion is structurally unreachable there; the test now carries the same `{ skip: win32 }` guard its sibling daemonHealth tests already use. Windows behavior is intentionally unchanged (the per-turn `deriveSummary` fallback keeps the Windows parent inbox fresh).
+
+Verified under a clean isolated HOME with DEVSWARM_* unset (mimicking a fresh CI checkout): 2176 pass, 0 fail, 2 skip.
+
+## 0.63.0
+
+DevSwarm mesh usability + self-healing hardening — addresses real parent/child coordination footguns found running a Primary + child workspace, plus new adaptive/self-healing infrastructure.
+
+- **Send addressing: `send --to` now accepts the roster `id`, not only the internal meshId.** `resolveSendTarget` tries the worktree-derived meshId first (full back-compat) then falls back to an exact registry-`id` match, with an `ambiguous-recipient` guard that fails closed rather than silently picking. `roster` now surfaces each row's `meshId`.
+- **Reconcile self-heal: mis-keyed registry rows are healed, not silently rejected.** A row whose stored path drifted from its descriptor's real worktreePath is corrected in place; a row physically in the wrong store is rehomed (no-delete, message-preserving, idempotent) via a `healRegistry` pre-pass in `cmdReconcile`. The aggregate `ok` now requires `rejected===0`, so a per-row ownership rejection can no longer be masked as success.
+- **Self-healing migration in doctor + update.** `doctor --repair` and the updater run the registry heal sweep (idempotent, fail-open, no-delete, skips malformed stores) so a broken store is repaired on update/health-check.
+- **Ingest daemon self-heal.** A wedged-but-alive ingest daemon (blocked event loop, SIGTERM undeliverable) whose own liveness heartbeat is confirmed stale is SIGKILLed and its lock reclaimed — never a fresh-heartbeat daemon (fails toward never-kill on any inconclusive read). The Primary's roster projection refreshes itself (`deriveSummary`) when the daemon is unhealthy, with a non-destructive empty-store guard.
+- **Structured error-logging foundation.** New central JSONL logger (`companion/lib/anti-hall-log.js`) — fail-open, size-bounded/rotating — wired into ingest/lock/parent-inbox error paths; previously-swallowed catches now log. (Cross-component wiring + an analyze-from-here `--logs` CLI land in a follow-up.)
+- **Parent/child SKILL clarity.** The devswarm skill (Claude + Codex mirror) now spells out addressing, identity (`inbox read-primary` vs `$DEVSWARM_BUILDER_ID`), the mutating-ack path, and an edge-case→remedy table.
+
+2176 tests (up from 2130 in v0.62.2), 0 fail. Minor bump — new self-healing capability + logging foundation; no destructive paths (all heals are no-delete, message-preserving, idempotent, fail-open).
+
+## 0.62.2
+
+DevSwarm store deep hardening — closes a third unlocked registry writer plus consistency/robustness gaps found across multiple review rounds.
+
+- **Concurrency: third unlocked registry writer now locked.** `registerStoreDescriptor` now runs under the same per-id lock as `upsertRegistry`/`rekeySubdirRegistryRows`, closing the last unserialized write path into the registry.
+- **Consistency: `upsertRegistry` path-change guard.** A same-id write that would silently change `worktree_path` (sqlite and journal backends alike) is now rejected by default with an explicit `true`/`false` return so callers can detect a skip, instead of silently clobbering a different worktree's registration; opt-in via `allowPathChange`.
+- **Robustness: truncated/malformed `DEVSWARM_BUILDER_ID` defense.** `registerChildDescriptor` no longer writes a phantom row under a bad id — it recovers the full id when possible, and falls back to non-destructive same-worktree phantom retirement (truncation-signal only) that forwards any unread direct messages to the survivor before archiving.
+- **Caller fixes for legitimate path changes.** `cmdRegister` keeps descriptor and registry consistent on owner re-register; `rehomeCore` now compares `worktree_path` + `sessionId` before tombstoning the source, preventing an orphaned row; migrate verification no longer reports success when the underlying registry write was silently skipped by the new path-change guard.
+
+2130 tests (up from 2117 in v0.62.1). Behavioral fix/hardening release (patch bump) — no new hooks, skills, or disciplines.
+
+## 0.62.1
+
+Follow-up hardening: `rekeySubdirRegistryRows` now serialized under the per-id lock with an in-lock re-read (closes a lost-update race vs concurrent register/ensure/heartbeat/re-home in doctor's fold path); `cmdSpawn` confirmed race-free (documented). Docs: devswarm verb tables (KB §8.8, READMEs, llms.txt) updated with diagnose/healthcheck/unarchive/migrate-owner-keys/reap-stale/reconcile-active.
+
+## 0.62.0
+
+DevSwarm Primary-orchestrator lifecycle: heals the split-brain "no primary set" failure mode, adds parent-driven archiving of abandoned/reconciled workspaces, and decouples heartbeat-alive from stale/escalated liveness verdicts.
+
+- **Split-brain "no primary set" healed via store re-home.** A Primary could register its descriptor under a stale hash-keyed store bucket while the fresh `repoKey` resolution pointed elsewhere — the roster then read as having no Primary at all, even though one was live. `rehomeCore` migrates the registry row + backlog + cursor into the correct `repoKey`-keyed bucket; it's invoked from the read path (`inbox messages`/`read-primary`), `register`/`ensure`, and the new `migrate-owner-keys` forward-migration below, so a stranded Primary self-heals on its own next read or register rather than staying invisible.
+- **Parent-driven archiving: `reap-stale` and `reconcile-active` (new CLI verbs).** `reap-stale [--yes|--confirm]` scopes to this project's descriptors verdicted `stale`/`escalated` and archives the survivors after two hard safety gates (a fresh heartbeat, or recent worktree git activity, both mean never-reap) — dry-run by default. `reconcile-active [--active id,...] [--allow-empty] [--stdin] [--yes|--confirm]` archives every current workspace NOT named in an explicit "still active" set (e.g. from a roster screenshot); a match always spares a workspace, and an empty active set is refused unless `--allow-empty` is passed explicitly. Both reuse `cmdArchive`'s own pre-archive revalidation so a workspace that heartbeats or commits between listing and archiving is skipped, never wrong-archived.
+- **`unarchive <id>` (new CLI verb).** Reverses `archive` — restores a descriptor from `archived/` back to active (crash-safe hardlink-then-unlink) and revives the store registry row. Rejects if the archived descriptor's ownerKey doesn't match the current project (cross-project reject) or a conflicting active descriptor already exists.
+- **Heartbeat→active reactivation.** `devswarm-parent-gate` (the Stop-hook neglect gate) now suppresses a `stale`/`escalated` verdict from gating when the workspace has a FRESH heartbeat — proof the environment is alive, emitted only by the workspace's own live session — while leaving the real-unread coordination axis untouched (a live, heartbeating workspace with genuine unread backlog still gates; that's neglect, not staleness).
+- **Hardening: per-id lock now fail-closed.** The shared per-id lock guarding register/archive/unarchive/reap/re-home against concurrent interleaving now fails CLOSED (refuses the operation) rather than open, on the class of workspace-mutation verbs this release adds.
+- **Hardening: crash-safe archive recovery-intent with fingerprint verification.** `cmdArchive`'s recovery-intent marker (left when a prior archive tombstoned the registry row but its rollback/clear didn't complete) is now fingerprint-checked before a doctor/next-run companion pass acts on it, closing a window where a stale marker could misfire against an unrelated descriptor.
+- **Hardening: cross-project reject.** `unarchive` and the re-home path both refuse to act across project boundaries — an archived/stranded descriptor whose ownerKey doesn't match the current project's repoKey is left alone instead of silently adopted.
+- **Hardening: future-heartbeat guard.** A heartbeat timestamped in the future (clock skew or a forged write) is no longer treated as fresh/alive.
+- **`ownerKey` forward-migration (`migrate-owner-keys`, new CLI verb) in both `update.js` and `doctor`.** Idempotent, fail-open, no-delete: scans every active + archived descriptor once, backfills a missing `ownerKey`, and re-homes an ACTIVE descriptor still stranded under a stale hash-keyed bucket into its fresh `repoKey`-keyed one (archived rows are never re-homed — only active ones can silently black-hole reads). Wired into both `update.js` (post-update) and `doctor`'s auto-safe repair, so most stores self-heal without an operator ever calling the verb by hand.
+- **Read-only roster fallback.** The roster projection falls back gracefully when a project's summary can't be resolved, instead of surfacing an empty/misleading table.
+
+2117 tests (up from 2037 in v0.61.0). This is a fix-and-capability release (minor bump) — no new hooks, skills, or disciplines; four new CLI verbs (`unarchive`, `migrate-owner-keys`, `reap-stale`, `reconcile-active`) on the existing `scripts/devswarm.js` DevSwarm CLI, shared identically by the Claude and Codex ports (`devswarm-parent-gate.js` is registered on both).
+
+## 0.61.1
+
+DevSwarm neglect-gate over-nag fix + registration inbox hardening.
+
+- **Parent-gate (Stop hook) now counts only REAL unread.** The DEVSWARM NEGLECT gate previously blocked on the raw unread line-count, so a "ghost" workspace whose entire backlog was the Primary's own `[Primary poke]` message mirrored back nagged on every Stop — a closed feedback loop (the nag prompts a poke, the poke refreshes the backlog). It now excludes system-generated poke/mirror noise via a shared classifier (`companion/lib/devswarm-noise.js` `isNoiseText`) and blocks iff realUnread > 0 or the workspace is stale/escalated. The message-age/freshness axis was dropped — a ghost's unread is *fresh* poke traffic, so freshness never excluded it. Fail-open: an unreadable inbox or an unparseable row still blocks.
+- **Registration precreates an empty durable inbox.** A freshly-registered child now reads as known/empty (0 unread, no nag) instead of absent (`known:false`), closing a false-silence hole where a genuinely-neglected child with an absent inbox was indistinguishable from a fresh one. The inbox is created with a truncation-proof append-mode open (`{flag:'a'}`) — it can never clobber a concurrent `devswarm-pull` drain on any filesystem, avoiding the O_EXCL/NFS unreliability of an earlier `wx` approach. Applied at both the per-turn hook registration path and the CLI register path; the descriptor is now published after the inbox/cursor init to close a transient discovery window.
+
+Behavioral fix to existing DevSwarm coordination — no new hooks, skills, or disciplines.
+
+## 0.61.0
+
+**DevSwarm mesh self-heal — instructions now reliably reach child workspaces; the substrate detects, routes around, migrates, and surfaces the mis-registration/misroute failure modes that could silently strand messages.**
+
+- **Drain-aware routing.** A `send`/mesh delivery now resolves to the partition a child is actually draining (not just the first matching registry row), plus a **phantom-only rescue**: on a child's very first mechanical self-register (`SessionStart`), any backlog that landed in a stranded pre-registration phantom partition is forwarded into the child's real partition — closing the class of bug where a message existed but no live session ever drained it.
+- **Pure mesh-health projection.** `computeSummary` (the store's pure summary projection) now derives `orphans[]` (message partitions with real unread backlog and no live workspace attached) and `staleRegistryPartitions[]` (a registry row whose worktree no longer exists on disk) — surface-only, never auto-deleted.
+- **New read verbs.** `diagnose` (read-only mesh-health detail: split/duplicate detection, orphans, stale partitions) and `healthcheck [--json]` (pass/fail over the same data, exit 0/2 — for monitors, CI, and the ingest daemon) join the CLI. `healthcheck` without `--json` prints one compact human-readable line.
+- **Register-time dedup with a noise filter.** A child re-registering from the same worktree now folds onto its existing partition instead of forking a duplicate, forwarding real backlog via a new `isForwardable` filter that skips poke/hash-mirror junk and forwards only genuine directs.
+- **Parent-inbox surfacing.** `devswarm-parent-inbox` now surfaces orphans and stale registry partitions to the Primary alongside the existing per-workspace status table — capped, read-only, never a delete or gate change.
+- **Migration: `foldMeshDuplicates`.** Folds every prior store shape (phantom rows, dual/legacy pairs, subdir-split registrations, stale entries) onto one canonical survivor per worktree, keyed by **git-toplevel canonical identity** (a child registered from a subdirectory now resolves to the same mesh identity as its toplevel). Idempotent, non-destructive (forward-before-tombstone; message rows are never deleted), fail-open. Wired into both `update.js` (runs post-update) and `doctor`'s auto-safe repair (dry-run detect doubles as a read-only mesh-shape check under `--check`, then applies).
+- **Pure reads.** `roster`, `workspaces list`, and `diagnose` no longer write `summary.json` as a side effect — they are now genuinely read-only.
+- **Docs.** The DevSwarm `SKILL.md` (Claude and Codex mirrors) gained a full "daemon + CLI ops reference" section — every CLI verb, the daemons, how to read mesh health without hand-reading the store, and self-heal behavior.
+
+This is a fix-and-capability release (minor bump).
+
+## 0.60.0
+
+Orchestration doctrine actually reaches the model now — it was silently spilling to a file — plus DevSwarm status idle-demotion.
+
+- **The orchestration ruleset was reaching NO session inline.** Hook `additionalContext` is capped at ~10,000 chars per hook command; the cap's failure mode is **spill-to-file, not truncation** (first-party documented) — a payload over the cap delivers only the first ~2,000 chars inline plus a file path the model must choose to open, so the tail effectively never lands. `verify-first-full.js` had grown to ~15,323 chars, so rules A–N (the orchestration/delegation ruleset) and the DevSwarm-Primary workspace-tier rule W reached no session inline.
+- **Split into two SessionStart hooks.** `verify-first-full.js` now carries the core Iron-Law + rationalization-table + Positive Rules + Scope & Fidelity + the disciplines/skills index (~7.7k chars); the new `verify-first-orch.js` carries the orchestration ruleset (rules A–N + the Primary-gated rule W, ~7.7-8.1k chars). Both clear the cap; both now land 100% inline; zero content dropped. Registered on both the Claude plugin and the Codex port.
+- Reverted two prior cap-driven micro-optimizations that turned out to be cargo-cult, since they optimized position within a truncation window that never actually existed: rule L restored to its natural alphabetical slot, rule W restored to its full content (workspace = top fan-out tier, the spawn command, the choice rule, the failure mode).
+- Added `tests/hooks/injection-cap.test.js` — runs every context-injecting hook and asserts each emitted payload is `<=10,000` chars, so a future re-spill regression fails CI instead of silently degrading doctrine delivery.
+- **DevSwarm status table: idle demotion.** A workspace idle beyond `ANTIHALL_DEVSWARM_IDLE_MS` (default 6h) is now relabeled `active`→`idle` in the parent-inbox live status table — view-only (no delete, no gate change, no row removal), so a workspace that finished hours ago stops reading as "active" forever. Never overrides `escalated`/`stale`/`archive-ready`.
+- Corrected `docs/KB.md`/`docs/KB-claude-codex.md` (the injection-cap behavior is spill-to-file with a first-party citation, replacing an earlier inaccurate plain-truncation claim and a circular self-citation) and fixed stale doc references to rule W now that it lives in `verify-first-orch.js`.
+- **Synced the Codex-port manifest.** `plugins/anti-hall/.codex-plugin/plugin.json` had silently frozen at `0.52.0` for 10+ releases because it was missing from the release checklist — bumped to match, and `RELEASING.md` step 1 now bumps both manifests together so this can't recur.
+
+## 0.59.0
+
+DevSwarm workspace-tier orchestration doctrine, idle self-wake via `CronCreate`, and a P0 edit-guard symlink-bypass fix.
+
+- **DevSwarm workspace-tier doctrine.** A DevSwarm Primary is now proactively directed that its top fan-out tier is a CHILD WORKSPACE (`devswarm.js spawn <branch> -p "<brief>"`), not a subagent; `edit-guard`/`command-guard` redirect the Primary there instead of naming "spawn a subagent" at the exact point it's blocked from working. Injected doctrine only — no mechanical scale classifier. A DevSwarm CHILD and any non-DevSwarm session are byte-identical to before.
+- **DevSwarm idle-wake (`CronCreate`).** A SessionStart directive tells a workspace to self-schedule a recurring mailbox-drain via `CronCreate` (the only primitive that fires while the REPL is idle); default `*/5 * * * *`, tunable via `ANTIHALL_DEVSWARM_WAKE_CRON`. A bounded Stop-gate re-verify on both `devswarm-child-gate` and `devswarm-parent-gate` handles the 7-day cron auto-expiry. Claude-only (gated on `DEVSWARM_AI_AGENT=claude`; Codex is never told to call `CronCreate`).
+- **SECURITY (P0): edit-guard symlink bypass fixed.** The coordinator-artifact allowlist (`PLAN.md`/`STATE.json`, and new `CONTINUE-HERE.md`) matched by path string and could be pointed at a symlink to write through to an arbitrary file. Now rejects any symlinked target or traversed symlinked directory (realpath cross-check, win32-aware); a non-existent file (first `Write`) is still allowed. This closes a pre-existing hole that also affected `PLAN.md`/`STATE.json`.
+- **edit-guard: `CONTINUE-HERE.md` allowlisted.** The session handover is coordinator-authored by design; added to the same root-anchored allowlist (traversal-safe).
+- **Hardening.** `ANTIHALL_DEVSWARM_WAKE_CRON` is now validated per-field against a strict cron charset (blocks prompt-injection via the env var into model-visible directive text); the new devswarm-wake lib is lazy-required + try/caught in all three hooks so a packaging failure fails open instead of crashing SessionStart/Stop.
+- **Docs/KB.** Hivecontrol reference KB updated to v2.3.5 (adds `jira` and `team` command groups, the hidden `workspace search` verb, `DEVSWARM_NO_AUTO_AUTH`); corrected stale "unreleased / still 0.56.0" version claims across llms.txt/README/skills that contradicted the actual shipped version; replaced real captured UUIDs/ports/PIDs in the KB with placeholders (public-repo agnostic rule).
+
+## 0.58.2
+
+DevSwarm hook parity with Codex, and a documentation correction.
+
+- The five DevSwarm hooks (`devswarm-child-role` on SessionStart, `devswarm-parent-inbox` + `devswarm-child-turn` on UserPromptSubmit, `devswarm-parent-gate` + `devswarm-child-gate` on Stop) are now registered for the Codex port, using the same shared hook files Claude uses — zero changes to the hooks themselves, pure registration.
+- Corrects a false claim that had propagated through the docs unverified: these hooks were described as Claude-only because their `DEVSWARM_*` env gate supposedly only applied to `claude` sessions. It does not — hivecontrol sets `DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` per workspace regardless of which agent runs there (`DEVSWARM_AI_AGENT` names the agent). The gap was wiring, not capability. A test that asserted the gap has been flipped into a parity test.
+- Still Claude-only, and structurally so: the liveness supervisor and the on-demand `devswarm-recover` CLI, which identity-bind to `claude --resume` processes by argv.
+
+## 0.58.1
+
+Fixes a real-world ingest-daemon outage, a message-loss gap in its own fix, a slow lock
+recovery path, dishonest reconcile reporting, and removes a manual step. Raises the Node
+floor to 22.
+
+- Ingest daemon could wedge indefinitely: `main()` never passed a hard timeout, so the `spawnSync` running `hivecontrol workspace monitor` had no OS-level kill timeout — only the cooperative `-t` flag handed to hivecontrol. A child that ignores its own `-t` blocks the daemon forever, including its heartbeat; `isAlive()` then correctly refuses to steal a lock whose holder is genuinely alive-but-wedged, so the daemon can never recover (observed: 4,319 consecutive lock refusals over ~15h). Now a hard timeout (cooperative timeout + 10s) backstops the spawn and surfaces as a retryable failure through the existing backoff path.
+- Ingest daemon leaked its lock on signal: no SIGTERM/SIGINT handlers existed, so an OS stop (e.g. launchd restarting the unit) bypassed the `finally` that releases the lock, stranding it for the full stale window. Signals now release the lock before exit.
+- Message loss fixed: the hard timeout above (and any other retryable failure) discarded the killed monitor's stdout outright — but `hivecontrol workspace monitor` is DESTRUCTIVE, popping messages off the native queue as it prints them, so whatever it had already drained before being killed was gone for good. `spawnSync` preserves stdout written before a kill; that output is now ingested unconditionally whenever non-empty, even when the attempt is otherwise treated as a retryable failure.
+- Ingest lock: a lock whose holder pid is confirmed dead is now reclaimed immediately instead of waiting out the full 15-minute stale window. Signal handlers (previous bullet) are not what guarantees this recovery path — Node cannot dispatch a JS signal handler while the event loop is blocked inside `spawnSync`, which is where this daemon spends its entire risky window, so a daemon killed mid-spawn never gets a chance to run its own handler. Dead-holder-immediate-reclaim in the lock acquisition path is what actually closes the leaked-lock window for every other starter.
+- `reconcile` no longer reports success while losing messages: a per-worktree `lost` count (from a real native-queue shortfall, distinct from a benign `locked` contention skip) now propagates all the way up — including across the `inbox pull` subprocess boundary that previously dropped it — and the aggregate `reconcile` result is no longer `ok:true` when any worktree lost messages. `doctor` now reports `failed` (not `fixed`) with the loss count, and `update` reports a not-success detail with the loss count, instead of both silently reading a lossy reconcile as clean.
+- `reconcile` (drains stranded per-worktree native queues into the shared store) now runs AUTOMATICALLY — as a gated `doctor` repair and as a post-update step inside a DevSwarm session — instead of requiring a manual command. It remains idempotent, skips (never races) a worktree a live child is already draining, and honors `--dry-run`/`--check`. The manual verb still works.
+- **Node 22 is now the minimum** (was 18). Node 18 and 20 are past EOL, and Claude Code's own npm package already requires Node 22+. CI matrix is now Node 22/24 across ubuntu/macos/windows.
+
+## 0.58.0
+
+**DevSwarm mesh-only messaging: a per-project mesh store becomes the sole agent-initiated messaging transport, mechanically enforced. hivecontrol's per-worktree native messaging is replaced (per-worktree queues, no from/to addressing, no broadcast); every other hivecontrol feature (create/list/check-merge/merge) is kept and thinly wrapped. DevSwarm coordination remains entirely OPTIONAL — dormant with zero behavioral change outside a DevSwarm session.**
+
+- **Mesh substrate (previously unreleased v0.57 work).** Per-project `repoKey`-keyed
+  shared store: every linked worktree of one repo shares one store, so any worktree can
+  message any other (all-to-all), not just its own parent/child. Windows-hardened path
+  canonicalization.
+- **Mesh CLI.** `send --to <meshId>|--to-primary|--broadcast [--urgency low|normal|
+  high|urgent]`, `roster [--ack]`, `mesh read`, `heartbeat <id> --summary`. Rows carry
+  `{from, to, type, message, timestamp, urgency}`. Spoof-resistant cwd-derived `from`;
+  fail-closed `--to`.
+- **#36 STRUCTURAL.** `devswarm-parent-gate`/`devswarm-parent-inbox` now scope to the
+  caller's OWN project via `repoKey`, replacing a spoofable env-var filter that leaked
+  workspaces across projects.
+- **Mesh-only messaging enforcement.** `command-guard` blocks agent-initiated
+  `hivecontrol message-child`/`message-parent` in all contexts and redirects to the mesh
+  CLI. Matching dequotes to the shell-effective argv, closing quote-based bypasses
+  (`"message-parent"`, split-quote, quoted verb) — which also closes the same
+  pre-existing gap in the `monitor`/`read-messages` guards. Lifecycle commands are never
+  blocked; coordination commands stay exempt from the heavy-command gate.
+- **Per-turn communication override** (both roles) re-asserting mesh-only messaging and
+  a mesh-poll resting posture. No external mechanism can wake a truly idle Claude Code
+  session (anthropics/claude-code#44380), so idle-wake is not claimed.
+- Thin lifecycle wrappers `spawn`/`merge`; `roster` folds `hivecontrol list`.
+- `reconcile` drains stranded per-worktree native queues into the store.
+- `archive-request` is now a store write (zero native calls).
+- Supervisor escalates (never kills) on urgent/high unread — direct or broadcast.
+- `child-gate` gains a projection-only already-reported check; heartbeat sender identity
+  is ownership-validated, so a forged heartbeat can no longer satisfy another workspace's
+  Stop-gate.
+- Emitted coordination commands now use an absolute CLI path (they were unrunnable from
+  an agent's working directory).
+- SQLite writes retry past `busy_timeout` exhaustion under concurrent writers.
+- **Codex parity.** The guard-block is shared and fires on Codex; the per-turn override
+  hooks remain Claude-only (full parity tracked as a follow-up).
+
+## 0.56.0
+
+**DevSwarm archive handshake (send-only, never mechanical on either side); ack-ownership guard is now cwd-ground-truth (closes an env-spoof cursor-corruption path); the Primary sees its own inbound because the ingest daemon self-registers its own store row; child descriptor registration + heartbeat-key fix close two discovery/collision bugs; doctor/update now heal a drifted ingest script, not just a missing one; the Fable Reviewer seat is back.**
+
+- **Archive handshake (both roles).** New `devswarm.js archive-request <childId|branch>` verb
+  — SEND-ONLY: posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`-marked message to a done child; it never
+  verifies merged/tested/deployed itself (the Primary checks per its OWN repo policy before
+  sending). Child side: `devswarm-child-turn.js` scans unread for the marker and injects a
+  distinct segment telling the child to confirm with ITS user, then run `devswarm.js archive
+  <id>`. anti-hall NEVER archives mechanically on either side.
+- **Ack-ownership guard — cwd-ground-truth (P0-hardened).** `devswarm.js`'s `callerIdentity(env,
+  cwd)` now treats cwd as the source of truth: when cwd resolves to a real git worktree, identity
+  is derived from that worktree and a `DEVSWARM_BUILDER_ID` env var naming a *different*
+  workspace is ignored, never trusted to override — closing the env-spoof path where a workspace
+  could set `DEVSWARM_BUILDER_ID=<other-id>` to impersonate another workspace and ack its cursor
+  (also closes the related env-inheritance case, e.g. a subshell/subagent inheriting a stale
+  builder id). `DEVSWARM_BUILDER_ID` is honored only when it can't contradict cwd — cwd already
+  agrees, or cwd resolves to no worktree at all. The explicit `--ack-as-owner` operator override
+  for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog) is
+  preserved.
+- **Primary sees its OWN inbound.** `devswarm-parent-inbox.js` + `devswarm-parent-gate.js`: the
+  Primary now surfaces AND Stop-gates on its own unread parent/peer messages, with the same
+  imperative "STOP and read FIRST" wording as the child gate. This actually surfaces end-to-end
+  because the ingest daemon now **self-registers** its own `primary-<hash>` workspace row at
+  startup (merge-preserving — a prior explicit `register-primary` call is never clobbered):
+  previously no runtime path ever created that row, so messages landed in the store but the
+  workspace itself never existed for the summary projection to surface. The daemon's own identity
+  is **worktree-ground-truth** — it registers/ingests under the `primary-<hash>` id derived from
+  ITS OWN resolved worktree, never an inherited child `DEVSWARM_BUILDER_ID` — closing the same
+  class of identity-spoof/inheritance bug the ack-ownership guard closes above.
+- **Child descriptor registration (#31) + imperative unread.** `devswarm-child-turn.js`
+  mechanically writes/refreshes the child's own descriptor every turn (merge-preserving) so the
+  parent can always discover it; unread-parent-message wording escalated advisory → imperative.
+  Child-gate STRICT mode (`ANTIHALL_DEVSWARM_CHILD_GATE_STRICT`, default on) backs the durable-
+  inbox check with one bounded, non-destructive native `message-count` probe (fail-open).
+- **Heartbeat key fix.** `devswarm-child-turn.js`'s `heartbeatKey` now keys by
+  `DEVSWARM_BUILDER_ID` (was the source branch) — sibling children no longer collide and
+  parent-join resolves correctly.
+- **Ingest daemon durability + doctor/update self-heal parity.** `install-devswarm-ingest.js`'s
+  `resolveStableScript` now bakes the daemon's script path to the git marketplace-clone path
+  (updated in place by the updater) instead of the version-pinned cache dir that gets renamed on
+  update — fixes an orphaned crash-loop after an update. The daemon now logs (startup /
+  lock-refusal / ERROR+stack) to `~/.anti-hall/devswarm-ingest.log` (systemd
+  `StandardOutput`/`StandardError` + cron redirect; previously discarded to `/dev/null`).
+  `doctor --repair` and `update.js`'s `healIngestDaemon()` gained a NEW `unstable-script`
+  classification (`classifyIngestUnit`) — the baked `ExecStart` script still exists but no longer
+  matches the current stable path (config drift, not just an absent/wrong-path unit) — and both
+  now detect + migrate it to the stable path, DevSwarm-session-gated, fail-open.
+- **Migration `--mark-read`.** `migrate-state.js` / `devswarm-migrate.js` gained an opt-in
+  flag/env to advance a freshly-imported legacy backlog's cursor to already-seen (default OFF,
+  byte-identical output when absent) so a catch-up migration doesn't trip the parent
+  neglect-gate.
+- **Fable seat re-enabled.** Fable 5 is now available, so the earlier 0.43.2 policy-disable
+  (over-restrictive/refusal-prone per community feedback) is reversed: the deadly-loop / ship-it
+  Reviewer seat once again tries Fable first when `args.fableAvailable === true`, falling back to
+  Sonnet 5 then Opus (fallback chain unchanged). Both Claude (`skills/deadly-loop/references/
+  deadly-loop.workflow.js`, `skills/ship-it/references/ship-it.workflow.js`) and the Codex port
+  (`codex/skills/anti-hall-deadly-loop/SKILL.md`, `codex/skills/anti-hall-model-policy/SKILL.md`).
+- **Doc correction.** Removed the stale claim (across `docs/KB-devswarm-hivecontrol.md`,
+  `README.md`, `llms.txt`, `docs/KB.md`) that `devswarm-child-gate` silences the Stop-gate on a
+  fresh child heartbeat — that behavior was reverted in v0.54.1; the gate always demands a report,
+  bounded only by its per-episode cap.
+- **Codex parity.** Mirror updates in `plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`
+  and the model-policy/deadly-loop Codex skills above.
+- **Cross-project scoping (#36).** DevSwarm workspace descriptors now record their `repoId`
+  (`DEVSWARM_REPO_ID`), and `devswarm-parent-gate` / `devswarm-parent-inbox` filter their per-turn
+  enumeration to the current session's project — a Primary in one project no longer sees, gates on,
+  or is nagged by another project's workspaces. Fail-open + back-compat: an untagged descriptor (or
+  a session with no `DEVSWARM_REPO_ID`) still surfaces exactly as before, and children re-stamp
+  their `repoId` within one turn.
+- Docs sweep: `README.md`, `llms.txt`, `docs/KB-devswarm-hivecontrol.md`, `docs/KB.md`, and
+  `skills/devswarm/SKILL.md` / `skills/update/SKILL.md` updated to match.
+- **Cross-platform CI fixes.** `devswarm-child-gate`'s STRICT native `message-count` probe now
+  resolves the `hivecontrol` shim on Windows (`spawnSync` `shell` on win32 → PATHEXT); the
+  statusline base-command dispatcher no longer discards a successful base command (exit 0 +
+  output) when writing our stdin to a non-reading child races to a benign broken-pipe error —
+  judged errno-agnostically by exit status and stdout presence, since the OS reports it
+  differently per platform (`EPIPE` on POSIX; `EOF` on Windows, where libuv maps
+  `ERROR_BROKEN_PIPE` → `UV_EOF`). The hook-test helper (`tests/helpers/spawn-hook.js`) now gives
+  cmd.exe its full Windows system env (`SystemRoot`/`ComSpec`/`PATHEXT`/etc, inherited from the
+  parent) on win32 so the STRICT probe's shell spawn can actually start, while stripping every
+  `DEVSWARM_*`/`ANTIHALL_*` key first to keep test isolation intact; the statusline's top-level
+  stdout error handler now tolerates the same benign broken-pipe condition (`EOF` on Windows,
+  `EPIPE` on POSIX) instead of rethrowing.
+- Full suite: 1487 tests, 1485 pass, 2 skipped (Windows-gated doctor no-ops), 0 fail.
+
+## 0.55.0
+
+**DevSwarm Primary read path ships (the Primary can finally read its own inbox); per-project ingest daemon fixes multi-repo coverage; a mechanical single-consumer read-guard closes the raw-read bypass; the supervisor actively escalates into the parent's store; and `doctor` now DIAGNOSES then REPAIRS every aspect it safely can.**
+
+- **DevSwarm Primary read path (NEW).** `store.listMessages(id, {sinceCursor})` —
+  implemented on BOTH backends (sqlite `devswarm-store.js`, journal/NDJSON, the
+  latter deduping by hash on read for parity with `messageCount`) — is the read-BACK
+  side of the store: message `body` was written but never readable back until now.
+  `devswarm.js inbox messages <id>` reads it non-destructively (`--unread` limits to
+  the tail past a durable ACK cursor under `cursors/<id>.json`); `inbox read-primary
+  <id>` additionally ACKs — advancing both the cursor file and the store's own
+  cursor (`store.setCursor`) so `deriveSummary`'s projected `unread` count (what the
+  live workspace table shows) drops immediately, not just on the next unrelated
+  store write. `register-primary` registers the CURRENT worktree's Primary/parent
+  descriptor under its per-worktree `primary-<hash>` id (reusing `register`'s
+  validation + store-upsert path) so `migrate` can fold a stranded legacy NDJSON
+  inbox into the store under the same id.
+- **Per-project ingest daemon (Option A — fixes multi-repo coverage).** The daemon
+  previously covered only the ONE worktree it was installed from, silently — a
+  second repo had no reception at all. `install-devswarm-ingest.js` now derives an
+  **additive, per-worktree** unit identity: `worktreeHash(wt)` (an 8-hex SHA-256 of
+  the worktree's realpath) feeds a per-worktree LaunchAgent label
+  `com.anti-hall.devswarm-ingest.<hash>` (macOS), systemd unit / cron marker
+  `anti-hall-devswarm-ingest-<hash>` (Linux), a per-worktree `O_EXCL` lock
+  (`locks/ingest-<hash>.lock`), and `primaryWorkspaceId(wt)` = `primary-<hash>` (the
+  store partition key for that worktree's own reception queue — replacing an early
+  hardcoded `'primary'` that collided rows across repos). Installing from a second
+  repo now creates a NEW unit rather than overwriting the first's; `devswarm-ingest.js`
+  computes the identical hash from its own resolved worktree so lock path and
+  workspace id agree byte-for-byte with what the installer baked in. New
+  `listInstalledIngestUnits()` enumerates every installed unit (legacy hash-less AND
+  per-worktree, across launchd/systemd/cron) for readback — `doctor`/`doctor-repair`
+  use this rather than re-deriving. The daemon writes a per-worktree LIVENESS
+  HEARTBEAT (`heartbeats/ingest-<hash>.json`, atomic tmp+rename) every bounded sweep
+  cycle regardless of whether anything was ingested — a live-but-quiet daemon no
+  longer false-reads as stale. **Multi-repo coverage means installing separately
+  from each repo/worktree** — there is still no single daemon that covers more than
+  the worktree it was launched from.
+- **Mechanical single-consumer read-guard.** New PreToolUse-Read hook
+  `hooks/inbox-read-guard.js` blocks a direct Read-tool read of the raw DevSwarm
+  inbox NDJSON or store (sqlite db + sidecars, journal NDJSON) — the harm is cursor
+  desync + a store-layering violation, not queue-draining (the inbox is append-only).
+  `command-guard.js` gained a parallel Bash-side branch (`detectProtectedFileRead`,
+  reusing the shared `devswarm-inbox-paths.js` classifier, with the same
+  quote-neutralization + `bash -c`/`eval`/`$()` recursion as the existing hivecontrol
+  detector) that blocks `cat`/`head`/`tail`/`grep`/`sed`/`awk`/etc. reads of those same
+  paths — closing the shell-side bypass the Read-tool guard can't see. `hivecontrol
+  workspace read-messages` now blocks UNCONDITIONALLY under DevSwarm, same as
+  `monitor` (previously it only blocked with durable-inbox evidence present); both
+  reasons now redirect to the `devswarm.js inbox pull`/`read` wrapper and document the
+  `DISABLE_ANTIHALL_DEVSWARM=1` kill-switch. Both guards share the
+  `devswarm-read-guard` skip name (immune to a blanket `{all}` skip, like git-guard)
+  and are fully fail-open on any internal error.
+- **Supervisor active escalation.** `recovery.js`'s `pokeOrEscalate` — on the
+  TRANSITION into `escalated` (nudge attempts exhausted) — now also mechanically
+  appends a notice into the PARENT/Primary's store (`notifyParentEscalation`,
+  resolving the parent's `primary-<hash>` id via `install-devswarm-ingest.js`), so an
+  idle Primary sees "child X idle Nm — reassign or archive" without the child taking
+  a turn. Idempotent two ways: caller-gated to the actual verdict transition, plus a
+  stable per-escalation content hash (`escalate:<childId>:<staleSince>`) so a race
+  between two sweep observers still lands one row. Fully fail-open — a store-write
+  failure never crashes the sweep or blocks the already-persisted escalation.
+- **Freshness banner** in `devswarm-parent-inbox.js`, rewired from `summary.json`'s
+  `generatedAt` (which only advances on `inserted>0` and false-read a live-but-quiet
+  daemon as stale) to the daemon's own per-worktree heartbeat file. Resolves the
+  current worktree via a pure `fs` walk-up for `.git` (no git spawn on this hot path)
+  hashed the same way the installer did; when the heartbeat is missing or older than
+  3 minutes, a `⚠ DEVSWARM STALE DATA` banner is injected above the live workspace
+  table. Gated on at least one active workspace so an idle system never false-alarms;
+  fully fail-open.
+- **doctor repair mode.** `doctor` now DIAGNOSES then REPAIRS every aspect it
+  safely can. New module `hooks/lib/doctor-repair.js` (mirrors the `companion/lib/doctor-devswarm.js`
+  require-and-call pattern doctor already uses). Exports `runRepairs()` plus the testable
+  `readInstalledIngestWorkingDir()` / `classifyIngestUnit()`.
+- **Flags on `hooks/doctor.js`:** `--check` = PURE read-only (today's behavior, the CI/test
+  path — mutates nothing); `--dry-run` = detection + print what WOULD be fixed, writes nothing
+  (threads each installer's own `--dry-run`, migrate-state `dryRun:true`); `--fix`/`--repair` =
+  explicit aliases for the default auto-apply path; **plain `doctor` (no flags) now auto-applies
+  fixes.** `--quiet` preserved.
+- **Two safety classes.** AUTO-SAFE (always, honors dry-run): legacy/GSD/DevSwarm-store state
+  migration; statusline install **only when no statusLine is configured in any scope** (a custom
+  statusLine is never overridden); idempotent relaunch of an ALREADY-installed supervisor; Codex
+  hook refresh when a `.codex/config.toml` exists but hooks are unwired (never creates a new
+  `.codex`). GATED (only when `isDevswarmActive(env)` AND `resolveWorktree(cwd)` is a git
+  worktree): ingest daemon install, the **v0.54.1 wrong-path ingest heal** (a unit whose
+  `WorkingDirectory` no longer resolves inside a worktree is rebuilt from the correct one), stale
+  ExecStart script, and supervisor FIRST-install. A closed gate REPORTS the gap + the exact
+  manual command and mutates nothing. REPORT-ONLY: the MCP orphan reaper (kills on a timer —
+  never auto-installed).
+- **Ingest-daemon awareness added to doctor** (previously the ingest daemon was surfaced only via
+  the supervisor path); doctor now reads the installed ingest unit back and classifies it
+  `ok` / `wrong-path` / `stale-script` / `absent`.
+- **doctor runtime health (new module `companion/lib/doctor-runtime.js`, five REPORT-ONLY
+  checks, never mutates).** 1) DB/store health — sqlite `PRAGMA quick_check` (run in a
+  child process so its `node:sqlite` experimental warning never reaches doctor's own
+  stderr) plus a journal-backend torn-line scan and a store<->summary parity check
+  (flags only `summary.total > store.total`). 2) Data staleness — `summary.json`'s
+  `generatedAt` vs the per-worktree ingest heartbeat, gated on the daemon actually
+  running AND `unread > 0` so an idle system never false-alarms. 3) Daemons RUNNING,
+  not just installed — `launchctl list` PID probe for the continuous ingest daemon,
+  `launchctl`/`systemctl` loaded-state probe for the periodic supervisor, and a
+  heartbeat-or-`ps`-fallback probe for the cron fallback — enumerated per-worktree via
+  `listInstalledIngestUnits()`. 4) Second-consumer detection — scans the process table
+  for more than one `hivecontrol workspace monitor` process (which would split the
+  destructive native queue), cross-checked against the `locks/ingest*.lock` holder PID;
+  report-only, never kills. 5) Foreign-plugin/hook conflict scan (UNCONDITIONAL, not
+  gated on DevSwarm) — cross-references other ENABLED plugins' `hooks.json` and skill
+  directories against anti-hall's own, flagging a competing `PreToolUse`-on-Bash or
+  `Stop` hook, or a skill-name collision; privacy-scoped to plugin name + event +
+  matcher + hook basename only, never full command strings or file contents.
+- **Verify-after-fix:** each applied fix RE-RUNS the relevant detection before reporting `FIXED`
+  (a spawned installer's exit code is not trusted — `launchctl load` can warn). A `FAILED` repair
+  keeps the exit code non-zero. Every fix is try/catch fail-open.
+- **Backward-compat:** CI gates only on `node --test` (no doctor invocation), and the existing
+  `tests/hooks/doctor.test.js` read-only assertions were re-pointed to `--check`; new
+  `tests/hooks/doctor-repair.test.js` covers the auto-fix / gate / dry-run behavior. Windows
+  daemon fixes are documented no-ops.
+- **Dual-platform (doctor):** `skills/doctor/SKILL.md` + `codex/skills/anti-hall-doctor/SKILL.md`
+  document the flags, classes, and gate (the Codex mirror notes the gate is effectively always
+  closed for gpt-5.x sessions).
+- **DevSwarm store is now PHYSICALLY PER-PROJECT.** Each git worktree gets its own
+  `store/<hash>/devswarm.db` (sqlite) or `store/<hash>/journal/` (journal backend), plus its
+  own `summaries/<hash>.json` — deliberately outside `store/` so the inbox read-guard's
+  `store/**` deny doesn't also swallow summaries (`companion/lib/devswarm-store.js`). `<hash>`
+  is the worktree hash unwrapped from a `primary-<hash>` id, or `sha256(id).slice(0,8)` for
+  any other workspace id. Upgrading from the old single global store is handled by a
+  NON-DESTRUCTIVE `migrateGlobalStoreToPerProject` (`companion/devswarm-migrate.js`): it reads
+  whichever legacy backend(s) are actually present directly under `store/`, splits rows by
+  `workspace_id` into each project's own per-hash store, and leaves the legacy global store
+  byte-for-byte intact as a backup (never deleted); idempotent via content-hash dedupe so a
+  re-run copies nothing new.
+- **Docs sweep.** `skills/devswarm/SKILL.md` + `codex/skills/anti-hall-devswarm/SKILL.md` expanded
+  to a comprehensive CLI reference (`inbox messages`/`read-primary`/`register-primary`, the
+  per-worktree ingest identity, the single-consumer read-guard, and the hook-vs-daemon design
+  split: mechanical parent/child triggers fire per-event via hooks, the ingest/supervisor loops
+  run on their own interval via daemons). `docs/KB-devswarm-hivecontrol.md` gained the largest
+  update — the read path, per-worktree ingest identity (with an explicit correction that an
+  installed daemon must never be described as "verified functioning" for the whole machine or
+  for other repos — only for the worktree it drains), the read-guard, and active escalation.
+  `docs/KB.md` version row, `README.md`, and `llms.txt` updated to match.
+
+## 0.54.2
+
+**Child reception ships (native queue → durable inbox); the ingest daemon actually functions (`WorkingDirectory` fix); lock hardening closes a torn-read double-consumer race.**
+
+- **Child reception (SHIPPED — replaces v0.54.1's surfacing-only).** `node
+  scripts/devswarm.js inbox pull <id>` (`companion/lib/devswarm-pull.js`,
+  `pullOnce`) is the drain v0.54.1 left as an explicit follow-up: a bounded,
+  guard-safe pull that folds a child's NATIVE parent→child queue into its durable
+  inbox + store. Each pull auto-ensures the descriptor (idempotent — reuses
+  `register`'s write path), then runs a non-destructive `message-count` gate FIRST
+  (count `0` returns without ever calling `read-messages`); on count `>0`, ONE
+  bounded `read-messages` (finite 10 s timeout — never the hanging `monitor`);
+  appends the batch to the durable inbox in one atomic NDJSON `appendFileSync`,
+  idempotent by embedded content hash (reused verbatim from the ingest daemon so
+  both paths dedupe identically); a per-id `O_EXCL` lock so a child never drains
+  its own queue twice concurrently. `devswarm-child-turn` now statically nudges
+  the child to run it every turn (no spawn on the hot path — the nudge is a
+  string, not a call). Honest limits, not hidden: reception is **pull, not
+  push** (a parent message is seen at most one child turn late, since a child
+  can't host the blocking `monitor` daemon on its turn thread), and there is a
+  **destructive-read crash-window** — `read-messages` marks the native messages
+  read before `pullOnce` durably persists them, so a crash in that window loses
+  them from the native side without landing in the durable inbox; the
+  `message-count` gate minimizes but cannot close the window (hivecontrol exposes
+  no non-destructive full read).
+- **Ingest daemon now actually functions (fix).** v0.54.1's auto-installer baked
+  no `WorkingDirectory` into the plist/systemd unit/cron line, so
+  launchd/systemd/cron ran the daemon from `$HOME` — not a git repo — and every
+  `hivecontrol workspace monitor` call failed "Not in a git repository",
+  draining nothing. `install-devswarm-ingest.js` now resolves the git worktree
+  the installer was RUN from (`git rev-parse --show-toplevel` against the
+  install-time cwd) and bakes it into the unit: macOS `WorkingDirectory` plist
+  key, Linux systemd `WorkingDirectory=` (escaped the same way as `ExecStart`),
+  and a `cd '<worktree>' &&` prefix on the cron fallback line (single-quoted, no
+  injection hole reopened). Refuses to install (fail-open — log + skip, exit 0)
+  if the install-time cwd doesn't resolve to a git worktree — no daemon is
+  better than one that silently drains nothing.
+- **Lock hardening.** `withMessagesLock` (journal backend) no longer ever runs
+  the append critical section UNLOCKED when contention is exhausted: a genuine
+  fs error opening the lock (e.g. `EPERM`) now fails closed with a distinct
+  `ELOCKFS`, and exhausting the retry budget throws a distinct, retryable
+  `ELOCKUNAVAIL` that `appendMessage` retries with jittered backoff (idempotent
+  by hash, so a retry can only add a row once). Also fixed a torn-read-steal
+  race: a lock file is briefly 0 bytes between `openSync('wx')` and the write,
+  and a concurrent reader that caught that empty window was wrongly treated as
+  "holder absent" and stealable; readers now fall back to the lock file's mtime
+  when the content is torn/unparseable and steal only on a genuinely OLD mtime,
+  never a fresh torn read. The same torn-read-safe steal propagated to the
+  `devswarm-ingest` / `devswarm-migrate` / `inbox pull` `O_EXCL` locks — closes a
+  double-consumer race on the destructive native queue shared by any two of
+  those. This is the exact race behind the CI failure caught on `windows-latest
+  / node 24.x` for v0.54.1's "concurrent writers never duplicate a deduped hash
+  row" test (`actual: 2, expected: 1`) — verified against the actual failed run
+  before writing this note.
+- **Reception silent-loss now surfaced (hardening).** `pullOnce` count-gates a
+  destructive `read-messages` on the non-destructive `message-count`, then relies
+  on `normalizeMonitorPayload` — but an unhandled read-messages shape normalized
+  to `[]`, so the messages were marked-read natively yet never persisted and the
+  drain returned a quiet `imported:0, ok:true`. It now RECONCILES: when a drain
+  recovers fewer messages than the native count (`imported+duplicate <
+  message-count`) it surfaces a loud `lost` field, logs a best-effort telemetry
+  line, and returns `ok:false`. The two are the same native unread metric
+  (`message-count` counts the unread set; `read-messages` reads that same set), so
+  a shortfall is real loss, never a benign count-vs-read race (a message arriving
+  between the two calls can only make `read-messages` return more, never fewer).
+- **Ingest daemon no longer crash-loops on a store-lock error (hardening).** The
+  store's messages lock fails CLOSED on `ELOCKFS` (a genuine fs/`EPERM` error) and
+  `ELOCKUNAVAIL` (contention budget exhausted) — correct, but an uncaught throw
+  propagated out of `runIngestLoop`, exiting the daemon so launchd/systemd re-exec'd
+  it every restart interval, hammering the same wedged lock. The ingest loop now
+  CATCHES those two known-retryable lock signals, logs, and continues to the next
+  poll (the native queue buffers and replay is idempotent by hash); any other error
+  still propagates so real bugs are not swallowed.
+
+## 0.54.1
+
+**DevSwarm substrate follow-up — ingest daemon auto-install, child-gate over-nag fix, partial child reception surfacing, live active-workspace table.**
+
+- **Ingest daemon auto-installer (`companion/install-devswarm-ingest.js`).** The
+  `devswarm-ingest` daemon (the one native consumer wrapping `hivecontrol workspace
+  monitor` into the store) now AUTO-installs/refreshes on `/anti-hall:update` inside an
+  active DevSwarm session — same no-offer, no-ask posture as the supervisor installer,
+  same `isDevswarmActive(process.env)` gate. Continuous daemon (not a periodic sweep):
+  macOS LaunchAgent with `KeepAlive`, Linux `systemd --user` `.service` with
+  `Restart=always` (cron fallback on systemctl-less hosts — every-minute tick, so a
+  cron-only Linux host has up to ~60s revive gap after a crash). Idempotent
+  (`launchctl unload && load` / `systemctl daemon-reload` + `restart`), so it
+  first-installs when absent and refreshes an already-running daemon to the current
+  build. `capability-scan.js` now detects BOTH shapes of a Linux systemd unit
+  (`.timer` for the periodic supervisor, `.service` for the continuous ingest daemon)
+  so either is reported correctly. Closes the gap where the daemon existed in code
+  (0.54.0) but nothing ever started it.
+- **`devswarm-child-gate` over-nag fix.** The child Stop-gate now stays SILENT when the
+  child's own turn-authored heartbeat (`devswarm-child-turn`'s
+  `heartbeats/<branch>.json`) is FRESH (<5 min old) — it no longer forces a duplicate
+  heartbeat on every single Stop. The forced-ack now fires only for the genuinely
+  unreported case (no heartbeat yet, or one stale past the freshness window).
+- **Child inbox reception surfacing — PARTIAL, not full reception.**
+  `devswarm-child-turn` now does a non-destructive unread check against the child's own
+  durable descriptor inbox and, when unread > 0, tells the child how many unread parent
+  message(s) it has and the safe (non-draining) way to read them via the CLI's
+  `inbox read` primitive. This is surfacing-only and forward-compatible: nothing
+  shipped yet actually DRAINS the child's native parent→child queue into that durable
+  inbox (native reads are destructive and guard-blocked; nothing currently populates the
+  child's durable inbox from the native side). Full child-side reception is an explicit
+  **v0.54.2 follow-up** — do not read this as "child message reception now works."
+- **Live active-workspace table (`devswarm-parent-inbox`).** The Primary's
+  UserPromptSubmit hook now injects a compact status table EVERY turn — one row per
+  active workspace, columns workspace / status (`escalated` > `stale` > `archive-ready`
+  > `active`, attention-needing rows sorted first) / finishing rate (required
+  completion gates met/total, plus an optional heartbeat progress-percent) / unread
+  count / last-activity (relative age). Capped at 12 rows (`+N more`, logged, never
+  silently truncated); empty output when no active workspace exists; read-only,
+  fail-open, zero git calls on the hot path (reads `summary.json` + the liveness
+  verdict + heartbeat files only).
+
+## 0.54.0
+
+**DevSwarm coordination substrate — mechanical parent/child triggers, SQLite-backed store, ingest daemon, CLI, auto-safe migration, archive-ready recommendation.**
+
+- **Mechanical parent/child trigger hooks.** Four new opt-in hooks, all fail-open and
+  empty-when-idle (own state files, no output unless the DevSwarm workspace is actually
+  active):
+  - `devswarm-parent-inbox` (UserPromptSubmit) — injects unread/idle status for the
+    parent, plus a persistent reminder once a workspace becomes archive-ready.
+  - `devswarm-parent-gate` (Stop) — capped forced-ack on unread/stale state, surfaces
+    supervisor verdicts; does not touch git on Stop.
+  - `devswarm-child-turn` (UserPromptSubmit) — child heartbeat.
+  - `devswarm-child-gate` (Stop) — heartbeat forced-ack for the child.
+- **`devswarm-inbox-cursor`** — the read/ack primitive underlying the forced-ack clear
+  path shared by the parent/child gate hooks.
+- **SQLite dual-backend store** (`node:sqlite` feature-detected, journal-file fallback
+  when unavailable, WAL mode) with an atomic `summary.json` projection; hooks read only
+  the projection, never the DB directly.
+- **`devswarm-ingest` daemon** — wraps `hivecontrol workspace monitor` behind a
+  single-native-consumer lock (never steals a live lock; heartbeats while running) with
+  dedupe.
+- **`scripts/devswarm.js` CLI** — `register` / `heartbeat` / `inbox` (`read`/`ack`/`count`)
+  / `workspaces` / `nudge` / `archive` / `gate` / `archive-ignore` / `migrate`; JSON
+  output throughout (CLI-over-MCP, per project convention).
+- **Automatic-but-safe migration** wired into the updater: idempotent, non-destructive,
+  single-consumer-locked, verifies row counts before switching over.
+- **Archive-ready recommendation.** Tracks per-workspace completion gates
+  (done/merged/tests_passed plus consumer-defined gates, e.g. deployed); once met,
+  PERSISTENTLY reminds the user to archive the workspace in the DevSwarm app (GUI-only
+  teardown), with a per-workspace `archive-ignore` opt-out. Never auto-archives.
+- **`system-briefing` companion skill** — derived live from the current hook/KB map;
+  hivecontrol KB refreshed to 2.3.4.
+- Note: the 4 DevSwarm Phase-1 hooks are documented-non-mirror on the Codex port
+  (env-gated inert there; tested).
+- **Cross-model review hardening:** ingest live-pid lock guard + heartbeat, migration
+  false-verify-on-unreadable fix, `summary.json` unique-tmp write, child-gate fail-open,
+  journal-dedupe lock, CLI register validation.
+
+## 0.53.0
+
+**DevSwarm destructive-read redirect (command-guard) + topology-aware edit-guard wording.**
+
+- **`command-guard` — new DevSwarm destructive-read redirect.** Under a DevSwarm-active
+  session (`isDevswarmActive`), the guard now redirects the two CONSUMING native
+  `hivecontrol` inbox reads before its own skip/coordinator gate, in ALL contexts (not
+  coordinator-only — a delegated read drains the queue identically):
+  - `hivecontrol workspace monitor` blocks UNCONDITIONALLY (a no-timeout long-poll that
+    hangs the shell AND consumes the native queue).
+  - `hivecontrol workspace read-messages` blocks ONLY when durable-inbox evidence exists
+    (`ANTIHALL_DEVSWARM_INBOX_CMD` non-empty, OR a `~/.anti-hall/devswarm/workspaces/*.json`
+    descriptor with a truthy `inboxPath`); otherwise a harmless single-consumer read is
+    ALLOWED (fail-OPEN-to-allow).
+  - Matching reuses the heavy-path quote-neutralization + `bash -c`/`eval`/`$()`/backtick
+    recursion, so a grep/echo of the command as quoted DATA does not false-positive while
+    smuggled forms still block. Closed-vocabulary reason never echoes input.
+  - Its own `devswarm-read-guard` skip name, now added to skip-guard's `DESTRUCTIVE` set —
+    a blanket `all` skip does NOT silence it (it prevents irreversible native-queue drain /
+    data loss); an explicit `{"devswarm-read-guard": <ttl>}` skip is required, like git-guard.
+  - Fully fail-open: any error falls through and never blocks a turn.
+- **`edit-guard` — topology-aware DevSwarm block wording.** The DevSwarm block reason now
+  distinguishes the Primary (`the primary/main orchestrator`) from a child workspace (`the
+  sub-orchestrator`) via `isChildWorkspace`; both still block, only the noun changes.
+- **deadly-loop / ship-it — Codex CRITIC seat pinned to `gpt-5.6-sol`.** The adversarial
+  Critic seat in both workflows now pins the flagship reasoning model via the brief prefix
+  `--fresh --model gpt-5.6-sol` (deadly-loop `investigateAgent`, ship-it `criticAgent` —
+  the single Codex-critic call site in each). This **supersedes** the 0.52.0 note that the
+  workflows "neither pins a Codex model by design": the Critic is now deliberately pinned.
+  The Codex IMPLEMENTER seat (ship-it `buildAgent`) stays unpinned (`gpt-5.6-terra`); the
+  availability-fallback (Codex-unavailable → Opus) and cross-model self-review guard are
+  untouched, so the sol pin can never leak onto an Opus seat. Both `MODEL-POLICY.md` copies
+  updated in lockstep. On codex CLI v0.143.0 the `-m` pin may emit "Model metadata not
+  found" (fallback metadata) per `docs/KB-gpt-5.6.md` — acceptable.
+
+## 0.52.0
+
+**New KB + Codex model-tier migration to GPT-5.6 (Sol/Terra/Luna).**
+
+- **New `docs/KB-gpt-5.6.md`** — a cited knowledge-base doc on OpenAI's GPT-5.6 lineup
+  (Sol/Terra/Luna): tier breakdown, official model IDs (`gpt-5.6-sol`, `gpt-5.6-terra`,
+  `gpt-5.6-luna`; bare `gpt-5.6` resolves to Sol), pricing (Sol $5/$30, Terra $2.50/$15,
+  Luna $1/$6), GA date 2026-07-09, with honest confidence bands (primary vs secondary vs
+  press sourcing) and the local codex #31873 picker/cache caveat noted explicitly.
+- **Codex port model-tier migration to GPT-5.6** across the codex skills, README, the
+  `MODEL-POLICY.md` line, and the limit-conserve downshift hook (updated in lockstep with
+  its test): planning/debate `gpt-5.5`→`gpt-5.6-sol`; implementation `gpt-5.4`→`gpt-5.6-terra`
+  — both are same-price capability upgrades over their predecessors. The cheap tier KEEPS
+  `gpt-5.4-mini` as the default (Luna is offered only selectively — it's +33% over
+  `gpt-5.4-mini`). The #31873 degraded-metadata caveat is carried forward, and `gpt-5.5` is
+  kept as the recommended non-degraded fallback until the codex CLI cache issue is fixed.
+- **Deadly-loop / ship-it workflows unchanged.** Neither pins a Codex model by design —
+  every Codex seat in those workflows uses `agentType codex:codex-rescue`, which resolves
+  its own backend.
+- **Correction:** GPT-5.6 reached GA on 2026-07-09. The 0.49.0 entry above (lines 156–159,
+  "Codex model routing — re-verified, unchanged") stated GPT-5.6 was "preview/select-partners-only,
+  not GA" at the time — that note is now superseded by this entry; it is left unedited as a
+  historical record.
+
+## 0.51.1
+
+**P0 fix — `codex-availability` PATH probe falsely reported a directory as an executable.**
+
+- **`hooks/codex-availability.js`.** `probeCodexOnPath()` matched a candidate with
+  `fs.accessSync(candidate, X_OK)` and no `isFile()` check. On POSIX a DIRECTORY
+  named `codex` on PATH has the execute/search bit set, so `X_OK` succeeded and
+  the hook wrote `available:true` / emitted the prefer-Codex `additionalContext`
+  even though no runnable binary existed — contradicting the hook's own comment
+  that it matches "a real executable (never a shell alias)". Fixed: a candidate
+  now counts only if `fs.statSync(candidate).isFile()` is true (symlinks to a
+  real binary still resolve via `statSync`'s follow-symlink behavior), and on
+  POSIX the execute bit (`X_OK`) is additionally required; on Windows `isFile()`
+  plus the `PATHEXT`-extension match is sufficient. Still fully fail-open (any
+  stat/access throw just means "not a match here"; the hook always exits 0).
+- **Reference probe parity.** The byte-identical `codex-available.js` reference
+  snippet in both `skills/MODEL-POLICY.md` and
+  `skills/deadly-loop/references/MODEL-POLICY.md` carried the same bug and got
+  the same `isFile()` fix, edited identically so the two copies remain
+  byte-for-byte the same.
+- **New regression test** `tests/hooks/codex-availability.test.js`: a directory
+  named `codex` on PATH (the bug) now asserts `available:false` and no emitted
+  context; a real executable file named `codex` on PATH asserts `available:true`;
+  an empty PATH asserts fail-open (`available:false`, exit 0, no throw).
+
+**Docs — `fable-availability.js` documented as intentionally Claude-only.** No
+behavior change: `hooks/fable-availability.js` probes `~/.claude.json` for a
+Claude Fable model entitlement to inform the Claude Reviewer-seat fallback,
+which is irrelevant to gpt-5.x Codex/OMX sessions and (like the DevSwarm
+liveness supervisor) has no Codex mirror by design — Fable routing is itself
+policy-disabled (see `MODEL-POLICY.md`). Documented in
+`plugins/anti-hall/codex/README.md`'s intentional-parity list, with a matching
+inline comment in `codex/install-codex.js`.
+
+## 0.51.0
+
+**"Strongly-defaulted" Codex utilization** — a new `codex-availability` SessionStart hook
+(Claude + Codex port) plus guidance edits pushing Codex toward being the default worker
+pool rather than an occasional afterthought. This strongly defaults Codex usage but does
+NOT mechanically guarantee it on the inline-Skill path — a saved Workflow template is
+still required for the enforced `codexUp` Critic wiring.
+
+- **New hook `hooks/codex-availability.js`.** A pure-Node, OS-agnostic PATH probe
+  (mirrors the probe documented in `MODEL-POLICY.md`) that checks once per session
+  whether a real `codex` executable is on PATH, writes `~/.anti-hall/codex-availability.json`
+  (`{available, checkedAt, source:"path-probe"}`), and — when `available:true` — emits an
+  honest `additionalContext`: this proves the binary is reachable, NOT that Codex is
+  authenticated/ready, so a runtime spawn returning null still falls back to Opus/Sonnet.
+  Fails open (any error -> exit 0, no output). Registered in both `hooks/hooks.json`
+  (after `fable-availability.js`) and the Codex port's `codex/hooks/hooks.json`.
+- **`doctor` gains a non-failing "saved workflow template" advisory.** Looks for
+  `~/.claude/workflows/deadly-loop*.js` / `ship-it*.js` (and the `<cwd>/.claude/workflows/`
+  equivalents); if none are saved, prints an advisory (warning, not a failure — exit code
+  unchanged) that the inline SKILL path leaves the Critic seat as unenforced LLM guidance
+  that can silently degrade to Opus, and points at `/workflows` for the enforced wiring.
+- **Guidance edits** (`MODEL-POLICY.md` — both copies, `skills/orchestration/SKILL.md`,
+  `skills/deadly-loop/SKILL.md`, `skills/ship-it/SKILL.md`): read the
+  `codex-availability` fact before re-probing; when available, default the Critic seat
+  and everyday correctness-review/implementation load to `codex:codex-rescue` with
+  Opus as the fallback taken only on a null spawn (never a default); prefer the Workflow
+  tool with a saved deadly-loop/ship-it template over ad-hoc inline Agent fan-out for
+  big/parallel work.
+
+## 0.50.0
+
+**New always-on guard `edit-guard` — the coordinator can no longer edit files directly.**
+Mirrors what `command-guard` already does for heavy Bash: a PreToolUse hook mechanically
+blocks a coordinator/orchestrator from calling `Edit`/`Write`/`MultiEdit`/`NotebookEdit`
+directly. Only coordinators are gated — subagents always pass, which prevents infinite
+agent nesting — and it fails open on ambiguity.
+
+- **Shared coordinator detection.** `hooks/coordinator-detect.js` is extracted from
+  `command-guard.js` so both guards share the exact same coordinator/subagent
+  discriminator (behavior-preserving refactor, no change to `command-guard`'s own logic).
+- **Decision A — normally-skippable.** `edit-guard` is intentionally NOT added to
+  skip-guard's DESTRUCTIVE set; it's skippable like its sibling `command-guard`. Skip name
+  is `edit-guard` (write `~/.anti-hall/skip.json` `{"edit-guard": <expiry-ms>}`).
+- **Decision B — built-in allowlist.** Coordinator-owned config/plan/memory paths are
+  always allowed through: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.claude/**`, `.omc/**`,
+  `.anti-hall/**`, `PLAN.md`, `STATE.json`. Extensible via env `ANTIHALL_EDIT_GUARD_ALLOW`
+  (colon/comma-separated globs).
+- **DevSwarm-aware.** Enforcement is always on in both standalone and DevSwarm sessions;
+  only the block-message wording adapts via `isDevswarmActive()` — the guard is agnostic
+  and works identically with or without DevSwarm.
+- **New hooks.json entry.** A separate PreToolUse matcher `Write|Edit|MultiEdit|NotebookEdit
+  -> edit-guard.js` was added; the existing `api-guard`/`ship-it-guard` matcher is left
+  untouched, so `NotebookEdit` isn't dragged onto them.
+- **Doctor + tests.** `doctor` gained a live behavioral self-test for `edit-guard` (the
+  first edit-time behavioral probe); `tests/hooks/edit-guard.test.js` adds 17 tests.
+- **Codex parity gap (documented, not claimed).** `edit-guard` shares the same documented
+  `apply_patch` payload-adapter gap as `api-guard`/`ship-it-guard` — it is NOT registered
+  in the Codex hooks yet (a real Codex `apply_patch` PreToolUse payload must be captured
+  first). No hard-block parity is claimed for Codex edit-time.
+
+## 0.49.0
+
+**DevSwarm recovery redesign — the supervisor NO LONGER auto-kills.** The automatic path is now
+layered and non-destructive (detect → poke → escalate-to-parent); the hardened kill+`--resume`
+survives only as a deliberate on-demand CLI. Plus a child self-report hook, a fully autonomous
+updater, and a mid-turn-kill safety hardening.
+
+### ⚠️ Behavior change: automatic kill removed
+The 0.47–0.48 supervisor auto-killed + `--resume`d a workspace it judged wedged. **That automatic
+kill is removed.** Rationale: the real-world failure is overwhelmingly *idle-not-wedged* (a finished
+child with a dead listener), where a poke recovers it non-destructively; a blind automatic kill is too
+aggressive. If you relied on automatic recovery, it now **escalates to the parent/you** instead — and
+you kill deliberately via the new CLI. An already-installed 0.48 supervisor picks up this no-kill
+behavior automatically on its next sweep (the companion is an ephemeral per-interval spawn, not a
+persistent daemon); old on-disk `recovering` verdicts are simply superseded.
+
+### The layered liveness model (automatic path — never kills)
+- **Layer 1 — child self-report** (new SessionStart hook `hooks/devswarm-child-role.js` +
+  `hooks/lib/devswarm-role.js`): a DevSwarm **child workspace** sub-orchestrator is reminded to message
+  its parent "idle — reassign or archive me" when idle. Role-gated by `DEVSWARM_SOURCE_BRANCH` — fires
+  **only** on child workspaces, never the Primary/main orchestrator, never subagents.
+- **Layer 2 — supervisor poke** (non-destructive): on `stale`, if the descriptor carries an optional
+  `nudgeCommand`, the sweep fires it (the consumer's real wake channel) — no pid targeting at all.
+- **Layer 3 — escalate-to-parent**: after the poke budget is exhausted, write `status:"escalated"` +
+  a `recovery.log` line, and fire an optional `escalateCommand`. **The automatic sweep stops here.**
+
+### On-demand recovery CLI — the ONLY kill path
+- `node companion/devswarm-recover.js <workspace-id>` — a deliberate, human/parent-invoked kill +
+  `claude --resume` for one named workspace. Reuses the deadly-loop-hardened confirm-gate
+  (exactly-one-candidate-or-abstain, identity-binding, cwd match, TOCTOU re-confirm before every
+  signal, single-writer lock, recovery cap), with one relaxation: it targets **interactive** sessions
+  too (DevSwarm launches children interactively; naming the id is itself the deliberate override of the
+  human-takeover protection).
+- **Mid-turn-kill hardening** (from a live test that caught a real double-execution risk): the CLI
+  **group-kills** the process tree (a lone `claude` SIGKILL otherwise orphans the in-flight tool
+  subprocess), and the resume prompt is **prepended with a state-check guardrail** ("before re-running
+  any side-effecting command, verify with a read-only check whether it already completed") — which
+  measurably stopped the model from blindly re-running a mutating command on resume.
+
+### Autonomous updater
+- `/anti-hall:update` (+ Codex mirror) now **autonomously installs or refreshes** the supervisor when
+  the update runs inside a DevSwarm session (`DEVSWARM_REPO_ID`) — no prompt, no manual step (the
+  installer is idempotent and reloads, so the next sweep runs the new code). Safe unprompted precisely
+  because the daemon never kills. Outside a DevSwarm session it does nothing.
+
+### Config + doctor
+- Sweep env: dropped `ANTIHALL_DEVSWARM_MAX_RECOVERIES`/`GRACE_SEC`/`STUCK_SEC` (kill-era knobs);
+  added `ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS`/`NUDGE_WINDOW_SEC`/`NUDGE_COOLDOWN_SEC`. The on-demand
+  CLI keeps its own cap/grace, decoupled from the sweep.
+- Verdict enum is now `alive | stale | nudged | ambiguous | escalated` (dropped `recovering`); doctor
+  maps `nudged` → WARN and drops the stuck-recovering logic. A genuine **simplification** — removing
+  automatic kill also removes most of the precision-kill machinery from the sweep path.
+
+### Codex model routing — re-verified, unchanged
+- Confirmed against official sources that the current Codex flagship is still **`gpt-5.5`** (GPT-5.6 is
+  preview/select-partners-only, not GA). The plugin's `gpt-5.5`→`gpt-5.4`→`gpt-5.4-mini` routing already
+  matches; no change. (Re-check at the next release if 5.6 goes GA.)
+
+## 0.48.0
+
+**DevSwarm addons rounded out + plugin self-awareness: tunable supervisor thresholds, a new
+`/anti-hall:devswarm` skill, a capability-aware smart update, an environment-aware doctor, and
+account-change-aware limit-conservation. Every optional integration stays dormant unless it's
+actually in use.**
+
+### DevSwarm liveness supervisor — thresholds now env-tunable
+- The supervisor's runtime thresholds (previously hardcoded) are configurable, fail-open to the same
+  defaults: `ANTIHALL_DEVSWARM_IDLE_SEC` (900), `ANTIHALL_DEVSWARM_COOLDOWN_SEC` (600),
+  `ANTIHALL_DEVSWARM_MAX_RECOVERIES` (3), `ANTIHALL_DEVSWARM_GRACE_SEC` (5), and doctor's
+  `ANTIHALL_DEVSWARM_STUCK_SEC` (1800). (`ANTIHALL_DEVSWARM_INTERVAL` was already tunable.) Also
+  fixed a latent gap — `graceMs` wasn't being threaded into recovery at all before.
+
+### New skill: `/anti-hall:devswarm` (+ Codex mirror)
+- Explains the whole OPTIONAL DevSwarm integration — the hivecontrol KB, the (designed, unbuilt)
+  workspace-tier orchestration, and the shipped liveness supervisor — plus a consumer **activation
+  checklist**: the install command, the `~/.anti-hall/devswarm/workspaces/<id>.json` descriptor
+  schema (required vs load-bearing fields), env gates, keep-fresh rules, config/tuning env, the
+  safety model, and where to watch outputs. A DevSwarm-orchestrating agent invokes this to get the
+  as-built activation contract — no separate hand-off doc needed.
+
+### Smart, capability-aware update
+- `/anti-hall:update` (+ Codex mirror) now runs a **dynamic capability scan** after pulling: it
+  discovers opt-in companions from `companion/install-*.js` (no hardcoded list), checks which are
+  actually installed on this machine (launchd / systemd / cron artifacts), plus statusline state and
+  pending state-migrations, and reports "available vs active + how to enable." Idempotent migrations
+  run automatically; opt-in installs are *guided*, never auto-run (a process-killer must stay
+  opt-in). New pure-Node `scripts/capability-scan.js`.
+
+### Comprehensive, environment-aware doctor
+- `doctor.js` now detects and tests each present integration and cleanly skips the absent ones (no
+  noise for a plain user): **OMC** (enabled + whether a loop is active), **Codex/OMX** (config +
+  anti-hall hooks wired), and **DevSwarm** — including whether the supervisor companion is installed
+  and an explicit per-workspace **listener-presence** line (an honest WARN when the listener state
+  can't be observed, never a fabricated PASS).
+
+### Limit-conservation is account-aware
+- anti-hall's weekly-limit conservation nudge now **deactivates when the Claude account changes**
+  (`userID` in `~/.claude.json`) until the usage cache is refreshed under the new account — fixing
+  stale over-restriction after an account switch. Fail-open (any ambiguity → prior behavior), biased
+  toward *not* over-restricting, with an `ANTIHALL_LIMIT_ACCOUNT_CHECK=off` kill-switch. Its firing
+  depends on `userID` rotating on switch (a safe no-op if it doesn't).
+
+## 0.47.1
+
+**Windows CI fix for the 0.47.0 DevSwarm liveness supervisor.** `encodeWorktreePath()`
+(`companion/lib/target-session.js`) stripped only `/` and `.` when mapping a worktree path to its
+`~/.claude/projects/<encoded>` transcript dir — not `\` or the drive-letter `:`. On Windows an
+absolute `C:\…` worktree path therefore stayed a multi-component absolute segment, and `path.join`
+(which does not anchor on a later absolute-looking argument) produced a doubled
+`…\.claude\projects\C:\…` path → the doctor self-test and the liveness detector ENOENT'd on all
+Windows CI jobs (macOS + Linux were unaffected and green). Widened the strip to `/[/\\:.]/g` so the
+encoded segment is always one flat, filesystem-legal component on every platform — a no-op on POSIX
+(which has no `\`/`:`). `node --test` = 855 pass / 0 fail / 2 skip; green across
+ubuntu/macos/windows × node 18/20/22/24.
+
+## 0.47.0
+
+**New OPT-IN DevSwarm liveness supervisor — a pure-Node companion that detects a wedged/idle
+DevSwarm workspace agent from its OUTBOUND activity and precisely recovers it (targeted kill +
+`claude --resume`), fully dormant unless DevSwarm is in use. Hardened by a 3-seat deadly-loop that
+found 15 issues (incl. a wrong-victim P0) — all fixed with non-vacuous tests BEFORE any code
+shipped. `node --test` = 855 pass / 0 fail / 2 Windows-skips (+74 tests).**
+
+### What it is
+- A background companion (`companion/devswarm-supervisor.js`, installed via
+  `companion/install-devswarm-supervisor.js` — the same opt-in launchd / systemd-user / cron model
+  as the `mcp-reaper`). Per active DevSwarm workspace it computes liveness from **OUTBOUND** signals
+  (the agent's own session-transcript activity + git/worktree activity — not inbound messages, which
+  are blind to the hang) and recovers the agent only when BOTH signals are idle past a threshold AND
+  the workspace has pending work it should be servicing.
+- Works around an upstream Claude Code core hang (process stays alive but can't service the next
+  turn, so crash-restarters never fire) — labeled a documented workaround for `claude-code#39755`,
+  to re-evaluate when a real upstream fix lands.
+
+### Optional — exactly like OMC/OMX
+- Entirely feature-detected via `DEVSWARM_REPO_ID` (new `hooks/lib/devswarm-detect.js`, modeled on
+  `omc-detect.js`). When DevSwarm is not in use, the supervisor and its doctor check are completely
+  dormant — zero effect, nothing installed, no context. Opt-in install; kill-switch + config env.
+  Documented as optional in README + llms.txt alongside OMC/OMX.
+
+### Safety (it kills processes, so it is hardened accordingly)
+- **Precise targeting, never a broad `pkill`:** maps a workspace to exactly one `claude` pid via the
+  process's own argv session-id + a real cwd match, and **ABSTAINS** on any ambiguity (0 or >1
+  candidates).
+- **Identity-bound:** the target's session-id must match the workspace's declared id AND the process
+  must be **headless (`-p`)** — so a human who takes over a worktree interactively is never killed.
+- Re-confirms identity on fresh data immediately **before every kill signal** (PID-recycle/TOCTOU
+  defense, mirroring `mcp-reaper`); **group-kills** so it never orphans MCP children; **detached
+  `--resume`** so it can't time-out and kill legitimate long-running work; **stale-lock steal**
+  (mirroring `swarm-guard`) so a supervisor crash can't permanently disable recovery; a per-workspace
+  recovery cap that escalates instead of looping; single-flight sweep; descriptor-id sanitization;
+  bounded `ps`/`lsof` probes. **Fail-open throughout** — any error logs and continues, never kills a
+  healthy agent. **Windows = detection-only** (a running process's cwd isn't obtainable in pure Node
+  there), matching the `mcp-reaper` platform stance.
+- **doctor** gains a per-active-workspace listener + liveness PASS/WARN/FAIL check (dormant when no
+  DevSwarm) and now syntax-checks the new `lib/` files.
+
+### The seam — anti-hall stays generic; the consumer owns the DevSwarm glue
+- anti-hall ships only the generic, agnostic supervisor. The DevSwarm-specific transport (inbox
+  daemon, done-report contract, `hivecontrol` wiring) stays consumer-side. Interface: the consumer
+  publishes a per-workspace descriptor `~/.anti-hall/devswarm/workspaces/<id>.json =
+  { id, worktreePath, inboxPath, cursorPath, sessionId }`; anti-hall derives pid/session itself and
+  writes a liveness verdict + recovery log. Full design + implementation plan under
+  `docs/superpowers/`.
+
+## 0.46.0
+
+**Whole-plugin ultracode audit remediated: 2 critical guard/data-loss bugs + 21
+correctness/parity fixes, plus 3 opt-in DevSwarm/hivecontrol integration hooks. Every fix
+ships with a non-vacuous test; `node --test` = 783 pass / 0 fail / 2 Windows-skips.**
+
+### Critical (P0)
+- **git-guard `bash -c`/`sh -c` bypass closed.** `scanCommand()` unwrapped only `eval`, so
+  `bash -c "git push --force"` and `bash -c '… Co-Authored-By: Claude …'` both passed (exit 0)
+  — a total bypass of the one guard the repo treats as non-skippable. Added
+  `extractShellCPayload()` (SHELL_VERBS `bash/sh/zsh/dash/ksh/ash` + `-c`/`--command`) with
+  depth-bounded recursion, mirroring `command-guard.js` / `graphify-guard.js`. Also fixed
+  `splitSegments` splitting on the `&` in `2>&1` / `>&2` / `&>`, which had orphaned a trailing
+  `--force` into a non-`git` segment. Both classes now block (exit 2).
+- **statusline uninstall no longer clobbers a committed settings file.** `uninstall --project`
+  targeted `.claude/settings.json` while the installer writes `.claude/settings.local.json`, and
+  Strategy A overwrote it with the global base — no backup, no check it was even anti-hall's.
+  Now resolves `settings.local.json` first, only rewrites when the current value is the anti-hall
+  dispatcher, and backs up before mutating.
+
+### Correctness & parity (P1)
+- **Guards:** command-guard adds a narrow, path-anchored exception for the coordinator-owned
+  helpers `statusline/phase.js` + `hooks/agent-watchdog.js` (arbitrary `node *.js` still blocked in
+  coordinator context); tasklist-guard's `BASH_WORK_RE` no longer counts read-only Bash (quoted
+  content, `2>` stderr redirects, mid-command write-verbs) as file-changing work.
+- **Workflows / skills:** `ship-it.workflow.js` now begins with `export const meta` (the Workflow
+  runtime previously rejected it, so `/ship-it` could not run), its audit gate blocks on new P0
+  **or** P1 (was P0-only), and Codex-implemented code is reviewed by an Opus Critic (implementer ≠
+  reviewer). `deadly-loop.workflow.js` re-checks a respawned seat for drift before trusting it as a
+  live GO. `deadly-loop/SKILL.md` swarm-mode Reviewer is Sonnet 5 (Fable routing is policy-disabled).
+- **Codex port:** every Codex skill resolves the plugin root via a `$ANTI_HALL_ROOT` preamble —
+  verified against official Codex docs that `${PLUGIN_ROOT}` is expanded only for hook commands,
+  never in skill bodies — instead of clone-relative `node plugins/anti-hall/…` paths that break
+  once the port is installed as a plugin. The Codex ship-it `STATE.json` gained the 0.45.0
+  `gate:"locked"|"not-run"` field + PLAN.md `## Goal coverage` (anti-false-completion parity);
+  `install-codex.js` dedup is backslash-safe so a Windows re-install no longer duplicates all 15
+  hook groups.
+- **Statusline:** `install --consolidate` on the already-installed path no longer throws a TDZ
+  `ReferenceError`.
+- **Docs accuracy:** model-routing-guard default documented correctly (strict by default since
+  v0.35.0; `=advisory` opts out — was documented backwards); the dead OMC companion link repointed
+  to the real upstream; the `docs/KB.md` version row refreshed; and a private project codename
+  scrubbed from a committed doc (agnostic-mandate fix).
+
+### DevSwarm / hivecontrol integration (opt-in, off by default)
+- **merge-gate** also recognizes `hivecontrol workspace merge-into-source` / `merge-from-source`
+  (stays default-OFF via `ANTIHALL_MERGE_GATE`; `skip.json` override intact).
+- **deadly-loop** writes an explicitly-**advisory** `~/.anti-hall/approvals/<repo>@<HEAD-sha>.json`
+  on convergence (`"proof": false` — an audit record, never an authorization token; the reader must
+  enforce its own real gating). Mirrored into the Codex deadly-loop skill.
+- **swarm-guard** appends a blocked-spawn trip to a separate `~/.anti-hall/swarm-trips.log` so a cap
+  trip leaves a forensic trace (the rate window and `SPAWN_CAP` are untouched — observation only).
+
+### Also in this release (carried-forward cleanup + docs)
+- **Codex `anti-hall-feature-launch` fully removed** — completes the 0.45.0 GSD/feature-launch
+  retirement on the Codex side. The skill is deleted and every reference (`codex/README.md`,
+  `docs/KB-omx.md`, `codex/skills/anti-hall-omx/SKILL.md`, and the plugin-manifest description)
+  now points at `anti-hall-ship-it`.
+- **graphify guidance modernized.** `doctor.js`, `graphify-reminder.js`, `graphify-session.js`, and
+  the SessionStart primer now say `graphify update .` (code graph) / `/graphify . --update --obsidian`
+  (docs + Obsidian) instead of the retired `/graphify --obsidian`, and the legacy `.planning/graphs/`
+  fallback is dropped (GSD is gone) — with a regression test asserting `.planning/graphs` alone no
+  longer triggers the graphify-first injection.
+- **New DevSwarm / hivecontrol docs.** `docs/KB-devswarm-hivecontrol.md` — a reference KB for the
+  `hivecontrol` CLI (v2.3.3), the `.devswarm/config.json` schema, and workspace role-detection —
+  plus the approved DevSwarm-aware workspace-tier orchestration design + implementation plan under
+  `docs/superpowers/`. The feature itself is not built yet; these are the hardened design/plan for a
+  separate later effort.
+
+## 0.45.0
+
+**GSD discontinued and removed as a live dependency; 4 new research KBs; a 17-item cross-KB
+feature audit resolved; a plugin-wide KB-contradiction sweep; 2 real bugs fixed in
+`deadly-loop.workflow.js`.**
+
+### GSD (`.planning/`) removed — owner decision, GSD itself is discontinued
+- `ship-it/SKILL.md`, `ship-it-guard.js`, and `docs/KB.md` no longer recognize `.planning/PLAN.md`
+  — `PLAN.md` at the repo root is the only location. `graphify-guard.js`, `graphify-reminder.js`,
+  and `doctor.js` no longer treat `.planning/graphs/` as an alternate graph location.
+- `scripts/migrate-state.js` gained `migrateGsdPlanning()`: folds an existing `.planning/` tree
+  into `.anti-hall/history/legacy/planning/`, then **deletes each source file once its own copy
+  is verified byte-identical** — the `.planning/` directory (and any subdirectory) is never
+  removed, only the individual files inside it, one at a time. A file whose copy can't be
+  verified is left in place, reported as `verify-failed`, never silently deleted. Wired into
+  `/anti-hall:update`'s existing migration step (same command, no new invocation needed).
+- `AGENTS.md`'s dual-platform-parity section now documents two accepted structural limitations
+  (Codex has no Dynamic-Workflows equivalent; Claude→Codex integration is one-directional) so
+  future work stops re-litigating them, and explicitly extends the parity mandate to KBs.
+
+### 4 new research KBs (all source-count-verified, none padded)
+- `docs/KB-model-modes.md` (47 sources) — Claude/Codex effort levels, Plan Mode, the Workflow
+  tool + "ultracode" (confirmed officially documented), `/code-review ultra`. Found and fixed a
+  real terminology-drift bug (prompt text said "max thinking"/"max reasoning" when the actual
+  code passes `effort:"high"`/`"xhigh"` — Codex has no `max` tier at all) across 10 files.
+- `docs/KB-overengineering.md` (15 sources) — general SE + AI-agent-specific causes of
+  overengineering, empirical bloat measurement.
+- `docs/KB-false-completion.md` (21 sources) — reward hacking / specification-gaming research;
+  identified that ship-it v2's own `STATE.json` protocol (shipped last release) was prose-only
+  and mechanically unenforced — the exact failure mode the research catalogs, now fixed (below).
+- `docs/KB-goal-setting.md` (15 sources) — goal-clarity research; identified a gap between
+  Step 1's intent and Step 2's decomposed phases with no reconciliation check — now fixed (below).
+
+### KB-contradiction sweep — 13 real contradictions found and fixed across 15 KB docs
+Including a within-document self-contradiction in `KB-sonnet-5.md` (TL;DR vs its own cited
+source), a benchmark figure mis-attributed to the wrong model, a pre-Sonnet-5 routing doc never
+flagged as superseded, and a stale error-code claim contradicting its own correction three
+sections later. All 13 independently re-verified against the actual working tree (grep/ls
+counts), not just re-read.
+
+### Feature-improvement audit — all 17 findings resolved
+- **Doc/text fixes:** `deadly-loop-multi` retry-arithmetic (wrong tier referenced), `task-guard.js`
+  under-description, `gpt-5.3-codex-spark` presented as interchangeable with `gpt-5.4-mini` (fixed
+  across 9 Codex files + added an Effort column to the Codex model-policy table), a 4-location
+  Fable stale-language sweep, `update`/`doctor` SKILL.md delegation instructions missing an
+  explicit model (live-verified to trigger `model-routing-guard.js`'s own block).
+- **Real code fixes:** `ship-it.workflow.js`'s `buildAgent()` now pins explicit effort
+  (`medium`/`high`, opt-up via `phase.effort`) instead of silently inheriting a model default;
+  `ship-it-guard.js` gained a plan-conformance advisory (flags — never blocks — an edit outside
+  every phase's declared `files:`); `graphify-guard.js` is now subagent-aware (a delegated
+  subagent's search no longer burns the coordinator's one-time nudge) and re-arms its nudge after
+  ~240KB of transcript growth instead of firing once per session forever; `task-tracker.js` gained
+  the same token-growth re-arm trigger alongside its wall-clock one; `doctor.js` now sums the
+  footprint of every registered SessionStart hook (was undercounting) and gained a behavioral test
+  for `version-alert.js`; Codex-native deadly-loop documents its same-model-TRIO as a disclosed
+  degraded config with an opt-in cross-model escalation path for L-tier hard-risk work.
+- **Empirical verification, not assumed:** ran a real experiment confirming SubagentStart's
+  `additionalContext` genuinely reaches a spawned subagent's model context (cross-checked against
+  37 historical subagent transcripts) — `docs/KB-claude-codex.md` updated accordingly.
+- **`ship-it/SKILL.md` protocol additions** (from the two false-completion/goal-setting KB
+  findings above): `STATE.json` gained a `gate:"locked"|"not-run"` field, set only after Step 5's
+  deadly-loop actually locks — a resumed phase can no longer be trusted `done` from inference
+  alone. `PLAN.md`'s template gained a "Goal coverage" field mapping each intent clause to the
+  phase that proves it, plus a new Step 3 Reviewer-checklist bullet verifying that mapping.
+
+### 2 real bugs fixed in `deadly-loop.workflow.js` (not doc-only — logic changes)
+- The Opus Reviewer-fallback silently inherited the Sonnet-5 seat's `effort:"xhigh"` via object
+  spread instead of using Opus's own tier — fixed with a fresh options object (`effort:"high"`).
+- Phase 2b (Argue) dispatched using each seat's *static* role-defined opts, never the opts that
+  actually answered in Phase 2a — meant a seat whose primary model failed over during Investigate
+  would silently retry the dead model in Argue with zero fallback and zero signal in
+  `verdictSummary`. Fixed by threading the resolved per-seat opts from 2a into 2b.
+
+### GSD removal, part 2 — statusline + Codex-side parity gaps
+A deeper sweep found GSD support was more extensive than the first pass caught:
+- `statusline-monorepo.js` was an entire dedicated rendering mode for GSD state
+  (`readGsdState`/`formatGsdState`/`.planning/config.json`) — stripped down to its
+  non-GSD content (model/context/current-task/dir); `.gsd/`/`.planning/` dropped as
+  monorepo-detection triggers in `statusline.js` (`.gitmodules` still triggers monorepo
+  mode for real git-submodule projects); `statusline-rich.js`'s GSD phase chip removed.
+- Two Codex-side skills contradicted their own stated intent: `anti-hall-feature-launch`
+  explicitly said "do not invoke GSD commands, GSD was removed" while still instructing
+  every artifact write into `.planning/` — fixed to `.anti-hall/feature-launch/`.
+  `anti-hall-ship-it` still preferred `.planning/PLAN.md` — fixed to repo-root only,
+  matching the Claude-side fix.
+- `install-statusline`'s SKILL.md and llms.txt's Codex README were also swept.
+- Historical/research docs (`docs/gsd-distilled.md`, `docs/KB-claude-codex.md` §12,
+  `docs/superpowers-planning.md`) were deliberately left untouched — they document GSD's
+  design as research provenance for anti-hall's own swarm/debate model, not live
+  coexistence, matching this repo's "historical artifacts are frozen" convention.
+
+### Process note
+Codex's independent verification of this release's implementation batch flagged one genuine
+defect (not environmental noise): a probe-record fixture claimed a grep returned zero matches
+when it actually returns one — corrected in place, logged rather than silently patched.
+
+Suite 729 (727 pass / 0 fail / 2 skip, up from 703 at the start of this release).
+
+## 0.44.0
+
+**Ship-it v2: resumable state, a global P0+P1 convergence gate, Codex-primary build seats, and legacy-state migration.**
+
+- **Global deadly-loop convergence gate now blocks on confirmed P0 *or* P1** (was P0-only).
+  `deadly-loop.workflow.js`'s `VERDICT_SCHEMA` already tagged every finding P0/P1/P2/P3; the
+  gate simply never checked P1 until now. This is a plugin-wide change — every deadly-loop
+  consumer (ship-it, root-cause debugging, deadly-loop-multi) now requires zero NEW P0s AND
+  P1s to converge, not just P0s. Mirrored in the Codex-native `anti-hall-deadly-loop` skill.
+- **ship-it v2, L-tier only:**
+  - Resumable `.anti-hall/ship-it/<slug>/STATE.json` (coordinator-owned protocol — Dynamic
+    Workflow scripts have no filesystem access, so this lives in `SKILL.md`, not the
+    `.workflow.js` template): `plan_hash` (drift detection against `PLAN.md`), per-phase
+    status, and an `escalations` counter. Reuses the existing `~/.anti-hall/agents/*.json`
+    heartbeat convention (`agent-watchdog.js`) rather than inventing a new one.
+  - P2-severity findings from a converged deadly-loop no longer vanish — they're appended to
+    `.anti-hall/ship-it/<slug>/decisions.md`.
+  - Build-to-plan escalations (a fix that needs re-planning, not just another fix-wave) are
+    capped at 2; the 3rd stops and surfaces to the owner instead of looping.
+  - Step 6 now auto-writes a session-history entry (via the existing per-session system) plus
+    `.anti-hall/ship-it/<slug>/SUMMARY.md`, then triggers `/graphify --obsidian --update`.
+- **Build seats now try Codex-primary / Sonnet-5-failover** (`buildAgent()` in
+  `ship-it.workflow.js`, mirroring the existing `criticAgent()` fallback shape) instead of
+  always going straight to Sonnet 5 — matching MODEL-POLICY.md's already-documented
+  implementation-seat routing. Surfaced a real cross-model gap: when a phase's build falls
+  back to Sonnet 5, that phase's Reviewer seat (also Sonnet-5-by-default) would otherwise be
+  reviewing its own model's output. Fixed — the Reviewer now skips Sonnet 5 and goes straight
+  to Opus for any phase Sonnet 5 itself built.
+- **`scripts/migrate-state.js`** (new) — non-destructive (copy-only, never deletes/moves),
+  idempotent script that folds legacy root `.anti-hall-progress.md` / `.anti-hall-history.md`
+  files into `.anti-hall/history/legacy/` for repos that haven't been through that migration
+  yet. Wired into the `update` skill as a post-pull step.
+- **Codex-native `anti-hall-ship-it` parity** — same L-tier resumable-state convention, P0+P1
+  LOCK threshold, P2 decisions log, migrate-state.js reference, and wrap-up/summarize step,
+  written as protocol text (this port has no Dynamic Workflow runtime, so nothing here relies
+  on one). Codex-native ship-it is already the Codex-primary implementer by construction, so
+  the cross-model self-review guard above doesn't apply on this port.
+- Doc sweep: README (root + plugin) and llms.txt updated for the above; also corrected
+  drifted test-pass counts (623/625 → 701/703) that had gone stale since 0.43.0.
+
+Suite 703 (701 pass / 0 fail / 2 skip, up from 688 — 15 new tests across the deadly-loop and
+ship-it workflow suites plus the new migrate-state suite).
+
+## 0.44.1
+
+**Fixed a Windows-only CI failure in 0.44.0: the new determinism test's comment-stripping
+regex silently no-op'd on CRLF checkouts.**
+
+- `tests/hooks/ship-it-workflow.test.js`'s determinism test stripped `//` comments by
+  splitting on `\n` then matching `\/\/.*$` per line. On a Windows (CRLF) checkout each
+  split line keeps a trailing `\r`; since regex `.` never matches a line terminator, `.*`
+  can't reach the line's true end, so `$` (no multiline flag) never matches and the strip
+  silently does nothing. The file's own doc-comment ("no Date.now() / Math.random() /
+  argless new Date()") then survives verbatim into the "code" being scanned, and the test
+  fails on every Windows Node version (18.x/20.x/22.x/24.x) — confirmed via `gh run view`
+  after v0.44.0's push, reproduced locally with a CRLF-line simulation, and root-caused by
+  comparing against `deadly-loop-workflow.test.js`'s equivalent test, which uses a `gm`-flag
+  regex over the whole string instead (CRLF-safe by construction) and passed on the same run.
+- Fix: normalize `\r\n` → `\n` before splitting, matching the CRLF-safe approach already
+  used elsewhere. v0.44.0's tag is left as-is (not retagged) since it was never propagated
+  to the marketplace or given a GitHub Release.
+
+Suite 703 (701 pass / 0 fail / 2 skip locally); Windows CI re-verified green after this fix.
+
+## 0.43.2
+
+**Fable routing policy-disabled: negative community feedback (over-restrictive/refusal-prone).**
+
+- `reviewerAgent()`/`buildFormation()` in ship-it.workflow.js and deadly-loop.workflow.js no
+  longer attempt Fable for the Reviewer seat, even when `args.fableAvailable === true`. Reason:
+  a soft refusal from an over-restrictive model would pass StructuredOutput schema validation
+  as a "successful" verdict and get silently treated as real analysis -- worse than the
+  already-handled unavailable/null case, and not worth building refusal-detection for given
+  the community's reported experience with Fable's current behavior. Sonnet 5 is now the fixed
+  primary Reviewer regardless of the flag; Opus stays the final fallback.
+- The `fable-availability.js` SessionStart hook and its cache stay in place for visibility
+  (informational only, no longer acted on) -- easy to re-enable if Fable's track record improves.
+- MODEL-POLICY.md (both copies) documents the policy decision and its reasoning.
+- Fixed a doc-currency gap the 0.43.0 doc sweep missed: `orchestration/SKILL.md` still
+  described the OLD single `.anti-hall-progress.md` file as the enforced mechanism; now
+  references the per-session path.
+
+2 tests updated to assert the new behavior (Fable never attempted); suite 688
+(686 pass / 0 fail / 2 skip).
+
+## 0.43.1
+
+**History-entry writes now delegate to a cheap model; fixed a stale path left by 0.43.0.**
+
+- `verify-first-full.js`'s always-injected orchestration rule B previously told the coordinator
+  to compose and append history entries itself (an expensive-model tokens spent on a mechanical
+  write). Now it says to delegate the write to a cheap model (Haiku): hand it the cause/fix/
+  verification facts, let it compose and append the entry.
+- The same instruction still referenced the OLD flat-file path (`.anti-hall-history.md`) from
+  before 0.43.0's per-session restructuring -- missed by that release's doc sweep since it's a
+  hardcoded string, not a doc file. Now points at `.anti-hall/history/<date>/<session-id>.md`.
+
+Suite 688 (686 pass / 0 fail / 2 skip), no test/code changes beyond the instruction string.
+
+## 0.43.0
+
+**Fable-5 availability flag (auto-detected, gated) + collision-free per-session progress/history.**
+
+### New: automatic Fable-5 detection — no manual "reconsider this seat" needed
+`fable-availability.js` (new SessionStart hook) reads `~/.claude.json`'s `modelAccessCache`/
+`additionalModelOptionsCache` -- the exact same data Claude Code's own `/model` selector renders
+from -- ONCE per session (never re-probed every turn), fail-open, silent unless Fable 5 is
+actually available. When it is, the flag threads into ship-it/deadly-loop Workflow invocations
+via `args.fableAvailable`, and the Reviewer seat's fallback chain automatically extends to
+Fable 5 → Sonnet 5 → Opus (previously Sonnet 5 → Opus). No live API probe as the primary path
+(many Claude Code sessions have no `ANTHROPIC_API_KEY` to probe with); this reuses Claude Code's
+own already-maintained entitlement cache.
+
+### New: per-session progress/history files — collision-free across concurrent sessions
+`.anti-hall-progress.md` and the fix/history ledger used to be single shared files at the repo
+root -- two Claude Code sessions running concurrently on the same project could clobber each
+other's writes. Now each session gets its own file: `.anti-hall/progress/<date>/<session-id>.md`
+and `.anti-hall/history/<date>/<session-id>.md`. `tasklist-guard.js`'s freshness check now
+targets the current session's own path (session_id + UTC date, sanitized). Both get a running
+`INDEX.md` maintained via single-line atomic appends only (`fs.appendFileSync` with the `'a'`
+flag, idempotent, never read-modify-rewrite -- safe even if two sessions finish at the same
+moment). The old root-level ledgers are preserved untouched (`.anti-hall-history.md` also copied
+to `.anti-hall/history/legacy/pre-2026-07-01.md`); local `CLAUDE.md` now points at both new
+`INDEX.md` files as the entry point for finding prior session work.
+
+### New: progress-file pruning — dated+timed, auto-archived into history
+Per-session progress files solve the single-huge-file problem but would otherwise accumulate
+unboundedly (one small file per session, forever). `progress-prune.js` (new SessionStart hook,
+per-cwd 24h-throttled) archives stale ones automatically: a newly-created progress file now
+carries a `<!-- session: ... | started: <ISO-8601 UTC> -->` header (dated *and* timed, human-
+readable); today's UTC date-folder is never touched; a past-date file is only pruned once its
+mtime is more than 6 hours stale (so a session still running across a midnight boundary is never
+touched mid-flight); pruning always appends the file's full content to that session's own history
+ledger under an "Archived progress" heading *before* deleting it — never deletes if the archive
+append fails, so no data is ever lost, only relocated.
+
+### Hardening
+- Fixed a real gap the adversarial verify step caught: the history-side index maintenance was
+  dead code (`kind !== 'progress'` guard) despite being part of the spec -- now both progress
+  and history are mechanically indexed, existence-triggered for history (no per-turn freshness
+  concept applies there) so nothing depends on the agent remembering a manual bookkeeping step.
+- `ship-it/SKILL.md`'s Reviewer-seat prose updated to describe the automatic fallback chain
+  instead of the stale "if Fable returns, reconsider this seat" note.
+
+17 new tests (fable-availability.test.js, ship-it-workflow.test.js, progress-prune.test.js,
++ additions to deadly-loop-workflow.test.js and tasklist-guard.test.js); suite 688
+(686 pass / 0 fail / 2 skip).
+
+## 0.42.1
+
+**Bug-fix patch: root-causes the recurring ubuntu/node22 statusline flake and hardens `harvest-debt.js` / `eval/rescore.js`.**
+
+### Fixed: statusline base-command timeout flake
+`runBaseCommand`'s `spawnSync` timeout raised from 3000ms to 10000ms. Root-caused via
+code read (not a re-run guess) to CI runner contention on the `ubuntu-latest`/node22 job
+specifically; the flake had recurred 3 times across prior releases.
+
+### Hardened: `harvest-debt.js`
+- Fixed a multi-marker-per-line drop (only the first `// anti-hall:` marker on a line was
+  picked up).
+- Fixed a comment-closer (`-->`, `*/`) leaking into the parsed `when` field.
+- Oversized files are now skipped, not silently truncated.
+- Directory walk converted from recursive to iterative (avoids stack-depth risk on deep
+  trees).
+- Added tests covering `<!-- -->` and `--` marker styles.
+
+### Hardened: `eval/rescore.js`
+- `--selftest` now warns (instead of silently disagreeing) on a non-boolean `fabricated`
+  value, a missing `condition`, or a duplicate `task_id` in the aggregate.
+- Removed a duplicate `'use strict'` directive.
+- Added missing selftest branch tests for the above.
+
+Full suite: 664 tests, 662 pass, 2 skipped, 0 fail.
+
+## 0.42.0
+
+**Sonnet 5 routing update + `KB-sonnet-5.md`; retires the Fable-disabled temp patch.**
+
+### New: `docs/KB-sonnet-5.md` — model routing KB (Claude + Codex)
+Benchmark tables for Opus 4.8 / Sonnet 5 / Haiku 4.5 **and** the parallel Codex table (gpt-5.5 / gpt-5.4 / gpt-5.4-mini), effort-tier behavior, pricing, a task→model decision matrix, switch thresholds, the anti-hall seat routing, and cross-platform equivalence (gpt-5.5↔Opus, gpt-5.4↔Sonnet 5, gpt-5.4-mini↔Haiku). 17 sources (2 official Anthropic + 3 official OpenAI); benchmark figures are directional (system-card PDFs unparsed) and source-tagged. Indexed in `docs/KB.md` + `llms.txt`.
+
+### Routing: Sonnet 5 lands; Fable-temp retired
+The `sonnet` tier token now resolves to `claude-sonnet-5`. MODEL-POLICY (both byte-identical copies) + the ship-it/deadly-loop workflow seats updated: **implementation → Codex primary, Sonnet 5 failover**; **deadly-loop Reviewer + M/secondary planning → Sonnet 5 @xhigh** (Auditor stays Opus @high, Critic stays Codex); Opus keeps top-level planning / root-cause / deep-debug. New rules: (1) the code implementer and its correctness reviewer are **always different models** (cross-model, no self-review); (2) Codex is the primary implementer (own limit → conserves the Claude bucket), failover to Sonnet 5 on unavailable/rate-limited — backoff, never retry-loop; (3) **never run Sonnet 5 at `max` inside a loop** (TTFT ~163s). The long-standing `TEMP(fable-disabled)` patch on the Reviewer seat is **removed** (Sonnet 5 fills it; a one-line "if Fable returns, reconsider" pointer remains).
+
+### Limit-conservation: main-model downshift directive
+When conservation is active, `limit-conserve-inject.js` now advises downshifting the **main coordinator** off the flagship (Claude Opus → Sonnet 5; Codex gpt-5.5 → gpt-5.4) to preserve the flagship weekly bucket — **but only to a 1M-context target** (never gpt-5.4-mini / 400k), so no context is lost. The flagship stays for delegated hard seats + escalation. Conditional advisory (the model isn't exposed in the UserPromptSubmit payload); the agent surfaces it (it can't self-`/model`). Codex mirror in the `anti-hall-context-conserve` skill.
+
+### Dual-platform parity
+Committed the standing **parity mandate** to `AGENTS.md`: every plan/work covers both platform variations (Claude + Codex) AND both orchestration layers (OMC ↔ OMX); model-routing artifacts get a Claude table AND a Codex table. Codex `anti-hall-model-policy` skill updated with the Claude-side mapping.
+
+## 0.41.1
+
+**CI fix for Codex installer tests.**
+
+- Fixed the new Codex installer regression test to accept both POSIX and Windows path separators when checking generated hook commands. No runtime behavior change.
+
+## 0.41.0
+
+**Codex/OMX port without disturbing the Claude plugin surface.**
+
+### New: Codex-native plugin layer
+- Added `plugins/anti-hall/.codex-plugin/plugin.json` and `plugins/anti-hall/codex/install-codex.js`. The installer writes Codex `.codex/hooks.json` plus `[features].hooks = true` for the supported Codex hook subset.
+- Added plugin-scoped Codex hooks at `plugins/anti-hall/codex/hooks/hooks.json` using `${PLUGIN_ROOT}` commands, matching installed Codex plugin examples.
+- Added Codex repo marketplace compatibility via `.agents/plugins/marketplace.json`, pointing at `./plugins/anti-hall` with the official local marketplace shape.
+- Added project/global install and dry-run modes for Codex activation. The installer preserves unrelated hook groups and replaces stale anti-hall hook groups.
+- Added regression coverage in `tests/codex/install-codex.test.js` for dry-run behavior, hook/config writing, and merge behavior.
+
+### New: Codex skills and OMX workflow mapping
+- Added Codex-native skills for activate, doctor, update, root-cause, orchestration, deadly-loop, ship-it, model policy, context-conserve, feature-launch, OMX integration, OMC integration, statusline install, flutter-debug, simplify, and debt.
+- `anti-hall-context-conserve` ports the limit/context conservation behavior to Codex model routing and output hygiene.
+- `anti-hall-feature-launch` replaces the removed GSD path with a Codex/OMX planning protocol, graphify-first setup, `gpt-5.5` debate gates, phased execution, and launch verification.
+
+### New: Codex KB equivalents
+- Added `docs/CODEX-KB-MIGRATION-MAP.md` to classify existing KBs into Claude-specific, Codex/agnostic, and historical buckets.
+- Added source-audited Codex KBs: `docs/KB-codex-platform-hooks-plugins.md`, `docs/KB-codex-workflow-orchestration.md`, and `docs/KB-omx.md`. Each has at least 10 sources and at least 2 official OpenAI sources.
+- Updated `docs/KB.md` and `llms.txt` to include the Codex KBs.
+
+### Codex parity boundary
+Current official Codex docs expose more hook events than the first migration note used for the initial port, including edit and subagent lifecycle hook names. This release intentionally registers only the Codex hook subset whose anti-hall payload contracts are currently adapted/tested: SessionStart, UserPromptSubmit, Bash PreToolUse, and Stop. Edit-time guards (`api-guard`, `ship-it-guard`) and lifecycle/compaction hooks are tracked as documented-but-not-yet-adapted Codex parity work until Codex payload adapters and tests prove them. Claude Workflow JS remains non-portable; use Codex skills/native subagents/OMX/scripts instead.
+
+Codex/OMX statusline parity is explicitly bounded: Claude Code supports a command-backed `statusLine`, so anti-hall can append the `AH: Vx.y.z` chip there. Codex `[tui].status_line` is documented as built-in footer item IDs only, so the Codex port documents the limitation rather than injecting an unsupported custom item.
+
+### Claude compatibility
+The Claude manifest remains present and versioned, and the Claude hook/skill files remain in their existing locations. The Codex port lives in separate `codex/` and `.codex-plugin/` paths.
+
+## 0.40.0
+
+**Ponytail-derived heavier features: two new skills (`simplify`, `debt`) + a zero-API eval rescorer.**
+
+### New skill: `/anti-hall:simplify` — measured, behavior-preserving simplification
+A harvest-then-prove pass over recently-changed (or named) code. Each finding gets exactly one tag — `delete:` (dead code), `stdlib:` (reinvented stdlib), `native:` (reimplemented builtin), `yagni:` (premature generality), `shrink:` (verbose equivalent), `slop:` (AI-slop filler) — the safe set is applied, the SAME tests are re-run, and the result is scored as a single `net: -N lines`. Crucially the score is the **measured** post-apply diff delta (`git diff --shortstat`), never a projected "you'll save ~X" estimate — that's the exact unverifiable saved-X claim verify-first rule 10 forbids. Behavior-preserving by contract: anything that removes a capability is declined as a scope change, not applied.
+
+### New skill: `/anti-hall:debt` — a register for *deliberate*, budgeted debt
+Introduces the `// anti-hall: <ceiling>,<when>` marker — a budgeted, harvestable alternative to vague TODOs. `<ceiling>` is the limit you consciously accepted (e.g. `30 lines`, `O(n^2)`); `<when>` is the concrete payback trigger (e.g. `when >3 callers`). New `plugins/anti-hall/scripts/harvest-debt.js` (pure Node, comment-syntax-agnostic across `//` `#` `--` `/* */` `<!-- -->`) greps the tree, parses each marker, and flags **rot-risk** (`no-trigger`) when a marker has no `<when>` *or* sits in code git-untouched past a staleness threshold (default 90 days; fail-open when git is absent). Explicitly **not** a license to skip real work — lazy TODO/stub patterns remain blockers; the marker is the narrow, defensible exception.
+
+### New: `eval/rescore.js` — recompute eval stats with zero API calls
+Recomputes the summary block (protocol/baseline fabrication rates, delta, per-task differences) straight from saved `records[].fabricated` — no answer calls *and* no judge calls (distinct from `grade.js`, which re-calls the judge). Aggregates across multiple result files. `--selftest` is an integrity gate: it re-derives each file's summary from its own records and fails (exit 1) on any schema violation or count/rate mismatch, catching hand-edited or corrupted result files. 21 new tests (`tests/eval/rescore.test.js`, `tests/hooks/harvest-debt.test.js`); suite 646 (644 pass / 2 skip).
+
+## 0.39.0
+
+**Subagents now receive the verify-first Iron Law (new SubagentStart hook) + guard/hardening refinements.**
+
+### New: SubagentStart re-injection — discipline finally reaches subagents
+`verify-first-full.js` was SessionStart-only, so every Task-spawned subagent ran verify-first-UNAWARE. New `verify-first-subagent.js` (SubagentStart hook) injects the Iron Law + rationalization table + positive rules + scope-fidelity into each spawned subagent — but DELIBERATELY omits the orchestration "delegate everything" block (subagents are workers; re-injecting it would recreate deep nesting). The shared core is extracted to `verify-first-core.js` (one source of truth for both hooks, no drift). 9 tests. (SubagentStart confirmed as a real Claude Code event via docs/KB-claude-codex.md §1.1.)
+
+### model-routing-guard: research→Explore nudge no longer false-positives on write tasks
+The 0.37.0 anti-nesting advisory nudged any research-shaped `general-purpose` spawn toward Explore — but Explore can't write, so release/commit/build agents were wrongly nudged. Now suppressed when the spawn has write/execute signals.
+
+### Hardening (ponytail-derived)
+- `install-statusline.js`: `isShellSafe()` allowlist guards paths before embedding them in a settings.json command (unsafe → manual-setup fallback).
+- verify-first rule 10: never display a per-run "you saved X tokens/lines" number — the unbuilt baseline was never run; cite a benchmark median with provenance, or say it's unmeasured.
+
+## 0.38.2
+
+**Fix: `agentsRunning()` was inert — the parallel-orchestration guard exemptions never fired.**
+
+`agentsRunning()` (consumed by task-guard, tasklist-guard, task-tracker) reads `~/.anti-hall/agents/*.json` heartbeats, but NOTHING wrote them, so it always returned false — the 0.36.1 multiple-in_progress exemption and the idle-neglect "no agents running" signal were no-ops, and the Stop guards nagged even while background agents were actively working. Fix:
+- `phase-tracker.js` now writes a rolling heartbeat `~/.anti-hall/agents/recent-spawn.json` (`{ts}`) on every Agent/Task spawn (fail-open; the existing `agent-spawns.log` write is unchanged). `agentsRunning()` returns true for ~20 min after the most recent spawn = active orchestration, so the agent-aware exemptions ACTUALLY fire now. (A single agent running >20 min with no new spawn is a known limitation — a per-subagent refresh is a future enhancement.)
+- `task-guard.js`: the generic "open tasks remain at Stop" block now suppresses when agents are live (it was firing on in_progress/owned tasks regardless of agent state). Genuinely-neglected work (open tasks + no live agent) still blocks.
+- +6 tests.
+
+## 0.38.1
+
+Test + docs maintenance: de-coupled the statusline minor/major-ahead test fixtures from the hardcoded version (now derived from plugin.json so they never go stale on a bump); refreshed stale test-count references in README/llms.txt/KB.md.
+
+## 0.38.0
+
+**Limit-conservation mode + consolidated statusline merge + OMC as recommended optional dependency.**
+
+### New: `limit-conserve-inject` hook (UserPromptSubmit) + `limit-conserve.js` helper
+
+`limit-conserve-inject.js` — a UserPromptSubmit hook that injects a token-conservation nudge when the session context usage is at or above a threshold. Env knobs:
+
+- `ANTIHALL_LIMIT_CONSERVE` — `auto` (default), `on`, or `off`. In `auto` mode the hook reads the OMC usage cache (`~/.anti-hall/omc-usage-cache.json`) to detect the current context percentage; `on` forces the nudge unconditionally; `off` disables it.
+- `ANTIHALL_LIMIT_THRESHOLD` — integer percentage (default `85`). The nudge fires only when detected context usage ≥ this value.
+
+Auto mode requires an OMC installation that populates the usage cache; without it the hook operates in manual mode (`on`/`off` only) and auto silently behaves as off. Skip-guard hatch: `limit-conserve`. UserPromptSubmit hooks 2 → 3.
+
+`limit-conserve.js` is the shared helper consumed by the hook (reads the OMC usage cache, applies threshold logic). It is not itself a hook.
+
+### Statusline: consolidated merge mode (`--consolidate`)
+
+`install-statusline --consolidate` merges the anti-hall statusline with an existing statusline (e.g., the OMC HUD) instead of replacing it. The existing base `statusLine` value is read from `ANTIHALL_STATUSLINE_BASE` (env) or detected from the current settings; the anti-hall bar is appended as an additional component. The resolved base is persisted to `~/.anti-hall/consolidated-base.json` so subsequent sessions can restore it without re-reading the env var.
+
+New env knob: `ANTIHALL_STATUSLINE_BASE` — explicitly sets the base statusline expression when using consolidated mode.
+
+### OMC: recommended optional dependency
+
+oh-my-claudecode (OMC) is now explicitly documented as a **recommended optional** dependency. Anti-hall is and remains fully standalone without it. Two features unlock automatic behavior when OMC is installed:
+
+1. `limit-conserve` auto mode — reads the OMC usage cache to detect the live context percentage.
+2. Consolidated statusline mode — the version chip and base-merge work with the OMC HUD out of the box.
+
+Without OMC, both features fall back to manual/off behavior; no errors, no breaking change.
+
+### Temporary: Fable removed from all spawn sites
+
+- Temporary: Fable removed from all spawn sites (Anthropic disabled it) — Reviewer/flagship-Claude seats in `deadly-loop` and `ship-it` run on Opus until re-enabled. All changed spawn sites are marked `TEMP(fable-disabled 2026-06-29)` for easy grep-revert when Fable is restored.
+
+## 0.37.0
+
+**Version awareness + priority-aware guards + anti-nesting backstop + cmux/OMC KBs.**
+
+### New: SessionStart `version-alert` hook
+`version-alert.js` (+ detached `version-alert-refresh.js`): a NON-BLOCKING SessionStart check that alerts when a newer anti-hall version is available. Reads the running version vs a cached latest (`~/.anti-hall/version-check.json`); if behind, emits a one-line "vX available — /anti-hall:update". When the cache is absent/stale it spawns a DETACHED, unref'd `git ls-remote --tags` refresh and stays silent that session — SessionStart never blocks or does synchronous network. Off-switch `ANTIHALL_VERSION_ALERT=off`; skip-guard hatch. SessionStart hooks 2 -> 3. 8 tests.
+
+### Statusline: version chip with update indicator
+The statusline shows `AH: Vx.y.z` between the cost chip and the email segment. When the version-check cache shows a newer release: `★ AH: …` in YELLOW for a new MINOR, RED for a new MAJOR; plain dim otherwise (fail-open if no cache).
+
+### Priority-aware Stop guards (less nag noise)
+`task-guard` (idle-neglect) and `tasklist-guard` (multi-in_progress) now read each task's `metadata.priority` and only chase ACTIONABLE P0/P1 work — a backlog of P2/deferred tasks no longer triggers a nudge, and P2 in_progress doesn't count toward the stale-multi check. Missing/garbage priority is treated as actionable (P1) so a real high-priority task is never under-nagged. Encodes "priority = check the top first/more often, never neglect the rest, don't nag about backlog."
+
+### Anti-nesting backstop in `model-routing-guard`
+A new advisory fires when research/read-only-shaped work is spawned as `general-purpose` (carries the Agent tool, can recurse) — nudging to use the `Explore` agent type (has WebSearch/WebFetch but NO Agent tool, so it structurally cannot nest). Advisory only; the structural complement to rule M's anti-deep-nesting discipline.
+
+### New KBs
+`docs/KB-cmux.md` (cmux terminal multiplexer) + `docs/KB-omc.md` (oh-my-claudecode + the cmux+OMC+Claude stack). Both agnostic; registered in llms.txt + docs/KB.md.
+
+## 0.36.1
+
+**Fix: `tasklist-guard` multiple-in_progress false-positive was crippling parallel orchestration.**
+
+The Stop-hook `hasStaleInProgress` sub-cause fired on ANY 2+ in_progress tasks and told the
+agent to "keep one task in_progress at a time" — i.e. to **serialize**, the exact opposite of
+the parallel fan-out anti-hall itself promotes. With background agents legitimately working N
+tasks at once, it nagged on every Stop and pushed agents to collapse their parallel work. Fix:
+
+- **Exempt the multi-in_progress block when a live background-agent heartbeat exists** — reuse
+  `agentsRunning()` (`~/.anti-hall/agents/*.json` fresh within 20 min). Multiple in_progress is
+  CORRECT while agents are live; only genuinely STALLED in_progress (no live agent) now flags.
+- **Rewrite the message** from "keep one in_progress at a time" (serialize) to "dispatch a
+  background agent for EACH so they run in PARALLEL, or set idle ones back to pending; priority
+  = check it first and more often, never pause the rest."
+- Fail-open: an `agentsRunning()` error reads as not-running (can only permit a nudge, never
+  wrongly silence a real stall). +2 tests.
+
+## 0.36.0
+
+**Codex everyday-routing + Workflow model-distribution discipline + new `codex-nudge` advisory hook.**
+
+### New hook: `codex-nudge` (Stop, advisory)
+A loop-safe, fail-open Stop hook that nudges ONCE per session to get an independent OpenAI-Codex second opinion when the session shipped a substantial code change (>= `ANTIHALL_CODEX_NUDGE_MIN`, default 3 code-file edits) with no Codex review (no `codex:codex-rescue` spawn / codex skill). Mechanizes the everyday-routing policy for the MAIN agent (the deadly-loop/ship-it Critic seat already covers those skills). Codex is the cross-model correctness reviewer (off-by-one, races, subtle bugs); Opus keeps architecture/design review. Deduped on the edited-file signature, hard cap 2 nudges/session. Off-switch `ANTIHALL_CODEX_NUDGE=off`; skip-guard hatch `codex-nudge`. 10 tests + doctor smoke test. Stop hooks: 5 -> 6.
+
+### Everyday-routing + Workflow model-distribution discipline
+`verify-first-full.js` gains orchestration rules M (shallow+wide; a subagent is a worker that does not re-delegate; lift 3+ nested/parallel spawns into a deterministic Workflow; Explore for read-only) and N (distribute models per seat — implementation->sonnet, correctness/verify review->Codex, planning/architecture->opus; NEVER an all-Opus fan-out; the model-routing guard does NOT police models inside a workflow review fan-out, so it is an authoring responsibility), a `model-routing` ALWAYS-APPLY bullet, and two per-turn nudges. Reconciled against a 13-source Codex-vs-Opus coding KB (`docs/KB-codex-vs-opus-coding.md`) + the Workflow KB (`docs/KB-claude-workflow-orchestration.md`).
+
+### Fix: ship-it build seats set an explicit model
+`ship-it.workflow.js` implementation seats omitted `model` — under strict model-routing (default since 0.35.0) a mechanical omitted-model spawn is BLOCKED, so the build could self-block, and an omitted model inherits the flagship orchestrator. Build seats now set `model: phase.model || 'sonnet'` (implementation -> Sonnet per the KB; override per phase).
+
+### MODEL-POLICY: everyday routing section
+`skills/MODEL-POLICY.md` (+ the deadly-loop copy) gains an "Everyday agent routing" section: Codex = second-opinion/correctness review (always) + bounded code-apply/terminal/migration; Opus = planning/architecture/design + design-level review; Sonnet = implementation; Haiku = trivial/nav. The TRIO debate roster is unchanged.
+
+## 0.35.1
+
+**ship-it Workflow Fable→Opus availability fallback (bug fix) + Workflow orchestration KB.**
+
+- **Fixed: the ship-it deadly-loop gate broke when Fable was unavailable.** The Reviewer
+  seat in `skills/ship-it/references/ship-it.workflow.js` hardcoded `model: 'fable'` with
+  no guard, so when the `fable` tier token is disabled at the account level the Reviewer
+  spawn died and the whole per-phase gate could not complete. `MODEL-POLICY.md` *documented*
+  a fable✗→Opus fallback matrix, but it was never wired into the workflow script (only the
+  Codex seat had a runtime probe). Added `reviewerAgent(p)`: it attempts the latest flagship
+  and, on a terminal `null` return (the Workflow contract's unavailable-model signal), falls
+  back to an Opus Reviewer — or short-circuits straight to Opus when the coordinator passes
+  `args.fableAvailable === false` (no wasted spawn). Floor stays Opus; never a cheaper model.
+  Validated: 3 branches (Fable healthy / Fable null / coordinator-off), 8/8 assertions green
+  against the real shipped function. `ship-it/SKILL.md` snippet updated to show the wrapper.
+- **New: `docs/KB-claude-workflow-orchestration.md`** — a 14-source (8 official Anthropic)
+  knowledge base on programmatic multi-agent orchestration (the `Workflow` tool): what it is
+  vs ad-hoc subagent spawns, when to use it vs a single/shallow agent, the core patterns
+  (orchestrator-worker, pipeline/parallel, map-reduce, loop-until-done, adversarial verify),
+  the ~15× token / 90.2% / depth-nesting cost numbers, and a "how to make an agent utilize it
+  more" section. Reconciled against in-repo live verification (Workflow runs under Opus 4.8 —
+  it is **not** Fable-bound). Registered in `llms.txt` and the `docs/KB.md` doc table.
+
+## 0.35.0
+
+**Strict-by-default model routing + `anti-hall:activate` first-run setup skill.**
+
+### model-routing-guard: strict is now the default
+
+`model-routing-guard.js` row-2 behavior flipped: **strict mode is the default** as of
+v0.35.0. Previously strict was opt-in (`ANTIHALL_MODEL_ROUTING=strict`); now advisory
+is the opt-out (`ANTIHALL_MODEL_ROUTING=advisory`).
+
+- **Before (≤ 0.34.1):** omitted-model mechanical spawns → advisory by default; set
+  `ANTIHALL_MODEL_ROUTING=strict` to block.
+- **After (≥ 0.35.0):** omitted-model mechanical spawns → **blocked unconditionally**
+  by default; set `ANTIHALL_MODEL_ROUTING=advisory` to revert to advisory-only.
+
+Rationale: an omitted model silently inherits the orchestrator's model. On a flagship
+orchestrator this produces an all-flagship swarm with no warning and no signal — the
+most common and most expensive misroute. Strict is the right default; advisory opt-out
+covers projects where the orchestrator is verifiably cheap-modeled.
+
+The row-1 behavior (explicit flagship + mechanical task → block, debate-role exemption
+downgrades to advisory) is unchanged. The row-2 strict block message now says "default"
+and names `ANTIHALL_MODEL_ROUTING=advisory` as the remedy. All existing tests updated.
+
+### New skill: `anti-hall:activate`
+
+`skills/activate/SKILL.md` — one-shot, idempotent first-run setup. User-invoked only;
+**never** auto-runs as a SessionStart side-effect (the always-on hooks need no
+activation). What it does:
+
+- Checks `~/.claude/settings.json` for an existing `statusLine`. If none → installs
+  the anti-hall statusline at user scope (delegates to `install-statusline.js --user`).
+  If one exists (conflict) → reports it and lets the user choose: wrap as line 1
+  (global), install at project scope, or skip.
+- Reports model-routing state: strict (default, unset) or advisory (opt-out set).
+  No action taken — informational only.
+- Writes `~/.anti-hall/activated.json` sentinel so re-runs report "already activated"
+  and exit 0 immediately (idempotent).
+- Prints a "restart Claude Code" note only when the statusline was actually changed.
+
+Reuses `install-statusline.js` — no reimplemented logic.
+
+### What stays opt-in (unchanged)
+
+`mcp-reaper`, `ANTIHALL_API_GUARD_THIRDPARTY`, `ANTIHALL_SHIPIT_GATE`,
+`ANTIHALL_MERGE_GATE`, `ANTIHALL_SEMANTIC_JUDGE` — all remain off by default; activate
+does not touch them. On-demand skills (deadly-loop, ship-it, etc.) unchanged.
+
+Skills shipped: 9 → 10.
+
+## 0.34.1
+
+**Honest-fix wave on the shipped `flutter-debug` agent/skill** (retroactive hardening of v0.34.0).
+
+- **FP1b resolution (NEGATIVE verdict, now stated honestly).** The step-0 probe captured `flutter_driver_command` tap/screenshot FAILING against a plain debug app — they REQUIRE an in-app `enableFlutterDriverExtension()` before `runApp` (same invasiveness class as marionette, which is strictly richer — the only semantic input/screenshot route). The shipped degradation row, SKILL.md honest-scope, and the agent's honesty discipline now say so; the previous "tap + screenshot with NO app package" claim is removed. The `widget_inspector` tree-inspection-without-extension nuance is retained.
+- **Private-identifier scrub + lint extension.** Owner-private identifiers (the owner's Flutter app name, a configured AVD name) were scrubbed from the public probe record, the plan doc, and this CHANGELOG. The repo-agnostic lint test is extended to a denylist constant (no `/Users/` home paths, no private app/device names) and now covers the probe record, the plan doc, and the CHANGELOG 0.34.x sections — future names add one denylist entry.
+- **doctor-conditionality + Windows-path test hardening.** A subprocess test asserts the doctor's `flutter-debug` section is silent without a `pubspec.yaml` and present with one; a platform-monkeypatched test asserts BOTH `claude` CLI candidates failing on Windows ⇒ `cli-unavailable` (a manual-verify WARN), never a false FAIL.
+- **Auto-apply pre-write safety checks.** SKILL.md app-integration now skips when `MarionetteBinding` is already present, locates the entrypoint via `lib/main.dart`, and WARN-AND-STOPs (never guess-edits) on non-standard layouts or multiple `runApp()` call sites. The applied-diff visibility stays.
+- **marionette PATH-resolution warning.** After a successful `dart pub global activate marionette_mcp`, preflight now verifies the wrapper actually resolves (`$PUB_CACHE/bin` ~ `~/.pub-cache/bin` or `$PATH`); if not, it WARNs with the exact manual `export PATH` fix line (fail-open).
+
+- **Android support VERIFIED via live FP7 (marionette taps/screenshots on emulator).** The
+  live FP7 probe (2026-06-11) confirmed all 15 `ext.flutter.marionette.*` extensions
+  registered on android_arm64; semantic tap drove a counter 0→1; screenshots returned valid
+  PNG. Scope: one AVD / android_arm64 arch — physical device and other architectures not yet
+  probed. All shipped Android-pending text updated to reflect the verified status with honest
+  scope boundaries.
+- **Full E2E debug loop validated live (plant→reproduce→read→fix→hot-reload→verify).** A
+  `StateError` was planted in the scratch app, reproduced via marionette tap,
+  `get_runtime_errors` captured "Bad state: planted bug", the fix was applied, `hot_reload`
+  succeeded, 3 taps past the old throw point produced zero new errors, and the screenshot was
+  verified. Closes the loop on every agent-loop step being exercised against a real AVD.
+- **`get_runtime_errors` timestamp guidance added.** The tool accumulates errors since DTD
+  connection — it does NOT reset on `hot_reload`. The agent's mandatory re-verify step now
+  requires comparing each error's timestamp against the `hot_reload` time; only post-reload
+  errors count as new failures. Added to the agent loop (step 7) and SKILL.md MCP-usage notes.
+
+**Transparency (house rules):** v0.34.0 was tagged against a RED CI run; the corrective fix landed in commit `31a7451`. This 0.34.1 wave addresses the substance flagged in the retroactive review.
+
+## 0.34.0
+
+**New agent + skill: `/anti-hall:flutter-debug`** — drive a Flutter app in debug mode, close the fix loop via agent-controlled hot reload + visually verified UI changes.
+
+### Workstream A — Agent + Skill architecture
+
+**`agents/flutter-debug.md`** — anti-hall's first shipped agent. Self-contained executor persona carries the full debug-loop protocol (reproduce → read error → root-cause → fix → hot reload → **visually re-verify**), so direct spawns work without the skill. Frontmatter: `{name: flutter-debug, description: <>, model: sonnet}` (sonnet is the code-authoring floor — never haiku). **No `tools` allowlist** — MCP tool names vary by alias; a wrong allowlist bricks the agent (FP5 validates MCP reachability).
+
+**`skills/flutter-debug/SKILL.md`** — user-facing workflow: setup orchestration, zero-setup MCP registration (scope-aware atomic `claude mcp add` per FP9/FP10), app-side marionette integration, capability tier degradation table, and escalation-report trigger. Loop protocol lives ONCE in the agent; the skill delegates to it (non-blocking coordinator).
+
+### Workstream B — MCP strategy: zero-setup via scope-aware `claude mcp add`
+
+**NO bundled `.mcp.json` for external servers** (owner directive; duplicated processes when user already has dart/marionette registered). Each of dart + marionette is registered idempotently via FP9 flow: `claude mcp get <name>` → absent everywhere ⇒ `claude mcp add --scope <chosen>` (scope question asked once in main context; non-interactive = default local) → present in ANY scope ⇒ SKIP (user entries win by precedence).
+
+**Composition:** official Dart MCP (reload/reload/get_runtime_errors/widget_inspector/vm_service/analyze_files) **REQUIRED** [2]; marionette_mcp ≥ 0.4.0 (semantic tap/enter_text/scroll_to + screenshots + logs) **PRIMARY** [5]; joshuayoes/ios-simulator-mcp (coordinate taps + screenshots, fallback, Flutter reliability UNVERIFIED [10]). Auto-apply: marionette `pubspec.yaml` dependency + upstream-verbatim kDebugMode init (FP6 verified; app-side, invisible to release builds).
+
+### Workstream C — Preflight + doctor integration
+
+**`scripts/preflight.js`** — pure Node ≥ 18, cross-platform, fail-open. **ONE implementation, TWO entry points:** exports its checks; `doctor.js` require()s and CALLS them in-process (not subprocess — matches the G test contract). Runs ONLY on Flutter projects (pubspec.yaml or flutter-debug in use). **Checks:** (1) `dart --version` ≥ 3.12 FULL / 3.9–3.11 WARN / <3.9 FAIL [1][3]; (2) FP9 idempotent MCP registration; (3) marionette host on PATH ≥ 0.4.0, auto-fix via `dart pub global activate marionette_mcp`; (4) iOS booted simulator + idb reachable [9][10]; (5) **Android SDK explicit-path resolution** (BINDING LESSON — bare-PATH probe once falsely reported "no tooling" on a machine with SDK 36 + AVD; now explicit env/path checks + `flutter doctor` cross-check [FP7]); (6) project sanity (pubspec.yaml present). Degradation table per missing capability. Honest on Android visual status (taps/screenshots PENDING FP7, now ACTIVE).
+
+**doctor.js § 6b:** conditional flutter-debug section (silent in non-Flutter cwd). Calls preflight exports in-process (skipRegistration:true = read-only mode). Scope context inherited from the user's current work. Fail-open on any probe error.
+
+### Workstream D — The debug loop (agent body; mirrors KB §5 + root-cause discipline)
+
+Agent executes: (0) preflight + announce tier; (1) run + DTD connect; (2) reproduce (marionette/coordinate/fallback semantic/coordinate/coordinate taps); **screenshot BEFORE** [5][10]; (3) read error routed by kind (exceptions → get_runtime_errors; layout → widget_inspector; prints → marionette get_logs / get_app_logs **double-gated: launch_app-enabled path only** [2]); (4) **NO CAUSE NO FIX** — root-cause with evidence (error + widget tree + code); (5) edit + verify with analyze_files [2]; (6) reload (hot_reload state-preserved, hot_restart for const/init/reset [2]); (7) **MANDATORY re-verify:** re-run get_runtime_errors until clean (matches official demo [1]); on visual tier, BEFORE/AFTER screenshot compare (visual MCP required for "verified", else "error-clear but visually unverified"); (8) **escalation trigger:** after 2 full iterations without proven root cause OR fix needs redesign → report `escalate: opus` with collected evidence (agent never respawns itself); (9) loop until clean. Report = tier + per-fix evidence (errors, screenshots).
+
+### Workstream E — Step-0 probes (tests/fixtures/step0-probe-record-v0.34.0.md)
+
+- **FP1 DONE:** `flutter_driver_command` exposes tap + screenshot + semantic finders (ByValueKey/ByText/BySemanticsLabel…) IN-SCHEMA [2]; schema forbids guessing (widget_inspector first).
+- **FP1b RESIDUAL:** runtime vs plain debug app (no enableFlutterDriverExtension()). Gates no-package degradation. No shipped promise pre-FP1b.
+- **FP2 UNVERIFIED:** Flutter widgets in iOS a11y trees [10][9]. Grades SUPPLEMENT tier only.
+- **FP3 EXCLUDED:** mcp_flutter untested-merge warning [6]. Revisit gate = stable tag (tracked in KB staleness ledger).
+- **FP4 CONFIRMED:** lifecycle tools ABSENT from default list (disabled by default [2]). Manual `flutter run --print-dtd` stays the path. get_app_logs correction = double-gate logic.
+- **FP5 GENERIC PASS:** subagent spawns surface mcp__ tools via ToolSearch and invoke live. Architecture viable; skill-only fallback retained as contingency (executable spec: SKILL.md → CI test omitted, AC1/AC3 branches, CHANGELOG note).
+- **FP6 DONE MATCH:** regular dep, upstream-verbatim kDebugMode if/else (quoted in B). Release-safe per upstream (LogCollector optional, non-fatal).
+- **FP7 UN-DEFERRED ACTIVE:** bare-PATH false-negative corrected (SDK 36 at ~/Library/Android/sdk; a configured AVD; adb + emulator functional). Probe = boot AVD → marionette → tap/screenshot. Upstream silent on Android ⇒ no promise pre-FP7. Binding baked into preflight check 5.
+- **FP9 CAPTURED:** `claude mcp add` scope/precedence/atomicity semantics (full consequences in B registration flow; B2 shims dropped).
+- **FP10 CAPTURED:** ecosystem precedent (OMC bundles only its own server; ecc bundles 6 externals REJECTED for duplicate-server hazard). Directs decision to FP9 registration flow.
+
+### Workstream F — Model routing + escalation
+
+Agent default **`model: sonnet`** (code-authoring floor). Escalation split: TRIGGER in agent body (D step 8, `escalate: opus`); RESPAWN via caller. SKILL.md instructs coordinator to respawn at `model: opus` on signal. Tier tokens only (v0.32.0 policy).
+
+### Workstream G — Tests
+
+**41 new tests** (≥19 required): agent frontmatter parse (1); SKILL.md lint (1); preflight dart full/warn/fail (3), degradation rows (7), malformed-output fail-open (2), Windows `.cmd` best-effort (1); FP9 registration flow (≥4): get-absent → add, get-present → SKIP, get-unparsable → no add, add hard-error surfaced; Android SDK-path units (2); doctor shared-checks (1); repo-agnostic lint (1). All 535 tests pass (2 skip unrelated).
+
+### Workstream H — Documentation
+
+**`docs/KB-flutter-claude-debug.md`** — 13 sources synthesized (KB + probe evidence cited via `[n]` = KB numbering + FP-ids). Drives every capability claim in the agent/skill/preflight (honesty contract: every promise traces to KB or probe).
+
+**`docs/2026-06-10-v0.34.0-flutter-debug-plan.md`** — development log (rounds 1–3 converged GO×3, v5 baseline + 2026-06-11 amendments for FP9/FP10 MCP strategy + FP7 Android binding). For future context.
+
+**`tests/fixtures/step0-probe-record-v0.34.0.md`** — raw probe captures (FP1–FP10 with dates + tooling inventory). Supports KB staleness tracking.
+
+**README / llms.txt:** new agent listed; 8 skills → 9 skills (including flutter-debug); test count 461 → 535; total checks 49; doctor integration noted.
+
+Skills shipped: 8 → 9.
+
+## 0.33.0
+
+**New skill: `/anti-hall:update`** — in-session self-update with cache sync and changelog delta.
+
+`scripts/update.js` (pure Node ≥ 18, cross-platform including Windows) implements the
+full update lifecycle: resolves the installed version from `installed_plugins.json` (v2
+schema, harness-owned — read-only), `git pull --ff-only` the marketplace clone (fail-closed on
+dirty tree or non-fast-forward divergence — hard STOP with a clear message, no merge/rebase/force),
+mirrors the new version into the version-pinned cache so `/reload-plugins` can resolve it
+(semver-anchored, traversal-proof path join — no writes outside the clone dir + cache),
+extracts the CHANGELOG delta between installed and latest, and emits a JSON status +
+human summary. `--check` mode: `git fetch` + local-vs-remote version compare, no pull,
+no writes. Unknown failures are fail-closed (exit 1 with message) per a conservative
+posture; offline/no-git is reported and exits 0.
+
+Hardened by a 2-round deadly-swarm: a path-traversal P1 (unsanitized cache path join) and a
+live E2E registry-shape bug (v2 `installed_plugins.json` parsing) were caught and fixed before
+ship. 47 dedicated tests cover both modes, all STOP / fail-open / offline / already-up-to-date
+branches, traversal-proof cache sync, changelog extraction, and JSON status output.
+
+On a successful update the skill instructs the user to run `/reload-plugins` to load the new
+version in-session (hooks and statusline pick up changes from disk automatically; `/reload-plugins`
+refreshes the skill list and version label). Rarely, a harness build may require a restart instead —
+the skill says so when relevant and does not over-promise.
+
+Skills shipped: 7 → 8.
+
+## 0.32.1
+
+Docs: refresh test counts (459 pass / 461 total) across README (root+plugin), llms.txt, KB.md; index KB-fable-5.md and the v0.32.0 design plan in llms.txt + KB.md. No behavioral changes.
+
+## 0.32.0
+
+**Fable 5 awareness, model-routing guard, OMC-deference, TRIO debate roster, 3-phase deadly-swarm workflow, statusline segment-matching + latent-bug fix, `ANTIHALL_JUDGE_MODEL`.**
+
+### model-routing-guard (new hook)
+
+`model-routing-guard.js` — PreToolUse Agent/Task, always-on anti-waste net. Classifies
+spawn descriptions by keyword signals (mechanical vs complex) and nudges toward the
+cheapest model that fits the task shape:
+
+- **Default (advisory):** emits a `hookSpecificOutput.additionalContext` advisory when
+  an explicit flagship model (`opus`/`fable`) is paired with a purely mechanical task
+  (fetch, grep, build, deploy, run tests, etc.), or when `model` is omitted on a
+  mechanical spawn (omitted model inherits the orchestrator's — on a flagship
+  orchestrator that silently produces an all-flagship swarm).
+- **Strict mode** (`ANTIHALL_MODEL_ROUTING=strict`): upgrades omitted-model mechanical
+  spawns to an unconditional block (exit 2). Opt-in and **project-scoped** — enable via
+  the PROJECT's `.claude/settings.json` env block, NOT a global shell profile. A
+  globally-exported strict blocks omitted-model mechanical spawns in EVERY project,
+  including genuinely-cheap-orchestrator ones. Remedy: set an explicit cheap model on the
+  spawn, or unset strict.
+- **Debate-role exemption:** row-1 blocks (explicit flagship + mechanical) are downgraded
+  to advisory when a role-word (`reviewer`/`auditor`/`critic`/`debate`/`deadly-loop`)
+  appears in the spawn `description` — TRIO debate seats legitimately need flagship
+  models. The exemption does NOT apply to strict row-2 (role words must not defeat the
+  user's explicit strict opt-in).
+- Fail-open on any error; never blocks unknown model tokens (forward-compat).
+- Hooks shipped: 21 → 23 (+`model-routing-guard.js`, +`omc-detect.js`).
+
+### omc-detect (new shared helper)
+
+`omc-detect.js` — shared pure-Node helper (not a hook) exported as
+`isOmcLoopActive({ cwd, sessionId })`. Returns `true` when an oh-my-claudecode
+autonomous loop (ralph, ultrawork, autopilot, ultraqa, team, ultrapilot, pipeline,
+omc-teams) is currently active AND fresh (any of `last_checked_at`/`updated_at`/`started_at`
+within 2 h, per OMC's own staleness rule) AND session-affinity-matched. Consumed by
+`task-guard` and `tasklist-guard` to suppress Stop-blocks to an advisory when an OMC
+loop is running — preventing the deadlock where the guard stops the loop it was meant to
+coexist with. Fail-open direction = NOT deferring (false): missing/malformed state = not
+active. Kill-switches: `DISABLE_OMC=1` or `OMC_SKIP_HOOKS` including `persistent-mode`.
+Version fragility documented in-file (state filenames stable since OMC 4.14.6).
+
+### TRIO debate roster (Workstream C)
+
+`MODEL-POLICY.md` (both copies) rewritten to a **three-agent TRIO**:
+
+| Role | Model | Thinking | Persona |
+|---|---|---|---|
+| **Reviewer** | latest flagship Claude (`model:"fable"`) | adaptive, effort `xhigh` (→ `high`) | correctness / architecture auditor |
+| **Auditor** | latest Claude Opus (`model:"opus"`) | `xhigh` | divergent: regression & coupling hunter |
+| **Critic** | latest OpenAI Codex | max reasoning (`xhigh` → `high`) | adversarial failure-mode hunter |
+
+Floor for every seat = Opus. Availability fallback matrix covers all four availability
+combinations. Round governance: DEGRADED round (seat dead after retry) may iterate but
+cannot grant final GO. Dissent adjudication: single-seat re-run for evidence only (no
+code change); any fix wave → full TRIO next round.
+
+**Latest-model policy (owner directive):** all spawn paths use harness tier tokens only
+(`fable`/`opus`/`sonnet`/`haiku`; Codex = latest the installed CLI reports) — resolved
+latest-at-call-time. NO versioned IDs in executable snippets. API call sites are the
+sole exception (no evergreen tier alias; `claude-haiku-4-5` is the alias-form for its
+tier).
+
+### deadly-loop skill + workflow (Workstream E / E.1)
+
+`skills/deadly-loop/SKILL.md` updated:
+- Phase B header + B0-B2 skeletons now describe the full TRIO (Reviewer + Auditor + Critic).
+- New **Swarm mode** section documents `references/deadly-loop.workflow.js` as the
+  swarm-first path (plain Agent-tool path stays fully supported for no-consent sessions).
+- **Three-phase architecture per round:** (1) CONTEXT AGENT (`model:"sonnet"`, shared
+  pack, graphify freshness check round-1 only); (2) THE DUEL (2a independent
+  investigation + 2b structured argument); (3) CONVERGE & CONFIRM (VERDICT_SCHEMA dedup,
+  RESPAWN-ON-DRIFT with objective criteria only).
+- Workflow consent friction, guard-coverage boundary, no cross-round caching — all stated
+  honestly.
+
+`references/deadly-loop.workflow.js` — new Workflow template (args contract): accepts
+`{round, multiplier, targetSHA, branch, scope, handoffPath, prevPackPath, findings,
+fixesApplied, contextMode, argue, respawnQuota, seats, codexAvailable}`. MODEL INVARIANT
+in file header: tier tokens only, never versioned IDs. DETERMINISM: no `Date.now()` /
+`Math.random()` / argless `new Date()`.
+
+### statusline (Workstream A2)
+
+`statusline-rich.js` `getModelName()`: token-segment matching (split model id on `-`,
+compare segments) for fable/opus/sonnet/haiku, fable-first. Fixes `confable`-class
+false-positive collisions. Latent bug fixed: the `:361-366` "pick max lastUsedAt" loop
+read a phantom field absent in real `~/.claude.json` (ts always 0, masked by last-key
+fall-through — P6 probe); simplified to explicit last-key with a comment stating the
+verified data shape (cumulative counters only, no timestamps).
+
+### ANTIHALL_JUDGE_MODEL
+
+`speculation-judge.js:194` now honors `ANTIHALL_JUDGE_MODEL` env override (house
+convention for all anti-hall LLM call sites). Default remains `claude-haiku-4-5`
+(alias-form, auto-tracking). `eval/run.js` / `eval/grade.js` were already env-overridable.
+
+## 0.31.1
+
+**Fix: statusline swarm-activity count is now per-session — no more cross-session/cross-project bleed.**
+
+The line-2 "orchestrating · N agents active" bar counted EVERY recent subagent
+spawn from EVERY Claude Code session on the machine, so a swarm running in one
+project showed its count on every other open project's statusline. Root cause:
+`phase-tracker.js` wrote bare `Date.now()` timestamps to the GLOBAL
+`~/.anti-hall/agent-spawns.log` with no session identity, and `phase-bar.js`
+`activityLine()` counted lines by TIME ONLY.
+
+Fix (per-session isolation):
+- `phase-tracker.js` now tags each spawn line as `"<ms> <tag>"`, where `<tag>`
+  is the PreToolUse `session_id` (sanitized to `[A-Za-z0-9_-]`), falling back to
+  `cwd-<sha1(cwd)[:12]>`, else `unknown`. Retention prune (5 min) and fail-open /
+  never-block behavior are unchanged; other sessions' fresh lines are preserved.
+- `phase-bar.js` `activityLine()` now derives THIS session's tag from the
+  statusline's own session JSON (stdin: `session_id`, else `cwd`-hash) and counts
+  ONLY entries whose tag matches AND fall within the 2-min activity window. LEGACY
+  untagged lines belong to no session and are never counted (they age out). When
+  no session identity is available, NO activity line is rendered (safer than a
+  wrong count). Fail-open intact.
+
+## 0.31.0
+
+**Feature (OPT-IN, default OFF): `merge-gate` — a mechanical backstop for the v0.30.0 "false done" discipline.**
+
+Mechanizes the one *checkable* part of the false-done failure: the agent wrote a
+self-hedge ("first-pass" / "pending review" / "do not merge" / "needs your eyes")
+in its OWN recent output, then auto-merged anyway. `merge-gate` is a PreToolUse
+(Bash) hook that, **only when `ANTIHALL_MERGE_GATE` ∈ {1,true,yes,on}**, detects an
+auto-merge intent (`gh pr merge` incl. `--auto`, `gh pr review --approve`, `git
+merge --no-ff/--ff` into `main`/`master`/`develop`) and does a bounded (128 KB)
+tail-scan of the recent **assistant** transcript text for an UNRESOLVED hedge. A
+hedge is RESOLVED (and the merge allowed) when a resolution token follows it
+("owner approved", "owner signed off", "fidelity verified", "verified against",
+"resolved:", "sign-off received"). Unresolved hedge + auto-merge → block (exit 2)
+with a verify-or-get-sign-off reason.
+
+HONEST limits (in the header): keyword-heuristic, bypassable (alternate merge
+syntax / heredoc / GitHub UI / API), **default-OFF**, fail-open on every error (no
+transcript, parse error, fs error, bad stdin). Cannot hard-loop — PreToolUse is
+single-shot and holds no state. A backstop on the v0.30.0 discipline, NOT a
+guarantee. Honors the `merge-gate` skip-hatch. Hooks shipped 19 → 20 (+`hooks.json`
+= 20 → 21 files); +18 tests.
+
+## 0.30.0
+
+**Fix (P0): "false done" — DONE now requires verification against the AGREED acceptance criteria, not tests-pass or a subagent "per-spec" report.**
+
+Fidelity that can't be mechanically verified (UI vs agreed mockup) is reported
+PENDING OWNER VERIFICATION, never folded into done as a hidden follow-up;
+coordinator verifies delegated acceptance (rule L); autonomy doesn't lower the bar.
+Grounded in a real field failure (UI shipped "done" off green behavior-tests +
+subagent self-reports, never compared to the agreed design HTML). Touches ship-it
+Step 4/6 + Autonomous-mode, always-on protocol rule 6, +1 per-turn nudge (17 → 18).
+A self-issued hedge (e.g., "first-pass / not pixel-perfect / pending review / needs your eyes") about a deliverable hard-blocks both its "done" status and any auto-merge; the coordinator's own written doubt is a verification signal.
+
+## 0.29.0
+
+**Feature (P0): `task-guard` now catches IDLE NEGLECT — the orchestrator sitting on dispatchable work instead of spinning parallel agents.**
+
+The #1 field pain: an autonomous run ends a turn with non-blocked, unassigned tasks
+pending and NO subagents running — it just stops instead of fanning out. The old Stop
+hook only knew "open tasks exist → generic nudge", which the model learned to ignore.
+
+`task-guard` now **classifies** open tasks into **ACTIONABLE NOW** = status `pending`
+AND unowned (no `owner`, or owner is the main thread) AND no **OPEN** `blockedBy` (every
+blocker already in a done state). It also **detects in-flight agents** by scanning
+`~/.anti-hall/agents/*.json` for a FRESH heartbeat (numeric `ts`, or file mtime fallback,
+within ~20 min — same format `agent-watchdog.js` writes; absent dir = no agents).
+
+- **Sharp block (the new condition):** if ≥1 actionable-now task AND no agents running →
+  **IDLE NEGLECT** → block naming those tasks: *"IDLE NEGLECT: N non-blocked, unassigned
+  task(s) and NO agents running — dispatch them in PARALLEL NOW (one background agent each,
+  cap ~min(16, cores-2)): &lt;names&gt;. Do not end the turn idle; only stop if a task truly
+  needs the user (then say which + why)."*
+- **Gentle path (no nagging real work):** if agents ARE in flight, or the only open tasks
+  are blocked/owned/in_progress, it falls back to the existing generic drain nudge.
+
+**Loop-safety (cannot hard-loop):** the idle-neglect block dedupes on a hash of
+(actionable-set + `"no-agents"`) so it re-fires only when that set actually changes; an
+absolute `MAX_BLOCKS` cap — raised modestly **3 → 5**, counting BOTH modes — guarantees a
+genuinely-stuck set goes quiet after a few nudges. All existing safety kept (top-level
+try/catch → exit 0, skip-hatch, per-session state under `~/.anti-hall/`, fail-open on any
+error, bounded transcript tail-read).
+
+Also: **orchestration rule C** (`verify-first-full.js` SessionStart protocol) reworded to
+demand **PROACTIVE** parallel dispatch — fire a background agent for a pending, unblocked,
+unassigned task the moment it exists, *without being asked*; ending a turn with such tasks
+and no agents running is explicitly named IDLE NEGLECT.
+
+**Complementary per-turn layer — `task-tracker` (UserPromptSubmit) now nudges BEFORE the
+turn, not only at Stop.** The Stop-hook idle-neglect block fires after the model already
+decided to stop; `task-tracker` now reviews the actionable-now set on *every* prompt and,
+when ≥1 pending+unowned+unblocked task exists AND no agents are in flight, injects a
+SPECIFIC review line into `additionalContext`:
+*"TASK REVIEW (every turn): N non-blocked, unassigned pending task(s) — dispatch a
+background agent for EACH now, in parallel (cap ~min(16, cores-2)), unless already
+in-flight: &lt;up to 4 names&gt;. Do not leave them idle; only hold one if it truly needs
+the user."* It reuses task-guard's exact definitions — `normOwner` / `normBlockedBy` /
+`classifyOpen` (owner main/orchestrator/coordinator = ours; blocker open unless its task
+is done/completed/cancelled) and the `~/.anti-hall/agents/*.json` fresh-heartbeat check.
+Task subjects are control-char-stripped then `JSON.stringify`'d (inert quoted strings — no
+prompt injection). When 0 actionable, the existing generic discipline + open-tasks
+freshness note are unchanged. Reconstruction now also captures `owner`/`blockedBy` per
+task (status-only `TaskUpdate` does not clear them). Bounded (same 256 KB tail read) and
+fully fail-open — any error → existing generic text or nothing, never wedges the turn.
+
+Tests: +6 task-guard cases (actionable-now + no-agents → idle-neglect naming tasks;
+agents-running → generic not idle-neglect; all-blocked → generic; owned-pending → not
+actionable; idle-neglect dedupe; churn-cap loop-safety). +5 task-tracker cases
+(actionable-now → review line names tasks + says parallel; 0 actionable → generic only;
+owned/blocked → not listed; fresh agent → no review line; malformed transcript →
+fail-open). +E2E system test for the task-neglect enforcement (`tests/hooks/task-neglect-e2e.test.js`):
+one realistic 3-pending-task transcript driving BOTH real hooks together against shared,
+real fs heartbeat state — no-agents → tracker review line + guard idle-neglect block naming
+only the actionable task; fresh heartbeat planted → both back off; actionable in_progress →
+neither flags; loop-safety end-to-end (dedupe once, churn capped at MAX_BLOCKS). Suite
+**340 passing / 342 total**.
+
+## 0.28.2
+
+**Fix (P0): `ship-it` plan-approval gate now honors granted autonomy — no more blocking for a "go" already given.**
+
+Reported in the field: an autonomous run sat idle for hours at `ship-it`'s `ExitPlanMode`
+plan-approval gate, waiting on approval the owner had already granted ("full autonomy / build
+it / AFK"). Root cause: when the lean `ship-it` replaced feature-launch, it dropped
+feature-launch's autonomous-mode handling, so the plan-approval and brainstorm gates became
+**unconditional human stops** with no autonomy carve-out.
+
+Fix — the two human gates (Step 1 brainstorm, Step 3 `ExitPlanMode`) are now explicitly
+**SOFT**: under granted autonomy they are satisfied by *forming/recording the design* and
+*converging the plan via the deadly-loop to zero NEW P0s*, then the run **proceeds straight
+into the build** — it does not re-stop for an already-given go. A new **Autonomous mode**
+section makes this the rule: stop only at a **hard safety boundary** (destructive /
+irreversible / financial / secret / prod-deploy / force-push — these still NEVER
+autonomy-bypass) or a **genuine ambiguity**, never the plan-approval gate itself. Interactive
+behavior is unchanged (present plan, wait for approval).
+
+## 0.28.1
+
+**Loose-end closeout — cross-model (Codex) review fixes for `ship-it` + a full doc-currency pass. No new features.**
+
+A cross-model Codex review of the shipped `ship-it` skill + its workflow template caught five real correctness/honesty gaps, all fixed:
+
+- **Plan-mode write claim corrected.** Plan mode is read-only *for the repo* (it writes only to `~/.claude/plans/`), so `ship-it` no longer claims it can write the repo `PLAN.md` inside plan mode — the plan is drafted + presented via `ExitPlanMode`, and `PLAN.md` is written as the first action *after* approval.
+- **Two-phase tier-sizing closed a gap.** Even an S-classified change now does a ~30-second blast-radius sanity glance before the tier is locked, so a deceptively-large "simple" ask can't skip the re-tier (S stays lean otherwise).
+- **Workflow template hardened.** Takes `files[]` (not a diff string) and `validateGroup()` fails closed unless a fan-out group is conflict-free (disjoint files, unique labels, no intra-group dependency) before any `parallel()`.
+- **Template honesty.** The template is now labelled a SINGLE-PASS audit *scaffold* (shows the fan-out shape); the full iterate-to-zero-NEW-P0 fix-wave + D1.5 gate is run by invoking the `deadly-loop` skill — no false convergence claim.
+- **Commit ownership clarified.** The template never commits; agents return results and the coordinator commits serially on the main thread.
+
+Plus a thorough doc-currency pass: test counts reconciled to **329 pass / 331 total / 2 platform-skip**, and `ship-it-guard` added to every user-facing hook inventory (it was only in the KB).
+
+## 0.28.0
+
+**`ship-it` v2 — 2-phase tier-sizing, an OPT-IN enforcement gate, and a copyable `/ship-it` workflow template.**
+
+This release hardens the `ship-it` workflow with a thin mechanical backstop and a reusable
+execution script, without changing its default behavior (the new gate is OFF by default).
+
+- **2-phase tier-sizing (skill).** Step 0 now decides the S/M/L tier **twice**: a PROVISIONAL
+  tier from the initial prompt (sets how much exploration to do), then a CONFIRMED/REVISED tier
+  at the blast-radius map after the Step-2 graphify-first research reveals the true blast radius.
+  A deceptively-large "simple" ask (one-liner that touches auth, or fans out to many callers)
+  gets upgraded; an over-estimate gets downgraded — re-decided **before** plan mode locks rigor.
+- **`ship-it-guard` hook (new; OPT-IN, default OFF).** PreToolUse on `Write|Edit|MultiEdit`.
+  A pure no-op (exit 0) unless `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}. When ON: blocks
+  (exit 2) a CODE edit on a **hard-risk path** (migration / auth / `.github/workflows` /
+  security/crypto) when **no `PLAN.md`** exists (repo root or `.planning/PLAN.md`) — nudging
+  the agent to plan first. **Honest limits (in the hook header):** enforces artifact-EXISTENCE
+  only, NOT plan quality (a stub `# Plan` satisfies it); bypassable via a `Bash` heredoc write
+  (PreToolUse sees Edit/Write/MultiEdit only); **conservative** — never gates ordinary
+  single edits, docs, or tests; **fail-open** on any error; honors the shared
+  `isSkipped('ship-it-guard')` escape-hatch. Registered in `hooks.json` (timeout 10).
+- **Copyable `/ship-it` workflow template (new).** Investigated feasibility: per the official
+  [Dynamic Workflows docs](https://code.claude.com/docs/en/workflows), a plugin **cannot ship**
+  a workflow command — there is no `workflows` field in `plugin.json`, and a workflow only
+  becomes a `/command` by saving a *live run's* script via `/workflows` → `s` into
+  `.claude/workflows/` (project) or `~/.claude/workflows/` (user). So `ship-it` ships a
+  **copyable template** at `skills/ship-it/references/ship-it.workflow.js` (deterministic — no
+  `Date.now`/`Math.random`/`new Date`; inputs via `args`) that automates the L-tier Step-4
+  build fan-out (`parallel([...])` over disjoint phases) + the Step-5 per-phase deadly-loop
+  (Reviewer + Codex Critic via `agentType: "codex:codex-rescue"`), plus a one-line pointer in
+  the skill telling the user to save it as `/ship-it`.
+- **Tests:** `tests/hooks/ship-it-guard.test.js` (13 cases — default-off no-op, ON+L-risk+no-PLAN
+  ⇒ exit 2 + reason, PLAN.md present ⇒ allow, ordinary/doc/test file ⇒ allow, env-value parsing,
+  fail-open on malformed/empty stdin, skip-hatch). Full suite: 331 tests, 0 fail.
+
+## 0.27.0
+
+**`ship-it` workflow replaces `feature-launch`. deadly-loop gains a D1.5 verification gate.**
+
+This release retires the `feature-launch` skill and ships `ship-it` in its place — one lean,
+anti-hall-native workflow for shipping any change correctly, from a one-line fix to a
+multi-phase feature.
+
+- **`ship-it` (new, replaces `feature-launch`).** A tier-scaled (S / M / L) fusion of the
+  best of superpowers-planning + the GSD phase loop + the deadly-loop, with the bloat removed.
+  Brainstorm + plan happen **in plan mode** (`ExitPlanMode` is the build-unlock approval gate;
+  no code before approval); the plan is hardened with the deadly-loop **before** any code; on
+  large (L) work the disjoint build phases and the per-phase deadly-loop fan out as a **Workflow
+  swarm**; each phase is verified with fresh evidence and a vacuous-test guard, then hardened
+  until zero NEW P0s. Wired to real Claude Code primitives (plan mode + the Workflow tool) plus
+  anti-hall's own deadly-loop and always-on guards — **standalone**, no GSD/superpowers
+  dependency. Hard safety boundaries (force-push, prod deploy, destructive/financial actions)
+  never autonomy-bypass and are enforced by the always-on guards, which swarm agents inherit.
+- **`feature-launch` removed.** Its bespoke `references/` (including the per-project
+  `PRE-TOOL-USE-HOOK.md` template) are gone; `ship-it` relies on the always-on guards instead
+  of a bespoke per-feature sentinel, and reuses the deadly-loop's `MODEL-POLICY.md`, A3
+  branch/SHA verification preamble, validation table, and D1.5 gate. The shared
+  `MODEL-POLICY.md` is now duplicated in 2 places (canonical + `deadly-loop/references/`)
+  instead of 3.
+- **deadly-loop D1.5 verification gate.** A GO verdict is no longer valid without a D1.5
+  check — fresh evidence (re-run the authoritative check this round, not a stale prior result)
+  plus a vacuous-test guard (a passing test that asserts nothing, or never exercises the
+  changed path, does not count). Inherited by **all** deadly-loop-driven workflows, including
+  `ship-it`'s per-phase gates and `deadly-loop-multi`.
+
+## 0.26.0
+
+**Structured-return discipline (rule G) made concrete + measured.**
+
+Rule G (SYNTHESIZE, NEVER RELAY) already required subagents to return tight summaries
+under an OUTPUT BUDGET. This release makes the SUBSTANTIAL-return case concrete and grounds
+it in measurement, with no mechanical or behavioral change to any guard.
+
+- **Schema now specified.** For a SUBSTANTIAL return (a review/audit/research dump, many
+  claims), rule G now names the exact compact shape to require:
+  `{claim, evidence:"file:line", verdict, blockers/uncertainty, next}`.
+- **Measured, not asserted.** A deadly-loop-hardened study (S4) measured these structured
+  subagent returns at **~5× smaller than verbose prose with zero decision-relevant loss**,
+  judged on a claim/evidence/uncertainty/blockers/next rubric (N=8, directional). Rule G
+  cites the figure inline.
+- **Reconciles the earlier ~1.4× number.** The prior pilot's ~1.43× density figure measured
+  *small, already-summarized* content (where a schema is a minor lever, and JSON overhead can
+  make tiny outputs LARGER). The ~5× figure is for *verbose* returns. Both hold; they measure
+  different inputs. The **prose-for-tiny caveat is kept** — a single prose line still wins for
+  a SMALL result; do not impose JSON there.
+- **Enforce, don't just request.** Rule G notes that passing a **schema to the Agent/Task
+  tool** validates the structured return rather than merely asking for it. The biggest levers
+  remain the output budget + no-raw-relay rule; the schema is the multiplier on large returns.
+- The per-turn SYNTHESIZE nudge (#57) was updated in place to carry the schema + the ~5×
+  figure. Nudge count unchanged (**17**).
+
+No guard mechanics or hook behavior changed — this is prompt discipline (rule G text + one
+nudge) only. `node --test` green: 316 passing (+2 platform-skipped), 318 total.
+
+## 0.25.2
+
+**CI green on all platforms — root-cause fixes for the macOS stdout race and Windows base-command env.**
+
+0.25.1's test-gating fixes were incomplete; CI stayed red on macOS node 18/20 and all
+Windows legs. Root-caused properly (from real CI logs) and fixed at the source:
+
+- **macOS (hook source fix):** `verify-first-full.js` and `graphify-session.js` emit a
+  ~10 KB JSON payload, then `process.exit(0)`. On a pipe, `process.stdout.write` is async
+  once the payload exceeds the OS pipe buffer, so `exit(0)` could race the flush and the
+  reader saw empty/partial stdout (intermittent on macOS node 18/20). Switched both to a
+  blocking `fs.writeSync(1, …)` so every byte is handed to the pipe before exit. The
+  test-side `expectJson` retry is kept as defense-in-depth and corrected to re-spawn on
+  any parse failure (empty OR partial), not just empty.
+- **Windows (test harness fix):** the statusline base-command test starved `cmd.exe` with
+  a stripped env (a hand-picked `SystemRoot/ComSpec/PATHEXT` allowlist was insufficient),
+  so the base command failed and the dispatcher fell back. The statusline test harness now
+  inherits the full parent env and overrides only the HOME-pointing vars (statusline
+  scripts read no Claude Code markers, so only HOME needs isolating).
+
+No user-facing behavior change beyond more reliable hook stdout. `node --test` green on
+Ubuntu, macOS, and Windows × Node 18/20/22/24.
+
+## 0.25.1
+
+**CI fix — cross-platform test gating. No plugin behavior change from 0.25.0.**
+
+The 0.25.0 test suite passed locally but failed on CI macOS + Windows: all failures were
+test-side environment assumptions, not plugin bugs (source behavior is correct on every
+platform). Fixed test-side only:
+
+- **macOS:** a graphify reflected-path test asserted a substring (`graphify-out`) that the
+  hook's 80-char `sanitizePath` cap truncates under CI's long `/var/folders/.../T/` tmpdir
+  (passed locally only because the dev tmpdir is short) — now asserts the always-in-cap
+  base-dir name. Added an opt-in single retry for a macOS `spawnSync` empty-stdout pipe
+  flake on the large-JSON SessionStart hook (node 18/20).
+- **Windows:** install-reaper `--dry-run` tests now assert the `win32` no-op message
+  (the installer correctly short-circuits before reading flags); tests that `mkdir` a
+  directory whose name contains characters illegal in Windows filenames (`"`, control,
+  bidi) are `win32`-skipped; statusline base-command tests invoke `node "<abspath>"`
+  (survives both `sh -c` and `cmd /c`) instead of a nested-quote `node -e`.
+
+Net: `node --test` green on Ubuntu, macOS, and Windows × Node 18/20/22/24.
+
+## 0.25.0
+
+**Always-on SCOPE & FIDELITY discipline + an opt-in mcp-reaper companion (macOS + Linux).**
+
+**A — SCOPE & FIDELITY discipline (prompt layer).** A new always-on discipline injected by
+the SessionStart protocol (`verify-first-full.js`) and reinforced by 2 new per-turn nudges
+(`verify-first.js`, NUDGES 12 → 14; later 14 → 15 with the verify-delegated-work nudge in
+section C). It enforces: solve the ACTUAL problem with the
+**simplest sufficient solution** (over-engineering is confabulating work the user never asked
+for); **intent over letter** (serve what the user means; do the small reading and say what you
+skipped rather than guess-big); **confirm before expanding scope** (new platform / file /
+dependency / phase / abstraction); **match rigor to blast radius** (heavy process is for risky
+or large work, not a reflex on small asks); and **finish what was asked / drop nothing
+silently**. It is now named in the "ALWAYS APPLY" disciplines list alongside
+root-cause / orchestration / anti-sycophancy, and mirrored in `AGENTS.md` for Codex.
+
+**B — mcp-reaper companion (OPT-IN, macOS + Linux).** A new pure-Node background **companion**
+(NOT a hook — an interval job via a macOS LaunchAgent / Linux `systemd --user` timer, cron
+fallback) that kills **orphaned** MCP-server processes — ones leaked when their spawner (a
+Claude / codex / npm / node session) exits without cleaning them up (on macOS these reparent
+to launchd and pile up over a workday). Files: `companion/mcp-reaper.js`,
+`companion/install-reaper.js`, `companion/README.md`. Install with
+`node plugins/anti-hall/companion/install-reaper.js` (`--uninstall` to remove). Env knobs:
+`MCP_REAP_DRYRUN=1`, `MCP_REAP_GRACE`, `ANTIHALL_REAPER_MATCH`, `ANTIHALL_REAPER_EXCLUDE`
+(regex of cmd substrings to NEVER reap). Also recognizes **Python MCPs** (`uvx`/`uv` +
+underscore `mcp_server_*` forms), not just Node.
+
+- **Safety invariant:** a process is reaped only if its command matches a generic MCP
+  signature **and** its parent is a reaper/init (pid1 / launchd / `systemd --user` / WSL
+  `Relay()`). Because Unix always reparents a dead process's children, a *live* MCP's parent
+  is always a live spawner — never a reaper — so "parent is a reaper" means the spawner died,
+  i.e. the MCP is a true orphan. Killing an in-use server is impossible by construction.
+- **Limitation — service-managed MCPs:** an MCP run as a macOS LaunchAgent / `systemd --user`
+  unit / other OS service shares init (ppid 1) as a parent **while alive** — indistinguishable
+  from a leaked orphan — so it could be reaped. Exclude it via
+  `ANTIHALL_REAPER_EXCLUDE='your-service-name|another'` (case-insensitive regex of cmd
+  substrings that are never reaped).
+- **Windows is a documented no-op (rescope rationale):** Windows has no parent-death
+  reparenting **and** recycles PIDs, so external orphan detection is unsafe there — a matched
+  signature on a recycled PID with an `init`-ish parent could kill an unrelated live process.
+  The correct fix on Windows is **Job Objects set by the spawner**, which a companion cannot
+  do. So the installer prints why and installs no scheduler.
+
+**C — VERIFY DELEGATED WORK discipline (prompt layer).** Orchestration now requires the
+coordinator to **independently verify delegated work** — a subagent's "done / fixed / tests
+pass / N passing" is an UNVERIFIED CLAIM, never a fact. Before marking any delegated task
+complete, the coordinator RE-RUNS the authoritative check (or dispatches a separate verifier)
+and reconciles multiple workers against GROUND TRUTH, not against each other. Added as rule L
+in `verify-first-full.js`, folded into the "ALWAYS APPLY" orchestration summary, mirrored in
+`AGENTS.md`, and reinforced by 1 new per-turn nudge (`verify-first.js`, NUDGES 14 → **15**).
+
+**D — Background-default orchestration (prompt layer).** Orchestration now defaults delegated
+heavy/parallel/long work to the **background** (the coordinator passes `run_in_background`
+itself) so the user needn't background it manually, while still verifying each on completion —
+never fire-and-forget. Extended into rule F in `verify-first-full.js`, mirrored in `AGENTS.md`,
+and reinforced by 1 new per-turn nudge (`verify-first.js`, NUDGES 15 → **16**).
+
+**E — Fix-history ledger discipline (prompt layer).** The `tasklist-guard` Stop reminder now
+also prompts appending each **completed task** to `.anti-hall-history.md` — an append-only fix
+ledger (one entry per task: **Cause / Fix / Verified**) so the fix history persists for the
+knowledge layer. Same reminder, enriched (no new hard Stop-block condition), fully fail-open.
+Mirrored as full-protocol text in rule B of `verify-first-full.js` and documented in
+`docs/TASKLIST-GUARD.md` / `docs/KB.md`. The hook never creates the file — it is gitignored,
+local session state.
+
+**F — Message-context bloat prevention (#45, prompt layer).** Orchestration rule G is rewritten
+from "synthesize, don't paste raw output" into **SYNTHESIZE, NEVER RELAY**: the coordinator
+reports findings in its own words and NEVER pastes a subagent's raw return into the user thread
+(that verbatim relay is the **#1 cause of message-context bloat**), and subagents must return
+TIGHT summaries under an explicit **OUTPUT BUDGET** (findings only; a compact
+`{claim, evidence:"file:line", verdict}` schema only when >~5 claims or >~200 tokens, else one
+prose line). Reinforced by 1 new per-turn nudge (`verify-first.js`, NUDGES 16 → **17**).
+**Pilot finding:** a
+compact JSON return schema is only **~1.43× denser than prose on average** (and *worse* for
+tiny outputs), so schema enforcement is a MINOR lever — the real levers are the output budget +
+the no-raw-relay rule, which is why this ships as prompt discipline, not a schema-enforcement
+system. A `PostToolUse`-on-`Task` hook to flag oversized subagent returns was evaluated and is
+**NOT feasible**: per the Claude Code hook contract (KB-claude-codex §1.4), `PostToolUse` stdout
+/`additionalContext` never reaches the model and `PostToolUse` cannot block — so it cannot
+inject a reminder back. No hook was faked; the discipline is the mechanism.
+
+Suite 318 total, **316 passing** (+2 platform-skipped).
+
+## 0.24.1
+
+**Doc-currency pass — descriptions + test counts brought to current reality.**
+
+No behavioral change. The `plugin.json` and `marketplace.json` descriptions predated
+api-guard and the v0.24.0 gh-PR guard — both now name the two signature mechanical guards
+(api-guard: fabricated-API blocking, opt-in 3rd-party; git-guard: AI self-credit in commits
+**and** gh pr/issue/release bodies). Test-count references corrected to **173** across
+README (root + plugin), `llms.txt`, and `docs/KB.md`; KB snapshot provenance refreshed to
+post-0.24.0.
+
+## 0.24.0
+
+**git-guard now also blocks AI self-credit in `gh` PR / issue / release bodies.**
+
+Previously git-guard blocked AI co-author trailers in `git commit` only; PRs created
+with `gh pr create --body "… 🤖 Generated with Claude Code …"` slipped through. Now the
+same self-credit markers (the `🤖 Generated with [Claude Code](…)` footer, `Co-Authored-By:
+Claude`, `noreply@anthropic.com`, a bare `claude.com/claude-code` link) are blocked in the
+inline `--body`/`--title`/`--notes` of `gh pr|issue|release create|edit|comment`. Reuses the
+existing commit markers + a bare-link marker; quote/segment-aware via git-guard's tokenizer.
+Inline values only — `--body-file`/`-F` and heredoc/command-substitution bodies put the text
+off the command line and are a documented fail-open limitation. +8 gh tests; suite 173/173.
+
+## 0.23.0
+
+**api-guard v2 — opt-in 3rd-party API verification + security hardening.**
+
+api-guard can now verify installed **3rd-party** packages (pandas, lodash, …) — the
+highest-hallucination class (38–80% per the literature) — not just stdlib/builtins.
+But a double deadly-loop (2 Opus + 2 Codex) **proved that verifying a 3rd-party
+package = importing it = running its top-level code at edit time** (a confirmed RCE,
+triggered even when the write is blocked; Codex bypassed the first fix via bare
+`node_modules` packages and `.pth` files). You cannot check an installed package's
+API without executing it. So 3rd-party checking is **opt-in, off by default**:
+
+- **Default (unchanged):** stdlib/builtin modules + JS globals only — importing those
+  to introspect is side-effect-free, so the probe never runs untrusted code. Safe.
+- **Opt-in:** set `ANTIHALL_API_GUARD_THIRDPARTY=1` to also verify installed packages,
+  accepting that referenced installed packages are imported at edit time.
+
+**Security hardening (both modes):**
+- Local/relative modules are NEVER probed: path-spec rejection (`./x`, `/abs`, `..`,
+  `C:\`), Python probe runs with `cwd=<tmp>` + scrubs cwd/`''` from `sys.path`, so a
+  bare `import localmod` can't resolve to a repo file.
+- `SAFE_ENV` now also strips `PYTHONUSERBASE`/`PYTHONSAFEPATH`, and the Python probe
+  runs with `-s` (no user site) — closes the `.pth` startup-exec vector.
+- Batched **one import per module** (not per attribute); **30s wall-clock deadline**
+  under the hook timeout (raised 30→45s); JS requires extracted from comment-stripped
+  code; function/lambda-parameter and `with/except as` names excluded from checking
+  (no false-block on `def f(pd): pd.x`).
+
+165 tests (3rd-party gated + RCE-no-execute regression), bench 21/21 catch / 0 FP.
+Known v2.1 gaps (fail-open, documented): dotted-submodule receivers (`os.path.x`) and
+JS member chains (`fs.promises.x`) are not yet checked.
+
+## 0.22.2
+
+**Fix: api-guard CI flake on Windows/node (probe timeout too tight).**
+
+After 0.22.1 the windows-latest leg still flaked intermittently (same commit green on
+`main`, red on the tag run): a COLD `python`/`node` spawn on a loaded Windows runner
+occasionally exceeded the `1500ms` probe timeout → the check timed out → fail-open →
+the `asyncio.run_all` test expecting a block got an allow. Raised `SPAWN_TIMEOUT_MS` to
+`5000ms` (a CEILING, not added latency — a normal spawn returns in <300ms; this just
+stops us giving up too early on a cold start), lowered `MAX_CHECKS` 12→6 to keep the
+worst case bounded, and bumped the hook's outer timeout 30→45s for headroom. Suite
+159/159.
+
+## 0.22.1
+
+**Fix: api-guard now works on Windows (CI was red on the windows-latest matrix legs).**
+
+The probe env was a PATH-only allowlist, which is secure but too minimal for Windows —
+Python could not spawn without `APPDATA`/`LOCALAPPDATA`/`TEMP`/etc., so `pyBin()` returned
+null and the hook fail-opened (Python fabrications silently allowed) on Windows. Changed
+`SAFE_ENV` to a **denylist**: the full parent environment minus the interpreter-injection
+vectors (`NODE_OPTIONS`, `NODE_PATH`, `PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONHOME`,
+`PYTHONINSPECT`, `PYTHONEXECUTABLE`). Keeps the security property (a poisoned env can't
+influence the existence check) while letting Python spawn on every OS. Suite 159/159;
+the exact failing case (`asyncio.run_all`) now blocks. Doc-only follow-up `547e184`
+(corrected stale test counts to 159) also rolled up here.
+
+## 0.22.0
+
+**`api-guard` — a mechanical guard against API hallucination, built on eval evidence.**
+
+A controlled A/B eval (see [`eval/`](eval/)) established that the verify-first *prompt*
+does not reliably reduce API fabrication: across four rounds (incl. a powered 122-trap,
+tools-on run with a naive baseline) the protocol netted **no statistically-significant
+reduction** (McNemar p=0.26), and the model ran a verification tool only ~5% of the time —
+*the same as baseline*. The model ignores "go verify." So this release does the verifying
+mechanically:
+
+- **`api-guard`** (new) — a `PreToolUse` hook on `Write`/`Edit`/`MultiEdit`. It extracts
+  `module.attribute` references from the code about to be written and resolves them against
+  the **installed** runtime (`python3` / `node`): Python stdlib `mod.attr` and `from mod
+  import Name; Name.attr` (via `hasattr`), Node builtins `require('mod').attr`, and JS
+  global builtins incl. `.prototype.attr` (via `typeof`). If a real module/object is missing
+  the referenced attribute, the write is **blocked** — the symbol was fabricated.
+  - **Substantiated: 100% in-scope catch, 0 false positives** on a committed, reproducible
+    bench — `node eval/api-guard-bench.js` (labeled corpus + a sweep of every `plugins/**.js`).
+    Contrast the prompt's unproven ~18%.
+  - **Fail-open by construction:** blocks ONLY on a positively-verified missing attribute;
+    any uncertainty (no interpreter, import error, 3rd-party package, receiver-typed instance
+    method, version skew) → allow. From-import bindings resolve before module names so
+    `datetime.fromisoformat` (class method) is not mistaken for a module attribute.
+  - **Hardened by a double deadly-loop (2 Opus + 2 Codex) + empirical sweep.** Security review
+    found injection/ReDoS/resource genuinely closed. Correctness review found and fixed a P0
+    false-positive cluster: stdlib/global names used as **local variables** (`array = [1,2];
+    array.append(3)`, `const Math = myLib; Math.x`), require-vars **reassigned** to a 3rd-party
+    (`fs = require('fs-extra')`), and from-import names rebound — now all resolve correctly
+    (require a real `import`; exclude locally-bound names). Added `Buffer` to JS globals;
+    `python` (3.x) fallback for non-`python3` systems; probe env pinned to PATH-only.
+  - Skip-hatch via `~/.anti-hall/skip.json` (`api-guard`); 27 tests (block/allow/fail-open/
+    scope/skip/regression/shadowing/portability), `python3`-gated for Windows CI. Full suite **159/159**.
+- **eval/** harness added: `claude -p` subscription backend (no API key), naive-baseline +
+  tools-on knobs, 122 execution-verified traps, `analyze.js` (McNemar exact + bootstrap CI).
+  Documents the honest finding that prompt-only fabrication reduction is unproven.
+
+## 0.21.1
+
+Refresh marketplace.json plugin description to current capability set (tasklist-guard, skip-guard, deadly-loop-multi, speculation guards, rule K, escape hatch) for the public listing; add assets/demo/ (VHS .tape + storyboard) to generate a demo GIF.
+
+## 0.21.0
+
+Pre-publish **triple-deadly-loop** hardening pass (3 Opus reviewers + 3 Codex critics, two re-converge passes) before the first public release. Closes a cluster of deliberate-evasion gaps in the always-on guards and the reflected-text sanitizers:
+
+- **git-guard** — now blocks AI/assistant self-credit trailers slipped in via `git commit --trailer`, including the `key=value` separator form (`Co-Authored-By=Claude <…>`) alongside the `key: value` form, and a `-c trailer.<name>.key=<self-credit>` remap that would emit a `Co-Authored-By` / `Generated-with` trailer from a benign-looking custom token. Benign trailers (`Reviewed-by=Alice`, `-c trailer.sob.key=Signed-off-by`) still pass.
+- **tasklist-guard** — fail-open when the state dir is unwritable instead of wedging.
+- **swarm-guard** — steals a zero-byte / corrupt lock instead of deadlocking, and resolves `vm_stat` by absolute path.
+- **graphify-reminder** — bounds the `git rev-parse` probe with a timeout.
+- **sanitizers** — reflected-text + terminal-control + **Unicode bidi** hygiene across `graphify-guard`, `graphify-session`, `speculation-judge`, and both statuslines: bidi overrides (U+202A–U+202E) and isolates (U+2066–U+2069) are now stripped so a crafted path/claim can't visually reorder terminal/model output. Regexes stay linear (no ReDoS); legit UTF-8 and branch names are preserved.
+- **docs** — accuracy fixes (`KB.md` → `0.21.0`, `TASK-WORK` >1/checks wording, README statusline + doctor list, E2E +24.x); README badges (tests / version / license / node / plugin).
+
+Accepted residuals (deliberate evasion of a safety net, documented not closed): `base64 | sh`, pipe-to-shell, process-substitution, deeply-nested `eval`, `commit -F <file>` / editor commits, and Unicode-confusable token swaps. These require an adversary actively defeating their own guardrail and are out of scope for a fail-open static hook.
+
+## 0.20.3
+
+Add RELEASING.md — the ordered release + doc-currency checklist the agent follows on every ship (manual tagging by agent, no CD); pointer from AGENTS.md.
+
+## 0.20.2
+
+Doc currency sync — `llms.txt` + `plugins/anti-hall/README.md` were stale (predated tasklist-guard / skip-guard / rule K); added the missing hooks (`tasklist-guard`, `skip-guard`, `command-guard`, `swarm-guard`, `phase-tracker`, `agent-watchdog`), the user-override escape hatch, rule K output-presentation, the E2E test suite + CI, and the new docs (`CONTEXT-PRESERVATION-KB`, `TASK-WORK`, `TASKLIST-GUARD`, `KB`, `E2E-TESTING`). Fixed "four Stop hooks" → five. CHANGELOG + tests were already current.
+
+## 0.20.1
+
+- orchestration skill gains a concise "References & context guardrails" section —
+  points to `docs/CONTEXT-PRESERVATION-KB.md` (the swarm-researched context-discipline
+  KB) and the findings-discipline (externalize durable findings to memory, case
+  findings to `.anti-hall-progress.md`; compact early once externalized; context-rot
+  sweet spot is a cadence not a length). Outcome of a deadly-loop on 3 candidate
+  context enhancements: the other two (an always-on findings protocol line, a
+  statusline pressure cue) were DROPPED as footprint regression / redundant with the
+  existing color gradient + native Auto Memory; only the skill-reference survived.
+
+## 0.20.0
+
+New `tasklist-guard.js` Stop hook + a per-turn freshness note (in `task-tracker.js`) that enforce live task-list + fresh `.anti-hall-progress.md` discipline for non-trivial work, so real work is tracked and never silently dropped or declared-done by a later agent. It **coexists with `task-guard`** (which drains declared tasks); each keeps an independent block cap so the two never compound.
+
+- **When it blocks (Stop):** ≥ `ANTIHALL_TASKLIST_WORK_THRESHOLD` (default 3) file-mutating actions (`Edit`/`Write`/`MultiEdit`/`NotebookEdit` + mutating `Bash`) AND (no task activity for it, OR more than one task `in_progress`, OR no fresh `.anti-hall-progress.md`). Blocks via `{decision:"block"}` (never exit 2 — plugin Stop hooks don't reliably continue on it), capped at `MAX_BLOCKS=3` cumulative per session, fully fail-open.
+- **Progress file:** `<cwd>/.anti-hall-progress.md` (done/in-progress/next), must be updated this session to count fresh (window `ANTIHALL_PROGRESS_FRESH_MS`, default 30 min). Gitignored, never ships; the hook never creates it.
+- **Per-turn freshness note:** when open/stale tasks exist, `task-tracker` injects a one-line reminder (open-task count + oldest `in_progress` subject).
+- **Escape hatch:** `~/.anti-hall/skip.json` `{"tasklist-guard": <unix-ms expiry>}` (or `"all"`) via the shared skip-guard, or ask the agent to skip.
+- **Hardened via 2 deadly-loop passes (Opus + Codex):** multi-`in_progress`-only staleness (a single `in_progress` — the healthy flow — never false-blocks), emit-before-persist (a state-write failure can't retract an emitted block), `lstat` + `isFile` progress check (rejects a dir/symlink named like the file), cwd-missing fail-open, command-position-aware + broadened `Bash` work regex (ReDoS-safe), task-subject injection neutralized via `JSON.stringify`.
+- **Coverage:** 120-test E2E suite incl. 21 `Bash`-regex cases; `doctor` gains a tasklist-guard self-test (4 edits, no tasks, no progress file ⇒ block).
+- **Accepted deferrals (fail-open by design):** cumulative work counters vs the 512 KB transcript tail-clip (work before the window is unseen, can only *suppress* a block — the safe direction); sync-I/O stall on a network-mounted cwd (the 30 s hook timeout makes a non-block the outcome).
+- New doc [`docs/TASKLIST-GUARD.md`](docs/TASKLIST-GUARD.md) (usage); README + `docs/KB.md` pointers added.
+
+## 0.19.0
+
+Strengthened deadly-loop auditor instructions with explicit depth requirements to prevent surface-skimming and ensure genuine issue discovery. Both `deadly-loop` and `deadly-loop-multi` skills now mandate:
+
+- **DIG DEEP.** Read full implementations end-to-end, trace control and data flow across files, follow every branch and error path. Never judge from names, signatures, or diff hunks. Cite file:line ranges actually read.
+- **ENUMERATE & SIMULATE EDGE CASES.** Systematically exercise boundary conditions, empty/malformed/oversized/unicode/concurrent inputs, missing files, permission denials, clock skew, truncation, and injection-shaped data. Mentally execute or write throwaway harnesses; report predicted outcomes.
+- **REAFFIRMED 3-TIER SEVERITY.** P0/P1/P2 categories (plus EASY-WIN) ranked by heat — correctness > reliability > ergonomics.
+- **CARRY-FORWARD DISCIPLINE.** Verify each prior finding's fix resolved without regression before hunting genuinely NEW issues. Distinguish new discoveries from re-reported findings.
+
+For `deadly-loop/SKILL.md`: added new "B0. Auditor depth requirements" section with B1/B2 forward pointers. For `deadly-loop-multi/SKILL.md`: expanded the mandatory brief-footer and step-6 reconverge to enforce carry-forward discipline across iterations. Auditor reviews now drill into implementation to surface root causes instead of polish-layer issues.
+
+## 0.18.0
+
+Performance: trimmed the always-on SessionStart protocol (`verify-first-full.js`) footprint by
+condensing VERBOSE PROSE ONLY — every rule, every rationalization trigger phrase, all orchestration
+labels A-K, the USER OVERRIDE mechanism, and the DISCIPLINES section are preserved verbatim. The
+SessionStart injection dropped from 8074 B to 7474 B (~7.4 KB, ~160-180 tokens saved) with zero
+efficacy loss. Hardened by a new 77-test zero-dep E2E net that asserts every marker is present (so a
+dropped rule fails the build), plus TWO deadly-loop passes (Opus reviewer + Codex critic) that caught
+8 semantic nuances the trim over-cut and restored them. Also fixed a stale "compact-matcher" comment
+in `verify-first.js` to match the verified no-matcher SessionStart mechanism. Net: smaller one-time
+injection, identical protocol.
+
+## 0.17.1
+
+Bug fix: task-tracker self-heals corrupted or future throttle state. A future or non-finite
+`lastFull` timestamp (from clock skew, manual edit, or corruption) previously left the throttle
+window permanently "within window", so the full task directive never re-showed. The throttle now
+detects a future-beyond-tolerance (5 min) or non-finite value as window-expired and rewrites
+the state to now, allowing the full task output to surface again on the next turn.
+
+## 0.17.0
+
+Tier-B guard hardening. Tightens the static command analysis so a quoted data literal is no
+longer mistaken for a heavy command, and unwraps a single `eval` payload so a guard sees the
+real command it would run — in both command-guard and git-guard.
+
+- **command-guard is quote-aware.** Heavy-pattern matching now distinguishes a heavy command
+  from a heavy-looking string literal: `echo "npm run build"` / `printf 'go test ./...'` pass a
+  quoted data argument and are no longer false-blocked in the coordinator, while an unquoted
+  heavy command (`npm run build`), a command-substitution payload (`echo "$(npm run build)"`),
+  and a `bash -c "npm run build"` wrapper still block. The intent is to stop flagging strings
+  that merely *contain* a heavy verb without losing any real execution path.
+- **`eval` payload unwrapping in BOTH command-guard and git-guard.** A single `eval "…"` is now
+  unwrapped and its inner command re-scanned, so `eval "npm test"` blocks in the coordinator and
+  `eval "git push -f"` is caught by git-guard, instead of slipping past as an opaque `eval`
+  argument. `eval "echo hi"` / `eval "git status"` still pass.
+- **Known residual gaps (accepted, by design).** `base64 | sh`, process-substitution
+  (`<(…)`), and `git commit -F <file>` trailer smuggling remain accepted defense-in-depth gaps:
+  they cannot be closed by static inspection without over-blocking legitimate use. The guards are
+  a safety net against the common slip, not a sandbox — a determined evasion is out of scope.
+
+## 0.16.0
+
+Round-2 Tier-A guard hardening, surfaced by the double deadly-loop on the round-1 changes.
+Closes the fail-closed and OOM cases that could wedge or crash a guard, and seals two guard
+evasion paths the round-1 hardening missed.
+
+- **swarm-guard memory gate fails OPEN, not closed.** The free-memory parser previously fell
+  back to `os.freemem()` on a parse failure, which on some platforms reports near-zero and
+  could block every spawn (fail-closed safety guard left silently disabled is the opposite of
+  what a coordinator wants). It now SKIPS the memory gate entirely when the platform memory
+  read can't be parsed, so a spawn is never blocked on bad telemetry.
+- **swarm-guard lock uses an owner token — no blind `unlink`.** The advisory spawn lock now
+  writes an owner token and only releases a lock it actually owns, instead of blindly
+  `unlink`-ing whatever lock file is present (which could stomp a concurrent holder).
+- **Bounded transcript tail-reads (512 KB) — OOM guard.** `speculation-guard.js`,
+  `speculation-judge.js`, `task-guard.js`, and `graphify-reminder.js` previously
+  `readFileSync`'d the entire transcript; a long session could grow that to hundreds of MB and
+  OOM the hook. They now tail-read only the last 512 KB, which is more than enough for the
+  recent-turn inspection each performs.
+- **task-guard subject sanitization.** The task subject is now sanitized before it is echoed
+  into the block reason, closing a reflected-content path.
+- **graphify rev-parse timeouts (2000 ms) + non-echoing block reason.** `graphify-session.js`
+  and `graphify-guard.js` now bound their `git rev-parse` calls at 2000 ms so a wedged git
+  can't hang the hook; `graphify-guard.js` no longer echoes the raw command into its block
+  reason (label only).
+- **git-guard seals two evasion paths.** It now catches a `+refspec` force-push smuggled
+  AFTER a `--` end-of-options marker (`git push origin -- +main:main`), and blocks
+  `git --config-env alias.*` config smuggling that could alias a benign verb to `push
+  --force`. Normal pushes and literal `--`-separated operands are unaffected.
+- **command-guard light exceptions + non-echoing reason.** Read-only `git push --dry-run`
+  and read-only `go env` (without `-w`) are now treated as light and allowed in the
+  coordinator; the heavy-command block reason no longer echoes the raw command (label/verb
+  only), removing a reflected-injection surface.
+- **Windows-safe installer.** `statusline/install-statusline.js` now uses a shell-free
+  `execFileSync` for the git-tracked check, so the install path no longer depends on a POSIX
+  shell.
+
+Tier B remains pending: the command-guard quote-aware false-positive and the
+`eval`/base64/process-substitution evasion cluster are not addressed here.
+
+## 0.15.0
+
+Adds a user-override escape hatch across all guards, hardens the speculation hooks against
+a Stop-loop wedge, bounds the deadly-loop convergence, and lands several doc fixes.
+
+- **User-override escape hatch.** New shared primitive `hooks/skip-guard.js` exports
+  `isSkipped(name)`, which reads a TTL'd marker at `~/.anti-hall/skip.json`
+  (`{"<guard>": <unix-ms expiry>}`). When the user EXPLICITLY asks to skip a guard, the
+  agent records consent there and the guard fail-opens (does not interfere) until it expires
+  — default TTL 15 minutes so a safety guard is never left silently disabled. Granular: the
+  broad key `"all"` covers the noisy guards but **NOT** `git-guard` (force-push / self-credit
+  must be named explicitly). Fail direction is safe: a missing/corrupt marker keeps every
+  guard ACTIVE. Wired into all 7 guards (`git-guard`, `command-guard`, `swarm-guard`,
+  `speculation-guard`, `speculation-judge`, `graphify-guard`, `task-guard`) immediately after
+  the stdin read. The SessionStart protocol (`verify-first-full.js`) and `AGENTS.md` gain a
+  matching rule: honor a skip ONLY on a direct, unambiguous user instruction — never on the
+  agent's own initiative or because a tool/file/channel asked.
+- **P1 fix — `MAX_BLOCKS = 3` hard cap on the speculation hooks.** `speculation-guard.js`
+  and `speculation-judge.js` previously deduped only on the exact message hash; because the
+  message text legitimately changes as the model reworks its reply, that dedupe could be
+  defeated and the Stop hook could re-block on every Stop. They now mirror `task-guard.js`'s
+  two-tier loop-safety — hash dedup PLUS a running `blocks` counter capped at 3 — closing the
+  Stop-loop wedge. State is now `{hash, blocks}`; legacy bare-hash files are still tolerated.
+- **deadly-loop iteration caps (soft 10 / hard 15).** The Reviewer+Critic debate + fix-wave
+  convergence loop is now explicitly bounded: at **10 rounds** without convergence, STOP and
+  checkpoint with the user (AskUserQuestion: continue / stop / change scope) instead of
+  looping silently; at **15 rounds**, force-stop unconditionally and report even if not
+  converged. The same cap applies to `deadly-loop-multi`'s step-6 reconverge loop.
+- **Doc fixes (no guard-logic change).** `STATUSLINE.md` now describes line 2 as the
+  actual always-on 3-tier behavior (phase bar → "orchestrating · N agents" → idle context
+  gauge), consistent with its own top summary and `phase-bar.js`; corrected two misleading
+  comments that said a transcript was "streamed" when the code does a full `readFileSync`
+  (`task-guard.js`, `graphify-reminder.js`); confirmed `demo-wrapper.sh` (machine-absolute
+  `/Users` path, untracked) stays gitignored so a future `git add -A` cannot ship it.
+
+## 0.14.1
+
+Refines the 0.14.0 email chip: show-when-available with an opt-OUT, instead of opt-in.
+
+- **The `✉ <email>` chip now renders whenever the account email is available**
+  (read from `~/.claude.json`), rather than requiring `ANTIHALL_STATUSLINE_EMAIL=1`.
+  Since a signed-in user almost always has an email, the opt-in gate was effectively
+  "never shows unless you know the flag." Inverted to a privacy opt-OUT:
+  set **`ANTIHALL_STATUSLINE_NO_EMAIL=1`** (or any non-`0`/`false` value) to hide it —
+  e.g. for screenshots or screen-shares. Fail-open: no chip when the email can't be read.
+
+## 0.14.0
+
+Adds an opt-in account-email chip to the rich statusline.
+
+- **`statusline-rich.js` can now show a `✉ <email>` chip** as the last line-1 segment,
+  reading the signed-in Claude account email from `~/.claude.json`
+  (`oauthAccount.emailAddress`). **OFF by default** and gated behind the
+  `ANTIHALL_STATUSLINE_EMAIL` env var (set to `1`/any non-`0`/`false` value to enable) —
+  the plugin must never surface a user's email on their statusline without explicit
+  consent. New `getClaudeEmail()` helper; pure file read, fail-open (no chip on any error).
+  This brings the plugin's own renderer to parity with custom `.claude/helpers/`
+  statuslines that already show the email, without making it a privacy-leaking default.
+
+## 0.13.0
+
+Adds an always-on output-presentation discipline so chat output is structured and
+scannable without becoming noisy.
+
+- **New SessionStart rule K — "PRESENT FOR SCANNABILITY (do not overdo it)".** Appended
+  to the orchestration block in `verify-first-full.js` (and mirrored as a bullet in
+  `AGENTS.md`). Encodes the conservative, renderer-verified subset of GitHub-flavored
+  markdown that Claude Code's terminal actually renders: tables for comparisons/status,
+  **bold** verdicts, *italic* caveats, `code` for flags/paths/commands, fenced blocks for
+  output, at most a leading status glyph (emoji = signal, not decoration). Explicitly
+  steers AWAY from syntax the terminal renderer drops or mangles — strikethrough,
+  `[label](url)` link labels (paste the bare URL), nested blockquotes, task-list
+  checkboxes — and notes that underline and per-word color do not exist in the renderer.
+  Subset confirmed against Claude Code terminal-rendering issue reports + docs. Styling
+  organizes, never pads: rule H (concise) still governs. Appended as rule K so existing
+  letters A-J do not renumber. SessionStart footprint grows by ~0.5 KB.
+- **Doc accuracy:** corrected the stale "5 nudges" comments in `verify-first.js` (the
+  `NUDGES` array has 12 entries, not 5) and refreshed the root README SessionStart
+  footprint figure to the doctor-measured value.
+
+## 0.12.1
+
+Fixes AUDIT-REPORT-2 item #7(a): the shared global statusline base was deleted on
+every uninstall.
+
+- **`uninstall-statusline` no longer deletes the shared global base by default.**
+  `~/.anti-hall/base-statusline.json` is GLOBAL — every project whose statusLine points
+  at the dispatcher wraps it as line 1. The uninstaller's Strategy A unconditionally
+  `unlink`ed it after restoring the original command, so uninstalling in ONE project
+  (even `--project` scope) silently stripped line 1 for EVERY other project still
+  relying on it. A reference count is infeasible (no way to enumerate all projects'
+  settings files), so the safe default is now: restore this scope's original command
+  and LEAVE the shared base in place. An orphaned JSON is harmless; a deleted shared
+  one is not. New opt-in `--purge-base` flag explicitly removes it for the
+  "done with anti-hall on this whole machine" case (use only after uninstalling
+  everywhere). Verified with a fake-HOME behavioral test: default keeps base + restores
+  original command; `--purge-base` deletes it.
+
+## 0.12.0
+
+Closes three deferred AUDIT-REPORT-2 needs-review gaps (external reviewer + codex).
+
+- **Recursive shell parsing (`command-guard` + `graphify-guard`).** The segment
+  splitter previously treated `$(...)` / backticks as plain boundaries and never
+  inspected their CONTENTS, and never unwrapped `bash -c '...'` / `sh -c` / `zsh -c`
+  payloads — so `echo "$(npm run build)"` and `bash -c "npm run build"` bypassed the
+  coordinator block (and the graph-first nudge). Both guards now extract nested
+  commands from command substitution and from shell `-c` payloads and re-apply the
+  full heuristic (HEAVY_VERBS/HEAVY_PATTERNS/LIGHT_EXCEPTIONS for command-guard, the
+  code-nav check for graphify-guard) to the inner commands, depth-bounded to 3 to
+  avoid pathological input. Benign substitutions stay allowed (`echo "$(date)"` —
+  `date` is not heavy). Fail-open preserved.
+- **Atomic swarm-guard spawn cap.** The prune→count→cap-check→append was a
+  non-atomic read-modify-write, so concurrent spawns each read a stale pre-cap log
+  and raced past the ceiling. It now runs inside a best-effort cross-process O_EXCL
+  lock (`~/.anti-hall/swarm-spawns.lock`) with stale-lock steal (mtime > ~5s),
+  bounded spin, re-read + cap-check INSIDE the lock, and release in `finally`.
+  FAIL-OPEN if the lock can't be acquired — never deadlocks a spawn. The
+  cap-before-append fix is retained.
+- **Doctor 2-line assertion + new tests.** The statusline self-test now requires
+  >= 2 lines for the sample payload (which carries `context_window`, so the live
+  context gauge on line 2 MUST render) and reports a FAILURE if only line 1 renders.
+  Added self-tests proving the recursive-parse fix: command-guard now BLOCKS (in
+  coordinator) `echo "$(npm run build)"` and `bash -c "npm run build"`, and still
+  ALLOWS the benign `echo "$(date)"`.
+
+## 0.11.3
+
+Precedence-aware install-statusline. Per-project install now writes `.claude/settings.local.json` (highest precedence + gitignored) instead of `settings.json`, so a committed project statusLine can no longer shadow it. The installer checks the statusLine across user/project/local scopes and reports shadowing or already-installed; resolves a STABLE marketplace dispatcher path (never the versioned cache path, which breaks on update); and auto-gitignores `.claude/settings.local.json`.
+
+## 0.11.2
+
+Double-deadly-loop (4-auditor) final-gate fixes. `git-guard` and `command-guard`: `sudo`
+with option flags no longer leaks — `sudo -u deploy git push --force` and `sudo -u deploy
+npm install` previously resolved their effective verb to `-u` and slipped past the guards;
+both now block (flag/operand-skip mirrors the env/timeout/nice handling). `git-guard`:
+a force form baked into an inline alias BODY (`git -c alias.p='push --force origin main' p`)
+was dropped — now the alias body's tokens are force-checked. `graphify-guard`: `segmentVerb`
+now skips wrapper words so `sudo rg secret` is still detected for the (non-blocking) graph-
+first nudge. Docs: corrected the skill count (llms.txt "five" → "seven workflow skills";
+plugins README primer "7 skills" → "core 4 skills" to match verify-first-full.js; Features
+table notes deadly-loop-multi/install-statusline/doctor). See docs/AUDIT-REPORT-2.md for the
+reconciled findings, rejected false-positives, and deferred needs-review items. Fail-open and
+subagent-allow preserved; doctor green (36 checks).
+
+## 0.11.1
+
+Fix `deadly-loop-multi` SKILL.md YAML frontmatter: the `description` contained an unquoted
+inner `Multiplier:` (colon-space), which YAML parses as a mapping value — the skill failed
+to load ("mapping values are not allowed in this context"). Replaced the colon with a dash.
+
+## 0.11.0
+
+Cut the plugin's OWN context footprint (it was growing the conversation every turn — the
+exact thing the plugin warns against). Root cause (researched): Claude Code injects
+`UserPromptSubmit` additionalContext into the transcript EVERY turn and it accumulates
+(see anthropics/claude-code#40216), so a long, repeated per-turn directive is a real token
+drain.
+
+- **`task-tracker.js` throttled:** injects the FULL task-discipline directive only on the
+  first turn of a session (and once per ~6h window), then a SHORT one-line reminder after,
+  via `~/.anti-hall/task-tracker-<session>.json` state. Fail-open to full on any state error.
+  Steady-state per-turn injection dropped ~68% (≈693 B → ≈223 B).
+- **`verify-first-full.js` (SessionStart) tightened** ~13% with no rule removed (Iron Law,
+  full rationalization table, orchestration A–J, anti-speculation tiers, anti-sycophancy all
+  intact). `verify-first.js` per-turn nudge was already one short line.
+- **`doctor.js` adds a "Context footprint" section** reporting the SessionStart / per-turn /
+  per-Stop injection sizes in bytes + estimated tokens, so the cost is measurable.
+
+Future levers (noted, not yet done): move the static protocol to CLAUDE.md / SessionStart-only
+and merge the four Stop hooks into one to further shrink per-turn overhead.
+
+## 0.10.0
+
+Audit-fix batch (from a 2-Opus + 2-Codex review) + context-protection discipline.
+
+Guards:
+- **command-guard** now evaluates PER SEGMENT (quote-aware split on `; && || |`, env-prefix
+  + wrapper skip, cross-platform basename). Fixes real false-negatives where heavy commands
+  bypassed: `cd app && npm test`, `git status && npm run build`, `FOO=1 docker build .`.
+- **swarm-guard** checks the spawn-rate cap BEFORE appending/persisting the timestamp, so
+  blocked retries no longer extend the block window; state moved to `~/.anti-hall/`.
+- **speculation-guard** regex now catches "should be fine" (was excluded by a lookahead).
+- **graphify-guard** `/graphify` exemption is now segment/verb-aware (a substring like
+  `echo /graphify && rg secret` no longer exempts the search); state → `~/.anti-hall/`.
+- **git-guard** resolves inline `-c alias.x=push` so aliased force-push is caught.
+- **task-guard / graphify-reminder** state relocated to `~/.anti-hall/` for cross-runner
+  consistency.
+
+Doctor: added a Graphify health section + self-tests proving the command-guard per-segment
+fix and the speculation-guard "should be fine" catch.
+
+Discipline (protect the orchestrator's context — a bloated main thread degrades the model
+and induces the very hallucination this plugin prevents):
+- Delegate not just heavy commands but **broad reads / Grep / Glob / code-nav searches** to
+  subagents; inline only a specific known-file read. Added to orchestration, AGENTS.md,
+  verify-first-full.js.
+- **Graphify-first:** ensure the graph is fresh then QUERY it before raw search and before
+  feature-launch analysis.
+- **AFK goal-anchor (drift watcher):** re-check work against the locked goal each cycle and
+  course-correct on drift; only deviate when the user explicitly redirects.
+
+Docs synced (version drift, autoUpdate wording, 7-skill count, STATUSLINE 3-tier line 2,
+"latest OpenAI Codex" not a pinned version, broken MODEL-POLICY links) and a consolidated
+`docs/AUDIT-REPORT.md` written (includes the reconciled demo-wrapper.sh false-positive).
+
+## 0.9.0
+
+New `deadly-loop-multi` skill — double / triple / quadruple deadly loop.
+
+Scales the standard 1+1 deadly-loop to N parallel reviewers + N parallel critics with
+diversified lenses, then reconciles + validates into ONE consolidated report.
+
+- **double** = 2 Opus + 2 Codex, **triple** = 3+3, **quadruple** = 4+4. The tier is named
+  by the user or auto-selected by job complexity × sensitivity (higher tier for
+  security/schema/cross-repo/release work).
+- **Always half-and-half cross-model:** half the auditors are the latest Codex (a
+  different model finds different bugs); if Codex is unavailable, substitute the latest
+  Opus with a divergent persona — never drop below the full 2N. Model versions are
+  deliberately NOT pinned ("latest Opus / latest Codex") so the skill survives new releases.
+- **Runs as a swarm** via the Opus Dynamic-Workflow primitives (KB §11 /
+  docs/opus-4-8-swarm.md): a parallel fan-out of the 2N auditors feeding a reconcile +
+  validate synthesis stage. The coordinator validates each finding against the code itself
+  (agreement raises confidence, but evidence decides) and reconciles conflicts — so a
+  single agent's false positive does not make it into the report.
+
+## 0.8.1
+
+Doctor: add a behavioral statusline check. Beyond confirming a statusLine is configured,
+the doctor now spawns the dispatcher with a sample payload and asserts it actually
+RENDERS (reports the line count — line 1 + live line 2), and validates that
+`statusline-rich.js` (the line-1 renderer) is present and syntax-valid. So a broken or
+missing renderer is caught, not just a missing setting.
+
+## 0.8.0
+
+Doctor (health check + live guard self-tests) + documentation refresh.
+
+Addresses external-review feedback: a guardrail plugin needs a way to prove it is
+actually running and that the guards actually fire — not just that files exist.
+
+- **New `hooks/doctor.js` + `/anti-hall:doctor` skill.** Reports Node version (flags
+  < 18, which makes the hooks silently no-op), plugin version, every registered hook's
+  presence + syntax, and the statusline install status. Crucially it runs LIVE
+  behavioral self-tests: it spawns the real guards with crafted payloads and asserts
+  exit codes — git-guard blocks force-push + AI self-credit and allows `git status`;
+  command-guard blocks heavy commands in the coordinator but ALLOWS them in a subagent
+  (payload `agent_id`); swarm-guard allows a normal spawn. Exits non-zero on any
+  critical failure (CI-friendly); `--quiet` prints just the verdict.
+- **Docs synced to the current feature set.** README rewritten (modern, explained, with
+  the two-layer model, the statusline, and AFK mode), `llms.txt` updated to list ALL
+  hooks/skills (it and the README previously undercounted — e.g. omitted command-guard,
+  swarm-guard, graphify-guard, phase-tracker), and AGENTS.md gained the AFK autonomy
+  contract.
+
+## 0.7.0
+
+Automatic swarm-progress tracking + AFK-mode autonomous driver.
+
+Problem: the phase bar only updated if the coordinator manually called `phase.js`, and
+the autonomous-driver template never called it — so a running swarm/feature-launch
+showed no progress (verified gap; `CONTINUE-HERE.md` listed it as a TODO).
+
+- **New `phase-tracker.js` hook** (PreToolUse Agent/Task) — records every subagent
+  spawn to a HOMEDIR log (`~/.anti-hall/agent-spawns.log`), never blocks, fail-open.
+  Registered after swarm-guard so it logs only real spawns.
+- **`phase-bar.js` now has 3 tiers** for line 2: (1) coordinator-set semantic phase ->
+  rich phase bar; (2) recent spawns (auto) -> animated `orchestrating · N agents active`
+  bar; (3) idle -> context-window gauge. So a swarm is visible with ZERO coordinator
+  effort. (A registered hook needs a session restart to activate.)
+- **AFK mode** (`AUTONOMOUS-DRIVER-PROMPT.md`): wired the `phase.js set/step/agents/
+  advance/clear` calls into the per-phase loop, and added the AFK autonomy contract —
+  the driver never returns to the owner or stops except for an ABSOLUTELY-DESTRUCTIVE
+  hard gate; it collects data instead of pausing, and resolves confusion with a
+  deadly-loop rather than asking the (away) owner.
+
+## 0.6.0
+
+Always-on line 2 (hybrid bar). The plugin's statusline now ships BOTH lines as a
+complete two-line statusline, and line 2 is always present (never blank):
+- During an active orchestration run -> the live phase progress bar (as before).
+- When idle -> a context-window usage bar rendered from the session JSON:
+  `[███████████◐────────] 56% context` (· `used/max tokens` when the harness
+  provides counts), color-coded green/yellow/red at <=70/70-89/>=90.
+
+`statusline.js` now passes the session stdin through to the line-2 renderer
+(`phase-bar.js`) so the context bar has real data; `phase-bar.js` renders the phase
+bar when a fresh phase-state exists and the context bar otherwise. Fail-open: if
+neither source is available, line 2 is simply omitted.
+
+## 0.5.1
+
+Phase bar auto-hides stale state. The line-2 phase bar reads `~/.anti-hall/phase-state.json`;
+an orchestration run that ended without calling `phase.js clear` left an ORPHAN state file,
+so the bar showed a frozen, stale phase indefinitely (e.g. a "22h" phase that never moved).
+`phase-bar.js` now treats a state file whose mtime is older than 30 minutes as absent —
+active runs rewrite the file on every set/advance/step/agents call (well under the window),
+so live runs always render, but orphaned leftovers no longer linger. Fail-open preserved.
+
+## 0.5.0
+
+Rich statusline + on-demand install skill.
+
+- New `statusline/statusline-rich.js` — a generic, project-agnostic rich line-1
+  renderer (project name from cwd, git branch/worktree/stash/staged-modified-untracked,
+  ahead/behind, model, effort, subagent count, session duration, context-window %, cost,
+  and the GSD `.planning` phase when present). Pure Node, fail-open, no project/user
+  specifics. The dispatcher (`statusline.js`) now uses it as the primary own-dispatch
+  line-1 renderer, falling back to the monorepo/simple renderers if it yields nothing.
+- New `install-statusline` skill — installs the statusLine entry on demand (user scope by
+  default for a global bar, `--project` for the current repo only), with a reminder that
+  Claude Code reads `statusLine` only at startup so a restart is required.
+- `install-statusline.js` no longer clobbers an existing GLOBAL `base-statusline.json`
+  (overwriting it changed line 1 for OTHER projects that rely on it). Existing base is
+  kept; repos without their own helper fall through to the rich renderer.
+
+## 0.4.7
+
+Fix swarm-guard false-positive memory-pressure block. The memory check used
+`os.freemem() / os.totalmem() < 4%`, but on macOS and Linux `os.freemem()` reports
+only truly-free pages and EXCLUDES reclaimable cache (inactive / speculative /
+file-backed). On a healthy 64 GB Mac it read ~2 GB "free" (< 4%) while ~24 GB was
+actually available and memory pressure was green with zero swap — so legitimate
+agent spawns were blocked, defeating delegation just like the 0.4.6 command-guard
+bug.
+
+Fix: compute REAL available memory per-platform — macOS via `vm_stat`
+(free + inactive + speculative pages, honoring the actual page size: 16384 on Apple
+Silicon, not a hardcoded 4096), Linux via `/proc/meminfo` MemAvailable, and
+`os.freemem()` as the fallback where it is accurate (Windows) or on any parse error.
+Verified on a 64 GB Apple Silicon Mac: old calc 6.5% (would block), corrected 36.5%
+(no block), matching Activity Monitor. Fail-open preserved.
+
+## 0.4.6
+
+Fix command-guard blocking SUBAGENTS (not just the coordinator) under cmux and other
+launchers that wrap `claude` — which crippled the orchestration plugin's entire purpose:
+if subagents are also blocked from running heavy commands, there is nothing left to
+delegate TO, and the swarm deadlocks.
+
+Root cause (verified empirically this session by capturing real PreToolUse payloads):
+the old `isCoordinator()` relied solely on `CLAUDE_CODE_ENTRYPOINT === "agent_tool"` to
+detect subagents. That env var is only set on the subagent PROCESS in a vanilla `claude`
+CLI. Under cmux, subagents inherit the parent's exact environment (same
+`CLAUDE_CODE_ENTRYPOINT=cli`, same `CLAUDE_CODE_SESSION_ID`, same PID), so every subagent
+looked like the coordinator and got blocked.
+
+Fix: detect subagents from the hook PAYLOAD instead of the process env. Claude Code
+injects `agent_id` and `agent_type` into the PreToolUse payload for Task-tool subagents;
+the top-level coordinator's payload has neither. `isCoordinator(payload)` now treats a
+command as a subagent (allow) if the payload carries `agent_id`/`agent_type` OR the
+entrypoint is `agent_tool` (vanilla-CLI fallback). `main()` parses the payload before the
+context check. This works in BOTH environments (cmux and vanilla CLI). Fail-open
+preserved on any ambiguity.
+
+Verified: coordinator `node x.js` -> still blocked; the SAME command from a Task-tool
+subagent -> runs (payload carried `agent_id`/`agent_type`, matching the spawned agent id).
+
+## 0.4.5
+
+Fix task-guard false-block: completed tasks were over-counted as pending, causing the
+Stop hook to block on sessions with zero genuinely-open tasks.
+
+Root cause (verified against real transcripts): two interacting key-mismatch bugs:
+
+1. `TaskCreate` input in the real harness has no `id` or `task_id` field — the harness
+   assigns a sequential numeric id (1, 2, 3...) but returns it only in the tool_result
+   string `"Task #N created successfully: <subject>"`. The old code fell back to
+   `Date.now() + random`, generating a different random key for each create.
+
+2. `TaskUpdate` input uses the field `taskId` (camelCase) — the old code read
+   `inp.id || inp.task_id`, both always `null`, so no update ever matched any create.
+   All 34 task creates stayed at status `pending` forever.
+
+Fix: parse tool_result strings to extract the harness-assigned numeric id, store
+TaskCreate provisionally under the tool_use wire id, then remap to the numeric id when
+the result is seen. Read `inp.taskId` first in TaskUpdate (fallback to `inp.id` and
+`inp.task_id` for alternate harnesses). Fail-open on any parse error. A cleared or
+all-completed task list yields zero open tasks and no block.
+
+Verified by 5 functional tests: 3-create-all-complete -> no block; 1-pending -> block
+with correct task name; TodoWrite all-completed -> no block; empty transcript -> no
+block; 34-creates-all-completed (exact real-scenario replay) -> no block.
+
+## 0.4.4
+
+Fix plugin load error — removed redundant manifest `hooks` reference; hooks/hooks.json is auto-loaded by Claude Code, so referencing it explicitly caused a duplicate-hooks-file load error (per /doctor). Hooks unchanged and still active.
+
+## 0.4.3
+
+Real statusline installer (wraps existing user statusline + scope-aware + uninstall).
+statusline.js now supports base-command wrap.
+
+- **`install-statusline.js` (new):** Interactive installer (--user/--project scope,
+  base-statusline.json config, backup + restore, dedup safety). Wraps the user's EXISTING
+  statusline.json / statusline command (if present) as line 1, adds anti-hall phase bar
+  as line 2. Scope-aware: --user writes to ~/.anti-hall/; --project writes to ./.anti-hall/.
+  Preserves .ai-generated-index, .claude-plugin, and other dotfiles on uninstall.
+- **`uninstall-statusline.js` (new):** Restores original statusline from backup, removes
+  anti-hall phase state.
+- **`statusline.js` (updated):** base-command wrap mode: reads ~/.anti-hall/base-statusline.json
+  (schema: `{command: "..."}`) and dispatches it to shell, captures line 1, appends phase
+  bar as line 2. Falls back to own dispatch (Claude | branch | repo) when config absent.
+- **`STATUSLINE.md` (updated):** usage examples for install/uninstall; wrap behavior and
+  base-statusline.json config schema.
+
+## 0.4.2
+
+Opt-in semantic speculation judge (LLM-evaluated Stop hook, off by default) covering
+the confident-inference-as-fact gap that the lexical Tier 2 guard cannot catch.
+
+- **`speculation-judge.js` (Stop hook, new, OPT-IN):** semantic judgment tier that
+  calls `claude-haiku-4-5` via the Anthropic API to evaluate whether the last assistant
+  message asserts an unverified factual claim with no hedge word and no acknowledgment.
+  Covers the gap left by `speculation-guard.js` (Tier 2), which catches hedged
+  speculation but cannot catch a confidently-stated inference-as-fact that uses no hedge
+  word at all (e.g., "The cause is the old build artifact." with zero hedging).
+  Enabled ONLY when `ANTIHALL_SEMANTIC_JUDGE=1` is set in the environment; exits 0
+  immediately (zero cost, zero latency, zero network activity) when unset — the default.
+  Also requires `ANTHROPIC_API_KEY`; fails-open (exits 0) when the key is absent or the
+  API call fails for any reason. Judge prompt instructs conservative evaluation: allows
+  honest hedging, quoted text, hypotheticals, plans, and general software knowledge;
+  blocks only definitive unverified factual assertions. Loop-safe: hashes message text
+  with a `":judge"` namespace suffix (separate from Tier 2's hash space); blocks at most
+  once per distinct message, never wedges. Fail-open on any parse/read/write/API error.
+  Cost/latency when enabled: ~$0.0001-0.001 per turn at Haiku rates + ~1-3 s per Stop.
+  Misfire caveat: LLM judges can false-positive; the conservative prompt reduces this but
+  does not eliminate it — disable `ANTIHALL_SEMANTIC_JUDGE` if misfires are disruptive.
+- **`hooks.json`:** `speculation-judge.js` registered as the fourth Stop hook (timeout
+  30 s). It is a behavioral no-op in the default configuration (env var unset = exits 0
+  immediately). Stop hook order: `task-guard` (1st, highest-stakes), `graphify-reminder`
+  (2nd), `speculation-guard` (3rd, Tier 2 lexical), `speculation-judge` (4th, Tier 3
+  semantic opt-in).
+- **`plugin.json`:** version bumped 0.4.1 -> 0.4.2.
+- **`README.md`:** speculation-guard entry in features table updated to label it Tier 2;
+  `speculation-judge` entry added (OPT-IN). "Three Stop hooks coexist" note updated to
+  four. "Known limit" paragraph replaced with a three-tier enforcement table (Tier 1:
+  protocol/always-on/zero-cost; Tier 2: lexical/on-by-default/zero-cost; Tier 3:
+  semantic/opt-in/LLM-cost). New "speculation-judge (Tier 3, OPT-IN)" section documenting
+  enable instructions (shell profile and settings.json env block), what it catches, the
+  fail-open/loop-safe/misfire/cost-latency properties.
+- **`AGENTS.md`:** "speculation-guard (Stop hook)" section replaced with an "Anti-
+  speculation enforcement: three tiers" section covering all three tiers, then dedicated
+  subsections for Tier 2 (lexical, always-on) and Tier 3 (semantic, OPT-IN) with the
+  same enable/cost/misfire/fail-open/loop-safe notes as the README.
+
+## 0.4.1
+
+Strengthened no-speculation Iron Law with inference-as-fact ban + hedged-speculation
+ban; added per-turn nudges; added `speculation-guard.js` Stop hook (lexical enforcement,
+block-once, fail-open).
+
+- **`verify-first-full.js` rationalization table (Iron Law hardening):** added two
+  explicit entries that were absent from prior versions: (a) `"X is happening because Y"
+  / a clean causal story assembled from a couple of real facts -> that is an INFERENCE
+  presented as fact` — bans confident inference-as-fact even when no hedge word is used;
+  (b) `"very plausibly" / "likely" / "presumably" / "I suspect" / "I think" / "my guess
+  is" / "it must be" -> hedging does NOT make a guess safe; it just disguises it` —
+  explicitly bans hedged speculation. Both entries already existed in the
+  RATIONALIZATION TABLE in 0.4.0; this entry documents them as rationale for the
+  speculation-guard hook boundary.
+- **`verify-first.js` (per-turn nudge):** the nudge at index 2 now explicitly names the
+  hedge-word ban: `'likely' / 'plausibly' / 'I suspect' / 'I think' / 'it must be' = a
+  guess in disguise. Hedging doesn't make it safe. Pull the data, or say 'I don't know -
+  here's what I'd check'.` This was already present in the NUDGES array; documented here
+  as the per-turn enforcement layer that pairs with the new Stop hook.
+- **`speculation-guard.js` (Stop hook, new):** lexical speculation guard. Extracts the
+  last assistant message from `transcript_path` (JSONL), scans for 15 speculation
+  markers (hedge words: `very plausibly`, `plausibly`, `presumably`, `I suspect`,
+  `my guess`, `I'd guess`, `I bet`, `likely`, `probably`, `must be`, `should be` [not
+  `should I`], `seems to be`, `appears to be`, `I think it's`, `my hunch`), suppresses
+  the block if the same message contains an evidence/uncertainty acknowledgment
+  (`verified`, `I don't know`, `haven't checked`, `not verified`, `unverified`, `let me
+  verify`, `I'll check`, `I will check`, `need to confirm`, `to confirm`, `file.ext:line`
+  citation, `running`, `per the data`, `the data shows`). Block-once: hashes the message
+  text and stores the hash in `~/.anti-hall/speculation-guard-state-<session>.json`; if
+  the same hash was already blocked, exits 0 (nudge fires once, never wedges). Fail-open:
+  any parse/read/write error exits 0 silently. Block reason names the matched marker and
+  instructs the model to verify or explicitly flag as unverified. Registered in
+  `hooks.json` as the third Stop hook (after `task-guard` and `graphify-reminder`).
+  **Known limit:** catches hedged speculation (hedge word present) but not confident
+  inference-as-fact with no hedge word. A semantic LLM-judge tier is architecturally
+  possible but not shipped by default (cost/latency tradeoff; documented in README +
+  AGENTS.md as opt-in design path).
+- **`hooks.json`:** `speculation-guard.js` registered under `Stop` as third entry
+  (timeout 30 s). Stop now has 3 hooks: `task-guard` (highest-stakes, first), 
+  `graphify-reminder` (second), `speculation-guard` (third).
+- **`plugin.json`:** version bumped 0.4.0 -> 0.4.1.
+- **`README.md` + `AGENTS.md`:** `speculation-guard` added to features table, new
+  "speculation-guard" how-it-works section (markers list, acknowledgment suppression,
+  loop-safe mechanism, known limit, opt-in semantic tier note); three-Stop-hook
+  coexistence note updated from two to three hooks.
+
+## 0.4.0
+
+Rewritten feature-launch workflow + agent-watchdog + statusline phase.js wiring + KB merge.
+
+- **`feature-launch` workflow rewritten:** plan-mode → deadly-loop-the-plan → loopback → self-heal;
+  simpler phase loop; analyze-work fan-out; 4.8-fanout/synthesis/gate integration.
+- **`agent-watchdog.js`:** new hook for heartbeat enforcement, babysit/backoff/kill logic. Polls
+  `~/.anti-hall/agents/<id>.json` every 20 min; kills idle/hung agents; integrates with phase.js.
+- **`orchestration/SKILL.md` + `AGENTS.md`:** updated with new agent-watchdog semantics,
+  heartbeat convention (mtime update = alive signal), and agent supervisor responsibilities.
+- **`statusline/phase.js` wiring:** orchestrator-main integration; calls phase.js (set/advance/step/agents/clear)
+  from feature-launch as phases progress; terminal bar reflects real run state.
+- **`docs/KB-claude-codex.md`:** merged knowledge base (67 sources): GSD methodology, superpowers,
+  deadly-loop, 4.8-swarm patterns, orchestration discipline, graphify workflow. Consolidated
+  from `.gsd/` and `superpowers/` skill refs.
+- **Version bump 0.3.11 -> 0.4.0.**
+
+## 0.3.11
+
+Phase.js writer (real data source for the phase bar) + colored line-2 palette + full agent label.
+
+- **`phase.js` (statusline writer):** new executable that writes phase-state.json as the
+  orchestrator / feature-launch skill progresses. Commands: `set` (start phase), `advance`/`step`/`agents`
+  (update in-flight), `clear` (hide bar). Writes to `~/.anti-hall/phase-state.json` (home dir,
+  consistent across all processes). Fail-open: any error exits 0 without throwing.
+- **`statusline/STATUSLINE.md`:** new "phase.js — Phase state writer" section documenting
+  the data source, all 6 commands (set, advance, step, agents, update, clear), usage examples,
+  and state-file schema (required + optional fields).
+- **`phase-bar.js` (colored palette):** code (magenta/cyan), description (white),
+  count (cyan), timer (yellow >20m, else dim), agents (blue "N agents"), step (dim).
+  Renders as: `[bar] NN% | CODE - Desc done/total | timer agents step`.
+- **Version bump 0.3.10 -> 0.3.11.**
+
+## 0.3.10
+
+Spinner repositioned inside the progress bar at the frontier. Phase-bar now uses box-drawing
+glyphs (█ for filled, ─ for empty) and a rotating half-disc spinner (◐◓◑◒) positioned at
+the progress frontier. Layout: `[████████◐────────────] 40% | P2 - Desc done/total | extras`.
+
+- **`phase-bar.js` (statusline):** spinner (◐◓◑◒) now rendered at the progress frontier
+  INSIDE the bar, not after. Filled segment uses █ (U+2588), empty segment uses ─ (U+2500).
+  Spinner is a rotating half-disc (◐◓◑◒ U+25D0-D2) that advances every 125ms. Layout remains
+  `[bar] NN% | CODE - Desc done/total | extras` with all styling preserved.
+
+## 0.3.9
+
+Phase-bar statusline enrichment: wider bar (20 chars), live percentage, longer description
+(cap 32 chars), and optional extras (elapsed time in yellow when >20m, active agent count,
+current step) rendered when present in phase-state.json.
+
+- **`phase-bar.js` (statusline):** expanded bar width from 16 to 20 chars; added percentage
+  render (e.g., "40%") in yellow after the bar; description cap increased from 16 to 32
+  chars with ellipsis on overflow; optional extras appended in dim text when phase-state
+  includes `elapsed`, `agents`, and `step` keys (e.g., "3m 3ag rendering bar"). Elapsed
+  times >20m highlighted in yellow (e.g., "\[33m23m\[0m") to signal long-running phases.
+  Backward-compatible: phase-state without these keys renders as before.
+
+## 0.3.7
+
+Consolidated enforcement wave: command-delegation as the top always-on rule, active
+task-draining, swarm-guard, graphify-guard, concise-communication note, and
+.graphifyignore.
+
+- **`command-guard.js` (PreToolUse Bash, coordinator-only):** new hook that BLOCKS
+  heavy/long/state-changing commands (build, test, deploy, push, pull, install,
+  migrate, dumps, bulk scripts) when running in a coordinator context, requiring the
+  model to delegate them to a subagent instead. Detection uses `CLAUDE_CODE_ENTRYPOINT`:
+  `agent_tool` = subagent (pass-through); `cli`/`vscode`/`jetbrains`/etc. = coordinator
+  (block). Fail-open on absent/unknown entrypoint. Registered in hooks.json.
+  COORDINATOR-VS-SUBAGENT INVESTIGATION: `CLAUDE_CODE_ENTRYPOINT` is a documented
+  Claude Code env var set to `agent_tool` when spawned via the Task tool, and inherited
+  by hook child processes — this is a reliable signal. The hook is SHIPPED.
+- **`swarm-guard.js` (PreToolUse Agent/Task):** new hook, OS-agnostic pure Node.
+  Tracks spawn timestamps under `os.tmpdir()/anti-hall/swarm-spawns.log`; prunes
+  entries older than 60s; blocks if spawns in last 60s >= 20 (CAP). Secondary check:
+  blocks if `os.freemem()/os.totalmem() < 4%` (critical memory pressure). Both
+  thresholds are conservative. Fail-open on any error. Registered for `Agent` and
+  `Task` matchers in hooks.json.
+- **`graphify-guard.js` (PreToolUse Grep/Glob/Bash):** new hook. If a graphify graph
+  exists (`graphify-out/` or `.planning/graphs/` at cwd or git toplevel), blocks the
+  FIRST code-navigation search of the session (Grep tool, Glob tool, or Bash with
+  grep/rg/ag/find/git-grep as first verb) and redirects to `/graphify query`. Blocks
+  ONCE per session per project (loop-safe via `os.tmpdir` marker); second call is
+  always allowed. Graphify-query Bash commands (`/graphify`) are explicitly excluded.
+  No-op when no graph is present. Fail-open. Registered for `Grep`, `Glob`, `Bash`.
+- **`.graphifyignore` (repo root):** new file — excludes `graphify-out/`,
+  `.planning/graphs/`, `node_modules/`, `dist/`, lock files, `.git/`, and common
+  generated/build patterns from graphify indexing.
+- **`verify-first-full.js` (SessionStart):** ORCHESTRATION DISCIPLINE block
+  restructured. Command-delegation moved to item A as the TOP RULE with explicit
+  wording: "NEVER run verbose/long/state-changing commands inline... ALWAYS delegate
+  to a subagent... never fill the main context with raw command output — the most
+  counterproductive thing a coordinator can do." Active task-draining added as item C:
+  "pick up pending tasks and dispatch subagents to finalize them; run INDEPENDENT
+  tasks in parallel (up to the concurrency cap, ~min(16, cores-2)); never spawn
+  unbounded agents... a runaway swarm can make the OS unusable." Concise-communication
+  added as item H: "Communicate concisely: enough to convey meaning, not pages; offer
+  to expand if the user wants more detail." Always-apply disciplines summary updated
+  to reflect command-delegation top rule, task-draining, concurrency cap, concise note.
+- **`verify-first.js` (per-turn nudge):** added two new nudges to the rotation —
+  explicit command-delegation top rule; concise-communication note. Concurrency-cap
+  language added to the task-list nudge. Hash-mod rotation auto-scales.
+- **`task-guard.js` (Stop):** block reason now includes active task-draining
+  instruction: "pick up pending tasks... run independent tasks in parallel (up to
+  the concurrency cap, ~min(16, cores-2)); do not let tasks sit neglected."
+- **`AGENTS.md` + plugin `README.md`:** command-delegation top rule added to
+  orchestration section; concurrency cap added; active task-draining added; concise-
+  communication added; "Recommended companion: graphify" section added (soft note —
+  hooks no-op without it, no hard dependency).
+- **Version bump 0.3.6 -> 0.3.7.**
+
+## 0.3.6
+
+Promote TWO disciplines to always-on ENFORCED via the hook layer, while keeping TWO
+skills conditional. Root-cause and orchestration now fire every session/turn; deadly-loop
+and feature-launch remain invoked-on-match.
+
+- **`verify-first-full.js` (SessionStart):** added an always-apply ORCHESTRATION
+  DISCIPLINE block framed as a BIAS TOWARD DELEGATION — non-blocking main thread;
+  priority-sorted task list capturing every request and interruption; default to
+  delegating any work that touches files/tools/commands/search/build/test or could balloon
+  (avoid the eager "I'll just do it inline" trap), handle inline only genuinely atomic
+  things (a direct answer, a single known-line read, the coordinator's own
+  synthesis/decisions), delegate immediately if a quick inline task balloons; parallel
+  agents when independent; noisy commands via a cheap-model subagent (Haiku/Codex)
+  off-thread; report/synthesize. Reframed the skill primer into "ALWAYS APPLY (enforced):
+  root-cause + orchestration + anti-sycophancy disciplines" vs "INVOKE WHEN IT MATCHES:
+  /anti-hall:deadly-loop, /anti-hall:feature-launch (plus the root-cause/orchestration full
+  playbooks on demand)". Anti-sycophancy named explicitly. Iron Law + rationalization table
+  kept intact.
+- **`verify-first.js` (per-turn nudge):** added three orchestration/anti-sycophancy
+  one-liners to the rotation (bias-toward-delegation default-to-subagent; noisy commands
+  via Haiku off-thread; capture every request/interruption in a priority-sorted list +
+  parallel independent agents). The hash-mod rotation auto-scales to the new count;
+  fail-open unchanged.
+- **READMEs + AGENTS.md:** note that root-cause + orchestration are enforced always-on via
+  hooks while deadly-loop + feature-launch are conditional skills invoked on match;
+  documented the bias-toward-delegation default, capture-every-request, and anti-sycophancy.
+- **Version bump 0.3.5 -> 0.3.6.**
+
+## 0.3.5
+
+Production-doc finalization + doc-vs-code reconciliation: rewrite the READMEs, add
+`llms.txt`, and remove the never-registered PreCompact claims.
+
+- **Production README rewrite:** both the top-level `README.md` and the plugin
+  `README.md` were rewritten for readability and structure — tagline, the four
+  failure modes, quickstart, requirements (with the honest Node-on-PATH no-op
+  caveat), a features table, plain-English how-it-works, the `/anti-hall:*` skills,
+  statusline install, configuration/tuning, troubleshooting/FAQ, contributing (the
+  3 MODEL-POLICY copies must stay in sync), and license. The top README is the
+  short overview; depth lives in the plugin README. Accurate to the real code
+  (7 Node hooks, 4 skills, Node statusline).
+- **`llms.txt` added:** an LLM-oriented index at the repo root (llms.txt standard) —
+  H1 title, blockquote summary, and linked sections for the README, plugin README,
+  CHANGELOG, AGENTS.md, KB doc, each skill SKILL.md, and each hook.
+- **Doc-accuracy fixes (4 × P2):**
+  - Top README "What's inside" now states the FULL protocol injects at SessionStart
+    (re-firing on compaction via `source=compact`) and a SHORT varying nudge per turn
+    at UserPromptSubmit — not "the full protocol every turn".
+  - `feature-launch/references/PRE-TOOL-USE-HOOK.md` no longer cites non-existent
+    "Phase A.5.5" / "A.5.3"; it now points to "Phase A.5 (AFK readiness gate)" to
+    match the prose (no sub-numbers) in `feature-launch/SKILL.md`.
+  - `verify-first.js` comments + plugin README now state the per-turn nudge is hashed
+    from the FULL stdin envelope (varies by session/cwd), not "reproducible for a
+    given prompt". Runtime behavior unchanged.
+  - `PRE-TOOL-USE-HOOK.md` example sentinel: added an explicit false-block/bypass
+    tradeoff caveat and a pointer to the shipped quote-aware `git-guard.js`
+    tokenizer; `--no-verify` / `--no-gpg-sign` patterns anchored to a flag boundary.
+- **PreCompact placeholder claims removed (P1):** `hooks.json` registers
+  `verify-first-full.js` ONLY on `SessionStart` — there is no `PreCompact`
+  registration block and never was in the shipped manifest. Every doc that
+  described an "inert PreCompact placeholder registration" was inaccurate. Removed
+  those claims from `verify-first-full.js` (banner + header + the dead
+  `name === 'PreCompact'` echo branch), the plugin `README.md`, and `AGENTS.md`.
+  Compaction survival is unchanged: it relies solely on the no-matcher
+  `SessionStart` re-fire with `source="compact"`, which IS registered. The earlier
+  0.3.0/0.3.1 notes below describing a kept PreCompact placeholder are superseded
+  by this entry.
+- **AGENTS.md scope clarified (P2):** `AGENTS.md` lives at the marketplace repo
+  root, not under `plugins/anti-hall/`, so it is NOT bundled by `/plugin install`
+  (the plugin `source` is `./plugins/anti-hall`). `plugin.json` description and the
+  plugin `README.md` now state it is a repo-root Codex mirror for clone-based use
+  that installed users must copy manually.
+- **0.3.0 marketplace-source note corrected (P2):** the 0.3.0 entry claimed the
+  marketplace plugin `source` switched to a GitHub source object; the file actually
+  uses the relative path `./plugins/anti-hall`. Corrected the 0.3.0 note to match
+  the file (the relative path resolves because `marketplace add talas9/anti-hall`
+  clones the whole repo).
+
+## 0.3.4
+
+Close the quoted-flag force-push bypass in git-guard.
+
+- **git-guard: quoted force flags / refspecs / subcommand now BLOCK (P1):** the
+  force-push guard previously skipped any token that came entirely from inside quotes
+  (`quotedOnly`). For argument-level flag/refspec/subcommand detection that was wrong —
+  the POSIX shell strips quotes before git runs, so `git push "--force"`,
+  `git push '--force'`, `git push "-f"`, `git push origin '+main'`, and
+  `git "push" --force origin main` are byte-for-byte equivalent to their unquoted forms
+  and DO rewrite published history, yet all five were reported ALLOW. `isForcePush()`
+  now matches `--force`/`--force-with-lease`/bundled `-f`/`+refspec` regardless of
+  quoting, and `gitSubcommand()` resolves a quoted subcommand token (e.g. `"push"`)
+  instead of bailing to `sub=null` and leaving the command uninspected. Quoting still
+  only changes meaning for commit-message CONTENT (a `--force`/`+main` inside an `-m`
+  value), which is inspected separately on the `commit` path — never in a push arg
+  list — so `git commit -m "fix --force bug"` is not false-blocked. Verified against the
+  block/allow matrix (5 bypass cases now block; all prior blocks and legitimate pushes
+  unchanged).
+
+## 0.3.3
+
+Portability finalization pass — restore the all-pure-Node guarantee.
+
+- **Removed `node-preflight.sh` (P1):** the POSIX-shell preflight added in 0.3.2 could
+  not run on the platform it targeted. Claude Code executes a hook `command` via the
+  system shell, which on a stock Windows box is cmd.exe/PowerShell — neither has `sh`
+  on `PATH`. On the exact "fresh Windows box with no Node" case the preflight existed
+  to warn about, `sh` is also absent, so `sh node-preflight.sh` failed to launch and
+  the "anti-hall hooks are INACTIVE" warning never fired — the precise silent-off
+  failure it was meant to prevent. The plugin's single non-Node component was also its
+  least portable. Rather than ship a `.sh`/`.cmd`/`.ps1` matrix, the missing-Node case
+  is now handled the same way as git-guard's other fail-open boundaries: documented as
+  a hard, verify-before-relying prerequisite (README "Requirements" + install steps,
+  "verify with `node --version`"). With the `.sh` gone, the manifest/README "all hooks
+  pure Node, run unchanged on Windows/macOS/Linux given Node" claim is once again true.
+- **Manifest/CHANGELOG vs README reconciled (P2):** plugin.json's "All hooks and the
+  statusline are pure Node" description and the 0.3.0 "no `.sh`, no bash" note no longer
+  contradict the shipped hooks — there is no shell hook to contradict them. README,
+  manifest, and CHANGELOG now agree.
+
+## 0.3.2
+
+Deadly-loop finalization pass (round 1 + round 2 findings; 0 P0, converged).
+
+- **git-guard `--force-if-includes` false-block (P1):** `--force-if-includes` /
+  `--no-force-if-includes` is a safety modifier (a no-op on its own, only meaningful
+  alongside `--force-with-lease`), not a force push. It is no longer a force trigger,
+  so a bare `git push --force-if-includes origin main` is ALLOWED. `--force`, `-f`,
+  `--force-with-lease`, and `+refspec` still BLOCK.
+- **statusline installer cache-path discovery (P1):** the one-command installer glob
+  now covers the real install layout `~/.claude/plugins/cache/{marketplace}/{plugin}/{version}/`
+  (verified against an actual install) plus the KB's shallower documented forms, keeping
+  the existing marketplace globs and the `.claude-plugin/plugin.json` existence guard, so
+  it no longer prints "not found" on a correctly installed plugin.
+- **node-absent honest documentation (P1):** every hook launches as `node <hook>.js`;
+  if `node` is absent from the hook shell's `PATH`, all hooks (including the git-guard
+  safety) silently do not run. A POSIX-shell `node-preflight.sh` SessionStart hook now
+  emits a loud one-time warning when `node` is missing (a node-based preflight cannot
+  detect its own missing interpreter), and the README install steps state the Node >= 18
+  requirement prominently and tell users to verify `node --version` before relying on
+  the protections.
+- **git-guard ANSI-C inline self-credit bypass (P2):** a `git commit -m $'fix\n\nCo-authored-by: ...'`
+  kept its `\n` literal after tokenizing, slipping past the line-anchored trailer
+  regexes. Self-credit detection now also tests an escape-normalized copy of each inline
+  message (`\n`/`\r`/`\t` interpreted), so the ANSI-C inline form is blocked too.
+- **marketplace.json capability claim (P2):** changed "PreCompact re-injection" to
+  "SessionStart re-injection (fires with source=compact)" to match the code — PreCompact
+  context injection is inert (forward-compat placeholder), SessionStart `source=compact`
+  is the sole compaction-survival mechanism.
+- **install-statusline.js ungrounded field (P2):** dropped the undocumented `padding: 0`
+  field; the installer writes only the doc-grounded `{ type: "command", command }`.
+- **MODEL-POLICY triplication sync note (P2):** the three byte-identical MODEL-POLICY.md
+  copies (needed because skill bundling carries each skill's own `references/` copy and
+  symlinks are stripped on install) now each carry a SYNC NOTE header, plus a README
+  maintainer note, instructing that all three be updated together.
+- **Stop-hook precedence (P2):** `task-guard` is now registered before `graphify-reminder`
+  on `Stop` so the higher-stakes open-task discipline reason wins when both fire (Claude
+  Code does not merge Stop reasons); README caveat updated.
+- **statusline blink removed (P2):** the >=80% context tier in `statusline-monorepo.js`
+  no longer uses SGR 5 (blink, inconsistently supported); it uses bold bright-red
+  256-color, consistent with the other tiers.
+- **per-turn nudge wording (P2):** README clarified that the verify-first nudge varies
+  **by prompt** (deterministic SHA-1 of the prompt), not strictly per turn — an identical
+  repeated prompt reproduces the same facet.
+
+## 0.3.1
+
+Deadly-loop finalization pass — applies the remaining open findings, all verified
+against the official Claude Code hooks docs.
+
+- **graphify-reminder now actually reaches the model (P1):** a Stop hook does NOT
+  inject `additionalContext` (only UserPromptSubmit / UserPromptExpansion /
+  SessionStart do, per the official docs), so the previous stdout-`additionalContext`
+  emission was a silent no-op. The reminder is now surfaced via the only Stop
+  channel that reaches the model — a **one-time soft block**
+  (`{"decision":"block","reason":...}`), capped + deduped via `os.tmpdir` state so
+  it nudges at most once per session and never loops. The "keep the graph updated"
+  guidance also lives in the SessionStart primer, which IS a context-injection event.
+- **git-guard emoji self-credit (P1):** the `Generated with <AI>` detector now
+  catches the canonical footer even when prefixed by a leading glyph/emoji
+  (e.g. the robot-emoji `Generated with [Claude Code]` footer) while still allowing
+  prose ("we generated with care"). Verified against the full block/allow matrix.
+- **Node prerequisite documented prominently (P1):** added a **Requirements**
+  section to the top-level README and the plugin description, and aligned the plugin
+  README to Node >= 18. Hooks invoke a bare `node`; without a global Node on `PATH`
+  every hook (including the git-guard safety) silently fails to launch.
+- **git-guard scope caveat (P2):** README now states the guard inspects only inline
+  `-m`/`--message` trailers — `-F`/`--file`, editor commits, and interpreter
+  wrappers (`sh -c`, `xargs`, aliases) are documented fail-open boundaries.
+- **KB §1.4 corrected (P2):** UserPromptSubmit context injection uses **nested**
+  `hookSpecificOutput.additionalContext` (not flat); added an explicit note that
+  context injection is event-gated to UserPromptSubmit / UserPromptExpansion /
+  SessionStart, so `Stop`/`PreCompact` `additionalContext` is inert.
+- **PreCompact framing corrected (P2):** clarified that PreCompact never injects
+  context (not "summarized away"); SessionStart `source="compact"` is the sole
+  survive-compaction mechanism. (Superseded in 0.3.5: the PreCompact registration
+  was never actually present in `hooks.json`, so all PreCompact-placeholder claims
+  were removed rather than reworded.)
+- **Two-Stop-hook coexistence noted (P2):** `graphify-reminder` + `task-guard` both
+  emit the top-level Stop `decision`/`reason` schema; Claude Code does not merge
+  reasons, but each is capped so neither is lost (they sequence across Stops).
+
+## 0.3.0
+
+KB-driven effectiveness + portability revision (see `docs/PLUGIN-REVIEW.md`),
+plus a full OS-agnostic Node rewrite and the deadly-loop hardening pass.
+
+- **OS-agnostic Node rewrite (portability):** every hook and the statusline +
+  its installer are now pure Node.js using only built-ins (`fs`, `path`, `os`,
+  `crypto`, `child_process`) — no `.sh`, no bash/grep/sed/cksum/jq/python3, no
+  `/dev/stdin`. The only spawned subprocess is `git` itself. They run unchanged
+  on Windows, macOS, and Linux **given Node.js on `PATH`** — Node is the one hard
+  prerequisite (see README "Requirements"); without a global `node` the hooks
+  cannot launch and the guards silently do not run. `hooks.json` invokes each as
+  `node "${CLAUDE_PLUGIN_ROOT}/hooks/<name>.js"` (explicit `node`, not a
+  shebang, since Windows ignores shebangs).
+- **verify-first restructured (P0-1, P0-3):** the FULL protocol moved to a
+  SessionStart injection (`verify-first-full.js`), rewritten in the Superpowers
+  "ONE Iron Law + rationalization/excuse table" form (names the specific bypass
+  excuses: "probably", "should work", "seems to", "I'll just assume", "this looks
+  done", "tests pass on first run"). The per-turn `UserPromptSubmit`
+  (`verify-first.js`) is now a SHORT nudge that VARIES per turn (one of 5
+  one-liners, chosen deterministically by a SHA-1 hash (Node `crypto`) of the
+  prompt) to fight habituation. JSON emitted via `JSON.stringify`, no jq.
+- **Survive compaction (P0-2):** the protocol persists across the compaction
+  reset via the no-matcher `SessionStart` registration — Claude Code re-fires
+  `SessionStart` after a compaction with `source="compact"`, and that injection
+  is fresh post-reset context. (This note originally also described keeping a
+  `PreCompact` registration as an inert placeholder; superseded in 0.3.5 — no
+  PreCompact registration was ever present in `hooks.json`, and all such claims
+  were removed. Per the official docs `additionalContext` is injected on exit 0
+  for UserPromptSubmit / UserPromptExpansion / SessionStart only, so a PreCompact
+  hook would deliver nothing.) A duplicate matcher-`"compact"` SessionStart entry
+  was removed so the protocol is not double-injected after a compaction.
+- **git-guard force-push hardening (deadly-loop):** force-push detection now
+  resists prefix/wrapper/subshell bypasses and `+refspec` variants — env-prefix
+  (`FOO=bar git push --force`), wrappers (`command`/`exec`/`sudo`/`env`/`time`/
+  `nohup`/`nice -n N`/`timeout 5`), subshell grouping (`(git push --force)`),
+  global git options (`-c x=y push --force`), positional `+refspec` (with `--`
+  end-of-options handling), and backslash-newline line continuations. Self-credit
+  trailer detection is anchored to start-of-line trailer form so a prose mention
+  ("docs: explain output generated with claude code") no longer false-blocks,
+  while real `Co-Authored-By:` / `Generated with <AI>` trailer lines still block.
+  Verified against an 18-case block/allow matrix.
+- **AGENTS.md mirror (P0-4):** new repo-root `AGENTS.md` (<32 KiB) mirroring the
+  verify-first Iron Law + commit/push hygiene + task discipline, so Codex
+  subagents inherit the discipline (Codex `PreToolUse` cannot inject context).
+- **Skill primer (P1-1):** SessionStart now lists the plugin's skills
+  (root-cause, deadly-loop, feature-launch, orchestration) + when to reach for
+  each, folded into `verify-first-full.js`.
+- **MODEL-POLICY (P1-2):** documented `effort` default `high` / recommended max
+  `xhigh` with fallback-to-`high` when unsupported (gpt-5.4-mini, Bedrock cmb);
+  added the `codex` CLI-alias-in-subprocess caveat (detect in the executing
+  shell, try an absolute path); added an anti-sycophancy clause (user agreement
+  != correctness).
+- **marketplace.json (P1-5, P1-6):** plugin `source` is the relative path
+  `"./plugins/anti-hall"`, which resolves because `/plugin marketplace add
+  talas9/anti-hall` clones the whole repo (the relative path is taken from the
+  marketplace root inside that clone); removed the per-plugin `version`
+  duplication (version now lives only in `plugin.json`).
+- **KB (`docs/KB-claude-codex.md`):** added §9 "Anthropic Prompting 101" and §10
+  "Claude Opus 4.8 features relevant to this plugin", plus their source URLs.
+- **CHANGELOG header:** corrected "bump both manifests" to "bump `plugin.json`
+  only (the authority)".
+
+## 0.2.1
+
+- Fix `git-guard` self-credit regex: removed the bare `ai` alternation that
+  false-blocked legitimate human trailers (e.g. `Co-authored-by: Ai ...`). Now matches
+  specific AI/assistant signatures only.
+- Add this CHANGELOG.
+
+## 0.2.0
+
+- Add skills: `root-cause` (evidence-driven debugging), `orchestration` (non-blocking
+  swarm; Claude+Codex load split; commands via Haiku), `feature-launch` (plan-first,
+  deadly-loop-hardened, edge-case/scenario simulated), `deadly-loop` (iterative
+  Reviewer+Critic debate), and shared `MODEL-POLICY.md` (Opus + Codex roster).
+- Add graphify hooks: `graphify-session` (SessionStart, query-graph-first) and
+  `graphify-reminder` (Stop, keep-graph-updated).
+- Add `git-guard` (PreToolUse/Bash): block self-credit commit trailers and force push.
+- Add conditional statusline (rich for monorepos, simple otherwise) + installer.
+- Strengthen `verify-first` injection: no-jumping-to-conclusions, no-cause-no-fix,
+  instrument-don't-guess, no-fake-completion, label claims.
+
+## 0.1.0
+
+- Initial release: `verify-first` UserPromptSubmit hook + marketplace scaffold.
+
+## Appendix: `scripts/devswarm.js` version history
+
+Moved here verbatim from `llms.txt` in 0.108.0 (llms.txt now carries only the current
+behaviour). Per-release detail is also in each version section above.
+
+- [devswarm.js](plugins/anti-hall/scripts/devswarm.js): THE structured CLI (CLI over MCP, owner preference) — stable JSON on stdout, pure Node built-ins. Subcommands: register/ensure (write a workspace descriptor + populate sessionId), register-primary (register the CURRENT worktree's Primary under its per-worktree id `primary-<hash>`, never a shared `'primary'`; as of v0.71.0 its `--session` defaults to `CLAUDE_CODE_SESSION_ID` instead of the workspace hash, so the registered row resolves its real transcript for liveness reads; as of v0.98.0 it also refuses, rather than plain-upserting, when a DIFFERENT currently-live session already holds this worktree's Primary row — `ok:false, reason:'live-primary-conflict'`, exit 2 — unless `--force` is passed; a same-session restart is never refused), heartbeat (turn-authored), inbox pull (child-side bounded native-queue drain into the durable inbox), inbox count/read/ack (the durable-inbox cursor primitive; ack advances the cursor = the parent-gate's non-skip clear path), inbox messages/read-primary (Primary/store non-destructive read of message bodies straight from the store — no descriptor needed, never touches the native queue; `--unread`/`--ack` against a separate `cursors/<id>.json` ACK cursor), workspaces list (derive+emit summary.json), gate --set/--clear (mark completion gates), nudge (poke-or-escalate), archive (archive-by-absence on anti-hall's OWN registry — hivecontrol has NO teardown command, so it SURFACES a manual "remove workspace in the DevSwarm app" step and never deletes), archive-request (REVISED v0.58 — see below; was v0.56.0 PARENT-side send-only via hivecontrol), archive-ignore/archive-unignore, migrate (`ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` marks an imported legacy backlog as already-read, avoiding a false unread wall). **v0.57 mesh (shipped in v0.58.0; Claude-side only):** `send --to <meshId>|--broadcast --message TEXT [--urgency low|normal|high|urgent]` (daemon-independent, writes the shared per-project `store/<repoKey>/` directly; spoof-resistant `--from` via `callerIdentity`; fail-closed `--to` against the registry), `roster [--ack]` (project-scoped registry + `working_on` + `recent[]` projection), `mesh read` (alias of `roster --ack` — the only surface that clears `broadcastUnread`; as of v0.98.0, `--peek` reads without advancing the cursor and `--seq N` reads from an explicit historical seq instead of the caller's own cursor, always implying peek — neither flag changes the no-flag default behavior), and `heartbeat --summary TEXT` (also broadcasts a mesh status ping). Every mesh send/`inbox pull`/`archive-request` call runs a cooldown-bounded send-time self-heal of the per-project ingest daemon first. **v0.58 "mesh-only messaging" (shipped in v0.58.0):** `send --to-primary` (a third target mode, resolves the registry entry for THIS project's main worktree, fail-closed if unregistered); `roster` (plain, no `--ack`) now also folds in a read-only `hivecontrol workspace list children` view so an unregistered native child is still visible; `archive-request <childId> [--reason TEXT]` REVISED to a direct mesh-store write (zero `hivecontrol` calls, `--child-branch` removed — the old branch-resolution + `message-child` spawn is deleted); `reconcile` (one-shot per-worktree subprocess drain of every registered inbox in the project — never in-process, which would drain the wrong queue; auto-run since v0.58.1 by `doctor --fix` GATED and by `update` DevSwarm-session-only, manual verb still available); `spawn <branch> [...]` (thin pass-through wrap of `hivecontrol workspace create`, then best-effort auto-registers the worktree in the store); `merge [...]` (thin wrap of `check-merge` + `merge-into-source`, then broadcasts the outcome to the mesh). Full reference with source-line citations: `docs/KB-devswarm-hivecontrol.md` §8.8. `command-guard.js` carries a root-anchored LIGHT_EXCEPTION for it so the guard doesn't block its own wrapper, and (v0.58) a SEPARATE guard branch now blocks the native `message-child`/`message-parent` sends this CLI replaces (see `command-guard.js` above). **v0.61.0 mesh self-heal:** `send`/mesh delivery now resolves to the partition a child is ACTUALLY DRAINING (`pickSurvivor` — greatest registry `updatedAt` among live rows, cursor-value tiebreak), plus a phantom-only rescue on the child's first mechanical self-register that forwards any backlog stranded in a pre-registration phantom partition; new read-only `diagnose` (mesh-health detail: split/duplicate detection, orphans, stale partitions — never writes `summary.json`) and `healthcheck [--json]` (pass/fail over the same data, exit 0/2, for monitors/CI/the daemon; no `--json` prints one compact human line) verbs; register-time dedup (`retireWorktreeDuplicates`) now filters forwarded backlog through a new `isForwardable(msg)` noise filter — forwards only a real actionable direct, skipping broadcast/heartbeat and stale native poke/hash-mirror rows; `foldMeshDuplicates(home, ctx)` (MIGRATION) generalizes register-time dedup to the WHOLE registry, grouping by `canonicalMeshId` (git-toplevel-resolved, so a legacy subdir-split registration folds onto its toplevel) via the shared `groupRegistryByMeshId`, forward-then-tombstone, idempotent, non-destructive, fail-open — wired into both `update.js` (post-update, DevSwarm-session-gated) and `doctor`'s new AUTO-SAFE `fold-mesh-duplicates` repair (dry-run detect doubles as the read-only mesh-shape check under `--check`); `roster`/`workspaces list`/`diagnose` no longer call `deriveSummary`'s write path — pure reads, zero `summary.json` side-effect. **v0.62.0:** `unarchive <id>` (reverses `archive` — restores an archived descriptor + store registry row, rejecting on an ownerKey/project mismatch or a conflicting live descriptor); `migrate-owner-keys` (forward-migration, idempotent/fail-open/no-delete — backfills a missing descriptor `ownerKey` and re-homes an ACTIVE descriptor stranded under a stale hash-keyed bucket into its fresh `repoKey`-keyed bucket; wired into `update.js`/`doctor`); `reap-stale [--yes|--confirm]` (project-scoped, dry-run by default — archives descriptors verdicted stale/escalated, gated by a fresh-heartbeat/recent-worktree-git-activity safety check); `reconcile-active [--active id,...] [--allow-empty] [--stdin] [--yes|--confirm]` (project-scoped, dry-run by default — archives every current workspace NOT in an explicit active set, refusing an empty set unless `--allow-empty`). **v0.66.0:** `heartbeat`'s reported `ok` and `reconcile`'s aggregate `ok` no longer mask a nested failure (a failed mesh broadcast, a crashed/timed-out drain target) — both now reflect what actually happened, treating a genuinely absent hivecontrol as a benign skip rather than a failure; `logs` now reads rotated log history, not only the live file. **v0.67.0 human-readable workspace names:** after a successful `hivecontrol workspace create`, `spawn` sets a title via a SEPARATE best-effort `hivecontrol workspace update-title -b <branch> "<title>"` call — derived from the `-p` brief (first non-empty line, one leading markdown marker stripped, whitespace collapsed, full line kept — no length cap since v0.108.0) unless the caller already passed `-t/--title`. `spawn`'s pass-through of the original argv to `hivecontrol workspace create` is untouched. `reconcile` caches whatever label hivecontrol already has for pre-existing workspaces but never invents one for a workspace with no brief on record. See `companion/lib/devswarm-names.js` below for the read-side cache. **v0.67.1:** `fetchNativeChildren`'s roster fold gained a cross-repo hijack guard — `hivecontrol workspace list children` resolves its scope entirely from `DEVSWARM_REPO_ID`/`DEVSWARM_BUILDER_ID`, never cwd, so a process holding a foreign repo's env got that repo's children back with exit 0 and valid JSON; each record's `repositoryId` is now cross-checked against a separate cwd-anchored, env-stripped `list all` ground truth (`fetchTrustedRepositoryId`), with mismatches dropped + logged and the fold failing open unfiltered when no ground truth is available. This is a NEW guard, not a repair — `fetchNativeChildren` passed `env` unmodified in every prior shipped release. Also new: a `skip <guard> [--ttl N]` CLI verb (`cmdSkip`, `devswarm.js:2637`), the CLI-side half of edit-guard's own skip-hint. **v0.70.0 mesh/store hardening (mesh/store message-loss fix):** `foldArchivedRegistryRows(home, ctx0)` (new) is a forward migration for registries split by the pre-fix archive bug — `cmdArchive` used to tombstone exactly one id per archive, so every registry that saw an archive under the old code could still hold live rows for worktrees whose workspace is now archived, and a live row is what made `computeSummary`/roster project that workspace as ACTIVE and, more seriously, is where a message could be forwarded even though that partition is dead. The sweep applies the SAME forward-then-tombstone + safety gate `cmdArchive` now applies at archive time (`retireArchivedWorktreeGroup`), retroactively, matching by canonical worktree real path (form-agnostic across id shapes) and sweeping every per-project store bucket (both `store/<repoKey>` and the legacy `store/<8hex>` bucket). Four load-bearing properties: IDEMPOTENT (a retired row is gone, a second run is a no-op), FAIL-OPEN HONESTLY (never throws into `update`/`doctor`, but a run that raised reports `ok:false` with the error, never a clean no-op), NO-DELETE (message rows are never deleted — unread directs are forwarded into the survivor's partition first, only registry rows are tombstoned), and SAFETY-GATED (`foldGroupIntoSurvivor` leaves any row with its own live descriptor alone). `ctx0.dryRun` classifies without writing (doctor's `--check`); the apply path runs each archived id's work under `withIdLock(id)`, surfacing (never silently dropping) a lock-busy id for retry next run. Wired into both `skills/update/scripts/update.js` (`fold-archived-rows` step) and `hooks/lib/doctor-repair.js`'s `migrationFix('fold-archived-rows', ...)`. Separately, `cmdArchive` gained `archivedTombstoneIsOrphaned(home, archivedStat)` — decides by INODE whether a leftover `archived/<id>.json` from a prior archive generation is orphaned (no live descriptor shares its `(dev, ino)`), fail-CLOSED on any incomplete scan; replaces the old unlink-then-link sequence with link-to-temp + atomic same-directory rename so `archivedPath` is never observably missing. **v0.74.0:** `gate --set merged` now also runs a best-effort git-ancestry check (`devswarm-git-truth.js`'s `gitMergedInto`, HEAD vs. the resolved default branch) and persists the verdict as a separate `merged_verified` gate row alongside `merged` — REPORT-ONLY, `merged` is set regardless of the verdict; a resolved-false verdict prints a stderr warning and shows as `merged (unverified)` on the parent roster, an unresolvable check omits `merged_verified` entirely. **v0.75.0:** `inbox peek-primary` (new) is the non-acking counterpart to `read-primary` — same read (message bodies straight from the store), `--ack:false` forced regardless of flags, so status can be checked without advancing the ACK cursor. **v0.84.0 partition resolution follows the WORKSPACE, not the caller's cwd (closes defect `e586afdaa968`):** `inbox read-primary`/`inbox count` resolved the store partition from the caller's working directory, so a Primary could be Stop-gated on mail it structurally could not see, and running the gate's own prescribed command from the wrong directory risked writing a cursor into another project's partition; resolution now comes from the workspace's REGISTERED project via the shared `registeredRepoKey` helper (`companion/lib/devswarm-repokey.js`; precedence fresh key → recorded `repoKey` → non-hash `ownerKey`), the same helper `devswarm-parent-gate.js` calls, so CLI and hook can no longer disagree about which workspaces a session owns. Same change, five more P0s: `gate`/`ensure`/`archive` re-homed a FOREIGN project's workspace — copying messages and registry rows and rewriting `ownerKey`, with `archive` additionally removing the live descriptor — BEFORE their own ownership guard ran, so even an invocation returning `ok:false` had already mutated another project's state (the guard now precedes every write; a refused call writes nothing); `inbox ack <foreign-id>` advanced the NDJSON cursor after the resolver had already refused, permanently skipping that workspace's mail; and `inbox count`/`read` returned a silent `0` indistinguishable from "no mail", now `known:false` plus the NAMED `registeredRepoKey`/`callerRepoKey`. Full record: `docs/KB-devswarm-hivecontrol.md` §29. **v0.85.0 archive retires the whole identity family:** `cmdArchive` tombstoned by `<id>` ONLY, but an identity family can be cross-linked by `sessionId` (one row's `sessionId` IS the other row's `id`), so the twin stayed live in `workspaces/` forever and `devswarm-parent-gate.js` nagged un-clearably about its impossible inbox. `cmdArchive` now retires the whole family at archive time, and `foldArchivedFamilyDescriptors(home, ctx0)` (new, exported) is the FORWARD MIGRATION for sets already split by the pre-fix code — the DESCRIPTOR-file counterpart of `foldArchivedRegistryRows` (which covers only the registry half), wired into BOTH `update.js` and doctor's AUTO-SAFE `migrationFix('fold-archived-family-descriptors')`, scoped to genuinely-archived ids (`archived/<id>.json` present AND `workspaces/<id>.json` absent — a mid-archive/crashed state has BOTH and belongs to `applyRecoveryIntents`), IDEMPOTENT, NO-DELETE (bytes are hardlinked into `archived/` and the active path unlinked only after a fresh lstat proves the same inode; a tombstone already holding DIFFERENT bytes is never clobbered, and no message row is touched), SAFETY-GATED (grouping is `identityFamilyTwins`' cross-link ONLY, never bare worktree equality, so two legitimately-live tabs on one worktree are never retired), and FAIL-OPEN HONESTLY (`ok:false` with the error rather than a clean no-op); `ctx0.dryRun` classifies without writing and takes no lock. WRITE AUTHORITY MUST BE PROVEN: every descriptor writer publishes via `rename`, which allocates a NEW INODE at the same pathname, so a scan-time classification acted on later could unlink a freshly-registered LIVE descriptor. `descriptorFileGeneration(p)` (one coherent lstat+read — dev/ino/size/mtimeMs/bytes; deliberately NOT named `descriptorFingerprint`, which is already the recovery-intent sha256-of-an-object helper, since a duplicate declaration would silently repoint every recovery-intent call site) is re-read INSIDE the per-id lock and compared via `sameDescriptorGeneration` (FAIL CLOSED on either side absent), and `worktreeIsProvablyGone` gates the migration path (ABSOLUTE path + real ENOENT lstat only — never a relative path, dangling symlink, or unresolvable stat). Any generation mismatch or unproven gone-ness REFUSES the retire; refusals land in `left[]` with a reason and are surfaced by `update`'s summary and doctor's `notice` (rendered on BOTH the pending and not-pending path) rather than reading as "nothing to migrate". A one-way historical identity link is NOT by itself write authority. `worktreePath` is now persisted ABSOLUTE at build time; legacy relative values fail closed (treated as NOT gone) on every reader. **v0.94.0 bounded reconcile + resume (defect f3c1bc827d89):** `cmdReconcile` previously spawned one serial 30s-timeout child PER registry row with no total budget, so a project with dozens of stale rows made `update.js` (which awaits it synchronously) hang for minutes with zero progress output. A total wall-clock budget (`ANTIHALL_RECONCILE_BUDGET_MS`, default 60000ms; `--budget-ms` for a direct CLI call; `0` = unlimited) now bounds one sweep; a row whose `worktreePath` no longer exists is skipped BEFORE spawning (zero budget cost), and whatever is left when the budget runs out is deferred to `reconcile-resume.json` (per-repoKey, fail-open) and prioritized FIRST on the next sweep (FIFO rotation across runs). The result now also reports `budgetMs`, `processed`, `skippedMissingWorktree`, `deferred`, and `elapsedMs`. **v0.95.0:** `diagnose` resolves `sessionId` through the descriptor when the registry is stale and reports a `descriptorSessionId` field on disagreement; `unclaimed:` promotion derives the caller's real session id from `--session`, `CLAUDE_CODE_SESSION_ID`, or — only for a row still carrying the marker or lacking a sessionId — the harness's own session file found by walking the parent-pid chain with a cwd-in-worktree check and a pid-reuse/staleness liveness guard; descriptor/registry divergence is repaired in both directions, and a registry write failure during promotion now surfaces as `registryWriteError` instead of being swallowed. **v0.96.0 (D11-A, defect f56dcc08f048):** `resolveMeshTarget`/`pickSurvivor`'s target-selection gate is now `isRoutingLiveRowStrict` — a bare, no-descriptor-fallback `isSiblingPartitionLive` call (the SAME heartbeat-freshness + harness-session-dormancy predicate `companion/lib/devswarm-liveness-select.js`'s `pickFreshestLive` composes its ranking around) — replacing the old bare `isLiveSessionId` shape test, so a real-but-dormant sessionId no longer outranks a genuinely live sibling for a `send`/fold target; `groupRegistryByMeshId`'s REPORTING-only `liveRows` counter uses the fallback-inclusive `isRoutingLiveRow` (adds a descriptor-existence check for a just-registered row with no heartbeat yet) instead. `rehomeMiskeyedRow`/`retireWorktreeDuplicates`/`foldGroupIntoSurvivor` are DELIBERATELY untouched, still gating on bare `isLiveSessionId` (an identity-match question, not a drain/routing decision — see `docs/KB-devswarm-hivecontrol.md` §26). `callerOwnsRow`'s clause 3 ("sole row on the caller's own worktree") now additionally requires that sole row be unclaimed before granting ownership — a lone CLAIMED foreign row sharing the caller's worktree no longer lets the caller stamp its own sessionId over it. The sibling-watermark write and its read-then-conditional-unlink now serialize under one per-`(callerId,siblingId)` lock (`withWatermarkLock`), closing a TOCTOU window where a concurrent write landing between the read and the unlink was silently discarded (fail-open on contention: runs unlocked rather than dropping the op). `send`/`heartbeat` results and every ownership-refusal shape now carry an additive `identity:{id,kind}` (`resolved`/`declared`/`unresolvable`) alongside the existing bare identity string. **v0.96.0 (D11-C):** `diagnose` rows carry an additive `archivedInApp` field and force `live:false` whenever it is true, even against a fresh heartbeat; `reconcile` gained a fifth benign pre-spawn skip, `skippedNotGitRoot` (a worktree that exists on disk but fails `git rev-parse --show-toplevel`), and (D11-C2) the git-root probe itself is now bounded by `reconcile`'s own wall-clock budget — checked BEFORE the probe runs, not just before the resulting spawn, so N broken worktrees can no longer each burn a full probe timeout unaccounted-for before the first row defers; `inbox ack` now refuses the whole verb on a POSITIVE, resolvable ownership mismatch (the caller's own cwd/env resolves to a REAL, different registered row) instead of the previous half-ack, but an unresolvable-caller-identity or unregistered-caller shape still fails open exactly as before (`--ack-as-owner` still overrides either way). **v0.98.0:** new `wake-directive <id>` verb — on-demand REPRINT of the full SessionStart idle-wake directive for `<id>` (placeholder substituted for the concrete id), what the trimmed Stop-gate `MAILBOX WAKE CHECK` re-verify (`wakeReassert`) now points an agent at instead of re-issuing `CronCreate` inline. Also: every read verb's `storeUnavailable` field is now a plain BOOLEAN (was, on `count`/`read`/`ack`, sometimes the full refusal detail object) with the underlying fs/sqlite error code surfaced separately as top-level `storeUnavailableReason` (string|null); `count`/`read`/`ack` additionally keep that fuller detail under a separate `storeUnavailableDetail` key so nothing is lost. The `read-primary`/`inbox messages --ack` ownership check and the ghost-id existence guard both now re-probe the store's read error AFTER their own `listRegistry()` call, so a genuinely unreadable registry reports `store-unavailable`/`storeUnavailableReason` instead of the misleading `caller-not-registered`/`unregistered-workspace`.

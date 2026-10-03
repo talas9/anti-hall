@@ -1,0 +1,32 @@
+[
+  {
+    "id": "S1-rename-fn",
+    "expected_tier": "S",
+    "prompt": "In our repo there is a single utility file src/util/slug.js with one exported function `makeSlug(s)` that lowercases and hyphenates a string. It currently drops trailing hyphens but keeps leading ones. Fix it so leading hyphens are also stripped. Produce your plan/approach for this task (do not write the final code)."
+  },
+  {
+    "id": "S2-fix-off-by-one",
+    "expected_tier": "S",
+    "prompt": "We have one function `paginate(items, page, perPage)` in src/lib/paginate.ts. It has an off-by-one bug: page 1 returns items 1..perPage but skips item 0. Fix the off-by-one so page 1 returns items 0..perPage-1. Produce your plan/approach for this task (do not write the final code)."
+  },
+  {
+    "id": "M1-add-csv-export",
+    "expected_tier": "M",
+    "prompt": "Add a 'Export to CSV' button to our existing reports page. It touches the React component ReportsTable.tsx, a new helper src/lib/csv.ts, and the route handler routes/reports.ts to stream the file. No auth or schema changes. Produce your plan/approach for this task (do not write the final code)."
+  },
+  {
+    "id": "M2-add-dark-mode",
+    "expected_tier": "M",
+    "prompt": "Add a dark-mode toggle to our web app. It involves a ThemeContext.tsx provider, a Toggle.tsx component, and updating theme.css with CSS variables, plus persisting the choice to localStorage. About 3-4 files, no backend. Produce your plan/approach for this task (do not write the final code)."
+  },
+  {
+    "id": "L1-auth-middleware",
+    "expected_tier": "L",
+    "prompt": "Add authentication to our currently-public API: JWT auth middleware, a new `sessions` table migration, login/logout/refresh endpoints, password hashing, rate limiting on login, and tests — spanning roughly a dozen files across the api/, db/migrations/, and middleware/ directories. Produce your plan/approach for this task (do not write the final code)."
+  },
+  {
+    "id": "L2-multitenant-migration",
+    "expected_tier": "L",
+    "prompt": "Make our single-tenant SaaS multi-tenant: add a tenant_id column to 14 tables via a production data migration, scope every query by tenant, add a tenant-resolution middleware, backfill existing rows into a default tenant, and add row-level isolation tests. This touches many files across the schema, ORM models, middleware, and query layer. Produce your plan/approach for this task (do not write the final code)."
+  }
+]

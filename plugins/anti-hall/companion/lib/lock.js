@@ -1,0 +1,498 @@
+'use strict';
+// anti-hall :: companion/lib/lock.js — THE one cross-process lock-file
+// primitive. Every advisory lock in the plugin (swarm-guard, settings,
+// repair-on-reload, recovery per-id, supervisor sweep, ingest, migrate, pull,
+// wake-watch, store journal, log rotation, retention) goes through here; the
+// hygiene ratchet tests/hygiene/lock-single-primitive.test.js forbids a new
+// hand-written one. Pure Node built-ins, synchronous (hooks cannot await).
+//
+// DESIGN (promoted from companion/lib/recovery.js acquireLock, where each piece
+// was paid for by a real incident):
+//   * OWNER RECORD — the lock file is JSON {pid, host, ts, token, ...fields}.
+//     `token` is unique per acquisition; release/refresh act ONLY while the
+//     on-disk token is still ours, so we never delete a successor's lock.
+//     `host` scopes the pid: a holder on ANOTHER host (a shared SMB/NFS home)
+//     can never be probed with kill(pid, 0), so its pid is treated as unknown
+//     (staleness-only) instead of "dead".
+//   * MACHINE ID — the hostname is NOT a machine identity: macOS renames the
+//     host when the network changes, which turned a live LOCAL holder into
+//     "unknown" (stealable by age even for never-steal-live callers, and no
+//     immediate dead-holder reclaim). Records therefore also carry `boot`
+//     (boot time, epoch seconds, from os.uptime()) and, on Linux, `pidns`
+//     (the /proc/self/ns/pid link — containers share the kernel's boot time
+//     but not its pid space). A differing host whose record matches our boot
+//     (within BOOT_SLOP_S) and pid namespace is this machine, so its pid IS
+//     probed. Probing unconditionally was rejected: on a genuinely foreign
+//     host ESRCH proves nothing, and a live remote holder would read as dead.
+//     A record without `boot` (older versions) keeps the host-only rule.
+//   * PUBLISH — publish:'link' (default) writes the FULL record to a private
+//     temp file and publishes it with linkSync (fails EEXIST like O_EXCL, but
+//     the lock is never visible empty — 7858c56). When linkSync itself is
+//     unsupported (EPERM/ENOTSUP/EXDEV/ENOSYS on SMB/exFAT — 3973de4) it falls
+//     back to openSync(p,'wx') + write for that attempt. publish:'excl' is the
+//     plain O_EXCL create for callers whose contract is defined on it.
+//   * TORN-READ GUARD — a holder file that is empty/unparseable (the 'wx'
+//     create->write window, or a crash inside it) is dated by its MTIME, never
+//     read as "ownerless": a fresh torn file is a live holder mid-write.
+//   * ATOMIC RECLAIM — a stealable holder is renamed ASIDE first (fails if
+//     someone else already moved/replaced it), the moved copy's token is
+//     compared with the one we judged, and only then discarded. A mismatch
+//     means a fresh lock got caught: it is restored WITHOUT clobbering
+//     (linkSync, so a lock published meanwhile is never overwritten) and
+//     respected (2f6dd00). A blind unlinkSync(p) here was the reclaim race
+//     where two stealers of one dead holder both "won".
+//   * RECLAIM SIDECAR — rename-aside alone still lost a THREE-way race: A and
+//     B judge the same stale holder, A reclaims + publishes, B renames A's
+//     LIVE lock aside, C publishes into the empty path, B's restore hits
+//     EEXIST and B discards A's lock -> A and C both hold. So reclaimers are
+//     serialized by an O_EXCL sidecar `<p>.reclaim` (same publish primitive,
+//     so it works without hard links; stale after RECLAIM_STALE_MS or when
+//     its pid is dead). Only a reclaimer holding the sidecar may rename or
+//     remove `p`, and under it the holder is RE-READ and RE-JUDGED before the
+//     rename. A plain acquire into an empty path never needs the sidecar.
+//
+// STEAL POLICY (per caller, via options — every caller keeps its old rule):
+//   holder classes: KNOWN (parsed record with a local pid: same host, or a
+//                   renamed host whose boot/pidns match) -> alive | dead;
+//                   UNKNOWN (torn/unparseable, no pid, or a foreign machine).
+//   age = now - (record.ts, else file mtime); stat failure -> Infinity.
+//   - dead holder:    stolen when opts.stealDead, else once age > staleMs.
+//   - live holder:    stolen once age > liveStaleMs (default Infinity = never).
+//   - unknown holder: stolen once age > staleMs.
+//   - opts.decide(holder) -> 'steal' | 'respect' | undefined overrides it
+//     (ingest's zombie/pid-reuse/wedged-heartbeat verdicts).
+
+const fs = require('fs');
+const os = require('os');
+
+const DEFAULT_STALE_MS = 15 * 60 * 1000;
+// A reclaim holds `<p>.reclaim` for a few fs calls (milliseconds); a sidecar
+// older than this is a crashed/stopped reclaimer and may be taken over.
+const RECLAIM_STALE_MS = 5000;
+
+let SEQ = 0;
+function rand() { return Math.random().toString(36).slice(2); }
+function newToken(ts) { return process.pid + ':' + ts + ':' + (++SEQ) + ':' + rand(); }
+
+let HOST = null;
+function localHost() {
+  if (HOST === null) { try { HOST = os.hostname(); } catch (_) { HOST = ''; } }
+  return HOST;
+}
+
+// localMachine() -> { boot, pidns } — boot: epoch seconds of this boot (null
+// when unavailable); pidns: Linux pid-namespace link, '' elsewhere. Cached.
+const BOOT_SLOP_S = 5; // os.uptime() is whole seconds; allow clock slew
+let MACHINE = null;
+function localMachine() {
+  if (MACHINE === null) {
+    let boot = null;
+    try {
+      const up = os.uptime();
+      if (Number.isFinite(up) && up > 0) boot = Math.floor(Date.now() / 1000 - up);
+    } catch (_) { boot = null; }
+    let pidns = '';
+    if (process.platform === 'linux') { try { pidns = fs.readlinkSync('/proc/self/ns/pid'); } catch (_) { pidns = ''; } }
+    MACHINE = { boot, pidns };
+  }
+  return MACHINE;
+}
+
+// sameMachine(record) -> true iff the record was written on THIS boot of
+// this machine (in this pid namespace), whatever its hostname said.
+function sameMachine(record) {
+  if (!record || !Number.isFinite(record.boot)) return false;
+  const m = localMachine();
+  if (m.boot === null || Math.abs(record.boot - m.boot) > BOOT_SLOP_S) return false;
+  return (typeof record.pidns === 'string' ? record.pidns : '') === m.pidns;
+}
+
+// ownerRecord(ts, token) -> the identity part of every record we publish.
+function ownerRecord(ts, token) {
+  const m = localMachine();
+  const r = { pid: process.pid, host: localHost(), ts, token };
+  if (m.boot !== null) r.boot = m.boot;
+  if (m.pidns) r.pidns = m.pidns;
+  return r;
+}
+
+// defaultIsAlive(pid) -> bool. kill(pid,0): ESRCH = gone; EPERM = exists but
+// not ours to signal (still alive).
+function defaultIsAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+}
+
+// sleepSync(ms) — cross-platform synchronous sleep with no busy-spin.
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms | 0)); } catch (_) { /* best-effort */ }
+}
+
+function parseRecord(raw) {
+  try {
+    const r = JSON.parse(raw);
+    return r && typeof r === 'object' && !Array.isArray(r) ? r : null;
+  } catch (_) { return null; }
+}
+
+function mkdirParent(F, p) {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  if (i > 0) { try { F.mkdirSync(p.slice(0, i), { recursive: true }); } catch (_) { /* surfaced by the create */ } }
+}
+
+// inspect(lockPath, opts) -> holder | null (no lock file). Read-only.
+// holder = { record, pid, host, ts, token, tsFromMtime, ageMs, known, alive,
+//            dead, unknown }
+function inspect(lockPath, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  const now = o.now || Date.now;
+  const isAlive = o.isAlive || defaultIsAlive;
+  let raw;
+  try { raw = F.readFileSync(lockPath, 'utf8'); }
+  catch (e) { if (e && e.code === 'ENOENT') return null; raw = null; }
+  const record = raw === null ? null : parseRecord(raw);
+  const pid = record && Number.isFinite(record.pid) && record.pid > 0 ? record.pid : null;
+  const host = record && typeof record.host === 'string' ? record.host : null;
+  const token = record && typeof record.token !== 'undefined' ? record.token : null;
+  let ts = record && Number.isFinite(record.ts) ? record.ts : null;
+  let tsFromMtime = false;
+  if (ts === null) {
+    try { ts = F.statSync(lockPath).mtimeMs; tsFromMtime = true; } catch (_) { ts = null; }
+  }
+  const t = now();
+  const ageMs = ts === null ? Infinity : Math.max(0, t - ts);
+  const known = pid !== null && (host === null || host === localHost() || sameMachine(record));
+  let alive = null;
+  if (known) { try { alive = !!isAlive(pid); } catch (_) { alive = true; } }
+  return {
+    record, pid, host, ts, token, tsFromMtime, ageMs, known,
+    alive: alive === true, dead: alive === false, unknown: !known,
+  };
+}
+
+function shouldSteal(h, o) {
+  if (typeof o.decide === 'function') {
+    let d;
+    try { d = o.decide(h); } catch (_) { d = 'respect'; }
+    if (d === 'steal') return true;
+    if (d === 'respect') return false;
+  }
+  const staleMs = Number.isFinite(o.staleMs) ? o.staleMs : DEFAULT_STALE_MS;
+  const liveStaleMs = typeof o.liveStaleMs === 'number' ? o.liveStaleMs : Infinity;
+  if (h.dead) return !!o.stealDead || h.ageMs > staleMs;
+  if (h.alive) return h.ageMs > liveStaleMs;
+  return h.ageMs > staleMs;
+}
+
+// publish(F, p, payload, mode) -> true | throws (EEXIST = held).
+function publish(F, p, payload, mode) {
+  if (mode === 'excl') {
+    const fd = F.openSync(p, 'wx');
+    try { F.writeSync(fd, payload); } finally { F.closeSync(fd); }
+    return true;
+  }
+  const tmp = p + '.tmp-' + process.pid + '-' + rand();
+  try {
+    F.writeFileSync(tmp, payload);
+    try {
+      F.linkSync(tmp, p);
+    } catch (linkErr) {
+      if (linkErr && linkErr.code === 'EEXIST') throw linkErr; // held
+      // Any other link error (EPERM/ENOTSUP/EXDEV/ENOSYS: a filesystem without
+      // hard links) -> O_EXCL create for THIS attempt. The torn-read guard
+      // (mtime) covers its create->write window.
+      const fd = F.openSync(p, 'wx');
+      try { F.writeSync(fd, payload); } finally { F.closeSync(fd); }
+    }
+    return true;
+  } finally {
+    try { F.unlinkSync(tmp); } catch (_) { /* ENOENT when never created */ }
+  }
+}
+
+// reclaim(F, p, h) -> 'reclaimed' | 'gone' | 'caught' | 'failed'.
+// Rename-aside, verify against the judged holder `h` (from inspect()),
+// discard; a caught fresh lock is restored (never clobbering one published
+// meanwhile) and must be respected. 'failed' = the verified stale file could
+// not be discarded; it is put back so nothing is lost or left half-moved.
+function reclaim(F, p, h) {
+  const reap = p + '.reap-' + process.pid + '-' + rand();
+  try { F.renameSync(p, reap); } catch (_) { return 'gone'; }
+  let moved = null;
+  let movedRaw = null;
+  try { movedRaw = F.readFileSync(reap, 'utf8'); moved = parseRecord(movedRaw); } catch (_) { /* unreadable */ }
+  const movedToken = moved && typeof moved.token !== 'undefined' ? moved.token : null;
+  let same = movedToken === h.token;
+  if (same && h.token === null) {
+    // No token to compare (torn/legacy record): the moved file must also
+    // still be the SAME non-fresh file we judged — a fresh publish carries a
+    // token, and a torn file judged by mtime must still be that old.
+    let mt = null;
+    try { mt = F.statSync(reap).mtimeMs; } catch (_) { mt = null; }
+    same = moved === null
+      ? (h.tsFromMtime && mt !== null && mt === h.ts)
+      : (moved.pid === (h.record && h.record.pid) && moved.ts === (h.record && h.record.ts));
+  }
+  if (!same) {
+    let restored = false;
+    try { F.linkSync(reap, p); restored = true; } catch (_) { /* EEXIST: a newer lock is already published; unsupported: fall through */ }
+    if (restored) { try { F.unlinkSync(reap); } catch (_) {} }
+    else {
+      let exists = false;
+      try { F.statSync(p); exists = true; } catch (_) { exists = false; }
+      if (!exists) { try { F.renameSync(reap, p); } catch (_) {} } else { try { F.unlinkSync(reap); } catch (_) {} }
+    }
+    return 'caught';
+  }
+  try { F.unlinkSync(reap); } catch (e) {
+    if (!e || e.code !== 'ENOENT') {
+      let exists = false;
+      try { F.statSync(p); exists = true; } catch (_) { exists = false; }
+      if (!exists) { try { F.renameSync(reap, p); } catch (_) {} }
+      return 'failed';
+    }
+  }
+  return 'reclaimed';
+}
+
+// takeSidecar(F, p, mode) -> { path, token, fs } | null (another reclaimer is
+// at work, or the sidecar cannot be created). Dated by real wall-clock time
+// and probed with the real pid check — never a caller's injected now/isAlive,
+// which describe the judged holder, not this process.
+function takeSidecar(F, p, mode) {
+  const side = p + '.reclaim';
+  for (let i = 0; i < 2; i++) {
+    const ts = Date.now();
+    const token = newToken(ts);
+    try {
+      publish(F, side, JSON.stringify(ownerRecord(ts, token)), mode);
+      return { path: side, token, fs: F };
+    } catch (e) { if (!e || e.code !== 'EEXIST') return null; }
+    const h = inspect(side, { fs: F });
+    if (h === null) continue; // released meanwhile: retry the create
+    if (!(h.dead || h.ageMs > RECLAIM_STALE_MS)) return null; // a live reclaimer holds it
+    const r = reclaim(F, side, h); // abandoned sidecar: token-verified takeover
+    if (r !== 'reclaimed' && r !== 'gone') return null;
+  }
+  return null;
+}
+
+// reclaimGuarded(F, p, o, stillStealable) -> 'reclaimed' | 'gone' | 'caught'
+// | 'failed' | 'busy'. The only path that renames/removes `p`: under the
+// sidecar, the holder is re-read and re-judged (stillStealable(fresh)) and only
+// then renamed aside. 'busy' = another reclaimer holds the sidecar.
+function reclaimGuarded(F, p, o, stillStealable) {
+  const side = takeSidecar(F, p, o.publish === 'excl' ? 'excl' : 'link');
+  if (!side) return 'busy';
+  try {
+    const fresh = inspect(p, o);
+    if (fresh === null) return 'gone';
+    let ok = false;
+    try { ok = !!stillStealable(fresh); } catch (_) { ok = false; }
+    if (!ok) return 'caught';
+    return reclaim(F, p, fresh);
+  } finally { releaseUnguarded(side); }
+}
+
+function sameHolder(a, b) {
+  if (a.token !== b.token) return false;
+  if (a.token !== null) return true;
+  return a.tsFromMtime === b.tsFromMtime && a.ts === b.ts && a.pid === b.pid;
+}
+
+// reclaimStale(lockPath, holder, opts) — the public form of the atomic
+// reclaim for a sweep that judged `holder` (from inspect()) itself. Under the
+// sidecar the holder must still be that SAME holder; 'busy' = another
+// reclaimer is at work (nothing touched).
+function reclaimStale(lockPath, holder, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  if (!holder) return 'gone';
+  return reclaimGuarded(F, lockPath, o, (fresh) => sameHolder(fresh, holder));
+}
+
+// acquire(lockPath, opts) -> handle | null.
+// opts: fs, now, isAlive, staleMs, liveStaleMs, stealDead, decide(holder),
+//   publish ('link'|'excl'), fields (extra record keys; undefined values are
+//   omitted), maxTries (create attempts; default 2), waitMs (keep retrying a
+//   respected holder this long; default 0), stepMs/jitterMs (sleep between
+//   retries), sleep (injectable), throwOnError (rethrow a non-EEXIST fs error
+//   instead of failing open to null), onRefused(holder).
+// handle: { path, token, record, release(), refresh(fields) }.
+function acquire(lockPath, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  const now = o.now || Date.now;
+  const mode = o.publish === 'excl' ? 'excl' : 'link';
+  const maxTries = typeof o.maxTries === 'number' ? o.maxTries : 2;
+  const waitMs = typeof o.waitMs === 'number' ? o.waitMs : 0;
+  const stepMs = Number.isFinite(o.stepMs) ? o.stepMs : 5;
+  const jitterMs = Number.isFinite(o.jitterMs) ? o.jitterMs : 0;
+  const sleep = o.sleep || sleepSync;
+  const deadline = Date.now() + waitMs;
+  mkdirParent(F, lockPath);
+  let lastHolder = null;
+  let retryNow = false; // one immediate retry is always allowed after a reclaim
+  for (let i = 0; i < maxTries; i++) {
+    // An unbounded try count is bounded by the wait budget instead — checked on
+    // EVERY pass, so a filesystem that keeps answering EEXIST for a path that
+    // is not there can never spin forever.
+    if (i > 0 && !retryNow && !Number.isFinite(maxTries) && Date.now() >= deadline) break;
+    retryNow = false;
+    const ts = now();
+    const token = newToken(ts);
+    const record = Object.assign(ownerRecord(ts, token), o.fields || {});
+    for (const k of Object.keys(record)) if (record[k] === undefined) delete record[k];
+    try {
+      publish(F, lockPath, JSON.stringify(record), mode);
+      return makeHandle(F, lockPath, token, record, now);
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') {
+        if (o.throwOnError) throw e;
+        return null; // fail-open: no lock
+      }
+    }
+    const h = inspect(lockPath, o);
+    if (h === null) continue; // released between our create and the read — retry now
+    lastHolder = h;
+    if (shouldSteal(h, o)) {
+      const r = reclaimGuarded(F, lockPath, o, (fresh) => shouldSteal(fresh, o));
+      if (r === 'caught' || r === 'failed') { refused(o, h); return null; }
+      if (r !== 'busy') {
+        retryNow = r === 'reclaimed';
+        continue; // reclaimed (or already gone): retry the create immediately
+      }
+      // busy: another reclaimer is at work — wait like a respected holder.
+    }
+    if (Date.now() >= deadline || i + 1 >= maxTries) break;
+    sleep(stepMs + (jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0));
+  }
+  if (lastHolder) refused(o, lastHolder);
+  return null;
+}
+
+function refused(o, h) {
+  if (typeof o.onRefused === 'function') { try { o.onRefused(h); } catch (_) {} }
+}
+
+function makeHandle(F, p, token, record, now) {
+  const handle = { path: p, token, record, fs: F, now };
+  handle.release = () => release(handle);
+  handle.refresh = (fields) => refresh(handle, fields);
+  return handle;
+}
+
+// releaseUnguarded(handle) -> true iff the on-disk token is ours and we removed
+// it. The read-then-unlink pair is not atomic by itself; release() runs it under
+// the reclaim sidecar. The sidecar's OWN release uses this path (no recursion).
+function releaseUnguarded(handle) {
+  const F = handle.fs || fs;
+  try {
+    const cur = parseRecord(F.readFileSync(handle.path, 'utf8'));
+    if (cur && cur.token === handle.token) { F.unlinkSync(handle.path); return true; }
+  } catch (_) { /* gone / unreadable: not ours to remove */ }
+  return false;
+}
+
+// Bound on waiting for a busy sidecar inside release(): RELEASE_SIDECAR_TRIES
+// attempts, RELEASE_SIDECAR_STEP_MS apart => at most ~(tries-1)*step = 40 ms of
+// sleep, safe inside a hook path. A crashed reclaimer can hold the sidecar for
+// RECLAIM_STALE_MS, so after the bound release falls back to the unguarded
+// read-then-unlink rather than leaking the lock.
+const RELEASE_SIDECAR_TRIES = 5;
+const RELEASE_SIDECAR_STEP_MS = 10;
+
+// release(handle) -> true iff OUR lock was removed. A lock whose on-disk token
+// is no longer ours (reclaimed by someone else) or unreadable is left alone.
+// The owner check and the unlink run under the reclaim sidecar, so a stealer
+// cannot reclaim + publish between our read and our unlink (which would delete
+// ITS lock).
+function release(handle) {
+  if (!handle || !handle.path) return false;
+  const F = handle.fs || fs;
+  let exists = true;
+  try { exists = F.existsSync(handle.path); } catch (_) {}
+  if (!exists) return false; // nothing of ours to remove: skip the sidecar
+  let side = null;
+  for (let i = 0; i < RELEASE_SIDECAR_TRIES && !side; i++) {
+    if (i > 0) sleepSync(RELEASE_SIDECAR_STEP_MS);
+    side = takeSidecar(F, handle.path, 'link');
+  }
+  if (!side) return releaseUnguarded(handle); // bounded fallback: pre-sidecar behaviour
+  try { return releaseUnguarded(handle); } finally { releaseUnguarded(side); }
+}
+
+// refresh(handle, fields?) -> true | false | 'error'. Re-stamps `ts` (and any
+// `fields`, e.g. a re-pointed pid) with an atomic tmp+rename while the lock is
+// still ours. false = DEFINITIVE loss (file gone, or another token); 'error' =
+// transient (unreadable/torn read, write failure, a reclaimer at work) — not
+// proof of loss.
+// The read-token-then-rename pair is NOT atomic, so it runs under the reclaim
+// sidecar — the same guard every rename/remove of `p` by a stealer holds. A
+// stealer therefore cannot reclaim + publish its own lock between our token
+// check and our rename (which would silently overwrite it: two holders).
+function refresh(handle, fields) {
+  if (!handle || !handle.path) return false;
+  const F = handle.fs || fs;
+  const side = takeSidecar(F, handle.path, 'link');
+  if (!side) return 'error'; // a reclaimer is at work: retry next beat
+  try { return refreshLocked(handle, F, fields); } finally { releaseUnguarded(side); }
+}
+
+function refreshLocked(handle, F, fields) {
+  let raw;
+  try { raw = F.readFileSync(handle.path, 'utf8'); }
+  catch (e) { return (e && e.code === 'ENOENT') ? false : 'error'; }
+  const cur = parseRecord(raw);
+  if (!cur) return 'error';
+  if (cur.token !== handle.token) return false;
+  const next = Object.assign({}, cur, { ts: (handle.now || Date.now)() }, fields || {});
+  next.token = handle.token;
+  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+  const tmp = handle.path + '.hb.' + process.pid + '-' + rand();
+  try {
+    F.writeFileSync(tmp, JSON.stringify(next));
+    F.renameSync(tmp, handle.path);
+    handle.record = next;
+    return true;
+  } catch (_) {
+    try { F.unlinkSync(tmp); } catch (_e) {}
+    return 'error';
+  }
+}
+
+const BUSY = Object.freeze({ ok: false, lockBusy: true });
+
+// withLock(path, opts, fn) — run fn(handle) under the lock, releasing in
+// finally. When the lock is not acquired, returns opts.onBusy(holder) if
+// given, else { ok:false, lockBusy:true } — fn never runs unlocked. A sync
+// fn that returns a Promise is refused (the lock would be released while the
+// async work still runs): use withLockAsync.
+function withLock(lockPath, opts, fn) {
+  const o = opts || {};
+  let holder = null;
+  const h = acquire(lockPath, Object.assign({}, o, { onRefused(x) { holder = x; if (typeof o.onRefused === 'function') o.onRefused(x); } }));
+  if (!h) return typeof o.onBusy === 'function' ? o.onBusy(holder) : BUSY;
+  try {
+    const out = fn(h);
+    if (out && typeof out.then === 'function') {
+      throw new Error('lock.withLock: the callback returned a Promise — use withLockAsync');
+    }
+    return out;
+  } finally { release(h); }
+}
+
+async function withLockAsync(lockPath, opts, fn) {
+  const o = opts || {};
+  let holder = null;
+  const h = acquire(lockPath, Object.assign({}, o, { onRefused(x) { holder = x; if (typeof o.onRefused === 'function') o.onRefused(x); } }));
+  if (!h) return typeof o.onBusy === 'function' ? o.onBusy(holder) : BUSY;
+  try { return await fn(h); } finally { release(h); }
+}
+
+module.exports = {
+  acquire, release, refresh, inspect, reclaimStale, withLock, withLockAsync,
+  defaultIsAlive, sleepSync, DEFAULT_STALE_MS, RECLAIM_STALE_MS,
+  _shouldSteal: shouldSteal, _localMachine: localMachine,
+};

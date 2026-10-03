@@ -1,0 +1,1797 @@
+'use strict';
+// anti-hall :: devswarm-supervisor — one sweep over published workspace
+// descriptors: compute liveness, write the verdict, poke or escalate the stale
+// ones. Workaround for claude-code#39755. OPT-IN (installed explicitly by the
+// user via install-devswarm-supervisor.js), fail-open per workspace, pure Node.
+//
+// This automatic path NEVER kills and NEVER resolves a pid — it does not import
+// findTarget or recover. On a `stale` verdict it only pokes (an optional
+// descriptor-supplied nudgeCommand) or escalates (a log line + optional
+// escalateCommand); see lib/recovery.js's pokeOrEscalate. Kill+resume survives
+// ONLY as the on-demand devswarm-recover.js CLI, invoked explicitly per
+// workspace — never from this sweep.
+//
+// Activation signal = the presence of ~/.anti-hall/devswarm/workspaces/*.json
+// descriptors (published by the consumer). DEVSWARM_REPO_ID is a per-SESSION var
+// and is absent in a launchd/systemd background job, so it is intentionally NOT
+// required here; the daemon gate is only the off / hard-kill switches.
+//
+// SINGLE-FLIGHT (P2-11): a cron fallback does NOT coalesce ticks the way launchd
+// StartInterval / systemd OnUnitActiveSec do, so main() takes a process-wide sweep
+// lock (dead-holder/stale steal) and exits immediately if a prior sweep is still
+// running — overlapping sweeps must never stack blocking ps/lsof work.
+//
+// ENV-TUNABLE THRESHOLDS (all seconds; absent/invalid -> module default, clamped):
+//   ANTIHALL_DEVSWARM_IDLE_SEC            idleThresholdMs   (default 900, min 60)
+//   ANTIHALL_DEVSWARM_COOLDOWN_SEC        cooldownMs        (default 600, min 0)
+//   ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS  nudgeMaxAttempts  (default 2,   1..20)
+//   ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC    nudgeWindowMs     (default 180, min 1)
+//   ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC  nudgeCooldownMs   (default 120, min 0)
+// See resolveThresholdsFromEnv() below; main() reads through it so a real
+// launchd/systemd/cron sweep honors overrides. (The on-demand devswarm-recover.js
+// CLI resolves its OWN maxRecoveries/graceMs directly, decoupled from this sweep.)
+
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const {
+  devswarmRoot, computeLiveness, writeVerdict, isSafeId, rowLivenessState, isSessionAliveRow,
+  DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS,
+} = require('./lib/liveness.js');
+const { pokeOrEscalate, notifyParentEscalation, drainEscalationIntents, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
+const repoUnknown = require('./lib/devswarm-repo-unknown.js'); // leaf (fs/path only)
+const alog = require('./lib/anti-hall-log.js'); // leaf module (fs/os/path only) — safe at top level, no cycle risk
+// devswarm-archived-cache: leaf-ish (fs/path + liveness.js, which this file
+// already loads). It lazy-requires THIS module for the sweep interval, so the
+// cycle is never observed at load time — see its sweepIntervalMs().
+const archivedCache = require('./lib/devswarm-archived-cache.js');
+// devswarm-repokey.js / devswarm-store.js are required LAZILY (inside
+// readMeshUrgency, not at module top level). Only the devswarm-repokey.js
+// lazy-require is load-bearing: repokey is NOT otherwise loaded anywhere in
+// this module's top-level require chain, so a corrupt/missing repokey must
+// fail OPEN at call time (readMeshUrgency's own try/catch -> null, no
+// escalation) rather than crash this module's top-level require — this
+// module is itself required at the TOP LEVEL by hooks/devswarm-parent-gate.js
+// (readDescriptors). devswarm-store.js, by contrast, is ALREADY loaded by the
+// time this module finishes loading — recovery.js (required above) top-level-
+// requires devswarm-store.js and predates v0.58, so the store rides in via
+// parent-gate -> supervisor -> recovery -> store regardless. Lazy-requiring it
+// here too is harmless-but-consistent, not load-bearing.
+//
+// scripts/devswarm.js (the reconcile-sweep's CLI entry point, C4 below) is
+// required LAZILY INSIDE reconcileSweepIfDue for a STRONGER reason than the
+// two above: it is genuinely CIRCULAR — scripts/devswarm.js itself top-level-
+// requires THIS module (for readDescriptors). A top-level require here would
+// deadlock into Node's partial-exports behavior whenever THIS module is the
+// one first loaded as `require.main` (i.e. run directly by launchd/systemd/
+// cron, exactly how install-devswarm-supervisor.js deploys it): see the
+// module.exports/require.main reordering note at the bottom of this file for
+// why that specific direction is otherwise unsafe.
+
+const SWEEP_LOCK_STALE_MS = 5 * 60 * 1000; // a sweep should never run this long; steal a lock older than this
+
+// ----- env-tunable thresholds (P2-xx) -----
+// parseEnvNum(env, name, defaultVal, {min,max}) -> number. A launchd/systemd/cron
+// sweep has no way to pass CLI flags, so these thresholds are env-only. Absent /
+// non-numeric / non-positive input ALWAYS falls back to defaultVal (fail-open —
+// a typo in a plist/unit file must never crash the sweep or silently zero a
+// threshold). min/max are applied to whichever value wins (env or default) so a
+// clamp can never be bypassed by simply omitting the var.
+function parseEnvNum(env, name, defaultVal, opts) {
+  const o = opts || {};
+  const raw = (env || {})[name];
+  let v = defaultVal;
+  if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    const n = parseInt(raw.trim(), 10);
+    if (Number.isFinite(n) && n > 0) v = n;
+  }
+  if (Number.isFinite(o.min)) v = Math.max(o.min, v);
+  if (Number.isFinite(o.max)) v = Math.min(o.max, v);
+  return v;
+}
+
+// resolveThresholdsFromEnv(env) -> { idleThresholdMs, cooldownMs, nudgeMaxAttempts,
+// nudgeWindowMs, nudgeCooldownMs }. All *_SEC env vars are seconds; converted to
+// ms here so callers (sweepOnce, computeLiveness, pokeOrEscalate) keep taking ms
+// as they already do.
+function resolveThresholdsFromEnv(env) {
+  const e = env || process.env;
+  // v0.108.0 unified settings: getWithEnv threads THIS SAME env through to
+  // settings.get() (env > settings.json > ... > default), deriving `home`
+  // from e.HOME/e.USERPROFILE so it never reads the real machine's home when
+  // a test passes an isolated env. Fails open to the legacy parseEnvNum-only
+  // path if settings.js is unavailable.
+  const g = (key, envName, dflt, opts) => {
+    try {
+      // parseEnvNum's OWN gate (below) only accepts a STRICTLY POSITIVE
+      // integer env value as a real override — zero/negative is treated as
+      // absent (falls to `dflt`, which is then still clamped). Reproduce
+      // that exact gate before consulting settings.get(), so e.g.
+      // ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS=0 keeps meaning "invalid,
+      // fail-open to default" rather than "0, clamped up to min".
+      const raw = e[envName];
+      let effectiveEnv = e;
+      if (typeof raw === 'string' && /^\d+$/.test(raw.trim()) && parseInt(raw.trim(), 10) <= 0) {
+        effectiveEnv = Object.assign({}, e);
+        delete effectiveEnv[envName];
+      }
+      return require('./../hooks/lib/settings.js').getWithEnv('devswarm', key, dflt, effectiveEnv);
+    } catch (_) {
+      return parseEnvNum(e, envName, dflt, opts);
+    }
+  };
+  const idleSec = g('idleSec', 'ANTIHALL_DEVSWARM_IDLE_SEC', DEFAULT_IDLE_MS / 1000, { min: 60 });
+  const cooldownSec = g('cooldownSec', 'ANTIHALL_DEVSWARM_COOLDOWN_SEC', DEFAULT_COOLDOWN_MS / 1000, { min: 0 });
+  const nudgeMaxAttempts = g('nudgeMaxAttempts', 'ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS', DEFAULT_NUDGE_MAX_ATTEMPTS, { min: 1, max: 20 });
+  const nudgeWindowSec = g('nudgeWindowSec', 'ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC', DEFAULT_NUDGE_WINDOW_MS / 1000, { min: 1 });
+  const nudgeCooldownSec = g('nudgeCooldownSec', 'ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC', DEFAULT_NUDGE_COOLDOWN_MS / 1000, { min: 0 });
+  return {
+    idleThresholdMs: idleSec * 1000,
+    cooldownMs: cooldownSec * 1000,
+    nudgeMaxAttempts,
+    nudgeWindowMs: nudgeWindowSec * 1000,
+    nudgeCooldownMs: nudgeCooldownSec * 1000,
+  };
+}
+
+function workspacesDir(home) {
+  return path.join(devswarmRoot(home), 'workspaces');
+}
+
+// ----- DEFECT 17685a91b783 (P1): post-spawn grace + done/archive-ready exclusion -----
+// The automatic sweep was observed forcing a parent-store escalation notice
+// ("child <id> idle 0m — reassign or archive") for a workspace whose descriptor
+// had just been (re)registered, AND for a workspace the Primary had already
+// ruled done. Two INDEPENDENT, additive suppressions, both applied ONLY to
+// whether this sweep ACTS on a `stale` verdict (pokeOrEscalate + the
+// mesh-urgency forced notify) — never to the verdict itself (writeVerdict still
+// persists exactly what computeLiveness/liveness.js computed; this file does
+// not own or alter that logic, see the DO-NOT-TOUCH list this fix is scoped
+// under). Both fail CLOSED toward the pre-fix behavior (escalate) on any
+// read/resolution failure — an unreadable signal must never silently suppress a
+// genuine neglect notice; the NEGATIVE CONTROL in the paired test proves a
+// genuinely idle-past-grace, non-done child is still poked/escalated normally.
+
+// DEFAULT_POST_SPAWN_GRACE_MS (2 minutes) — the minimum runway a descriptor
+// gets after its most recent (re)registration before this sweep will act on a
+// stale verdict for it. Deliberately GENEROUS relative to a single sweep tick
+// (launchd/systemd/cron intervals in this codebase are commonly 60-300s) but
+// short relative to DEFAULT_IDLE_MS (15min) and DEFAULT_NEVER_LAUNCHED_MS (6h)
+// so it can never mask real neglect for more than a couple of minutes — it
+// exists purely to cover the register-to-first-turn gap (spawn scheduling,
+// worktree creation, model cold-start), not to re-litigate the idle thresholds
+// computeLiveness already owns.
+const DEFAULT_POST_SPAWN_GRACE_MS = 2 * 60 * 1000;
+
+// resolvePostSpawnGraceMs(env) -> ms, via the SAME parseEnvNum helper every
+// other threshold in this file already uses. 0 is a valid override (grace
+// disabled outright); clamped to [0, 1800] seconds so a typo can never turn
+// this into an unbounded suppression.
+function resolvePostSpawnGraceMs(env) {
+  const e = env || process.env;
+  let sec;
+  try { sec = require('./../hooks/lib/settings.js').getWithEnv('devswarm', 'postSpawnGraceSec', DEFAULT_POST_SPAWN_GRACE_MS / 1000, e); }
+  catch (_) { sec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC', DEFAULT_POST_SPAWN_GRACE_MS / 1000, { min: 0, max: 1800 }); }
+  return sec * 1000;
+}
+
+// descriptorFilePath(home, id) — the SAME path convention scripts/devswarm.js's
+// own descriptorPath() uses (workspacesDir(home)/<id>.json); kept as a local
+// copy (this file's own established idiom — see collapsedDescriptorFamilies'
+// header on why cross-module coupling is avoided here) rather than importing
+// the forbidden scripts/devswarm.js for one path join.
+function descriptorFilePath(home, id) {
+  return path.join(workspacesDir(home), String(id) + '.json');
+}
+
+// withinPostSpawnGrace(id, home, now, graceMs, fsi) -> bool. Uses the
+// descriptor FILE's own mtime as the "most recent (re)registration" signal —
+// register/ensure/re-home all rewrite this file via an atomic tmp+rename
+// (scripts/devswarm.js writeDescriptorAtomic), so its mtime tracks the most
+// recent registration event, not merely the workspace's original creation.
+// FAIL-CLOSED (toward escalating, never toward suppressing): a disabled grace
+// (graceMs <= 0), an unreadable/absent descriptor file, or a NEGATIVE age
+// (the file's mtime is in the FUTURE relative to `now` — clock skew, or a
+// forged mtime) all return false, i.e. "not in grace, evaluate normally".
+// SKEW_TOLERANCE_MS — a small allowance for the mtime the fs clock reports
+// reading marginally AHEAD of `now` (observed a few ms, immediately after a
+// synchronous writeFileSync on this very machine — fs timestamp resolution and
+// Date.now()'s clock source are not guaranteed to agree to sub-millisecond
+// precision). Without this, a descriptor written microseconds ago could read
+// as a NEGATIVE age and fail the grace check for the wrong reason (treated as
+// "future/forged", the failure mode the null-return branch below exists for)
+// on the exact case this feature is meant to cover. Only a skew LARGER than
+// this (a genuinely forged or clock-skewed far-future mtime) still fails
+// closed toward "not in grace" — see the fail-closed branch below.
+const SKEW_TOLERANCE_MS = 5000;
+
+function withinPostSpawnGrace(id, home, now, graceMs, fsi) {
+  if (!(graceMs > 0)) return false;
+  const F = fsi || fs;
+  let ts = null;
+  try {
+    const st = F.statSync(descriptorFilePath(home, id));
+    ts = Number.isFinite(st.mtimeMs) ? st.mtimeMs : null;
+  } catch (_) { ts = null; }
+  if (ts === null) return false;
+  const age = now - ts;
+  if (age < 0) return age >= -SKEW_TOLERANCE_MS; // benign clock jitter -> effectively age 0, in grace
+  return age < graceMs;
+}
+
+// isArchiveReadyForSupervisor(id, worktreePath, home, deps) -> bool. Shares
+// Defect A's derivation (hooks/devswarm-parent-gate.js's isArchiveReadyFor):
+// once the Primary has ruled a child done+merged+tests_passed (the default
+// required-gate set; `devswarm.js gate <id> --set ...`), the store already
+// derives `archive_ready: true` into the per-project summary projection
+// (companion/lib/devswarm-store.js deriveSummary) — the SAME summaries/
+// <repoKey>.json file the gate reads. Kept as an independent local copy in
+// THIS file rather than a cross-require of hooks/devswarm-parent-gate.js (that
+// file is a Stop-hook script with side-effecting top-level code — `main()` is
+// invoked unconditionally at require time — so requiring it from here would
+// run a Stop hook's body as a side effect of loading the supervisor; the two
+// copies read the exact same on-disk fact and must be kept in sync by hand).
+// FAIL-CLOSED: any resolution/read/parse failure, or an id absent from the
+// projection, returns false — never silently suppresses a real neglect notice.
+function isArchiveReadyForSupervisor(id, worktreePath, home, deps) {
+  const d = deps || {};
+  try {
+    const resolveRepoKey = d.repoKeyForWorktree || require('./lib/devswarm-repokey.js').repoKeyForWorktree;
+    const repoKey = resolveRepoKey(worktreePath);
+    if (!repoKey) return false;
+    const F = d.fs || fs;
+    const p = path.join(devswarmRoot(home), 'summaries', String(repoKey) + '.json');
+    const raw = F.readFileSync(p, 'utf8').trim();
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.workspaces || typeof parsed.workspaces !== 'object') return false;
+    const entry = parsed.workspaces[String(id)];
+    return !!(entry && entry.archive_ready === true);
+  } catch (_) {
+    return false;
+  }
+}
+
+// ----- mesh-urgency signal (v0.58 "mesh-only messaging" — additive Tier 0 wake) -----
+// URGENT_TIERS — only these two deriveSummary urgencyMax values qualify as an
+// urgent unread signal (deriveSummary's URGENCY_RANK: low=0, normal=1, high=2,
+// urgent=3). 'low'/'normal'/absent -> not urgent: the sweep relies on the agent's
+// own next turn (child-turn.js/parent-inbox.js already surface those), it does
+// NOT force an escalate for them.
+const URGENT_TIERS = new Set(['high', 'urgent']);
+
+// readMeshUrgency(descriptor, home, deps) -> {urgencyMax, broadcastUrgencyMax,
+// directUnread, broadcastUnread} | null. Resolves THIS descriptor's PROJECT repoKey the SAME
+// way the codebase already does (repoKeyForWorktree — never re-hashed here), then
+// reads that project's mesh-store projection `summaries/<repoKey>.json`
+// (readSummaryForHash — the EXACT file the hooks read; see
+// hooks/devswarm-parent-inbox.js's own summaryPath) and looks up THIS
+// descriptor's own row (summary.workspaces[d.id] — deriveSummary keys the
+// per-workspace projection by the registered workspace id). FAIL-OPEN throughout:
+// an unresolvable repoKey (non-git worktree, no git binary), a missing/
+// unreadable/malformed summary file, or a descriptor absent from
+// summary.workspaces all return null ("no urgent signal") — this signal
+// augments, it never blocks or throws out of, a sweep tick.
+function readMeshUrgency(descriptor, home, deps) {
+  const d = deps || {};
+  try {
+    const resolveRepoKey = d.repoKeyForWorktree || require('./lib/devswarm-repokey.js').repoKeyForWorktree;
+    const readSummary = d.readSummaryForHash || require('./lib/devswarm-store.js').readSummaryForHash;
+    const repoKey = resolveRepoKey(descriptor.worktreePath);
+    if (!repoKey) return null;
+    const summary = readSummary(home, repoKey, d.fs);
+    if (!summary || typeof summary.workspaces !== 'object' || !summary.workspaces) return null;
+    const w = summary.workspaces[descriptor.id];
+    if (!w) return null;
+    return {
+      urgencyMax: w.urgencyMax != null ? String(w.urgencyMax) : null,
+      // broadcastUrgencyMax (v0.58 P1 fix) — deriveSummary's max urgency among
+      // this workspace's UNREAD non-heartbeat BROADCAST rows. Surfaced
+      // separately from urgencyMax (which is direct-only) so isUrgentMesh can
+      // treat an urgent/high broadcast as its own escalation trigger — a
+      // broadcast previously carried no urgency signal at all here, so a
+      // stale child with only an unread urgent broadcast (no direct message)
+      // could never wake the supervisor.
+      broadcastUrgencyMax: w.broadcastUrgencyMax != null ? String(w.broadcastUrgencyMax) : null,
+      directUnread: Number.isFinite(w.directUnread) ? w.directUnread : 0,
+      broadcastUnread: Number.isFinite(w.broadcastUnread) ? w.broadcastUnread : 0,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+// isUrgentMesh(urgency) -> bool. `urgency` is readMeshUrgency's return (or
+// null). True when EITHER the direct-row urgencyMax OR the broadcast-row
+// broadcastUrgencyMax is high/urgent (v0.58 P1 fix — a broadcast used to
+// carry no urgency signal here at all, so an urgent/high broadcast sitting
+// unread for a stale child could never force an escalation).
+function isUrgentMesh(urgency) {
+  return !!(urgency && (URGENT_TIERS.has(urgency.urgencyMax) || URGENT_TIERS.has(urgency.broadcastUrgencyMax)));
+}
+
+// supervisorBlockerLabel re-ask dedupe: one input (childId + hit.kind/ts)
+// stays THE SAME across many consecutive sweeps (the sweep interval is
+// ~90s; a child can sit "waiting-on-parent"/"wedged" for hours), so without
+// this, jevBlockerLabel below re-asked and re-logged the byte-identical
+// decision every single tick — one input produced 382 cache rows in 24h,
+// none of which carried any new information. A per-workspace state file
+// under <devswarmRoot>/blocker-label-ask/<childId>.json remembers the hash
+// of the last input actually asked/logged for that workspace; a sweep whose
+// input hash is unchanged skips the ask (and the log line) entirely UNLESS
+// the configured re-ask interval has elapsed (settings key
+// devswarm.supervisorBlockerLabelReaskSec, default 6h), which forces a
+// periodic re-log even for a long-static input so `jev report` still sees
+// this integration as alive. Fail-open throughout: any read/write error
+// degrades to "ask anyway" (today's pre-dedupe behavior), never to silence.
+const BLOCKER_LABEL_ASK_DIR = 'blocker-label-ask';
+const DEFAULT_BLOCKER_LABEL_REASK_MS = 6 * 60 * 60 * 1000; // 6h
+
+function blockerLabelAskStatePath(home, childId) {
+  return path.join(devswarmRoot(home), BLOCKER_LABEL_ASK_DIR, String(childId) + '.json');
+}
+function readBlockerLabelAskState(home, childId) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(blockerLabelAskStatePath(home, childId), 'utf8'));
+    return {
+      hash: typeof (parsed && parsed.hash) === 'string' ? parsed.hash : '',
+      askedAt: Number.isFinite(parsed && parsed.askedAt) ? parsed.askedAt : 0,
+      // P2 fix (rc-v0.108.4.2 review): this field was written by
+      // writeBlockerLabelAskState() but never READ back here, so every call
+      // site's `askState.mode` was always `undefined` — the dedupe-skip
+      // branch below (`askState.mode === 'on' ? label : null`) could never
+      // return the label for a suppressed re-ask, silently dropping an "on"
+      // mode's label for the rest of the re-ask interval. `mode` MUST
+      // round-trip: writeBlockerLabelAskState always persists it (the mode
+      // captured at the last real ask), and jevBlockerLabel's own
+      // dedupe-skip branch reads it back to decide whether a deduped
+      // (unlogged) sweep should still report the label. Dropping it here
+      // made every deduped sweep after the FIRST ask in a re-ask window
+      // silently report null -- the wedged/waiting-on-parent annotation
+      // flickered off for the rest of the ~6h window instead of staying
+      // attached, even though mode was genuinely still "on" the whole time
+      // (proven via a fixture repro: 10 sweeps at a 90s cadence produced
+      // label:'wedged' once, then label:null for the remaining 9, despite
+      // mode never actually changing).
+      mode: typeof (parsed && parsed.mode) === 'string' ? parsed.mode : '',
+    };
+  } catch (_) {
+    return { hash: '', askedAt: 0, mode: '' };
+  }
+}
+function writeBlockerLabelAskState(home, childId, state) {
+  try {
+    const p = blockerLabelAskStatePath(home, childId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(state));
+    fs.renameSync(tmp, p); // atomic — a crash mid-write can never leave a torn state file
+  } catch (_) { /* fail-open: dedupe is best-effort only, never load-bearing for correctness */ }
+}
+// resolveBlockerLabelReaskMs(env) -> ms, via settings.js (env > settings.json
+// > default), same getWithEnv idiom every other companion cooldown in this
+// file uses (resolveReconcileCooldownMs above).
+function resolveBlockerLabelReaskMs(env) {
+  const e = env || process.env;
+  try {
+    const sec = require('./../hooks/lib/settings.js')
+      .getWithEnv('devswarm', 'supervisorBlockerLabelReaskSec', DEFAULT_BLOCKER_LABEL_REASK_MS / 1000, e);
+    return (Number.isFinite(sec) && sec > 0 ? sec : DEFAULT_BLOCKER_LABEL_REASK_MS / 1000) * 1000;
+  } catch (_) {
+    return DEFAULT_BLOCKER_LABEL_REASK_MS;
+  }
+}
+
+// jevBlockerLabel(childId, home, opts) -> 'waiting-on-parent' | 'wedged' | null.
+//
+// JEV ADVISORY (supervisorBlockerLabel, default mode "shadow" — see
+// hooks/lib/jev-assist.js). Liveness here (computeLiveness above) is
+// TIMESTAMP-ONLY: a child that has gone idle right after asking the Primary a
+// question, or reporting a blocker, reads identically to a child that is
+// genuinely wedged — pokeOrEscalate above (already decided by the time this
+// runs) wastes an attempt/escalation on the former. This label is a REPORT
+// ANNOTATION ONLY: it is computed and attached AFTER poke/escalate have
+// already happened, so it can never change what this sweep just did.
+//
+// ZERO NETWORK: reads jev-triage.js's OWN existing pending-inbound cache
+// (~/.anti-hall/state/jev-triage-pending.json, written by
+// noteLabeledInbound() whenever the Primary last rendered a triage-labelled
+// message from this child — see scripts/devswarm.js's `inbox messages` path)
+// — never spawns a fresh classification. If the Primary has since replied,
+// recordAnswered() already cleared the entry, so a genuinely wedged/answered
+// distinction stays correct without this module re-deriving anything.
+//
+// Fail-open: any missing lib, unreadable cache, or jev-assist error -> null
+// (no label, no crash, no effect on the report's existing shape).
+function jevBlockerLabel(childId, home, opts) {
+  try {
+    const jevTriage = require('../hooks/lib/jev-triage.js');
+    const jevAssist = require('../hooks/lib/jev-assist.js');
+    const pending = jevTriage.readPending(home);
+    const suffix = '\u0001' + String(childId);
+    let hit = null;
+    for (const key of Object.keys(pending)) {
+      if (key.endsWith(suffix)) { hit = pending[key]; break; }
+    }
+    if (!hit || (hit.kind !== 'blocker' && hit.kind !== 'question-needs-answer')) return null;
+    const label = hit.kind === 'blocker' ? 'wedged' : 'waiting-on-parent';
+
+    const o = opts || {};
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const env = o.env || process.env;
+    const inputHash = String(childId) + '\u0001' + String(hit.kind) + '\u0001' + String(hit.ts);
+
+    // Dedupe: same input as last time AND within the re-ask interval -> skip
+    // the ask+log entirely, but still return the SAME label the last logged
+    // ask decided (a shadow row's suppression must not also blank an
+    // already-promoted "on" report field).
+    const askState = readBlockerLabelAskState(home, childId);
+    const reaskMs = resolveBlockerLabelReaskMs(env);
+    if (askState.hash === inputHash && (now - askState.askedAt) < reaskMs) {
+      return askState.mode === 'on' ? label : null;
+    }
+
+    const p = jevAssist.prepare({
+      id: 'supervisorBlockerLabel', home, trust: 'advisory', baseline: null,
+      cacheKey: String(childId) + '\u0001' + String(hit.ts), state: label,
+    });
+    if (p.skip) {
+      // mode "off" — no log line, no label (byte-identical to pre-Jev), but
+      // still record the ask so an off->on flip mid-interval isn't blocked
+      // by a stale off-mode state entry outliving the interval.
+      writeBlockerLabelAskState(home, childId, { hash: inputHash, askedAt: now, mode: 'off' });
+      return null;
+    }
+    jevAssist.finalize({
+      id: 'supervisorBlockerLabel', home: p.h, hash: p.hash, mode: p.mode,
+      trust: 'advisory', baseline: null, judge: () => true, threshold: p.threshold,
+      r: { ok: true, answer: label, confidence: 1, ms: 0 }, cachedFlag: true, state: label,
+    });
+    writeBlockerLabelAskState(home, childId, { hash: inputHash, askedAt: now, mode: p.mode });
+    // Shadow logs the decision above (for `jev report`) but NEVER changes the
+    // report — the label is only ever attached once promoted to mode "on".
+    return p.mode === 'on' ? label : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// superviseStraying(d, verdict, opts) -> { signals, issued } | null. Meeseeks
+// P2: see companion/lib/devswarm-supervision.js. Skips the Primary's own row
+// and any child without a step plan (null). Fail-open: any error -> null.
+function superviseStraying(d, verdict, opts) {
+  try {
+    const o = opts || {};
+    const deps = o.deps || {};
+    if (d.worktreePath) {
+      const pid = (deps.primaryWorkspaceId || require('./install-devswarm-ingest.js').primaryWorkspaceId)(d.worktreePath);
+      if (String(d.id) === String(pid)) return null;
+    }
+    const sup = require('./lib/devswarm-supervision.js');
+    const r = sup.evaluateChild(d, verdict, { home: o.home, env: o.env, now: o.now, deps: deps.supervision || {} });
+    if (!r || (!r.signals.length && !r.issued.length)) return null;
+    return { signals: r.signals.map((s) => s.signal), issued: r.issued.map((s) => s.signal) };
+  } catch (_) { return null; }
+}
+
+// readDescriptors(home, fsi) -> [{id, worktreePath, inboxPath, cursorPath, sessionId}].
+// Skips unreadable/malformed files (fail-open: one bad descriptor never stops the
+// sweep). Requires id + worktreePath + sessionId, AND a path-safe id (P1-7) so a
+// hostile id can never escape into locks/liveness/recovery paths.
+function readDescriptors(home, fsi) {
+  const F = fsi || fs;
+  let names = [];
+  try { names = F.readdirSync(workspacesDir(home)); } catch (_) { return []; }
+  const out = [];
+  for (const n of names) {
+    if (!/\.json$/.test(n)) continue;
+    try {
+      const d = JSON.parse(F.readFileSync(path.join(workspacesDir(home), n), 'utf8'));
+      if (d && d.worktreePath && d.sessionId && isSafeId(d.id)) out.push(d);
+    } catch (_) {}
+  }
+  return out;
+}
+
+// collapsedDescriptorFamilies(descriptors, deps) -> [{key, members, survivor}].
+// READ-TIME identity-family collapse (companion/lib/devswarm-identity-family.js)
+// — the SAME grouping hooks/devswarm-parent-gate.js applies to its own
+// `readDescriptors` enumeration, so the supervisor's own reported "how many
+// workspaces are being watched" view agrees with the gate's "N workspace(s)"
+// count instead of drifting apart. Two descriptor FILES sharing one
+// `worktreePath` (a builder-id UUID row and a slug row for the same physical
+// worktree) collapse to ONE family here, purely for REPORTING — nothing here
+// retires/deletes/writes any descriptor or state file, and `sweepOnce` below
+// is DELIBERATELY left iterating the raw, uncollapsed `descriptors` list: each
+// real descriptor still gets its own liveness verdict/poke, since a twin
+// descriptor can carry its OWN distinct sessionId (the legitimate "two live
+// tabs on one worktree" case the store-layer fold already protects).
+// `deps.canonicalMeshId` is injectable for tests; the default lazily requires
+// scripts/devswarm.js (same circular-require reasoning as reconcileSweepIfDue
+// above — NEVER a top-level require in this file) and reuses its EXISTING
+// `canonicalMeshId` derivation rather than reimplementing it. Fail-open: any
+// failure (missing module, throwing resolver) yields one family per
+// descriptor — today's uncollapsed behavior, never a crash.
+function collapsedDescriptorFamilies(descriptors, deps) {
+  const d = deps || {};
+  const list = Array.isArray(descriptors) ? descriptors : [];
+  try {
+    const identityFamily = d.identityFamily || require('./lib/devswarm-identity-family.js');
+    const resolveMeshId = d.canonicalMeshId || function (wt) {
+      const devswarmCli = require('../scripts/devswarm.js');
+      return devswarmCli.canonicalMeshId(wt);
+    };
+    const cache = new Map(); // worktreePath -> canonicalMeshId | null
+    const resolve = (wt) => {
+      if (cache.has(wt)) return cache.get(wt);
+      let k = null;
+      try { k = resolveMeshId(wt); } catch (_) { k = null; }
+      cache.set(wt, k);
+      return k;
+    };
+    return identityFamily.collapseFamilies(list, { resolve });
+  } catch (_) {
+    return list.map((desc) => ({ key: 'id:' + (desc && desc.id), members: [desc], survivor: desc }));
+  }
+}
+
+// supervisorEnabled(env) — daemon gate: off / hard-kill only.
+function supervisorEnabled(env) {
+  const e = env || process.env;
+  if (e.DISABLE_ANTIHALL_DEVSWARM === '1') return false;
+  if (String(e.ANTIHALL_DEVSWARM_SUPERVISOR || 'auto').trim().toLowerCase() === 'off') return false;
+  return true;
+}
+
+// ----- single-flight sweep lock (P2-11) -----
+function sweepLockPath(home) { return path.join(devswarmRoot(home), 'locks', 'sweep.lock'); }
+// acquireSweepLock(home, io) -> release() | null. Same dead-holder/stale-steal
+// semantics as the per-workspace lock (companion/lib/lock.js), on a fixed
+// process-wide path: a dead holder or one older than SWEEP_LOCK_STALE_MS is
+// reclaimed; a live, fresh sweep in progress -> null (skip this tick).
+function acquireSweepLock(home, io) {
+  const h = require('./lib/lock.js').acquire(sweepLockPath(home), {
+    fs: io && io.fs,
+    isAlive: io && io.isAlive,
+    now: io && io.now,
+    staleMs: SWEEP_LOCK_STALE_MS,
+    liveStaleMs: SWEEP_LOCK_STALE_MS,
+    stealDead: true,
+  });
+  return h ? function release() { h.release(); } : null;
+}
+
+// sweepOnce({home, now, env, idleThresholdMs, cooldownMs, nudgeWindowMs,
+//   nudgeMaxAttempts, nudgeCooldownMs, deps}) -> [{ id, verdict, poke } | { id,
+//   error }]. deps injectable for tests. NEVER resolves a pid, NEVER kills — a
+//   `stale` verdict only ever reaches pokeOrEscalate (poke or escalate; see
+//   lib/recovery.js). The on-demand devswarm-recover.js CLI is the only caller
+//   that ever resolves a target / kills.
+function sweepOnce(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const deps = o.deps || {};
+  const F = deps.fs || fs;
+  if (!supervisorEnabled(env)) return [];
+
+  const descriptors = (deps.readDescriptors || readDescriptors)(home, F);
+  const results = [];
+  for (const d of descriptors) {
+    try {
+      const verdict = (deps.computeLiveness || computeLiveness)({
+        descriptor: d, now: o.now, home, env, runners: deps.runners,
+        idleThresholdMs: o.idleThresholdMs, cooldownMs: o.cooldownMs, nudgeWindowMs: o.nudgeWindowMs,
+      });
+      (deps.writeVerdict || writeVerdict)(d.id, verdict, home, F);
+
+      let poke = null;
+      if (verdict.status === 'stale') {
+        // DEFECT 17685a91b783 — see the suppression helpers' header above.
+        // Evaluated ONCE per descriptor per tick, cheapest check first
+        // (grace is a single fs.statSync; archive-ready needs a repoKey
+        // resolution + a summary read, so it is skipped once grace already
+        // suppresses).
+        const nowTs = Number.isFinite(o.now) ? o.now : Date.now();
+        const graceMs = Number.isFinite(o.postSpawnGraceMs) ? o.postSpawnGraceMs : resolvePostSpawnGraceMs(env);
+        const graced = (deps.withinPostSpawnGrace || withinPostSpawnGrace)(d.id, home, nowTs, graceMs, F);
+        const done = !graced && (deps.isArchiveReadyForSupervisor || isArchiveReadyForSupervisor)(d.id, d.worktreePath, home, deps);
+        // R15 P3 FIX — SESSION-SOURCED LIVENESS (defect 699a236129c5) at the
+        // SUPERVISOR too, not just the read-side gate/table. `computeLiveness`
+        // above derives `stale` from ACTIVITY TIMESTAMPS alone (transcript/
+        // worktree mtime), the exact axis that goes quiet for an interactive
+        // session sitting at its prompt or a long autonomous turn — the same
+        // gap devswarm-parent-gate.js's/devswarm-parent-inbox.js's own
+        // `idleAlive` suppressors already close on the READ side. Without this,
+        // the supervisor kept poking/escalating (writing verdicts, invoking
+        // escalateCommand, notifying the parent store) a session it could have
+        // confirmed via `rowLivenessState` was still a RUNNING harness process.
+        // Evaluated only once graced/done have already failed to suppress
+        // (cheapest-first, same ordering discipline as those two checks).
+        // D12 (defect: false-positive escalation) — rowLivenessState's
+        // dormancy gate is 30 min (DEFAULT_DORMANT_MS) while the stale gate
+        // above is 15 min (DEFAULT_IDLE_MS): a row idle 15-30 min with a
+        // transcript is 'active' by that state machine, so sessionPidAlive
+        // was never consulted and a live-but-idle session could be escalated
+        // outright on the first stale tick. Fix: consult isSessionAliveRow
+        // DIRECTLY as a second, ONE-DIRECTIONAL suppressor alongside the
+        // existing rowLivenessState check — a live session pid can only
+        // SUPPRESS a poke/escalate, never assert one (rows with no real
+        // sessionId fall through isSessionAliveRow -> false, unchanged).
+        const rowForLiveness = { id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId };
+        const idleAlive = !graced && !done
+          && (
+            (deps.rowLivenessState || rowLivenessState)(rowForLiveness, home, { now: nowTs }) === 'idle-alive'
+            || (deps.isSessionAliveRow || isSessionAliveRow)(rowForLiveness, home, { now: nowTs })
+          );
+        // PRIMARY-ROW EXCLUSION (item F.2, v0.107.1 field report): `register-
+        // primary` (a documented, recommended one-time setup step — see
+        // scripts/devswarm.js cmdRegisterPrimary / skills/devswarm/SKILL.md)
+        // writes a REAL descriptor for the Primary's own `primary-<hash>` id
+        // so `migrate` can fold its legacy inbox — that id then sits in
+        // readDescriptors() forever, alongside genuine CHILD descriptors, and
+        // was swept by this SAME nudge/escalate machinery. A Primary row
+        // structurally never has a `nudgeCommand` (there is no CLI verb to
+        // "nudge" your own top-level session), so pokeOrEscalate's own
+        // exhaustion branch (lib/recovery.js: `if (descriptor.nudgeCommand
+        // && ...)` false -> immediate escalate) fired on the FIRST stale
+        // tick with nudgeAttempts=0 EVERY time — observed live as `workspace
+        // primary-<id>: escalated (nudgeAttempts=0)` for an actively-
+        // draining Primary. A Primary isn't a child to nudge/escalate at
+        // all; its OWN mailbox activity is already covered by the separate
+        // listener-presence check (doctor-devswarm.js's listenerPresenceFor)
+        // and the read-side idleAlive/isSessionAliveRow signals used
+        // elsewhere. Checked cheaply (no I/O — pure string derivation from
+        // the descriptor's own worktreePath) alongside the other suppressors
+        // so it never reaches pokeOrEscalate.
+        const isPrimaryRow = (() => {
+          try {
+            return d.worktreePath
+              ? String(d.id) === String((deps.primaryWorkspaceId
+                || require('./install-devswarm-ingest.js').primaryWorkspaceId)(d.worktreePath))
+              : false;
+          } catch (_) { return false; }
+        })();
+        if (graced || done || idleAlive || isPrimaryRow) {
+          poke = {
+            action: 'suppressed',
+            reason: graced ? 'post-spawn-grace' : (done ? 'archive-ready' : (idleAlive ? 'idle-alive' : 'primary-row-not-nudgeable')),
+          };
+        } else {
+          poke = (deps.pokeOrEscalate || pokeOrEscalate)(d, verdict, {
+            home, now: o.now, nudgeMaxAttempts: o.nudgeMaxAttempts, nudgeCooldownMs: o.nudgeCooldownMs,
+          }, deps.io);
+
+          // Mesh-urgency escalation (v0.58 "mesh-only messaging", additive Tier 0
+          // wake): an urgent/high unread in the project's mesh-store summary forces
+          // a parent-store escalate notice NOW, independent of the poke budget/
+          // cadence above (a stale-but-just-nudged workspace with a genuinely
+          // urgent unread must not wait out the nudge window) — same
+          // notifyParentEscalation channel pokeOrEscalate itself uses, so the
+          // store-level hash dedupe (`escalate:<id>:<staleSince>`) keeps this
+          // idempotent even when the base poke above already escalated on its own.
+          // NEVER resolves a pid, NEVER kills. Low/normal urgency (or no mesh
+          // signal at all) -> no forced escalate; rely on the agent's next turn.
+          // Gated by the SAME graced/done suppression as the base poke above —
+          // a just-spawned or already-done workspace must not be force-escalated
+          // via this side door either.
+          const urgency = (deps.readMeshUrgency || readMeshUrgency)(d, home, deps);
+          if (isUrgentMesh(urgency)) {
+            // Thread the SAME injected fs (F, already used above for
+            // readDescriptors/writeVerdict/computeLiveness) through to
+            // notifyParentEscalation's opts — matching how the neighbouring
+            // pokeOrEscalate call site passes `fsi: F` into its own internal
+            // notifyParentEscalation call (lib/recovery.js). Without this, a
+            // test/sandbox that injects fs here still leaks the forced-escalate
+            // path to the real filesystem.
+            (deps.notifyParentEscalation || notifyParentEscalation)(d, verdict, {
+              home, now: o.now, env, fsi: F,
+            }, deps.openParentStore);
+          }
+        }
+      }
+      const blockerLabel = jevBlockerLabel(d.id, home, { now: o.now, env });
+      const row = blockerLabel ? { id: d.id, verdict, poke, blocker: blockerLabel } : { id: d.id, verdict, poke };
+      // Meeseeks P2 straying signals (plan rows only; advisory, never kills).
+      // A child without a step plan is untouched and its result row keeps
+      // its old shape.
+      const straying = superviseStraying(d, verdict, { home, env, now: o.now, deps });
+      if (straying) row.straying = straying;
+      results.push(row);
+    } catch (e) {
+      results.push({ id: d && d.id, error: String(e && e.message) });
+    }
+  }
+  // Parked escalation notices (recovery.js escalation-pending/) are retried on
+  // EVERY sweep, independent of any child's verdict: an `escalated` child is
+  // sticky and no longer reaches pokeOrEscalate, so its one-shot notice would
+  // otherwise never be re-sent. Reported on the array (additive property).
+  try {
+    results.escalationsDrained = (deps.drainEscalationIntents || drainEscalationIntents)(home, { now: o.now, env, fsi: F }, deps.openParentStore);
+  } catch (e) {
+    results.escalationsDrained = { error: String(e && e.message) };
+  }
+  return results;
+}
+
+// ============================================================================
+// RECONCILE SWEEP (C4 — trigger-less recovery). Verified: `devswarm.js
+// reconcile` (drains stranded per-worktree native queues into the shared
+// store) was MANUAL-only — `update` runs it post-update and `doctor` only
+// under an explicit --fix gate; this periodic liveness sweep never ran it at
+// all. Field consequence: 1,440 messages sat stranded across 23 worktrees
+// until an update happened to run reconcile (the recovery itself, once
+// triggered, was lossless — the gap was purely "nothing triggers it
+// automatically"). This gives the ALREADY-installed periodic supervisor a
+// COOLDOWN-GATED sweep that periodically invokes the EXISTING reconcile entry
+// point (scripts/devswarm.js's `run(['reconcile'], ctx)` — the exact
+// programmatic call doctor-repair.js already makes) — no new recovery
+// mechanism, no parallel lock, no reimplementation of the drain itself.
+//
+// LOCK REUSE (hard constraint): `run(['reconcile'])` -> cmdReconcile spawns
+// `inbox pull <id>` as a subprocess per descriptor, cwd=that worktree, which
+// runs cmdInboxPull -> devswarm-pull.js's pullOnce -> acquireExclLock (the
+// SAME per-id O_EXCL `openSync(p,'wx')` lock a live child's own `inbox pull`
+// already uses). This sweep therefore acquires that SAME lock via the SAME
+// existing call path — it never opens a lock of its own — so it cannot race a
+// live drain: whichever of the two (this sweep's subprocess, or a live
+// child's own pull) gets there first wins the lock; the other observes
+// `locked:true` in cmdReconcile's per-target result and is skipped for THIS
+// tick, never blocked on, never corrupted.
+//
+// NON-DESTRUCTIVE + IDEMPOTENT: reconcile/inbox-pull never deletes source
+// messages (verified: no unlink/rm of message data anywhere in
+// devswarm-pull.js — only lock-file bookkeeping); re-running it on an
+// already-drained project is a no-op (imported:0).
+//
+// BOUNDED: (1) cooldown-gated — at most one reconcile-sweep attempt per
+// RECONCILE_SWEEP_COOLDOWN_MS (default 15min, env-tunable, floor 5min so a
+// typo'd override can never turn this into a per-tick hammer); (2) capped —
+// at most MAX_RECONCILE_PROJECTS_PER_TICK distinct projects per attempt (a
+// project skipped this tick is simply retried on a later cooldown-gated
+// tick — never lossy, just deferred); (3) each underlying `inbox pull`
+// subprocess already carries its own 30s spawn timeout (defaultSpawnReconcile
+// in scripts/devswarm.js) — this sweep inherits that bound for free by
+// reusing the same call path rather than reimplementing it.
+//
+// FAIL-OPEN throughout: this feature must never crash or hang the liveness
+// sweep it rides alongside. Every layer (state read/write, repoKey
+// resolution, the reconcile call itself) is individually try/caught; a
+// failure anywhere degrades to "skip this tick", never a thrown error.
+// ============================================================================
+
+const DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS = 15 * 60 * 1000; // 15 min
+const RECONCILE_SWEEP_STATE_FILE = 'reconcile-sweep-state.json';
+// Soft bound on distinct PROJECTS (repoKeys) reconciled in one tick — keeps a
+// single tick's worst-case latency bounded even on a machine with many active
+// projects. Not env-tunable (deliberately small, fixed surface area): a
+// project excluded this tick is picked up on a later cooldown-gated tick, so
+// this is a fairness/latency cap, never a lossiness risk.
+const MAX_RECONCILE_PROJECTS_PER_TICK = 10;
+
+function reconcileSweepStatePath(home) {
+  return path.join(devswarmRoot(home), RECONCILE_SWEEP_STATE_FILE);
+}
+
+// reconcileSweepEnabled(env) — off / hard-kill gates, PLUS its own dedicated
+// sub-toggle so an owner can keep the liveness sweep (poke/escalate) while
+// opting OUT of the automatic reconcile invocation specifically (e.g. while
+// diagnosing a reconcile-side issue) without disabling the whole supervisor.
+function reconcileSweepEnabled(env) {
+  const e = env || process.env;
+  if (!supervisorEnabled(e)) return false;
+  let mode;
+  try { mode = require('./../hooks/lib/settings.js').getWithEnv('devswarm', 'reconcileSweep', 'auto', e); }
+  catch (_) { mode = String(e.ANTIHALL_DEVSWARM_RECONCILE_SWEEP || 'auto').trim().toLowerCase(); }
+  return String(mode).trim().toLowerCase() !== 'off';
+}
+
+// resolveReconcileCooldownMs(env) -> ms, floor 5min (see BOUNDED above).
+function resolveReconcileCooldownMs(env) {
+  const e = env || process.env;
+  let sec;
+  try { sec = require('./../hooks/lib/settings.js').getWithEnv('devswarm', 'reconcileSweepSec', DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS / 1000, e); }
+  catch (_) { sec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC', DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS / 1000, { min: 300 }); }
+  return sec * 1000;
+}
+
+// readReconcileSweepState/writeReconcileSweepState — a small, independent,
+// additive state file (NOT the liveness verdict, NOT the sweep lock) tracking
+// only `{ lastRunAt }`. Fail-open: unreadable/corrupt/absent -> lastRunAt:0,
+// i.e. "never run" -> ELIGIBLE NOW. This fails open TOWARD sweeping, not away
+// from it — deliberately the opposite polarity of e.g. the parent-gate's
+// unknown-blocks convention, because running reconcile is itself safe,
+// idempotent, and non-destructive (see header), so the worse failure mode
+// here is staying silent (the ORIGINAL C4 bug), not sweeping an extra time.
+function readReconcileSweepState(home, F) {
+  try {
+    const parsed = JSON.parse(F.readFileSync(reconcileSweepStatePath(home), 'utf8'));
+    return { lastRunAt: Number.isFinite(parsed && parsed.lastRunAt) ? parsed.lastRunAt : 0 };
+  } catch (_) {
+    return { lastRunAt: 0 };
+  }
+}
+function writeReconcileSweepState(home, F, state) {
+  try {
+    const p = reconcileSweepStatePath(home);
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + process.pid;
+    F.writeFileSync(tmp, JSON.stringify(state));
+    F.renameSync(tmp, p); // atomic — a crash mid-write can never leave a torn state file
+  } catch (_) { /* fail-open: rate-limiting is best-effort only, never load-bearing for correctness */ }
+}
+
+// distinctRepoKeys(descriptors, deps) -> [{repoKey, worktreePath}], one
+// representative worktreePath per distinct repoKey. `deps.repoKeyForWorktree`
+// is injectable (tests); default lazily requires devswarm-repokey.js (same
+// lazy-require discipline readMeshUrgency above already uses — repokey is not
+// otherwise on this module's top-level require chain). Fail-open per
+// descriptor: an unresolvable repoKey (non-git worktree, missing git binary)
+// is skipped, never thrown — this signal only exists to discover WHICH
+// projects are active; the real reconcile call re-derives its own repoKey
+// from cwd independently regardless of what we pass in here.
+//
+// D12 item 5 (v0.96.1) — EXPLICIT BELT-AND-SUSPENDERS HARDENING, NOT A FIX
+// for defect 3e000e49fe1b. That defect's stated mechanism (a stale worktree
+// winning the representative slot over a live one for the same repoKey) was
+// investigated and REFUTED: `resolve()` (the git-root probe in
+// lib/devswarm-repokey.js) already requires the candidate path to exist —
+// spawnSync ENOENTs on a missing cwd, so a deleted worktree's own resolve()
+// call already fails and is skipped by the pre-existing `if (!key ...)
+// continue` below, before it could ever reach `seen`. The real cause of that
+// defect's field symptom (that one repoKey's hivecontrol-active.json entry
+// never populating) is still open and is being traced separately via a
+// read-only repro; this change does not close it.
+//
+// What THIS does: consults `deps.fs` (default real `fs`) via `existsSync`
+// EXPLICITLY and independently of whatever `repoKeyForWorktree` happens to do
+// internally, so the "prefer a live path" guarantee no longer rides on that
+// resolver's incidental existence requirement — a defensive decoupling, kept
+// because it is cheap and strictly does not weaken today's behavior, not
+// because it was proven to fix a live incident.
+//
+// TWO-PASS, each descriptor visited exactly once (no redundant git spawns):
+// PASS 1 restricts to worktreePaths that currently EXIST — first-resolving
+// wins per repoKey, same semantics as before, just existence-gated. PASS 2 is
+// the FALLBACK for a repoKey with no existing candidate at all — the
+// pre-existing fail-open contract still applies (first descriptor wins), a
+// stale representative there is no worse than today's behavior.
+function distinctRepoKeys(descriptors, deps) {
+  const d = deps || {};
+  const F = d.fs || fs;
+  const resolve = d.repoKeyForWorktree || function (wt) {
+    try { return require('./lib/devswarm-repokey.js').repoKeyForWorktree(wt); } catch (_) { return null; }
+  };
+  const exists = (wt) => { try { return F.existsSync(wt); } catch (_) { return false; } };
+  const list = descriptors || [];
+  const seen = new Map();
+
+  for (const desc of list) {
+    if (!desc || !desc.worktreePath || !exists(desc.worktreePath)) continue;
+    let key = null;
+    try { key = resolve(desc.worktreePath); } catch (_) { key = null; }
+    if (!key || seen.has(key)) continue;
+    seen.set(key, desc.worktreePath);
+  }
+  for (const desc of list) {
+    if (!desc || !desc.worktreePath || exists(desc.worktreePath)) continue; // already handled above
+    let key = null;
+    try { key = resolve(desc.worktreePath); } catch (_) { key = null; }
+    if (!key || seen.has(key)) continue;
+    seen.set(key, desc.worktreePath);
+  }
+
+  const out = [];
+  for (const [repoKey, worktreePath] of seen) out.push({ repoKey, worktreePath });
+  return out;
+}
+
+// reconcileSweepIfDue(opts) -> { ran, reason? } | { ran:true, projects,
+// skipped, results }. Never throws. opts: { home, env, now, cooldownMs,
+// maxProjectsPerTick, deps: { fs, readDescriptors, repoKeyForWorktree,
+// readReconcileSweepState, writeReconcileSweepState, runReconcile } } — all
+// injectable so tests never spawn a real subprocess or touch real git.
+function reconcileSweepIfDue(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const deps = o.deps || {};
+  const F = deps.fs || fs;
+
+  try {
+    if (!reconcileSweepEnabled(env)) return { ran: false, reason: 'disabled' };
+
+    const cooldownMs = Number.isFinite(o.cooldownMs) ? o.cooldownMs : resolveReconcileCooldownMs(env);
+    const state = (deps.readReconcileSweepState || readReconcileSweepState)(home, F);
+    if ((now - state.lastRunAt) < cooldownMs) return { ran: false, reason: 'cooldown' };
+
+    const descriptors = (deps.readDescriptors || readDescriptors)(home, F);
+    if (!descriptors || !descriptors.length) return { ran: false, reason: 'no-descriptors' };
+
+    const projects = distinctRepoKeys(descriptors, deps);
+    if (!projects.length) return { ran: false, reason: 'no-resolvable-projects' };
+
+    // Persist BEFORE running (mirrors devswarm-parent-gate.js's persist-
+    // before-block ordering): a slow or crashing reconcile call still honors
+    // the cooldown for the NEXT tick rather than being retried every tick.
+    (deps.writeReconcileSweepState || writeReconcileSweepState)(home, F, { lastRunAt: now });
+
+    const cap = Number.isFinite(o.maxProjectsPerTick) ? o.maxProjectsPerTick : MAX_RECONCILE_PROJECTS_PER_TICK;
+    const targets = projects.slice(0, Math.max(0, cap));
+
+    // runReconcile(worktreePath) -> the reconcile call result shape ({ok,
+    // count, imported, lost, rejected, ...} — see scripts/devswarm.js's
+    // cmdReconcile) or { ok:false, error } on failure. LAZY require (see the
+    // top-of-file comment): scripts/devswarm.js top-level-requires THIS
+    // module, so requiring it here at call time (never at module top level)
+    // is what keeps the cycle from ever observing partial exports.
+    const runReconcile = deps.runReconcile || function (worktreePath) {
+      const devswarmCli = require('../scripts/devswarm.js');
+      const { result } = devswarmCli.run(['reconcile'], { home, env, cwd: worktreePath });
+      return result;
+    };
+    // runFold(repoKey) — B1(a) fix: invoke the SAME canonical-fold primitive
+    // doctor --repair/update already run (scripts/devswarm.js's
+    // foldMeshDuplicates), but from THIS periodic, cooldown-gated sweep, so a
+    // live slug/UUID partition split (fold logic already handles the pair —
+    // groupRegistryByMeshId + isStaleCrossReference — but nothing on a LIVE
+    // path ever invoked it) gets folded without waiting for a manual
+    // doctor/update run. No new gate/lock/scheduling primitive: this rides
+    // INSIDE the exact same reconcileSweepEnabled/cooldown gate and the same
+    // single-flight supervisor sweep-lock (main()'s acquireSweepLock) the
+    // reconcile call above already uses — `ctx.repoKey` bypasses cwd/git
+    // resolution entirely, matching doctor-repair.js's own call shape. LAZY
+    // require for the same circular-require reason as runReconcile above.
+    // Ordering: runFold AFTER runReconcile per target, so a project that was
+    // just reconciled (its native inbox freshly pulled into the registry) is
+    // folded against its now-current state, not a stale pre-reconcile one.
+    const runFold = deps.runFold || function (repoKey) {
+      const devswarmCli = require('../scripts/devswarm.js');
+      return devswarmCli.foldMeshDuplicates(home, { repoKey, env });
+    };
+
+    // runActiveList(worktreePath) — APP-SIDE ARCHIVE PROBE, BY ABSENCE (field:
+    // the owner archived children in the DevSwarm app; nothing on anti-hall's
+    // side ever learned, so those rows kept rendering as escalated/not-draining).
+    // ONE bounded, read-only `hivecontrol workspace list all` per target, riding
+    // INSIDE this same cooldown-gated, sweep-locked pass — no new scheduler, no
+    // new lock, and NO reader ever spawns hivecontrol (see
+    // companion/lib/devswarm-archived-cache.js's header). It caches the ACTIVE
+    // set; "archived" is derived from absence at READ time under that lib's four
+    // conjuncts. LAZY require for the same circular-require reason as
+    // runReconcile/runFold above.
+    const runActiveList = deps.runActiveList || function (worktreePath) {
+      const devswarmCli = require('../scripts/devswarm.js');
+      return devswarmCli.fetchActiveWorkspaceRecords({ home, env, cwd: worktreePath });
+    };
+
+    // scopeRecordToRepoKey(rec) -> repoKey|null (D12b item 2). `hivecontrol
+    // workspace list all` is a GLOBAL, unfiltered read — measured to return
+    // the IDENTICAL record set regardless of which repo's cwd the probe ran
+    // from. Naively assigning that whole answer to `activeByRepoKey[t.repoKey]`
+    // (the pre-fix code) stuffed EVERY repo's active records into EVERY
+    // probed repo's bucket, so a row in repo X could be "proven live" by a
+    // same-id/worktreePath record that actually belongs to repo Y. Resolve
+    // each record's OWN repoKey from its OWN worktreePath via the exact same
+    // resolver distinctRepoKeys above already uses (fail-open null on a
+    // missing/deleted/non-git worktreePath — such a record is unattributable
+    // and is excluded from every bucket, never guessed into one). Memoized by
+    // worktreePath since the global list — and therefore this resolution — is
+    // identical across every target in this same sweep tick; resolving each
+    // distinct worktreePath's repoKey once here, rather than once per target,
+    // avoids a redundant git spawn per (target x record) pair.
+    const resolveRepoKeyCached = deps.repoKeyForWorktree || function (wt) {
+      try { return require('./lib/devswarm-repokey.js').repoKeyForWorktree(wt); } catch (_) { return null; }
+    };
+    const recordRepoKeyCache = new Map();
+    function scopeRecordToRepoKey(rec) {
+      if (!rec || !rec.worktreePath) return null;
+      if (recordRepoKeyCache.has(rec.worktreePath)) return recordRepoKeyCache.get(rec.worktreePath);
+      let key = null;
+      try { key = resolveRepoKeyCached(rec.worktreePath); } catch (_) { key = null; }
+      recordRepoKeyCache.set(rec.worktreePath, key);
+      return key;
+    }
+
+    const results = [];
+    let anyLost = false;
+    const activeByRepoKey = {};
+    let activeProbeFailure = null;
+    // activeScope counters (D12c, R29 P2) — tick-wide, not per-target: `kept`
+    // sums every record actually attributed to a bucket across all targets
+    // this tick (direct match + same-repositoryId sibling fallback below);
+    // `dropped` counts DISTINCT unattributable records (deduped by
+    // worktreePath, since the global hivecontrol answer is refetched — and,
+    // per field measurement, identical — once per target, so the same
+    // unattributable record would otherwise be counted once per target
+    // rather than once per tick). `droppedLoggedKeys` backs that dedupe AND
+    // caps the actual alog.logEvent calls at 20 for this tick; the `dropped`
+    // count itself is never capped, only the log volume is.
+    let activeScopeKept = 0;
+    let activeScopeDropped = 0;
+    const droppedLoggedKeys = new Set();
+    for (const t of targets) {
+      let result = null;
+      try {
+        result = runReconcile(t.worktreePath);
+      } catch (e) {
+        result = { ok: false, error: String(e && e.message || e) };
+      }
+      if (result && result.lost) anyLost = true;
+      let fold = null;
+      try {
+        fold = runFold(t.repoKey);
+      } catch (e) {
+        fold = { ok: false, error: String(e && e.message || e) };
+      }
+      // Best-effort, per target. A probe failure NEVER contributes an entry —
+      // "no data for this project" means no suppression, the fail-open
+      // direction. THE THREE ADMISSION CONDITIONS, all required: the call
+      // exited ok, it parsed as an array, and it carried AT LEAST ONE record.
+      // The last one matters under absence semantics in a way it did not under
+      // the old flag design: a zero-record answer (an empty array, or a CLI
+      // error such as "Repository not found" surfaced as an empty body) would
+      // otherwise be cached as "this project has no live workspaces" and
+      // archive EVERY row in it. fetchActiveWorkspaceRecords reports that case
+      // as `hivecontrol-empty-list` rather than ok, so it is refused here, and
+      // writeActiveCache refuses it a second time independently.
+      // The first failure is remembered so it can be logged ONCE per sweep
+      // (not once per project).
+      // "Repository not found" for this probe cwd is terminal (devswarm-repo-
+      // unknown.js): recorded once, then not re-run (nor re-reported) every
+      // sweep until its periodic recheck. Contributes nothing — fail-open.
+      let active = null;
+      // Only a repoKey with NO live row may be suppressed: a live child's probe
+      // keeps running (and reporting its failure) every sweep.
+      const repoTerminal = () => !descriptors.some((x) => {
+        if (!x || !x.worktreePath) return false;
+        let k = null;
+        try { k = resolveRepoKeyCached(x.worktreePath); } catch (_) { k = null; }
+        return k === t.repoKey && !repoUnknown.rowTerminal(x, { home, env, now });
+      });
+      const listSuppressed = repoUnknown.isSuppressed(home, t.repoKey, 'list', now) && repoTerminal();
+      if (!listSuppressed) {
+        try {
+          active = runActiveList(t.worktreePath);
+        } catch (e) {
+          active = { ok: false, reason: 'probe-threw', error: String(e && e.message || e) };
+        }
+        if (active && active.ok) {
+          repoUnknown.clear(home, t.repoKey, 'list');
+        } else if (active && !repoUnknown.isRepoUnknownText(active.error, active.stderr)) {
+          repoUnknown.clear(home, t.repoKey, 'list'); // a different error resets the streak
+        } else if (active && repoTerminal()) {
+          const rec = repoUnknown.record(home, t.repoKey, 'list', active.error || active.stderr, now);
+          if (rec.engaged) {
+            try {
+              alog.logEvent('devswarm-supervisor', 'repo-unknown', 'info',
+                'hivecontrol does not know this project\'s repository (' + repoUnknown.SUPPRESS_AFTER + ' sweeps in a row, no live row) — the active-workspace probe is suppressed until a periodic recheck',
+                { repoKey: t.repoKey, worktreePath: t.worktreePath });
+            } catch (_) { /* logging must never break the sweep */ }
+          }
+          if (rec.suppressed) active = { ok: false, reason: 'repo-unknown' };
+        }
+      }
+      if (active && active.ok && Array.isArray(active.records) && active.records.length) {
+        // D12b item 2: SCOPE the (possibly global) answer to records this
+        // repoKey's own worktree(s) actually own — see scopeRecordToRepoKey
+        // above.
+        const direct = active.records.filter((r) => scopeRecordToRepoKey(r) === t.repoKey);
+        // D12c (R29 P2): a record whose OWN worktreePath cannot be attributed
+        // to ANY repoKey (deleted/rehomed worktree, symlink mismatch) used to
+        // be dropped unconditionally, even when hivecontrol still lists it
+        // live — past the archive grace period this let isAppArchived read a
+        // genuinely-live sibling row as app-archived. Safer default: fold such
+        // a record into THIS repoKey's bucket when it shares a repositoryId
+        // with a record that DID attribute here directly (same repositoryId
+        // under the devswarm repos root means "same repo, different/stale
+        // worktree path") — never across a FOREIGN repositoryId, and never
+        // for a record that resolves to a DIFFERENT repoKey (that one truly
+        // belongs elsewhere and is not reassigned).
+        const attributedRepositoryIds = new Set(
+          direct
+            .map((r) => (typeof r.repositoryId === 'string' && r.repositoryId) ? r.repositoryId : null)
+            .filter(Boolean)
+        );
+        const siblings = attributedRepositoryIds.size ? active.records.filter((r) => {
+          if (direct.indexOf(r) !== -1) return false; // already counted directly
+          if (scopeRecordToRepoKey(r) !== null) return false; // attributed elsewhere — never reassign
+          if (typeof r.repositoryId !== 'string' || !r.repositoryId) return false;
+          if (!attributedRepositoryIds.has(r.repositoryId)) return false;
+          return archivedCache.isUnderDevswarmReposRoot(r.worktreePath);
+        }) : [];
+        const scoped = direct.concat(siblings);
+        if (scoped.length) { activeByRepoKey[t.repoKey] = scoped; activeScopeKept += scoped.length; }
+        // A non-empty global answer that scopes down to ZERO records for
+        // THIS repoKey is not treated as a probe failure (the probe itself
+        // succeeded) — it simply contributes nothing for this project this
+        // tick, same fail-open posture as any other empty-for-this-key case
+        // (writeActiveCache already refuses an empty per-key write).
+
+        // Genuinely dropped: unattributable AND no same-repositoryId sibling
+        // fallback applied. Logged once per DISTINCT worktreePath this tick
+        // (see droppedLoggedKeys above), capped at 20 alog.logEvent calls;
+        // the dropped count itself is never capped.
+        const stillDropped = active.records.filter((r) => scoped.indexOf(r) === -1 && scopeRecordToRepoKey(r) === null);
+        for (const r of stillDropped) {
+          const key = (r && r.worktreePath) ? String(r.worktreePath) : ('id:' + (r && r.id != null ? String(r.id) : 'unknown'));
+          if (droppedLoggedKeys.has(key)) continue;
+          droppedLoggedKeys.add(key);
+          activeScopeDropped++;
+          if (droppedLoggedKeys.size <= 20) {
+            try {
+              alog.logEvent('devswarm-supervisor', 'active-scope-drop', 'info',
+                'an active hivecontrol record could not be attributed to any repoKey (and no same-repositoryId sibling fallback applied) — dropped from this sweep',
+                { repoKeyTarget: t.repoKey, recordId: r && r.id != null ? String(r.id) : null, worktreePath: (r && r.worktreePath) || null, reason: 'unattributable-worktree' });
+            } catch (_) { /* logging must never break the sweep */ }
+          }
+        }
+      } else if (active && !active.ok && active.reason !== 'repo-unknown' && !activeProbeFailure) {
+        // D12b item 3: carry the real diagnostic fields fetchActiveWorkspaceRecords
+        // now supplies on failure — error (message/code), status, signal, and the
+        // first 200 chars of stderr (stdout/`raw` deliberately excluded) — so a
+        // real field failure (a fast non-zero exit, not a timeout) is
+        // distinguishable after the fact instead of collapsing to a bare reason
+        // string with no detail.
+        activeProbeFailure = {
+          repoKey: t.repoKey, reason: active.reason || 'unknown', rawKeys: active.rawKeys || [],
+          error: active.error != null ? String(active.error) : null,
+          status: Number.isFinite(active.status) ? active.status : null,
+          signal: active.signal ? String(active.signal) : null,
+          stderr: typeof active.stderr === 'string' ? active.stderr.slice(0, 200) : null,
+        };
+      }
+      results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result, fold, active });
+    }
+
+    // Write the cache only when at least one target actually reported records.
+    // Under absence semantics an empty write is NOT harmless — it would stamp a
+    // FRESH fetchedAt on a snapshot asserting that nothing is live. Skipping it
+    // leaves the previous (soon-to-expire) snapshot to age out on its own, which
+    // ends in "no suppression", the fail-open direction.
+    if (Object.keys(activeByRepoKey).length) {
+      try {
+        (deps.writeActiveCache || archivedCache.writeActiveCache)({ home, byRepoKey: activeByRepoKey, now, fsi: F });
+      } catch (_) { /* cache write must never break the sweep */ }
+    }
+    if (activeProbeFailure) {
+      try {
+        alog.logEvent('devswarm-supervisor', 'active-probe', 'info',
+          'hivecontrol workspace list returned no usable records — app-side archive detection is OFF this cycle (nothing written, nothing suppressed)',
+          activeProbeFailure);
+      } catch (_) { /* logging must never break the sweep */ }
+    }
+
+    // Startup-state sampling (0.117.0) — DATA CAPTURE ONLY, see
+    // companion/lib/devswarm-startup-sampling.js's own header: paused-workspace
+    // detection cannot be designed yet (`workspace info` has only ever been
+    // observed returning `startup: null`). Riding INSIDE this same cooldown-
+    // gated, sweep-locked reconcile pass (no new scheduler/lock), it probes at
+    // most devswarm.pausedProbeMax (default 8) of THIS tick's descriptors whose
+    // persisted liveness verdict already reads stale/notDraining, 3s timeout
+    // each, and appends any non-null startup field or terminalId change to a
+    // bounded ndjson log. No suppression, no status change — see the settings
+    // switch devswarm.startupSampling (default on).
+    try {
+      let samplingEnabled = true;
+      try { samplingEnabled = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'startupSampling', true, env); }
+      catch (_) { samplingEnabled = true; }
+      if (samplingEnabled) {
+        let maxProbe = 8;
+        try { maxProbe = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'pausedProbeMax', 8, env); }
+        catch (_) { maxProbe = 8; }
+        const startupSampling = deps.startupSampling || require('./lib/devswarm-startup-sampling.js');
+        startupSampling.runSamplingPass(descriptors, { home, env, now, fsi: F, maxProbe, run: deps.startupSamplingRun });
+      }
+    } catch (_) { /* data capture must never break the sweep */ }
+
+    // OBSERVE, DON'T ASSERT: log exactly what the (real, already-executed)
+    // reconcile calls reported — never a claim of health beyond what was
+    // actually returned. `warn` when any target reported a real loss
+    // shortfall (cmdReconcile's own `lost` field — a genuine shortfall, never
+    // a benign lock-contention skip), `info` otherwise.
+    try {
+      alog.logEvent('devswarm-supervisor', 'reconcile-sweep', anyLost ? 'warn' : 'info',
+        'reconcile-sweep: ' + targets.length + ' project(s) attempted' + (projects.length > targets.length ? ', ' + (projects.length - targets.length) + ' deferred to a later tick' : ''),
+        { results: results.map((r) => ({ repoKey: r.repoKey, ok: !!(r.result && r.result.ok), imported: (r.result && r.result.imported) || 0, lost: (r.result && r.result.lost) || 0 })) });
+    } catch (_) { /* logging must never break the sweep */ }
+
+    return { ran: true, projects: targets.length, skipped: projects.length - targets.length, results,
+      // activeProbe: report-only provenance for the app-side archive probe —
+      // which projects contributed an active snapshot this tick, and the FIRST
+      // failure reason if any probe came back unusable. There is no field to
+      // report any more (archive is derived from absence, not a flag), so this
+      // replaces the old `archivedField`.
+      activeProbe: {
+        repoKeys: Object.keys(activeByRepoKey),
+        failure: activeProbeFailure,
+      },
+      // activeScope (D12c, R29 P2): tick-wide kept/dropped counts from the
+      // scoping pass above — flows into main()'s sweep JSON line via the
+      // `reconcile` field (reconcile.activeScope) for after-the-fact
+      // diagnosis of how much of the global hivecontrol answer this sweep
+      // actually attributed vs. genuinely dropped.
+      activeScope: { kept: activeScopeKept, dropped: activeScopeDropped } };
+  } catch (e) {
+    return { ran: false, error: String(e && e.message || e) };
+  }
+}
+
+// ============================================================================
+// HOUSEKEEPING SWEEP (disk-growth fix) — cooldown-gated periodic retention
+// sweep for two of the three field-measured unbounded-growth dirs (see
+// scratchpad/disk-growth.md):
+//   - <devswarmRoot>/child-gate/*.json (hooks/devswarm-child-gate.js's
+//     per-session Stop-hook cap state — measured 133MB / 34k files)
+//   - <devswarmRoot>/reaped/*.ndjson (hooks/lib/doctor-repair.js's
+//     sweepReapedLogs — already wired into `doctor --repair`, but that only
+//     runs when a human/agent explicitly invokes it; NOTHING periodic ever
+//     drained it on a machine that never runs `doctor --repair`)
+// Both reuse doctor-repair.js's EXISTING sweepChildGateFiles/sweepReapedLogs
+// (sweepAgedFiles under the hood) verbatim — no new deletion logic here, only
+// a periodic scheduling slot around them, same posture as reconcileSweepIfDue
+// above. AUTO-SAFE by the same contract doctor --repair's own R13 wiring
+// documents: NO-DELETE except files strictly older than their own configured
+// retention window, never a fresh one.
+// ============================================================================
+
+const DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS = 60 * 60 * 1000; // 1h — this is disk hygiene, not liveness; no need to run every tick
+const HOUSEKEEPING_SWEEP_STATE_FILE = 'housekeeping-sweep-state.json';
+
+function housekeepingSweepStatePath(home) {
+  return path.join(devswarmRoot(home), HOUSEKEEPING_SWEEP_STATE_FILE);
+}
+
+// housekeepingSweepEnabled(env) — off / hard-kill gates, PLUS its own
+// dedicated sub-toggle (same pattern as reconcileSweepEnabled above).
+function housekeepingSweepEnabled(env) {
+  const e = env || process.env;
+  if (!supervisorEnabled(e)) return false;
+  try { return require('../hooks/lib/settings.js').getWithEnv('devswarm', 'housekeepingSweep', 'auto', e) !== 'off'; }
+  catch (_) { return String(e.ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP || 'auto').trim().toLowerCase() !== 'off'; }
+}
+
+// resolveHousekeepingCooldownMs(env) -> ms, floor 5min (typo-safety, same
+// convention as resolveReconcileCooldownMs).
+function resolveHousekeepingCooldownMs(env) {
+  try {
+    const v = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'housekeepingSweepSec', DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS / 1000, env || process.env);
+    if (Number.isFinite(v)) return Math.max(300, v) * 1000;
+  } catch (_) { /* fall through */ }
+  const sec = parseEnvNum(env || process.env, 'ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC',
+    DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS / 1000, { min: 300 });
+  return sec * 1000;
+}
+
+// readHousekeepingSweepState/writeHousekeepingSweepState — same `{lastRunAt}`
+// shape + fail-open-toward-sweeping posture as reconcileSweepStatePath's pair.
+function readHousekeepingSweepState(home, F) {
+  try {
+    const parsed = JSON.parse(F.readFileSync(housekeepingSweepStatePath(home), 'utf8'));
+    return { lastRunAt: Number.isFinite(parsed && parsed.lastRunAt) ? parsed.lastRunAt : 0 };
+  } catch (_) {
+    return { lastRunAt: 0 };
+  }
+}
+function writeHousekeepingSweepState(home, F, state) {
+  try {
+    const p = housekeepingSweepStatePath(home);
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + process.pid;
+    F.writeFileSync(tmp, JSON.stringify(state));
+    F.renameSync(tmp, p);
+  } catch (_) { /* fail-open: rate-limiting is best-effort only, never load-bearing for correctness */ }
+}
+
+// housekeepingSweepIfDue(opts) -> { ran:false, reason } | { ran:true, results:
+// {reapedLogs, childGate} }. Never throws. opts: { home, env, now, cooldownMs,
+// deps: { fs, doctorRepair, readHousekeepingSweepState, writeHousekeepingSweepState } }.
+function housekeepingSweepIfDue(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const deps = o.deps || {};
+  const F = deps.fs || fs;
+  try {
+    if (!housekeepingSweepEnabled(env)) return { ran: false, reason: 'disabled' };
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const cooldownMs = Number.isFinite(o.cooldownMs) ? o.cooldownMs : resolveHousekeepingCooldownMs(env);
+    const state = (deps.readHousekeepingSweepState || readHousekeepingSweepState)(home, F);
+    if (state.lastRunAt && (now - state.lastRunAt) < cooldownMs) {
+      return { ran: false, reason: 'cooldown', nextEligibleAt: state.lastRunAt + cooldownMs };
+    }
+    // Persist BEFORE running (same ordering rationale as reconcileSweepIfDue —
+    // a sweep that itself hangs/crashes must never re-arm every subsequent tick).
+    (deps.writeHousekeepingSweepState || writeHousekeepingSweepState)(home, F, { lastRunAt: now });
+
+    const doctorRepair = deps.doctorRepair || require('../hooks/lib/doctor-repair.js');
+    let reapedLogs = [];
+    let childGate = [];
+    try { reapedLogs = doctorRepair.sweepReapedLogs({ home, mode: 'repair', env, io: { fs: F, now } }) || []; }
+    catch (e) { reapedLogs = [{ status: 'failed', msg: 'sweepReapedLogs raised: ' + String(e && e.message || e) }]; }
+    try { childGate = doctorRepair.sweepChildGateFiles({ home, mode: 'repair', env, io: { fs: F, now } }) || []; }
+    catch (e) { childGate = [{ status: 'failed', msg: 'sweepChildGateFiles raised: ' + String(e && e.message || e) }]; }
+
+    return { ran: true, results: { reapedLogs, childGate } };
+  } catch (e) {
+    return { ran: false, error: String(e && e.message || e) };
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Supervisor's OWN log file rotation (disk-growth fix, third measured dir:
+// ~/.anti-hall/devswarm-supervisor.log, measured 62MB unbounded). This file is
+// appended to OUT OF PROCESS — launchd's StandardOutPath / systemd journal
+// redirect / cron `>>` — so this process cannot cap it by simply writing less;
+// the only lever available to it is to periodically move the accumulated file
+// aside before the scheduler's next append. Size-checked (cheap: one statSync)
+// at the START of every sweep tick — no cooldown needed, a stat is negligible
+// next to the rest of a tick's work. 10MB threshold, keep 2 generations (the
+// active log + one rotated `.1` backup) — the SAME threshold/generation-count
+// documented in scratchpad/disk-growth.md. Best-effort: a scheduler that has
+// the file open for append may keep writing to the renamed inode until its own
+// next restart — an accepted log-rotation caveat, not a correctness issue
+// (the accumulated bytes are still capped at the next restart at the latest).
+// ============================================================================
+
+const SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT = 10 * 1024 * 1024; // 10MB
+
+function supervisorLogPath(home) {
+  return path.join(home, '.anti-hall', 'devswarm-supervisor.log');
+}
+
+function resolveSupervisorLogRotateBytes(env) {
+  try {
+    const v = require('../hooks/lib/settings.js').getWithEnv('devswarm', 'supervisorLogRotateBytes', SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT, env || process.env);
+    if (Number.isFinite(v) && v > 0) return v;
+  } catch (_) { /* fall through */ }
+  const raw = (env || process.env || {}).ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT;
+}
+
+// rotateSupervisorLogIfNeeded({home, env, fsi}) -> { rotated, size, reason }.
+// Never throws — a rotation failure must never block the sweep it guards.
+function rotateSupervisorLogIfNeeded(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const F = o.fsi || fs;
+  const logPath = supervisorLogPath(home);
+  try {
+    let st;
+    try { st = F.statSync(logPath); } catch (_) { return { rotated: false, size: 0, reason: 'no log file yet' }; }
+    const threshold = resolveSupervisorLogRotateBytes(env);
+    if (st.size <= threshold) return { rotated: false, size: st.size, reason: 'under threshold' };
+    const backup = logPath + '.1';
+    try { F.unlinkSync(backup); } catch (_) { /* absent is fine — keep 2 generations means at most one prior backup */ }
+    F.renameSync(logPath, backup);
+    return { rotated: true, size: st.size, reason: 'rotated to ' + backup };
+  } catch (e) {
+    return { rotated: false, size: 0, reason: 'rotation failed: ' + String(e && e.message || e) };
+  }
+}
+
+// compactReconcileForLog(reconcile, prevSig) -> { line, sig } — the shape the
+// sweep's stdout (launchd) line carries for the reconcile pass. The raw result
+// embeds every row of every project plus the whole global hivecontrol record
+// list (9 MB / 674 lines in the field), and re-logged the same failures on
+// every run. Compact it to per-project counts plus only the REAL failures (a
+// row that is ok:false and not a recognised skip — archived/pruned, repo-
+// unknown, locked, missing hivecontrol, native timeout — and a failing fold or
+// probe). The failure set is signed: the first time a signature appears the
+// failures are listed in full; while it stays identical the line carries only
+// "N unchanged failures (same as last run)". Pure; never throws.
+function compactReconcileForLog(reconcile, prevSig) {
+  try {
+    if (!reconcile || !reconcile.ran || !Array.isArray(reconcile.results)) return { line: reconcile, sig: null };
+    const failures = [];
+    const results = reconcile.results.map((r) => {
+      const res = (r && r.result) || {};
+      const rows = Array.isArray(res.results) ? res.results : [];
+      let skipped = 0;
+      for (const x of rows) {
+        if (x && x.skipped) skipped++;
+        else if (x && x.ok === false && !x.locked && !x.hivecontrolMissing && !x.nativeTimeout) {
+          failures.push({ repoKey: r.repoKey, id: x.id, error: String(x.error || 'unknown error').replace(/\u001b\[[0-9;]*m/g, '').slice(0, 200) });
+        }
+      }
+      if (res.ok === false && !rows.length) failures.push({ repoKey: r.repoKey, error: String(res.error || res.reason || 'reconcile failed').slice(0, 200) });
+      const fold = r && r.fold;
+      if (fold && fold.ok === false) failures.push({ repoKey: r.repoKey, error: 'fold: ' + String(fold.error || fold.reason || 'failed').slice(0, 200) });
+      const act = r && r.active;
+      return {
+        repoKey: r.repoKey, ok: !!res.ok, count: res.count || 0, imported: res.imported || 0, lost: res.lost || 0,
+        skipped, repoUnknown: res.repoUnknown || 0,
+        fold: fold ? { ok: !!fold.ok, folded: fold.folded || 0, retired: Array.isArray(fold.retired) ? fold.retired.length : (fold.retired || 0), forwarded: fold.forwarded || 0, pending: fold.pending || 0 } : null,
+        active: act ? { ok: !!act.ok, reason: act.reason || null, records: Array.isArray(act.records) ? act.records.length : 0 } : null,
+      };
+    });
+    const pf = reconcile.activeProbe && reconcile.activeProbe.failure;
+    if (pf) failures.push({ repoKey: pf.repoKey, error: 'active-probe: ' + String(pf.error || pf.reason).replace(/\u001b\[[0-9;]*m/g, '').slice(0, 200) });
+    const sig = failures.map((x) => [x.repoKey, x.id || '', x.error].join('|')).sort().join('\n');
+    const line = Object.assign({}, reconcile, { results });
+    if (!failures.length) line.failures = 0;
+    else if (sig === prevSig) line.failures = { unchanged: failures.length, note: failures.length + ' unchanged failures (same as last run)' };
+    else line.failures = failures;
+    return { line, sig };
+  } catch (_) { return { line: reconcile, sig: null }; }
+}
+
+function reconcileLogSigPath(home) { return path.join(devswarmRoot(home), 'reconcile-log-sig.json'); }
+
+function main() {
+  let release = null;
+  try {
+    const home = os.homedir();
+    // v0.108.0: mark this process as automation — devswarm-lifecycle's
+    // executePrune (workspace DELETE) refuses any non-interactive caller.
+    process.env.ANTIHALL_CALLER = 'supervisor';
+    // Log rotation (disk-growth fix): a cheap statSync BEFORE anything else
+    // writes another line to this process's own launchd/systemd/cron-appended
+    // log — see rotateSupervisorLogIfNeeded's header for why this is the one
+    // lever available for a file this process never opens itself.
+    const logRotate = rotateSupervisorLogIfNeeded({ home });
+    release = acquireSweepLock(home, {});
+    if (!release) { process.exit(0); return; } // a prior sweep is still running — do not stack
+    const t = resolveThresholdsFromEnv(process.env);
+    const results = sweepOnce({
+      home, idleThresholdMs: t.idleThresholdMs, cooldownMs: t.cooldownMs,
+      nudgeMaxAttempts: t.nudgeMaxAttempts, nudgeWindowMs: t.nudgeWindowMs, nudgeCooldownMs: t.nudgeCooldownMs,
+    });
+    // Reconcile sweep (C4) rides INSIDE the same single-flight sweep-lock hold
+    // as the liveness sweep above — never a parallel/independent lock — so two
+    // overlapping supervisor ticks can never both attempt it at once either.
+    const reconcile = reconcileSweepIfDue({ home });
+    // Deferred post-update sweep backstop (task #40) — rides inside this SAME
+    // single-flight sweep-lock hold, one bounded stage-slot per pass.
+    const deferredSweep = deferredSweepIfDue({ home });
+    // v0.108.0 DevSwarm app-DB sync — same single-flight lock hold, every tick
+    // (measured ~0.2 s incl. the 15-min-cooldown message-gap scan on a
+    // 214-builder / 82k-message app DB; far inside the per-pass budget).
+    const appSync = appDbSyncIfDue({ home });
+    // v0.108.0 auto-archive (devswarm-lifecycle.js): default mode "on" archives
+    // proven-done children (dormant below DevSwarm 2.5.3); "dry-run" only reports.
+    let autoArchive = null;
+    try { autoArchive = require('./lib/devswarm-lifecycle.js').autoArchiveSweep({ home }); } catch (_) { autoArchive = null; }
+    // Message retention (devswarm-retention.js) — same sweep-lock hold, one
+    // store per pass, its own budget (ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS)
+    // and its own retention.lock; the machine's first pass is a dry-run report.
+    let retention = { ran: false, reason: 'disabled' };
+    try {
+      if (supervisorEnabled(process.env)) retention = require('./lib/devswarm-retention.js').sweep({ home });
+    } catch (e) { retention = { ran: false, error: String((e && e.message) || e) }; }
+    // Housekeeping sweep (disk-growth fix) — cooldown-gated (default 1h),
+    // rides inside this SAME single-flight sweep-lock hold.
+    const housekeeping = housekeepingSweepIfDue({ home });
+    // `sweepFamilies` (identity-family collapsed) rides ALONGSIDE the existing
+    // `sweep` field (raw per-descriptor count, unchanged — still what
+    // sweepOnce actually iterated/wrote verdicts for) rather than replacing
+    // it, so this reporting-only view addition can never regress anything
+    // that already reads `sweep`. Reads descriptors fresh (cheap fs read,
+    // same primitive sweepOnce itself just used) rather than threading
+    // worktreePath through sweepOnce's per-result shape.
+    let sweepFamilies = results.length;
+    try { sweepFamilies = collapsedDescriptorFamilies(readDescriptors(home)).length; } catch (_) { /* fail-open: keep raw count */ }
+    // Compact + signature-dedupe the reconcile pass (see compactReconcileForLog).
+    let reconcileForLog = reconcile;
+    try {
+      let prevSig = null;
+      try { prevSig = JSON.parse(fs.readFileSync(reconcileLogSigPath(home), 'utf8')).sig; } catch (_) { prevSig = null; }
+      const c = compactReconcileForLog(reconcile, prevSig);
+      reconcileForLog = c.line;
+      if (c.sig !== null && c.sig !== prevSig) {
+        try {
+          const p = reconcileLogSigPath(home);
+          fs.mkdirSync(path.dirname(p), { recursive: true });
+          const tmp = p + '.tmp-' + process.pid;
+          fs.writeFileSync(tmp, JSON.stringify({ sig: c.sig }));
+          fs.renameSync(tmp, p);
+        } catch (_) { /* fail-open: worst case the next run re-lists the failures */ }
+      }
+    } catch (_) { reconcileForLog = reconcile; }
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile: reconcileForLog, deferredSweep, appSync, autoArchive, retention, housekeeping, logRotate }) + '\n');
+  } catch (_) {
+    // absolute fail-safe: never throw out of the sweep
+  } finally {
+    try { if (release) release(); } catch (_) {}
+    process.exit(0);
+  }
+}
+
+// ============================================================================
+// DEFERRED POST-UPDATE SWEEP BACKSTOP (task #40, v0.96.1) — see update.js's
+// postPullBudgetMs doc comment: `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS` (D11-C,
+// defect e7307778b614) caps every DevSwarm post-pull stage COMBINED, and a
+// machine that always exhausts it defers fold-all-stores/heal-orphan-
+// partitions/fold-archived-rows/heal-registry-rows WHOLE on EVERY
+// `update`/`doctor` run. Unlike reconcile/fold (already covered above by
+// reconcileSweepIfDue's own cooldown-gated periodic re-run), nothing
+// periodic ever picked those four back up — they relied SOLELY on the next
+// explicit update/doctor call,
+// which never comes on a machine whose backlog is large enough to always
+// blow the budget. This gives the already-installed periodic sweep a
+// bounded per-pass slot: at most ONE deferred stage per pass, rotating in a
+// fixed order, and ONLY when that stage's OWN resume/sweep-state marker
+// shows deferred work is genuinely pending — a no-op tick costs one cheap
+// marker read, never a store re-enumeration.
+//
+// NO NEW FOLD/HEAL LOGIC HERE: this reuses update.js's own stage functions
+// (foldAllStoresPostUpdate / healOrphanPartitionsPostUpdate /
+// foldArchivedRowsPostUpdate / healRegistryPostUpdate) verbatim — this section is a scheduling slot
+// around them, nothing more.
+//
+// GATE-OPEN OVERRIDE (deliberate): those update.js stage functions each gate
+// on `isDevswarmActive(env)` internally (hooks/lib/devswarm-detect.js) —
+// correct for the `update`/`doctor` call site they were written for (skip
+// entirely on a plain non-DevSwarm run), but a launchd/systemd/cron-invoked
+// supervisor process carries no per-session `DEVSWARM_REPO_ID` at all, so
+// `auto` mode would gate-closed EVERY call unconditionally, silently making
+// this whole feature a no-op in the real deployed daemon. This module already
+// independently proved DevSwarm is genuinely in use before ever reaching this
+// code (this pass only runs when `hasDeferredWork` finds a REAL persisted
+// marker a DevSwarm session created on disk), so `runDeferredStage` passes a
+// SCOPED COPY of env with `ANTIHALL_DEVSWARM_SUPERVISOR: 'on'` forced —
+// `isDevswarmActive`'s own documented unconditional-true override — to the
+// stage call only, never mutating the caller's real env.
+// ============================================================================
+
+const DEFERRED_SWEEP_STAGES = ['fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows', 'heal-registry-rows'];
+const DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS = 20000; // 20s per-pass slot, mirrors update.js's own DEFAULT_SWEEP_BUDGET_MS
+const DEFERRED_SWEEP_STATE_FILE = 'deferred-sweep-state.json';
+
+function deferredSweepStatePath(home) {
+  return path.join(devswarmRoot(home), DEFERRED_SWEEP_STATE_FILE);
+}
+
+// readDeferredSweepState/writeDeferredSweepState — a small, independent state
+// file tracking only `{ nextStageIndex }` (the rotation cursor). Fail-open:
+// unreadable/corrupt/absent -> index 0 (start of rotation), never thrown.
+// Same atomic tmp+rename write discipline as reconcileSweepStatePath above.
+function readDeferredSweepState(home, F) {
+  const Fi = F || fs;
+  try {
+    const parsed = JSON.parse(Fi.readFileSync(deferredSweepStatePath(home), 'utf8'));
+    const idx = Number.isFinite(parsed && parsed.nextStageIndex) ? parsed.nextStageIndex : 0;
+    const n = DEFERRED_SWEEP_STAGES.length;
+    return { nextStageIndex: ((idx % n) + n) % n };
+  } catch (_) {
+    return { nextStageIndex: 0 };
+  }
+}
+function writeDeferredSweepState(home, F, state) {
+  const Fi = F || fs;
+  try {
+    const p = deferredSweepStatePath(home);
+    Fi.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + process.pid;
+    Fi.writeFileSync(tmp, JSON.stringify(state));
+    Fi.renameSync(tmp, p);
+  } catch (_) { /* fail-open: the rotation cursor is best-effort, never load-bearing for correctness */ }
+}
+
+// resolveSupervisorSweepBudgetMs(env) -> ms, ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS-
+// overridable. Deliberately an absolute-ms knob (like update.js's own
+// sweepBudgetMs/postPullBudgetMs), NOT a *_SEC var like this file's liveness
+// thresholds above — it feeds straight into update.js's own ms-based budget
+// plumbing (ANTIHALL_UPDATE_SWEEP_BUDGET_MS), so the units must line up
+// without a seconds<->ms conversion at the boundary.
+function resolveSupervisorSweepBudgetMs(env) {
+  const e = env || process.env || {};
+  try { return require('./../hooks/lib/settings.js').getWithEnv('devswarm', 'supervisorSweepBudgetMs', DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS, e); }
+  catch (_) { /* fall through */ }
+  const n = Number(e.ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS;
+}
+
+// hasDeferredWork(stage, home, deps) -> bool. Peeks the stage's OWN persisted
+// resume/sweep-state marker WITHOUT doing any of its work — a cheap read,
+// never a listStoreHashes/directory walk. Fail-open to false: an absent or
+// corrupt marker reads as "nothing pending", the same posture every marker
+// reader in this codebase already takes (readSweepState/readFoldArchivedResume
+// etc. are themselves fail-open; this only adds the "is it non-empty" check).
+function hasDeferredWork(stage, home, deps) {
+  const d = deps || {};
+  try {
+    if (stage === 'fold-all-stores' || stage === 'heal-orphan-partitions' || stage === 'heal-registry-rows') {
+      const updateJs = d.updateJs || require('../skills/update/scripts/update.js');
+      const key = stage === 'fold-all-stores' ? 'foldAllStores'
+        : stage === 'heal-orphan-partitions' ? 'healOrphanPartitions'
+        : 'healRegistry';
+      const state = updateJs.readSweepState(home);
+      const entry = state[key];
+      return !!(entry && entry.pendingVersion && Array.isArray(entry.pendingHashes) && entry.pendingHashes.length > 0);
+    }
+    if (stage === 'fold-archived-rows') {
+      const devswarmCli = d.devswarm || require('../scripts/devswarm.js');
+      const buckets = devswarmCli.readFoldArchivedResume(home) || {};
+      const anyBucketPending = Object.keys(buckets).some((k) => Array.isArray(buckets[k]) && buckets[k].length > 0);
+      const famIds = devswarmCli.readFoldArchivedFamilyResume(home) || [];
+      return anyBucketPending || (Array.isArray(famIds) && famIds.length > 0);
+    }
+  } catch (_) { /* fail-open: a marker read failure reads as nothing pending */ }
+  return false;
+}
+
+// runDeferredStage(stage, opts) -> the stage function's OWN result shape (see
+// update.js's foldAllStoresPostUpdate/healOrphanPartitionsPostUpdate/
+// foldArchivedRowsPostUpdate doc comments) — never re-implemented here.
+// opts: { home, env, budgetMs, cwd, now, deps: { updateJs, devswarm } }.
+function runDeferredStage(stage, opts) {
+  const o = opts || {};
+  const home = o.home;
+  const env = o.env || process.env;
+  const deps = o.deps || {};
+  const updateJs = deps.updateJs || require('../skills/update/scripts/update.js');
+  const budgetMs = Number.isFinite(o.budgetMs) ? o.budgetMs : resolveSupervisorSweepBudgetMs(env);
+  const nowFn = o.now || Date.now;
+  // Deliberately NOT updateJs.resolvePaths(env, home): that resolves a
+  // MARKETPLACE-clone-relative path under `home` (the update/doctor CLI's own
+  // installed-plugin layout), which has no relationship to where THIS
+  // supervisor process's own code actually lives — a launchd/systemd/cron
+  // `home` carries no marketplace clone at all. This module already lazily
+  // requires '../scripts/devswarm.js' relative to its OWN location elsewhere
+  // in this file (see hasDeferredWork above); pluginSrcDir here is that same
+  // real, currently-running plugin source directory (one level up from
+  // companion/), never a home-derived guess.
+  const paths = deps.paths || { pluginSrcDir: path.resolve(__dirname, '..') };
+  // Threads THIS pass's own budget into the SAME knob update.js's own sweeps
+  // already read (ANTIHALL_UPDATE_SWEEP_BUDGET_MS via sweepBudgetMs), and
+  // forces the isDevswarmActive gate open (see the section header above) —
+  // both scoped to THIS call only, never mutating the caller's real env.
+  const scopedEnv = Object.assign({}, env, {
+    ANTIHALL_UPDATE_SWEEP_BUDGET_MS: String(budgetMs),
+    ANTIHALL_DEVSWARM_SUPERVISOR: 'on',
+  });
+  const commonOpts = { paths, env: scopedEnv, cwd: o.cwd || process.cwd(), home, devswarm: deps.devswarm, now: nowFn };
+  if (stage === 'fold-all-stores' || stage === 'heal-orphan-partitions' || stage === 'heal-registry-rows') {
+    // The pending VERSION comes off the stage's OWN sweep-state entry (never
+    // recomputed here) so sweepItemsFor's resume branch matches and picks up
+    // exactly the pendingHashes list a prior budget-exhausted pass left —
+    // never a fresh listStoreHashes() full re-enumeration.
+    const key = stage === 'fold-all-stores' ? 'foldAllStores'
+      : stage === 'heal-orphan-partitions' ? 'healOrphanPartitions'
+      : 'healRegistry';
+    const state = updateJs.readSweepState(home);
+    const entry = state[key] || {};
+    const version = entry.pendingVersion || null;
+    const fn = stage === 'fold-all-stores' ? updateJs.foldAllStoresPostUpdate
+      : stage === 'heal-orphan-partitions' ? updateJs.healOrphanPartitionsPostUpdate
+      : updateJs.healRegistryPostUpdate;
+    return fn(Object.assign({}, commonOpts, { version }));
+  }
+  if (stage === 'fold-archived-rows') {
+    // foldArchivedRowsPostUpdate self-resumes off its own fold-archived-
+    // resume.json / fold-archived-family-resume.json markers — no
+    // version/hashes plumbing needed from this caller.
+    return updateJs.foldArchivedRowsPostUpdate(commonOpts);
+  }
+  return { attempted: false, detail: stage + ': unknown deferred-sweep stage' };
+}
+
+// deferredSweepIfDue(opts) -> { stage, ran:false, reason } | { stage, ran:true,
+// budgetMs, result }. Never throws. Rotates ONE stage forward per call
+// REGARDLESS of outcome (persisted BEFORE running/peeking, same ordering
+// rationale as reconcileSweepIfDue's own persist-before-run above) — a
+// no-op tick still advances so the NEXT pass checks a DIFFERENT stage rather
+// than getting stuck re-peeking the same one forever.
+function deferredSweepIfDue(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const deps = o.deps || {};
+  const F = deps.fs || fs;
+  try {
+    if (!supervisorEnabled(env)) return { stage: null, ran: false, reason: 'disabled' };
+
+    const state = (deps.readDeferredSweepState || readDeferredSweepState)(home, F);
+    const stage = DEFERRED_SWEEP_STAGES[state.nextStageIndex];
+    const nextIndex = (state.nextStageIndex + 1) % DEFERRED_SWEEP_STAGES.length;
+    (deps.writeDeferredSweepState || writeDeferredSweepState)(home, F, { nextStageIndex: nextIndex });
+
+    const pending = (deps.hasDeferredWork || hasDeferredWork)(stage, home, deps);
+    if (!pending) return { stage, ran: false, reason: 'no-marker' };
+
+    const budgetMs = Number.isFinite(o.budgetMs) ? o.budgetMs : resolveSupervisorSweepBudgetMs(env);
+    const result = (deps.runDeferredStage || runDeferredStage)(stage, { home, env, budgetMs, now: o.now, deps });
+    return { stage, ran: true, budgetMs, result };
+  } catch (e) {
+    return { stage: null, ran: false, error: String(e && e.message || e) };
+  }
+}
+
+// ============================================================================
+// v0.108.0 — DevSwarm APP-DB SYNC (runner step). Every supervisor tick reads ONE
+// fresh read-only snapshot of the desktop app's database and applies it:
+// archived / deleted-in-app markers (never a delete), the names cache, the
+// session map + drift + schema report in app-state.json, and (every 15 min) the
+// message-gap cross-check. All of it is scripts/devswarm.js's syncAppState.
+//
+// NO fs.watch: measured on a live app the DB's -wal file changes about every
+// 13 s from the app's own background writes (lastAccessed bumps, 60 s PR
+// polling, 500 ms transcript polling), so a watcher would fire on noise, and
+// this supervisor is a one-shot launchd/systemd tick with no long-lived process
+// to host one. The 60-120 s sweep is the cadence.
+//
+// appSyncEnabled(env): setting devswarm.appSync (env ANTIHALL_DEVSWARM_APP_SYNC=0
+// > settings.json > /config > default on), resolved against the home THIS env
+// implies. Fail-open to the env-only rule if settings.js is unavailable.
+function appSyncEnabled(env) {
+  const e = env || process.env;
+  try { return require('../hooks/lib/settings.js').getWithEnv('devswarm', 'appSync', true, e) !== false; }
+  catch (_) {
+    const v = String((e || {}).ANTIHALL_DEVSWARM_APP_SYNC || '').trim().toLowerCase();
+    return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
+  }
+}
+
+// appDbSyncIfDue(opts) -> { ran, ...summary } | { ran:false, reason }. Never throws.
+// opts: { home, env, now, deps: { devswarm } }.
+function appDbSyncIfDue(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  try {
+    if (!supervisorEnabled(env)) return { ran: false, reason: 'disabled' };
+    if (!appSyncEnabled(env)) return { ran: false, reason: 'app-sync-disabled' };
+    const devswarmCli = (o.deps && o.deps.devswarm) || require('../scripts/devswarm.js');
+    const r = devswarmCli.syncAppState(home, { env, now: o.now });
+    return {
+      ran: true, ok: r.ok, appDb: r.appDb, reason: r.reason || null, elapsedMs: r.elapsedMs,
+      archived: r.archived || null, names: r.names || null, unknownToAntiHall: r.unknownToAntiHall == null ? null : r.unknownToAntiHall,
+      gapTotal: r.gapTotal == null ? null : r.gapTotal, gapsScanned: !!r.gapsScanned, schemaMissing: r.missing == null ? null : r.missing,
+      error: r.error || null,
+    };
+  } catch (e) {
+    return { ran: false, error: String((e && e.message) || e) };
+  }
+}
+
+// module.exports MUST be assigned BEFORE the require.main-gated main() call
+// below, NOT after (the pre-C4 order). Reasoning: main() (via
+// reconcileSweepIfDue's lazy require) can now load scripts/devswarm.js, which
+// itself top-level-requires THIS module (`const { readDescriptors } =
+// require('../companion/devswarm-supervisor.js')`, line ~128 of that file) —
+// genuinely circular. When THIS module is `require.main` (the real deployment
+// shape: launchd/systemd/cron invoke `node devswarm-supervisor.js` directly),
+// Node reaches the `if (require.main === module) main()` line DURING this
+// module's own top-level execution — if module.exports were assigned AFTER
+// that line (as it was pre-C4), scripts/devswarm.js's require of this module
+// mid-main() would observe the DEFAULT EMPTY exports object (not yet
+// reassigned), silently binding its own `readDescriptors` to `undefined` for
+// the rest of its lifetime. That specific landmine was latent-but-harmless
+// pre-C4 (nothing this module's own runtime code ever required
+// scripts/devswarm.js), but C4's reconcile-sweep is exactly the code path
+// that can now trigger it — so the export assignment is reordered ahead of
+// the main() call, closing it unconditionally rather than relying on this
+// particular call graph never exercising it.
+module.exports = {
+  workspacesDir, readDescriptors, collapsedDescriptorFamilies, supervisorEnabled, sweepLockPath, acquireSweepLock, sweepOnce,
+  parseEnvNum, resolveThresholdsFromEnv, readMeshUrgency, isUrgentMesh, URGENT_TIERS,
+  reconcileSweepIfDue, compactReconcileForLog, reconcileSweepEnabled, resolveReconcileCooldownMs, distinctRepoKeys,
+  reconcileSweepStatePath, readReconcileSweepState, writeReconcileSweepState,
+  DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS, MAX_RECONCILE_PROJECTS_PER_TICK,
+  // DEFECT 17685a91b783
+  DEFAULT_POST_SPAWN_GRACE_MS, resolvePostSpawnGraceMs, descriptorFilePath,
+  withinPostSpawnGrace, isArchiveReadyForSupervisor,
+  // task #40 (v0.96.1) — deferred post-update sweep backstop:
+  deferredSweepIfDue, hasDeferredWork, runDeferredStage,
+  deferredSweepStatePath, readDeferredSweepState, writeDeferredSweepState,
+  resolveSupervisorSweepBudgetMs, DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS, DEFERRED_SWEEP_STAGES,
+  // v0.108.0 — DevSwarm app-DB sync runner step:
+  appDbSyncIfDue, appSyncEnabled,
+  // disk-growth fix — periodic housekeeping sweep (reaped logs + child-gate retention):
+  housekeepingSweepIfDue, housekeepingSweepEnabled, resolveHousekeepingCooldownMs,
+  housekeepingSweepStatePath, readHousekeepingSweepState, writeHousekeepingSweepState,
+  DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS,
+  // disk-growth fix — supervisor's own log rotation:
+  rotateSupervisorLogIfNeeded, supervisorLogPath, resolveSupervisorLogRotateBytes,
+  SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT,
+  // supervisorBlockerLabel re-ask dedupe (382-rows-in-24h fix):
+  superviseStraying,
+  jevBlockerLabel, blockerLabelAskStatePath, readBlockerLabelAskState, writeBlockerLabelAskState,
+  resolveBlockerLabelReaskMs, DEFAULT_BLOCKER_LABEL_REASK_MS,
+};
+
+if (require.main === module) main();

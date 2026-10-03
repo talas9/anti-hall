@@ -1,0 +1,85 @@
+name: Bug report
+description: Something in anti-hall does not work as documented
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problem? Do not post it here; see SECURITY.md and use private vulnerability reporting.
+        If a guard blocked something legitimate, use the "False positive" form instead.
+  - type: input
+    id: version
+    attributes:
+      label: anti-hall version
+      description: Run `/anti-hall:doctor` (its first line prints the version), or read the `version` field in `plugins/anti-hall/.claude-plugin/plugin.json`.
+      placeholder: "0.120.12"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Claude Code
+        - Codex
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node --version`.
+      placeholder: v22.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Output of `/anti-hall:doctor` (or `node plugins/anti-hall/hooks/doctor.js --check` from a checkout), trimmed.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or hook output
+      render: text
+  - type: checkboxes
+    id: sanitized
+    attributes:
+      label: Sanitized
+      options:
+        - label: I removed secrets and private paths from the pasted text
+          required: true

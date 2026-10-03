@@ -1,0 +1,305 @@
+#!/usr/bin/env node
+// anti-hall :: swarm-guard (PreToolUse Agent/Task — anti-fork-bomb)
+//
+// Limits agent spawn rate to prevent runaway swarms that can make the OS unusable.
+// Checks two conditions on every agent spawn:
+//   1. SPAWN RATE: if >= CAP spawns occurred in the last 60 seconds, BLOCK.
+//   2. MEMORY PRESSURE: if AVAILABLE RAM < 4% of total, BLOCK.
+//
+// Both checks are conservative. The spawn-rate cap (default 20 per 60s) is a
+// ceiling against runaway loops, not a parallelism budget — normal parallel
+// workflows rarely exceed it. The memory threshold (4%) is a last-resort OS
+// safety guard; at that level the system is already under extreme pressure.
+//
+// IMPORTANT: "available" RAM is NOT os.freemem(). On macOS and Linux, os.freemem()
+// reports only truly-free pages and EXCLUDES reclaimable cache (inactive / file-
+// backed / speculative), so it chronically reads near-zero on a healthy machine
+// (e.g. 2 GB "free" of 64 GB while 17 GB of cache is instantly reclaimable and
+// memory pressure is green). Using it caused false-positive blocks. We compute real
+// available memory per-platform (macOS vm_stat, Linux /proc/meminfo MemAvailable).
+// On macOS/Linux we NEVER fall back to os.freemem() — see availableBytes() — because
+// a failed real-memory read would otherwise produce a misleadingly-low number and
+// could BLOCK a spawn when memory is actually fine. We only use os.freemem() where it
+// is genuinely accurate (Windows). Elsewhere a parse failure SKIPS the memory gate.
+//
+// Fail-open on ANY error: a bug here must never prevent legitimate agent spawns.
+//
+// Contract (Claude Code PreToolUse hook):
+//   stdin  : JSON { tool_name, tool_input, ... }
+//   stdout : JSON { decision: "block", reason: "..." } to block
+//   exit 2 : to block; exit 0: allow
+//   Fail-open on any error (exit 0).
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execSync } = require('child_process');
+
+const SPAWN_CAP = 20;          // max spawns allowed in WINDOW_MS
+const WINDOW_MS = 60000;       // 60-second rolling window
+const MEM_FLOOR_RATIO = 0.04;  // block if availableMem/totalMem < 4%
+
+// Real available memory (reclaimable cache included), per-platform. os.freemem()
+// undercounts on macOS/Linux because it excludes reclaimable pages — see header.
+//
+// FAIL-OPEN ON PARSE FAILURE, BY DESIGN (memory gate skipped, NOT blocked): returns a real
+// available-byte count ONLY when it was SUCCESSFULLY read; otherwise returns null.
+// A null tells the caller to SKIP the memory gate entirely (treat memory as OK).
+// We must NOT fall back to os.freemem() on macOS/Linux: it excludes reclaimable
+// cache and reads near-zero on a healthy box, so using it after a parser failure
+// would falsely trip the < 4% floor and BLOCK a spawn when memory is actually fine.
+// The only place os.freemem() is the genuine primary source is Windows.
+function availableBytes() {
+  try {
+    if (process.platform === 'darwin') {
+      // vm_stat: available ~= free + inactive + speculative pages (all reclaimable
+      // on demand). Inactive/speculative are what Activity Monitor counts as cache.
+      // Absolute path so a manipulated PATH can't shadow vm_stat with a stub
+      // that returns garbage (which would parse to null and silently SKIP the
+      // memory gate). /usr/bin/vm_stat is the fixed macOS system location.
+      const out = execSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 1500 });
+      const psM = out.match(/page size of (\d+) bytes/);
+      const ps = psM ? parseInt(psM[1], 10) : 4096;
+      const pages = (label) => {
+        const m = out.match(new RegExp('Pages ' + label + ':\\s+(\\d+)'));
+        return m ? parseInt(m[1], 10) : 0;
+      };
+      const avail = pages('free') + pages('inactive') + pages('speculative');
+      if (avail > 0) return avail * ps;
+      // Parsed but got nothing usable -> unavailable, skip the gate (not a block).
+      return null;
+    } else if (process.platform === 'linux') {
+      // MemAvailable is the kernel's own reclaimable-aware estimate (kB).
+      const mi = fs.readFileSync('/proc/meminfo', 'utf8');
+      const m = mi.match(/MemAvailable:\s+(\d+)\s+kB/);
+      if (m) return parseInt(m[1], 10) * 1024;
+      // /proc parsed but MemAvailable missing -> unavailable, skip the gate.
+      return null;
+    }
+    // Windows (and any other platform): os.freemem() is the genuine primary source.
+    return os.freemem();
+  } catch (_) {
+    // Real-memory read failed (exec/read/parse error). Return null so the caller
+    // SKIPS the memory gate instead of blocking on a bogus low number. Fail-CLOSED
+    // for the GATE (don't block), fail-open for spawning.
+    return null;
+  }
+}
+
+// Cross-process state under ~/.anti-hall/ (not os.tmpdir) so the spawn log is
+// visible across runners and survives tmpdir variation between processes.
+const LOG_DIR = path.join(os.homedir(), '.anti-hall');
+const LOG_FILE = path.join(LOG_DIR, 'swarm-spawns.log');
+const LOCK_FILE = path.join(LOG_DIR, 'swarm-spawns.lock');
+// SEPARATE observation-only file: a blocked spawn is deliberately NOT recorded
+// in LOG_FILE (a blocked entry must never extend the rate window — see the cap
+// check below), which left cap trips with no forensic trace. TRIP_LOG_FILE
+// records that a trip happened WITHOUT feeding the rate window: it is never
+// read by readTimestamps()/writeTimestamps() and is written outside the
+// LOCK_FILE critical section, so it cannot affect the block decision.
+const TRIP_LOG_FILE = path.join(LOG_DIR, 'swarm-trips.log');
+const LOCK_STALE_MS = 5000;    // steal a lock whose mtime is older than this
+const LOCK_RETRY_MS = 50;      // bounded total spin time trying to acquire
+const LOCK_SPIN_STEP_MS = 5;   // busy-wait granularity (no async in a sync hook)
+
+// acquireLock(lockFile?) -> handle | null. Best-effort cross-process mutex via
+// the shared lock primitive (companion/lib/lock.js): token-bearing owner
+// record, token-checked release (never deletes a lock a different process now
+// holds), and an ATOMIC stale steal — a lock older than LOCK_STALE_MS is
+// renamed aside and verified before it is discarded, so two stealers of one
+// stale lock can never both win (the old stat/re-stat/unlink steal let the
+// second stealer unlink the first one's fresh lock). A zero-byte/corrupt lock
+// is dated by its mtime and stolen once stale, so it can never wedge the rate
+// limiter. Bounded wait (LOCK_RETRY_MS, LOCK_SPIN_STEP_MS steps) — never
+// blocks long, never deadlocks. null -> the caller fails open.
+function acquireLock(lockFile) {
+  try {
+    return require('../companion/lib/lock.js').acquire(lockFile || LOCK_FILE, {
+      staleMs: LOCK_STALE_MS,
+      liveStaleMs: LOCK_STALE_MS, // staleness alone steals, whatever the holder pid
+      maxTries: Infinity,
+      waitMs: LOCK_RETRY_MS,
+      stepMs: LOCK_SPIN_STEP_MS,
+    });
+  } catch (_) { return null; }
+}
+
+// Release ONLY our own lock (token-checked; a lock reclaimed by another
+// process, or an unreadable one, is left alone).
+function releaseLock(handle) {
+  if (!handle) return;
+  try { handle.release(); } catch (_) { /* fail-open: leave the file rather than risk a wrong unlink */ }
+}
+
+function readTimestamps() {
+  try {
+    const data = fs.readFileSync(LOG_FILE, 'utf8');
+    return data.trim().split(/\r?\n/)
+      .map(line => parseInt(line.trim(), 10))
+      .filter(n => Number.isFinite(n) && n > 0);
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeTimestamps(timestamps) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.writeFileSync(LOG_FILE, timestamps.join('\n') + '\n', 'utf8');
+  } catch (_) {
+    // Fail-open: if we can't persist, don't block
+  }
+}
+
+// Append ONE line to TRIP_LOG_FILE when a spawn is BLOCKED by the rate cap:
+// ISO timestamp \t recent-count-in-window \t tool/agent that tripped. Fire and
+// forget: never throws, never affects the block decision (telemetry only), and
+// never touches LOG_FILE/LOCK_FILE (must not feed the rate window).
+function logTrip(recentCount, toolLabel) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const line = new Date().toISOString() + '\t' + recentCount + '\t' + toolLabel + '\n';
+    fs.appendFileSync(TRIP_LOG_FILE, line, 'utf8');
+  } catch (_) {
+    // Fail-open: a telemetry write failure must never crash the guard or
+    // change its block decision.
+  }
+}
+
+// Identify the tool/agent that spawned this hook invocation, for the trip log
+// only (never used in the block decision itself). Checks subagent_type /
+// agentType / agent_type — the Agent tool, the Workflow agent() API, and a
+// generic fallback spell it differently (mirrors codex-nudge.js:117-119).
+function describeSpawn(payload) {
+  try {
+    const toolName = (payload && typeof payload.tool_name === 'string' && payload.tool_name) || 'unknown';
+    const inp = (payload && payload.tool_input && typeof payload.tool_input === 'object') ? payload.tool_input : {};
+    const atype = (typeof inp.subagent_type === 'string' && inp.subagent_type) ||
+                  (typeof inp.agentType === 'string' && inp.agentType) ||
+                  (typeof inp.agent_type === 'string' && inp.agent_type) || '';
+    return atype ? (toolName + ':' + atype) : toolName;
+  } catch (_) {
+    return 'unknown';
+  }
+}
+
+function main() {
+  // Settings switch safety.swarmGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('safety', 'swarmGuard')) return; } catch (_) { /* run */ }
+  // Read stdin and parse it JUST enough to label a trip (tool/agent name).
+  // Never required for the block/allow logic itself — a parse failure simply
+  // leaves toolLabel as 'unknown'.
+  let toolLabel = 'unknown';
+  let payload = null;
+  try {
+    const raw = fs.readFileSync(0, 'utf8');
+    try { payload = JSON.parse(raw); toolLabel = describeSpawn(payload); } catch (_) {}
+  } catch (_) {}
+
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('swarm-guard')) process.exit(0);
+
+  const now = Date.now();
+
+  // --- Memory pressure check (real available memory, reclaimable cache included) ---
+  try {
+    const avail = availableBytes();
+    const total = os.totalmem();
+    // Only block on a SUCCESSFULLY-READ real available value below the floor.
+    // avail === null means the platform parser failed/was unavailable -> SKIP the
+    // gate (treat memory as OK) rather than block on a misleading os.freemem() number.
+    if (avail !== null && total > 0 && (avail / total) < MEM_FLOOR_RATIO) {
+      const availMb = Math.round(avail / 1024 / 1024);
+      const totalMb = Math.round(total / 1024 / 1024);
+      const reason =
+        'anti-hall swarm-guard: memory pressure critical (' + availMb + ' MB available of ' +
+        totalMb + ' MB total, < 4%). Blocking new agent spawn to protect OS stability. ' +
+        'Let running agents finish and free memory before spawning more.';
+      process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+      process.exit(2);
+    }
+  } catch (_) {
+    // Fail-open: if the availability check throws, skip it
+  }
+
+  // --- Spawn rate check (atomic across concurrent hook invocations) ---
+  // The prune -> count -> cap-check -> append must be a single critical section,
+  // or concurrent spawns each read a stale pre-cap log and race past the ceiling.
+  // We serialize it with a best-effort cross-process lock. FAIL-OPEN: if the lock can't
+  // be acquired, proceed WITHOUT blocking (never deadlock a spawn). The cap check
+  // happens INSIDE the lock on a FRESH read so it sees concurrent appends.
+  const lock = acquireLock();
+  if (lock === null) {
+    // Could not lock -> fail-open: allow without recording (don't risk a deadlock).
+    process.exit(0);
+  }
+
+  let blockReason = null;
+  let tripCount = 0;
+  try {
+    let timestamps;
+    try {
+      timestamps = readTimestamps();
+    } catch (_) {
+      process.exit(0); // fail-open (finally releases the lock)
+    }
+
+    // Prune entries older than WINDOW_MS (re-read INSIDE the lock).
+    const cutoff = now - WINDOW_MS;
+    const recent = timestamps.filter(t => t > cutoff);
+
+    // Cap check BEFORE appending/persisting `now`: a blocked spawn must NOT be
+    // logged, otherwise repeated blocked retries keep extending the window and the
+    // guard can never recover. Only an ALLOWED spawn is recorded (below).
+    if (recent.length >= SPAWN_CAP) {
+      tripCount = recent.length;
+      blockReason =
+        'anti-hall swarm-guard: agent spawn-rate ceiling reached (' + recent.length +
+        ' spawns in the last 60s, cap is ' + SPAWN_CAP + '). Pause new agents to avoid ' +
+        'a runaway swarm that can make the OS unusable. Let running agents finish, ' +
+        'then continue. Respect the concurrency cap (~min(16, cores-2)): never spawn ' +
+        'unbounded agents; let in-flight agents finish before launching more waves.';
+    } else {
+      // Spawn is allowed: record its timestamp INSIDE the lock so concurrent
+      // spawns observe it. A persist failure is fail-open (allow without recording).
+      recent.push(now);
+      writeTimestamps(recent);
+    }
+  } finally {
+    releaseLock(lock);
+  }
+
+  if (blockReason !== null) {
+    // Telemetry only, AFTER the lock is released: a trip must be observable
+    // but must never feed the rate window (LOG_FILE) or extend
+    // the critical section that guards it.
+    logTrip(tripCount, toolLabel);
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: blockReason }) + '\n');
+    process.exit(2);
+  }
+
+  // Allowed spawn: advisory (never blocks) when it shares a working tree with
+  // another running write-capable agent (guards.sharedTreeAgentNote).
+  try {
+    const note = require('./lib/shared-tree-note.js').sharedTreeNote(payload);
+    if (note) {
+      fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: note } }) + '\n');
+    }
+  } catch (_) { /* fail-open */ }
+
+  process.exit(0);
+}
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (_) {
+    // Fail-open.
+  }
+  process.exit(0);
+}
+
+module.exports = { acquireLock, releaseLock, LOCK_FILE, LOCK_STALE_MS };

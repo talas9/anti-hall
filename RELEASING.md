@@ -1,0 +1,34 @@
+# Releasing anti-hall
+
+Every behavioral or shipped-content change bumps the version and follows this checklist. The agent (not CI) performs the tag manually.
+
+## Checklist (in order)
+
+1. - [ ] Bump `plugins/anti-hall/.claude-plugin/plugin.json` `version` (AND `plugins/anti-hall/.codex-plugin/plugin.json` to match — the two manifests track together; semver: patch=fix/doc, minor=new capability).
+2. - [ ] Add a `## <version>` section to `CHANGELOG.md` (top) describing the change. CHANGELOG is the authority; marketplace entry carries no version.
+3. - [ ] Update docs for ANY new/changed hook, skill, or discipline:
+   - [ ] `docs/GUIDE.md` — the hooks and skills tables, disciplines, settings reference.
+   - [ ] `llms.txt` — hooks list, skills, disciplines, docs list.
+   - [ ] `README.md` (root) and `plugins/anti-hall/README.md` — only if the change touches what they cover (overview, privacy/network table, escape hatch).
+   - [ ] relevant other `docs/*.md` (and `docs/KB.md` topic map).
+4. - [ ] Verify: `node --test` (all pass) and `node plugins/anti-hall/hooks/doctor.js --check` (anti-hall ACTIVE). Never claim done without these THIS change.
+5. - [ ] Commit (NO AI-credit / Co-Authored-By trailer — git-guard blocks them).
+6. - [ ] **CI gate BEFORE main moves.** Pushing `main` IS a release: the marketplace clone fetches only `refs/heads/main` and fast-forwards it, and the updater copies a version into the plugin cache only when that version's directory is absent — so a red commit on `main` gets installed and cannot be replaced under the same version number (0.102.2 shipped red this way). Instead, push a candidate tag first — `test.yml` runs on `rc-v*` tags (full matrix: ubuntu + macOS × Node 22/24, each cell sharded; `main` pushes and PRs run a reduced matrix, and `v*` tags do not trigger it), and the marketplace never fetches tags:
+   - `git tag rc-v<version>` then `git push origin rc-v<version>`
+   - `gh run list --commit <sha>` → wait for the run at that sha to finish; `gh run view <id> --json jobs` → every job of the run (the `plan matrix` job plus all 10 `node:test` shard jobs) `success`. The gate is "all jobs of the rc run green", not a fixed count of 4.
+   - Red → fix, amend the LOCAL commit (it was never on `main`), tag it `rc-v<version>.2`, and repeat. Never move `main` on a red run.
+   - Tag retention: `rc-v*` tags are left in place after the release; the owner prunes old ones. Do not delete them as part of a release. The update check needs at least one `vX.Y.Z` tag, and release notes live in `CHANGELOG.md`, not in old tags.
+7. - [ ] Only after the candidate run is green: `git push origin main`, then TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Create a GitHub Release from the tag with that version's CHANGELOG section.
+8. - [ ] Propagate to the live marketplace dir only (`~/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/`); do NOT overwrite version-pinned `cache/.../<ver>/` snapshots.
+9. - [ ] Consider publish venues (see below) for notable releases.
+
+## Doc-currency rule
+
+A version bump that adds/changes a hook/skill/discipline is NOT done until README (root+plugin) + llms.txt + relevant docs reflect it.
+
+## Publish venues (for notable releases)
+
+- Official Community Marketplace (Anthropic plugin-directory submission form) → surfaces on claude.com/plugins.
+- Auto-crawl directories (e.g. claudemarketplaces.com) — automatic for public repos with valid `.claude-plugin/marketplace.json`.
+- Community awesome-lists (PR): awesome-claude-plugins (ComposioHQ), awesome-claude-code-plugins (ccplugins), awesome-claude-code (jqueryscript).
+- Promotion: dev.to/blog post, Show HN (strict no-hype), r/ClaudeAI, X/#ClaudeCode. Needs a demo GIF.

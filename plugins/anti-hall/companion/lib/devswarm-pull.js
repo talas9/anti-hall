@@ -1,0 +1,593 @@
+'use strict';
+// anti-hall :: devswarm-pull — the CHILD-SIDE reception drain (v0.54.2). A
+// bounded, guard-safe, one-shot CLI pull that folds a child workspace's NATIVE
+// parent->child message queue into its OWN durable descriptor inbox (the NDJSON
+// `devswarm-child-turn` surfaces + the store parity feed `inbox read/ack` walks).
+//
+// WHY A SEPARATE PATH FROM THE INGEST DAEMON. The ingest daemon (companion/
+// devswarm-ingest.js) wraps `hivecontrol workspace monitor` — a blocking,
+// no-timeout long-poll — as the ONE supervised native consumer. A headless child
+// sub-orchestrator cannot host a blocking daemon on its turn thread, and
+// `monitor` is exactly the destructive read command-guard blocks. So reception is
+// a PULL, not a push: each child turn nudges the child to run this one-shot drain,
+// which:
+//   1. Takes a PER-ID O_EXCL lock (a child never drains its own queue twice
+//      concurrently — that would SPLIT the destructive native queue and lose
+//      messages, the same single-consumer invariant the ingest lock enforces).
+//   2. Runs the NON-DESTRUCTIVE `hivecontrol workspace message-count` FIRST.
+//      count===0 -> return WITHOUT ever touching read-messages (the count-gate
+//      minimizes the destructive-read crash-window: we only mark-read when there
+//      is actually something to drain).
+//   3. On count>0, ONE BOUNDED `hivecontrol workspace read-messages` with a finite
+//      timeout — NEVER `monitor`. read-messages marks-read (destructive), so it is
+//      called at most once per pull and only when the count-gate says there is work.
+//   4. Appends the drained batch to the durable inbox NDJSON in ONE atomic
+//      appendFileSync, idempotent by embedded content hash (a re-observed message
+//      is skipped, so a crash-then-retry never duplicates a line).
+//
+// DELIVERY WAL (mesh redesign Phase 5, simplified). `read-messages` marks the
+// native messages read BEFORE this process persists them. The raw stdout of
+// every destructive read is therefore appended + fsynced to ONE append-only
+// per-reader WAL file (<devswarm>/wal/pull-<id>.ndjson) BEFORE it is parsed or
+// appended anywhere. Each batch is closed by a `done` (destination NDJSON
+// appended + fsynced) or `quarantine` (unparseable/short — raw bytes kept in the
+// WAL, never deleted) record. Every pull replays still-open batches FIRST,
+// under the pull lock, and refuses a new destructive read while one cannot be
+// replayed. Replay is idempotent by the existing content hash, so a crash
+// anywhere after the WAL fsync re-delivers, never loses.
+//
+// RESIDUAL WINDOW (not fixable here): hivecontrol dequeues inside its own
+// process; a crash between that dequeue and our WAL fsync (native-side, or
+// while spawnSync still holds stdout in memory) loses the batch. Closing it
+// needs a native peek/ack API.
+//
+// Pure Node built-ins. Every spawn is injectable via io.run so unit tests exercise
+// the count-gate / drain / idempotence / lock WITHOUT spawning a real binary; io.fs
+// is injectable so the crash-window ordering is testable (a throwing appendFileSync
+// must surface ok:false, never a false success).
+
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const { isSafeId, devswarmRoot, resolveSelfId } = require('./liveness.js');
+// REUSE the ingest primitives verbatim (do NOT reimplement) so the child-side
+// drain hashes/normalizes messages IDENTICALLY to the daemon path — a message
+// hashed one way here and another way there would break cross-path dedupe.
+const {
+  normalizeMonitorPayload, messageHash, ingestPayload,
+} = require('../devswarm-ingest.js');
+const store = require('./devswarm-store.js');
+// v0.57 mesh (PLAN-v0.57-mesh.md D1/D8): the parity feed's STORE target re-keys
+// to the SAME shared per-project store the ingest daemon drains into — this
+// child never touches child-side liveness surfaces (descriptor id / heartbeat /
+// durable NDJSON inbox stay UNCHANGED, worktree-hash based, D19); only WHICH
+// physical store the best-effort parity write lands in changes.
+const repokey = require('./devswarm-repokey.js');
+// Phase 5 delivery WAL (shared with the ingest daemon's monitor path).
+const readWal = require('./devswarm-read-wal.js');
+
+const PULL_LOCK_STALE_MS = 60 * 1000;   // a one-shot pull is short-lived; a lock older than this from a dead/unknown holder is stealable
+const READ_TIMEOUT_MS = 10 * 1000;      // the ONE bounded read-messages spawn — finite, never a blocking monitor
+
+// pullLockPath(home, id) — PER-ID lock so disjoint workspaces never block each
+// other; only two drains of the SAME queue are mutually exclusive.
+function pullLockPath(home, id) {
+  return path.join(devswarmRoot(home), 'locks', 'pull-' + id + '.lock');
+}
+function inboxDefaultPath(home, id) { return path.join(devswarmRoot(home), 'inbox', id + '.ndjson'); }
+function cursorDefaultPath(home, id) { return path.join(devswarmRoot(home), 'cursors', id + '.cursor'); }
+
+function isAliveDefault(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+}
+
+// acquireExclLock(lockPath, io, staleMs) -> release() | null. The same acquire/steal
+// discipline as devswarm-ingest.acquireIngestLock, factored small for the one-shot
+// pull (no heartbeat needed — a pull is short-lived). null => another pull holds the
+// lock; the caller MUST refuse (single-consumer invariant). STEAL RULE: a lock is
+// stolen ONLY when it is BOTH stale AND not held by a live process (dead or unknown
+// pid). A KNOWN-LIVE holder is NEVER stolen however old its timestamp looks — UNLESS
+// the caller opts in via `io.allowStaleLiveSteal` (see below). Default behavior for
+// every existing caller (pullOnce's own one-shot drain lock) is UNCHANGED.
+//
+// io.allowStaleLiveSteal (default false, OPT-IN, defect 8143ced316d3): a one-shot
+// pull's lock must NEVER take this path — a live-but-slow pull mid-drain must never
+// be interrupted (that would split the destructive native queue). It exists ONLY for
+// a long-lived, PURE-READ holder (devswarm-wake-watch.js) that re-stamps its own
+// lock's `ts` every poll tick via the returned `release.restamp()` (see below) — a
+// HUNG (frozen, not exited) watcher stops calling restamp() and its lock goes stale
+// while its pid stays alive, which is exactly the gap this flag closes: a stale+live
+// holder becomes stealable ONLY when the caller has explicitly said "I am the kind of
+// holder that keeps its lock fresh while healthy." No automatic path here ever kills
+// or signals the old holder's process — it only reclaims the lock FILE so a new
+// watcher can arm; if the hung watcher wakes back up, its next restamp()/release()
+// call is a no-op once the token on disk no longer matches (both already guard on
+// `cur.token === token`).
+//
+// io.version (string, optional): stamped into the lock JSON as `version` so a
+// refused caller can report which plugin build holds the lock (see io.onRefused).
+//
+// io.sessionId (string, optional, v0.102.2): stamped into the lock JSON as
+// `sessionId` so a refused caller can name WHICH session's watcher holds the
+// lock (see io.onRefused) — same "who, since when" diagnostic need `version`
+// already covers for "which build". ADDITIVE ONLY: a lock file written by an
+// older version (pre-v0.102.2, no `sessionId` key at all) simply parses with
+// `holder.sessionId === undefined`, which the read-back below already treats
+// as "unavailable" — never a crash, never a behavior change for that lock.
+// Omitted (not just falsy) from the written JSON when the caller passes
+// nothing, so a lock written by an old OR new caller with no sessionId looks
+// byte-identical either way.
+//
+// io.onRefused(info) (optional): called with `{ pid, ageMs, version, sessionId, ts }`
+// (any field may be null if unknown/unparseable/absent-in-an-older-lock)
+// immediately before a refusal (`return null`) on an EEXIST path — lets a
+// caller build a diagnostic line without changing this function's
+// `release() | null` return contract that every existing call site relies
+// on. `ts` is the holder's raw acquire/restamp epoch-ms (the same value
+// `ageMs` is already computed from) so a caller can render an absolute
+// "acquired at" timestamp instead of only a relative age.
+function acquireExclLock(lockPath, io, staleMs) {
+  const stale = Number.isFinite(staleMs) ? staleMs : PULL_LOCK_STALE_MS;
+  const version = (io && typeof io.version === 'string') ? io.version : null;
+  const sessionId = (io && typeof io.sessionId === 'string' && io.sessionId) ? io.sessionId : undefined;
+  const onRefused = io && typeof io.onRefused === 'function' ? io.onRefused : null;
+  // Shared primitive (companion/lib/lock.js): torn-read mtime guard, rename-
+  // aside reclaim, token-checked release. Steal rule unchanged: only a STALE
+  // holder that is not alive (or any stale holder under allowStaleLiveSteal).
+  const h = require('./lock.js').acquire(lockPath, {
+    fs: io && io.fs,
+    isAlive: (io && io.isAlive) || isAliveDefault,
+    now: io && io.now,
+    staleMs: stale,
+    liveStaleMs: (io && io.allowStaleLiveSteal) ? stale : Infinity,
+    fields: { version, sessionId },
+    onRefused: onRefused ? (holder) => {
+      const r = holder.record || {};
+      onRefused({
+        pid: holder.pid,
+        ageMs: holder.ts === null ? null : holder.ageMs,
+        version: typeof r.version === 'string' ? r.version : null,
+        sessionId: typeof r.sessionId === 'string' && r.sessionId ? r.sessionId : null,
+        ts: holder.ts,
+      });
+    } : undefined,
+  });
+  if (!h) return null;
+  const release = function release() { h.release(); };
+  // restamp() — re-write `ts` (and version/sessionId) atomically, same
+  // pid/token, so a healthy long-lived holder's lock never reads as stale to a
+  // steal-check even though the process itself never releases between ticks.
+  // TRI-STATE: true = refreshed, still ours; false = DEFINITIVE loss (the file
+  // is gone or another holder owns the token, e.g. after this process's own
+  // lock was reclaimed while it was hung); 'error' = transient (torn read,
+  // write failure, a reclaimer holding the sidecar) — NOT proof of loss.
+  release.restamp = function restamp() {
+    return h.refresh({ pid: process.pid, version, sessionId });
+  };
+  return release;
+}
+
+// defaultRun(spec) -> { ok, raw, error, status?, signal?, stderr? }. ONE injectable
+// hivecontrol spawn (mirrors ingest.defaultMonitorRun). spec: { args, timeout, env,
+// hivecontrol }. Carries a finite `timeout` so a hung read-messages can never wedge
+// the child's turn.
+//
+// EXIT-STATUS CHECK (silent-failure fix). This used to inspect ONLY `r.error` — the
+// SPAWN-failure channel (binary missing, EACCES). A process that spawned FINE but
+// exited NON-ZERO was reported as `{ok:true, raw:''}`: success with no data.
+// Demonstrated live: with DevSwarm.app not reachable, `hivecontrol workspace list
+// all` exits 1 with EMPTY stdout and stderr "DevSwarm is not running" — and this
+// function called that SUCCESS. Every consumer routed through here inherited it
+// (pullOnce's message-count gate and read-messages; devswarm.js's
+// fetchNativeChildren roster fold, reconcile name backfill, cmdSpawn's create +
+// update-title, cmdMergeVerb's check-merge + merge-into-source), so "the app is
+// down" was indistinguishable from "there is genuinely nothing" — and a FAILING
+// `merge-into-source` broadcast "merge-into-source completed" to the whole mesh.
+// Now a non-zero exit OR a terminating signal yields ok:false with stderr captured.
+//
+// STDOUT IS PRESERVED ON FAILURE (`raw` is NOT blanked). hivecontrol emits
+// meaningful JSON on stdout alongside a non-zero exit (KB-devswarm-hivecontrol.md:
+// `workspace search` returns a structured `{success:false, code:...}` body with
+// exit 1; `repo validate` uses 0=valid/1=invalid/2=no-file). Blanking `raw` here
+// would destroy that diagnostic body. Only the `r.error` spawn-failure branch keeps
+// `raw:''` — there genuinely is no stdout when the process never ran.
+//
+// FAIL-OPEN CONTRACT PRESERVED: this widens the ok:false CHANNEL; it never throws
+// and never hard-blocks. Every caller already gates on `.ok` and either treats a
+// failed run as "nothing to fold" (fetchNativeChildren -> [], reconcile's name
+// backfill -> skip, cmdMergeVerb's check-merge -> null) or now reports an honest
+// failure it previously masked as success (cmdSpawn's create, cmdMergeVerb's merge).
+//
+// The `error` string deliberately does NOT begin with "spawnSync" — cmdReconcile's
+// `hivecontrolMissing` benign-skip classifier (devswarm.js) matches
+// /^spawnSync\s+\S*hivecontrol\S*\s+(ENOENT|EACCES|ENOTDIR)\b/, and an exit-status
+// failure must NOT be silently absorbed into that environment-fact allowance.
+function defaultRun(spec) {
+  const o = spec || {};
+  const bin = o.hivecontrol || 'hivecontrol';
+  const args = Array.isArray(o.args) ? o.args : [];
+  try {
+    const opts = { encoding: 'utf8' };
+    if (Number.isFinite(o.timeout)) opts.timeout = o.timeout;
+    if (o.env && typeof o.env === 'object') opts.env = o.env;
+    if (typeof o.cwd === 'string' && o.cwd) opts.cwd = o.cwd;
+    const r = spawnSync(bin, args, opts);
+    if (r.error) {
+      // TIMEOUT (dead-branch fix): a `timeout`-killed spawnSync sets BOTH
+      // `r.error` (code ETIMEDOUT) AND `r.signal`/`r.status` (SIGTERM/null) —
+      // but this branch used to return before the signal check below ever
+      // ran, so it always dropped `status`/`signal` off the result. A caller
+      // gating on `res.signal && res.status == null` (scripts/devswarm.js
+      // cmdSpawn) could then never detect a timeout at all. Propagate the
+      // real fields, and flag `timedOut` explicitly off `r.error.code` — the
+      // one unambiguous signal a `timeout` option kill leaves.
+      return {
+        ok: false,
+        raw: '',
+        error: String(r.error.message || r.error),
+        status: (r.status === undefined ? null : r.status),
+        signal: (r.signal || null),
+        stderr: String(r.stderr || ''),
+        timedOut: !!(r.error && r.error.code === 'ETIMEDOUT'),
+      };
+    }
+    const raw = String(r.stdout || '');
+    const stderr = String(r.stderr || '');
+    const detail = stderr.trim() ? ': ' + stderr.trim() : '';
+    // Signal FIRST: a signal-killed process reports `status === null`, so the
+    // status branch below could not describe it.
+    if (r.signal) {
+      return { ok: false, raw, error: bin + ' ' + args.join(' ') + ' killed by signal ' + r.signal + detail, status: null, signal: r.signal, stderr };
+    }
+    if (r.status !== 0) {
+      return { ok: false, raw, error: bin + ' ' + args.join(' ') + ' exited ' + r.status + detail, status: r.status, signal: null, stderr };
+    }
+    return { ok: true, raw, error: null, status: 0, signal: null, stderr };
+  } catch (e) {
+    return { ok: false, raw: '', error: String(e && e.message || e) };
+  }
+}
+
+// parseCount(raw) -> int (>=0). Tolerant parse of `message-count` stdout — the exact
+// shape is not pinned in the KB, so accept a bare number, a JSON object with a known
+// count key, or the first integer in a plain string. Unparseable -> 0 (fail-soft: a
+// count we cannot read is treated as "nothing to drain", so we never blindly fire the
+// destructive read-messages on an unknown count).
+function parseCount(raw) {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+  if (raw == null) return 0;
+  const t = String(raw).trim();
+  if (t === '') return 0;
+  try {
+    const v = JSON.parse(t);
+    if (typeof v === 'number' && Number.isFinite(v)) return Math.max(0, Math.floor(v));
+    if (v && typeof v === 'object') {
+      for (const k of ['count', 'unread', 'unreadCount', 'messages', 'total', 'pending']) {
+        if (Number.isFinite(v[k])) return Math.max(0, Math.floor(v[k]));
+      }
+    }
+  } catch (_) {}
+  const m = t.match(/-?\d+/);
+  if (m) { const n = parseInt(m[0], 10); return Number.isFinite(n) ? Math.max(0, n) : 0; }
+  return 0;
+}
+
+// collectExistingHashes(F, inboxPath) -> Set<string>. Read the durable inbox ONCE and
+// gather every embedded `_h` so the append is idempotent: a re-observed message (same
+// content hash) is skipped rather than duplicated. Absent/unreadable inbox -> empty set.
+function collectExistingHashes(F, inboxPath) {
+  const seen = new Set();
+  let existing;
+  try { existing = String(F.readFileSync(inboxPath, 'utf8')); } catch (_) { return seen; }
+  for (const line of existing.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try { const o = JSON.parse(t); if (o && o._h != null) seen.add(String(o._h)); } catch (_) { /* skip torn line */ }
+  }
+  return seen;
+}
+
+// walPath(home, id) — this child's pull WAL (see devswarm-read-wal.js).
+function walPath(home, id) { return readWal.walPath(home, 'pull', id); }
+function walPending(F, file) { return readWal.pending(F, file); }
+
+// pullOnce({ home, id, env, backend, now, io }) -> { ok, locked, imported, duplicate, nativeCount, error? }.
+// One bounded, guard-safe drain of the child's native queue into its durable inbox.
+// The caller GUARANTEES the descriptor (workspaces/<id>.json with inboxPath) exists.
+// Fail-soft on any error: no durable corruption, no partial NDJSON, lock always released.
+function pullOnce(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const id = o.id;
+  const env = o.env || process.env;
+  const backend = o.backend;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const io = o.io || {};
+  const F = io.fs || fs;
+  const run = io.run || defaultRun;
+  // v0.57 mesh (D1/D8): the CALLER's cwd (this child's own worktree — defaults to
+  // process.cwd() when not explicit) selects the SHARED project store the parity
+  // feed writes into. Deliberately NOT threaded through `io.run` above (that key
+  // is the hivecontrol spawn's shape — {args,timeout,env,hivecontrol} — a
+  // DIFFERENT signature from repokey's own git spawn {args,cwd}; reusing it here
+  // would feed a test's hivecontrol mock a call it never expects). null (non-git
+  // cwd) is fail-open — the parity feed then falls back to its PRE-MESH behavior
+  // (hash derived from `id`) below.
+  const cwd = o.cwd || process.cwd();
+  let repoKey = null;
+  try { repoKey = repokey.repoKeyForWorktree(cwd); } catch (_) { repoKey = null; }
+  // SENDER (D3 fix — "Primary's own outbound counted as the Primary's
+  // neglect"): this whole drain is the CHILD-SIDE reception of its OWN
+  // native parent->child queue (see file header), so EVERY row landing here
+  // was sent BY the Primary. `resolveSelfId(cwd)` (liveness.js) hashes
+  // through `resolveMainWorktree` to the shared main-worktree id — the SAME
+  // `primary-<worktreeHash>` a linked child worktree and its Primary both
+  // resolve to (git-common-dir is identical across a worktree family) — so
+  // this equals the exact `own.id` devswarm-parent-gate.js's readOwnUnread
+  // already computes for the real Primary, without this child needing to
+  // know the Primary's own cwd. `primaryWorkspaceId` is a PURE hash of
+  // whatever path it is handed — a non-git `cwd` still resolves to a
+  // deterministic (if less meaningful) id, it does NOT fail to null; only a
+  // falsy `cwd` (never happens here — `cwd` above always defaults to
+  // `process.cwd()`) or a throwing require yields null. A null sender still
+  // counts as real per every consumer's own documented fail-open-toward-
+  // counting default, so this is safe either way.
+  let senderId = null;
+  try { senderId = resolveSelfId(cwd); } catch (_) { senderId = null; }
+
+  if (!isSafeId(id)) return { ok: false, locked: false, error: 'invalid or missing workspace id' };
+
+  const release = acquireExclLock(pullLockPath(home, id), io, PULL_LOCK_STALE_MS);
+  if (!release) return { ok: false, locked: false, error: 'another pull holds the lock' };
+
+  try {
+    // Descriptor -> inboxPath (caller guarantees it exists).
+    const descPath = path.join(devswarmRoot(home), 'workspaces', id + '.json');
+    let desc;
+    try { desc = JSON.parse(F.readFileSync(descPath, 'utf8')); } catch (_) {
+      return { ok: false, locked: true, error: 'no descriptor for workspace ' + JSON.stringify(id) };
+    }
+    if (!desc || typeof desc !== 'object') {
+      return { ok: false, locked: true, error: 'descriptor for ' + JSON.stringify(id) + ' has no inboxPath' };
+    }
+    // A null/absent inboxPath (e.g. a `primary-*` row that never went through
+    // a flow that seeded it, or an old descriptor from before the inbox field
+    // existed) is NOT unresolvable — every sibling call site (devswarm-wake-
+    // watch.js:870, devswarm-child-turn.js:447, cmdRegister's ensure branch)
+    // derives the SAME deterministic default instead of erroring. Match them
+    // here so a descriptor missing only this field still drains.
+    const inboxPath = desc.inboxPath || inboxDefaultPath(home, id);
+
+    const wal = walPath(home, id);
+
+    // ingestRaw(raw) -> { imported, duplicate, parsed }. Parse one raw native
+    // batch, append the new rows to the durable inbox NDJSON (idempotent by
+    // content hash) and fsync it, then the best-effort store parity feed.
+    // THROWS when the durable append fails (the WAL entry then stays pending).
+    const ingestRaw = (raw) => {
+      const messages = normalizeMonitorPayload(raw);
+      const seen = collectExistingHashes(F, inboxPath);
+      let imported = 0;
+      let duplicate = 0;
+      const batch = [];
+      for (const m of messages) {
+        const h = messageHash(id, m);
+        if (seen.has(h)) { duplicate++; continue; }
+        seen.add(h); // also de-dupe WITHIN the batch
+        batch.push(JSON.stringify({
+          _h: h,
+          fromBranch: (m && m.fromBranch != null) ? m.fromBranch : null,
+          message: (m && m.message != null) ? m.message : null,
+          createdAt: (m && m.createdAt != null) ? m.createdAt : null,
+          status: (m && m.status != null) ? m.status : null,
+          // sender (D3, additive): appended AFTER the pre-existing fields, not
+          // interleaved — `_h` is computed from `m` above (messageHash), never
+          // from this row object, so adding a trailing key here cannot change
+          // an existing or new row's hash/dedupe key. Old rows on disk simply
+          // lack this key; every reader already treats `sender == null` as
+          // "no resolvable sender, count as real" (fail-open), so this is
+          // silently backward-compatible with every row written before it.
+          sender: senderId,
+        }) + '\n');
+        imported++;
+      }
+
+      // DURABLE append precedes ok:true (crash-window ordering). ONE appendFileSync of
+      // the whole batch — a throw here propagates as ok:false, never a false
+      // success. Leading '\n' when a prior crash left a torn tail (#26). The
+      // fsync makes the WAL `done` record below truthful.
+      if (batch.length > 0) {
+        F.mkdirSync(path.dirname(inboxPath), { recursive: true });
+        F.appendFileSync(inboxPath, (readWal.lacksTrailingNewline(F, inboxPath) ? '\n' : '') + batch.join(''));
+        const fd = F.openSync(inboxPath, 'r');
+        try { F.fsyncSync(fd); } finally { F.closeSync(fd); }
+      }
+
+      // Store parity feed (do NOT touch the store cursor). Best-effort: the durable
+      // NDJSON above is the source of truth `inbox read/ack` and the child-turn hook
+      // consume; the store projection is a secondary read model. Dedupe is by the SAME
+      // messageHash, so a re-ingest OR-IGNOREs — idempotent across both layers.
+      try {
+        // v0.57 mesh (D1/D8): the SHARED per-project store (store/<repoKey>/) when
+        // repoKey resolves — `id` (the child's builder-id) still selects the
+        // PARTITION inside that store (unchanged); repoKey===null falls back to
+        // the PRE-MESH per-id store (fail-open). deriveSummary is called WITHOUT
+        // an explicit workspaceId so it targets THIS handle's own hash (repoKey
+        // when set) — passing `workspaceId: id` here would write the projection to
+        // the WRONG (legacy id-hash) summary file even though the messages
+        // landed in the repoKey store.
+        const s = store.openStore({ home, workspaceId: id, hash: repoKey || undefined, backend, env });
+        try {
+          ingestPayload(s, raw, { workspaceId: id, home, now });
+          store.deriveSummary(s, { home, env, now });
+        } finally { s.close(); }
+      } catch (_) { /* durable inbox already persisted; store parity is best-effort */ }
+      return { imported, duplicate, parsed: messages.length };
+    };
+
+    // The worktree recorded on every batch lets a reader whose KEY changed
+    // (identity rekey / new builder id) still find its open batches.
+    const walMeta = { worktree: desc.worktreePath || cwd || null };
+
+    // FAIL CLOSED, step 1: batches spilled when the WAL was unwritable must be
+    // absorbed back into a writable WAL before anything else.
+    const absorbed = readWal.absorbSpill(F, wal, now);
+    if (absorbed.error) {
+      return {
+        ok: false, locked: true, walPath: wal, walBlocked: true,
+        spilled: readWal.spillPending(F, wal).length, spillDir: readWal.spillDir(wal),
+        error: 'delivery WAL not writable (' + absorbed.error + ') — spilled batch(es) kept in '
+          + readWal.spillDir(wal) + '; no destructive native read until the WAL is writable',
+      };
+    }
+
+    // REPLAY FIRST (admission control): every WAL batch a previous pull
+    // captured but never closed — in this reader's WAL, or in another pull WAL
+    // naming the same worktree (a prior reader key) — is ingested before any
+    // new destructive read. A replay failure returns ok:false with the batch
+    // still pending — no new read-messages while an earlier one has not landed.
+    let replayed = 0;
+    let replayImported = 0;
+    let pendingEntries;
+    try {
+      pendingEntries = walPending(F, wal).map((b) => ({ file: wal, e: b.e, raw: b.raw }))
+        .concat(readWal.adoptForWorktree(F, home, 'pull', walMeta.worktree, wal,
+          // the prior reader's own pull lock: never claim a WAL mid-pull
+          (base) => acquireExclLock(pullLockPath(home, base.slice('pull-'.length)), io, PULL_LOCK_STALE_MS)));
+    } catch (e) {
+      return { ok: false, locked: true, walBlocked: true, error: 'delivery WAL unreadable (' + String((e && e.code) || e) + '): ' + wal, walPath: wal };
+    }
+    for (const entry of pendingEntries) {
+      let r;
+      try { r = ingestRaw(entry.raw); } catch (e) {
+        return {
+          ok: false, locked: true, walPath: wal, walPending: pendingEntries.length - replayed,
+          error: 'WAL replay failed (batch kept pending, no new native read): ' + String((e && e.message) || e),
+        };
+      }
+      const empty = r.parsed === 0 && entry.raw.trim() !== '' && entry.raw.trim() !== '[]';
+      readWal.closeBatch(F, entry.file, entry.e, empty
+        ? { t: 'quarantine', reason: 'unparseable' }
+        : { t: 'done', imported: r.imported, duplicate: r.duplicate, into: id }, now);
+      replayed += 1;
+      replayImported += r.imported;
+    }
+    const replayOut = replayed ? { walReplayed: replayed, walReplayImported: replayImported } : {};
+
+    // FAIL CLOSED, step 2: never issue a destructive read into a WAL that
+    // cannot be appended + fsynced right now.
+    const notWritable = readWal.preflight(F, wal);
+    if (notWritable) {
+      return Object.assign({
+        ok: false, locked: true, walPath: wal, walBlocked: true,
+        error: 'delivery WAL not writable (' + notWritable + '): ' + wal + ' — destructive native read refused',
+      }, replayOut);
+    }
+
+    // NON-DESTRUCTIVE count-gate. count===0 -> never touch read-messages.
+    const cRes = run({ args: ['workspace', 'message-count'], env });
+    if (!cRes || !cRes.ok) {
+      // nativeTimeout (additive): the native app did not answer in time. The
+      // count-gate runs BEFORE any destructive read, so nothing was read, lost
+      // or imported — cmdReconcile classifies it as a calm benign skip.
+      const cErr = (cRes && cRes.error) || 'message-count failed';
+      const timedOut = !!(cRes && (cRes.timedOut || /request timeout|timed out|ETIMEDOUT/i.test(String(cErr))));
+      return Object.assign({ ok: false, locked: true, error: cErr }, timedOut ? { nativeTimeout: true } : {}, replayOut);
+    }
+    const nativeCount = parseCount(cRes.raw);
+    if (!(nativeCount > 0)) {
+      readWal.maybeRotate(F, wal, now);
+      return Object.assign({ ok: true, locked: true, imported: 0, duplicate: 0, nativeCount: 0 }, replayOut);
+    }
+
+    // count>0 -> ONE bounded read-messages (finite timeout, NEVER monitor).
+    const rRes = run({ args: ['workspace', 'read-messages'], timeout: READ_TIMEOUT_MS, env });
+
+    // WAL the RAW bytes IMMEDIATELY — before the exit-status check and before
+    // any parse or validation (a failed/killed read can still carry popped
+    // stdout). Residual window (native dequeue -> here) is documented in
+    // devswarm-read-wal.js. A WAL write failure SPILLS the raw bytes to a
+    // separate fsynced file and blocks further destructive reads (step 1).
+    const rawStr = String(rRes && rRes.raw != null ? rRes.raw : '');
+    let entryId = null;
+    let walError = null;
+    let spillPath = null;
+    let lastResortPath = null;
+    if (rawStr !== '') {
+      const cap = readWal.captureRaw(F, wal, rawStr, now, walMeta);
+      entryId = cap.entryId || null;
+      if (!entryId) {
+        walError = cap.error || 'WAL write failed';
+        spillPath = cap.spillPath || null;
+        lastResortPath = cap.lastResortPath || null;
+      }
+    }
+    if (!rRes || !rRes.ok) {
+      return Object.assign({
+        ok: false, locked: true, error: (rRes && rRes.error) || 'read-messages failed',
+        walEntry: entryId, walPath: wal,
+      }, replayOut, walError ? { walError, walBlocked: true, spillPath, lastResortPath } : {});
+    }
+
+    let got;
+    try { got = ingestRaw(rawStr); } catch (e) {
+      if (!walError) throw e; // WAL entry pending -> the next pull replays it
+      return Object.assign({
+        ok: false, locked: true, walBlocked: true, walError, spillPath, lastResortPath,
+        error: 'delivery WAL write failed (' + walError + ') and the inbox append failed ('
+          + String((e && e.message) || e) + ') — batch kept in ' + (spillPath || lastResortPath || 'stderr only')
+          + '; destructive reads blocked until the WAL is writable',
+      }, replayOut);
+    }
+    const imported = got.imported;
+    const duplicate = got.duplicate;
+
+    // RECONCILIATION — make the destructive-read silent-loss OBSERVABLE. The KB pins
+    // `message-count` and `read-messages` to the SAME native metric: message-count is
+    // the UNREAD count (non-destructive), read-messages reads THOSE unread messages and
+    // marks them read (destructive) — so the count gates a destructive drain whose batch
+    // SHOULD contain exactly that many messages. If we recovered FEWER than the count
+    // said (imported+duplicate < nativeCount), the shortfall was marked-read natively but
+    // never landed in the durable inbox (e.g. normalizeMonitorPayload returned [] on an
+    // unhandled read-messages shape). The raw bytes are KEPT in the WAL (quarantined,
+    // never deleted), so the batch is recoverable — but fail ok:false to force attention.
+    const recovered = imported + duplicate;
+    const shortfall = recovered < nativeCount;
+    if (!walError) {
+      try {
+        readWal.closeBatch(F, wal, entryId, shortfall
+          ? { t: 'quarantine', reason: 'shortfall', nativeCount, recovered }
+          : { t: 'done', imported, duplicate }, now);
+      } catch (_) { /* batch stays pending -> next pull replays it idempotently */ }
+    }
+    // A spilled batch keeps this reader blocked until absorbed: never ok:true.
+    const walOut = walError ? { walError, walBlocked: true, spillPath, lastResortPath } : {};
+    if (shortfall) {
+      const lost = nativeCount - recovered;
+      try {
+        F.writeSync(2, 'devswarm-pull: reception shortfall for ' + JSON.stringify(id)
+          + ' — message-count=' + nativeCount + ' recovered=' + recovered + ' lost=' + lost
+          + ' (marked-read natively but not parsed; raw batch kept in ' + wal + ' entry ' + entryId + ')\n');
+      } catch (_) { /* telemetry is best-effort; a failed log must never break the drain */ }
+      return Object.assign({ ok: false, locked: true, imported, duplicate, nativeCount, lost, walPath: wal, walEntry: entryId }, replayOut, walOut);
+    }
+
+    return Object.assign({ ok: !walError, locked: true, imported, duplicate, nativeCount }, replayOut, walOut,
+      walError ? { error: 'delivery WAL write failed (' + walError + ') — batch kept in ' + (spillPath || lastResortPath || 'stderr only') + '; destructive reads blocked until the WAL is writable' } : {});
+  } catch (e) {
+    return { ok: false, locked: true, error: String(e && e.message || e) };
+  } finally {
+    try { release(); } catch (_) {}
+  }
+}
+
+module.exports = {
+  PULL_LOCK_STALE_MS, READ_TIMEOUT_MS,
+  pullLockPath, inboxDefaultPath, cursorDefaultPath,
+  acquireExclLock, defaultRun, parseCount, collectExistingHashes,
+  pullOnce,
+  walPath, walPending,
+};

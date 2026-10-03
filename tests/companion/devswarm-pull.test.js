@@ -1,0 +1,820 @@
+'use strict';
+// devswarm-pull — the child-side reception drain (v0.54.2). Unit-tests the bounded,
+// guard-safe one-shot pull WITHOUT spawning real hivecontrol: the count-gate, the
+// at-most-one bounded read-messages (never monitor), the atomic idempotent NDJSON
+// append, the per-id lock, and the crash-window ordering. Every hivecontrol spawn is
+// injected via io.run; io.fs is injected to prove a thrown append surfaces ok:false.
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const cp = require('node:child_process');
+
+const pull = require('../../plugins/anti-hall/companion/lib/devswarm-pull.js');
+const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const { readUnread } = require('../../plugins/anti-hall/companion/lib/devswarm-inbox-cursor.js');
+const { resolveSelfId } = require('../../plugins/anti-hall/companion/lib/liveness.js');
+const { testHook } = require('../helpers/spawn-hook.js');
+
+// makeGitRepo(tag) — a REAL, minimal git repo on disk (D3 sender tests need a
+// resolvable git root: resolveSelfId(cwd) hashes through the actual
+// `git rev-parse --git-common-dir`, which a fake/non-git path cannot satisfy).
+function makeGitRepo(tag) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-pull-repo-' + tag + '-'));
+  cp.spawnSync('git', ['init', '-q', dir]);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.email', 'a@b.c']);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'README.md'), tag);
+  cp.spawnSync('git', ['-C', dir, 'add', '.']);
+  cp.spawnSync('git', ['-C', dir, 'commit', '-q', '-m', 'init']);
+  return dir;
+}
+
+function tmpHome() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-pull-'));
+  fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+  return home;
+}
+function rm(home) { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+function dsw(home) { return path.join(home, '.anti-hall', 'devswarm'); }
+
+// seedDescriptor(home, id) — write the child's own descriptor (workspaces/<id>.json)
+// pointing at an inbox+cursor under the devswarm root, cursor initialized to 0.
+function seedDescriptor(home, id) {
+  const root = dsw(home);
+  const inboxPath = path.join(root, 'inbox', id + '.ndjson');
+  const cursorPath = path.join(root, 'cursors', id + '.cursor');
+  const wdir = path.join(root, 'workspaces');
+  fs.mkdirSync(wdir, { recursive: true });
+  fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+  fs.writeFileSync(cursorPath, '0');
+  fs.writeFileSync(path.join(wdir, id + '.json'),
+    JSON.stringify({ id, worktreePath: '/wt/' + id, sessionId: 's-' + id, inboxPath, cursorPath }));
+  return { inboxPath, cursorPath };
+}
+
+// makeRun({ count, batch }) -> { run, calls }. An injectable hivecontrol runner that
+// records every spec it was called with, so a test can assert read-messages was (or
+// was NOT) invoked, that monitor is NEVER used, and that read-messages carries a
+// finite timeout.
+function makeRun(spec) {
+  const calls = [];
+  function run(s) {
+    calls.push(s);
+    const args = (s && s.args) || [];
+    const sub = args[1];
+    if (sub === 'message-count') return { ok: true, raw: String(spec.count), error: null };
+    if (sub === 'read-messages') return { ok: true, raw: spec.batch, error: null };
+    return { ok: false, raw: '', error: 'unexpected subcommand ' + sub };
+  }
+  return { run, calls };
+}
+
+const TWO = JSON.stringify([
+  { fromBranch: 'parent', message: 'rebase now', createdAt: '2026-01-01T00:00:00Z', status: 'unread' },
+  { fromBranch: 'parent', message: 'status?', createdAt: '2026-01-01T00:00:01Z', status: 'unread' },
+]);
+
+test('count-gate: message-count===0 -> read-messages is NEVER called, imported 0', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    const R = makeRun({ count: 0, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    assert.deepEqual(res, { ok: true, locked: true, imported: 0, duplicate: 0, nativeCount: 0 });
+    const subs = R.calls.map((c) => c.args[1]);
+    assert.deepEqual(subs, ['message-count'], 'only message-count ran; read-messages must be gated off');
+    assert.ok(!subs.includes('read-messages'), 'the destructive read must not fire on a zero count');
+  } finally { rm(home); }
+});
+
+// ---- REGRESSION (primary-* inboxPath:null hard-erroring reconcile forever) --
+// pullOnce used to hard-error whenever desc.inboxPath was absent/null, even
+// though every sibling call site (devswarm-wake-watch.js:870, devswarm-child-
+// turn.js:447, cmdRegister's ensure branch) derives the SAME deterministic
+// default (inboxDefaultPath) instead of erroring. A `primary-*` row has no
+// per-turn hook to backfill it, so it failed identically forever with
+// "descriptor for ... has no inboxPath".
+test('pullOnce succeeds against a descriptor with NO inboxPath, deriving the same default inboxDefaultPath() computes', () => {
+  const home = tmpHome();
+  try {
+    const dir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(dir, { recursive: true });
+    // Descriptor deliberately has no inboxPath field at all (and no cursorPath
+    // — pullOnce never reads cursorPath, only inboxPath).
+    fs.writeFileSync(path.join(dir, 'noinbox-1.json'),
+      JSON.stringify({ id: 'noinbox-1', worktreePath: '/wt/noinbox-1', sessionId: 's1', inboxPath: null }));
+    const R = makeRun({ count: 2, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'noinbox-1', backend: 'journal', io: { run: R.run } });
+    assert.equal(res.ok, true, 'must derive the default inbox path rather than erroring');
+    assert.equal(res.imported, 2);
+    const derived = pull.inboxDefaultPath(home, 'noinbox-1');
+    const lines = fs.readFileSync(derived, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 2, 'the drain must land in the SAME default path inboxDefaultPath() computes');
+  } finally { rm(home); }
+});
+
+test('drain: count>0 -> N lines appended, inbox reports N, child-turn unread segment fires', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const R = makeRun({ count: 2, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    assert.equal(res.ok, true);
+    assert.equal(res.imported, 2);
+    assert.equal(res.duplicate, 0);
+    assert.equal(res.nativeCount, 2);
+    // Durable NDJSON: exactly 2 non-empty lines, each carrying an embedded _h hash.
+    const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 2);
+    for (const l of lines) { const o = JSON.parse(l); assert.ok(o._h && typeof o._h === 'string', 'each line carries a dedupe hash'); }
+    // The cursor primitive (what inbox read/ack and the child-turn hook consume) sees 2 unread.
+    const u = readUnread(inboxPath, cursorPath);
+    assert.equal(u.count, 2);
+    // The child-turn hook's unread surfacing now fires (the pull is what populates it).
+    const r = testHook('devswarm-child-turn.js',
+      { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'go', cwd: '/tmp' },
+      { home, expectJson: true, env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' } });
+    const c = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+    assert.ok(/2 unread parent message/.test(c), `unread segment must fire after a drain; ctx=${c}`);
+  } finally { rm(home); }
+});
+
+test('never-monitor: the drain uses read-messages, never the destructive monitor long-poll', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    const R = makeRun({ count: 1, batch: JSON.stringify([{ message: 'hi', createdAt: '2026-01-01T00:00:00Z' }]) });
+    pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    const subs = R.calls.map((c) => c.args[1]);
+    assert.ok(subs.includes('read-messages'), 'read-messages IS the drain command');
+    assert.ok(!subs.includes('monitor'), 'monitor (blocking long-poll) must NEVER be invoked');
+  } finally { rm(home); }
+});
+
+test('hard-timeout: the read-messages spawn carries a finite timeout', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    const R = makeRun({ count: 1, batch: JSON.stringify([{ message: 'hi', createdAt: '2026-01-01T00:00:00Z' }]) });
+    pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    const readCall = R.calls.find((c) => c.args[1] === 'read-messages');
+    assert.ok(readCall, 'read-messages was invoked');
+    assert.ok(Number.isFinite(readCall.timeout), 'read-messages must carry a finite timeout (never an unbounded blocking read)');
+    assert.equal(readCall.timeout, pull.READ_TIMEOUT_MS);
+  } finally { rm(home); }
+});
+
+// P2-1: cmdSpawn/cmdMergeVerb (scripts/devswarm.js) pass a `cwd` into `run(spec)`
+// (spec.cwd), but defaultRun used to never read it, so the native spawn silently
+// inherited process.cwd() instead of the caller's requested directory. Uses
+// `process.execPath` (node itself) as the "hivecontrol" binary — guaranteed
+// present on every platform in the CI matrix, no shell, no `pwd`/`cd` reliance —
+// to have the spawned process report its OWN cwd back on stdout. realpathSync on
+// both sides avoids false negatives from symlinked tmp dirs (e.g. macOS
+// /var -> /private/var).
+test('defaultRun: honors spec.cwd when provided, and omits it (inherits the caller\'s own cwd) when absent', () => {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-pull-cwd-'));
+  try {
+    const withCwd = pull.defaultRun({
+      hivecontrol: process.execPath,
+      args: ['-e', 'process.stdout.write(process.cwd())'],
+      cwd: target,
+    });
+    assert.equal(withCwd.ok, true, JSON.stringify(withCwd));
+    assert.equal(fs.realpathSync(withCwd.raw.trim()), fs.realpathSync(target),
+      'spec.cwd must be passed through to spawnSync, not silently dropped');
+
+    const withoutCwd = pull.defaultRun({
+      hivecontrol: process.execPath,
+      args: ['-e', 'process.stdout.write(process.cwd())'],
+    });
+    assert.equal(withoutCwd.ok, true, JSON.stringify(withoutCwd));
+    assert.equal(fs.realpathSync(withoutCwd.raw.trim()), fs.realpathSync(process.cwd()),
+      'an absent spec.cwd must inherit the CALLING process\'s cwd (no forced cwd option)');
+  } finally { rm(target); }
+});
+
+test('idempotent re-append: the same batch twice -> no duplicate line or store row', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    // Registered in its store, as cmdInboxPull's ensure-register guarantees
+    // before it pulls: the store parity feed goes through the partition door,
+    // which refuses an id not registered in that store.
+    const reg = storeLib.openStore({ home, workspaceId: 'child-1', backend: 'journal' });
+    try { reg.upsertRegistry({ id: 'child-1', worktreePath: '/wt/child-1', sessionId: 's', inboxPath, cursorPath: null, nudgeCommand: null }); }
+    finally { reg.close(); }
+    const R = makeRun({ count: 2, batch: TWO });
+    // cwd: home (a plain tmpdir, NOT a git repo) pins the v0.57 mesh repoKey
+    // resolution to null so the store parity feed falls back to its PRE-MESH
+    // per-id store — this test is about generic dedupe mechanics, independent of
+    // the repoKey rekey (covered by its own dedicated mesh tests).
+    const r1 = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: home, io: { run: R.run } });
+    assert.equal(r1.imported, 2);
+    // Re-observe the identical batch (count still >0, so read-messages runs again).
+    const r2 = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: home, io: { run: R.run } });
+    assert.equal(r2.imported, 0, 're-append imports nothing new');
+    assert.equal(r2.duplicate, 2, 'both re-observed messages are recognized as duplicates');
+    const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 2, 'the NDJSON must not grow on replay');
+    const s = storeLib.openStore({ home, workspaceId: 'child-1', backend: 'journal' });
+    try { assert.equal(s.messageCount('child-1'), 2, 'the store parity feed is deduped by the same hash'); }
+    finally { s.close(); }
+  } finally { rm(home); }
+});
+
+// ---- D3: sender carried on the NDJSON wire ---------------------------------
+// This drain (devswarm-pull.js) is the CHILD-SIDE reception of its OWN native
+// parent->child queue — every row landing here was sent BY the Primary, so
+// `sender` must equal the exact `primary-<worktreeHash>` id
+// devswarm-parent-gate.js's readOwnUnread computes for the real Primary
+// (resolveSelfId hashes through git-common-dir, identical across a worktree
+// family), letting the gate-side `row.sender === own.id` filter (added
+// separately) recognize the Primary's own outbound and stop counting it as
+// its own neglect.
+test('sender: a new row carries the resolvable Primary id (matches resolveSelfId(cwd) exactly)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('sender');
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    const R = makeRun({ count: 2, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: repo, io: { run: R.run } });
+    assert.equal(res.imported, 2);
+    const expected = resolveSelfId(repo);
+    assert.ok(expected, 'the test repo itself must resolve to a real primary-<hash> id');
+    const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 2);
+    for (const l of lines) {
+      const o = JSON.parse(l);
+      assert.equal(o.sender, expected, 'row.sender must equal the SAME id the parent-gate resolves as its own');
+    }
+  } finally { rm(home); rm(repo); }
+});
+
+test('sender: a non-git cwd still drains successfully; sender resolves deterministically (resolveSelfId hashes the raw path when git-common-dir is unresolvable, it does not fail closed to null)', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    const R = makeRun({ count: 2, batch: TWO });
+    // cwd: home is a plain tmpdir, not a git repo. resolveMainWorktree(home)
+    // returns null (no git-common-dir), but resolveSelfId falls back to
+    // hashing `home` itself (primaryWorkspaceId is a pure path hash) rather
+    // than returning null — matching production, where pullOnce's cwd is
+    // always some real, non-empty path.
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: home, io: { run: R.run } });
+    assert.equal(res.ok, true);
+    assert.equal(res.imported, 2);
+    const expected = resolveSelfId(home);
+    assert.ok(expected, 'a non-git path still resolves to a deterministic hash, never null, given a real path string');
+    const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    for (const l of lines) { assert.equal(JSON.parse(l).sender, expected); }
+  } finally { rm(home); }
+});
+
+test('sender: backward compatibility — a pre-existing senderless row and a new sender-carrying row coexist, both parse and count identically, dedupe/cursor unaffected', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('sender-back-compat');
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    // Simulate a row written by the OLD writer (no `sender` key at all) already
+    // sitting in the durable inbox before this fix ever ran.
+    const oldRow = { _h: 'native:pre-existing-legacy-row', fromBranch: 'parent', message: 'legacy', createdAt: '2025-01-01T00:00:00Z', status: 'unread' };
+    fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
+    fs.writeFileSync(inboxPath, JSON.stringify(oldRow) + '\n');
+    // Drain ONE new message through the fixed writer, cwd resolved to a real repo.
+    const ONE = JSON.stringify([{ fromBranch: 'parent', message: 'new one', createdAt: '2026-01-01T00:00:00Z', status: 'unread' }]);
+    const R = makeRun({ count: 1, batch: ONE });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: repo, io: { run: R.run } });
+    assert.equal(res.ok, true);
+    assert.equal(res.imported, 1, 'the new message is imported; the pre-existing legacy row is untouched, not re-counted');
+    assert.equal(res.duplicate, 0, 'the legacy row (different _h) must not be mistaken for a duplicate of the new one');
+    const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 2, 'both the legacy senderless row and the new sender-carrying row are on disk');
+    const parsed = lines.map((l) => JSON.parse(l));
+    assert.equal(parsed[0]._h, 'native:pre-existing-legacy-row', 'the legacy row is byte-preserved, still first');
+    assert.ok(!('sender' in parsed[0]) || parsed[0].sender === undefined, 'the legacy row still has no sender key');
+    assert.equal(parsed[1].sender, resolveSelfId(repo), 'the new row carries the resolved sender');
+    // The cursor/unread primitive counts BOTH rows identically regardless of the
+    // shape difference — position-based, not shape-based.
+    const u = readUnread(inboxPath, cursorPath);
+    assert.equal(u.count, 2, 'both a senderless legacy row and a sender-carrying new row count as unread identically');
+  } finally { rm(home); rm(repo); }
+});
+
+test('reconciliation: message-count=2 but read-messages returns an UNHANDLED shape -> lost:2, ok:false (no silent imported:0)', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    // message-count says 2 unread, but read-messages returns a shape normalizeMonitorPayload
+    // does not handle ({items:[...]}) -> normalize returns [] -> nothing recovered. The two
+    // messages were marked-read natively but never persisted = SILENT LOSS. The drain MUST
+    // surface it (lost:2, ok:false), never a quiet imported:0/ok:true.
+    const R = makeRun({ count: 2, batch: JSON.stringify({ items: [{ message: 'a' }, { message: 'b' }] }) });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    assert.equal(res.ok, false, 'a shortfall vs the native count must NOT report success');
+    assert.equal(res.locked, true);
+    assert.equal(res.imported, 0);
+    assert.equal(res.duplicate, 0);
+    assert.equal(res.nativeCount, 2);
+    assert.equal(res.lost, 2, 'the loud lost signal must equal the unrecovered count');
+    // Nothing bogus was written to the durable inbox.
+    assert.ok(!fs.existsSync(inboxPath) || fs.readFileSync(inboxPath, 'utf8').trim() === '',
+      'an unhandled batch must not fabricate NDJSON lines');
+  } finally { rm(home); }
+});
+
+test('lock: a held per-id lock refuses a second pull (locked:false); disjoint ids do not block', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'a');
+    seedDescriptor(home, 'b');
+    // Simulate a LIVE holder of a's pull lock (this process's pid, fresh ts).
+    const lockPath = pull.pullLockPath(home, 'a');
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held' }));
+    const R = makeRun({ count: 0, batch: '[]' });
+    const blocked = pull.pullOnce({ home, id: 'a', backend: 'journal', io: { run: R.run } });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.locked, false);
+    assert.match(blocked.error, /lock/);
+    // a's lock must be left intact (a live holder is never stolen).
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, 'utf8')).token, 'held');
+    // A disjoint id is unaffected.
+    const ok = pull.pullOnce({ home, id: 'b', backend: 'journal', io: { run: R.run } });
+    assert.equal(ok.ok, true);
+    assert.equal(ok.locked, true);
+  } finally { rm(home); }
+});
+
+test('crash-window: a thrown durable append surfaces ok:false (no false success, no partial NDJSON, no store row)', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    // io.fs delegates to real fs but makes the ONE durable appendFileSync throw — the
+    // exact crash-window failure. The result MUST be ok:false, the inbox MUST stay
+    // empty (append precedes ok:true), and the store parity feed MUST NOT have run.
+    const throwingFs = Object.assign({}, fs, { appendFileSync() { throw new Error('disk full'); } });
+    const R = makeRun({ count: 2, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run, fs: throwingFs } });
+    assert.equal(res.ok, false, 'a failed durable append must never report success');
+    assert.equal(res.locked, true);
+    assert.ok(!fs.existsSync(inboxPath) || fs.readFileSync(inboxPath, 'utf8').trim() === '',
+      'no partial NDJSON may be left behind');
+    const s = storeLib.openStore({ home, workspaceId: 'child-1', backend: 'journal' });
+    try { assert.equal(s.messageCount('child-1'), 0, 'store parity must not run when the durable append failed'); }
+    finally { s.close(); }
+  } finally { rm(home); }
+});
+
+test('durable append precedes ok:true: on success the NDJSON is already on disk when ok:true returns', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    let sawFileAtOk = false;
+    // Wrap appendFileSync so the moment it runs we can confirm the write happens
+    // BEFORE the function returns ok:true — assert the file content is present at
+    // return time (a proxy for the strict ordering: append then success).
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 1, batch: JSON.stringify([{ message: 'hi', createdAt: 't' }]) }).run } });
+    if (res.ok) sawFileAtOk = fs.readFileSync(inboxPath, 'utf8').trim() !== '';
+    assert.equal(res.ok, true);
+    assert.ok(sawFileAtOk, 'the durable line must be on disk by the time ok:true is returned');
+  } finally { rm(home); }
+});
+
+test('bad id / missing descriptor fail soft (never throw, lock reflects state)', () => {
+  const home = tmpHome();
+  try {
+    const R = makeRun({ count: 0, batch: '[]' });
+    const bad = pull.pullOnce({ home, id: '../evil', backend: 'journal', io: { run: R.run } });
+    assert.equal(bad.ok, false);
+    assert.equal(bad.locked, false, 'an unsafe id is rejected before any lock is taken');
+    // Safe id but no descriptor -> lock acquired, then a clean ok:false.
+    const noDesc = pull.pullOnce({ home, id: 'ghost', backend: 'journal', io: { run: R.run } });
+    assert.equal(noDesc.ok, false);
+    assert.equal(noDesc.locked, true);
+    assert.match(noDesc.error, /descriptor/);
+  } finally { rm(home); }
+});
+
+test('acquireExclLock does NOT steal a TORN/EMPTY lock whose MTIME is FRESH (live pull mid-write)', () => {
+  const home = tmpHome();
+  try {
+    const p = pull.pullLockPath(home, 'a');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // A live holder is briefly a 0-byte file between openSync('wx') and writeSync.
+    fs.writeFileSync(p, ''); // torn/empty -> unparseable (holderTs would be null)
+    const mt = fs.statSync(p).mtimeMs;
+    // Unparseable AND no live pid, but a FRESH mtime -> a live pull mid-write -> MUST NOT
+    // be stolen (two drains of the same queue split the destructive native queue).
+    const rel = pull.acquireExclLock(p, { isAlive: () => false, now: () => mt + 1000 }, pull.PULL_LOCK_STALE_MS);
+    assert.equal(rel, null, 'a torn/empty lock with a FRESH mtime is not stolen');
+    assert.equal(fs.readFileSync(p, 'utf8'), '', 'the live holder empty lock is left intact');
+  } finally { rm(home); }
+});
+
+test('acquireExclLock RECLAIMS a TORN/EMPTY lock whose MTIME is OLD (dead holder)', () => {
+  const home = tmpHome();
+  try {
+    const p = pull.pullLockPath(home, 'a');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, ''); // torn/empty, written long ago (dead holder)
+    const mt = fs.statSync(p).mtimeMs;
+    // Unparseable AND its mtime is older than the 60-s pull stale window -> dead holder -> reclaimable.
+    const rel = pull.acquireExclLock(p, { isAlive: () => false, now: () => mt + pull.PULL_LOCK_STALE_MS + 1000 }, pull.PULL_LOCK_STALE_MS);
+    assert.ok(rel, 'a torn/empty lock with an OLD mtime (dead holder) is reclaimed');
+    assert.notEqual(fs.readFileSync(p, 'utf8'), '', 'the reclaimed lock now carries our token');
+    rel();
+  } finally { rm(home); }
+});
+
+// P0 silent-failure regression: defaultRun used to inspect ONLY r.error (the SPAWN-
+// failure channel) and never r.status/r.signal, so a process that spawned fine but
+// exited NON-ZERO with empty stdout was reported as {ok:true, raw:''} — success with
+// no data. Demonstrated live: with DevSwarm.app unreachable, `hivecontrol workspace
+// list all` exits 1 with EMPTY stdout and stderr 'DevSwarm is not running', and
+// defaultRun called that SUCCESS. These use process.execPath as the "hivecontrol"
+// binary — the SAME convention as the spec.cwd test above (guaranteed present on
+// every CI platform, no shell) — to produce an exact, controlled status/stdout/stderr.
+test('defaultRun: a NON-ZERO exit with EMPTY stdout is ok:false with stderr surfaced (never a silent {ok:true, raw:\'\'})', () => {
+  const res = pull.defaultRun({
+    hivecontrol: process.execPath,
+    args: ['-e', 'process.stderr.write("DevSwarm is not running"); process.exit(1)'],
+  });
+  assert.equal(res.ok, false, 'a non-zero exit must NOT report success: ' + JSON.stringify(res));
+  assert.equal(res.raw, '', 'the command genuinely produced no stdout');
+  assert.equal(res.status, 1, 'the real exit status is surfaced');
+  assert.equal(res.signal, null);
+  assert.equal(res.stderr, 'DevSwarm is not running', 'stderr is captured verbatim');
+  assert.match(res.error, /DevSwarm is not running/, 'stderr must be surfaced in the error string');
+  assert.match(res.error, /exited 1/, 'the error names the exit status');
+  // Must NOT be absorbed by cmdReconcile's `hivecontrolMissing` benign-skip
+  // classifier (devswarm.js), which matches this exact spawn-failure shape — an
+  // exit-status failure is a REAL failure, not a benign environment fact.
+  assert.ok(!/^spawnSync\s+\S*hivecontrol\S*\s+(ENOENT|EACCES|ENOTDIR)\b/i.test(res.error),
+    'an exit-status failure must not masquerade as the benign missing-binary shape');
+});
+
+test('defaultRun: a NON-ZERO exit PRESERVES stdout in raw (hivecontrol emits JSON bodies alongside exit 1)', () => {
+  // KB-devswarm-hivecontrol.md: `workspace search` returns a structured
+  // {success:false, code:...} JSON body on stdout WITH exit 1. Blanking raw on
+  // failure would destroy that diagnostic body.
+  const res = pull.defaultRun({
+    hivecontrol: process.execPath,
+    args: ['-e', 'process.stdout.write(JSON.stringify({success:false,code:"TEAM_SUBSCRIPTION_REQUIRED"})); process.exit(1)'],
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 1);
+  assert.deepEqual(JSON.parse(res.raw), { success: false, code: 'TEAM_SUBSCRIPTION_REQUIRED' },
+    'the failure body must survive on raw, not be blanked');
+});
+
+test('defaultRun: a SIGNAL-terminated command is ok:false with the signal surfaced', { skip: process.platform === 'win32' }, () => {
+  const res = pull.defaultRun({
+    hivecontrol: process.execPath,
+    args: ['-e', 'process.kill(process.pid, "SIGKILL")'],
+  });
+  assert.equal(res.ok, false, 'a signal-killed command must NOT report success: ' + JSON.stringify(res));
+  assert.equal(res.signal, 'SIGKILL', 'the terminating signal is surfaced');
+  assert.equal(res.status, null, 'a signal-killed process has no exit status');
+  assert.match(res.error, /killed by signal SIGKILL/);
+});
+
+test('defaultRun: a CLEAN exit 0 still reports ok:true with stdout (no regression)', () => {
+  const res = pull.defaultRun({
+    hivecontrol: process.execPath,
+    args: ['-e', 'process.stdout.write("2")'],
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.raw, '2');
+  assert.equal(res.status, 0);
+  assert.equal(res.error, null);
+});
+
+// BLAST RADIUS: the count-gate is what the silent failure actually corrupted. A
+// `message-count` that exits non-zero with EMPTY stdout used to reach parseCount('')
+// === 0 and return {ok:true, nativeCount:0} = "nothing to drain", making an
+// unreachable DevSwarm.app indistinguishable from a genuinely empty queue. It must
+// now be an explicit ok:false — WITHOUT throwing (the fail-open contract) and
+// WITHOUT falling through to the destructive read.
+test('count-gate blast radius: a FAILING message-count is ok:false, never a silent nativeCount:0 success', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    const calls = [];
+    // The exact shape defaultRun now returns for `hivecontrol` exiting 1 with empty
+    // stdout because DevSwarm.app is not running.
+    const run = (s) => {
+      calls.push(s);
+      return {
+        ok: false, raw: '', status: 1, signal: null,
+        stderr: 'DevSwarm is not running',
+        error: 'hivecontrol workspace message-count exited 1: DevSwarm is not running',
+      };
+    };
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run } });
+    assert.equal(res.ok, false, 'an unreachable DevSwarm must not read as a successful empty drain');
+    assert.equal(res.locked, true);
+    assert.match(res.error, /DevSwarm is not running/, 'the real cause reaches the caller');
+    assert.deepEqual(calls.map((c) => c.args[1]), ['message-count'],
+      'a failed count-gate must NOT fall through to the destructive read-messages');
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 delivery WAL (simplified): raw batch fsynced before parse, replay
+// before any new destructive read, idempotent by content hash.
+// ---------------------------------------------------------------------------
+function walRecords(home, id) {
+  try {
+    return fs.readFileSync(pull.walPath(home, id), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch (_) { return []; }
+}
+
+test('WAL: the raw batch is fsynced to the WAL BEFORE the durable inbox append', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    const order = [];
+    const spyFs = Object.assign({}, fs, {
+      fsyncSync(fd) { order.push('fsync'); return fs.fsyncSync(fd); },
+      appendFileSync(p, d) { order.push(p === inboxPath ? 'inbox-append' : 'append:' + p); return fs.appendFileSync(p, d); },
+    });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: spyFs } });
+    assert.equal(res.ok, true);
+    assert.ok(order.indexOf('fsync') >= 0 && order.indexOf('fsync') < order.indexOf('inbox-append'),
+      'WAL fsync must precede the inbox append: ' + JSON.stringify(order));
+    const recs = walRecords(home, 'child-1');
+    assert.deepEqual(recs.map((r) => r.t), ['batch', 'done']);
+    assert.equal(recs[0].raw, TWO, 'the WAL keeps the exact raw stdout');
+    assert.deepEqual(pull.walPending(fs, pull.walPath(home, 'child-1')), []);
+  } finally { rm(home); }
+});
+
+test('WAL: crash after the destructive read -> next pull replays BEFORE message-count/read-messages', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const crashFs = Object.assign({}, fs, { appendFileSync(p, d) { if (p === inboxPath) throw new Error('SIMULATED CRASH'); return fs.appendFileSync(p, d); } });
+    const first = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: crashFs } });
+    assert.equal(first.ok, false);
+    assert.equal(pull.walPending(fs, pull.walPath(home, 'child-1')).length, 1, 'the popped batch stays pending in the WAL');
+    // Native queue is now EMPTY (the read was destructive).
+    const R = makeRun({ count: 0, batch: '[]' });
+    const second = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    assert.equal(second.ok, true);
+    assert.equal(second.walReplayed, 1);
+    assert.equal(second.walReplayImported, 2);
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2, 'both messages recovered into the durable inbox');
+    assert.deepEqual(pull.walPending(fs, pull.walPath(home, 'child-1')), []);
+  } finally { rm(home); }
+});
+
+test('WAL: crash after the inbox append but before `done` -> replay dedupes (no duplicate rows)', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const wal = pull.walPath(home, 'child-1');
+    // Let the writability probe + batch append + inbox fsync succeed, then fail
+    // the WAL write that carries the `done` record.
+    const crashFs = Object.assign({}, fs, {
+      writeSync(fd, data, ...rest) {
+        if (typeof data === 'string' && data.includes('"t":"done"')) throw new Error('SIMULATED CRASH before done');
+        return fs.writeSync(fd, data, ...rest);
+      },
+    });
+    pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: crashFs } });
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2);
+    assert.equal(pull.walPending(fs, wal).length, 1, 'no done record -> still pending');
+    const again = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(again.ok, true);
+    assert.equal(again.walReplayed, 1);
+    assert.equal(again.walReplayImported, 0, 'replay is idempotent by content hash');
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2, 'exactly two rows, no duplicates');
+  } finally { rm(home); }
+});
+
+test('WAL admission control: a batch that cannot be replayed blocks any NEW destructive read', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    const crashFs = Object.assign({}, fs, { appendFileSync(p, d) { if (p === inboxPath) throw new Error('disk full'); return fs.appendFileSync(p, d); } });
+    pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: crashFs } });
+    const R = makeRun({ count: 5, batch: TWO });
+    const blocked = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run, fs: crashFs } });
+    assert.equal(blocked.ok, false);
+    assert.match(blocked.error, /WAL replay failed/);
+    assert.equal(R.calls.length, 0, 'no native call (count or read) while a WAL batch is unreplayable');
+  } finally { rm(home); }
+});
+
+test('WAL: an unparseable batch is quarantined in the WAL (raw bytes kept), not replayed forever', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 1, batch: 'garbage-not-json' }).run } });
+    assert.equal(res.ok, false, 'a shortfall still surfaces ok:false');
+    const recs = walRecords(home, 'child-1');
+    assert.equal(recs[0].raw, 'garbage-not-json', 'raw bytes preserved');
+    assert.equal(recs[1].t, 'quarantine');
+    assert.deepEqual(pull.walPending(fs, pull.walPath(home, 'child-1')), []);
+  } finally { rm(home); }
+});
+
+test('#26 analog: a torn inbox tail does not swallow the next pulled row', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
+    fs.writeFileSync(inboxPath, '{"_h":"torn","message":"cut');
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run } });
+    assert.equal(res.ok, true);
+    const parsed = fs.readFileSync(inboxPath, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (_) { return null; } });
+    assert.deepEqual(parsed.filter(Boolean).map((r) => r.message), ['rebase now', 'status?']);
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 review fixes: fail CLOSED on an unwritable WAL, raw-first WAL write,
+// prior-reader-key replay.
+// ---------------------------------------------------------------------------
+test('WAL fail-closed: an unwritable WAL path -> NO destructive read at all', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    fs.writeFileSync(path.join(dsw(home), 'wal'), 'not-a-directory'); // WAL dir cannot exist
+    const R = makeRun({ count: 2, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    assert.equal(res.ok, false);
+    assert.equal(res.walBlocked, true);
+    assert.equal(R.calls.filter((c) => c.args[1] === 'read-messages').length, 0, 'no destructive read into an unwritable WAL');
+  } finally { rm(home); }
+});
+
+test('WAL fail-closed: a batch-write failure spills the raw bytes, blocks further reads, and recovers once writable', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const badFs = Object.assign({}, fs, {
+      writeSync(fd, data, ...rest) {
+        if (typeof data === 'string' && data.includes('"t":"batch"')) throw new Error('EIO simulated WAL write failure');
+        return fs.writeSync(fd, data, ...rest);
+      },
+      appendFileSync(p) { if (p === inboxPath) throw new Error('inbox append also fails'); return fs.appendFileSync.apply(fs, arguments); },
+    });
+    const first = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: badFs } });
+    assert.equal(first.ok, false);
+    const spilled = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js').spillPending(fs, pull.walPath(home, 'child-1'));
+    assert.equal(spilled.length, 1, 'the popped batch is recoverable from the spill quarantine');
+    assert.equal(JSON.parse(fs.readFileSync(spilled[0], 'utf8')).raw, TWO, 'byte-exact raw');
+    // Still broken: the spill cannot be absorbed -> no new destructive read.
+    const R2 = makeRun({ count: 5, batch: TWO });
+    const blocked = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R2.run, fs: badFs } });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.walBlocked, true);
+    assert.equal(R2.calls.length, 0, 'no native call while a spilled batch is unabsorbed');
+    // WAL writable again -> absorbed, replayed, delivered.
+    const ok = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(ok.ok, true, JSON.stringify(ok));
+    assert.equal(ok.walReplayed, 1);
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2, 'both messages recovered');
+  } finally { rm(home); }
+});
+
+test('WAL raw-first: a FAILED read-messages that still printed popped stdout is kept and replayed', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    const run = (s) => (s.args[1] === 'message-count' ? { ok: true, raw: '2' } : { ok: false, raw: TWO, error: 'killed by signal SIGTERM' });
+    const first = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run } });
+    assert.equal(first.ok, false);
+    const again = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(again.walReplayed, 1);
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2);
+  } finally { rm(home); }
+});
+
+test('WAL prior reader key: an open batch in another pull WAL for the SAME worktree is replayed, not stranded', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-new');
+    const readWal = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js');
+    const oldWal = pull.walPath(home, 'child-old');
+    readWal.appendBatch(fs, oldWal, TWO, 1, { worktree: '/wt/child-new' });
+    readWal.appendBatch(fs, pull.walPath(home, 'child-other'), TWO, 1, { worktree: '/wt/somewhere-else' });
+    const res = pull.pullOnce({ home, id: 'child-new', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(res.ok, true);
+    assert.equal(res.walReplayed, 1, 'only the same-worktree batch is adopted');
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2);
+    assert.deepEqual(readWal.pending(fs, oldWal), [], 'the prior-key batch is closed in its own WAL');
+    assert.equal(readWal.pending(fs, pull.walPath(home, 'child-other')).length, 1, 'a different worktree is untouched');
+  } finally { rm(home); }
+});
+
+test('WAL double failure: WAL AND spill fail mid-operation -> last-resort file in os.tmpdir(), reader stays blocked, recovers once writable', () => {
+  const home = tmpHome();
+  const readWal = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js');
+  const wal = pull.walPath(home, 'child-1');
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    // Preflight passes (opens + fsync only); then the disk "dies": every WAL
+    // batch write and every spill create fails.
+    const deadFs = Object.assign({}, fs, {
+      writeSync(fd, data, ...rest) {
+        if (typeof data === 'string' && data.includes('"t":"batch"')) throw new Error('EIO disk died');
+        return fs.writeSync(fd, data, ...rest);
+      },
+      openSync(p, flags) {
+        if (flags === 'wx' && p.startsWith(readWal.spillDir(wal))) throw new Error('EIO disk died (spill)');
+        return fs.openSync(p, flags);
+      },
+      appendFileSync(p) { if (p === inboxPath) throw new Error('EIO'); return fs.appendFileSync.apply(fs, arguments); },
+    });
+    const first = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 2, batch: TWO }).run, fs: deadFs } });
+    assert.equal(first.ok, false);
+    assert.equal(first.walBlocked, true);
+    assert.ok(first.lastResortPath && first.lastResortPath.startsWith(require('node:os').tmpdir()), JSON.stringify(first));
+    assert.equal(JSON.parse(fs.readFileSync(first.lastResortPath, 'utf8')).raw, TWO, 'byte-exact raw in the last-resort file');
+    assert.ok(readWal.health(fs, home, Date.now()).some((h) => h.alert), 'loud alert');
+    const R2 = makeRun({ count: 5, batch: TWO });
+    const blocked = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R2.run, fs: deadFs } });
+    assert.equal(blocked.walBlocked, true);
+    assert.equal(R2.calls.length, 0, 'no destructive read while the last-resort batch is unabsorbed');
+    const ok = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+    assert.equal(ok.ok, true, JSON.stringify(ok));
+    assert.equal(readUnread(inboxPath, cursorPath).count, 2);
+    assert.deepEqual(readWal.lastResortPending(fs, wal), []);
+  } finally {
+    // Test-owned temp artifacts only: this home's last-resort files (any state).
+    const tmp = require('node:os').tmpdir();
+    const mine = readWal.lastResortPending(fs, wal).concat(readWal.lastResortPending(fs, wal).map((p) => p + '.absorbed'));
+    for (const n of fs.readdirSync(tmp)) {
+      const full = path.join(tmp, n);
+      if (n.startsWith('anti-hall-wal-lastresort-') && n.endsWith('.absorbed')) {
+        try { if (JSON.parse(fs.readFileSync(full, 'utf8')).wal === path.resolve(wal)) mine.push(full); } catch (_) {}
+      }
+    }
+    for (const p of mine) { try { fs.rmSync(p, { force: true }); } catch (_) {} }
+    rm(home);
+  }
+});
+
+test('WAL adoption race: two same-worktree readers adopting one prior-key WAL -> exactly one applies', () => {
+  const home = tmpHome();
+  const readWal = require('../../plugins/anti-hall/companion/lib/devswarm-read-wal.js');
+  try {
+    const a = seedDescriptor(home, 'child-a');
+    const b = seedDescriptor(home, 'child-b');
+    for (const id of ['child-a', 'child-b']) {
+      const p = path.join(dsw(home), 'workspaces', id + '.json');
+      const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+      d.worktreePath = '/wt/shared';
+      fs.writeFileSync(p, JSON.stringify(d));
+    }
+    readWal.appendBatch(fs, pull.walPath(home, 'child-old'), TWO, 1, { worktree: '/wt/shared' });
+    let raced = null;
+    // Adopter A: at the exact moment it claims, adopter B runs a full pull.
+    const racingFs = Object.assign({}, fs, {
+      renameSync(from, to) {
+        if (!raced && from.endsWith('pull-child-old.ndjson')) {
+          raced = pull.pullOnce({ home, id: 'child-b', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run } });
+        }
+        return fs.renameSync(from, to);
+      },
+    });
+    const ra = pull.pullOnce({ home, id: 'child-a', backend: 'journal', io: { run: makeRun({ count: 0, batch: '[]' }).run, fs: racingFs } });
+    assert.ok(raced, 'the concurrent adopter actually ran inside the claim window');
+    const total = readUnread(a.inboxPath, a.cursorPath).count + readUnread(b.inboxPath, b.cursorPath).count;
+    assert.equal(total, 2, 'the two messages were applied exactly once across both readers: ' + JSON.stringify({ ra, raced }));
+  } finally { rm(home); }
+});
+
+test('count-gate: message-count Request timeout -> ok:false + nativeTimeout:true, read-messages never called, nothing imported/lost', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'tmo');
+    const calls = [];
+    const run = (spec) => {
+      calls.push(spec.args[1]);
+      return { ok: false, raw: '', error: 'hivecontrol workspace message-count exited 1: Error: Request timeout' };
+    };
+    const r = pull.pullOnce({ home, id: 'tmo', io: { run }, backend: 'journal' });
+    assert.equal(r.ok, false);
+    assert.equal(r.nativeTimeout, true);
+    assert.deepEqual(calls, ['message-count']);
+    assert.ok(!r.lost && !r.imported);
+  } finally { rm(home); }
+});
+
+test('count-gate: a NON-timeout message-count failure does not set nativeTimeout', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'tmo2');
+    const run = () => ({ ok: false, raw: '', error: 'hivecontrol workspace message-count exited 2: boom' });
+    const r = pull.pullOnce({ home, id: 'tmo2', io: { run }, backend: 'journal' });
+    assert.equal(r.ok, false);
+    assert.equal(r.nativeTimeout, undefined);
+  } finally { rm(home); }
+});

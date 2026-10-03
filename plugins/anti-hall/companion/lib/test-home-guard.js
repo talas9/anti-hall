@@ -1,0 +1,139 @@
+'use strict';
+// anti-hall :: test-home-guard — under `node --test`, refuse to run a
+// state-mutating entry point (update.js runUpdate, doctor-repair runRepairs,
+// migrations runMigrations) against the REAL user home. Repo rule: tests never
+// touch the real home. Several leaks came through exactly this gap (a test
+// calling runUpdate()/runRepairs() without an isolated HOME, so a stage fell
+// back to os.homedir() and repaired the developer's real ~/.anti-hall).
+//
+// realHomeUnderTest(home) -> true when NODE_TEST_CONTEXT is set and `home`
+// resolves to the passwd home (os.userInfo().homedir — immune to a HOME
+// override, so an isolated HOME reads as "not real"). Outside `node --test`
+// it is always false: production behaviour is unchanged. ANTIHALL_TEST_ISOLATION
+// (set by tests/helpers on every spawned hook child, which has no
+// NODE_TEST_CONTEXT) counts too, so a child whose HOME is missing/real throws
+// instead of writing the developer's real ~/.anti-hall.
+const os = require('os');
+const path = require('path');
+
+function realHomeUnderTest(home, env) {
+  const e = env || process.env;
+  const underTest = process.env.NODE_TEST_CONTEXT || e.NODE_TEST_CONTEXT
+    || process.env.ANTIHALL_TEST || e.ANTIHALL_TEST
+    || process.env.ANTIHALL_TEST_ISOLATION || e.ANTIHALL_TEST_ISOLATION;
+  if (!underTest || !home) return false;
+  let real = null;
+  try { real = os.userInfo().homedir; } catch (_) { real = null; }
+  if (!real) return false;
+  try { return path.resolve(String(home)) === path.resolve(real); } catch (_) { return false; }
+}
+
+function refusalMessage(label, home) {
+  return label + ' refused under node --test: home ' + JSON.stringify(String(home))
+    + ' is the REAL user home — isolate HOME (and USERPROFILE) or pass an explicit fixture home';
+}
+
+// resolveHome(explicitHome, env) -> the CANONICAL `explicitHome || os.homedir()`
+// fallback every shared helper (settings.js, jev-assist.js, ...) used to
+// hand-roll on its own. Behaves byte-identically to that bare fallback in
+// production; the ONLY difference is under `node --test` (NODE_TEST_CONTEXT)
+// or an explicit `ANTIHALL_TEST=1`: if the result would be the REAL passwd
+// home (os.userInfo().homedir — immune to a HOME env override, so an
+// isolated fixture home never trips this), it throws instead of silently
+// reading/writing the developer's real ~/.anti-hall. Escape hatch:
+// ANTIHALL_ALLOW_REAL_HOME_TEST=1 (set by a test that deliberately needs the
+// real home, e.g. to prove THIS guard works — see
+// tests/hygiene/settings-home-injection.test.js's poisoned-os.homedir()
+// pattern for the alternative that avoids needing the opt-out at all).
+function resolveHome(explicitHome, env) {
+  if (explicitHome) return explicitHome;
+  const home = os.homedir();
+  const e = env || process.env;
+  if (process.env.ANTIHALL_ALLOW_REAL_HOME_TEST || e.ANTIHALL_ALLOW_REAL_HOME_TEST) return home;
+  if (realHomeUnderTest(home, e)) {
+    throw new Error(refusalMessage('resolveHome', home));
+  }
+  return home;
+}
+
+// ---------------------------------------------------------------------------
+// Service-registration isolation (0.108.0 launchd leak). A test called
+// runRepairs({ env: {} }) and doctor-repair's spawnInstaller handed that `{}`
+// straight to spawnSync, which REPLACES the child environment: the installer
+// child started with no HOME (os.homedir() fell back to the real passwd home)
+// and no NODE_TEST_CONTEXT, so every test guard passed and it ran a real
+// `launchctl load`, re-pointing the machine's supervisor at a scratch clone.
+//
+// TEST_MARKERS: NODE_TEST_CONTEXT is set by `node --test` in every worker;
+// ANTIHALL_TEST_ISOLATION is set by tests/helpers for every child they build
+// (it survives a test that strips NODE_TEST_CONTEXT to exercise a production
+// path). Either one means "running under a test".
+const fs = require('fs');
+const TEST_MARKERS = ['NODE_TEST_CONTEXT', 'ANTIHALL_TEST_ISOLATION'];
+
+function underTest(env) {
+  for (const k of TEST_MARKERS) {
+    if (process.env[k] || (env && env[k])) return true;
+  }
+  return false;
+}
+
+// installerChildEnv(env, overrides) -> the env for a spawned installer child.
+// The parent's environment is the base (so HOME/USERPROFILE/PATH are never
+// dropped), the caller's env is merged on top, overrides last; the test
+// markers are always carried from the parent even when the caller's env
+// cleared them.
+function installerChildEnv(env, overrides) {
+  const out = Object.assign({}, process.env, env || {}, overrides || {});
+  for (const k of TEST_MARKERS) {
+    if (!out[k] && process.env[k]) out[k] = process.env[k];
+  }
+  return out;
+}
+
+// SERVICE_CMDS: the commands that register/unregister/restart user services or
+// rewrite the user's crontab. Every installer routes them through
+// runServiceCmd, which under a test refuses them outright (the default stub):
+// no test may reach the real launchd/systemd/cron, whatever its HOME.
+const SERVICE_CMDS = new Set(['launchctl', 'systemctl', 'crontab']);
+function refuseServiceCmd(cmd, env) {
+  return SERVICE_CMDS.has(path.basename(String(cmd || ''))) && underTest(env);
+}
+function runServiceCmd(cmd, argv, opts) {
+  if (refuseServiceCmd(cmd)) {
+    return { status: 0, stdout: '', stderr: '', refused: true, dry: true };
+  }
+  return require('child_process').spawnSync(cmd, argv, Object.assign({ encoding: 'utf8' }, opts || {}));
+}
+
+// pathUnderTmp(p) -> true when p (realpath'd when it exists) sits under a temp
+// root: os.tmpdir(), /tmp, /private/tmp, and on macOS /var/folders (a child
+// spawned with a stripped env has no TMPDIR, so name the roots directly).
+function pathUnderTmp(p) {
+  try {
+    const roots = [os.tmpdir(), '/tmp', '/private/tmp'].concat(process.platform === 'darwin' ? ['/var/folders', '/private/var/folders'] : []);
+    const real = new Set();
+    for (const r of roots) { real.add(r); try { real.add(fs.realpathSync(r)); } catch (_) {} }
+    const raw = path.resolve(String(p));
+    const cands = [raw];
+    try { cands.push(fs.realpathSync(raw)); } catch (_) { /* may not exist yet */ }
+    for (const h of cands) {
+      for (const t of real) {
+        const rel = path.relative(t, h);
+        if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return true;
+      }
+    }
+    return false;
+  } catch (_) { return false; }
+}
+
+// userConfigWriteRefused(target, env) -> true when a test would write user
+// config (~/.claude, ~/.codex, a project .claude/.codex) outside a temp dir.
+function userConfigWriteRefused(target, env) {
+  return underTest(env) && !pathUnderTmp(target);
+}
+
+module.exports = {
+  realHomeUnderTest, refusalMessage, resolveHome,
+  TEST_MARKERS, underTest, installerChildEnv, SERVICE_CMDS, refuseServiceCmd, runServiceCmd, pathUnderTmp, userConfigWriteRefused,
+};

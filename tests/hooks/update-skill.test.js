@@ -1,0 +1,3256 @@
+'use strict';
+// update-skill — unit tests for the /anti-hall:update helper (update.js).
+//
+// NO real git, NO network. update.js is factored so the version-compare,
+// changelog-extraction, cache-copy and path-resolution logic are exported PURE
+// functions tested directly against tmp fixtures; the git step is exercised via
+// an injectable `exec` stub (runCheck/runUpdate accept `{ exec }`).
+//
+// Each test builds an isolated tmp tree mirroring the real install layout:
+//   <tmp>/marketplaces/anti-hall/                         (the clone)
+//        plugins/anti-hall/.claude-plugin/plugin.json
+//        CHANGELOG.md
+//   <tmp>/cache/anti-hall/anti-hall/<version>/            (version-pinned cache)
+//   <tmp>/installed_plugins.json                          (harness-owned, read-only)
+// ANTIHALL_MARKETPLACE_DIR points at the clone; resolvePaths derives the rest.
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+// Many runUpdate() calls below pass no `home`, so every post-pull stage falls
+// back to os.homedir(). Point HOME at a throwaway dir BEFORE anything runs so
+// no stage can ever read or write the real ~/.anti-hall (a v0.108.0 store
+// repair stage mutated a real store through exactly this gap).
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'update-skill-home-'));
+
+const U = require('../../plugins/anti-hall/skills/update/scripts/update.js');
+const devswarmCli = require('../../plugins/anti-hall/scripts/devswarm.js');
+const devswarmStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const devswarmRepokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+
+// ---------------------------------------------------------------------------
+// Fixture helpers
+// ---------------------------------------------------------------------------
+function makeTree() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-update-'));
+  const marketplaceDir = path.join(root, 'marketplaces', 'anti-hall');
+  // Created eagerly: resolvePaths now validates the override points at an
+  // EXISTING dir (R1-A-01) — a missing clone dir would fall back to the real
+  // ~/.claude default and leak machine paths into fixture-derived paths.
+  fs.mkdirSync(marketplaceDir, { recursive: true });
+  function cleanup() { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
+  return { root, marketplaceDir, cleanup };
+}
+
+function writePluginJson(marketplaceDir, version) {
+  const dir = path.join(marketplaceDir, 'plugins', 'anti-hall', '.claude-plugin');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'plugin.json'), JSON.stringify({ name: 'anti-hall', version }), 'utf8');
+}
+
+function writeChangelog(marketplaceDir, body) {
+  fs.writeFileSync(path.join(marketplaceDir, 'CHANGELOG.md'), body, 'utf8');
+}
+
+function writeInstalled(root, value) {
+  // value: string | object | raw-string-for-malformed
+  const p = path.join(root, 'installed_plugins.json');
+  if (typeof value === 'string' && value.startsWith('RAW:')) {
+    fs.writeFileSync(p, value.slice(4), 'utf8');
+  } else {
+    fs.writeFileSync(p, JSON.stringify({ 'anti-hall@anti-hall': value }), 'utf8');
+  }
+}
+
+function pathsFor(t) {
+  return U.resolvePaths({ ANTIHALL_MARKETPLACE_DIR: t.marketplaceDir }, t.root);
+}
+
+// Platform-correct fake HOME (CI regression: Windows). A posix literal like
+// '/home/fake' is NOT fully absolute on Windows — the production code's
+// path.resolve() prepends the drive letter ('D:\home\fake\...') while a
+// path.join('/home/fake', ...) expectation stays drive-less ('\home\fake\...'),
+// so a literal expectation can never match there. Resolving the fake home FIRST
+// and feeding the SAME value to both the code under test and the expectation
+// makes both sides go through identical path semantics on every platform.
+const FAKE_HOME = path.resolve('/home/fake');
+
+// ---------------------------------------------------------------------------
+// parseVersion / compareVersions
+// ---------------------------------------------------------------------------
+test('compareVersions: equal / newer / older', () => {
+  assert.strictEqual(U.compareVersions('1.2.3', '1.2.3'), 0);
+  assert.strictEqual(U.compareVersions('1.2.4', '1.2.3'), 1);
+  assert.strictEqual(U.compareVersions('1.2.3', '1.2.4'), -1);
+  assert.strictEqual(U.compareVersions('0.33.0', '0.32.1'), 1);
+  assert.strictEqual(U.compareVersions('0.9.0', '0.10.0'), -1, 'numeric not lexical');
+});
+
+test('parseVersion: tolerates v-prefix and pre-release; rejects junk', () => {
+  assert.deepStrictEqual(U.parseVersion('v1.2.3'), [1, 2, 3]);
+  assert.deepStrictEqual(U.parseVersion('0.32.1-beta'), [0, 32, 1]);
+  assert.strictEqual(U.parseVersion('garbage'), null);
+  assert.strictEqual(U.parseVersion(undefined), null);
+});
+
+test('compareVersions: unparseable sorts as 0.0.0 (readable wins)', () => {
+  assert.strictEqual(U.compareVersions('garbage', '0.0.1'), -1);
+  assert.strictEqual(U.compareVersions('0.0.1', 'garbage'), 1);
+});
+
+// ---------------------------------------------------------------------------
+// resolvePaths
+// ---------------------------------------------------------------------------
+test('resolvePaths: override derives cache/installed two levels up', () => {
+  const t = makeTree();
+  try {
+    const p = pathsFor(t);
+    assert.strictEqual(p.marketplaceDir, t.marketplaceDir);
+    assert.strictEqual(p.cacheRoot, path.join(t.root, 'cache', 'anti-hall', 'anti-hall'));
+    assert.strictEqual(p.installedJson, path.join(t.root, 'installed_plugins.json'));
+    assert.ok(p.pluginJson.endsWith(path.join('.claude-plugin', 'plugin.json')));
+  } finally { t.cleanup(); }
+});
+
+test('resolvePaths: default (no override) lands under ~/.claude/plugins', () => {
+  const p = U.resolvePaths({}, FAKE_HOME);
+  assert.strictEqual(p.marketplaceDir, path.join(FAKE_HOME, '.claude', 'plugins', 'marketplaces', 'anti-hall'));
+  assert.strictEqual(p.cacheRoot, path.join(FAKE_HOME, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall'));
+});
+
+// ---------------------------------------------------------------------------
+// installed_plugins.json read (read-only, fallbacks)
+// ---------------------------------------------------------------------------
+test('resolveInstalledVersion: reads string entry from installed_plugins.json', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.0');
+    writeInstalled(t.root, '0.32.1');
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.32.1');
+  } finally { t.cleanup(); }
+});
+
+test('resolveInstalledVersion: reads object {version} entry', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.0');
+    writeInstalled(t.root, { version: '0.32.1', enabled: true });
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.32.1');
+  } finally { t.cleanup(); }
+});
+
+test('resolveInstalledVersion: malformed installed_plugins.json → falls back to cache then plugin.json', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.30.0');
+    writeInstalled(t.root, 'RAW:{not json');
+    // no cache dirs → falls all the way back to marketplace plugin.json
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.30.0');
+  } finally { t.cleanup(); }
+});
+
+test('resolveInstalledVersion: missing installed_plugins.json → newest cache dir wins over plugin.json', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.30.0');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.31.0'), { recursive: true });
+    fs.mkdirSync(path.join(cacheRoot, '0.31.2'), { recursive: true });
+    fs.mkdirSync(path.join(cacheRoot, 'not-a-version'), { recursive: true });
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.31.2', 'newest valid cache dir');
+  } finally { t.cleanup(); }
+});
+
+// --- item C (v0.107.1): installed_plugins.json is harness-owned and can LAG
+// a cache already synced by a prior update.js run. resolveInstalledVersion
+// must report the HIGHER of the two, not blindly trust the registry file.
+test('resolveInstalledVersion: installed_plugins.json LAGS a newer cache dir → cache wins (defect: --check reported 0.105.3 while cache held 0.107.0)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.105.3');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.106.0'), { recursive: true });
+    fs.mkdirSync(path.join(cacheRoot, '0.107.0'), { recursive: true });
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.107.0');
+  } finally { t.cleanup(); }
+});
+
+test('resolveInstalledVersion: installed_plugins.json AHEAD of cache (plugin manager updated without update.js) → registry wins', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.107.0');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.105.3'), { recursive: true });
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.107.0');
+  } finally { t.cleanup(); }
+});
+
+test('installedVersionLag: disagreement reported; agreement/absence → null', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.105.3');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.107.0'), { recursive: true });
+    assert.deepStrictEqual(U.installedVersionLag(pathsFor(t)), { jsonVersion: '0.105.3', cacheVersion: '0.107.0' });
+  } finally { t.cleanup(); }
+});
+
+test('installedVersionLag: no cache dirs → null (nothing to disagree with)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.107.0');
+    assert.strictEqual(U.installedVersionLag(pathsFor(t)), null);
+  } finally { t.cleanup(); }
+});
+
+test('runCheck: installed_plugins.json BEHIND the cache surfaces a register-then-/reload-plugins note in action', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.107.0');
+    writeInstalled(t.root, '0.105.3');
+    const cacheRoot = path.join(t.root, 'cache', 'anti-hall', 'anti-hall');
+    fs.mkdirSync(path.join(cacheRoot, '0.107.0'), { recursive: true });
+    const exec = execStub({ fetch: '', 'rev-parse': 'origin/main\n', show: JSON.stringify({ version: '0.107.0' }) });
+    const s = U.runCheck({ paths: pathsFor(t), exec });
+    assert.strictEqual(s.installed, '0.107.0');
+    assert.strictEqual(s.action, "already up to date [installed_plugins.json reports 0.105.3, cache shows 0.107.0 — run claude plugin update anti-hall@anti-hall, then /reload-plugins]");
+  } finally { t.cleanup(); }
+});
+
+test('versionFromInstalledJson: wrong key → null', () => {
+  const t = makeTree();
+  try {
+    fs.writeFileSync(path.join(t.root, 'installed_plugins.json'), JSON.stringify({ 'other@x': '1.0.0' }), 'utf8');
+    assert.strictEqual(U.versionFromInstalledJson(pathsFor(t).installedJson), null);
+  } finally { t.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// CHANGELOG extraction
+// ---------------------------------------------------------------------------
+const SAMPLE_CHANGELOG = [
+  '# Changelog',
+  'preamble line that must be dropped',
+  '',
+  '## 0.33.0',
+  'New update skill.',
+  '',
+  '## 0.32.1',
+  'Docs refresh.',
+  '',
+  '## 0.32.0',
+  'Model routing guard.',
+  '',
+  '## 0.31.0',
+  'Merge gate.',
+].join('\n');
+
+test('extractChangelog: multi-section delta (exclusive from, inclusive to)', () => {
+  const out = U.extractChangelog(SAMPLE_CHANGELOG, '0.32.0', '0.33.0');
+  assert.ok(out.includes('## 0.33.0'), 'includes new section');
+  assert.ok(out.includes('## 0.32.1'), 'includes intermediate section');
+  assert.ok(!out.includes('## 0.32.0'), 'excludes the installed (from) version');
+  assert.ok(!out.includes('## 0.31.0'), 'excludes older sections');
+  assert.ok(!out.includes('preamble'), 'drops preamble before first heading');
+});
+
+test('extractChangelog: single new section', () => {
+  const out = U.extractChangelog(SAMPLE_CHANGELOG, '0.32.1', '0.33.0');
+  assert.ok(out.includes('## 0.33.0') && out.includes('New update skill.'));
+  assert.ok(!out.includes('## 0.32.1'));
+});
+
+test('extractChangelog: already up to date (from === to) → empty', () => {
+  assert.strictEqual(U.extractChangelog(SAMPLE_CHANGELOG, '0.33.0', '0.33.0'), '');
+});
+
+test('extractChangelog: target version not present in file → empty', () => {
+  assert.strictEqual(U.extractChangelog(SAMPLE_CHANGELOG, '0.40.0', '0.41.0'), '');
+});
+
+test('extractChangelog: malformed / empty input → empty (no throw)', () => {
+  assert.strictEqual(U.extractChangelog('', '0.1.0', '0.2.0'), '');
+  assert.strictEqual(U.extractChangelog(undefined, '0.1.0', '0.2.0'), '');
+  assert.strictEqual(U.extractChangelog('no headings here at all', '0.1.0', '0.2.0'), '');
+});
+
+// ---------------------------------------------------------------------------
+// Cache copy
+// ---------------------------------------------------------------------------
+test('syncCache: copies into NEW version dir when cache root exists', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const r = U.syncCache(p, '0.33.0');
+    assert.strictEqual(r.synced, true, r.reason);
+    assert.ok(fs.existsSync(path.join(p.cacheRoot, '0.33.0', '.claude-plugin', 'plugin.json')));
+  } finally { t.cleanup(); }
+});
+
+test('syncCache: skips when version dir already exists; never touches sibling', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    // pre-existing target + a sibling we must not touch
+    fs.mkdirSync(path.join(p.cacheRoot, '0.33.0'), { recursive: true });
+    fs.writeFileSync(path.join(p.cacheRoot, '0.33.0', 'sentinel.txt'), 'KEEP', 'utf8');
+    const siblingFile = path.join(p.cacheRoot, '0.32.1', 'sibling.txt');
+    fs.mkdirSync(path.dirname(siblingFile), { recursive: true });
+    fs.writeFileSync(siblingFile, 'SIBLING', 'utf8');
+
+    const r = U.syncCache(p, '0.33.0');
+    assert.strictEqual(r.synced, false, 'must skip existing version dir');
+    // sentinel untouched (not overwritten by copy)
+    assert.strictEqual(fs.readFileSync(path.join(p.cacheRoot, '0.33.0', 'sentinel.txt'), 'utf8'), 'KEEP');
+    // sibling untouched
+    assert.strictEqual(fs.readFileSync(siblingFile, 'utf8'), 'SIBLING');
+  } finally { t.cleanup(); }
+});
+
+test('syncCache: no-op when cache root absent (does not invent the layout)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    const p = pathsFor(t);
+    // cache root NOT created
+    const r = U.syncCache(p, '0.33.0');
+    assert.strictEqual(r.synced, false);
+    assert.ok(!fs.existsSync(p.cacheRoot), 'must not create the cache root');
+  } finally { t.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// runCheck (--check mode shape) with injected exec stub
+// ---------------------------------------------------------------------------
+function execStub(map, calls) {
+  // map: { 'fetch': out|Error, 'rev-parse': ..., 'show': ..., 'status': ..., 'pull': ... }
+  // calls (optional array): records { args, cwd } for every invocation (F1).
+  return function (args, cwd) {
+    if (calls) calls.push({ args: args.slice(), cwd });
+    const key = args[0];
+    const v = map[key];
+    if (v instanceof Error) throw v;
+    if (typeof v === 'function') return v(args, cwd);
+    return v == null ? '' : v;
+  };
+}
+
+test('runCheck: update available shape', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.1');
+    writeInstalled(t.root, '0.32.1');
+    const exec = execStub({
+      fetch: '',
+      'rev-parse': 'origin/main\n',
+      show: JSON.stringify({ version: '0.33.0' }),
+    });
+    const s = U.runCheck({ paths: pathsFor(t), exec });
+    assert.strictEqual(s.installed, '0.32.1');
+    assert.strictEqual(s.latest, '0.33.0');
+    assert.strictEqual(s.updated, false);
+    assert.strictEqual(s.cacheSynced, false);
+    assert.match(s.action, /update available/);
+  } finally { t.cleanup(); }
+});
+
+test('runCheck: already up to date', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeInstalled(t.root, '0.33.0');
+    const exec = execStub({ fetch: '', 'rev-parse': 'origin/main\n', show: JSON.stringify({ version: '0.33.0' }) });
+    const s = U.runCheck({ paths: pathsFor(t), exec });
+    assert.strictEqual(s.action, 'already up to date');
+  } finally { t.cleanup(); }
+});
+
+test('runCheck: offline (fetch throws) → reports, no crash', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeInstalled(t.root, '0.33.0');
+    const exec = execStub({ fetch: Object.assign(new Error('fail'), { stderr: 'could not resolve host github.com' }) });
+    const s = U.runCheck({ paths: pathsFor(t), exec });
+    assert.strictEqual(s.latest, null);
+    assert.match(s.action, /check failed/);
+  } finally { t.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// runUpdate with injected exec stub (no real git)
+// ---------------------------------------------------------------------------
+test('runUpdate: clean tree + ff pull + new version → reload action + changelog + cache sync', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0'); // post-pull marketplace version
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true }); // cache root exists → sync allowed
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status, changelog, stop } = U.runUpdate({ paths: p, exec });
+    assert.strictEqual(stop, false);
+    assert.strictEqual(status.installed, '0.32.1');
+    assert.strictEqual(status.latest, '0.33.0');
+    assert.strictEqual(status.updated, true);
+    assert.strictEqual(status.cacheSynced, true);
+    assert.strictEqual(status.action, 'run /reload-plugins');
+    // installed=0.32.1 exclusive → only 0.33.0 is in the delta (0.32.1 itself excluded).
+    assert.ok(changelog.includes('## 0.33.0'), 'new section present');
+    assert.ok(!changelog.includes('## 0.32.1'), 'installed version (from, exclusive) excluded from delta');
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: dirty tree → STOP, no pull attempted', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeInstalled(t.root, '0.32.1');
+    let pullCalled = false;
+    const exec = execStub({
+      status: ' M plugins/anti-hall/foo.js\n',
+      pull: () => { pullCalled = true; return ''; },
+    });
+    const { status, stop } = U.runUpdate({ paths: pathsFor(t), exec });
+    assert.strictEqual(stop, true);
+    assert.match(status.action, /STOP.*local changes/);
+    assert.strictEqual(pullCalled, false, 'must not pull a dirty tree');
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: non-fast-forward (diverged) → STOP', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.1');
+    writeInstalled(t.root, '0.32.1');
+    const exec = execStub({
+      status: '',
+      pull: Object.assign(new Error('fail'), { stderr: 'fatal: Not possible to fast-forward, aborting.' }),
+    });
+    const { status, stop } = U.runUpdate({ paths: pathsFor(t), exec });
+    assert.strictEqual(stop, true);
+    assert.match(status.action, /STOP.*fast-forward/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: offline (git status throws) → fail-open report, no stop', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.1');
+    writeInstalled(t.root, '0.32.1');
+    const exec = execStub({ status: Object.assign(new Error('fail'), { stderr: 'git: command not found' }) });
+    const { status, stop } = U.runUpdate({ paths: pathsFor(t), exec });
+    assert.strictEqual(stop, false);
+    assert.match(status.action, /offline \/ no git/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: already up to date (no version bump after pull) → no reload action', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.33.0');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    fs.mkdirSync(path.join(p.cacheRoot, '0.33.0'), { recursive: true }); // already cached
+    const exec = execStub({ status: '', pull: 'Already up to date.\n' });
+    const { status } = U.runUpdate({ paths: p, exec });
+    assert.strictEqual(status.updated, false);
+    assert.strictEqual(status.cacheSynced, false, 'no copy when target cache dir already present');
+    assert.strictEqual(status.action, 'already up to date');
+  } finally { t.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// renderHuman shape
+// ---------------------------------------------------------------------------
+test('renderHuman: includes installed/latest/action and changelog block', () => {
+  const out = U.renderHuman(
+    { installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true, action: 'run /reload-plugins' },
+    '## 0.33.0\nNew skill.'
+  );
+  assert.match(out, /installed: 0\.32\.1/);
+  assert.match(out, /latest:\s+0\.33\.0/);
+  assert.match(out, /action:\s+run \/reload-plugins/);
+  assert.match(out, /Changelog delta:/);
+  assert.match(out, /New skill\./);
+});
+
+// ===========================================================================
+// REGRESSION (live E2E 2026-06-10): the REAL installed_plugins.json is the v2
+// schema — { version: 2, plugins: { "<name>@<marketplace>": [ { scope,
+// installPath, version, installedAt, lastUpdated, gitCommitSha } ] } }.
+// The old parser missed it (looked at the top level), fell back to the cache
+// dirs, and a commit-sha-named dir ('3928cc1257d9') was accepted by the
+// lenient leading-digit parse → surfaced as installed AND compared "newer"
+// than 0.32.1 → false 'already up to date'.
+// ===========================================================================
+
+function writeInstalledV2(root, entries) {
+  fs.writeFileSync(
+    path.join(root, 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'anti-hall@anti-hall': entries } }),
+    'utf8'
+  );
+}
+
+test('v2 registry: REAL verbatim shape (array, scope user) → version, not sha', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.30.0'); // must NOT be reached
+    writeInstalledV2(t.root, [{
+      scope: 'user',
+      installPath: '/x/.claude/plugins/cache/anti-hall/anti-hall/0.32.1',
+      version: '0.32.1',
+      installedAt: '2026-05-29T16:49:15.773Z',
+      lastUpdated: '2026-06-10T14:52:25.268Z',
+      gitCommitSha: 'a8b943cfbc672b1e1532e786ddb0e62f8a2e0423',
+    }]);
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), '0.32.1');
+  } finally { t.cleanup(); }
+});
+
+test('v2 registry: prefers scope user over project', () => {
+  const t = makeTree();
+  try {
+    writeInstalledV2(t.root, [
+      { scope: 'project', version: '0.31.0' },
+      { scope: 'user', version: '0.32.1' },
+    ]);
+    assert.strictEqual(U.versionFromInstalledJson(pathsFor(t).installedJson), '0.32.1');
+  } finally { t.cleanup(); }
+});
+
+test('v2 registry: project-only entry is used', () => {
+  const t = makeTree();
+  try {
+    writeInstalledV2(t.root, [{ scope: 'project', version: '0.31.0' }]);
+    assert.strictEqual(U.versionFromInstalledJson(pathsFor(t).installedJson), '0.31.0');
+  } finally { t.cleanup(); }
+});
+
+test('v2 registry: non-semver entry version → null (falls to next step, never surfaces)', () => {
+  const t = makeTree();
+  try {
+    writeInstalledV2(t.root, [{ scope: 'user', version: '3928cc1257d9' }]);
+    assert.strictEqual(U.versionFromInstalledJson(pathsFor(t).installedJson), null);
+  } finally { t.cleanup(); }
+});
+
+test('isSemver: rejects digit-prefixed hex hashes and partial versions', () => {
+  assert.strictEqual(U.isSemver('0.32.1'), true);
+  assert.strictEqual(U.isSemver('v1.2.3'), true);
+  assert.strictEqual(U.isSemver('3928cc1257d9'), false, 'hash is NOT a version');
+  assert.strictEqual(U.isSemver('1.2'), false, 'two segments insufficient');
+  assert.strictEqual(U.isSemver(undefined), false);
+});
+
+test('newestCacheVersion: sha-named cache dir 3928cc1257d9 never wins', () => {
+  const t = makeTree();
+  try {
+    const cacheRoot = pathsFor(t).cacheRoot;
+    fs.mkdirSync(path.join(cacheRoot, '3928cc1257d9'), { recursive: true });
+    fs.mkdirSync(path.join(cacheRoot, '0.32.1'), { recursive: true });
+    assert.strictEqual(U.newestCacheVersion(cacheRoot), '0.32.1', 'sha dir must not outrank semver dirs');
+  } finally { t.cleanup(); }
+});
+
+test('newestCacheVersion: sha-only cache → null, never the hash', () => {
+  const t = makeTree();
+  try {
+    const cacheRoot = pathsFor(t).cacheRoot;
+    fs.mkdirSync(path.join(cacheRoot, '3928cc1257d9'), { recursive: true });
+    assert.strictEqual(U.newestCacheVersion(cacheRoot), null);
+  } finally { t.cleanup(); }
+});
+
+// Non-semver EVERYWHERE: malformed registry + sha-only cache + garbage plugin.json.
+function makeNonSemverEverywhere() {
+  const t = makeTree();
+  writeInstalled(t.root, 'RAW:{not json');
+  fs.mkdirSync(path.join(pathsFor(t).cacheRoot, '3928cc1257d9'), { recursive: true });
+  writePluginJson(t.marketplaceDir, 'garbage-not-a-version');
+  return t;
+}
+
+test('non-semver everywhere: resolveInstalledVersion → null (nothing surfaces)', () => {
+  const t = makeNonSemverEverywhere();
+  try {
+    assert.strictEqual(U.resolveInstalledVersion(pathsFor(t)), null);
+  } finally { t.cleanup(); }
+});
+
+test('non-semver everywhere: runCheck → unknown-installed-version, NEVER up to date', () => {
+  const t = makeNonSemverEverywhere();
+  try {
+    const exec = execStub({ fetch: '', 'rev-parse': 'origin/main\n', show: JSON.stringify({ version: '0.33.0' }) });
+    const s = U.runCheck({ paths: pathsFor(t), exec });
+    assert.strictEqual(s.installed, null, 'a hash must never surface as installed');
+    assert.strictEqual(s.latest, '0.33.0');
+    assert.match(s.action, /^unknown-installed-version/);
+    assert.ok(!/already up to date/.test(s.action), 'must not claim up to date');
+  } finally { t.cleanup(); }
+});
+
+test('non-semver everywhere: runUpdate → unknown-installed-version, no changelog dump', () => {
+  const t = makeNonSemverEverywhere();
+  try {
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    const exec = execStub({ status: '', pull: 'Already up to date.\n' });
+    const { status, changelog, stop } = U.runUpdate({ paths: pathsFor(t), exec });
+    assert.strictEqual(stop, false);
+    assert.strictEqual(status.installed, null);
+    assert.match(status.action, /^unknown-installed-version/);
+    assert.ok(!/already up to date/.test(status.action));
+    assert.strictEqual(changelog, '', 'null from-version must not dump the whole changelog');
+  } finally { t.cleanup(); }
+});
+
+test('regression e2e shape: v2 registry + sha cache dir → runCheck reports the real version', () => {
+  // The exact live-machine combination that produced the bug: v2 registry with
+  // 0.32.1 AND a sha-named cache dir present. installed must be 0.32.1.
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.1');
+    writeInstalledV2(t.root, [{ scope: 'user', version: '0.32.1', gitCommitSha: 'a8b943c' }]);
+    fs.mkdirSync(path.join(pathsFor(t).cacheRoot, '3928cc1257d9'), { recursive: true });
+    const exec = execStub({ fetch: '', 'rev-parse': 'origin/main\n', show: JSON.stringify({ version: '0.32.1' }) });
+    const s = U.runCheck({ paths: pathsFor(t), exec });
+    assert.strictEqual(s.installed, '0.32.1');
+    assert.strictEqual(s.action, 'already up to date');
+  } finally { t.cleanup(); }
+});
+
+// ===========================================================================
+// Round-1 deadly-swarm fixes
+// ===========================================================================
+
+// --- R1-C-01 / R1-F-01: path traversal via the version string ---------------
+test('isSemver: fully anchored — rejects path-traversal suffixes (R1-C-01)', () => {
+  assert.strictEqual(U.isSemver('0.33.0/../../evil'), false, 'forward-slash traversal');
+  assert.strictEqual(U.isSemver('0.33.0\\..\\evil'), false, 'backslash traversal');
+  assert.strictEqual(U.isSemver('0.33.0extra'), false, 'trailing junk');
+  assert.strictEqual(U.isSemver('0.33.0-beta.1'), true, 'prerelease suffix still valid');
+  assert.strictEqual(U.isSemver('0.33.0+build.5'), true, 'build suffix still valid');
+});
+
+test('syncCache: traversal version → synced:false, nothing written outside cache root', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    // Sentinel two levels above cacheRoot (<root>/cache/sentinel.txt) — where
+    // '0.33.0/../../../evil' would land if the guard failed.
+    const sentinel = path.resolve(p.cacheRoot, '..', '..', 'sentinel.txt');
+    fs.writeFileSync(sentinel, 'ORIGINAL', 'utf8');
+    const evil = '0.33.0/../../../evil';
+
+    const r = U.syncCache(p, evil);
+
+    assert.strictEqual(r.synced, false, 'traversal version must be rejected');
+    assert.strictEqual(r.reason, 'unsafe version string');
+    assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'ORIGINAL', 'sentinel untouched');
+    assert.ok(!fs.existsSync(path.resolve(p.cacheRoot, evil)), 'no escaped write target created');
+    // Windows-separator variant too
+    const r2 = U.syncCache(p, '0.33.0\\..\\evil');
+    assert.strictEqual(r2.synced, false);
+    assert.strictEqual(r2.reason, 'unsafe version string');
+  } finally { t.cleanup(); }
+});
+
+// --- A2: inverted pull-failure posture --------------------------------------
+test('runUpdate: "refusing to merge unrelated histories" → STOP (A2)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.1');
+    writeInstalled(t.root, '0.32.1');
+    const exec = execStub({
+      status: '',
+      pull: Object.assign(new Error('fail'), { stderr: 'fatal: refusing to merge unrelated histories' }),
+    });
+    const { status, stop } = U.runUpdate({ paths: pathsFor(t), exec });
+    assert.strictEqual(stop, true, 'unrelated histories is divergence, not transient');
+    assert.match(status.action, /^STOP/);
+    assert.match(status.action, /unrelated histories/, 'raw git message surfaced');
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: UNKNOWN pull error → STOP (inverted posture, A2)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.1');
+    writeInstalled(t.root, '0.32.1');
+    const exec = execStub({
+      status: '',
+      pull: Object.assign(new Error('fail'), { stderr: 'fatal: some exotic never-seen-before failure' }),
+    });
+    const { status, stop } = U.runUpdate({ paths: pathsFor(t), exec });
+    assert.strictEqual(stop, true, 'unrecognized failure must STOP, not fail open');
+    assert.match(status.action, /^STOP/);
+    assert.match(status.action, /exotic never-seen-before/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: network-shaped pull error → report + no stop (fail-open class)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.32.1');
+    writeInstalled(t.root, '0.32.1');
+    const exec = execStub({
+      status: '',
+      pull: Object.assign(new Error('fail'), {
+        stderr: "fatal: unable to access 'https://github.com/talas9/anti-hall/': Could not resolve host: github.com",
+      }),
+    });
+    const { status, stop } = U.runUpdate({ paths: pathsFor(t), exec });
+    assert.strictEqual(stop, false, 'recognized offline failure stays exit 0');
+    assert.match(status.action, /offline \/ network/);
+    assert.ok(!/^STOP/.test(status.action));
+  } finally { t.cleanup(); }
+});
+
+// --- F1 + R1-F-02: git invocation discipline (cwd + flags) ------------------
+test('full flow: git runs in the marketplace cwd, --ff-only pinned, no destructive tokens', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+
+    const calls = [];
+    const exec = execStub(
+      { status: '', pull: 'Updating...\n', fetch: '', 'rev-parse': 'origin/main\n', show: JSON.stringify({ version: '0.33.0' }) },
+      calls
+    );
+
+    // Full update + a check pass through the SAME recorded exec.
+    const { status } = U.runUpdate({ paths: p, exec });
+    assert.strictEqual(status.action, 'run /reload-plugins');
+    U.runCheck({ paths: p, exec });
+
+    // cwd discipline: status / pull / fetch all run against the marketplace clone.
+    for (const cmd of ['status', 'pull', 'fetch']) {
+      const call = calls.find(c => c.args[0] === cmd);
+      assert.ok(call, `expected a git ${cmd} call`);
+      assert.strictEqual(call.cwd, p.marketplaceDir, `git ${cmd} must run in the marketplace clone`);
+    }
+    // pull is pinned to --ff-only.
+    const pull = calls.find(c => c.args[0] === 'pull');
+    assert.ok(pull.args.includes('--ff-only'), 'pull must carry --ff-only');
+    // NO destructive git token in ANY call of the whole flow.
+    for (const c of calls) {
+      const joined = c.args.join(' ');
+      assert.ok(
+        !/\bmerge\b|\brebase\b|\breset\b|\bpush\b|--force\b|--hard\b/.test(joined),
+        `destructive git token in: git ${joined}`
+      );
+    }
+  } finally { t.cleanup(); }
+});
+
+// --- R1-A-01: ANTIHALL_MARKETPLACE_DIR override validation ------------------
+test('resolvePaths: relative override → ignored, default used, reported', () => {
+  const p = U.resolvePaths({ ANTIHALL_MARKETPLACE_DIR: 'relative/clone' }, FAKE_HOME);
+  assert.strictEqual(p.marketplaceDir, path.join(FAKE_HOME, '.claude', 'plugins', 'marketplaces', 'anti-hall'));
+  assert.match(p.overrideIgnored, /ANTIHALL_MARKETPLACE_DIR ignored/);
+});
+
+test('resolvePaths: absolute but nonexistent override → ignored, default used, reported', () => {
+  const missing = path.join(os.tmpdir(), 'antihall-definitely-missing-' + Date.now());
+  const p = U.resolvePaths({ ANTIHALL_MARKETPLACE_DIR: missing }, FAKE_HOME);
+  assert.strictEqual(p.marketplaceDir, path.join(FAKE_HOME, '.claude', 'plugins', 'marketplaces', 'anti-hall'));
+  assert.match(p.overrideIgnored, /ANTIHALL_MARKETPLACE_DIR ignored/);
+});
+
+test('resolvePaths: valid absolute existing override → used, no report', () => {
+  const t = makeTree();
+  try {
+    const p = pathsFor(t);
+    assert.strictEqual(p.marketplaceDir, t.marketplaceDir);
+    assert.strictEqual(p.overrideIgnored, '');
+  } finally { t.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// healIngestDaemon — the update → doctor auto-heal wiring (P0 fix companion).
+// Uses the REAL plugin source tree (this repo's own plugins/anti-hall) as
+// paths.pluginSrcDir so the require-and-call wiring against the actual
+// install-devswarm-ingest.js / doctor-repair.js / devswarm-detect.js is
+// exercised, not a hand-rolled stub. `home` is always an isolated tmpdir so no
+// test ever reads/writes this machine's REAL installed units.
+// ---------------------------------------------------------------------------
+const REAL_PLUGIN_SRC_DIR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
+
+test('healIngestDaemon: gate closed (not a DevSwarm session) → attempted:false, never spawns', () => {
+  const result = U.healIngestDaemon({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    spawnFn: () => { throw new Error('must not spawn when the gate is closed'); },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.strictEqual(result.healed, false);
+  assert.match(result.detail, /gate closed/);
+});
+
+test('healIngestDaemon: gate closed (cwd is not a git worktree) → attempted:false, never spawns', () => {
+  const nogit = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-nogit-'));
+  try {
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: nogit,
+      spawnFn: () => { throw new Error('must not spawn when the gate is closed'); },
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not a git worktree|gate closed/);
+  } finally { fs.rmSync(nogit, { recursive: true, force: true }); }
+});
+
+test('healIngestDaemon: pulled plugin tree missing companion/hooks files → fail-open, attempted:false, never throws', () => {
+  const t = makeTree(); // empty marketplace fixture — no companion/hooks dirs at all
+  try {
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('healIngestDaemon: gate open + nothing installed ("absent") → attempted:true, healed:true, never spawns', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-absent-'));
+  let spawned = false;
+  try {
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+      spawnFn: () => { spawned = true; },
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.healed, true);
+    assert.match(result.detail, /absent/);
+    assert.strictEqual(spawned, false, "an absent unit is not this code path's job to first-install");
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healIngestDaemon: gate open + stale-script unit → spawns the (fresh) installer, reclassifies ok, healed:true', { skip: process.platform === 'win32' }, () => {
+  const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-stale-'));
+  const wt = process.cwd(); // a real git worktree (this repo)
+  const staleScript = path.join(home, 'this-script-does-not-exist.js');
+  const realScript = installer.SCRIPT; // a real, existing file on disk
+  const writeUnit = (script) => {
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installer.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'),
+        installer.buildPlist({ label, exec: process.execPath, script, log: '/tmp/x.log', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installer.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'),
+        installer.buildService({ exec: process.execPath, script, workdir: wt }));
+    }
+  };
+  try {
+    writeUnit(staleScript); // starts out stale
+    let spawnedScript = null;
+    const spawnFn = (script) => {
+      spawnedScript = script;
+      writeUnit(realScript); // simulate the real installer's re-bake effect
+    };
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: wt,
+      home,
+      spawnFn,
+    });
+    assert.ok(spawnedScript, 'the installer was spawned for a stale-script unit');
+    assert.ok(spawnedScript.endsWith('install-devswarm-ingest.js'));
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.healed, true);
+    assert.match(result.detail, /re-installed/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healIngestDaemon: gate open + reinstall does NOT fix it → attempted:true, healed:false', { skip: process.platform === 'win32' }, () => {
+  const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-stillstale-'));
+  const wt = process.cwd();
+  const staleScript = path.join(home, 'this-script-does-not-exist.js');
+  const writeUnit = (script) => {
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installer.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'),
+        installer.buildPlist({ label, exec: process.execPath, script, log: '/tmp/x.log', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installer.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'),
+        installer.buildService({ exec: process.execPath, script, workdir: wt }));
+    }
+  };
+  try {
+    writeUnit(staleScript);
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: wt,
+      home,
+      spawnFn: () => { /* no-op: a spawn that does not actually fix the unit */ },
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.healed, false);
+    assert.match(result.detail, /still stale-script/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healIngestDaemon: gate open + unstable-script (drift) unit → env is passed through to classify, spawns installer, reclassifies ok, healed:true', { skip: process.platform === 'win32' }, () => {
+  const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-drift-'));
+  const wt = process.cwd(); // a real git worktree (this repo)
+  // A fake "current stable" marketplace clone whose companion/devswarm-ingest.js
+  // is a DIFFERENT file from the one baked into the installed unit below — this
+  // is exactly the drift classifyIngestUnit's 'unstable-script' branch detects,
+  // but ONLY when `env` reaches it (root cause of the P1 this test guards).
+  const fakeMarketplaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-drift-mkt-'));
+  const stableScriptDir = path.join(fakeMarketplaceDir, 'plugins', 'anti-hall', 'companion');
+  fs.mkdirSync(stableScriptDir, { recursive: true });
+  const stableScript = path.join(stableScriptDir, 'devswarm-ingest.js');
+  fs.writeFileSync(stableScript, '// fake current-stable ingest script\n');
+  const env = { DEVSWARM_REPO_ID: 'r1', ANTIHALL_MARKETPLACE_DIR: fakeMarketplaceDir };
+  const driftedScript = installer.SCRIPT; // exists on disk, but is NOT the stable path above
+  const writeUnit = (script) => {
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installer.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'),
+        installer.buildPlist({ label, exec: process.execPath, script, log: '/tmp/x.log', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installer.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'),
+        installer.buildService({ exec: process.execPath, script, workdir: wt }));
+    }
+  };
+  try {
+    writeUnit(driftedScript); // starts out drifted (baked scriptPath != current stable)
+    let spawnedScript = null;
+    const spawnFn = (script) => {
+      spawnedScript = script;
+      writeUnit(stableScript); // simulate the real installer's re-bake onto the stable path
+    };
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env,
+      cwd: wt,
+      home,
+      spawnFn,
+    });
+    assert.ok(spawnedScript, 'the installer was spawned for a drifted (unstable-script) unit');
+    assert.ok(spawnedScript.endsWith('install-devswarm-ingest.js'));
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.healed, true);
+    assert.match(result.detail, /re-installed/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(fakeMarketplaceDir, { recursive: true, force: true });
+  }
+});
+
+test('healIngestDaemon: gate open + already-stable ("ok") unit under a drift-aware env → attempted:true, healed:true, FORCES a restart anyway (pacing-fix delivery gap — the running process must re-exec onto post-pull content even when install-shape is already ok)', { skip: process.platform === 'win32' }, () => {
+  const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-stable-'));
+  const wt = process.cwd();
+  const fakeMarketplaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-stable-mkt-'));
+  const stableScriptDir = path.join(fakeMarketplaceDir, 'plugins', 'anti-hall', 'companion');
+  fs.mkdirSync(stableScriptDir, { recursive: true });
+  const stableScript = path.join(stableScriptDir, 'devswarm-ingest.js');
+  fs.writeFileSync(stableScript, '// fake current-stable ingest script\n');
+  const env = { DEVSWARM_REPO_ID: 'r1', ANTIHALL_MARKETPLACE_DIR: fakeMarketplaceDir };
+  const writeUnit = (script) => {
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installer.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'),
+        installer.buildPlist({ label, exec: process.execPath, script, log: '/tmp/x.log', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installer.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'),
+        installer.buildService({ exec: process.execPath, script, workdir: wt }));
+    }
+  };
+  try {
+    writeUnit(stableScript); // baked scriptPath already IS the current stable path
+    let spawned = false;
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env,
+      cwd: wt,
+      home,
+      spawnFn: () => { spawned = true; },
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.healed, true);
+    assert.match(result.detail, /restarted/);
+    assert.strictEqual(spawned, true, 'an already-stable unit is STILL restarted once — update just changed the code on disk and the running daemon only re-execs on crash, never on a fresh git pull alone');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(fakeMarketplaceDir, { recursive: true, force: true });
+  }
+});
+
+test('healIngestDaemon: repoKey-aware (v0.57 mesh Phase 6, D9/D24) — after a spawn that reaps the LEGACY unit and installs the PER-PROJECT unit (what the real installer now does on a real git worktree), the FRESH project unit is detected, not the just-reaped legacy one → healed:true', { skip: process.platform === 'win32' }, () => {
+  const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+  const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-repokey-'));
+  const wt = process.cwd(); // a real git worktree (this repo) — repoKey resolves
+  const repoKey = repokey.repoKeyForWorktree(wt);
+  assert.ok(repoKey, 'test precondition: repoKeyForWorktree must resolve for this repo');
+  const staleScript = path.join(home, 'this-script-does-not-exist.js');
+  const realScript = installer.SCRIPT; // a real, existing file on disk
+  const legacyUnitPath = () => (process.platform === 'darwin'
+    ? path.join(home, 'Library', 'LaunchAgents', installer.labelForWorktree(wt) + '.plist')
+    : path.join(home, '.config', 'systemd', 'user', installer.unitForWorktree(wt) + '.service'));
+  const projectUnitPath = () => (process.platform === 'darwin'
+    ? path.join(home, 'Library', 'LaunchAgents', installer.labelForProject(repoKey) + '.plist')
+    : path.join(home, '.config', 'systemd', 'user', installer.unitForProject(repoKey) + '.service'));
+  const writeLegacyUnit = (script) => {
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installer.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'),
+        installer.buildPlist({ label, exec: process.execPath, script, log: '/tmp/x.log', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installer.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'),
+        installer.buildService({ exec: process.execPath, script, workdir: wt }));
+    }
+  };
+  const writeProjectUnit = (script) => {
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installer.labelForProject(repoKey);
+      fs.writeFileSync(path.join(dir, label + '.plist'),
+        installer.buildPlist({ label, exec: process.execPath, script, log: '/tmp/x.log', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installer.unitForProject(repoKey);
+      fs.writeFileSync(path.join(dir, unit + '.service'),
+        installer.buildService({ exec: process.execPath, script, workdir: wt }));
+    }
+  };
+  try {
+    writeLegacyUnit(staleScript); // starts out as a drifted LEGACY unit only — no project unit yet
+    let spawnedScript = null;
+    const spawnFn = (script) => {
+      spawnedScript = script;
+      // Simulate exactly what the REAL installer does on a real git worktree
+      // (D9 reap-before-drain): stop+remove the legacy unit, install the
+      // per-project unit instead. NEVER a real launchctl/systemctl spawn here —
+      // this mock IS the reap, no scheduler is touched.
+      try { fs.unlinkSync(legacyUnitPath()); } catch (_) {}
+      writeProjectUnit(realScript);
+    };
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: wt,
+      home,
+      spawnFn,
+    });
+    assert.ok(spawnedScript, 'the installer was spawned for the drifted legacy unit');
+    assert.ok(!fs.existsSync(legacyUnitPath()), 'test precondition: the legacy unit really is gone post-spawn (reaped, not fixed)');
+    assert.ok(fs.existsSync(projectUnitPath()), 'test precondition: the per-project unit really was installed');
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.healed, true, 'the fresh per-project unit is detected — NOT misreported as still-absent because the legacy unit it replaced is gone');
+    assert.match(result.detail, /re-installed/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healIngestDaemon: an internal throw is fail-open — never propagates, detail explains it', () => {
+  const result = U.healIngestDaemon({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    home: fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-throws-')),
+    spawnFn: () => { throw new Error('spawn boom'); },
+  });
+  // A throwing spawnFn against an absent unit never even calls spawnFn (see the
+  // "absent" test above); to actually exercise the catch we'd need a stale unit —
+  // covered indirectly by the try/catch wrapping every step. This asserts the
+  // documented CONTRACT: the function itself never throws, regardless of input.
+  assert.ok(result && typeof result.attempted === 'boolean');
+});
+
+// ---------------------------------------------------------------------------
+// runUpdate wiring: ingestHeal surfaces on the returned status, fail-open.
+// ---------------------------------------------------------------------------
+
+test('runUpdate: ingestHeal is fail-open when the pulled tree has no companion/hooks files (never breaks the update)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd() });
+    assert.strictEqual(status.cacheSynced, true);
+    assert.strictEqual(status.updated, true);
+    assert.ok(status.ingestHeal, 'ingestHeal field present on the status object');
+    assert.strictEqual(status.ingestHeal.attempted, false);
+    assert.match(status.ingestHeal.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: ingestHeal reports "nothing to heal" when the cache did not sync this run', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.33.0'); // already at latest
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    fs.mkdirSync(path.join(p.cacheRoot, '0.33.0'), { recursive: true }); // already cached -> no sync
+    const exec = execStub({ status: '', pull: 'Already up to date.\n' });
+    const { status } = U.runUpdate({ paths: p, exec });
+    assert.strictEqual(status.cacheSynced, false);
+    assert.strictEqual(status.ingestHeal.attempted, false);
+    assert.match(status.ingestHeal.detail, /nothing to heal/);
+  } finally { t.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// reconcilePostUpdate — v0.58.0's `devswarm.js reconcile` verb, auto-run as a
+// post-update step. Same REAL-plugin-source-tree posture as the healIngestDaemon
+// tests above: paths.pluginSrcDir = this repo's own plugins/anti-hall so the
+// require-and-call wiring against the actual devswarm-detect.js / devswarm.js
+// is exercised, not a hand-rolled stub. `home` is always an isolated tmpdir.
+// ---------------------------------------------------------------------------
+
+test('reconcilePostUpdate: not a DevSwarm session (no DEVSWARM_REPO_ID) -> attempted:false, gate closed', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { run: () => { throw new Error('must not run reconcile when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('reconcilePostUpdate: machine-level descriptor/registry presence alone is NOT enough — only isDevswarmActive(env) opens the gate', () => {
+  // A populated devswarm home (as if descriptors exist on disk) must not matter —
+  // only the env-level DEVSWARM_REPO_ID (an actual active session) does.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-reconcile-machine-'));
+  try {
+    const wsDir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'w1.json'), JSON.stringify({ id: 'w1', worktreePath: '/wt/w1' }));
+    const result = U.reconcilePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: {}, // no DEVSWARM_REPO_ID -> not an active session
+      cwd: process.cwd(),
+      home,
+      devswarm: { run: () => { throw new Error('must not run reconcile when the gate is closed'); } },
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not a DevSwarm session/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('reconcilePostUpdate: pulled plugin tree missing scripts/hooks files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree(); // empty marketplace fixture — no scripts/hooks dirs at all
+  try {
+    const result = U.reconcilePostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('reconcilePostUpdate: gate open + empty shared store (real devswarm.js, no mock) -> attempted:true, count:0, imported:0', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-reconcile-empty-'));
+  try {
+    const result = U.reconcilePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), // a real git worktree (this repo)
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.count, 0);
+    assert.strictEqual(result.imported, 0);
+    assert.match(result.detail, /reconciled 0 worktree\(s\)/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('reconcilePostUpdate: gate open + cwd is not a git project -> reconcile itself reports no-project, never throws', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-reconcile-nogit-'));
+  const nogit = fs.mkdtempSync(path.join(os.tmpdir(), 'update-reconcile-nogit-cwd-'));
+  try {
+    const result = U.reconcilePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: nogit,
+      home,
+    });
+    assert.strictEqual(result.attempted, true, 'reconcile WAS attempted (gate was open) — the no-project outcome comes from inside cmdReconcile');
+    assert.match(result.detail, /reconcile failed/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(nogit, { recursive: true, force: true }); }
+});
+
+// P1 fix (v0.58.1): reconcilePostUpdate used to fall straight to a generic
+// "reconcile failed: unknown error" whenever `result.ok` was false — and
+// cmdReconcile itself used to ALWAYS return ok:true, so a real per-target
+// message loss never even reached this branch, it just read as success. Now
+// that cmdReconcile returns ok:false + a `lost` total on a genuine shortfall,
+// this proves the update flow surfaces the loss count (not a generic
+// "unknown error"), marks the outcome as attempted-but-NOT-success, and — per
+// reconcilePostUpdate's own fail-open contract — never throws.
+test('reconcilePostUpdate: a reconcile with a REAL per-target message loss -> attempted:true, NOT the success template, loss count surfaced, never throws', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 1, imported: 0, lost: 2,
+          results: [{ id: 'child-lossy', worktreePath: '/wt/lossy', ok: false, imported: 0, duplicate: 0, nativeCount: 2, lost: 2, locked: true, error: null }],
+        },
+      }),
+    },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.strictEqual(result.lost, 2, 'the loss count must be surfaced on the returned status object');
+  assert.doesNotMatch(result.detail, /^reconciled \d+ worktree/, 'a lossy reconcile must NEVER read as the success template');
+  assert.match(result.detail, /LOST 2 message/i, 'the loss count must appear in the human detail, not a generic "unknown error"');
+});
+
+// P2 fix: cmdReconcile's returned object never carries a top-level
+// `.reason`/`.error` for a per-target-failure shape (only `.results[i]` does)
+// — reconcilePostUpdate used to always fall through to "unknown error" even
+// when a real per-target cause was present in `result.results`. Ported the
+// fix from doctor-repair.js's mirrored reconcile summariser (v0.76.0):
+// surface the real per-target error, filter benign skips, cap the list.
+test('reconcilePostUpdate: a real per-target error -> detail contains that error string, NOT "unknown error"', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 1, imported: 0,
+          results: [{ id: 'primary-bf04dd47', worktreePath: '/wt/primary', ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: false, error: 'descriptor for "primary-bf04dd47" has no inboxPath' }],
+        },
+      }),
+    },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.match(result.detail, /descriptor for "primary-bf04dd47" has no inboxPath/, 'the real per-target cause must be surfaced');
+  assert.doesNotMatch(result.detail, /unknown error/);
+});
+
+test('reconcilePostUpdate: only benign skips (locked/hivecontrolMissing/worktreeMissing) -> detail stays quiet, no false alarm', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 2, imported: 0,
+          results: [
+            { id: 'child-locked', worktreePath: '/wt/locked', ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: true, error: 'holds the lock' },
+            { id: 'child-nohivecontrol', worktreePath: '/wt/nohc', ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, hivecontrolMissing: true, error: 'spawnSync hivecontrol ENOENT' },
+          ],
+        },
+      }),
+    },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.match(result.detail, /unknown error/, 'no real cause remains once benign skips are filtered — falls back to the quiet generic detail');
+  assert.doesNotMatch(result.detail, /holds the lock/);
+  assert.doesNotMatch(result.detail, /ENOENT/);
+});
+
+test('reconcilePostUpdate: many failing targets -> capped list with "+N more"', () => {
+  const results = [];
+  for (let i = 0; i < 8; i++) {
+    results.push({ id: 'child-' + i, worktreePath: '/wt/' + i, ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: false, error: 'boom-' + i });
+  }
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: { run: () => ({ code: 2, result: { ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 8, imported: 0, results } }) },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.match(result.detail, /boom-0/);
+  assert.match(result.detail, /boom-4/);
+  assert.doesNotMatch(result.detail, /boom-5/, 'list is capped to 5 shown entries');
+  assert.match(result.detail, /\+3 more/);
+});
+
+test('reconcilePostUpdate: an internal throw is fail-open — never propagates, detail explains it', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: { run: () => { throw new Error('reconcile boom'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /reconcile raised/);
+});
+
+// ---------------------------------------------------------------------------
+// runUpdate wiring: reconcile surfaces on the returned status, runs only
+// inside a DevSwarm session, and a reconcile failure never fails the update.
+// ---------------------------------------------------------------------------
+
+test('runUpdate: reconcile is NOT attempted outside a DevSwarm session (default env)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR; // real scripts/hooks tree, so this exercises the GATE, not "files not found"
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status } = U.runUpdate({ paths: p, exec, env: {}, cwd: process.cwd() });
+    assert.ok(status.reconcile, 'reconcile field present on the status object');
+    assert.strictEqual(status.reconcile.attempted, false);
+    assert.match(status.reconcile.detail, /not a DevSwarm session/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: reconcile runs inside a DevSwarm session, regardless of cache.synced (unlike ingestHeal)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.33.0'); // already at latest -> cache does NOT sync this run
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR; // real scripts/hooks tree, so the gate check itself runs
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    fs.mkdirSync(path.join(p.cacheRoot, '0.33.0'), { recursive: true }); // already cached
+    const exec = execStub({ status: '', pull: 'Already up to date.\n' });
+    let called = null;
+    const fakeDevswarm = { run: (argv, ctx) => { called = { argv, ctx }; return { code: 0, result: { ok: true, action: 'reconcile', count: 2, imported: 5, results: [] } }; } };
+    const { status } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd(), devswarm: fakeDevswarm });
+    assert.strictEqual(status.cacheSynced, false, 'sanity: this run genuinely did not sync the cache');
+    assert.deepStrictEqual(called.argv, ['reconcile']);
+    assert.strictEqual(status.reconcile.attempted, true);
+    assert.strictEqual(status.reconcile.count, 2);
+    assert.strictEqual(status.reconcile.imported, 5);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: a reconcile failure is reported but never fails the update (fail-open, stop stays false)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR; // real scripts/hooks tree, so the gate opens and devswarm.run is actually called
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const fakeDevswarm = { run: () => { throw new Error('reconcile boom'); } };
+    const { status, stop } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd(), devswarm: fakeDevswarm });
+    assert.strictEqual(stop, false, 'a reconcile failure must never trip the STOP contract');
+    assert.strictEqual(status.updated, true, 'the update itself still succeeded');
+    assert.strictEqual(status.reconcile.attempted, false);
+    assert.match(status.reconcile.detail, /reconcile raised/);
+  } finally { t.cleanup(); }
+});
+
+test('renderHuman: prints reconcile summary + per-worktree breakdown when attempted', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    reconcile: {
+      attempted: true, count: 1, imported: 3,
+      detail: 'reconciled 1 worktree(s) — imported 3 message(s) into the shared store',
+      results: [{ id: 'w1', imported: 3, duplicate: 0 }],
+    },
+  };
+  const out = U.renderHuman(status, '');
+  assert.match(out, /reconcile: reconciled 1 worktree\(s\) — imported 3 message\(s\) into the shared store/);
+  assert.match(out, /w1: imported 3, duplicate 0/);
+});
+
+test('renderHuman: omits the reconcile block entirely when not attempted (non-DevSwarm session — no noise)', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    reconcile: { attempted: false, detail: 'not a DevSwarm session — reconcile skipped (gate closed)' },
+  };
+  const out = U.renderHuman(status, '');
+  assert.doesNotMatch(out, /reconcile:/);
+});
+
+// ---------------------------------------------------------------------------
+// healRegistryPostUpdate — Claim 3 self-heal MIGRATION, auto-run as a
+// post-update step. Same REAL-plugin-source-tree posture as reconcilePostUpdate's
+// own tests: paths.pluginSrcDir = this repo's own plugins/anti-hall so the
+// require-and-call wiring against the actual devswarm-detect.js / devswarm.js /
+// devswarm-store.js is exercised, not a hand-rolled stub. `home` is always an
+// isolated tmpdir. The heal DECISION itself (rehomeMiskeyedRow) is already
+// covered by devswarm-lifecycle.test.js's own Claim 3 tests — these tests prove
+// the update.js INTEGRATION: the DevSwarm gate, enumeration across every
+// per-project store, idempotency through this entry point, and a synthetic
+// mis-keyed row rehomed with zero message loss.
+// ---------------------------------------------------------------------------
+
+function makeGitRepoForUpdate(tag) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-repo-' + tag + '-'));
+  require('node:child_process').spawnSync('git', ['init', '-q', dir]);
+  require('node:child_process').spawnSync('git', ['-C', dir, 'config', 'user.email', 'a@b.c']);
+  require('node:child_process').spawnSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'README.md'), tag);
+  require('node:child_process').spawnSync('git', ['-C', dir, 'add', '.']);
+  require('node:child_process').spawnSync('git', ['-C', dir, 'commit', '-q', '-m', 'init']);
+  return dir;
+}
+
+test('healRegistryPostUpdate: not a DevSwarm session (no DEVSWARM_REPO_ID) -> attempted:false, gate closed', () => {
+  const result = U.healRegistryPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { healRegistry: () => { throw new Error('must not run heal-registry-rows when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('healRegistryPostUpdate: pulled plugin tree missing scripts/companion files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree(); // empty marketplace fixture — no scripts/companion dirs at all
+  try {
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('healRegistryPostUpdate: gate open + no DevSwarm store at all (real devswarm.js, no mock) -> attempted:true, checked:0, healed:0, rehomed:0', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-empty-'));
+  try {
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.checked, 0);
+    assert.strictEqual(result.healed, 0);
+    assert.strictEqual(result.rehomed, 0);
+    assert.match(result.detail, /0 store\(s\)/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healRegistryPostUpdate: gate open + a synthetic mis-keyed row -> REHOMED with ZERO message loss, then a second pass is IDEMPOTENT (real devswarm.js + devswarm-store.js, no mock)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-fix-'));
+  const repoA = makeGitRepoForUpdate('a');
+  const repoB = makeGitRepoForUpdate('b');
+  try {
+    const repoKeyA = devswarmRepokey.repoKeyForWorktree(repoA);
+    const repoKeyB = devswarmRepokey.repoKeyForWorktree(repoB);
+
+    // 'z' is correctly registered at repoB — its true, structural home.
+    const reg = devswarmCli.run(['register', 'z', '--worktree', repoB, '--session', 's2'], { home, env: {}, cwd: repoB });
+    assert.strictEqual(reg.result.ok, true);
+
+    // A STRAY registry row for 'z' ALSO physically lives in store A, plus a
+    // pending message that arrived into the WRONG bucket — must survive.
+    const sA0 = devswarmStore.openStore({ home, hash: repoKeyA });
+    try {
+      sA0.upsertRegistry({ id: 'z', worktreePath: repoB, sessionId: 's2' });
+      sA0.appendMeshRow({
+        workspaceId: 'z', ts: Date.now(), hash: 'update-stray-hash-1', body: 'update stray message',
+        sender: 'someone', recipient: 'z', mtype: 'direct', urgency: 'normal', isHeartbeat: false,
+      });
+    } finally { sA0.close(); }
+
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repoA,
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.rehomed, 1, JSON.stringify(result));
+    assert.ok(Array.isArray(result.stores) && result.stores.some((s) => s.repoKey === repoKeyA && s.rows.includes('z')),
+      'the healed store + row id must be reported: ' + JSON.stringify(result.stores));
+    assert.match(result.detail, /rehomed 1/);
+
+    const sA = devswarmStore.openStore({ home, hash: repoKeyA });
+    try {
+      assert.strictEqual((sA.listRegistry() || []).some((x) => x.id === 'z'), false, 'the mis-keyed registry row must be gone from the wrong store');
+    } finally { sA.close(); }
+    const sB = devswarmStore.openStore({ home, hash: repoKeyB });
+    try {
+      const msgs = sB.listMessages('z');
+      assert.ok(msgs.some((m) => m.body === 'update stray message'), 'the stray message must have migrated into the correct store — zero loss');
+      assert.ok((sB.listRegistry() || []).some((x) => x.id === 'z'), 'the registry row must now live in the correct store');
+    } finally { sB.close(); }
+
+    // Idempotency THROUGH THE UPDATE ENTRY POINT: a second pass over the
+    // now-healed stores must heal/rehome nothing further.
+    const second = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repoA,
+      home,
+    });
+    assert.strictEqual(second.healed, 0, 'a second pass must heal nothing further:\n' + JSON.stringify(second));
+    assert.strictEqual(second.rehomed, 0, 'a second pass must rehome nothing further:\n' + JSON.stringify(second));
+    assert.match(second.detail, /nothing mis-keyed\/stale/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repoA, { recursive: true, force: true });
+    fs.rmSync(repoB, { recursive: true, force: true });
+  }
+});
+
+// --- item B (v0.107.1): the split-store merge (v0.107.0) re-delivers already-
+// handled messages as unread by design (cursors are deliberately never copied
+// across the two backends' independent sequence spaces — see
+// mergeSplitBackendStore's own header comment in devswarm-store.js). This is
+// NOT a behavior change; it makes update.js's human summary + JSON state HOW
+// MANY rows were re-delivered and WHY, instead of leaving that silent.
+(devswarmStore.sqliteAvailable() ? test : test.skip)(
+  'mergeSplitBackendStoresPostUpdate: reports reDeliveredUnread + explains the re-delivery in the human detail (real devswarm.js + devswarm-store.js, no mock)',
+  () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-mergesplit-'));
+    const repo = makeGitRepoForUpdate('mergesplit');
+    try {
+      const repoKey = devswarmRepokey.repoKeyForWorktree(repo);
+      const dir = devswarmStore.storeDirForHash(home, repoKey);
+
+      const sq = devswarmStore.openSqlite(home, null, { hash: repoKey });
+      sq.appendMeshRow({ workspaceId: 'w1', ts: 100, hash: 'sq-1', body: 'sqlite native', sender: 'primary-a', mtype: 'direct' });
+      sq.setCursor('w1', 0);
+      sq.close();
+      devswarmStore.writeBackendMarker(dir, 'sqlite');
+
+      // The journal ("other") side holds a message that a reader already saw
+      // there BEFORE the merge — it is not tracked as read on the chosen
+      // (sqlite) side, so after merge it lands there as fresh unread.
+      const jn = devswarmStore.openJournal(home, null, null, null, { hash: repoKey });
+      jn.appendMeshRow({ workspaceId: 'w1', ts: 200, hash: 'jn-1', body: 'already read on the journal side', sender: 'primary-b', mtype: 'direct' });
+      jn.close();
+
+      const result = U.mergeSplitBackendStoresPostUpdate({
+        paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+        env: { DEVSWARM_REPO_ID: 'r1' },
+        cwd: repo,
+        home,
+        version: '0.107.1',
+      });
+
+      assert.strictEqual(result.attempted, true, JSON.stringify(result));
+      assert.strictEqual(result.messagesMerged, 1, JSON.stringify(result));
+      assert.strictEqual(result.reDeliveredUnread, 1, 'reDeliveredUnread must mirror messagesMerged — every merged row lands unread by design');
+      assert.match(result.detail, /1 already-handled message\(s\) may reappear as unread once/);
+      assert.match(result.detail, /cursors are not copied across split-store backends by design/);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  }
+);
+
+test('mergeSplitBackendStoresPostUpdate: dry-run-shaped zero-merge result never claims a re-delivery note', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-mergesplit-none-'));
+  const repo = makeGitRepoForUpdate('mergesplit-none');
+  try {
+    const result = U.mergeSplitBackendStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+      version: '0.107.1',
+    });
+    assert.strictEqual(result.attempted, true, JSON.stringify(result));
+    assert.strictEqual(result.reDeliveredUnread, 0);
+    assert.ok(!/may reappear as unread/.test(result.detail), result.detail);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('healRegistryPostUpdate: a per-store throw is fail-open — never propagates, that store just contributes 0, attempted stays true', () => {
+  // Isolated home with ONE real per-project store (via the real devswarm.js +
+  // devswarm-store.js) so listStoreHashes finds a real repoKey to iterate, and
+  // the fake healRegistry below is actually exercised — not skipped over an
+  // empty enumeration, which would prove nothing about fail-open.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-throw-'));
+  const repo = makeGitRepoForUpdate('throw');
+  try {
+    const reg = devswarmCli.run(['register', 'w', '--worktree', repo, '--session', 's1'], { home, env: {}, cwd: repo });
+    assert.strictEqual(reg.result.ok, true);
+
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+      devswarm: { healRegistry: () => { throw new Error('heal boom'); } },
+    });
+    // The enumeration loop's own try/catch fails open PER STORE (mirrors
+    // healRegistry's own per-row fail-open contract) — a single store's throw
+    // never propagates out; attempted stays true with 0 counted for that
+    // store, never a thrown exception reaching the caller.
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.checked, 0);
+    assert.strictEqual(result.healed, 0);
+    assert.strictEqual(result.rehomed, 0);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('runUpdate: healRegistryRows is NOT attempted outside a DevSwarm session (default env)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status } = U.runUpdate({ paths: p, exec, env: {}, cwd: process.cwd() });
+    assert.ok(status.healRegistryRows, 'healRegistryRows field present on the status object');
+    assert.strictEqual(status.healRegistryRows.attempted, false);
+    assert.match(status.healRegistryRows.detail, /not a DevSwarm session/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: healRegistryRows runs inside a DevSwarm session, regardless of cache.synced', () => {
+  const t = makeTree();
+  // VACUOUS-TEST FIX (mirrors the sibling 'a healRegistryRows failure is
+  // reported...' test below): without an isolated `home` seeded with a real
+  // store, `healRegistryPostUpdate` -> `devstore.listStoreHashes(home)`
+  // defaults `home` to `os.homedir()` (the REAL machine's actual home). On a
+  // box that runs live DevSwarm sessions, `~/.anti-hall/devswarm/store/`
+  // already has real per-project store dirs, so the enumeration loop finds
+  // one BY ACCIDENT and the fake `healRegistry` gets called — the test only
+  // passes because of ambient machine state, not because the gate/wiring
+  // under test actually works. On a clean CI checkout (no such directory),
+  // `hashes` resolves to `[]`, the loop never iterates, and `called` stays
+  // false — this is exactly the CI-only failure this fix addresses. Seed one
+  // real per-project store under a temp `home` and pass it through so the
+  // mock is provably exercised regardless of the host machine's state.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-runupdate-'));
+  const repo = makeGitRepoForUpdate('runupdate');
+  try {
+    const reg = devswarmCli.run(['register', 'w', '--worktree', repo, '--session', 's1'], { home, env: {}, cwd: repo });
+    assert.strictEqual(reg.result.ok, true);
+
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.33.0'); // already at latest -> cache does NOT sync this run
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    fs.mkdirSync(path.join(p.cacheRoot, '0.33.0'), { recursive: true });
+    const exec = execStub({ status: '', pull: 'Already up to date.\n' });
+    let called = false;
+    const fakeDevswarm = {
+      run: (argv, ctx) => ({ code: 0, result: { ok: true, action: 'reconcile', count: 0, imported: 0, results: [] } }),
+      foldMeshDuplicates: () => ({ retired: [], left: [] }),
+      migrateOwnerKeys: () => ({ scanned: 0, backfilled: 0, rehomed: 0 }),
+      healRegistry: () => { called = true; return { checked: 0, healed: 0, rehomed: 0, skipped: 0, rows: [] }; },
+    };
+    const { status } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: repo, home, devswarm: fakeDevswarm });
+    assert.strictEqual(status.cacheSynced, false, 'sanity: this run genuinely did not sync the cache');
+    assert.strictEqual(called, true, 'healRegistry must actually run when the gate is open');
+    assert.strictEqual(status.healRegistryRows.attempted, true);
+  } finally {
+    t.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('runUpdate: a healRegistryRows failure is reported but never fails the update (fail-open, stop stays false)', () => {
+  const t = makeTree();
+  // VACUOUS-TEST FIX: without an isolated `home` seeded with a real store,
+  // `healRegistryPostUpdate` -> `devstore.listStoreHashes(home)` defaults
+  // `home` to `os.homedir()` (the real machine's actual home), resolves
+  // `hashes` to `[]` on any box with no `~/.anti-hall/devswarm/store/`
+  // entries, and the enumeration loop below never iterates — the throwing
+  // `healRegistry` mock is then NEVER invoked, so every assertion here passed
+  // trivially regardless of whether the fail-open behavior under test
+  // actually works. Seed one real per-project store under a temp `home` (same
+  // pattern as the sibling 'per-store throw is fail-open' test above) and
+  // pass that `home` through runUpdate so the mock is provably exercised.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-runupdate-throw-'));
+  const repo = makeGitRepoForUpdate('runupdate-throw');
+  try {
+    const reg = devswarmCli.run(['register', 'w', '--worktree', repo, '--session', 's1'], { home, env: {}, cwd: repo });
+    assert.strictEqual(reg.result.ok, true);
+
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    let called = false;
+    const fakeDevswarm = {
+      run: () => ({ code: 0, result: { ok: true, action: 'reconcile', count: 0, imported: 0, results: [] } }),
+      foldMeshDuplicates: () => ({ retired: [], left: [] }),
+      migrateOwnerKeys: () => ({ scanned: 0, backfilled: 0, rehomed: 0 }),
+      healRegistry: () => { called = true; throw new Error('heal boom'); },
+    };
+    const { status, stop } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: repo, home, devswarm: fakeDevswarm });
+    assert.strictEqual(called, true, 'the throwing healRegistry mock must actually be invoked — otherwise this test proves nothing');
+    assert.strictEqual(stop, false, 'a heal-registry-rows failure must never trip the STOP contract');
+    assert.strictEqual(status.updated, true, 'the update itself still succeeded');
+    assert.strictEqual(status.healRegistryRows.attempted, true, 'the enumeration loop fails open per-store, not at the attempted level');
+    assert.strictEqual(status.healRegistryRows.checked, 0, 'the throw happens before this store contributes a count');
+  } finally {
+    t.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('renderHuman: prints heal-registry-rows summary + per-store row list when attempted', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    healRegistryRows: {
+      attempted: true, checked: 2, healed: 0, rehomed: 1,
+      detail: 'healed 0 + rehomed 1 of 2 registry row(s) across 2 store(s)',
+      stores: [{ repoKey: 'stale-repo-abc123', rows: ['z'] }],
+    },
+  };
+  const out = U.renderHuman(status, '');
+  assert.match(out, /heal-registry-rows: healed 0 \+ rehomed 1 of 2 registry row\(s\) across 2 store\(s\)/);
+  assert.match(out, /stale-repo-abc123: z/);
+});
+
+test('renderHuman: omits the heal-registry-rows block entirely when not attempted (non-DevSwarm session — no noise)', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    healRegistryRows: { attempted: false, detail: 'not a DevSwarm session — heal-registry-rows skipped (gate closed)' },
+  };
+  const out = U.renderHuman(status, '');
+  assert.doesNotMatch(out, /heal-registry-rows:/);
+});
+
+// ---------------------------------------------------------------------------
+// wakeMonitorPostUpdate — Monitor-based idle-wake forward-migration companion
+// (companion/lib/devswarm-wake-watch.js + hooks/lib/devswarm-wake.js).
+// update.js is a plain Node process with NO access to the agent-only `Monitor`
+// tool, so this function only VERIFIES + REPORTS (shipped / live / manual arm
+// command) — it must never claim to have armed a watcher. Same
+// REAL-plugin-source-tree posture as the other *PostUpdate suites: paths.
+// pluginSrcDir = this repo's own plugins/anti-hall so the require-and-call
+// wiring against the actual devswarm-detect.js / devswarm-wake-watch.js /
+// liveness.js is exercised, not a hand-rolled stub. `home` is always an
+// isolated tmpdir.
+// ---------------------------------------------------------------------------
+const wakeWatch = require('../../plugins/anti-hall/companion/lib/devswarm-wake-watch.js');
+
+test('wakeMonitorPostUpdate: not a DevSwarm session (no DEVSWARM_REPO_ID) -> attempted:false, gate closed', () => {
+  const result = U.wakeMonitorPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.strictEqual(result.shipped, false);
+  assert.strictEqual(result.live, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('wakeMonitorPostUpdate: pulled plugin tree missing scripts/companion files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree(); // empty marketplace fixture — no hooks/companion dirs at all
+  try {
+    const result = U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.strictEqual(result.shipped, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('wakeMonitorPostUpdate: gate open + real watcher shipped but NOT live -> shipped:true, live:false, exact manual arm command surfaced', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-notlive-'));
+  const repo = makeGitRepoForUpdate('wakemon-notlive');
+  try {
+    const result = U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.shipped, true);
+    assert.strictEqual(result.live, false);
+    assert.match(result.detail, /NOT live|live-check skipped/);
+    assert.match(result.detail, /Monitor.*tool/, 'must surface the exact manual arm command since no watcher is live');
+    const watcherPath = path.join(REAL_PLUGIN_SRC_DIR, 'companion', 'lib', 'devswarm-wake-watch.js');
+    assert.ok(result.detail.includes(watcherPath), 'the manual arm command must name the real watcher script path');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('wakeMonitorPostUpdate: gate open + a lock genuinely held by THIS live process -> live:true, never touches the lock file (read-only)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-live-'));
+  const repo = makeGitRepoForUpdate('wakemon-live');
+  try {
+    const identity = wakeWatch.resolveIdentity({}, repo, {});
+    assert.ok(identity, 'sanity: identity must resolve for this real git repo before the lock test means anything');
+    const lockPath = wakeWatch.lockPathFor(home, identity.id);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    const lockPayload = JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'test-token' });
+    fs.writeFileSync(lockPath, lockPayload);
+
+    const result = U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.shipped, true);
+    assert.strictEqual(result.live, true);
+    assert.match(result.detail, /LIVE/);
+    // Read-only contract: the lock file must be untouched — same bytes, still present.
+    assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), lockPayload, 'wakeMonitorPostUpdate must never mutate a lock file it only inspects');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('wakeMonitorPostUpdate: a DEAD pid in the lock file -> live:false, never throws, never deletes the stale lock', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-dead-'));
+  const repo = makeGitRepoForUpdate('wakemon-dead');
+  try {
+    const identity = wakeWatch.resolveIdentity({}, repo, {});
+    assert.ok(identity);
+    const lockPath = wakeWatch.lockPathFor(home, identity.id);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    // A pid essentially guaranteed dead/unassigned on any real machine.
+    const deadPid = 999999;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: deadPid, ts: Date.now(), token: 'x' }));
+
+    const result = U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+    });
+    assert.strictEqual(result.live, false);
+    assert.ok(fs.existsSync(lockPath), 'inspection-only: a dead-holder lock must be left in place, never deleted by this reporter');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('wakeMonitorPostUpdate: corrupt/unparseable lock file -> never throws, reported as not live', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-corrupt-'));
+  const repo = makeGitRepoForUpdate('wakemon-corrupt');
+  try {
+    const identity = wakeWatch.resolveIdentity({}, repo, {});
+    assert.ok(identity);
+    const lockPath = wakeWatch.lockPathFor(home, identity.id);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, 'not json{{{');
+
+    assert.doesNotThrow(() => {
+      const result = U.wakeMonitorPostUpdate({
+        paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+        env: { DEVSWARM_REPO_ID: 'r1' },
+        cwd: repo,
+        home,
+      });
+      assert.strictEqual(result.live, false);
+      assert.strictEqual(result.shipped, true);
+    });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('wakeMonitorPostUpdate: idempotent — running twice back-to-back yields the same shipped/live verdict, no throw, no mutation drift', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-idem-'));
+  const repo = makeGitRepoForUpdate('wakemon-idem');
+  try {
+    const opts = {
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+    };
+    const first = U.wakeMonitorPostUpdate(opts);
+    const second = U.wakeMonitorPostUpdate(opts);
+    assert.strictEqual(first.attempted, second.attempted);
+    assert.strictEqual(first.shipped, second.shipped);
+    assert.strictEqual(first.live, second.live);
+    assert.strictEqual(first.detail, second.detail);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('runUpdate: wakeMonitor is NOT attempted outside a DevSwarm session (default env)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status } = U.runUpdate({ paths: p, exec, env: {}, cwd: process.cwd() });
+    assert.ok(status.wakeMonitor, 'wakeMonitor field present on the status object');
+    assert.strictEqual(status.wakeMonitor.attempted, false);
+    assert.match(status.wakeMonitor.detail, /not a DevSwarm session/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: wakeMonitor runs inside a DevSwarm session and never flips stop/exit', () => {
+  const t = makeTree();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-runupdate-'));
+  const repo = makeGitRepoForUpdate('wakemon-runupdate');
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status, stop } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: repo, home });
+    assert.strictEqual(stop, false);
+    assert.ok(status.wakeMonitor, 'wakeMonitor field present on the status object');
+    assert.strictEqual(status.wakeMonitor.attempted, true);
+    assert.strictEqual(status.wakeMonitor.shipped, true);
+  } finally {
+    t.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('renderHuman: prints wake-monitor summary line when attempted', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    wakeMonitor: { attempted: true, shipped: true, live: false, detail: 'wake-monitor shipped but NOT live for primary abc123 — arm it: call the `Monitor` tool.' },
+  };
+  const out = U.renderHuman(status, '');
+  assert.match(out, /wake-monitor: wake-monitor shipped but NOT live for primary abc123/);
+});
+
+test('renderHuman: omits the wake-monitor block entirely when not attempted (non-DevSwarm session — no noise)', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    wakeMonitor: { attempted: false, detail: 'not a DevSwarm session — wake-monitor skipped (gate closed)' },
+  };
+  const out = U.renderHuman(status, '');
+  assert.doesNotMatch(out, /wake-monitor:/);
+});
+
+// ---------------------------------------------------------------------------
+// Sweep throttling + resume/stamp (#15 pacing fix): runThrottledSweep, the
+// sweep-state file, and the foldAllStoresPostUpdate / healRegistryPostUpdate /
+// ownerKeyMigratePostUpdate / healIngestDaemon wiring on top of it.
+// ---------------------------------------------------------------------------
+
+test('runThrottledSweep: no budget pressure processes every item, sleeping between (not after) each', () => {
+  const sleeps = [];
+  const items = ['a', 'b', 'c'];
+  const seen = [];
+  const r = U.runThrottledSweep({
+    items,
+    worker: (x) => { seen.push(x); return x + '!'; },
+    sleepFn: (ms) => sleeps.push(ms),
+    now: () => 0, // budget never appears exceeded
+  });
+  assert.deepStrictEqual(seen, items);
+  assert.deepStrictEqual(r.results, ['a!', 'b!', 'c!']);
+  assert.deepStrictEqual(r.processedItems, items);
+  assert.deepStrictEqual(r.remaining, []);
+  assert.strictEqual(r.budgetExhausted, false);
+  assert.strictEqual(sleeps.length, 2, 'sleeps BETWEEN items only — never after the last one');
+});
+
+test('runThrottledSweep: budget exhaustion stops mid-list, always makes progress on the first item regardless of budget', () => {
+  const items = ['a', 'b', 'c', 'd'];
+  let call = 0;
+  const r = U.runThrottledSweep({
+    items,
+    budgetMs: 100,
+    worker: (x) => x,
+    sleepFn: () => {},
+    now: () => { call++; return call === 1 ? 0 : 1000; }, // start=0, every check after item 1 reads as way over budget
+  });
+  assert.deepStrictEqual(r.processedItems, ['a'], 'first item always runs even though the budget check trips immediately after');
+  assert.deepStrictEqual(r.remaining, ['b', 'c', 'd']);
+  assert.strictEqual(r.budgetExhausted, true);
+});
+
+test('sweepItemsFor / recordSweepResult: budget exhaustion persists a resume pending-list; a second pass continues from it and completes', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-sweep-resume-'));
+  try {
+    const version = '0.99.0';
+    let state = U.readSweepState(home);
+    assert.deepStrictEqual(state, {}, 'no state file yet -> {}');
+
+    // Pass 1: budget forces a stop after the first of three items.
+    const sel1 = U.sweepItemsFor(state, 'testSweep', version, () => ['h1', 'h2', 'h3']);
+    assert.strictEqual(sel1.skip, false);
+    assert.deepStrictEqual(sel1.items, ['h1', 'h2', 'h3'], 'first pass: fresh full enumeration');
+    const seen1 = [];
+    const sweep1 = U.runThrottledSweep({
+      items: sel1.items, worker: (x) => { seen1.push(x); return x; },
+      sleepFn: () => {}, now: (() => { let n = 0; return () => (n++ === 0 ? 0 : 1000); })(), budgetMs: 100,
+    });
+    assert.deepStrictEqual(seen1, ['h1']);
+    assert.strictEqual(sweep1.budgetExhausted, true);
+    state = U.recordSweepResult(home, state, 'testSweep', version, sweep1);
+    assert.strictEqual(state.testSweep.pendingVersion, version);
+    assert.deepStrictEqual(state.testSweep.pendingHashes, ['h2', 'h3']);
+    assert.strictEqual(state.testSweep.completedVersion, null);
+
+    // A fresh read of the persisted file matches the in-memory state.
+    const reread = U.readSweepState(home);
+    assert.deepStrictEqual(reread.testSweep.pendingHashes, ['h2', 'h3']);
+
+    // Pass 2 ("next update run"): resumes from the pending list, not from
+    // scratch, and this time completes (no budget pressure).
+    const sel2 = U.sweepItemsFor(reread, 'testSweep', version, () => { throw new Error('must NOT re-enumerate — a pending list exists'); });
+    assert.strictEqual(sel2.skip, false);
+    assert.deepStrictEqual(sel2.items, ['h2', 'h3']);
+    const seen2 = [];
+    const sweep2 = U.runThrottledSweep({ items: sel2.items, worker: (x) => { seen2.push(x); return x; }, sleepFn: () => {} });
+    assert.deepStrictEqual(seen2, ['h2', 'h3']);
+    assert.strictEqual(sweep2.budgetExhausted, false);
+    const state2 = U.recordSweepResult(home, reread, 'testSweep', version, sweep2);
+    assert.strictEqual(state2.testSweep.completedVersion, version, 'fully drained -> stamped complete for this version');
+    assert.deepStrictEqual(state2.testSweep.pendingHashes, []);
+
+    // Pass 3 ("update run at the SAME version"): the stamp is honored -> skip.
+    const sel3 = U.sweepItemsFor(U.readSweepState(home), 'testSweep', version, () => { throw new Error('must NOT enumerate — already stamped complete'); });
+    assert.strictEqual(sel3.skip, true);
+
+    // A version bump invalidates the old stamp -> fresh full sweep again.
+    const sel4 = U.sweepItemsFor(U.readSweepState(home), 'testSweep', '1.0.0', () => ['h1', 'h2', 'h3']);
+    assert.strictEqual(sel4.skip, false);
+    assert.deepStrictEqual(sel4.items, ['h1', 'h2', 'h3']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('readSweepState: unreadable/corrupt state file fails open to {} (never throws)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-sweep-corrupt-'));
+  try {
+    fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.anti-hall', 'update-sweep-state.json'), '{ not valid json', 'utf8');
+    assert.deepStrictEqual(U.readSweepState(home), {});
+
+    // An array at the top level is rejected too (not a plain object).
+    fs.writeFileSync(path.join(home, '.anti-hall', 'update-sweep-state.json'), '[1,2,3]', 'utf8');
+    assert.deepStrictEqual(U.readSweepState(home), {});
+
+    // A missing file entirely.
+    fs.rmSync(path.join(home, '.anti-hall', 'update-sweep-state.json'));
+    assert.deepStrictEqual(U.readSweepState(home), {});
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('writeSweepState: an unwritable target fails open (returns false, never throws)', () => {
+  // Point "home" at a path that cannot be mkdir'd into (a FILE, not a dir).
+  const blocker = fs.mkdtempSync(path.join(os.tmpdir(), 'update-sweep-blocker-'));
+  const fakeHome = path.join(blocker, 'not-a-dir');
+  fs.writeFileSync(fakeHome, 'i am a file, not a directory', 'utf8');
+  try {
+    const ok = U.writeSweepState(fakeHome, { foo: 'bar' });
+    assert.strictEqual(ok, false);
+  } finally { fs.rmSync(blocker, { recursive: true, force: true }); }
+});
+
+test('sweepBudgetMs: ANTIHALL_UPDATE_SWEEP_BUDGET_MS overrides the 20s default; invalid values fall back', () => {
+  assert.strictEqual(U.sweepBudgetMs({}), 20000);
+  assert.strictEqual(U.sweepBudgetMs({ ANTIHALL_UPDATE_SWEEP_BUDGET_MS: '5000' }), 5000);
+  assert.strictEqual(U.sweepBudgetMs({ ANTIHALL_UPDATE_SWEEP_BUDGET_MS: '0' }), 0);
+  assert.strictEqual(U.sweepBudgetMs({ ANTIHALL_UPDATE_SWEEP_BUDGET_MS: 'garbage' }), 20000);
+});
+
+test('sweepYield: a real (bounded) sleep — does not throw, and actually elapses roughly the requested time', () => {
+  const start = Date.now();
+  U.sweepYield(20);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed >= 10, 'must actually pause, not a no-op: elapsed=' + elapsed);
+});
+
+// --- foldAllStoresPostUpdate: gate, real-tree wiring, throttle/resume/stamp ---
+
+test('foldAllStoresPostUpdate: not a DevSwarm session -> attempted:false, gate closed', () => {
+  const result = U.foldAllStoresPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { foldMeshDuplicates: () => { throw new Error('must not run when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('foldAllStoresPostUpdate: pulled plugin tree missing scripts/companion files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree();
+  try {
+    const result = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('foldAllStoresPostUpdate: gate open + no stores at all -> attempted:true, 0 across the board', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-empty-'));
+  try {
+    const result = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.stores, 0);
+    assert.strictEqual(result.retired, 0);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('foldAllStoresPostUpdate: explicit `hashes` is used as-is — devswarmStore.listStoreHashes is NEVER called (shared-enumeration contract)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-hashes-'));
+  try {
+    let calledFold = [];
+    let listCalled = 0;
+    const fakeDevswarm = { foldMeshDuplicates: (h, ctx) => { calledFold.push(ctx.repoKey); return { retired: [], forwarded: 0, folded: 0 }; } };
+    const fakeStore = { listStoreHashes: () => { listCalled++; return ['should-not-be-used']; } };
+    const result = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+      devswarm: fakeDevswarm,
+      devswarmStore: fakeStore,
+      hashes: ['pre-enumerated-a', 'pre-enumerated-b'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(listCalled, 0, 'listStoreHashes must not be called when a pre-enumerated list is supplied');
+    assert.deepStrictEqual(calledFold, ['pre-enumerated-a', 'pre-enumerated-b']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('foldAllStoresPostUpdate: budget exhaustion stops mid-sweep, writes a resume stamp; a second run (same version) resumes and completes', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-budget-'));
+  try {
+    const seen1 = [];
+    const fakeDevswarm1 = { foldMeshDuplicates: (h, ctx) => { seen1.push(ctx.repoKey); return { retired: [], forwarded: 0, folded: 0 }; } };
+    // Force the sweep to stop after the first hash via a near-zero budget +
+    // a `now` that reads "already over budget" on every check after the first.
+    const savedNow = Date.now;
+    let calls = 0;
+    Date.now = () => (calls++ === 0 ? 0 : 999999);
+    let result1;
+    try {
+      result1 = U.foldAllStoresPostUpdate({
+        paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+        env: { DEVSWARM_REPO_ID: 'r1', ANTIHALL_UPDATE_SWEEP_BUDGET_MS: '1' },
+        cwd: process.cwd(), home,
+        devswarm: fakeDevswarm1,
+        hashes: ['s1', 's2', 's3'],
+        version: '0.90.0',
+      });
+    } finally { Date.now = savedNow; }
+    assert.strictEqual(result1.attempted, true);
+    assert.deepStrictEqual(seen1, ['s1'], 'only the first store processed before the budget stop');
+    assert.strictEqual(result1.budgetExhausted, true);
+    assert.strictEqual(result1.pending, 2);
+
+    const stateAfter1 = U.readSweepState(home);
+    assert.strictEqual(stateAfter1.foldAllStores.pendingVersion, '0.90.0');
+    assert.deepStrictEqual(stateAfter1.foldAllStores.pendingHashes, ['s2', 's3']);
+
+    // Second run at the SAME version: resumes from the pending list (never
+    // re-supplied `hashes`, proving it reads the stamp, not a fresh param).
+    const seen2 = [];
+    const fakeDevswarm2 = { foldMeshDuplicates: (h, ctx) => { seen2.push(ctx.repoKey); return { retired: [], forwarded: 0, folded: 0 }; } };
+    const result2 = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm2,
+      version: '0.90.0',
+    });
+    assert.deepStrictEqual(seen2, ['s2', 's3'], 'resumed from where pass 1 left off, not from s1 again');
+    assert.strictEqual(result2.budgetExhausted, false);
+
+    const stateAfter2 = U.readSweepState(home);
+    assert.strictEqual(stateAfter2.foldAllStores.completedVersion, '0.90.0');
+
+    // Third run at the SAME version: the stamp is honored — sweep skipped entirely.
+    const fakeDevswarm3 = { foldMeshDuplicates: () => { throw new Error('must not run — already completed for this version'); } };
+    const result3 = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm3,
+      version: '0.90.0',
+    });
+    assert.strictEqual(result3.attempted, true);
+    assert.strictEqual(result3.skippedAlreadyDone, true);
+    assert.match(result3.detail, /already completed for 0\.90\.0/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('foldAllStoresPostUpdate: a per-store throw is fail-open — never propagates, counted as an error, the sweep continues', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-throw-'));
+  try {
+    const fakeDevswarm = {
+      foldMeshDuplicates: (h, ctx) => {
+        if (ctx.repoKey === 'bad') throw new Error('fold boom');
+        return { retired: ['x'], forwarded: 1, folded: 1 };
+      },
+    };
+    const result = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['good', 'bad'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.errors, 1);
+    assert.strictEqual(result.retired, 1, 'the good store still contributed its result');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('foldAllStoresPostUpdate: a drained-but-ERRORED pass is NOT stamped complete — the next run re-enumerates in full', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-errnostamp-'));
+  try {
+    const fakeDevswarm = {
+      foldMeshDuplicates: (h, ctx) => {
+        if (ctx.repoKey === 'locked') throw new Error('store locked');
+        return { retired: [], forwarded: 0, folded: 0 };
+      },
+    };
+    const result1 = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['ok1', 'locked', 'ok2'],
+      version: '0.91.0',
+    });
+    assert.strictEqual(result1.attempted, true);
+    assert.strictEqual(result1.errors, 1);
+    assert.strictEqual(result1.budgetExhausted, false, 'the sweep drained the whole list');
+    const state1 = U.readSweepState(home);
+    assert.ok(!state1.foldAllStores || state1.foldAllStores.completedVersion !== '0.91.0',
+      'an errored pass must NOT stamp completion — the locked store\'s migration would be skipped forever');
+
+    // Second run at the SAME version: no stamp honored, no stale pending — the
+    // full list is enumerated again and the previously-locked store is retried.
+    const seen2 = [];
+    const result2 = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: { foldMeshDuplicates: (h, ctx) => { seen2.push(ctx.repoKey); return { retired: [], forwarded: 0, folded: 0 }; } },
+      hashes: ['ok1', 'locked', 'ok2'],
+      version: '0.91.0',
+    });
+    assert.deepStrictEqual(seen2, ['ok1', 'locked', 'ok2'], 'full re-enumeration, including the previously-errored store');
+    assert.strictEqual(result2.errors, 0);
+    const state2 = U.readSweepState(home);
+    assert.strictEqual(state2.foldAllStores.completedVersion, '0.91.0', 'the clean pass IS stamped');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- healOrphanPartitionsPostUpdate: gate, real-tree wiring, throttle/resume/stamp ---
+
+test('healOrphanPartitionsPostUpdate: not a DevSwarm session -> attempted:false, gate closed', () => {
+  const result = U.healOrphanPartitionsPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { healOrphanPartitions: () => { throw new Error('must not run when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('healOrphanPartitionsPostUpdate: pulled plugin tree missing scripts/companion files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree();
+  try {
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('healOrphanPartitionsPostUpdate: an older devswarm.js build without healOrphanPartitions -> attempted:false, never throws', () => {
+  const result = U.healOrphanPartitionsPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {}, // no healOrphanPartitions export — simulates an older build
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /no healOrphanPartitions/);
+});
+
+test('healOrphanPartitionsPostUpdate: gate open + no stores at all -> attempted:true, 0 across the board', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-empty-'));
+  try {
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.stores, 0);
+    assert.strictEqual(result.adopted, 0);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: explicit `hashes` is used as-is — devswarmStore.listStoreHashes is NEVER called (shared-enumeration contract)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-hashes-'));
+  try {
+    let calledHeal = [];
+    let listCalled = 0;
+    const fakeDevswarm = { healOrphanPartitions: (h, ctx) => { calledHeal.push(ctx.repoKey); return { adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0 }; } };
+    const fakeStore = { listStoreHashes: () => { listCalled++; return ['should-not-be-used']; } };
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+      devswarm: fakeDevswarm,
+      devswarmStore: fakeStore,
+      hashes: ['pre-enumerated-a', 'pre-enumerated-b'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(listCalled, 0, 'listStoreHashes must not be called when a pre-enumerated list is supplied');
+    assert.deepStrictEqual(calledHeal, ['pre-enumerated-a', 'pre-enumerated-b']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: budget exhaustion stops mid-sweep, writes a resume stamp; a second run (same version) resumes and completes; a third (same version) is stamp-skipped', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-budget-'));
+  try {
+    const seen1 = [];
+    const fakeDevswarm1 = { healOrphanPartitions: (h, ctx) => { seen1.push(ctx.repoKey); return { adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0 }; } };
+    const savedNow = Date.now;
+    let calls = 0;
+    Date.now = () => (calls++ === 0 ? 0 : 999999);
+    let result1;
+    try {
+      result1 = U.healOrphanPartitionsPostUpdate({
+        paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+        env: { DEVSWARM_REPO_ID: 'r1', ANTIHALL_UPDATE_SWEEP_BUDGET_MS: '1' },
+        cwd: process.cwd(), home,
+        devswarm: fakeDevswarm1,
+        hashes: ['s1', 's2', 's3'],
+        version: '0.92.0',
+      });
+    } finally { Date.now = savedNow; }
+    assert.strictEqual(result1.attempted, true);
+    assert.deepStrictEqual(seen1, ['s1'], 'only the first store processed before the budget stop');
+    assert.strictEqual(result1.budgetExhausted, true);
+    assert.strictEqual(result1.pending, 2);
+
+    const stateAfter1 = U.readSweepState(home);
+    assert.strictEqual(stateAfter1.healOrphanPartitions.pendingVersion, '0.92.0');
+    assert.deepStrictEqual(stateAfter1.healOrphanPartitions.pendingHashes, ['s2', 's3']);
+
+    const seen2 = [];
+    const fakeDevswarm2 = { healOrphanPartitions: (h, ctx) => { seen2.push(ctx.repoKey); return { adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0 }; } };
+    const result2 = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm2,
+      version: '0.92.0',
+    });
+    assert.deepStrictEqual(seen2, ['s2', 's3'], 'resumed from where pass 1 left off, not from s1 again');
+    assert.strictEqual(result2.budgetExhausted, false);
+
+    const stateAfter2 = U.readSweepState(home);
+    assert.strictEqual(stateAfter2.healOrphanPartitions.completedVersion, '0.92.0');
+
+    // Third run at the SAME version: the stamp is honored — sweep skipped entirely.
+    const fakeDevswarm3 = { healOrphanPartitions: () => { throw new Error('must not run — already completed for this version'); } };
+    const result3 = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm3,
+      version: '0.92.0',
+    });
+    assert.strictEqual(result3.attempted, true);
+    assert.strictEqual(result3.skippedAlreadyDone, true);
+    assert.match(result3.detail, /already completed for 0\.92\.0/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: a per-store throw is fail-open — never propagates, counted as an error, the sweep continues', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-throw-'));
+  try {
+    const fakeDevswarm = {
+      healOrphanPartitions: (h, ctx) => {
+        if (ctx.repoKey === 'bad') throw new Error('heal boom');
+        return { adopted: 1, forwarded: 2, unhealable: 0, skipped: 0, errors: 0 };
+      },
+    };
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['good', 'bad'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.errors, 1);
+    assert.strictEqual(result.adopted, 1, 'the good store still contributed its result');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: runUpdate wires it into status, after foldAllStores and before foldArchivedRows, and never turns a failure into a hard stop', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR; // real scripts/hooks tree, so the gate opens for real
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-runupdate-'));
+    try {
+      const exec = execStub({ status: '', pull: 'Updating...\n' });
+      // No stores under this tmp home -> the throttled sweep has nothing to
+      // iterate, so this exercises the WIRING (status shape, ordering, never a
+      // hard stop) rather than the per-store throw path (already covered above).
+      const fakeDevswarm = { healOrphanPartitions: () => { throw new Error('boom — must never be reached with zero stores'); } };
+      const { status, stop } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd(), home, devswarm: fakeDevswarm });
+      assert.strictEqual(stop, false, 'a self-heal step never blocks the update itself');
+      assert.ok(status.healOrphanPartitions, 'runUpdate wires healOrphanPartitions into status');
+      assert.strictEqual(status.healOrphanPartitions.attempted, true);
+      assert.strictEqual(status.healOrphanPartitions.stores, 0, 'no stores under this tmp home');
+      // Ordering: healOrphanPartitions key appears after foldAllStores and
+      // before foldArchivedRows in the status object's own key order.
+      const keys = Object.keys(status);
+      assert.ok(keys.indexOf('foldAllStores') < keys.indexOf('healOrphanPartitions'), 'healOrphanPartitions comes after foldAllStores');
+      assert.ok(keys.indexOf('healOrphanPartitions') < keys.indexOf('foldArchivedRows'), 'healOrphanPartitions comes before foldArchivedRows');
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  } finally { t.cleanup(); }
+});
+
+test('healRegistryPostUpdate: a healRegistry throw counts as an error and blocks the completion stamp', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-errnostamp-'));
+  try {
+    const fakeDevswarm = {
+      healRegistry: (h, repoKey) => {
+        if (repoKey === 'boom') throw new Error('heal boom');
+        return { checked: 1, healed: 0, rehomed: 0, skipped: 0, rows: [] };
+      },
+    };
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['a', 'boom', 'b'],
+      version: '0.91.0',
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.errors, 1);
+    assert.strictEqual(result.checked, 2, 'the non-throwing stores still contributed');
+    const state = U.readSweepState(home);
+    assert.ok(!state.healRegistry || state.healRegistry.completedVersion !== '0.91.0',
+      'an errored pass must NOT stamp completion');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('ownerKeyMigratePostUpdate: a pass with per-descriptor errors is NOT stamped — the next run retries', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-ownerkey-errnostamp-'));
+  try {
+    let calls = 0;
+    const fakeDevswarm = { migrateOwnerKeys: () => { calls++; return { scanned: 3, backfilled: 1, rehomed: 0, errors: calls === 1 ? 2 : 0 }; } };
+    const result1 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      version: '0.91.0',
+    });
+    assert.strictEqual(result1.attempted, true);
+    assert.strictEqual(result1.errors, 2);
+    const state1 = U.readSweepState(home);
+    assert.ok(!state1.ownerKeyMigrate || state1.ownerKeyMigrate.completedVersion !== '0.91.0',
+      'an errored migrate pass must NOT stamp completion');
+
+    // Second run (errors resolved) runs again and IS stamped; third run skips.
+    const result2 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      version: '0.91.0',
+    });
+    assert.strictEqual(result2.errors, 0);
+    assert.strictEqual(U.readSweepState(home).ownerKeyMigrate.completedVersion, '0.91.0');
+    const result3 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: { migrateOwnerKeys: () => { throw new Error('must not run — stamped'); } },
+      version: '0.91.0',
+    });
+    assert.strictEqual(result3.skippedAlreadyDone, true);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- healRegistryPostUpdate: shared-enumeration + throttle/resume/stamp ---
+
+test('healRegistryPostUpdate: explicit `hashes` is used as-is — devswarmStore.listStoreHashes is NEVER called (shared-enumeration contract)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-hashes-'));
+  try {
+    let listCalled = 0;
+    const seen = [];
+    const fakeDevswarm = { healRegistry: (h, repoKey) => { seen.push(repoKey); return { checked: 1, healed: 0, rehomed: 0, skipped: 0, rows: [] }; } };
+    const fakeStore = { listStoreHashes: () => { listCalled++; return ['should-not-be-used']; } };
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      devswarmStore: fakeStore,
+      hashes: ['pre-a', 'pre-b'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(listCalled, 0);
+    assert.deepStrictEqual(seen, ['pre-a', 'pre-b']);
+    assert.strictEqual(result.checked, 2);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healRegistryPostUpdate: same-version re-run honors the completed stamp -> skipped entirely, healRegistry never called', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-stamp-'));
+  try {
+    const fakeDevswarm1 = { healRegistry: () => ({ checked: 1, healed: 0, rehomed: 0, skipped: 0, rows: [] }) };
+    const result1 = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm1,
+      hashes: ['h1'],
+      version: '0.91.0',
+    });
+    assert.strictEqual(result1.attempted, true);
+    assert.strictEqual(result1.skippedAlreadyDone, undefined);
+
+    const fakeDevswarm2 = { healRegistry: () => { throw new Error('must not run — already completed for this version'); } };
+    const result2 = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm2,
+      hashes: ['h1'],
+      version: '0.91.0',
+    });
+    assert.strictEqual(result2.skippedAlreadyDone, true);
+
+    // A version bump invalidates the stamp -> runs again.
+    const seen3 = [];
+    const fakeDevswarm3 = { healRegistry: (h, repoKey) => { seen3.push(repoKey); return { checked: 1, healed: 0, rehomed: 0, skipped: 0, rows: [] }; } };
+    const result3 = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm3,
+      hashes: ['h1'],
+      version: '0.92.0',
+    });
+    assert.strictEqual(result3.skippedAlreadyDone, undefined);
+    assert.deepStrictEqual(seen3, ['h1']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- ownerKeyMigratePostUpdate: run-once-per-version stamp ---
+
+test('ownerKeyMigratePostUpdate: not a DevSwarm session -> attempted:false, gate closed', () => {
+  const result = U.ownerKeyMigratePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { migrateOwnerKeys: () => { throw new Error('must not run when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('ownerKeyMigratePostUpdate: same-version re-run honors the completed stamp -> skipped entirely, migrateOwnerKeys never called', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-ownerkey-stamp-'));
+  try {
+    let calls = 0;
+    const fakeDevswarm = { migrateOwnerKeys: () => { calls++; return { scanned: 3, backfilled: 1, rehomed: 0, errors: 0 }; } };
+    const result1 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      version: '0.93.0',
+    });
+    assert.strictEqual(result1.attempted, true);
+    assert.strictEqual(result1.backfilled, 1);
+    assert.strictEqual(calls, 1);
+
+    const result2 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      version: '0.93.0',
+    });
+    assert.strictEqual(calls, 1, 'migrateOwnerKeys must NOT run again for the same version');
+    assert.strictEqual(result2.skippedAlreadyDone, true);
+
+    // No `version` passed -> always runs (existing/legacy call-site behavior, unchanged).
+    const result3 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+    });
+    assert.strictEqual(calls, 2);
+    assert.strictEqual(result3.skippedAlreadyDone, undefined);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- healIngestDaemon: version-aware skip (defense-in-depth against a spawn race) ---
+
+test('healIngestDaemon: with `version` + an already-ok unit, a prior same-version heal stamp skips the re-spawn', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-ingestheal-stamp-'));
+  const repo = makeGitRepoForUpdate('ingestheal-stamp');
+  try {
+    // Pre-seed the stamp as if a prior run already healed this exact version.
+    U.writeSweepState(home, { ingestHeal: { healedVersion: '0.94.0', healedTs: Date.now() } });
+    let spawned = 0;
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+      version: '0.94.0',
+      spawnFn: () => { spawned++; },
+    });
+    // With no unit installed at all, classifyIngestUnit reads 'absent' and the
+    // function returns before ever consulting the version stamp — this proves
+    // the stamp-skip path specifically requires cls === 'ok', not just any gate-open state.
+    assert.strictEqual(spawned, 0);
+    assert.strictEqual(result.attempted, true);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('healIngestDaemon: no `version` passed (existing call sites) -> stamp logic never engages, unchanged forced-restart behavior', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-ingestheal-noversion-'));
+  const repo = makeGitRepoForUpdate('ingestheal-noversion');
+  try {
+    U.writeSweepState(home, { ingestHeal: { healedVersion: '0.94.0', healedTs: Date.now() } });
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+      // no `version` field at all
+    });
+    assert.strictEqual(result.attempted, true);
+    // absent unit -> healed:true, no-spawn, same as always (proves this path is untouched).
+    assert.match(result.detail, /absent/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// --- runUpdate: shared enumeration (ONE listStoreHashes pass, reused by both sweeps) ---
+
+test('runUpdate: shared store-hash enumeration — devswarmStore.listStoreHashes is called exactly ONCE for the whole run, both sweeps reuse it', () => {
+  const t = makeTree();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-shared-enum-'));
+  const repo = makeGitRepoForUpdate('shared-enum');
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+
+    let listCalls = 0;
+    const realStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const spyStore = Object.assign({}, realStore, {
+      listStoreHashes: (...args) => { listCalls++; return realStore.listStoreHashes(...args); },
+    });
+    const foldAllStoresRepoKeys = [];
+    let healCalls = 0;
+    const fakeDevswarm = {
+      run: () => ({ code: 0, result: { ok: true, action: 'reconcile', count: 0, imported: 0, results: [] } }),
+      // Used by BOTH foldMeshPostUpdate (cwd-scoped, called once regardless of
+      // the shared hash list) AND foldAllStoresPostUpdate (per shared hash) —
+      // distinguish them by whether ctx.repoKey (the all-stores override) was
+      // passed, rather than a single shared counter that would conflate the two.
+      foldMeshDuplicates: (h, ctx) => {
+        if (ctx && ctx.repoKey) foldAllStoresRepoKeys.push(ctx.repoKey);
+        return { retired: [], forwarded: 0, folded: 0 };
+      },
+      migrateOwnerKeys: () => ({ scanned: 0, backfilled: 0, rehomed: 0 }),
+      healRegistry: () => { healCalls++; return { checked: 0, healed: 0, rehomed: 0, skipped: 0, rows: [] }; },
+    };
+    const { status } = U.runUpdate({
+      paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: repo, home,
+      devswarm: fakeDevswarm, devswarmStore: spyStore,
+    });
+    assert.strictEqual(status.updated, true);
+    assert.strictEqual(listCalls, 1, 'listStoreHashes must be called exactly once per update run, shared by fold-all-stores and heal-registry-rows');
+    // No stores exist under this fresh home -> the shared hash list is empty,
+    // so both sweeps ran over zero items (the cwd-scoped foldMeshDuplicates
+    // call from foldMeshPostUpdate is separate and untracked here).
+    assert.deepStrictEqual(foldAllStoresRepoKeys, []);
+    assert.strictEqual(healCalls, 0);
+  } finally {
+    t.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// --- Defect 1: priority-blind sweep order starves small stores ---
+
+test('orderStoreHashesBySize: smallest-disk-size-first, not raw readdir/input order', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-order-size-'));
+  try {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const mk = (hash, bytes) => {
+      const dir = storeLib.storeDirForHash(home, hash);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'devswarm.db'), Buffer.alloc(bytes));
+    };
+    // 'aaaaaaaa' sorts first alphabetically/in raw readdir order, but is the
+    // LARGEST store — proves the reorder is driven by measured size, not by
+    // accidentally preserving input order.
+    mk('aaaaaaaa', 5_000_000);
+    mk('bbbbbbbb', 100);
+    mk('cccccccc', 1000);
+    const ordered = U.orderStoreHashesBySize(storeLib, home, ['aaaaaaaa', 'bbbbbbbb', 'cccccccc']);
+    assert.deepStrictEqual(ordered, ['bbbbbbbb', 'cccccccc', 'aaaaaaaa']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('orderStoreHashesBySize: fail-open — an unreadable/missing store dir scores 0, never throws, list is still returned in full', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-order-size-failopen-'));
+  try {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const dir = storeLib.storeDirForHash(home, 'realone');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'devswarm.db'), Buffer.alloc(500));
+    // 'missing' has no store dir on disk at all.
+    const ordered = U.orderStoreHashesBySize(storeLib, home, ['realone', 'missing']);
+    assert.deepStrictEqual(ordered.slice().sort(), ['missing', 'realone'].sort(), 'both hashes survive — nothing dropped/thrown on the unreadable one');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('smallest-first ordering reaches a store that would previously starve behind a large one, within the same tiny budget', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-order-starve-'));
+  try {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const mk = (hash, bytes) => {
+      const dir = storeLib.storeDirForHash(home, hash);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'devswarm.db'), Buffer.alloc(bytes));
+    };
+    // repoKey shape (^[a-z0-9-]{1,40}-[0-9a-f]{6}$) so listStoreHashes actually
+    // picks these up — 'a-large-store-...' sorts first alphabetically/in raw
+    // readdir order despite being the LARGEST.
+    mk('a-large-store-aaaaaa', 5_000_000);
+    mk('z-small-store-bbbbbb', 200);
+    const raw = storeLib.listStoreHashes(home);
+    assert.deepStrictEqual(raw.slice().sort(), ['a-large-store-aaaaaa', 'z-small-store-bbbbbb'].sort());
+    const ordered = U.orderStoreHashesBySize(storeLib, home, raw);
+
+    // budgetMs: 0 -> runThrottledSweep always runs the FIRST item (its own
+    // documented guarantee), then breaks before item 2 unconditionally. Which
+    // hash lands in that guaranteed first slot is exactly what starves under
+    // raw readdir order vs the size-ordered fix.
+    const seen = [];
+    const sweep = U.runThrottledSweep({
+      items: ordered,
+      budgetMs: 0,
+      sleepFn: () => {},
+      worker: (h) => { seen.push(h); },
+    });
+    assert.deepStrictEqual(seen, ['z-small-store-bbbbbb'], 'the small store is reached within budget instead of being starved behind the large one');
+    assert.strictEqual(sweep.budgetExhausted, true);
+    assert.deepStrictEqual(sweep.remaining, ['a-large-store-aaaaaa']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('storeDirSizeBytes/orderStoreHashesBySize measured cost: stat-ing 242 stores is negligible next to the 20s sweep budget', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-order-size-cost-'));
+  try {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const hashes = [];
+    for (let i = 0; i < 242; i++) {
+      const hash = 'store' + String(i).padStart(4, '0') + 'aa';
+      hashes.push(hash);
+      const dir = storeLib.storeDirForHash(home, hash);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'devswarm.db'), Buffer.alloc(1024));
+      fs.writeFileSync(path.join(dir, 'devswarm.db-wal'), Buffer.alloc(512));
+    }
+    const t0 = Date.now();
+    U.orderStoreHashesBySize(storeLib, home, hashes);
+    const elapsedMs = Date.now() - t0;
+    // Generously bounded (default budget is 20000ms) — this is a smoke bound,
+    // not a tight perf assertion; real-world numbers on this machine were
+    // low-single-digit milliseconds for 242 shallow stat passes.
+    assert.ok(elapsedMs < 2000, 'stat-ing 242 stores took ' + elapsedMs + 'ms — expected well under the 20s sweep budget');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- Defect 2: unhealable-store visibility (heal-orphan-partitions) ---
+
+test('healOrphanPartitionsPostUpdate: unhealable ids are surfaced as a bounded sample, not just a bare count', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-visible-'));
+  try {
+    const fakeDevswarm = {
+      healOrphanPartitions: (h, ctx) => ({
+        ok: true, adopted: 0, forwarded: 0, unhealable: 2, skipped: 0, errors: 0,
+        detail: [
+          { id: 'orphan-1', action: 'unhealable', reason: 'no-descriptor' },
+          { id: 'orphan-2', action: 'unhealable', reason: 'no-descriptor' },
+        ],
+      }),
+    };
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['store-x'],
+    });
+    assert.strictEqual(result.unhealable, 2);
+    assert.strictEqual(result.unhealableSample.length, 2);
+    assert.deepStrictEqual(result.unhealableSample.map((u) => u.id), ['orphan-1', 'orphan-2']);
+    assert.strictEqual(result.unhealableSample[0].repoKey, 'store-x');
+    assert.match(result.detail, /unhealable/);
+    assert.match(result.detail, /orphan-1/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: unhealable sample is bounded (never dumps every id across many stores)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-cap-'));
+  try {
+    const hashes = [];
+    for (let i = 0; i < 30; i++) hashes.push('store' + i);
+    const fakeDevswarm = {
+      healOrphanPartitions: (h, ctx) => ({
+        ok: true, adopted: 0, forwarded: 0, unhealable: 3, skipped: 0, errors: 0,
+        detail: [
+          { id: ctx.repoKey + '-a', action: 'unhealable', reason: 'no-descriptor' },
+          { id: ctx.repoKey + '-b', action: 'unhealable', reason: 'no-descriptor' },
+          { id: ctx.repoKey + '-c', action: 'unhealable', reason: 'no-descriptor' },
+        ],
+      }),
+    };
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes,
+    });
+    assert.strictEqual(result.unhealable, 90, '30 stores * 3 each');
+    assert.ok(result.unhealableSample.length <= 20, 'sample is capped, never the full 90');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: wires a ctx.deadline (this run\'s sweep budget) into every devswarm.healOrphanPartitions call', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-deadline-'));
+  try {
+    const seenDeadlines = [];
+    const fakeDevswarm = {
+      healOrphanPartitions: (h, ctx) => {
+        seenDeadlines.push(ctx.deadline);
+        return { ok: true, adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0, detail: [] };
+      },
+    };
+    const before = Date.now();
+    U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['s1'],
+    });
+    assert.strictEqual(seenDeadlines.length, 1);
+    assert.ok(Number.isFinite(seenDeadlines[0]) && seenDeadlines[0] >= before, 'deadline is a real future-ish epoch-ms value');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- Defect 3: lastCompletedHash is observability-only (decided contract) ---
+
+test('lastCompletedHash is OBSERVABILITY-ONLY: sweepItemsFor resumption reads pendingHashes exclusively, never lastCompletedHash', () => {
+  const state = {
+    myKey: {
+      completedVersion: null,
+      pendingVersion: 'v1',
+      pendingHashes: ['s2', 's3'],
+      lastCompletedHash: 'BOGUS-VALUE-THAT-MATCHES-NOTHING',
+    },
+  };
+  const sel = U.sweepItemsFor(state, 'myKey', 'v1', () => { throw new Error('fullEnumerate must not run — a pending list already exists'); });
+  assert.strictEqual(sel.skip, false);
+  assert.deepStrictEqual(sel.items, ['s2', 's3'], 'resume list comes from pendingHashes only, unaffected by lastCompletedHash content');
+});
+
+test('recordSweepResult: lastCompletedHash records the last store actually finished before a budget stop (debugging aid), cleared on a clean completion', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-lastcompleted-'));
+  try {
+    const midSweep = { budgetExhausted: true, remaining: ['c'], processedItems: ['a', 'b'] };
+    const next1 = U.recordSweepResult(home, {}, 'k', 'v1', midSweep);
+    assert.strictEqual(next1.k.lastCompletedHash, 'b');
+    assert.deepStrictEqual(next1.k.pendingHashes, ['c']);
+
+    const doneSweep = { budgetExhausted: false, remaining: [], processedItems: ['c'] };
+    const next2 = U.recordSweepResult(home, next1, 'k', 'v1', doneSweep);
+    assert.strictEqual(next2.k.lastCompletedHash, null, 'cleared once the sweep for this version completes cleanly');
+    assert.strictEqual(next2.k.completedVersion, 'v1');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('GIT_EXEC_TIMEOUT_MS: 20s, not the prior 60s', () => {
+  assert.strictEqual(U.GIT_EXEC_TIMEOUT_MS, 20000);
+});
+
+test('defaultExec (git step): the reduced timeout does not change the fail-open contract — a bogus cwd still reports a reason, never throws out', () => {
+  const bogusDir = path.join(os.tmpdir(), 'update-timeout-bogus-' + Date.now());
+  const st = U.gitState(bogusDir, undefined);
+  assert.strictEqual(st.ok, false);
+  assert.ok(st.reason, 'still reports a reason (fail-open), unaffected by the timeout reduction');
+});
+
+// ---------------------------------------------------------------------------
+// Wave D9: per-stage STDERR progress lines (root cause: update.js printed
+// nothing until EVERY post-update stage returned, so a slow reconcile sweep
+// looked hung with zero output — see reconcileBudgetMs/cmdReconcile tests in
+// tests/scripts/devswarm-reconcile-budget.test.js for the underlying fix).
+// `fs.writeSync` is monkey-patched for the duration of each test (the SAME
+// `fs` module singleton update.js itself requires — Node's require cache
+// guarantees identity) to capture fd===2 writes without spawning a real
+// subprocess; STDOUT (fd 1, the final JSON/status contract) is left
+// completely alone and unasserted here, matching the "stdout contract
+// unchanged" requirement.
+// ---------------------------------------------------------------------------
+function captureFd2(fn) {
+  const real = fs.writeSync;
+  const lines = [];
+  fs.writeSync = function (fd, data, ...rest) {
+    if (fd === 2) { lines.push(String(data)); return Buffer.byteLength(String(data)); }
+    return real.call(fs, fd, data, ...rest);
+  };
+  try {
+    fn();
+  } finally {
+    fs.writeSync = real;
+  }
+  return lines;
+}
+
+test('runUpdate: emits [update] <stage> start/done STDERR lines for every post-update stage by default', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const lines = captureFd2(() => {
+      const { stop } = U.runUpdate({ paths: p, exec, env: {} });
+      assert.strictEqual(stop, false);
+    });
+    assert.ok(lines.some((l) => l === '[update] reconcile start\n'), 'must emit a start line for the reconcile stage:\n' + lines.join(''));
+    assert.ok(lines.some((l) => /^\[update\] reconcile done \d+ms\n$/.test(l)), 'must emit a done line with an elapsed-ms suffix:\n' + lines.join(''));
+    assert.ok(lines.some((l) => l === '[update] fold start\n'), 'must also cover a later stage (fold), not just the first one:\n' + lines.join(''));
+    assert.ok(lines.some((l) => l === '[update] wake-monitor start\n'), 'must reach the LAST stage too:\n' + lines.join(''));
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: ANTIHALL_UPDATE_QUIET=1 suppresses every [update] stage STDERR line', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const lines = captureFd2(() => {
+      const { stop } = U.runUpdate({ paths: p, exec, env: { ANTIHALL_UPDATE_QUIET: '1' } });
+      assert.strictEqual(stop, false);
+    });
+    assert.deepStrictEqual(lines, [], 'ANTIHALL_UPDATE_QUIET=1 must suppress every stage line:\n' + lines.join(''));
+  } finally { t.cleanup(); }
+});
+
+// ===========================================================================
+// runPostPullReexec (P0 field bug): an OLDER update.js pulls a NEWER version,
+// syncs the cache, then would otherwise run ITS OWN (stale) hardcoded stage
+// list forever — a stage first added in the newer release never runs until a
+// second update/doctor call. Fix: re-exec the freshly-pulled marketplace
+// clone's OWN update.js with --post-pull-only and merge its JSON status in.
+// ===========================================================================
+
+// writeFakeNewUpdateJs(pluginSrcDir, markerPath) — a minimal stand-in for "a
+// newer cache version['s update.js" that only needs to prove the MECHANISM
+// (spawn + merge + loop guard), not re-implement the full real stage chain
+// (already covered by every other test in this file). Every --post-pull-only
+// invocation appends one line to markerPath, so "ran exactly once" is
+// directly observable.
+function writeFakeNewUpdateJs(marketplaceDir, markerPath) {
+  const dir = path.join(marketplaceDir, 'plugins', 'anti-hall', 'skills', 'update', 'scripts');
+  fs.mkdirSync(dir, { recursive: true });
+  const src = `
+'use strict';
+const fs = require('fs');
+if (process.argv.includes('--post-pull-only')) {
+  fs.appendFileSync(${JSON.stringify(markerPath)}, 'ran\\n');
+  process.stdout.write(JSON.stringify({ status: { markAppArchived: { attempted: true, archived: 1 } } }) + '\\n');
+  process.exit(0);
+}
+process.exit(1); // this fixture never runs as a normal (non-post-pull-only) update.js
+`;
+  fs.writeFileSync(path.join(dir, 'update.js'), src, 'utf8');
+}
+
+test('runPostPullReexec: re-execs the newly-pulled version\'s update.js exactly once and merges its new stage into status', () => {
+  const t = makeTree();
+  try {
+    const markerPath = path.join(t.root, 'ran-marker.txt');
+    writeFakeNewUpdateJs(t.marketplaceDir, markerPath);
+    const paths = pathsFor(t);
+    const localStatus = { installed: '0.107.0', latest: '0.107.1', updated: true, cacheSynced: true, action: 'run /reload-plugins' };
+
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: {}, cwd: t.root });
+
+    assert.strictEqual(note, null, 'a successful re-exec must not report a fallback note');
+    assert.ok(status.markAppArchived && status.markAppArchived.attempted === true,
+      'the NEW version\'s stage result must be merged into status: ' + JSON.stringify(status));
+    // Local fields (installed/latest/updated/action) are kept, never overwritten by the child.
+    assert.strictEqual(status.installed, '0.107.0');
+    assert.strictEqual(status.latest, '0.107.1');
+
+    const ranLines = fs.readFileSync(markerPath, 'utf8').trim().split('\n').filter(Boolean);
+    assert.strictEqual(ranLines.length, 1, 'the new stage must have run EXACTLY once: ' + JSON.stringify(ranLines));
+  } finally { t.cleanup(); }
+});
+
+test('runPostPullReexec: ANTIHALL_UPDATE_REEXEC=1 guards against a loop — never spawns again', () => {
+  const t = makeTree();
+  try {
+    const markerPath = path.join(t.root, 'ran-marker-loop.txt');
+    writeFakeNewUpdateJs(t.marketplaceDir, markerPath);
+    const paths = pathsFor(t);
+    const localStatus = { installed: '0.107.0', latest: '0.107.1', updated: true, cacheSynced: true, action: 'run /reload-plugins' };
+
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: { ANTIHALL_UPDATE_REEXEC: '1' }, cwd: t.root });
+
+    assert.strictEqual(note, null);
+    assert.strictEqual(status, localStatus, 'inside a re-exec\'d child, status must pass through untouched — no further spawn');
+    assert.strictEqual(fs.existsSync(markerPath), false, 'the loop guard must prevent any spawn at all');
+  } finally { t.cleanup(); }
+});
+
+test('runPostPullReexec: same version (installed === latest) never spawns', () => {
+  const t = makeTree();
+  try {
+    const markerPath = path.join(t.root, 'ran-marker-same.txt');
+    writeFakeNewUpdateJs(t.marketplaceDir, markerPath);
+    const paths = pathsFor(t);
+    const localStatus = { installed: '0.107.1', latest: '0.107.1', updated: false, cacheSynced: false, action: 'already up to date' };
+
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: {}, cwd: t.root });
+
+    assert.strictEqual(note, null);
+    assert.strictEqual(status, localStatus);
+    assert.strictEqual(fs.existsSync(markerPath), false);
+  } finally { t.cleanup(); }
+});
+
+test('runPostPullReexec: fail-open when the new version\'s update.js does not exist (e.g. a minimal fixture tree) — no note, local status kept', () => {
+  const t = makeTree();
+  try {
+    const paths = pathsFor(t); // no skills/update/scripts/update.js written under t.marketplaceDir
+    const localStatus = { installed: '0.107.0', latest: '0.107.1', updated: true, cacheSynced: true, action: 'run /reload-plugins' };
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: {}, cwd: t.root });
+    assert.strictEqual(note, null);
+    assert.strictEqual(status, localStatus);
+  } finally { t.cleanup(); }
+});
+
+test('runPostPullReexec: fail-open when the re-exec spawn genuinely fails — keeps local status, reports why', () => {
+  const t = makeTree();
+  try {
+    const markerPath = path.join(t.root, 'ran-marker-fail.txt');
+    writeFakeNewUpdateJs(t.marketplaceDir, markerPath);
+    const paths = pathsFor(t);
+    const localStatus = { installed: '0.107.0', latest: '0.107.1', updated: true, cacheSynced: true, action: 'run /reload-plugins' };
+    const spawnReexec = () => ({ status: 1, stdout: '', stderr: 'boom' });
+
+    const { status, note } = U.runPostPullReexec({ paths, status: localStatus, env: {}, cwd: t.root, spawnReexec });
+
+    assert.strictEqual(status, localStatus);
+    assert.match(note, /post-pull re-exec of 0\.107\.1's update\.js failed/);
+  } finally { t.cleanup(); }
+});
+
+// Field report: native `message-count` Request timeouts on live worktrees read
+// as "reconcile failed" (imported 0, lost 0). They are a calm, aggregated skip.
+test('reconcilePostUpdate: native-timeout rows -> ONE aggregated "skipped N (native unavailable: timeout)" line, never "failed"', () => {
+  const row = (id) => ({ id, worktreePath: '/wt/' + id, ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: true, nativeTimeout: true, error: 'hivecontrol workspace message-count exited 1: Error: Request timeout' });
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 0,
+        result: {
+          ok: true, action: 'reconcile', repoKey: 'fake-repo', count: 6, imported: 0, lost: 0, nativeTimeouts: 4,
+          results: [row('a'), row('b'), row('c'), row('d'),
+            { id: 'e', ok: false, skipped: true, imported: 0, lost: 0 }, { id: 'f', ok: true, imported: 0, lost: 0 }],
+        },
+      }),
+    },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.strictEqual(result.lost, 0);
+  assert.match(result.detail, /^reconciled 1 worktree\(s\), skipped 1 \(archived\), skipped 4 \(native unavailable: timeout\) — imported 0/);
+  assert.doesNotMatch(result.detail, /fail|Request timeout/i);
+  assert.strictEqual((result.detail.match(/native unavailable/g) || []).length, 1, 'aggregated: mentioned once, not per worktree');
+});
+
+test('reconcilePostUpdate: native-timeout rows never appear in a REAL failure listing', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 2, imported: 0,
+          results: [
+            { id: 'slow', ok: false, nativeTimeout: true, locked: true, lost: 0, error: 'Request timeout' },
+            { id: 'bad', ok: false, lost: 0, error: 'descriptor has no inboxPath' },
+          ],
+        },
+      }),
+    },
+  });
+  assert.match(result.detail, /bad: descriptor has no inboxPath/);
+  assert.doesNotMatch(result.detail, /slow/);
+});

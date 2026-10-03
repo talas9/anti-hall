@@ -1,0 +1,306 @@
+---
+name: anti-hall-jev
+description: Activate, configure, check, or read the tracking loop of the opt-in Jev classifier for Codex. Use when the user says activate/enable/disable/turn on/set up jev, jev status, jev report, how is jev doing, jev scorecard, label that decision, promote an integration, jev budget, or jev credit balance.
+---
+
+# anti-hall jev for Codex
+
+## Resolve the plugin root
+
+Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — resolve
+it from the path Codex shows you for this SKILL.md (see
+`docs/KB-codex-platform-hooks-plugins.md` in the anti-hall source repository):
+
+```bash
+ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
+test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+```
+
+All commands below run as `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" <verb>`.
+
+## The credential never travels through the model
+
+`set-key` reads the key from **STDIN only**. Never pass it as a CLI argument, never
+have the model repeat it in a reply, never log it. Once `set-key` prints
+`key saved for <transport>`, that's the only confirmation you ever give — never the key
+itself.
+
+## Primary flow: activate / enable / set up jev
+
+1. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" status`.
+2. Key already present (`key present: yes`) → skip to step 5.
+3. No key: ask which provider it's for — **Vercel AI Gateway** (default,
+   recommended, the only live-verified transport) or **TypeSafe direct**
+   (supported, NOT live-verified — TypeSafe's console has closed sign-ups). Never
+   guess the provider from the key's shape.
+4. Ask in prose: "Paste your Vercel AI Gateway key (or TypeSafe key)." The
+   safest option — never appears in the transcript — is having the user run it
+   themselves with echo off:
+
+   ```bash
+   read -rs K && printf '%s' "$K" | node "$ANTI_HALL_ROOT/scripts/jev-setup.js" set-key --transport vercel && unset K
+   ```
+
+   (`--transport typesafe` if that's the pick). If they paste the key in chat
+   instead, pipe it to `set-key` via stdin and never repeat it back:
+
+   ```bash
+   printf '%s' "<pasted key>" | node "$ANTI_HALL_ROOT/scripts/jev-setup.js" set-key --transport <vercel|typesafe>
+   ```
+5. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" enable [--transport vercel|typesafe]`.
+6. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" test` — one real classification
+   call; prints ok/latency/confidence or a failure reason, never the key. On
+   `http-401`/`http-403`, tell the user the key was rejected and ask them to
+   confirm BOTH the key and the provider choice, then re-run `set-key`.
+7. `status` again to show the final state.
+   - Tip: if the owner knows their per-call rate, set `costPerCall` in
+     `~/.anti-hall/jev.json` now so `jev-report.js` can estimate spend.
+
+## Backup transport ("jev fallback")
+
+`jev.fallbackTransport` (`none` default | `vercel` | `typesafe`) makes the OTHER vendor an automatic
+backup: when the primary times out, has a network error, returns 5xx (incl. 529), 402 or 429, or a
+400/403 whose body names insufficient balance/credits, ONE retry goes to the backup inside the SAME time
+budget (a retry with under ~150 ms left is skipped; the primary is held back ~600 ms of the budget for it).
+401/403 and other 4xx never fall back, on purpose: a rejected primary key must surface, not be masked.
+After 3 consecutive eligible failures a per-vendor circuit breaker skips that vendor for 5 minutes, then probes it
+again (state: `~/.anti-hall/cache/jev-breaker.json`).
+
+- Set: `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" enable --transport typesafe --fallback vercel`
+  (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
+- Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
+  `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
+  `jev-setup.js set-key --transport <vendor>` writing that vendor's key file, `~/.config/vercel/ai-gateway-key` or
+  `~/.config/typesafe/key`; `--role fallback` is an alias for the fallback vendor). The older generic `jev_api_key`
+  (and an explicit `jev.keyFile`) still work but are bound to ONE vendor: the home-only setting
+  `jev.genericKeyVendor` (default vercel; never `jev.transport`, never env or `/config`); for any other vendor they
+  are refused with a "jev_api_key is bound to X; set jev_<Y>_api_key" diagnostic. `enable --transport V` warns when
+  V has no key of its own and the generic key is bound elsewhere, and never re-binds. Re-bind deliberately with
+  `jev-setup.js bind-generic-key --vendor <v>`. So neither a transport change nor an env/plugin-option flip can
+  redirect a key.
+- `status` shows both transports and whether a key is visible for each (yes/no only); `test` tests each
+  transport on its own.
+- NOT full redundancy: the two routes very likely reach the SAME TypeSafe model (inference from the model ids
+  `typesafe-ai/jev` vs `jev-1.13.0` and identical answers on a 40-item test; not confirmed). The backup covers the
+  direct account's balance/quota and a direct-endpoint outage, probably NOT an outage of the model itself. When both
+  fail, the breaker opens for BOTH vendors (calls skip Jev for the cooldown, no double timeouts) and the guards use
+  their built-in rules, exactly as when Jev is off.
+- Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
+- Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
+- `jev-report.js` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
+  reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
+
+## Other verbs
+
+- `status` — enabled/transport/key-present(yes/no only)/integration modes/24h
+  call count. No key or network needed for those fields. Also shows the
+  Vercel AI Gateway credit balance (`GET /v1/credits`, verified at
+  https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#check-credit-balance)
+  when transport is `vercel` + a key is present, served from a 15-min cache.
+  TypeSafe's own API documents no equivalent (checked
+  https://docs.typesafe.ai/api) -- nothing shown for `typesafe`, never
+  invented.
+- `disable` — or `ANTIHALL_JEV=0` for a one-session-only override.
+- `mode <integration> on|shadow|off` — `on` lets Jev influence that
+  integration's outcome; `shadow` consults+logs without changing anything (build
+  up `jev report` data before trusting it); `off` skips it. `speculation`/`triage`
+  default `on` once Jev is enabled; everything else defaults `shadow`. Before
+  promoting `shadow` -> `on`, check that integration's `jev report` row for a
+  KEEP suggestion first — see the scorecard walkthrough below.
+- **All integrations**: `speculation`/`triage` (legacy, default `on`);
+  `modelRouting`, `claimLedger`, `mergeGateHedge`, `newRequest`,
+  `outputVerifyGuard`, `gitGuardSelfCredit` (add-block, never relaxes),
+  `parentGateQuestion` (cache-only, zero network), `tasklistTrivial`,
+  `supervisorBlockerLabel` (cache-only, zero network; **v0.108.5 fix:** its
+  ~90s sweep now asks/logs once per DISTINCT input — childId+kind+ts — per
+  workspace, via a per-workspace state file under
+  `~/.anti-hall/devswarm/blocker-label-ask/`, re-asking only on a change or
+  after `devswarm.supervisorBlockerLabelReaskSec` [default 6h] elapses; one
+  static input used to produce 382 `jev-assist.ndjson` rows in 24h; a follow-up
+  fix made the persisted ask-state's `mode` actually round-trip through
+  `readBlockerLabelAskState` — it was written but never read back, so every
+  deduped [skipped] sweep after the first ask in a re-ask window silently
+  reported `null` instead of the still-valid label),
+  `codexNudgeSubstantial` —
+  all default `shadow`; `findingDedup` (advisory: do two deadly-loop TRIO findings
+  describe the same underlying issue, called from the standalone
+  `scripts/finding-dedup.js` CLI, not a hook) defaults `on` — 65/65 correct at
+  confidence ≥0.85 on a 30-day, 3-project offline benchmark, see CHANGELOG 0.108.4;
+  `postHandoverGate` (advisory: does a new request fit in the remaining
+  post-handover context budget, asked fire-and-forget from the shared
+  `auto-handover.js` while the post-handover gate is armed) defaults `off` —
+  an offline benchmark (n=299) found park-recall 17.6% vs 28.8% for the
+  agent's own size judgment plus the measured budget backstop, no gain over
+  that baseline;
+  `dispatchTier` (advisory: workspace / workflow / subagent recommendation on
+  Claude's DISPATCH NOW line) is Claude-only — Codex has no TaskCreate/Agent
+  task tools, so the integration has nothing to classify there;
+  the five DevSwarm supervision integrations (v0.117.0) `devswarmOnBrief`,
+  `devswarmExtraSanctioned`, `devswarmWaitKind`, `devswarmLoop` and
+  `devswarmStepMap` default `on` as RECOMMENDATIONS: asked detached from the
+  supervisor sweep, their verdict + confidence ride on the Primary's
+  DEVSWARM STRAYING line and roster; they never suppress a warning, block or
+  kill (`shadow` = logged only)
+  (settings `jevIntegrations.<id>`, e.g. `jevIntegrations.modelRouting`
+  — v0.108.4 gave every one of the 13 its own settings-schema row (`postHandoverGate` has one since v0.109.0); a pre-existing
+  `jev.json integrations.<id>` or pre-0.108.4 `jev.integrations.<id>` value keeps
+  working and forward-migrates automatically, nothing deleted). In `on`,
+  `tasklistTrivial`/`codexNudgeSubstantial` ask synchronously (1.5 s cap, fail-open)
+  and a confident "trivial" verdict skips the nudge. Full per-id trust/hook/API table:
+  `docs/KB-jev-classifier.md` §10. Claude Code exposes each as its own `/config` row
+  ("Jev integration · <name>"); Codex has no `/config` equivalent — use
+  `settings.js show --section jevIntegrations` or the `anti-hall-settings` skill.
+  **Claude/Codex parity**: `speculation`, `triage`, `claimLedger`, `mergeGateHedge`,
+  `newRequest`, `gitGuardSelfCredit`, `parentGateQuestion`, `tasklistTrivial` run on
+  BOTH platforms (their backing hooks are registered in this port's own
+  `hooks/hooks.json`). `modelRouting` (no `PreToolUse` Agent/Task-tool call exists
+  here — subagent spawn is a separate `SubagentStart`/`SubagentStop` event with no
+  pre-spawn payload to classify), `outputVerifyGuard` (the shell tool's
+  `PostToolUse` `tool_response` shape is unverified on this platform, so it is not
+  wired until proven), `supervisorBlockerLabel` (the liveness supervisor
+  identity-binds to `claude --resume` processes), and `codexNudgeSubstantial`
+  (self-referential inside a Codex session) are Claude-only. `findingDedup` runs on
+  BOTH platforms — see the `anti-hall-deadly-loop` skill's synthesis step.
+- "how is jev doing" / "jev scorecard": run `jev-report.js`, then for each row
+  explain KEEP (promote-worthy) / REMOVE (offer to set mode off) / REVIEW (not
+  enough data, needs more labels, label-only, or p95 latency over budget).
+  Mention the headline one-liner per integration for a quick summary.
+  **v0.108.1 fix:** KEEP and REMOVE now BOTH require a labelled sample (tp+fp,
+  human+auto) of at least 20 — below that it's `REVIEW (needs labels: n/20)`
+  regardless of the raw rates; a <1% changed-decision rate is a low-yield NOTE
+  only, never a REMOVE trigger by itself; a shadow-mode row's yield is now
+  computed from `wouldChange` (what Jev would have done) instead of `changed`
+  (which is always null in shadow by construction — see `docs/KB-jev-classifier.md`).
+  **v0.108.3 fix:** a label-only (`choice`/string) integration's `changed%`
+  column used to print a bare `0.0%`, indistinguishable from "Jev never
+  changed anything here". It now shows `n/a (N distinct)`, a `label-only
+  integrations` note below the table (and the headline) states `label-only:
+  no boolean outcome to compare; N distinct decisions (M fresh)`, and the
+  distinct-decision count dedupes cache retries of the same content hash —
+  KEEP/REMOVE/REVIEW gating itself is unchanged.
+  **v0.108.3 fix (tp/fp accounting):** owner-delegated `jev report label <hash>
+  tp|fp` labels on a would-change choice decision (`wouldChange`/`changed`
+  truthy, fresh, hashed) used to be read but silently dropped — a choice
+  integration's would-change rows never joined `changedHashByFresh`, so the
+  tp/fp loop (which only iterated that map) never saw them, and
+  `bucket.labeled > 0 && known === 0` short-circuited to `REVIEW (label-only,
+  no outcome signal yet)` forever regardless of how many labels it had. Fixed:
+  those hashes now join the SAME precision/labelled-sample pipeline a boolean
+  integration's changed decisions use (`humanTP`/`humanFP`/`autoTP`/`autoFP`/
+  `labeledSample`), reported additively via JSON as `labelWouldChangeUnique`.
+  `changed%`/`changedUnique` still stay 0 — a choice answer has no
+  added/relaxed/changed semantics — and the `known === 0` short-circuit into
+  label-only REVIEW now applies only when `labeledSample` is also 0. Once a
+  choice integration reaches 20 labelled decisions and 50+ calls it can reach
+  REMOVE (bad-outcome/failure-rate gates, unchanged) or KEEP (gated on its own
+  would-change rate in place of changed-decision rate, since that stays 0).
+- `jev-report.js --exclude-project <name>` (repeatable) drops a leaked project's raw rows
+  (daily rollups have no project, so they are unaffected); the report also lists
+  `triggers seen: N` for rare-trigger integrations.
+- `jev-report.js --since <iso> --until <iso>` / `--exclude-window <iso>..<iso>`
+  (repeatable) exclude rows by `ts` before anything else, from both the live
+  `jev-assist.ndjson`/`jev-triage.ndjson` AND every rotated generation `.1` ..
+  `.N` (`jev.logRotatedFiles`, default 10; older days come from the daily
+  rollups in `~/.anti-hall/logs/jev-daily/`, reported as `rollupHistory`) —
+  use this to drop a known-accidental run from the numbers, e.g.
+  `--exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z`. **v0.108.5:**
+  every report now prints a `window: <since> .. <until> exclude: <…> rows: N in
+  window / M total (K excluded)` line (also a `window` object in `--json`
+  output) — the only way to confirm two runs actually covered the same rows
+  before comparing their agreement/changed-rate numbers.
+- `jev-report.js --weekly [--json]` — compact ALWAYS-7-day summary, one line
+  per integration (`[mode]`, suggestion, short reason, calls). A SessionStart
+  hook (`hooks/jev-weekly-scorecard.js`, shared with the Claude port) checks
+  this automatically at most once every 7 days (latch:
+  `~/.anti-hall/state/jev-weekly-notice.json`) and, ONLY in the interactive
+  Primary session (never a DevSwarm child workspace), injects one line when an
+  integration has earned KEEP/REMOVE but its `jev.json` mode hasn't caught up:
+  `Jev scorecard: <id> ready to switch ON/OFF — run /anti-hall:jev`. Never
+  changes any mode itself. Opt out with `jev.json` `"weeklyNotice": false`
+  (default `true`); silent whenever Jev is not `enabled` at all.
+- **Two different "latency" numbers** — never conflate them. The table's
+  `p50ms`/`p95ms` are the Jev classifier CALL's own latency: for every
+  integration except `triage` from `jev-assist.ndjson` decision rows' `ms`
+  field (typically hundreds of ms); `triage`'s own real classification calls
+  never land in `jev-assist.ndjson` (separate file/schema), so `buildReport`
+  merges its `jev-triage.ndjson` decision rows in as their own `triage`
+  integration row instead — same kind of number (classifier latency), just a
+  different source file, with `backend` always one of `jev`/`cache`/
+  `baseline-only`, never left `undefined` (root cause of "triage backend
+  undefined": `triage` was previously ABSENT from this table entirely, not
+  present with a bad value). The separate "triage answer-time" section is
+  agent REPLY TURNAROUND (`jev-triage.ndjson`'s `{type:"answered", latencyMs}`
+  rows from `recordAnswered` — typically minutes) — a completely different
+  quantity, excluded from the `triage` integration row above by construction
+  (no `hash` field).
+- **`agree% (n=distinct)`** — the denominator is DISTINCT content-hash
+  decisions with both a boolean `jev` answer and a `compare` signal, fresh
+  calls only (`backend !== 'cache'`), same dedupe discipline as `changed%`. A
+  cache-hit retry of the same decision no longer adds its own extra vote (root
+  cause of wildly inconsistent agreement numbers across windows/reports).
+- `--by project|session` splits the report into one table per distinct
+  project/session value instead of one combined table; `--project <name>`
+  filters to one project first. `project` is a cwd basename (agnostic, no
+  absolute paths); `sessionId` is present only when the calling hook had one to
+  thread through. **v0.108.5 fix:** every session-scoped integration
+  (`speculation`, `claimLedger`, `newRequest`, `mergeGateHedge`,
+  `outputVerifyGuard`, `modelRouting`, `codexNudgeSubstantial`,
+  `tasklistTrivial`) now actually threads `sessionId` on every call — live
+  `speculation` add-block rows (the only ones that can add a block while "on")
+  used to log `sessionId: null` on every row, unjoinable to the transcript
+  that produced them. Rows also now carry an optional `turnRef` (the
+  transcript's last-line ISO timestamp, or a line-count fallback) pointing at
+  which turn the decision was about. A row missing either (including every row
+  logged before this feature existed) groups under `unknown`. **v0.108.3 fix:** `recordOutcome()`'s
+  `type:'outcome'` rows (`triage`'s answer-latency join, `speculation`'s
+  evidence-added/user-override outcomes) now carry `project` too, via the same
+  cwd-basename fallback as decision rows — they used to have none at all. A
+  pre-fix outcome row still groups under `unknown` and cannot be repaired
+  retroactively (no source cwd to recover it from).
+- `node "$ANTI_HALL_ROOT/scripts/jev-report.js" [--window 24h|7d]` — read-only
+  KEEP/REVIEW/REMOVE summary per integration. Two cost signals: `costPerCall` in
+  `~/.anti-hall/jev.json` for a manual estimate (else `n/a`), and an automatic
+  REAL cost parsed from each call's own response when the gateway reports one —
+  see `hooks/lib/jev-client.js`'s `extractCostAndUsage`
+  (https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
+  The systemone endpoint this build calls does not currently return those
+  fields, so set the `jev.prices` setting (`{"<model>": {"inPerMTok", "outPerMTok"}}` or a
+  `"default"` entry; file-only, edit `~/.anti-hall/settings.json`; a legacy `jev.json`
+  `prices` is still read) to compute real cost from token counts when present instead. Never an extra network call; never charges a cache hit.
+- Budget watch (opt-in): settings `jev.budget.mode` (`unlimited`/`watch`), `jev.budget.usdPerDay`,
+  `jev.budget.usdPerWeek`, `jev.budget.minCreditUsd` via the `anti-hall-settings` skill; a legacy
+  `jev.json` `"budget": {"mode": "watch", "usdPerDay": 5,
+  "usdPerWeek": 25, "minCreditUsd": 10}` is still read. Default mode `"unlimited"` (no
+  watching). Over `usdPerDay`, the assist layer logs ONE
+  `type:"budget-warning"` row per calendar day to `jev-assist.ndjson` -- no
+  existing user-facing Jev notice path exists in this build, so it surfaces
+  only via `jev-report.js`. `minCreditUsd` triggers the SAME once-per-day
+  cadence for the Vercel credit balance instead of spend, checked at report
+  time only. Jev is NEVER auto-disabled by a budget.
+- `node "$ANTI_HALL_ROOT/scripts/jev-report.js" label <hash> [tp|fp]` -- the
+  ONLY write path this script has (verdict omitted = read-only inspect);
+  appends to a separate, append-only `~/.anti-hall/logs/jev-labels.ndjson`
+  (the hash `h` is already the decision's stable id), never touching
+  `jev-assist.ndjson`. A human label wins over an AUTO label for the same
+  hash; AUTO labels come from the SAME mechanical `recordOutcome()` signal
+  already logged (never re-parsed transcripts, never ground truth, always
+  reported separately as "N TP (H human, A auto)"). The report also prints a
+  one-line headline per integration, e.g. `speculation: 6 changed/24h · 5 TP
+  (3 human, 2 auto) · $0.02/TP · p50=120ms · KEEP`.
+- Audit snippets (opt-in, OFF by default): setting `jev.audit.snippets` (env
+  `ANTIHALL_JEV_AUDIT_SNIPPETS`; legacy `jev.json` `"audit": {"snippets": true}` still read) stores a REDACTED ~200-char snippet (secrets scrubbed: Bearer
+  tokens, known key prefixes, key=/token= assignments, emails, long
+  base64/hex runs) for every decision that CHANGES an outcome, OR that WOULD
+  have changed it in shadow mode (the default for every integration under
+  evaluation -- a would-have-changed row carries `shadow: true`), in a
+  separate `~/.anti-hall/logs/jev-audit.ndjson`, mode 600, keyed by hash. `label
+  <hash>` prints it if one exists. Deletion is manual-only:
+  `jev-report.js prune-audit --days N` -- never automatic.
+
+Text sent to the gateway (prompt, last assistant message, commit/PR text, test output) is passed through a best-effort redactor first: text matching known token shapes (API keys, Bearer tokens, `password=` style assignments, PEM blocks, JWTs, URL credentials, emails, long token-like runs) is replaced with `[REDACTED...]` placeholders. Redaction is best-effort, not a guarantee.
+
+## Never
+
+Never print/log/commit the key. Never guess the provider. Never store the key
+anywhere but the resolved key file (Codex has no plugin options: enable `jev.allowLegacyKeyRead` in `~/.anti-hall/settings.json`, with `settings.js set … --confirmed`, for the key file to be read) (the file the jev-setup script's set-key command writes).

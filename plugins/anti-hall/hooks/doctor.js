@@ -1,0 +1,1905 @@
+#!/usr/bin/env node
+// doctor.js — anti-hall health check + live guard self-tests.
+//
+// Answers the only question that matters for a guardrail plugin: "is it actually
+// running, and do the guards actually fire?" Prints a readable report and exits
+// non-zero if anything critical fails (so it is scriptable too).
+//
+//   node hooks/doctor.js           full report — no repair pass (read-only default)
+//   node hooks/doctor.js --repair  report, then apply the safe repairs (alias --fix)
+//   node hooks/doctor.js --quiet   summary line only
+//
+// Pure Node, cross-platform. Behavioral tests spawn the real guards with crafted
+// payloads and assert their exit codes — this is the test suite AND the live status.
+
+'use strict';
+
+const fs   = require('fs');
+const path = require('path');
+const os   = require('os');
+const cp   = require('child_process');
+
+const ROOT  = path.resolve(__dirname, '..');     // plugin root
+const HOOKS = __dirname;                           // hooks/
+const QUIET = process.argv.includes('--quiet');
+// --migrations-only (with --repair): the automatic repair-on-reload pass —
+// stamped data migrations + ~/.anti-hall sweeps only, and it skips the
+// self-test diagnostics (see the early exit right after the repair pass).
+// No user config is touched (no statusLine, no Codex install, no daemon
+// install/restart); those stay behind a user-typed `doctor --repair`.
+// One of those migrations writes PROJECT state in the session's cwd, not
+// user config: migrateLegacyState copies .anti-hall-progress.md /
+// .anti-hall-history.md into <cwd>/.anti-hall/history/legacy/ (originals kept).
+// No repair pass ever deletes or moves a repo file (0.108.5 P0: the GSD
+// .planning/ fold is explicit-only, `migrate-state.js --planning`).
+const MIGRATIONS_ONLY = process.argv.includes('--migrations-only');
+// Repair mode is OPT-IN (mesh redesign Phase 4). Plain `doctor` and `--check`
+// run NO repair: diagnostics only. The live self-tests below still exercise the
+// real guards end-to-end, so they create their own throwaway temp dirs under
+// os.tmpdir() and the guards they spawn write their usual per-session state
+// files (e.g. ~/.anti-hall/speculation-guard-state-doctor-*.json) — that is
+// the guards' normal behavior, not a repair. `--repair` (alias `--fix`) runs the repair
+// pass after the diagnostics; `--dry-run` runs it as a preview that writes
+// nothing. Before this, a bare `doctor` repaired by default, so every caller
+// that only wanted a health report (activate, CI, a curious operator) mutated
+// state as a side effect.
+const CHECK   = process.argv.includes('--check');
+const DRYRUN  = process.argv.includes('--dry-run');
+const REPAIR  = process.argv.includes('--repair') || process.argv.includes('--fix');
+// --repair-ingest-orphans [--apply] (v0.98, ec33954162ef): EXPLICIT, OPT-IN,
+// human-invoked ONLY — mirrors --reclaim-ingest-lock's posture exactly.
+// Declared here (ahead of DO_REPAIR) because DO_REPAIR itself is gated on it
+// (P2/usability fix, fix-wave R2): this flag used to ALSO run the full
+// default repair pass below it (DO_REPAIR was only gated on --check), so a
+// plain `doctor --repair-ingest-orphans` unexpectedly ran every OTHER
+// auto-repair too. Now scoped to run ONLY its own detect+plan/apply section,
+// matching --reclaim-ingest-lock's own narrow posture.
+const REPAIR_INGEST_ORPHANS = process.argv.includes('--repair-ingest-orphans');
+// --repair-test-stores [--apply] (be2c6c9e81a1): EXPLICIT, OPT-IN, human-
+// invoked ONLY — same narrow posture as --repair-ingest-orphans immediately
+// above (scoped to run ONLY its own detect+plan/apply section below, never
+// folded into the default/--fix/--dry-run repair pass).
+const REPAIR_TEST_STORES = process.argv.includes('--repair-test-stores');
+// --repair-resurrected [--apply] (R3 fix, defect df54edf54804): EXPLICIT,
+// OPT-IN, human-invoked ONLY — same narrow posture as --repair-ingest-orphans/
+// --repair-test-stores above. This used to run inside the DEFAULT repair pass
+// (a migrationFix, AUTO-SAFE-classified), which meant a bare `doctor` — the
+// exact command the anti-hall-activate skill runs — removed resurrected
+// registry rows with NO operator intent, contrary to its own "human-
+// initiated only" documentation. Scoped to run ONLY its own detect+plan/apply
+// section below, never folded into the default/--fix/--dry-run repair pass.
+const REPAIR_RESURRECTED = process.argv.includes('--repair-resurrected');
+const DO_REPAIR = (REPAIR || DRYRUN) && !CHECK && !REPAIR_INGEST_ORPHANS && !REPAIR_TEST_STORES && !REPAIR_RESURRECTED; // --repair/--fix (apply) or --dry-run (preview) only; bare doctor, --check and the narrow --repair-* flags do not
+// --logs: opt-in section that reads + summarizes recent warn/error entries from the
+// CENTRAL anti-hall-log (companion/lib/anti-hall-log.js, C0) so a Primary orchestrator
+// can see a child project's failures from one place without tailing the raw JSONL
+// itself. Additive to the normal report (does not replace/skip anything above); never
+// affects the exit code (report-only, same posture as the reaper/foreign-conflict
+// sections) — a logged error is history, not a live guard failure THIS run.
+const LOGS = process.argv.includes('--logs');
+// --reclaim-ingest-lock (v0.65.0): EXPLICIT, OPT-IN, human-invoked ONLY — never
+// wired into the default/--fix/--dry-run repair pass above. Mirrors
+// devswarm-recover being the one path allowed to forcibly reclaim. Sweeps every
+// installed ingest lock for a CONFIRMED dead/zombie/pid-reused holder (never
+// signals a process) and additionally reclaims THIS worktree's own project lock
+// via devswarm-ingest.js's own wedged-heartbeat+SIGKILL liveness test, then
+// triggers the existing reinstall path ONLY if something for this worktree was
+// actually reclaimed. Runs independently of --check/--fix/--dry-run; --dry-run
+// (if also passed) is still honored as a preview that writes nothing.
+const RECLAIM_INGEST_LOCK = process.argv.includes('--reclaim-ingest-lock');
+// REPAIR_INGEST_ORPHANS itself is declared earlier (ahead of DO_REPAIR,
+// which is gated on it — see that comment). The always-on DETECT section
+// below (6i-detect) runs on every plain `doctor` call regardless of this
+// flag and only ever REPORTS a table, never mutates; this flag additionally
+// prints the unload plan, and --apply on top of it actually executes it.
+const INGEST_APPLY = process.argv.includes('--apply');
+
+const C = process.stdout.isTTY
+  ? { g:'\x1b[32m', r:'\x1b[31m', y:'\x1b[33m', d:'\x1b[2m', b:'\x1b[1m', c:'\x1b[36m', x:'\x1b[0m' }
+  : { g:'', r:'', y:'', d:'', b:'', c:'', x:'' };
+
+let pass = 0, fail = 0, warn = 0;
+const lines = [];
+function ok(msg)   { pass++; lines.push(`  ${C.g}✓${C.x} ${msg}`); }
+function bad(msg)  { fail++; lines.push(`  ${C.r}✗${C.x} ${msg}`); }
+function warnl(msg){ warn++; lines.push(`  ${C.y}!${C.x} ${msg}`); }
+// infol: a neutral "not detected — skipped" note. Deliberately does NOT touch
+// pass/fail/warn — an absent optional integration is not a warning, it's the
+// expected state for most users, and must not make a healthy machine look
+// unhealthy.
+function infol(msg){ lines.push(`  ${C.d}i${C.x} ${msg}`); }
+function head(t)   { lines.push(`\n${C.b}${t}${C.x}`); }
+
+// emitVerdictAndExit() — print the SAME verdict/summary the unconditional
+// tail (section 7) prints, then exit immediately. Factored out (0.99.2) so an
+// EXPLICIT, OPT-IN repair flag (--repair-ingest-orphans / --repair-test-stores
+// / --repair-resurrected) can end the run right after its own section instead
+// of silently falling through every later section (6j-6n) and the full
+// unconditional summary — before this fix, all three flags' own verdict line
+// was buried mid-output (observed: 562 of 571 total lines) because nothing
+// after their block ever called `process.exit`; doctor.js has no wrapping
+// function, so `process.exit()` (not `return`) is what actually stops
+// execution here. `version`/`QUIET`/`C`/`lines`/`pass`/`fail`/`warn` are all
+// already in scope by the time any repair flag's block runs (declared at
+// module top, ~line 23/76-86/120-121), so this is byte-identical output to
+// running the unconditional tail with nothing after it, restricted to
+// whatever sections actually ran before the exit.
+function emitVerdictAndExit() {
+  const verdict = fail === 0
+    ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
+    : `${C.r}${C.b}anti-hall has ${fail} FAILURE(S)${C.x} — ${pass} passed, ${warn} warning(s)`;
+  if (!QUIET) {
+    process.stdout.write(`${C.c}${C.b}anti-hall doctor${C.x} ${C.d}v${version}${C.x}\n`);
+    process.stdout.write(lines.join('\n') + '\n\n');
+  }
+  process.stdout.write(verdict + '\n');
+  process.exit(fail === 0 ? 0 : 1);
+}
+
+// --- spawn a hook with a payload + env, return {code, out} -------------------
+// timeout: 30000ms (up from 5000ms) — same contention-flake class as the
+// statusline spawn above (fixed alongside it; see that comment). This helper
+// backs ~15 unconditional self-test sections (git-guard, command-guard,
+// edit-guard, swarm-guard, model-routing-guard, version-alert, etc.), each
+// comparing r.code against an exact 0/2 via BLOCKED()/ALLOWED() below — under
+// contention a SIGTERM yields code:null, which satisfies neither check and
+// falls into that call site's own `bad(...)` branch, i.e. the SAME false-FAIL
+// shape as the proven statusline bug, just spread across more call sites.
+// Raising the shared timeout here shrinks that flake surface for all of them
+// without touching each individual BLOCKED/ALLOWED ternary — those already
+// encode a binary block/allow behavioral contract (not a 3-way pass/warn/fail
+// like the statusline check), so rewriting each one to special-case a null/
+// SIGTERM result would be a much larger, out-of-scope change for a failure
+// mode this fix already makes far less likely to occur.
+//
+// HOME ISOLATION: the hooks read ~/.anti-hall state (skip.json, codex-availability.json,
+// settings, ...), so with the caller's real HOME an unexpired user skip or an exhausted
+// Codex quota made a working guard's self-test report FAILED. By default each self-test
+// runs against ONE empty temp home per doctor run (removed at exit). `realHome` (the
+// context-footprint measurements) keeps the real home on purpose: injected size depends
+// on the user's real settings. An explicit HOME/USERPROFILE in `env` still wins.
+let selfTestHome = null;
+function getSelfTestHome() {
+  if (!selfTestHome) {
+    try {
+      selfTestHome = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-doctor-'));
+      process.on('exit', () => { try { fs.rmSync(selfTestHome, { recursive: true, force: true }); } catch (_) { /* best effort */ } });
+    } catch (_) { selfTestHome = null; }
+  }
+  return selfTestHome;
+}
+function runHook(file, payload, env, realHome) {
+  try {
+    const h = realHome ? null : getSelfTestHome();
+    const res = cp.spawnSync(process.execPath, [path.join(HOOKS, file)], {
+      input: JSON.stringify(payload || {}),
+      encoding: 'utf8',
+      timeout: 30000,
+      env: Object.assign({}, process.env, h ? { HOME: h, USERPROFILE: h } : {}, env || {}),
+    });
+    return { code: res.status, out: (res.stdout || '') + (res.stderr || '') };
+  } catch (e) {
+    return { code: -1, out: String(e && e.message) };
+  }
+}
+const BLOCKED = (r) => r.code === 2;     // PreToolUse block contract: exit 2
+const ALLOWED = (r) => r.code === 0;
+
+// --- repair-on-reload's automatic pass: migrations only, no diagnostics ----
+if (MIGRATIONS_ONLY && DO_REPAIR) {
+  let v = '(unknown)';
+  try { v = require(path.join(ROOT, '.claude-plugin', 'plugin.json')).version; } catch (_) { /* unknown */ }
+  let rows = [];
+  let error = null;
+  try {
+    rows = require('./lib/doctor-repair.js').runRepairs({
+      cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN, migrationsOnly: true,
+      version: v !== '(unknown)' ? v : undefined,
+    });
+  } catch (e) { error = String((e && e.message) || e); }
+  const failed = rows.filter((r) => r.status === 'failed').length;
+  fs.writeSync(1, JSON.stringify({ ok: !error && failed === 0, action: 'migrations-only', version: v, error, repairs: rows }) + '\n');
+  process.exit(error || failed ? 1 : 0);
+}
+
+// --- 1. Environment ----------------------------------------------------------
+head('Environment');
+const nodeMajor = parseInt((process.versions.node || '0').split('.')[0], 10);
+if (nodeMajor >= 22) ok(`Node ${process.version} (>= 22) — hooks can run`);
+else bad(`Node ${process.version} is < 22 — plugin.json requires Node.js >= 22 on PATH; hooks may silently no-op. Install Node >= 22.`);
+ok(`Platform ${process.platform} / ${process.arch}`);
+let version = '(unknown)';
+try { version = require(path.join(ROOT, '.claude-plugin', 'plugin.json')).version; } catch (e) {}
+ok(`anti-hall plugin version ${version}`);
+
+// installed_plugins.json is HARNESS-OWNED (see skills/update/scripts/update.js's
+// own header) — this only ever READS it, never writes it. Two DISTINCT gaps,
+// checked separately because they need different fixes:
+//   1. installed_plugins.json itself is behind the newest version actually
+//      mirrored into cache/marketplace -> the harness has not re-registered
+//      this build at all. Fix: `claude plugin update anti-hall@anti-hall`.
+//      `update.js`'s harnessRegisterPostUpdate now attempts this automatically
+//      on a version bump; this check surfaces the gap for a machine where
+//      that auto-heal hasn't run yet (or failed / needs a manual
+//      confirmation).
+//   2. installed_plugins.json is AHEAD of the version this doctor.js process
+//      is itself running (`version`, read above from THIS process's own
+//      plugin.json under ROOT) -> the harness registry was already updated,
+//      but the CURRENT session's hooks are still executing the OLD build
+//      because it has not reloaded. Fix: /reload-plugins first, then a full
+//      restart only if it persists.
+//      FIELD EVIDENCE (2026-10-01, current): after `/reload-plugins` ALONE (no
+//      restart) on a 0.120.6 -> 0.120.7 registry update, PreToolUse hooks ran
+//      from .../cache/anti-hall/anti-hall/0.120.7/hooks/git-guard.js, the Skill
+//      tool's Base directory for system-briefing was .../0.120.7/skills/..., and
+//      the wake-watch Monitor handed itself off to 0.120.7.
+//      HISTORY (superseded 2026-10-01): `claude plugin update --help` says
+//      "restart required to apply" and a single field test on 2026-09-24 saw a
+//      reload not suffice; that drove the old "RESTART, /reload-plugins is not
+//      enough" wording.
+// Both are read-only — never part of the repair pass.
+try {
+  const upd = require(path.join(ROOT, 'skills', 'update', 'scripts', 'update.js'));
+  const home = os.homedir();
+  const updPaths = upd.resolvePaths(process.env, home);
+  const harnessVersion = upd.versionFromInstalledJson(updPaths.installedJson);
+  const newest = upd.newestCacheVersion(updPaths.cacheRoot) || upd.versionFromMarketplace(updPaths.pluginJson);
+  if (upd.isSemver(harnessVersion) && upd.isSemver(newest) && upd.compareVersions(harnessVersion, newest) < 0) {
+    warnl(`installed_plugins.json reports ${harnessVersion}, but ${newest} is available in cache/marketplace — the harness has not re-registered this build. Fix: claude plugin update anti-hall@anti-hall.`);
+  } else if (upd.isSemver(harnessVersion) && upd.isSemver(version) && upd.compareVersions(version, harnessVersion) < 0) {
+    warnl(`installed_plugins.json is registered at ${harnessVersion}, but this session is still running ${version} — run /reload-plugins to load ${harnessVersion}; if this warning persists afterwards (a hook or skill path still shows ${version}), restart Claude Code (exit and resume the session).`);
+  } else if (upd.isSemver(harnessVersion)) {
+    ok(`installed_plugins.json harness registration is current (${harnessVersion}) and this session is running it`);
+  }
+} catch (e) {
+  infol(`harness registration check skipped: ${e.message}`);
+}
+
+// --- 1b. --prune-cache [--confirmed] (EXPLICIT, OPT-IN, human-invoked ONLY;
+// owner-approved 2026-09-26). Lists the old anti-hall plugin cache version
+// dirs it would remove and their total size; only --confirmed removes them,
+// each removal logged below. Keep rules, symlink/outside-root refusal and the
+// live-process scan live in lib/cache-prune.js. Never run by update.js, the
+// supervisor, a cron, SessionStart or any hook — only this flag reaches it.
+// Runs before the self-tests and exits right after its own section.
+// Setting updates.allowCachePrune (default true) only enables the verb.
+if (process.argv.includes('--prune-cache')) {
+  const confirmed = process.argv.includes('--confirmed');
+  head('Prune plugin cache' + (confirmed ? ' [--confirmed]' : ' (list only — nothing removed; add --confirmed to remove)'));
+  let enabled = true;
+  try { enabled = require('./lib/settings.js').get('updates', 'allowCachePrune') !== false; } catch (_) { enabled = true; }
+  if (!enabled) {
+    bad('--prune-cache is disabled by updates.allowCachePrune=false');
+    emitVerdictAndExit();
+  }
+  warnl('Crons/Monitors that name a versioned cache path (…/plugins/cache/anti-hall/anti-hall/<ver>/…) will break when that version is pruned — point them at the stable launchers ~/.anti-hall/bin/devswarm.js and ~/.anti-hall/bin/wake-watch.js instead.');
+  try {
+    const cachePrune = require('./lib/cache-prune.js');
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    const plan = cachePrune.planCachePrune({ home, runningVersion: version, runningRoot: ROOT });
+    if (!plan.ok) {
+      infol(plan.error);
+    } else {
+      for (const e of plan.entries) {
+        if (e.action === 'remove') infol('would remove ' + e.dir + ' (' + cachePrune.formatBytes(e.bytes) + ')');
+        else infol('keep ' + e.dir + ' (' + e.reasons.join(', ') + ')');
+      }
+      const toRemove = plan.entries.filter((e) => e.action === 'remove');
+      infol(toRemove.length + ' dir(s) to remove, ' + cachePrune.formatBytes(plan.removeBytes) + ' total');
+      if (confirmed && toRemove.length) {
+        const res = cachePrune.applyCachePrune(plan, (msg) => infol(msg));
+        const freed = res.removed.reduce((n, r) => n + r.bytes, 0);
+        ok('removed ' + res.removed.length + ' dir(s), freed ' + cachePrune.formatBytes(freed));
+        if (res.refused.length) warnl(res.refused.length + ' dir(s) refused at removal time (see above)');
+      } else if (confirmed) {
+        ok('nothing to remove');
+      }
+    }
+  } catch (e) {
+    bad('prune-cache raised (nothing removed after the error): ' + (e && e.message));
+  }
+  emitVerdictAndExit();
+}
+
+// --- 2. Hooks present + syntax-valid ----------------------------------------
+head('Hooks (present + syntax)');
+let registered = [];
+let hooksConfig = null;
+try {
+  hooksConfig = JSON.parse(fs.readFileSync(path.join(HOOKS, 'hooks.json'), 'utf8'));
+  const cmds = JSON.stringify(hooksConfig).match(/[\w-]+\.js/g) || [];
+  registered = [...new Set(cmds)];
+  ok(`hooks.json is valid JSON (${registered.length} hook script(s) registered)`);
+} catch (e) {
+  bad(`hooks.json invalid or unreadable: ${e.message}`);
+}
+// The transcript-heavy hook commands pass these V8 flags; a Node that rejects one would fail those hooks.
+{
+  const { NODE_HOOK_FLAGS } = require('./lib/node-hook-flags.js');
+  const fl = cp.spawnSync(process.execPath, [...NODE_HOOK_FLAGS, '-e', '0'], { encoding: 'utf8' });
+  if (fl.status === 0) ok(`node ${process.version} accepts the hook flags (${NODE_HOOK_FLAGS.join(' ')})`);
+  else bad(`node ${process.version} rejects the hook flags — the transcript-heavy hooks would fail: ${(fl.stderr || '').split('\n')[0]}`);
+}
+for (const f of registered) {
+  const p = path.join(HOOKS, f);
+  if (!fs.existsSync(p)) { bad(`${f} — REGISTERED BUT MISSING`); continue; }
+  const chk = cp.spawnSync(process.execPath, ['--check', p], { encoding: 'utf8' });
+  if (chk.status === 0) ok(`${f} present, syntax valid`);
+  else bad(`${f} — SYNTAX ERROR: ${(chk.stderr || '').split('\n')[0]}`);
+}
+
+// --- 3. Behavioral self-tests (the guards actually fire) ---------------------
+head('Guard behavior (live self-tests)');
+
+// git-guard: blocks force-push + AI self-credit; allows read-only git
+function gg(cmd) { return runHook('git-guard.js', { tool_name: 'Bash', tool_input: { command: cmd } }); }
+BLOCKED(gg('git push --force origin main')) ? ok('git-guard blocks `git push --force`') : bad('git-guard did NOT block force-push');
+BLOCKED(gg('git commit -m "x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"')) ? ok('git-guard blocks AI self-credit trailer') : bad('git-guard did NOT block AI self-credit');
+ALLOWED(gg('git status')) ? ok('git-guard allows `git status`') : bad('git-guard wrongly blocked `git status`');
+
+// command-guard: blocks heavy in COORDINATOR; allows in SUBAGENT (payload agent_id)
+function cg(cmd, extra) { return runHook('command-guard.js', Object.assign({ tool_name: 'Bash', tool_input: { command: cmd } }, extra), { CLAUDE_CODE_ENTRYPOINT: 'cli' }); }
+BLOCKED(cg('npm run build')) ? ok('command-guard blocks heavy cmd in coordinator') : bad('command-guard did NOT block heavy cmd in coordinator');
+ALLOWED(cg('npm run build', { agent_id: 'test-agent', agent_type: 'general-purpose' })) ? ok('command-guard ALLOWS heavy cmd in subagent (payload agent_id)') : bad('command-guard wrongly blocked a subagent — delegation would deadlock');
+ALLOWED(cg('git status')) ? ok('command-guard allows light cmd in coordinator') : bad('command-guard wrongly blocked a light cmd');
+// Per-segment fix: a heavy verb after a light-exception segment / non-heavy first
+// verb must still block (the old code only inspected the first whole-string verb).
+BLOCKED(cg('git status && npm run build')) ? ok('command-guard blocks heavy SECOND segment (`git status && npm run build`)') : bad('command-guard MISSED heavy second segment — per-segment fix regressed');
+BLOCKED(cg('cd app && npm test')) ? ok('command-guard blocks heavy cmd after `cd` (`cd app && npm test`)') : bad('command-guard MISSED heavy cmd after cd — per-segment fix regressed');
+// Recursive shell parsing (v0.12.0): heavy commands hidden in command
+// substitution and in `bash -c '...'` payloads must also block in coordinator.
+BLOCKED(cg('echo "$(npm run build)"')) ? ok('command-guard blocks heavy cmd in $(...) substitution (`echo "$(npm run build)"`)') : bad('command-guard MISSED heavy cmd in command substitution — recursive-parse fix regressed');
+BLOCKED(cg('bash -c "npm run build"')) ? ok('command-guard blocks heavy `bash -c "npm run build"` payload') : bad('command-guard MISSED heavy bash -c payload — recursive-parse fix regressed');
+ALLOWED(cg('echo "$(date)"')) ? ok('command-guard allows benign substitution (`echo "$(date)"` — date is not heavy)') : bad('command-guard wrongly blocked benign `echo "$(date)"` — over-blocking substitutions');
+// DevSwarm destructive-read redirect (v0.53.0): under a DevSwarm-active env, a
+// `hivecontrol workspace monitor` (no-timeout long-poll) blocks UNCONDITIONALLY,
+// while a grep whose only hivecontrol text is quoted DATA must NOT false-positive.
+function cgds(cmd) { return runHook('command-guard.js', { tool_name: 'Bash', tool_input: { command: cmd } }, { CLAUDE_CODE_ENTRYPOINT: 'cli', ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' }); }
+BLOCKED(cgds('hivecontrol workspace monitor')) ? ok('command-guard blocks `hivecontrol workspace monitor` under DevSwarm (blocking long-poll)') : bad('command-guard did NOT block hivecontrol monitor under DevSwarm — destructive-read redirect regressed');
+ALLOWED(cgds("grep -n 'hivecontrol workspace monitor' docs/KB.md")) ? ok('command-guard allows grep of quoted hivecontrol DATA under DevSwarm (no false-positive)') : bad('command-guard wrongly blocked a grep of quoted hivecontrol data — destructive-read redirect over-blocks');
+
+// Per-project command allowlist (owner-approved 2026-09-26): if THIS repo
+// opted in via .anti-hall/command-allow.json, report (a) a symlinked or
+// unreadable file (refused), (b) whether the user TRUSTED this exact content
+// (~/.anti-hall/trusted-command-allow.json; untrusted/edited -> command-guard
+// applies nothing) with the command that trusts it, and (c) every pattern
+// command-guard ignores (lib/command-allow.js validatePattern: unanchored, no
+// literal command word, unbounded wildcard like `.*`, top-level `|`, invalid
+// regex) with its reason. Uses process.cwd(), not the top-level `const cwd`
+// declared further down (reading that here was a TDZ ReferenceError the
+// catch swallowed, so this report never printed).
+try {
+  const allowLib = require('./lib/command-allow.js');
+  const allowTop = allowLib.repoToplevel(process.cwd());
+  const f = allowTop ? allowLib.readAllowFile(allowTop) : { state: 'missing' };
+  const trustCmd = 'node ' + JSON.stringify(path.join(__dirname, '..', 'scripts', 'settings.js')) +
+    ' trust-command-allow ' + JSON.stringify(allowTop || '.');
+  if (f.state === 'symlink') {
+    warnl('command-allow.json (or its .anti-hall dir) is a symlink — refused, command-guard applies nothing');
+  } else if (f.state === 'unreadable' || f.state === 'invalid-json') {
+    warnl('command-allow.json is ' + (f.state === 'invalid-json' ? 'not valid JSON' : 'unreadable') + ' — command-guard applies nothing');
+  } else if (f.state === 'ok') {
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    const trust = allowLib.trustState(home, allowTop, f.hash);
+    const bad_ = [];
+    for (const p of f.patterns) {
+      const v = allowLib.validatePattern(p);
+      if (!v.ok) bad_.push(JSON.stringify(p) + ' (' + v.reason + ')');
+    }
+    if (trust === 'untrusted') {
+      warnl('command-allow.json is NOT trusted — command-guard applies none of its ' + f.patterns.length + ' pattern(s). Review it, then trust it: ' + trustCmd);
+    } else if (trust === 'mismatch') {
+      warnl('command-allow.json CHANGED since you trusted it — command-guard applies nothing until re-trusted. Review it, then: ' + trustCmd);
+    }
+    if (bad_.length) {
+      warnl('command-allow.json has ' + bad_.length + ' ignored pattern(s) (command-guard never matches them): ' + bad_.join(', '));
+    } else if (f.patterns.length && trust === 'trusted') {
+      ok('command-allow.json: trusted, ' + f.patterns.length + ' valid anchored pattern(s)');
+    }
+  }
+} catch (_) {
+  // fail-open: this is a diagnostic, never a hard failure.
+}
+
+// Per-project doc-edit allowlist (0.112): same report for edit-guard's
+// .anti-hall/edit-allow.json — refused symlink/unreadable file, untrusted or
+// changed-since-trusted content (with the trust command), and ignored globs
+// (lib/command-allow.js validateEditPath: absolute, `..`, match-everything).
+try {
+  const allowLib = require('./lib/command-allow.js');
+  const allowTop = allowLib.repoToplevel(process.cwd());
+  const f = allowTop ? allowLib.readAllowFile(allowTop, 'edit') : { state: 'missing' };
+  const trustCmd = 'node ' + JSON.stringify(path.join(__dirname, '..', 'scripts', 'settings.js')) +
+    ' trust-edit-allow ' + JSON.stringify(allowTop || '.');
+  if (f.state === 'symlink') {
+    warnl('edit-allow.json (or its .anti-hall dir) is a symlink — refused, edit-guard applies nothing');
+  } else if (f.state === 'unreadable' || f.state === 'invalid-json') {
+    warnl('edit-allow.json is ' + (f.state === 'invalid-json' ? 'not valid JSON' : 'unreadable') + ' — edit-guard applies nothing');
+  } else if (f.state === 'ok') {
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    const trust = allowLib.trustState(home, allowTop, f.hash, 'edit');
+    const bad_ = [];
+    for (const p of f.patterns) {
+      const v = allowLib.validateEditPath(p);
+      if (!v.ok) bad_.push(JSON.stringify(p) + ' (' + v.reason + ')');
+    }
+    if (trust === 'untrusted') {
+      warnl('edit-allow.json is NOT trusted — edit-guard applies none of its ' + f.patterns.length + ' path(s). Review it, then trust it: ' + trustCmd);
+    } else if (trust === 'mismatch') {
+      warnl('edit-allow.json CHANGED since you trusted it — edit-guard applies nothing until re-trusted. Review it, then: ' + trustCmd);
+    }
+    if (bad_.length) {
+      warnl('edit-allow.json has ' + bad_.length + ' ignored path(s) (edit-guard never matches them): ' + bad_.join(', '));
+    } else if (f.patterns.length && trust === 'trusted') {
+      ok('edit-allow.json: trusted, ' + f.patterns.length + ' valid repo-relative path glob(s)');
+    }
+  }
+} catch (_) {
+  // fail-open: this is a diagnostic, never a hard failure.
+}
+
+// edit-guard: blocks direct Edit-family tool use in COORDINATOR; allows in SUBAGENT (payload agent_id)
+function eg(extra) { return runHook('edit-guard.js', Object.assign({ tool_name: 'Edit', tool_input: { file_path: 'src/x.js', old_string: 'a', new_string: 'b' } }, extra), { CLAUDE_CODE_ENTRYPOINT: 'cli' }); }
+BLOCKED(eg()) ? ok('edit-guard blocks coordinator edit') : bad('edit-guard did NOT block coordinator edit');
+ALLOWED(eg({ agent_id: 'test-agent', agent_type: 'general-purpose' })) ? ok('edit-guard ALLOWS subagent edit') : bad('edit-guard wrongly blocked a subagent edit — delegation would deadlock');
+
+// speculation-guard: a Stop-hook block on hedged-without-evidence text. Build a
+// throwaway transcript whose last assistant message says "should be fine".
+function specTest() {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-'));
+  const tp = path.join(tdir, 't.jsonl');
+  try {
+    fs.writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'That change should be fine.' }] },
+    }) + '\n');
+    const r = runHook('speculation-guard.js', { transcript_path: tp, session_id: 'doctor-spec-' + Date.now() });
+    // Stop-hook block is signalled by the decision field (exit 0), not exit 2.
+    return /"decision"\s*:\s*"block"/.test(r.out);
+  } finally {
+    try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+specTest() ? ok('speculation-guard flags "should be fine" (hedge w/o evidence)') : bad('speculation-guard did NOT flag "should be fine"');
+
+// tasklist-guard: blocks at Stop when >= threshold file-mutating actions were
+// done with NO task activity and no fresh progress file. Build a throwaway
+// transcript of 4 Edit tool_uses, point cwd at a dir with no progress file.
+function tasklistTest() {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-tl-'));
+  const tp = path.join(tdir, 't.jsonl');
+  try {
+    const edits = [];
+    for (let i = 0; i < 4; i++) {
+      edits.push(JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', id: 'toolu_e' + i, input: { file_path: '/x/f' + i } }] },
+      }));
+    }
+    fs.writeFileSync(tp, edits.join('\n') + '\n');
+    const r = runHook('tasklist-guard.js', { transcript_path: tp, cwd: tdir, session_id: 'doctor-tl-' + Date.now() });
+    return /"decision"\s*:\s*"block"/.test(r.out);
+  } finally {
+    try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+tasklistTest() ? ok('tasklist-guard blocks untracked work (4 edits, no tasks, no progress file)') : bad('tasklist-guard did NOT block untracked work');
+
+// codex-nudge: Stop-hook advisory that nudges for a Codex second opinion when a
+// session shipped >= MIN substantial code-file edits with no Codex review. Build a
+// throwaway transcript of 3 Edit tool_uses on .ts files and no codex spawn.
+function codexNudgeTest() {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cx-'));
+  const tp = path.join(tdir, 't.jsonl');
+  try {
+    const lines = [];
+    for (const f of ['a.ts', 'b.ts', 'c.ts']) {
+      lines.push(JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', id: 'toolu_' + f, input: { file_path: '/x/' + f } }] },
+      }));
+    }
+    fs.writeFileSync(tp, lines.join('\n') + '\n');
+    const r = runHook('codex-nudge.js', { transcript_path: tp, session_id: 'doctor-cx-' + Date.now() });
+    return /"decision"\s*:\s*"block"/.test(r.out);
+  } finally {
+    try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+codexNudgeTest() ? ok('codex-nudge flags substantial code change with no Codex review') : bad('codex-nudge did NOT flag uncovered code change');
+
+// model-routing-guard: blocks a mechanical task pinned to a flagship model (row 1);
+// allows a benign spawn with no model specified and no mechanical signals (row 5).
+function mrg(payload) {
+  return runHook('model-routing-guard.js', Object.assign({ tool_name: 'Agent' }, payload));
+}
+const mrgBlock = mrg({ tool_input: {
+  model: 'opus',
+  subagent_type: 'general-purpose',
+  description: 'fetch and download the build artifacts',
+  prompt: 'fetch and download the build artifacts from the CI bucket',
+} });
+const mrgAllow = mrg({ tool_input: {
+  description: 'summarise the findings from the last round',
+  prompt: 'summarise the findings from the last round',
+} });
+BLOCKED(mrgBlock) ? ok('model-routing-guard blocks mechanical task pinned to flagship model (opus + fetch/download)') : bad('model-routing-guard did NOT block mechanical+flagship spawn — routing guard not firing');
+ALLOWED(mrgAllow) ? ok('model-routing-guard allows benign spawn with no model and no mechanical signals') : bad('model-routing-guard wrongly blocked a benign spawn');
+
+// omc-detect: presence and syntax check (shared helper, not a hook).
+const omcDetectPath = path.join(HOOKS, 'omc-detect.js');
+if (fs.existsSync(omcDetectPath)) {
+  const omcChk = cp.spawnSync(process.execPath, ['--check', omcDetectPath], { encoding: 'utf8' });
+  omcChk.status === 0 ? ok('omc-detect.js present and syntax-valid') : bad('omc-detect.js present but SYNTAX ERROR: ' + (omcChk.stderr || '').trim());
+} else {
+  bad('omc-detect.js MISSING — OMC-deference will not work in task-guard / tasklist-guard');
+}
+
+// swarm-guard: must allow a normal spawn on a healthy machine (fail-open, real mem calc)
+const sg = runHook('swarm-guard.js', { tool_name: 'Agent', tool_input: {} });
+ALLOWED(sg) ? ok('swarm-guard allows a spawn under normal memory') : warnl(`swarm-guard returned exit ${sg.code} (blocked) — check memory pressure`);
+
+// version-alert: SessionStart advisory that nudges when a cached "latest"
+// version is newer than the running one. It reads its cache from a FIXED path
+// under the user's home dir (~/.anti-hall/version-check.json), not from cwd or
+// the payload — so this test overrides HOME (and USERPROFILE for Windows,
+// since os.homedir() resolves from that var there) to a throwaway temp dir
+// rather than touching the real cache file. Two cases against the SAME
+// fresh-cache contract: a newer cached version must alert, an equal one must
+// stay silent (ANTIHALL_VERSION_ALERT is force-cleared so an inherited
+// off-switch can't fake a false negative).
+function versionAlertTest() {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-va-'));
+  try {
+    const cacheDir = path.join(tdir, '.anti-hall');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cachePath = path.join(cacheDir, 'version-check.json');
+    const fakeEnv = { HOME: tdir, USERPROFILE: tdir, ANTIHALL_VERSION_ALERT: '' };
+
+    // Case 1: fresh cache, latest > running -> must emit the update nudge.
+    fs.writeFileSync(cachePath, JSON.stringify({ latest: '999.0.0', checkedAt: Date.now() }));
+    const stale = runHook('version-alert.js', { hook_event_name: 'SessionStart', session_id: 'doctor-va-stale-' + Date.now() }, fakeEnv);
+    // v0.108.0 wording: "Tell the user now: anti-hall vX is available (you are running vY) ..."
+    const staleAlerted = /"additionalContext"\s*:\s*"[^"]*anti-hall v999\.0\.0 is available \(you are running v/.test(stale.out);
+
+    // Case 2: fresh cache, latest === running -> must stay silent (no stdout).
+    fs.writeFileSync(cachePath, JSON.stringify({ latest: version, checkedAt: Date.now() }));
+    const current = runHook('version-alert.js', { hook_event_name: 'SessionStart', session_id: 'doctor-va-current-' + Date.now() }, fakeEnv);
+    const currentSilent = current.out.trim() === '';
+
+    return staleAlerted && currentSilent;
+  } finally {
+    try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+versionAlertTest() ? ok('version-alert nudges on a stale cached version and stays silent when current') : bad('version-alert did NOT behave correctly for stale-vs-current cache');
+
+// --- 4. Statusline install status -------------------------------------------
+head('Statusline');
+function readJSON(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } }
+const cwd = process.cwd();
+const scopes = [
+  ['project-local', path.join(cwd, '.claude', 'settings.local.json')],
+  ['project',       path.join(cwd, '.claude', 'settings.json')],
+  ['user',          path.join(os.homedir(), '.claude', 'settings.json')],
+];
+let slFound = false;
+for (const [label, p] of scopes) {
+  const s = readJSON(p);
+  const cmd = s && s.statusLine && s.statusLine.command;
+  if (cmd) {
+    slFound = true;
+    if (cmd.includes('statusline.js')) ok(`statusline installed (${label}) -> anti-hall dispatcher`);
+    else ok(`statusline set (${label}) -> ${cmd.slice(0, 48)}…${cmd.length > 48 ? '' : ''}`);
+    break;
+  }
+}
+if (!slFound) warnl('no statusLine configured — run the install-statusline skill (then restart)');
+
+// Behavioral: does the statusline actually RENDER? Spawn the dispatcher with a
+// sample session payload and assert it produces output (line 1 = rich, line 2 =
+// context gauge when idle).
+// Test-only overrides (undocumented; mirror the ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS
+// pattern in api-guard.js) so this exact contention-timeout path can be exercised
+// deterministically without waiting out a real 30s timeout: ...SCRIPT points the
+// spawn at a stand-in script instead of the real statusline.js, ...TIMEOUT_MS
+// shortens the timeout to match. Neither is read unless explicitly set, so normal
+// runs are unaffected.
+const slScript = process.env.ANTIHALL_DOCTOR_SL_SCRIPT || path.join(ROOT, 'statusline', 'statusline.js');
+const slTimeoutMs = parseInt(process.env.ANTIHALL_DOCTOR_SL_TIMEOUT_MS || '', 10) || 30000;
+if (!fs.existsSync(slScript)) {
+  bad('statusline.js dispatcher missing');
+} else {
+  const sample = JSON.stringify({
+    workspace: { current_dir: cwd }, cwd,
+    model: { display_name: 'doctor-test' },
+    context_window: { used_percentage: 50 },
+  });
+  // timeout: 30000ms (up from 5000ms). Under `node --test` file-level parallelism
+  // this spawn can legitimately lose the CPU-contention race and miss a short
+  // window with no bug, no hang, no shared state (same flake class fe0d901/
+  // b99eafb fixed by raising the OUTER test-harness runDoctor() timeout to
+  // 60000ms — this is the analogous fix for the INNER product-code spawn those
+  // commits didn't touch). 30000ms gives 6x headroom over the old cap while
+  // leaving half of the 60000ms outer test-harness budget for every OTHER
+  // section of a `doctor` run (this is only one of ~15+ spawns doctor makes).
+  const res = cp.spawnSync(process.execPath, [slScript], { input: sample, encoding: 'utf8', timeout: slTimeoutMs });
+  const out = (res.stdout || '').replace(/\s+$/, '');
+  const nlines = out ? out.split('\n').length : 0;
+  // The product is a TWO-line statusline. The sample payload carries
+  // context_window, so line 2 (the live context gauge) MUST render. Require >= 2
+  // lines — a single line means line 2 (the context gauge) failed to render.
+  if (res.status === 0 && nlines >= 2) ok(`statusline renders ${nlines} lines (line 1 + live context gauge on line 2)`);
+  else if (res.status === 0 && nlines === 1) bad('statusline rendered only 1 line — line 2 (context gauge) did NOT render despite context_window in the payload');
+  else if (res.status === null && res.signal === 'SIGTERM') warnl(`statusline.js timed out under load (30s) — likely CPU contention, not a real failure; re-run outside contention to confirm`);
+  else bad(`statusline.js produced no output (exit ${res.status})`);
+  // Verify the rich line-1 renderer is present + valid (the own-dispatch default).
+  const rich = path.join(ROOT, 'statusline', 'statusline-rich.js');
+  if (fs.existsSync(rich) && cp.spawnSync(process.execPath, ['--check', rich], { encoding: 'utf8' }).status === 0) {
+    ok('statusline-rich.js (line-1 renderer) present, syntax valid');
+  } else {
+    warnl('statusline-rich.js missing/invalid — line 1 falls back to the simple renderer');
+  }
+}
+
+// --- 5. Context footprint ----------------------------------------------------
+// The plugin injects text into the model's context. Measure it so the cost of
+// the guardrail is visible (bloated context is the exact failure it warns of).
+head('Context footprint (injected text)');
+function ctxBytes(file, payload, picker, env) {
+  const r = runHook(file, payload || {}, env, true);
+  let txt = '';
+  try {
+    const o = JSON.parse((r.out || '').split('\n').find(Boolean) || '{}');
+    txt = (picker ? picker(o) : (o.hookSpecificOutput && o.hookSpecificOutput.additionalContext)) || '';
+  } catch (_) { txt = ''; }
+  return Buffer.byteLength(String(txt), 'utf8');
+}
+const tok = (b) => Math.round(b / 4);
+// SessionStart one-time cost = SUM across every hook actually registered on
+// SessionStart in hooks.json (verify-first-full is only one of several — e.g.
+// version-alert and fable-availability ALSO inject
+// additionalContext on the same event per hooks.json). Derive the list from
+// hooks.json itself rather than hardcoding it, so a future hooks.json edit is
+// picked up automatically instead of silently under-reporting.
+function sessionStartHookFiles(cfg) {
+  const groups = (cfg && cfg.hooks && Array.isArray(cfg.hooks.SessionStart)) ? cfg.hooks.SessionStart : [];
+  const files = [];
+  for (const group of groups) {
+    const hs = Array.isArray(group.hooks) ? group.hooks : [];
+    for (const h of hs) {
+      const m = String((h && h.command) || '').match(/[\w-]+\.js/);
+      if (m) files.push(m[0]);
+    }
+  }
+  return [...new Set(files)];
+}
+// Fallback to the single known SessionStart script ONLY if hooks.json itself
+// failed to parse (section 2 above already reported that failure as a FAIL).
+const ssFiles = sessionStartHookFiles(hooksConfig);
+const ssPayload = { hook_event_name: 'SessionStart', source: 'startup' };
+let ssB = 0;
+const ssParts = [];
+// NEVER-SIDE-EFFECTING PROBE (item E follow-up, v0.107.1): this loop spawns
+// EVERY registered SessionStart hook purely to measure its additionalContext
+// byte size — every hook here is expected to be a pure JSON emitter with no
+// real-world effect. repair-on-reload.js is the one exception (it can spawn a
+// detached `doctor.js --repair` child when a repair is pending) — spawning
+// THAT from inside doctor.js's own self-measurement would recursively launch
+// another doctor.js run on every `doctor` invocation. Disabled for this probe
+// only via its own documented escape hatch; every other hook is unaffected.
+const ssProbeEnv = { ANTIHALL_REPAIR_ON_RELOAD: 'off' };
+for (const f of (ssFiles.length ? ssFiles : ['verify-first-full.js'])) {
+  const b = ctxBytes(f, ssPayload, null, ssProbeEnv);
+  ssB += b;
+  ssParts.push(`${f} ${b} B`);
+}
+// Per-turn cost = sum of UserPromptSubmit injections (verify-first + task-tracker).
+const upPayload = { hook_event_name: 'UserPromptSubmit', prompt: 'x', session_id: 'doctor-ctx', cwd };
+const vfB = ctxBytes('verify-first.js', upPayload);
+// task-tracker is throttled: measure its FULL (first-turn) injection by using a
+// fresh session id so state has not been written yet this run.
+const ttPayload = { hook_event_name: 'UserPromptSubmit', prompt: 'x', session_id: 'doctor-ctx-' + Date.now(), cwd };
+const ttB = ctxBytes('task-tracker.js', ttPayload);
+const perTurnB = vfB + ttB;
+// Per-Stop cost: the block reason text a Stop hook surfaces (decision.reason).
+function stopReasonBytes(file, payload) {
+  const r = runHook(file, payload || {}, undefined, true);
+  let txt = '';
+  try {
+    const o = JSON.parse((r.out || '').split('\n').find(Boolean) || '{}');
+    txt = (o.decision === 'block' && o.reason) || '';
+  } catch (_) { txt = ''; }
+  return Buffer.byteLength(String(txt), 'utf8');
+}
+let stopB = 0;
+try {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-ctx-'));
+  const tp = path.join(tdir, 't.jsonl');
+  fs.writeFileSync(tp, JSON.stringify({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'That change should be fine.' }] },
+  }) + '\n');
+  stopB = stopReasonBytes('speculation-guard.js', { transcript_path: tp, session_id: 'doctor-ctx-stop-' + Date.now() });
+  try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+} catch (_) { stopB = 0; }
+ok(`SessionStart (one-time): ${ssB} B ~${tok(ssB)} tok  (${ssParts.join(' + ')})`);
+ok(`Per-TURN (every UserPromptSubmit): ${perTurnB} B ~${tok(perTurnB)} tok  (verify-first ${vfB} B + task-tracker ${ttB} B; task-tracker throttles to a short line after the first turn)`);
+ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
+
+// --- 5b. flutter-debug (CONDITIONAL: Flutter cwd or skill/agent in use) -------
+// ONE implementation, two entry points: preflight.js EXPORTS its checks; doctor
+// require()s and CALLS them IN-PROCESS (not a subprocess spawn) as a read-only
+// section. Runs ONLY when a pubspec.yaml is in cwd or the flutter-debug skill/
+// agent is present — silent in a non-Flutter repo. skipRegistration:true keeps
+// it read-only (no MCP add, no marionette auto-provision).
+(function flutterDebugSection() {
+  const hasPubspec = (() => { try { return fs.statSync(path.join(cwd, 'pubspec.yaml')).isFile(); } catch (_) { return false; } })();
+  const skillPath = path.join(ROOT, 'skills', 'flutter-debug', 'scripts', 'preflight.js');
+  const skillPresent = fs.existsSync(skillPath);
+  // Condition: a Flutter project in cwd, OR the user explicitly invoked it.
+  const inUse = /flutter-debug/i.test((process.env.ANTIHALL_DOCTOR_CONTEXT || '') + ' ' + process.argv.join(' '));
+  if (!hasPubspec && !inUse) return; // not a Flutter context → stay silent
+  head('flutter-debug (Flutter project detected)');
+  if (!skillPresent) { warnl('flutter-debug preflight.js not found — skill not installed?'); return; }
+  let preflight;
+  try { preflight = require(skillPath); }
+  catch (e) { bad('flutter-debug preflight.js present but failed to load: ' + (e && e.message)); return; }
+  try {
+    const report = preflight.runAllChecks({ projectDir: cwd, skipRegistration: true });
+    for (const r of report.results) {
+      const msg = '[' + r.id + '] ' + String(r.message).split('\n')[0];
+      if (r.status === preflight.FAIL) bad(msg);
+      else if (r.status === preflight.WARN) warnl(msg);
+      else ok(msg);
+    }
+    ok('capability tier: ' + report.tier.tier + ' — ' + report.tier.summary);
+  } catch (e) {
+    warnl('flutter-debug checks raised (fail-open): ' + (e && e.message));
+  }
+})();
+
+// --- 5c. DevSwarm liveness supervisor (CONDITIONAL: active session or descriptors) ---
+// ONE implementation, two entry points: companion/lib/doctor-devswarm.js EXPORTS
+// runChecks; doctor requires it and CALLS it IN-PROCESS. Silent unless a DevSwarm
+// session is active OR the consumer has published workspace descriptors — EXCEPT a
+// syntax error in any supervisor lib is always surfaced (P2-12). Workaround for
+// claude-code#39755.
+// devswarmHookSelfTests() -> [{ok, msg}]. Behavioral self-tests for the four
+// Phase-1 mechanical hooks. Each builds an isolated fixture home (its own
+// ~/.anti-hall/devswarm tree) and runs the REAL hook subprocess with the
+// appropriate DevSwarm role env, then asserts the observable effect. Fully
+// self-contained + cleaned up; any throw fails-safe to a single FAIL result.
+function devswarmHookSelfTests() {
+  const results = [];
+  let base = null;
+  try { base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-ds-')); } catch (_) { return results; }
+  try {
+    // A descriptor + its durable inbox/cursor, mirroring the workspace registry
+    // shape readDescriptors() requires (id, worktreePath, sessionId, inbox/cursor).
+    // Consumed by the parent-gate self-test (#4 below) — parent-gate.js's
+    // blocking-set loop is still raw readDescriptors + readUnread, unchanged by
+    // the v0.57 mesh Phase 8 restructure (D29: only its #36 filter predicate
+    // changed, not its data source).
+    function writeWorkspace(home, id, opts) {
+      const root = path.join(home, '.anti-hall', 'devswarm');
+      fs.mkdirSync(path.join(root, 'workspaces'), { recursive: true });
+      const inboxPath = path.join(root, 'inbox', id + '.ndjson');
+      const cursorPath = path.join(root, 'cursor', id + '.json');
+      fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
+      fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+      const inbox = (opts && opts.inbox) || [];
+      fs.writeFileSync(inboxPath, inbox.length ? inbox.join('\n') + '\n' : '');
+      fs.writeFileSync(cursorPath, String((opts && opts.cursor) || 0));
+      const d = { id, worktreePath: path.join(root, 'wt', id), sessionId: 'sess-' + id, inboxPath, cursorPath };
+      fs.writeFileSync(path.join(root, 'workspaces', id + '.json'), JSON.stringify(d));
+    }
+    // v0.57 mesh (PLAN-v0.57-mesh.md Phase 8): devswarm-parent-inbox.js now
+    // reads ONE shared summaries/<repoKey>.json (keyed by repoKeyForWorktree of
+    // the hook payload's OWN `cwd`), not a per-descriptor durable inbox/cursor —
+    // so its self-test needs a RESOLVABLE cwd (ROOT, this plugin's own repo
+    // checkout — always a real git worktree) and a shared-summary write at that
+    // repoKey, not writeWorkspace()'s raw descriptor shape. Lazy/guarded
+    // require (same D27 posture as the hooks themselves): an unresolvable
+    // repokey module fails this self-test to a single, clearly-labelled SKIP
+    // result rather than crashing doctor.js.
+    //
+    // ITEM F.1 FIX (v0.107.1 field report): this used to resolve the repoKey
+    // from `ROOT` (the PLUGIN's own install/cache dir, e.g. ~/.claude/
+    // plugins/cache/anti-hall/anti-hall/0.107.0/) instead of the CALLER's
+    // actual cwd — the plugin cache mirror is never itself a git worktree, so
+    // repoKeyForWorktree(ROOT) failed on every real invocation, even one run
+    // from inside a perfectly normal project repo, and the self-test always
+    // SKIPPED. Use process.cwd() (the directory doctor.js was actually
+    // invoked from) instead, matching what a real Primary session would have.
+    let meshRepoKey = null;
+    try {
+      const repokey = require('../companion/lib/devswarm-repokey.js');
+      meshRepoKey = repokey.repoKeyForWorktree(process.cwd());
+    } catch (_) { meshRepoKey = null; }
+    function writeSharedSummary(home, workspaces) {
+      if (!meshRepoKey) return false;
+      const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, meshRepoKey + '.json'), JSON.stringify({ workspaces }));
+      return true;
+    }
+    // Force the supervisor ON (mode wins over feature-detect) and clear the
+    // hard kill-switch so the self-test verifies the code regardless of the
+    // operator's runtime toggle. HOME + USERPROFILE point os.homedir() at the
+    // fixture on every platform. Child = source-branch set; Primary = cleared.
+    const CHILD_ENV = (home) => ({ HOME: home, USERPROFILE: home, DISABLE_ANTIHALL_DEVSWARM: '', ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature-x' });
+    const PRIMARY_ENV = (home) => ({ HOME: home, USERPROFILE: home, DISABLE_ANTIHALL_DEVSWARM: '', ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: '' });
+
+    // 1. devswarm-child-turn (UserPromptSubmit, child): writes a turn-authored
+    //    heartbeat AND injects the per-turn parent-update reminder.
+    (function () {
+      const home = path.join(base, 'child-turn'); fs.mkdirSync(home, { recursive: true });
+      const r = runHook('devswarm-child-turn.js', { hook_event_name: 'UserPromptSubmit', session_id: 'ct', prompt: 'hi' }, CHILD_ENV(home));
+      const said = /CHILD WORKSPACE/.test(r.out);
+      let beat = false;
+      try { beat = fs.readdirSync(path.join(home, '.anti-hall', 'devswarm', 'heartbeats')).some((f) => /\.json$/.test(f)); } catch (_) {}
+      results.push({ ok: said && beat, msg: (said && beat)
+        ? 'devswarm-child-turn writes a turn-authored heartbeat + reminds the child to update its parent'
+        : 'devswarm-child-turn did NOT heartbeat/remind a child session (said=' + said + ', heartbeat=' + beat + ')' });
+    })();
+
+    // 2. devswarm-child-gate (Stop, child): forces a self-report before idling.
+    //
+    // Wave 3 addendum item 14 fix: devswarm-child-gate.js gates on
+    // isChildWorkspaceCorroborated() (defect a55d6b71a76f root cause C — #3
+    // above), which requires ON-DISK evidence (a registered
+    // workspaces/<id>.json descriptor for env.DEVSWARM_BUILDER_ID) in
+    // addition to DEVSWARM_SOURCE_BRANCH. This self-test used to spawn the
+    // gate with CHILD_ENV(home) alone — no DEVSWARM_BUILDER_ID, no
+    // descriptor — so isChildWorkspaceCorroborated made the gate a silent
+    // no-op and doctor reported the gate as broken on every install,
+    // regardless of the actual code. Model a REAL child the same way #1's
+    // own descriptor fixture (writeWorkspace, defined above) already does
+    // for #4 below: register a descriptor for a synthetic builder id in this
+    // self-test's OWN isolated temp HOME (never the real home — `base` is an
+    // mkdtempSync fixture root) and pass that same id as DEVSWARM_BUILDER_ID.
+    (function () {
+      const home = path.join(base, 'child-gate'); fs.mkdirSync(home, { recursive: true });
+      const builderId = 'cg-self-test-child';
+      writeWorkspace(home, builderId);
+      const env = Object.assign({}, CHILD_ENV(home), { DEVSWARM_BUILDER_ID: builderId });
+      const r = runHook('devswarm-child-gate.js', { hook_event_name: 'Stop', session_id: 'cg-' + Date.now() }, env);
+      const blocked = /"decision"\s*:\s*"block"/.test(r.out);
+      results.push({ ok: blocked, msg: blocked
+        ? 'devswarm-child-gate forces a child to self-report to its parent before stopping'
+        : 'devswarm-child-gate did NOT force a child heartbeat at Stop' });
+    })();
+
+    // 3. devswarm-parent-inbox (UserPromptSubmit, Primary): surfaces a neglected
+    //    workspace's unread backlog to the Primary. Reads the ONE shared
+    //    summaries/<repoKey>.json (Phase 8) — payload.cwd = ROOT so the hook
+    //    resolves the SAME repoKey writeSharedSummary() wrote under.
+    (function () {
+      const home = path.join(base, 'parent-inbox'); fs.mkdirSync(home, { recursive: true });
+      const wrote = writeSharedSummary(home, { wsA: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
+      if (!wrote) {
+        // ITEM F.1 FIX: a SKIP is NOT a failure (doctor.js was invoked from a
+        // cwd repoKeyForWorktree could not resolve — e.g. not a git worktree
+        // at all). `skip: true` routes this through the neutral/informational
+        // path below instead of `bad()`, so a legitimately-inapplicable self-
+        // test can never inflate the failure count.
+        results.push({ ok: true, skip: true, msg: 'devswarm-parent-inbox self-test SKIPPED: repoKey unresolvable for ' + process.cwd() + ' (not a git worktree?)' });
+      } else {
+        const r = runHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'pi', prompt: 'hi', cwd: process.cwd() }, PRIMARY_ENV(home));
+        const said = /DEVSWARM PARENT INBOX/.test(r.out) && /3 unread/.test(r.out);
+        results.push({ ok: said, msg: said
+          ? 'devswarm-parent-inbox surfaces a workspace unread backlog to the Primary'
+          : 'devswarm-parent-inbox did NOT surface unread backlog to the Primary' });
+      }
+    })();
+
+    // 4. devswarm-parent-gate (Stop, Primary): blocks the Primary turn while a
+    //    child still has unread backlog past its cursor.
+    (function () {
+      const home = path.join(base, 'parent-gate'); fs.mkdirSync(home, { recursive: true });
+      writeWorkspace(home, 'wsA', { inbox: ['{"m":1}', '{"m":2}'], cursor: 0 });
+      const r = runHook('devswarm-parent-gate.js', { hook_event_name: 'Stop', session_id: 'pg-' + Date.now() }, PRIMARY_ENV(home));
+      const blocked = /"decision"\s*:\s*"block"/.test(r.out);
+      results.push({ ok: blocked, msg: blocked
+        ? 'devswarm-parent-gate blocks the Primary turn while a child inbox is unread'
+        : 'devswarm-parent-gate did NOT block on a neglected child at Stop' });
+    })();
+  } catch (e) {
+    results.push({ ok: false, msg: 'devswarm hook self-tests raised: ' + (e && e.message) });
+  } finally {
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {}
+  }
+  return results;
+}
+
+(function devswarmSection() {
+  const libDir = path.join(ROOT, 'companion', 'lib');
+  const supervisorFiles = [
+    path.join(HOOKS, 'lib', 'devswarm-detect.js'),
+    path.join(libDir, 'target-session.js'),
+    path.join(libDir, 'liveness.js'),
+    path.join(libDir, 'recovery.js'),
+    path.join(libDir, 'doctor-devswarm.js'),
+    path.join(libDir, 'doctor-descriptors.js'),
+    path.join(libDir, 'doctor-runtime.js'),
+    path.join(ROOT, 'companion', 'devswarm-supervisor.js'),
+    path.join(ROOT, 'companion', 'install-devswarm-supervisor.js'),
+    path.join(ROOT, 'companion', 'install-devswarm-ingest.js'),
+    path.join(ROOT, 'companion', 'devswarm-ingest.js'),
+  ];
+  // P2-12: node --check each PRESENT file so a broken file FAILS (loudly) instead
+  // of vanishing behind the require()-fail-open below.
+  const syntaxErrors = [];
+  for (const f of supervisorFiles) {
+    if (!fs.existsSync(f)) continue; // optional / older build
+    const chk = cp.spawnSync(process.execPath, ['--check', f], { encoding: 'utf8' });
+    if (chk.status !== 0) syntaxErrors.push({ f, err: (chk.stderr || '').split('\n')[0] });
+  }
+
+  const modPath = path.join(libDir, 'doctor-devswarm.js');
+  let dsd = null, report = null;
+  if (fs.existsSync(modPath)) {
+    try { dsd = require(modPath); } catch (_) { dsd = null; } // fail-open: a broken check never breaks doctor
+    if (dsd) { try { report = dsd.runChecks({ home: os.homedir(), env: process.env, repair: DO_REPAIR && !DRYRUN }); } catch (_) { report = null; } }  // `&& !DRYRUN` (defect 8b211241bbe9): DO_REPAIR stays TRUE under --dry-run
+  // (that flag selects a dry repair pass, it does not clear DO_REPAIR), so
+  // passing DO_REPAIR alone would let the cursor-hygiene pass DELETE files
+  // during a run the user asked to be a preview.
+  }
+  const active = !!(report && report.active);
+
+  // Supervisor companion (launchd/systemd background job) INSTALLED vs merely
+  // available on disk — always checked against the REAL os.homedir(), never the
+  // `home` used above for report/descriptors (those may be a test fixture; the
+  // scheduler artifact is always per-real-user). Read-only existence check,
+  // never spawns launchctl/systemctl. LABEL/UNIT live in
+  // install-devswarm-supervisor.js (NOT devswarm-supervisor.js, which doesn't
+  // export them) — require that module separately so this can't drift from
+  // what install actually writes.
+  let installed = false;
+  const installPath = path.join(ROOT, 'companion', 'install-devswarm-supervisor.js');
+  if (fs.existsSync(installPath)) {
+    try {
+      const inst = require(installPath);
+      const realHome = os.homedir();
+      if (process.platform === 'darwin') {
+        installed = fs.existsSync(path.join(realHome, 'Library', 'LaunchAgents', `${inst.LABEL}.plist`));
+      } else if (process.platform === 'linux') {
+        installed = fs.existsSync(path.join(realHome, '.config', 'systemd', 'user', `${inst.UNIT}.timer`));
+      }
+      // win32: recovery is a documented no-op (see install-devswarm-supervisor.js) — never installed.
+    } catch (_) { installed = false; } // fail-open: unknown = not installed
+  }
+
+  // Phase-1 mechanical hooks (parent-inbox / child-turn / parent-gate /
+  // child-gate) behavioral self-tests. Each constructs its OWN throwaway fixture
+  // home + DevSwarm env and runs the real hook as a subprocess, proving it still
+  // FIRES (a child that finishes a turn is forced to heartbeat; a Primary with a
+  // neglected workspace is nudged and gated). Runs UNCONDITIONALLY — the fixtures
+  // are self-contained, so this verifies the code even for a dormant session —
+  // but stays QUIET when healthy: a FAILURE is always surfaced (loud, matching
+  // the P2-12 syntax-error rule) so a broken Phase-1 hook can never hide.
+  const hookTests = devswarmHookSelfTests();
+  // ITEM F.1 FIX: a `skip:true` result (self-test not applicable — e.g. cwd
+  // is not a git worktree) is neither a pass nor a failure. Only an explicit
+  // `ok:false` (a self-test that actually RAN and found the hook broken)
+  // counts toward anyHookFail / the loud FAILURE path below.
+  const anyHookFail = hookTests.some((t) => t.ok === false);
+
+  // Fully silent ONLY when dormant, not installed, every lib parses, AND every
+  // Phase-1 hook self-test passed.
+  if (!active && !installed && syntaxErrors.length === 0 && !anyHookFail) return;
+  head('DevSwarm liveness supervisor (optional)');
+  for (const se of syntaxErrors) bad('supervisor lib SYNTAX ERROR: ' + path.basename(se.f) + ' — ' + se.err);
+  for (const t of hookTests) (t.skip ? infol : (t.ok ? ok : bad))(t.msg);
+  if (installed) ok(`supervisor companion INSTALLED (${process.platform === 'darwin' ? 'launchd' : 'systemd'} background sweep)`);
+  else infol('supervisor companion not installed — background auto-recovery is off; the in-session checks below (if any) still run');
+  if (active && report && dsd) {
+    for (const r of report.results) {
+      if (r.status === dsd.FAIL) bad(r.message);
+      else if (r.status === dsd.WARN) warnl(r.message);
+      else ok(r.message);
+    }
+  }
+
+  // Meeseeks supervision effectiveness (0.117.0): one report-only line when
+  // the supervision metrics log exists. Fail-open.
+  try {
+    const sl = require(path.join(libDir, 'devswarm-supervision-metrics.js')).doctorLine(null); // null -> test-home-guard resolveHome
+    if (sl) infol(sl);
+  } catch (_) { /* never breaks doctor */ }
+
+  // RUNTIME health checks 1-4 (companion/lib/doctor-runtime.js): store/journal
+  // health + summary parity, data staleness, daemons RUNNING (not just
+  // installed), and no-second-consumer. Same require-and-call pattern, same
+  // `active` gate as doctor-devswarm above (check 5 — foreign skill/hook
+  // conflicts — is unconditional; see its own top-level section below).
+  if (active) {
+    const runtimeModPath = path.join(libDir, 'doctor-runtime.js');
+    let dr = null, runtimeReport = null;
+    if (fs.existsSync(runtimeModPath)) {
+      try { dr = require(runtimeModPath); } catch (_) { dr = null; } // fail-open: a broken check never breaks doctor
+      if (dr) { try { runtimeReport = dr.runChecks({ home: os.homedir(), env: process.env, cwd: process.cwd() }); } catch (_) { runtimeReport = null; } }
+    }
+    if (dr && runtimeReport) {
+      for (const r of runtimeReport.results) {
+        if (r.status === dr.FAIL) bad(r.message);
+        else if (r.status === dr.WARN) warnl(r.message);
+        else if (r.status === dr.INFO) infol(r.message);
+        else ok(r.message);
+      }
+    }
+
+    // D13 (v0.97.0) measurement: cron-found-mail.jsonl accumulates one line
+    // per mailbox-wake cron tick that found unread mail WHILE a Monitor
+    // watcher lock was already armed for that same id (devswarm.js's
+    // cmdInboxTick, effect 3) — a directly-measurable "cron caught something
+    // Monitor should have already delivered" event. Report-only (never
+    // FAIL/WARN — a healthy system can carry any count here, including 0),
+    // matching the reporter's own documented decision rule: empty after a
+    // week of normal use is the signal that this cron fallback is pulling no
+    // real weight beyond Monitor and becomes a release candidate for removal.
+    try {
+      const livenessModPath = path.join(libDir, 'liveness.js');
+      let devswarmRootFn = null;
+      if (fs.existsSync(livenessModPath)) {
+        try { ({ devswarmRoot: devswarmRootFn } = require(livenessModPath)); } catch (_) { devswarmRootFn = null; }
+      }
+      if (devswarmRootFn) {
+        // item 5 fix (field report: "CHILD NOT DRAINING" repeated every turn
+        // for an idle child) measurement folded into this SAME try/
+        // devswarmRootFn block (reusing `root` below rather than a second
+        // homedir-resolving call site — see tests/hygiene/homedir-call-site-
+        // ratchet.test.js) — not-draining-suppressed.jsonl accumulates one
+        // line per turn hooks/devswarm-parent-inbox.js's on-change dedupe cap
+        // (keepaliveTurns:2) suppressed an unchanged not-draining nudge; same
+        // report-only, capped-jsonl pattern as cron-found-mail.jsonl below.
+        const root = devswarmRootFn(os.homedir());
+        const p = path.join(root, 'cron-found-mail.jsonl');
+        let lineCount = 0;
+        try { lineCount = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).length; } catch (_) { lineCount = 0; }
+        infol('cron ticks that found mail while a watcher was armed: ' + lineCount +
+          ' (cron-found-mail.jsonl — empty after a week of normal use means this cron ' +
+          'fallback is removable; see docs/KB-claude-monitor-tool.md §7)');
+
+        const p2 = path.join(root, 'not-draining-suppressed.jsonl');
+        let lineCount2 = 0;
+        try { lineCount2 = fs.readFileSync(p2, 'utf8').split('\n').filter(Boolean).length; } catch (_) { lineCount2 = 0; }
+        infol('CHILD NOT DRAINING nudges suppressed by the repeat cap: ' + lineCount2 +
+          ' (not-draining-suppressed.jsonl)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+
+    // #39 (devswarm.wakeWatchIdleSkip) measurement: rearm-cues.jsonl accumulates
+    // one line per idle-skip (trigger 'idle-skip', written by both
+    // scripts/devswarm.js's cmdInboxTick and companion/lib/devswarm-wake-
+    // watch.js's own startup gate) — a Primary with 0 live children declining
+    // to arm/re-arm its wake-watch Monitor. Report-only (never FAIL/WARN — any
+    // count here, including 0, is a healthy system).
+    try {
+      const livenessModPath2 = path.join(libDir, 'liveness.js');
+      let devswarmRootFn2 = null;
+      if (fs.existsSync(livenessModPath2)) {
+        try { ({ devswarmRoot: devswarmRootFn2 } = require(livenessModPath2)); } catch (_) { devswarmRootFn2 = null; }
+      }
+      if (devswarmRootFn2) {
+        const p2 = path.join(devswarmRootFn2(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)), 'rearm-cues.jsonl');
+        let idleSkipCount = 0;
+        try {
+          idleSkipCount = fs.readFileSync(p2, 'utf8').split('\n').filter(Boolean)
+            .filter((l) => { try { return JSON.parse(l).trigger === 'idle-skip'; } catch (_) { return false; } }).length;
+        } catch (_) { idleSkipCount = 0; }
+        infol('wake-watch idle-skips: ' + idleSkipCount +
+          ' (rearm-cues.jsonl, trigger idle-skip — a Primary with 0 live children declining to arm)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+
+    // limit-skip (field report) measurement: same rearm-cues.jsonl ledger,
+    // trigger 'limit-skip' — `inbox tick` declining to nag "re-arm it" while
+    // LIMIT CONSERVATION is active. Report-only (never FAIL/WARN).
+    try {
+      const livenessModPath3 = path.join(libDir, 'liveness.js');
+      let devswarmRootFn3 = null;
+      if (fs.existsSync(livenessModPath3)) {
+        try { ({ devswarmRoot: devswarmRootFn3 } = require(livenessModPath3)); } catch (_) { devswarmRootFn3 = null; }
+      }
+      if (devswarmRootFn3) {
+        const p3 = path.join(devswarmRootFn3(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)), 'rearm-cues.jsonl');
+        let limitSkipCount = 0;
+        try {
+          limitSkipCount = fs.readFileSync(p3, 'utf8').split('\n').filter(Boolean)
+            .filter((l) => { try { return JSON.parse(l).trigger === 'limit-skip'; } catch (_) { return false; } }).length;
+        } catch (_) { limitSkipCount = 0; }
+        infol('wake-watch limit-skips: ' + limitSkipCount +
+          ' (rearm-cues.jsonl, trigger limit-skip — LIMIT CONSERVATION active, re-arm deliberately deferred)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+
+    // Startup-state sampling (0.117.0) — DATA CAPTURE ONLY, report-only line
+    // (never FAIL/WARN — 0 is expected/normal for a long time; see
+    // companion/lib/devswarm-startup-sampling.js's own header for why paused
+    // detection cannot be designed yet).
+    try {
+      const startupSamplingModPath = path.join(libDir, 'devswarm-startup-sampling.js');
+      if (fs.existsSync(startupSamplingModPath)) {
+        const sampling = require(startupSamplingModPath);
+        const n = sampling.countSamples(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env));
+        infol(n + ' startup samples captured (paused detection needs ≥1)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+
+    // 0.117: cron-missing-warned.jsonl accumulates one line per time
+    // devswarm-child-gate.js's Stop hook warned that the mailbox-wake cron
+    // has stopped ticking (e.g. after a DevSwarm crash/session restore/Claude
+    // restart dropped the cron and nothing re-created it) — see that file's
+    // cronMissingWarning(). Report-only.
+    try {
+      const livenessModPath2 = path.join(libDir, 'liveness.js');
+      let devswarmRootFn2 = null;
+      if (fs.existsSync(livenessModPath2)) {
+        try { ({ devswarmRoot: devswarmRootFn2 } = require(livenessModPath2)); } catch (_) { devswarmRootFn2 = null; }
+      }
+      if (devswarmRootFn2) {
+        const p2 = path.join(devswarmRootFn2(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)), 'cron-missing-warned.jsonl');
+        let lineCount2 = 0;
+        try { lineCount2 = fs.readFileSync(p2, 'utf8').split('\n').filter(Boolean).length; } catch (_) { lineCount2 = 0; }
+        infol('mailbox-cron-missing warnings shown: ' + lineCount2 +
+          ' (cron-missing-warned.jsonl — a cron that keeps going missing after restores may need ' +
+          'a supervisor-level recreate instead of relying on the per-session Stop-gate nudge)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
+  }
+})();
+
+// --- 5d. OMC (oh-my-claudecode) detection (CONDITIONAL) ----------------------
+// Reuses hooks/omc-detect.js's OWN gates (enabledPlugins + .omc/state/) so this
+// can never drift from what task-guard/tasklist-guard actually check to decide
+// deference. omc-detect.js's presence/syntax was already verified in section 3
+// above — if it's missing/broken, stay silent here rather than double-report.
+(function omcSection() {
+  if (!fs.existsSync(omcDetectPath)) return;
+  let mod;
+  try { mod = require(omcDetectPath); } catch (_) { return; }
+  let enabled = false;
+  try { enabled = !!(mod.isOmcEnabled && mod.isOmcEnabled(cwd)); } catch (_) { enabled = false; }
+  if (!enabled) { infol('OMC (oh-my-claudecode) not detected — skipped'); return; }
+  head('OMC (oh-my-claudecode) — detected');
+  ok('OMC plugin enabled in settings (enabledPlugins["oh-my-claudecode@omc"])');
+  let loopActive = false;
+  try { loopActive = !!mod.isOmcLoopActive({ cwd, sessionId: 'doctor-omc-probe' }); } catch (_) { loopActive = false; }
+  if (loopActive) ok('an OMC autonomous loop is ACTIVE right now — anti-hall task-guard/tasklist-guard defer to it (no double-block)');
+  else ok('no active OMC autonomous loop detected — anti-hall Stop-hook guards run normally');
+})();
+
+// --- 5e. Codex / OMX port detection (CONDITIONAL) -----------------------------
+// Detects a Codex install by the same artifacts codex/install-codex.js writes:
+// <scope>/.codex/config.toml (+ [features] hooks = true) and <scope>/.codex/
+// hooks.json with anti-hall's own hook commands merged in. "Wired" is a
+// PRECISE per-event check: every event key in install-codex.js's own
+// ANTI_HALL_HOOKS (the canonical source of what SHOULD be registered) must
+// have a matching anti-hall-owned group actually present under that SAME
+// event, using install-codex.js's own isAntiHallGroup() matcher (reused
+// directly, not re-implemented) — not a coarse "does the fragment appear
+// anywhere in the file" test. The coarse version reported an OLDER install
+// (missing a newly-added event, e.g. the PostToolUse reply-tracker hook) as
+// already wired, because its older events still matched the substring test;
+// doctor --fix's repair decision lives in doctor-repair.js's scanCodex() —
+// this mirrors that same precise logic so the read-only report here never
+// disagrees with what repair actually does. Read-only; never writes.
+(function codexSection() {
+  let codexInstaller = {};
+  try { codexInstaller = require(path.join(ROOT, 'codex', 'install-codex.js')); } catch (_) { codexInstaller = {}; }
+  const { ANTI_HALL_HOOKS, isAntiHallGroup } = codexInstaller;
+  const expectedEvents = ANTI_HALL_HOOKS && typeof ANTI_HALL_HOOKS === 'object' ? Object.keys(ANTI_HALL_HOOKS) : [];
+
+  function hasAntiHallHooks(hooksJsonPath) {
+    let cfg;
+    try { cfg = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8')); } catch (_) { return null; } // null = file absent/unreadable
+    try {
+      const hooksByEvent = cfg && typeof cfg === 'object' && cfg.hooks && typeof cfg.hooks === 'object' ? cfg.hooks : {};
+      if (typeof isAntiHallGroup === 'function' && expectedEvents.length) {
+        return expectedEvents.every((event) => {
+          const groups = Array.isArray(hooksByEvent[event]) ? hooksByEvent[event] : [];
+          return groups.some((g) => isAntiHallGroup(g));
+        });
+      }
+      // Defensive fallback only (install-codex.js failed to require) — never
+      // crash the scan; falls back to the old coarse substring test.
+      return JSON.stringify(cfg).replace(/\\\\/g, '/').includes('/plugins/anti-hall/hooks/');
+    } catch (_) { return false;
+    }
+  }
+  const scopesX = [
+    ['project', path.join(cwd, '.codex')],
+    ['global', path.join(os.homedir(), '.codex')],
+  ];
+  const found = [];
+  for (const [label, dir] of scopesX) {
+    let hasConfig = false;
+    try { hasConfig = fs.statSync(path.join(dir, 'config.toml')).isFile(); } catch (_) {}
+    if (!hasConfig) continue;
+    let hooksEnabled = false;
+    try {
+      const toml = fs.readFileSync(path.join(dir, 'config.toml'), 'utf8');
+      hooksEnabled = /\[features\][\s\S]*?^\s*hooks\s*=\s*true/m.test(toml);
+    } catch (_) {}
+    found.push({ label, hooksEnabled, wired: hasAntiHallHooks(path.join(dir, 'hooks.json')) });
+  }
+  if (found.length === 0) { infol('Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped'); return; }
+  head('Codex / OMX port — detected');
+  for (const s of found) {
+    if (s.hooksEnabled) ok(`Codex config.toml (${s.label}) has the hooks feature enabled`);
+    else warnl(`Codex config.toml (${s.label}) found but [features] hooks is not enabled`);
+    if (s.wired === true) ok(`Codex hooks.json (${s.label}) has anti-hall hooks registered`);
+    else if (s.wired === false) warnl(`Codex hooks.json (${s.label}) present but no anti-hall hooks found — run plugins/anti-hall/codex/install-codex.js`);
+    else warnl(`Codex hooks.json (${s.label}) missing — run plugins/anti-hall/codex/install-codex.js`);
+  }
+})();
+
+// --- 5f. Saved workflow templates (deadly-loop / ship-it) --------------------
+// Advisory ONLY (warnl, never bad) — must NOT change doctor's exit code. Checks
+// whether the deadly-loop/ship-it Workflow templates have been saved via
+// /workflows into ~/.claude/workflows/ or <cwd>/.claude/workflows/. Without a
+// saved workflow, deadly-loop/ship-it run via the inline SKILL path, where the
+// Critic seat is unenforced LLM guidance (agentType:'codex:codex-rescue' is a
+// prompt-level convention there, not mechanically wired) and can silently
+// degrade to Opus with nobody noticing.
+head('Workflow templates (deadly-loop / ship-it)');
+(function workflowSection() {
+  function findMatches(dir, patterns) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir); } catch (_) { return []; }
+    return entries.filter((f) => patterns.some((re) => re.test(f)));
+  }
+  const patterns = [/^deadly-loop.*\.js$/i, /^ship-it.*\.js$/i];
+  const dirs = [
+    path.join(os.homedir(), '.claude', 'workflows'),
+    path.join(cwd, '.claude', 'workflows'),
+  ];
+  const found = [];
+  for (const d of dirs) {
+    for (const f of findMatches(d, patterns)) found.push(path.join(d, f));
+  }
+  if (found.length > 0) {
+    ok(`saved workflow template(s) found: ${found.join(', ')}`);
+  } else {
+    warnl('no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ or <cwd>/.claude/workflows/ -- running via the inline SKILL path means the Critic seat is unenforced LLM guidance and can silently degrade to Opus; save the workflow template via /workflows so the seat census (deadSeats/degraded blocking converged) is mechanically enforced instead of LLM-followed guidance');
+  }
+})();
+
+// --- 5g. Foreign skill/hook conflict scan (UNCONDITIONAL) --------------------
+// Cross-references OTHER ENABLED plugins' hooks.json + skill directories
+// against anti-hall's own (companion/lib/doctor-runtime.js's
+// scanForeignConflicts — check 5 of the DevSwarm runtime checks, but this scan
+// itself has nothing to do with DevSwarm and so is NOT gated on it). A
+// competing PreToolUse/Stop hook or a skill-name collision matters on any
+// machine, DevSwarm-active or not. HIGH findings surface as a WARN (never bad —
+// this is advisory about a THIRD-PARTY plugin's own configuration, not an
+// anti-hall defect, so it must never flip doctor's exit code). PRIVACY: only
+// plugin name + event + matcher + hook basename are ever surfaced — never full
+// command strings (which can carry a local username/path) or file contents.
+head('Foreign skill/hook conflict scan');
+(function foreignConflictSection() {
+  const runtimeModPath = path.join(ROOT, 'companion', 'lib', 'doctor-runtime.js');
+  let dr = null, scan = null;
+  if (fs.existsSync(runtimeModPath)) {
+    try { dr = require(runtimeModPath); } catch (_) { dr = null; } // fail-open: a broken check never breaks doctor
+    if (dr) { try { scan = dr.scanForeignConflicts({ home: os.homedir(), cwd }); } catch (_) { scan = null; } }
+  }
+  if (!dr || !scan) { warnl('foreign conflict scan unavailable (module missing or raised, fail-open)'); return; }
+  if (scan.results.length === 0) { infol('no foreign hook/skill conflicts detected among enabled plugins'); return; }
+  for (const r of scan.results) {
+    if (r.status === 'HIGH') warnl(r.message);
+    else if (r.status === dr.WARN) warnl(r.message);
+    else if (r.status === dr.INFO) infol(r.message);
+    else ok(r.message);
+  }
+})();
+
+// --- 5g2. --logs (OPT-IN): recent central anti-hall-log errors, by component ---
+// Surfaces companion/lib/anti-hall-log.js's readRecent() output so a Primary
+// orchestrator can see a child project's recent failures from one `doctor --logs`
+// call instead of tailing ~/.anti-hall/logs/devswarm.jsonl by hand. Lazy require
+// with a console/no-op fallback (matches the fail-open posture of every other
+// optional companion require above): if the logger module is missing/broken this
+// section degrades to a single INFO line, never a crash or a FAIL — a doctor run
+// must never break because its OWN diagnostics-reading helper is unavailable.
+// Report-only: never touches pass/fail (only warnl/infol), same posture as the
+// reaper/foreign-conflict sections — a logged error is history, not a live guard
+// failure this run.
+if (LOGS) {
+  head('Logs (--logs: recent anti-hall-log entries)');
+  (function logsSection() {
+    let logMod;
+    try {
+      logMod = require(path.join(ROOT, 'companion', 'lib', 'anti-hall-log.js'));
+    } catch (e) {
+      logMod = { readRecent: () => [], logDir: () => null }; // console/no-op fallback — never breaks doctor
+      warnl('anti-hall-log module unavailable (' + (e && e.message) + ') — showing nothing (fail-open)');
+    }
+    let dir = null;
+    try { dir = typeof logMod.logDir === 'function' ? logMod.logDir() : null; } catch (_) { dir = null; }
+    let entries = [];
+    try { entries = logMod.readRecent({ minLevel: 'warn', limit: 200 }) || []; } catch (e) {
+      warnl('reading the central anti-hall log raised (fail-open): ' + (e && e.message));
+      entries = [];
+    }
+    if (!entries.length) {
+      infol('no warn/error entries in the central anti-hall log' + (dir ? ' (' + dir + ')' : ''));
+      return;
+    }
+    const byComponent = {};
+    for (const e of entries) {
+      const c = (e && e.component) || '(unknown)';
+      byComponent[c] = (byComponent[c] || 0) + 1;
+    }
+    const compSummary = Object.keys(byComponent).sort().map((c) => `${c}:${byComponent[c]}`).join(', ');
+    warnl(`${entries.length} warn/error entries in the central anti-hall log across ${Object.keys(byComponent).length} component(s) — ${compSummary}` + (dir ? ` (${dir})` : ''));
+    // Most recent 10, newest-last (readRecent's own ordering) shown oldest-of-the-
+    // slice-first so the report reads top-to-bottom in the order they happened.
+    const SHOWN = 10;
+    const recent = entries.slice(-SHOWN);
+    if (entries.length > recent.length) infol(`showing the most recent ${recent.length} of ${entries.length} — re-run with a narrower window if you built one, or read the file directly for the rest`);
+    for (const e of recent) {
+      const repoTag = e && e.repoKey ? ' repoKey=' + e.repoKey : '';
+      const msg = (e && (e.msg || (e.err && e.err.message))) || '(no message)';
+      warnl(`[${(e && e.ts) || '?'}] ${(e && e.level) || '?'} ${(e && e.component) || '?'}/${(e && e.op) || '?'}${repoTag}: ${String(msg).split('\n')[0]}`);
+    }
+  })();
+}
+
+// --- 5h. Repair pass (--repair / --fix / --dry-run only; a bare doctor and --check skip it) ---
+// With --repair doctor DIAGNOSES then REPAIRS. runRepairs applies AUTO-SAFE fixes always
+// (honoring --dry-run) and GATED daemon fixes only under the DevSwarm gate
+// (isDevswarmActive + a git-worktree cwd); a closed gate REPORTS the exact manual
+// command instead of mutating. Each 'failed' repair is a real failure and drives
+// the exit-code contract (exit 1). No existing diagnostic `bad` maps to a repair —
+// each repair re-verifies itself and carries its own verdict here.
+if (DO_REPAIR) {
+  head('Repair' + (DRYRUN ? ' (dry-run — no changes written)' : ''));
+  let repairs = [];
+  try {
+    repairs = require('./lib/doctor-repair.js').runRepairs({
+      cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN, migrationsOnly: MIGRATIONS_ONLY,
+      version: version !== '(unknown)' ? version : undefined,
+    });
+  } catch (e) {
+    bad('repair pass raised (fail-open): ' + (e && e.message));
+  }
+  if (repairs.length === 0 && fail === 0) infol('nothing to repair');
+  for (const r of repairs) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('FIXED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else if (r.status === 'gated') warnl('GATED ' + label);
+    else infol('skipped ' + label);
+  }
+} else if (!CHECK && !REPAIR_INGEST_ORPHANS && !REPAIR_TEST_STORES && !REPAIR_RESURRECTED) {
+  head('Repair');
+  infol('read-only run — nothing was changed. Run with --repair to apply the safe repairs (--dry-run previews them).');
+}
+
+// --- 5i. --reclaim-ingest-lock (EXPLICIT, OPT-IN ONLY; see the flag's own doc
+// comment above). Independent of --check/--fix/--dry-run — this section runs
+// purely off the presence of --reclaim-ingest-lock. `failed` drives the exit
+// code exactly like the repair pass above; `fixed`/`skipped` do not.
+// ---------------------------------------------------------------------------
+if (RECLAIM_INGEST_LOCK) {
+  head('Reclaim ingest lock' + (DRYRUN ? ' (dry-run — no changes written)' : '') + ' [explicit --reclaim-ingest-lock]');
+  let reclaimed = [];
+  try {
+    reclaimed = require('./lib/doctor-repair.js').reclaimIngestLocks({
+      cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN,
+    });
+  } catch (e) {
+    bad('reclaim-ingest-lock pass raised (fail-open): ' + (e && e.message));
+  }
+  if (reclaimed.length === 0 && fail === 0) infol('nothing swept or reclaimed');
+  for (const r of reclaimed) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('RECLAIMED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else infol('skipped ' + label);
+  }
+}
+
+// --- 5i-detect. Orphaned launchd/systemd ingest registrations (ALWAYS-ON
+// REPORT-ONLY, no flag needed — v0.98, ec33954162ef) --------------------------
+// install-devswarm-ingest.js's orphanReapPlan enumerates from the SCHEDULER'S
+// OWN registration list (launchctl list / systemctl --user list-units), not
+// from the file system — so this catches a loaded label with NO matching
+// plist/service file on disk at all (confirmed field case: a test fixture's
+// tmp HOME registered a real LaunchAgent, the HOME was deleted, and launchd
+// keeps retrying it forever — exit 78, "program gone"). D9's git-worktree-
+// list-driven reap is structurally blind to this (the worktree is gone, so
+// there is nothing left to enumerate FROM). NEVER mutates — prints a table,
+// silent (no section at all) when every loaded label classifies 'healthy'.
+(function detectIngestOrphansSection() {
+  let plan = [];
+  try {
+    const installer = require(path.join(__dirname, '..', 'companion', 'install-devswarm-ingest.js'));
+    if (typeof installer.orphanReapPlan === 'function') plan = installer.orphanReapPlan({ home: os.homedir() }) || [];
+  } catch (_) { plan = []; }
+  const flagged = plan.filter((e) => e.class !== 'healthy');
+  if (flagged.length === 0) return; // silent — matches reaperWarningLines' own convention
+  head('Orphaned launchd/systemd ingest registrations');
+  infol(`${flagged.length} loaded label(s) not classified 'healthy' (of ${plan.length} total). Run doctor --repair-ingest-orphans to preview a repair plan.`);
+  const DETECT_TABLE_CAP = 10; // P2: an unbounded table is noise on a machine with 50+ leaked labels
+  for (const e of flagged.slice(0, DETECT_TABLE_CAP)) {
+    const name = e.label || e.unit || '(unknown)';
+    warnl(`${name}  pid=${e.pid == null ? '-' : e.pid}  script=${e.scriptPath || '-'}  plist=${e.plistPresent ? 'y' : 'n'}  path=${e.pathExists ? 'y' : 'n'}  class=${e.class}`);
+  }
+  if (flagged.length > DETECT_TABLE_CAP) {
+    infol(`+${flagged.length - DETECT_TABLE_CAP} more (run doctor --repair-ingest-orphans for the full plan)`);
+  }
+})();
+
+// --- 5i-units. Leaked scheduler unit FILES (ALWAYS-ON REPORT-ONLY, check mode
+// included; mesh redesign Phase 4, #12) ---------------------------------------
+// See doctor-repair.js's checkLeakedDaemonUnits: every anti-hall launchd/systemd
+// unit file (ingest, supervisor, reaper) whose WorkingDirectory is under a temp
+// root or gone, or whose script is gone. Pure fs reads; never unloads or
+// renames anything — prints the exact bootout + quarantine commands instead.
+// Silent when nothing is flagged; never touches pass/fail (warnl only).
+(function leakedDaemonUnitsSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkLeakedDaemonUnits({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('Leaked scheduler units (report-only)');
+  warnl(result.message);
+  for (const line of result.lines) infol(line);
+})();
+
+// --- 5i-repair. --repair-ingest-orphans [--apply] (EXPLICIT, OPT-IN ONLY;
+// v0.98, ec33954162ef). Default (flag present, no --apply) is DRY-RUN: prints
+// the exact unload plan, writes/unloads nothing. --apply executes it. Never
+// invoked implicitly by a plain `doctor` or `doctor --check` run — only the
+// DETECT section above runs unconditionally. `failed` drives the exit code
+// exactly like --reclaim-ingest-lock above; `fixed`/`skipped` do not.
+// ---------------------------------------------------------------------------
+if (REPAIR_INGEST_ORPHANS) {
+  head('Repair ingest orphans' + (INGEST_APPLY ? ' [--apply]' : ' (dry-run — no changes written)') + ' [explicit --repair-ingest-orphans]');
+  let repaired = [];
+  try {
+    repaired = require('./lib/doctor-repair.js').runIngestOrphanRepair({
+      home: os.homedir(), dryRun: !INGEST_APPLY,
+    });
+  } catch (e) {
+    bad('repair-ingest-orphans pass raised (fail-open): ' + (e && e.message));
+  }
+  if (repaired.length === 0 && fail === 0) infol('nothing to repair');
+  for (const r of repaired) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('UNLOADED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else infol('skipped ' + label);
+  }
+  // EARLY EXIT (0.99.2, P2 fix — Critic NO-GO 2026-09-11): this EXPLICIT,
+  // OPT-IN flag runs ONLY its own section — see emitVerdictAndExit's own
+  // header for why falling through to 6j-6n and the unconditional tail
+  // buried this section's verdict. GATED on no LATER repair flag also being
+  // set: `doctor --repair-ingest-orphans --repair-test-stores` must run
+  // BOTH sections, not silently drop the second because this block exited
+  // first. Only the LAST applicable flag (in file order) actually exits;
+  // every earlier one just falls through into the next matching block.
+  if (!REPAIR_TEST_STORES && !REPAIR_RESURRECTED) emitVerdictAndExit();
+}
+
+// --- 5j. memguard-reaper risk (REPORT-ONLY, CONDITIONAL) ---------------------
+// See doctor-repair.js's checkMemguardReaperRisk for the full rationale (a
+// user-machine reaper/memguard LaunchAgent can SIGKILL an unallowlisted,
+// launchd-spawned ingest daemon whose PPID is 1 by construction on macOS).
+// Delegated to that ONE helper (fully defensive + fail-open there) so this
+// call site can never crash doctor.js; stays SILENT (no section at all) when
+// no detection helper is present in this build, per this feature's contract.
+// Report-only: never touches pass/fail (only warnl), same posture as the
+// reaper/foreign-conflict sections above.
+(function memguardReaperRiskSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkMemguardReaperRisk({}); } catch (_) { result = null; }
+  if (!result) return;
+  head('memguard-reaper risk');
+  warnl(result.message + (result.file ? ' (' + result.file + ')' : ''));
+})();
+
+// --- 5k. orphaned MCP children under a live app-server broker (REPORT-ONLY,
+// CONDITIONAL) ----------------------------------------------------------------
+// See doctor-repair.js's checkOrphanedMcpUnderBroker for the full rationale
+// (defect bfa063ab8e3f: an app-server-style broker can leak MCP-server child
+// processes across threads without reaping them; those children are parented
+// to the LIVE broker, not PID 1, so a PPID==1 orphan reaper cannot see them by
+// construction). Delegated to that ONE helper (fully defensive + fail-open
+// there) so this call site can never crash doctor.js; stays SILENT (no
+// section at all) when the detection module or platform support is absent.
+// Report-only: never touches pass/fail, same posture as the section above —
+// pure `ps` enumeration, never kills/signals/writes anything.
+(function orphanedMcpUnderBrokerSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkOrphanedMcpUnderBroker({}); } catch (_) { result = null; }
+  if (!result) return;
+  head('orphaned MCP children under a live broker');
+  warnl(result.message);
+})();
+
+// --- 5l. leaked test-fixture stores (REPORT-ONLY, CONDITIONAL, check mode
+// included) --------------------------------------------------------------------
+// See doctor-repair.js's checkLeakedTestFixtureStores for the full rationale
+// (defect f3c1bc827d89: a test suite spawning a real subprocess with
+// `env: {...process.env}` and no HOME override leaks a fixture registry row
+// into the real ~/.anti-hall/devswarm/store/). Delegated to that ONE helper
+// (fully defensive + fail-open there) so this call site can never crash
+// doctor.js; stays SILENT (no section at all) when nothing is flagged.
+// Report-only: NO deletion path here, in repair mode, or anywhere else for
+// this — never touches pass/fail, same posture as the two sections above.
+(function leakedTestFixtureStoresSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkLeakedTestFixtureStores({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('leaked test-fixture stores');
+  warnl(result.message);
+})();
+
+// --- 5m-planning. moved-.planning damage (REPORT-ONLY, CONDITIONAL, check
+// mode included) ---------------------------------------------------------------
+// 0.108.5 P0: the pre-0.108.5 automatic GSD fold moved tracked .planning/
+// files into .anti-hall/history/legacy/planning/. Lists each affected work
+// tree with the exact restore command. Restores NOTHING; silent when clean;
+// never touches pass/fail.
+(function planningDamageSection() {
+  let rows = [];
+  try { rows = require('./lib/doctor-repair.js').checkPlanningDamage({ cwd: process.cwd() }); } catch (_) { rows = []; }
+  if (!rows || rows.length === 0) return;
+  head('moved .planning/ files (pre-0.108.5 automatic fold — report-only, nothing restored)');
+  for (const r of rows) {
+    warnl(r.worktree + ': ' + r.missing + ' tracked .planning/ file(s) missing from the work tree, ' + r.withCopy + ' with a legacy copy (' + r.safe + ' byte-identical to HEAD)');
+    infol('restore from git:        ' + r.restoreCmd);
+    infol('or restore identical copies only (opt-in): ' + r.optInCmd);
+  }
+})();
+
+// --- 5m0. `.anti-hall/` git-ignore hygiene (WARN only, check mode included) ---
+// Silent when cwd is not a git work tree, has no .anti-hall/, git is missing, or the
+// dir is ignored. Never touches pass/fail beyond a warning; the fix is the explicit
+// `doctor --repair` (appends to <git-dir>/info/exclude, never the tracked .gitignore).
+(function gitignoreHintSection() {
+  let s = null;
+  try { s = require('./lib/gitignore-hint.js').status(process.cwd()); } catch (_) { s = null; }
+  if (!s || s.status !== 'not-ignored') return;
+  head('.anti-hall/ git-ignore hygiene');
+  warnl('.anti-hall/ is NOT git-ignored in ' + s.root + ' - a `git add .` could commit private session notes');
+  infol('fix: add `.anti-hall/` to .gitignore, or run `doctor --repair` (appends it to .git/info/exclude; .gitignore is never edited)');
+})();
+
+// --- 5m1. handover format (WARN only, read-only: no repair, no file moves) ---
+// One handover format: .anti-hall/handovers/<date>/<session_id>/HANDOVER.md, never
+// committed. Reports (i) handover-named files TRACKED by git (hooks/lib/
+// handover-find.js isHandoverPath over `git ls-files`) and (ii) handover-like files
+// on disk outside that layout (repo root, or flat under .anti-hall/handovers/;
+// INDEX.md excluded), each with the canonical destination. Bounded (one git call,
+// two readdirs, 10 rows per list); silent when clean; fail-open on any error.
+(function handoverFormatSection() {
+  try {
+    const find = require('./lib/handover-find.js');
+    const { spawnSync } = require('child_process');
+    const root = find.repoRoot(process.cwd()); // the canonical resolver; cwd itself when not a repo
+    let tracked = [];
+    const ls = spawnSync('git', ['-C', root, 'ls-files', '-z'], { encoding: 'utf8', timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
+    if (ls.status === 0 && typeof ls.stdout === 'string') tracked = ls.stdout.split('\0').filter((p) => p && find.isHandoverPath(p));
+    const dest = (rel) => {
+      let day;
+      try { day = find.localDate(fs.statSync(path.join(root, rel)).mtime); } catch (_) { day = '<YYYY-MM-DD>'; }
+      return '.anti-hall/handovers/' + day + '/<session_id>/HANDOVER.md';
+    };
+    const stray = [];
+    const scan = (dirRel) => {
+      let names = [];
+      try { names = fs.readdirSync(path.join(root, dirRel), { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name); } catch (_) { names = []; }
+      for (const n of names) {
+        const rel = dirRel ? dirRel + '/' + n : n;
+        if (n === 'INDEX.md' || !/\.md$/i.test(n) || tracked.includes(rel)) continue;
+        // flat under handovers/: any .md; at the repo root: only handover-like names
+        if (dirRel || find.isHandoverPath(rel) || /handover|handoff/i.test(n)) stray.push(rel);
+      }
+    };
+    scan('');
+    scan('.anti-hall/handovers');
+    if (!tracked.length && !stray.length) return;
+    head('handover format (report-only; handovers live ONLY under .anti-hall/handovers/<date>/<session_id>/ and are never committed)');
+    for (const rel of tracked.slice(0, 10)) {
+      warnl('tracked by git: ' + rel + ' - run `git rm --cached ' + rel + '` (keeps the file), keep .anti-hall/ git-ignored' + (/(?:^|\/)\.anti-hall\/handovers\/[^/]+\/[^/]+\//.test(rel) ? '' : '; canonical location: ' + dest(rel)));
+    }
+    for (const rel of stray.slice(0, 10)) warnl('outside the canonical layout: ' + rel + ' - move it to ' + dest(rel));
+    const more = Math.max(0, tracked.length - 10) + Math.max(0, stray.length - 10);
+    if (more) infol('(+' + more + ' more not listed)');
+  } catch (_) { /* fail-open: report-only */ }
+})();
+
+// --- 5m. identity-rekey-candidates (REPORT-ONLY, CONDITIONAL, check mode
+// included) ---------------------------------------------------------------------
+// Mesh redesign Phase 2 B1: stores written under a submodule's legacy repoKey
+// that nothing reads since the re-key. Read-only (writes nothing); no automatic
+// action — cross-store cursor merging is Phase 3. Silent when none is found;
+// never touches pass/fail.
+(function identityRekeySection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkIdentityRekey({ home: os.homedir(), cwd: process.cwd() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('identity-rekey-candidates (legacy submodule-key stores, read-only)');
+  warnl(result.stores + ' store(s), ' + result.messages + ' message(s), ' + result.registryRows + ' registry row(s) under a legacy submodule repoKey (not read by this build; not merged — Phase 3):');
+  for (const line of result.lines) infol(line);
+})();
+
+// --- 5m2. phantom Primary rows (REPORT-ONLY; repaired only by explicit --repair) ---
+(function phantomPrimarySection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkPhantomPrimaries({ home: require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env) }); } catch (_) { result = null; }
+  if (!result) return;
+  head('phantom Primary rows (submodule-cwd registrations)');
+  warnl(result.message);
+})();
+
+// --- 5n. archived-child-stop metrics (REPORT-ONLY, CONDITIONAL) ---------------
+// Design B ("archive tells the live child to stop" — devswarm-child-turn.js
+// skips the descriptor rewrite + phantom retirement on an archived workspace,
+// devswarm-child-gate.js blocks the Stop ONCE with a "save a handover and
+// stop" reason instead of the normal forced-heartbeat nagging). Counts are
+// persisted by companion/lib/archived-child-metrics.js (best-effort, never
+// load-bearing). "time since last event" doubles as the "time until the
+// session stops beating" signal a re-run of doctor will show growing once a
+// child actually goes idle. Silent when nothing has ever fired; never
+// touches pass/fail EXCEPT the one actionable case (a child was blocked but
+// still has no handover on file).
+(function archivedChildStopMetricsSection() {
+  let m = null;
+  try { m = require('../companion/lib/archived-child-metrics.js').readMetrics(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)); } catch (_) { m = null; }
+  if (!m || !m.totals || !Object.keys(m.totals).length) return;
+  head('archived-child-stop metrics (design B — report-only)');
+  infol('re-registrations refused: ' + (m.totals['reregistration-refused'] || 0)
+    + ', turns after archive: ' + (m.totals['turn-after-archive'] || 0)
+    + ', Stop blocks: ' + (m.totals['stop-blocked'] || 0)
+    + ', Stop clears: ' + (m.totals['stop-cleared'] || 0));
+  const byId = m.byId || {};
+  const now = Date.now();
+  for (const id of Object.keys(byId).sort()) {
+    const row = byId[id] || {};
+    const sinceArchived = Number.isFinite(row.firstArchivedTurnTs) ? Math.round((now - row.firstArchivedTurnTs) / 60000) + 'min since first archived turn' : 'archived-turn age unknown';
+    const quietFor = Number.isFinite(row.lastEventTs) ? Math.round((now - row.lastEventTs) / 60000) + 'min since last event (this is the "time until it stops beating" signal — re-run to watch it grow)' : 'last-event time unknown';
+    const line = id + ': ' + sinceArchived + ', ' + quietFor + ', handover ' + (row.handoverWritten ? 'written' : 'NOT written yet');
+    if (row['stop-blocked'] && !row.handoverWritten) warnl(line);
+    else infol(line);
+  }
+})();
+
+// --- 5l-repair. --repair-test-stores [--apply] (EXPLICIT, OPT-IN ONLY;
+// be2c6c9e81a1). Default (flag present, no --apply) is DRY-RUN: prints the
+// exact removal plan, deletes nothing. --apply executes it, re-verifying
+// each entry's eligibility immediately before deleting (see
+// runTestStoreRepair's TOCTOU guard). Never invoked implicitly by a plain
+// `doctor` or `doctor --check` run — only the DETECT section above (6l) runs
+// unconditionally. `failed` drives the exit code exactly like
+// --repair-ingest-orphans above; `fixed`/`skipped` do not.
+// ---------------------------------------------------------------------------
+if (REPAIR_TEST_STORES) {
+  head('Repair test stores' + (INGEST_APPLY ? ' [--apply]' : ' (dry-run — no changes written)') + ' [explicit --repair-test-stores]');
+  let repaired = [];
+  try {
+    repaired = require('./lib/doctor-repair.js').runTestStoreRepair({
+      home: os.homedir(), dryRun: !INGEST_APPLY,
+    });
+  } catch (e) {
+    bad('repair-test-stores pass raised (fail-open): ' + (e && e.message));
+  }
+  if (repaired.length === 0 && fail === 0) infol('nothing to repair');
+  for (const r of repaired) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('REMOVED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else infol('skipped ' + label);
+  }
+  // EARLY EXIT (0.99.2, P2 fix): see the REPAIR_INGEST_ORPHANS block's
+  // identical note — gated the same way, on no LATER flag also being set.
+  if (!REPAIR_RESURRECTED) emitVerdictAndExit();
+}
+
+// --- 5l2. resurrected registry rows (REPORT-ONLY, CONDITIONAL, check mode
+// included) -- R3 fix, defect df54edf54804 --------------------------------
+// See doctor-repair.js's checkResurrectedRows for the full rationale (the
+// store migration's resurrection bug — fixed via companion/lib/
+// devswarm-archive-gate.js — left already-upgraded installs holding
+// registry rows for a whole retired worktree-group family; a downstream project measured
+// ~43 legacy-slug rows on one install). Delegated to that ONE helper (fully
+// defensive + fail-open there) so this call site can never crash doctor.js;
+// stays SILENT (no section at all) when nothing is flagged. Report-only: NO
+// removal path here, in repair mode, or anywhere else for this section —
+// never touches pass/fail, same posture as the leaked-test-fixture-stores
+// section above.
+(function resurrectedRowsSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkResurrectedRows({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('resurrected registry rows');
+  warnl(result.message);
+})();
+
+// --- 5l2-repair. --repair-resurrected [--apply] (EXPLICIT, OPT-IN ONLY; R3
+// fix, defect df54edf54804). Default (flag present, no --apply) is DRY-RUN:
+// prints the exact re-retirement plan, writes nothing. --apply executes it
+// via devswarm.js's reRetireResurrectedRowsAllStores (candidacy/locking/
+// unhealable rules live there — see its own header). Never invoked
+// implicitly by a plain `doctor` or `doctor --check` run — only the DETECT
+// section above (6l2) runs unconditionally. `failed` drives the exit code
+// exactly like --repair-ingest-orphans/--repair-test-stores above;
+// `fixed`/`skipped` do not.
+// ---------------------------------------------------------------------------
+if (REPAIR_RESURRECTED) {
+  head('Repair resurrected registry rows' + (INGEST_APPLY ? ' [--apply]' : ' (dry-run — no changes written)') + ' [explicit --repair-resurrected]');
+  let repaired = [];
+  try {
+    repaired = require('./lib/doctor-repair.js').runResurrectedRepair({
+      home: os.homedir(), cwd: process.cwd(), env: process.env, dryRun: !INGEST_APPLY,
+    });
+  } catch (e) {
+    bad('repair-resurrected pass raised (fail-open): ' + (e && e.message));
+  }
+  if (repaired.length === 0 && fail === 0) infol('nothing to repair');
+  for (const r of repaired) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('RE-RETIRED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else infol('skipped ' + label);
+  }
+  // EARLY EXIT (0.99.2): see the REPAIR_INGEST_ORPHANS block's identical note
+  // — this is the flag a downstream project field-reported burying its own verdict at
+  // line 562 of 571 total output lines.
+  emitVerdictAndExit();
+}
+
+// --- 5m. escalated-while-session-alive (REPORT-ONLY, CONDITIONAL) -----------
+// See doctor-repair.js's checkEscalatedWhileAlive for the full rationale
+// (D12 v0.96.1: a liveness file can say `escalated` for a row whose session
+// pid is provably alive right now — liveness.js's computeLiveness now
+// self-heals this on the row's NEXT supervisor pass). Delegated to that ONE
+// helper (fully defensive + fail-open there) so this call site can never
+// crash doctor.js; stays SILENT (no section at all) when nothing is flagged.
+// Report-only: never writes/clears/kills anything, same posture as the three
+// sections above.
+(function escalatedWhileAliveSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkEscalatedWhileAlive({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('escalated while session alive');
+  warnl(result.message);
+})();
+
+// --- 5n. superseded archived markers (REPORT-ONLY, CONDITIONAL) -------------
+// See doctor-repair.js's checkSupersededArchivedMarkers for the full rationale
+// (P0 field, 0.96.1/0.96.2: an anchor row's reused id can carry a PRIOR
+// occupant's archived/<id>.json — isArchivedWorkspace now discriminates this
+// by sessionId, so the row itself is no longer misclassified; this surfaces
+// which markers that discriminator is quietly ignoring). Delegated to that ONE
+// helper (fully defensive + fail-open there) so this call site can never
+// crash doctor.js; stays SILENT (no section at all) when nothing is flagged.
+// Report-only: never writes/clears/deletes any archived/<id>.json.
+(function supersededArchivedMarkersSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkSupersededArchivedMarkers({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('superseded archived markers');
+  infol(result.message);
+})();
+
+// --- 5n2. emit-dedupe suppression counts (REPORT-ONLY, one line) -----------
+// Counters from hooks/lib/emit-dedupe.js summary() — how many repeated
+// UserPromptSubmit injection blocks (LIMIT CONSERVATION, TASK-LIST, DEVSWARM
+// COMMS OVERRIDE, DEVSWARM WORKSPACES, ...) were suppressed instead of being
+// re-sent, across every session's dedupe state file. Stays SILENT when
+// nothing has ever been suppressed (fresh install, or the feature is off).
+(function emitDedupeSection() {
+  let s = null;
+  try { s = require('./lib/emit-dedupe.js').summary(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)); } catch (_) { s = null; }
+  if (!s || !s.totalSuppressed) return;
+  head('emit-dedupe');
+  const ago = Number.isFinite(s.lastSuppressedAt) ? Math.max(0, Math.round((Date.now() - s.lastSuppressedAt) / 60000)) + 'm ago' : 'n/a';
+  infol('suppressed ' + s.totalSuppressed + ' repeated injection(s) across ' + s.sessions + ' session(s) (last ' + ago + ')');
+})();
+
+// --- 5o. dispatch demand effectiveness (REPORT-ONLY, one line) ---------------
+// Counters from hooks/lib/dispatch-demand.js; full view: scripts/dispatch-report.js.
+(function dispatchDemandSection() {
+  let d = null;
+  try { d = require('./lib/dispatch-demand.js').summary(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env)); } catch (_) { d = null; }
+  if (!d) return;
+  head('dispatch demand');
+  const rate = d.complianceRate == null ? 'n/a' : (Math.round(d.complianceRate * 1000) / 10) + '%';
+  infol('shown ' + d.demandsShown + ' · followed ' + d.demandsFollowed + ' · ignored ' + d.demandsIgnored +
+    ' (compliance ' + rate + ') · idle-neglect blocks ' + d.idleNeglectBlocks +
+    ' — node scripts/dispatch-report.js');
+  try {
+    const t = require('./lib/dispatch-tier.js').summary(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env));
+    const fr = t.followRate == null ? 'n/a' : (Math.round(t.followRate * 1000) / 10) + '%';
+    infol('jev dispatchTier: verdicts ' + (t.verdicts.workspace + t.verdicts.workflow + t.verdicts.subagent) +
+      ' · followed ' + t.followed + ' · overridden ' + t.overridden + ' (follow rate ' + fr + ')');
+  } catch (_) { /* report-only */ }
+})();
+
+// --- 5p. jev shadow-review due (REPORT-ONLY, CONDITIONAL) -------------------
+// Durable "time to review the Jev shadow numbers" reminder — see
+// hooks/lib/jev-review.js and hooks/jev-review-reminder.js (the SessionStart
+// side of this same check). Stays SILENT (no section) when Jev is off, the
+// reviewReminder setting is off, or nothing is currently due.
+(function jevReviewDueSection() {
+  let cfg = null;
+  try { cfg = JSON.parse(fs.readFileSync(path.join(require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env), '.anti-hall', 'jev.json'), 'utf8')); } catch (_) { cfg = null; }
+  let jevOn = !!cfg && cfg.enabled === true;
+  try { jevOn = require('./lib/settings.js').get('jev', 'enabled', jevOn) === true; } catch (_) { /* keep jev.json's value */ }
+  if (!jevOn) return;
+  let reminderOn = true;
+  try { reminderOn = require('./lib/settings.js').get('jev', 'reviewReminder', true) !== false; } catch (_) { reminderOn = true; }
+  if (!reminderOn) return;
+  let result = null;
+  try { result = require('./lib/jev-review.js').computeReviewDue(); } catch (_) { result = null; }
+  if (!result || !result.due || !result.due.length) return;
+  head('jev shadow review');
+  for (const d of result.due) {
+    warnl(`review due: ${d.id} (${d.days}d, ${d.decisions} decisions) — run \`jev reviewed ${d.id}\` after deciding`);
+  }
+})();
+
+// --- 5p2. recommend Jev (REPORT-ONLY, CONDITIONAL) ---------------------------
+// A clearly marked recommendation while Jev is OFF (jev.recommendNotice=false
+// silences it). Not a warning: it never touches pass/fail/warn.
+(function jevRecommendSection() {
+  try {
+    const rec = require('./lib/jev-recommend.js');
+    const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
+    if (!rec.applicable({ home, env: process.env })) return;
+    head('jev recommendation');
+    rec.doctorLines().forEach((l, i) => lines.push(`  ${i === 0 ? C.b : ''}${l}${i === 0 ? C.x : ''}`));
+  } catch (_) { /* report-only */ }
+})();
+
+// --- 5p3. jev config split-brain (REPORT-ONLY, CONDITIONAL) -----------------
+// ~/.anti-hall/settings.json (or env / the /config option) outranks the legacy
+// ~/.anti-hall/jev.json. When jev.json holds a DIFFERENT enabled/transport/
+// fallbackTransport than the effective value, the hooks use the winner while
+// anything reading jev.json alone (older scripts, a hand edit) shows the
+// loser. Names both files; silent when they agree or jev.json is absent.
+(function jevConfigSplitBrainSection() {
+  try {
+    const diffs = require('./lib/jev-client.js').configDisagreements();
+    if (!diffs.length) return;
+    head('jev config');
+    for (const d of diffs) {
+      const winner = d.source === 'file' ? '~/.anti-hall/settings.json' : (d.source === 'env' ? 'the environment' : 'the /config plugin option');
+      warnl(`jev.${d.key}: ~/.anti-hall/jev.json says ${JSON.stringify(d.legacy)} but ${winner} wins with ${JSON.stringify(d.effective)} (the hooks use ${JSON.stringify(d.effective)}); jev.json is only the legacy tier, so correct whichever value you actually want via \`node scripts/jev-setup.js enable|disable\` or \`node scripts/settings.js set jev.${d.key} <value>\``);
+    }
+  } catch (_) { /* report-only */ }
+})();
+
+// --- 5q. legacy API-key notice (REPORT-ONLY, CONDITIONAL) --------------------
+// anti-hall reads Jev / Anthropic keys from the plugin options (set on the plugin's options screen)
+// (jev_api_key, anthropic_api_key) and no longer reads the machine's env vars
+// or key file unless jev.allowLegacyKeyRead is on. Tells the user when a legacy
+// key EXISTS (presence only, value never read) for a feature they enabled.
+// Doctor is a plain process, so it cannot see whether the plugin option is
+// already set — the wording covers both cases. Silent when nothing applies.
+(function legacyKeyNoticeSection() {
+  try {
+    const settings = require('./lib/settings.js');
+    const kinds = [];
+    if (settings.get('jev', 'enabled', false) === true) kinds.push('jev');
+    if (settings.get('jev', 'semanticJudge', false) === true || settings.get('jev', 'enabled', false) === true) kinds.push('anthropic');
+    if (!kinds.length) return;
+    const jc = require('./lib/jev-client.js').loadJevConfig();
+    const notices = require('./lib/credentials.js').legacyNotices({
+      kinds, transport: jc.transport,
+      keyFile: jc.keyFile || require('./lib/jev-client.js').defaultKeyFilePath(jc.transport),
+    });
+    if (!notices.length) return;
+    head('api keys');
+    for (const n of notices) warnl(n);
+  } catch (_) { /* report-only */ }
+})();
+
+// --- 6. Summary --------------------------------------------------------------
+emitVerdictAndExit();

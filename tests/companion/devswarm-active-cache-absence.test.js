@@ -1,0 +1,302 @@
+'use strict';
+// companion/lib/devswarm-archived-cache.js — APP-SIDE archive detection BY ABSENCE.
+//
+// ROOT CAUSE this pins (measured, hivecontrol 2.5.1): `hivecontrol workspace
+// list all` emits records carrying EXACTLY {id, branch, sourceBranch,
+// repositoryId, label, aiAgent, worktreePath, createdAt} and takes no filter
+// flags. The prior field-pinned probe looked for an `archived`/`isArchived`/
+// `status`/`isHidden`/`isActive` key, found none, and therefore wrote NOTHING
+// — the feature was inert. Archive is expressed by MEMBERSHIP: an archived
+// workspace stops being listed. These tests pin the four conjuncts that make
+// deriving "archived" from absence safe.
+//
+// MUTATION CHECKS (each must turn a named test RED):
+//   M1: drop the repos-root conjunct (isUnderDevswarmReposRoot -> always true)
+//       -> "a row OUTSIDE the DevSwarm repos root is never app-archived" fails.
+//   M2: drop the grace conjunct (skip the fetchedAt - firstSeen comparison)
+//       -> "a row younger than the grace is not app-archived" fails.
+//   M3: drop the freshness bound (readActiveCache `fresh = true`)
+//       -> "a STALE cache suppresses nothing" fails.
+//   M4: let writeActiveCache write an empty snapshot
+//       -> "an EMPTY active list writes nothing" fails.
+
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const cacheLib = require('../../plugins/anti-hall/companion/lib/devswarm-archived-cache.js');
+
+const NOW = 1_700_000_000_000;
+const MAX_AGE = 60_000;
+const GRACE = 10 * 60 * 1000;
+// ENV pins the freshness bound so the test never depends on the supervisor's
+// live cooldown resolver.
+const ENV = { ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS: String(MAX_AGE) };
+
+// A worktree the DevSwarm app manages, and one it does not (the Primary's own
+// checkout). The repos-root conjunct is exactly this distinction.
+const APP_WT = '/Users/x/.devswarm/repos/1/abc123/feat-thing';
+const OWN_WT = '/Users/x/Projects/anti-hall';
+
+function mkhome() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'active-cache-'));
+  return { home, cleanup() { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
+}
+
+// Give a row a registry descriptor whose mtime IS its "first seen" age source.
+function seedDescriptor(home, id, firstSeenMs) {
+  const dir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, id + '.json');
+  fs.writeFileSync(p, JSON.stringify({ id, worktreePath: APP_WT }));
+  const t = new Date(firstSeenMs);
+  fs.utimesSync(p, t, t);
+}
+
+// An OLD row: registered comfortably before the snapshot, so the grace is met.
+const OLD = NOW - (GRACE * 3);
+
+function seedCache(home, records, fetchedAt) {
+  return cacheLib.writeActiveCache({
+    home, byRepoKey: { 'repo-a': records }, now: Number.isFinite(fetchedAt) ? fetchedAt : NOW,
+  });
+}
+
+function archived(home, id, worktreePath, now, repositoryId) {
+  return cacheLib.isAppArchived({
+    home, repoKey: 'repo-a', id, worktreePath, env: ENV,
+    now: Number.isFinite(now) ? now : NOW, repositoryId,
+  });
+}
+
+test('a row ABSENT from the active list is app-archived', () => {
+  const h = mkhome();
+  try {
+    seedDescriptor(h.home, 'ws-gone', OLD);
+    // The snapshot lists a DIFFERENT workspace; ws-gone is simply not in it.
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: '/Users/x/.devswarm/repos/1/def456/other' }]);
+    assert.strictEqual(archived(h.home, 'ws-gone', APP_WT), true);
+  } finally { h.cleanup(); }
+});
+
+test('a row PRESENT in the active list is never app-archived (by id, and by worktreePath)', () => {
+  const h = mkhome();
+  try {
+    seedDescriptor(h.home, 'ws-live', OLD);
+    seedDescriptor(h.home, 'ws-twin', OLD);
+    // ws-live matches by id. ws-twin has a DIFFERENT id but the SAME worktree —
+    // an id-space divergence (a builder-id alias row) must not read as archived.
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT }]);
+    assert.strictEqual(archived(h.home, 'ws-live', APP_WT), false);
+    assert.strictEqual(archived(h.home, 'ws-twin', APP_WT), false, 'worktreePath match alone proves liveness');
+  } finally { h.cleanup(); }
+});
+
+test('M2 — a row younger than the grace is not app-archived', () => {
+  const h = mkhome();
+  try {
+    // Registered ONE MINUTE before the snapshot: legitimately absent because the
+    // app had not listed it yet, not because it was archived.
+    seedDescriptor(h.home, 'ws-new', NOW - 60_000);
+    seedCache(h.home, [{ id: 'ws-other', worktreePath: '/Users/x/.devswarm/repos/1/def456/other' }]);
+    assert.strictEqual(archived(h.home, 'ws-new', APP_WT), false);
+    // The SAME row, once it is older than the grace, IS archived — proving the
+    // grace only defers the verdict, never cancels it.
+    seedDescriptor(h.home, 'ws-new', OLD);
+    assert.strictEqual(archived(h.home, 'ws-new', APP_WT), true);
+  } finally { h.cleanup(); }
+});
+
+test('M1 — a row OUTSIDE the DevSwarm repos root is never app-archived (the Primary itself)', () => {
+  const h = mkhome();
+  try {
+    seedDescriptor(h.home, 'primary-row', OLD);
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT }]);
+    // The Primary's own checkout was NEVER a DevSwarm workspace, so its absence
+    // from the app's list carries no archive meaning at all.
+    assert.strictEqual(archived(h.home, 'primary-row', OWN_WT), false);
+    assert.strictEqual(cacheLib.isUnderDevswarmReposRoot(OWN_WT), false);
+    assert.strictEqual(cacheLib.isUnderDevswarmReposRoot(APP_WT), true);
+  } finally { h.cleanup(); }
+});
+
+test('M3 — a STALE cache suppresses nothing', () => {
+  const h = mkhome();
+  try {
+    seedDescriptor(h.home, 'ws-gone', OLD);
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT }], NOW - (MAX_AGE + 1));
+    assert.strictEqual(cacheLib.readActiveCache({ home: h.home, env: ENV, now: NOW }).fresh, false);
+    assert.strictEqual(archived(h.home, 'ws-gone', APP_WT), false);
+  } finally { h.cleanup(); }
+});
+
+test('M4 — an EMPTY active list writes nothing (never "everything is archived")', () => {
+  const h = mkhome();
+  try {
+    seedDescriptor(h.home, 'ws-gone', OLD);
+    assert.strictEqual(cacheLib.writeActiveCache({ home: h.home, byRepoKey: { 'repo-a': [] }, now: NOW }), null);
+    assert.strictEqual(fs.existsSync(cacheLib.cachePath(h.home)), false, 'no file written');
+    assert.strictEqual(archived(h.home, 'ws-gone', APP_WT), false);
+  } finally { h.cleanup(); }
+});
+
+test('a MISSING cache, an unknown row age, and another project\'s bucket all suppress nothing', () => {
+  const h = mkhome();
+  try {
+    seedDescriptor(h.home, 'ws-gone', OLD);
+    // No cache file at all.
+    assert.strictEqual(archived(h.home, 'ws-gone', APP_WT), false);
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT }]);
+    // A row with NO descriptor file has no knowable age -> never suppressed.
+    assert.strictEqual(archived(h.home, 'no-descriptor', APP_WT), false);
+    // A snapshot for a DIFFERENT project says nothing about this one.
+    assert.strictEqual(cacheLib.isAppArchived({
+      home: h.home, repoKey: 'repo-b', id: 'ws-gone', worktreePath: APP_WT, env: ENV, now: NOW,
+    }), false);
+  } finally { h.cleanup(); }
+});
+
+test('the grace is tunable via ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS', () => {
+  assert.strictEqual(cacheLib.resolveArchivedGraceMs({}), cacheLib.DEFAULT_ARCHIVED_GRACE_MS);
+  assert.strictEqual(cacheLib.resolveArchivedGraceMs({ ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS: '900' }), 900);
+  // A junk value falls back to the default rather than disabling the conjunct.
+  assert.strictEqual(cacheLib.resolveArchivedGraceMs({ ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS: 'soon' }), cacheLib.DEFAULT_ARCHIVED_GRACE_MS);
+});
+
+// ---------------------------------------------------------------------------
+// R17 item 1 (Critic, reproduced): conjunct 3 used to compare worktreePath by
+// EXACT STRING. A trailing separator, or (macOS: /tmp -> /private/tmp) a
+// symlinked-prefix divergence between the row's own path and hivecontrol's
+// reported path made a genuinely LIVE workspace fail every comparison and
+// read as app-archived.
+//
+// MUTATION CHECK M5: drop normalizeWorktreePath (compare raw strings again)
+// -> both tests below fail (the trailing-slash and symlink cases both start
+// reading as archived).
+// ---------------------------------------------------------------------------
+
+test('M5 — a trailing separator on either side of the comparison is not a mismatch', () => {
+  const h = mkhome();
+  try {
+    // ws-twin has a DIFFERENT id from the cached record — ONLY the worktreePath
+    // match (not the id-match short-circuit) can prove this row is live, so
+    // this genuinely exercises the path comparison, not the id one.
+    seedDescriptor(h.home, 'ws-twin', OLD);
+    // The cached record (as hivecontrol reported it) carries a trailing slash;
+    // the row's own worktreePath does not.
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT + '/' }]);
+    assert.strictEqual(archived(h.home, 'ws-twin', APP_WT), false,
+      'a trailing separator alone must never make a live row read as archived');
+  } finally { h.cleanup(); }
+});
+
+test('M5 — a real symlinked-prefix divergence (macOS /tmp vs /private/tmp shape) is not a mismatch', () => {
+  const h = mkhome();
+  try {
+    // Build a REAL symlink so this is not circular: `alias` resolves to `real`
+    // via fs.realpathSync exactly the way macOS resolves /tmp -> /private/tmp.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'symlink-wt-'));
+    const real = path.join(base, 'real', '.devswarm', 'repos', '1', 'abc', 'feat');
+    fs.mkdirSync(real, { recursive: true });
+    const aliasParent = path.join(base, 'alias-parent');
+    fs.mkdirSync(aliasParent, { recursive: true });
+    const aliasRoot = path.join(aliasParent, 'real');
+    fs.symlinkSync(path.join(base, 'real'), aliasRoot, 'dir');
+    const aliasWt = path.join(aliasRoot, '.devswarm', 'repos', '1', 'abc', 'feat');
+
+    // ws-twin (a DIFFERENT id from the cached 'ws-live' record) so ONLY the
+    // worktreePath comparison — never the id short-circuit — can prove liveness.
+    seedDescriptor(h.home, 'ws-twin', OLD);
+    // hivecontrol reports the REAL path; anti-hall's own descriptor row was
+    // registered against the symlinked ALIAS path (or vice versa) — either
+    // direction must resolve to the same canonical form.
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: real }]);
+    assert.strictEqual(archived(h.home, 'ws-twin', aliasWt), false,
+      'a symlinked-prefix divergence of the SAME real directory must never read as archived');
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {}
+  } finally { h.cleanup(); }
+});
+
+test('a genuinely DIFFERENT path (not just a trailing-slash/symlink divergence) still reads as archived', () => {
+  const h = mkhome();
+  try {
+    seedDescriptor(h.home, 'ws-gone', OLD);
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: '/Users/x/.devswarm/repos/1/def456/other' }]);
+    assert.strictEqual(archived(h.home, 'ws-gone', APP_WT), true,
+      'normalization must never manufacture a match between two genuinely different paths');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// D11-B — conjunct 3's bucket is keyed by repoKey but the underlying
+// `hivecontrol workspace list all` answer that fills it is GLOBAL and takes no
+// repo filter (see the module header), so ONE bucket can legitimately hold
+// records spanning multiple physical repos. A bare id (or a worktreePath, in
+// a moved/rehomed setup) can then collide across two UNRELATED repos' rows,
+// and the id/worktreePath-only match falsely reads a genuinely-archived row
+// in repo A as still-live because a same-id record from repo B happens to sit
+// in the same bucket.
+//
+// MUTATION CHECK M7: drop the repositoryId guard entirely (match on
+// id/worktreePath alone, as before D11-B) -> "same id, two repos" fails (the
+// cross-repo record would wrongly prove liveness).
+// ---------------------------------------------------------------------------
+
+test('M7 — same id, two repositoryIds in one bucket: only the matching repositoryId suppresses (fails the "found evidence" check for the wrong repo)', () => {
+  const h = mkhome();
+  try {
+    // ws-shared is registered (and genuinely archived) in repo-a, whose real
+    // repositoryId is 'repo-id-A'. A DIFFERENT repo's live workspace happens
+    // to reuse the SAME literal id 'ws-shared' (ids are per-app, not
+    // guaranteed globally unique) and both land in this ONE bucket because
+    // `workspace list all` is unscoped.
+    seedDescriptor(h.home, 'ws-shared', OLD);
+    seedCache(h.home, [{ id: 'ws-shared', worktreePath: APP_WT, repositoryId: 'repo-id-B' }]);
+    assert.strictEqual(
+      archived(h.home, 'ws-shared', APP_WT, NOW, 'repo-id-A'),
+      true,
+      'a same-id record belonging to a DIFFERENT repositoryId must not prove this row is live'
+    );
+    // The SAME cached record, now correctly attributed to repo-id-A, DOES
+    // prove liveness — proving the guard only WITHHOLDS a wrong-repo match,
+    // it never blocks a genuinely correct one.
+    seedCache(h.home, [{ id: 'ws-shared', worktreePath: APP_WT, repositoryId: 'repo-id-A' }]);
+    assert.strictEqual(archived(h.home, 'ws-shared', APP_WT, NOW, 'repo-id-A'), false);
+  } finally { h.cleanup(); }
+});
+
+test('D11-B — when either side lacks a repositoryId, the id/worktreePath match alone still suppresses nothing (fail toward never-suppress)', () => {
+  const h = mkhome();
+  try {
+    // Cached record carries no repositoryId (older hivecontrol / un-migrated
+    // cache); the row's own caller also passes none.
+    seedDescriptor(h.home, 'ws-live', OLD);
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT }]);
+    assert.strictEqual(archived(h.home, 'ws-live', APP_WT), false);
+    // Only the CACHED side carries a repositoryId; the caller supplies none —
+    // still not enough information to disagree, so the existing match holds.
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT, repositoryId: 'repo-id-A' }]);
+    assert.strictEqual(archived(h.home, 'ws-live', APP_WT), false);
+    // Only the CALLER carries a repositoryId; the cached record has none.
+    assert.strictEqual(archived(h.home, 'ws-live', APP_WT, NOW, 'repo-id-A'), false);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// D11-B — isUnderDevswarmReposRoot now normalizes its input the same way
+// conjunct 3 already normalizes every worktreePath (R17 item 1), so a
+// trailing separator on the raw caller-supplied path is still recognized.
+//
+// MUTATION CHECK M8: drop the normalizeWorktreePath call in
+// isUnderDevswarmReposRoot (test the raw path again) -> this test alone does
+// not turn red (the regex already tolerates a trailing separator via
+// substring match), but the symmetry with conjunct 3's own normalization is
+// what this guards; see the module-level comment on the function itself.
+// ---------------------------------------------------------------------------
+
+test('D11-B — isUnderDevswarmReposRoot recognizes a path with a trailing separator', () => {
+  assert.strictEqual(cacheLib.isUnderDevswarmReposRoot(APP_WT + '/'), true);
+  assert.strictEqual(cacheLib.isUnderDevswarmReposRoot(APP_WT + '/./'), true);
+});

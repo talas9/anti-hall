@@ -1,0 +1,681 @@
+'use strict';
+// anti-hall :: devswarm-app-db — READ-ONLY snapshot of the DevSwarm desktop
+// app's own database (v0.107.1 archive state; v0.108.0 full snapshot).
+//
+// WHY: archive detection used to be "by absence" from `hivecontrol workspace
+// list all` (devswarm-archived-cache.js). Measured against a current app build,
+// that command returns EVERY builder, archived ones included, with no state
+// field — so an archived workspace is never absent and never detected. The
+// app's database is the ground truth; an archived builder is
+// `isActive = 0 AND isHidden = 1`.
+//
+// v0.108.0 reads ONE snapshot per process (short cache) of the tables below,
+// joined per workspace, and every surface (parent-inbox, roster, identity,
+// doctor, the supervisor sync) reads that one snapshot.
+//
+// FIELD SEMANTICS — proven on a live DB (read-only) and against the app's own
+// source (2.5.2) before any decision uses them; the rest are INFORMATIONAL only
+// (docs/KB-devswarm-app-db.md):
+//   PROVEN  builders.isActive/isHidden   archive = isHidden 1 + isActive 0; close =
+//           isActive 0 only (NOT archived); pre-2.3.0 rows carry isActive 0 as
+//           "unknown" — hence archived requires isHidden 1. Delete removes the row.
+//   PROVEN  builders.label                == hivecontrol `label` (the UI title)
+//   PROVEN  builders.rank                 sidebar order within a repo (0 = top)
+//   PROVEN  builders.lastSelectedAt       UI focus: stamped on every active-tab change
+//   PROVEN  builder_terminals.ai_session_config.sessionId = the live Claude session
+//           id (rewritten on /clear, /compact fork when the app's hook reports).
+//           Used ONE-WAY: a session id found here runs on that worktree (129/130
+//           transcripts' cwd == worktreePath); absence proves nothing.
+//   PROVEN  initialPrompt / DeliveredAt / WithheldAt: delivery clears the prompt and
+//           stamps DeliveredAt in one write; WithheldAt + prompt = withheld, retried
+//           on the next healthy resume. Rows older than the first recorded delivery
+//           (pre-2.5.2) are never judged.
+//   PROVEN  pull_requests.state / checkStatus (Title Case; 6/6 state and 2/2
+//           'Failed' match GitHub; polled every 60 s)
+//   INFO    panelStatus (pending = no PTY yet), lastViewedAt (terminal tab
+//           switch), lastAccessed (bumped by background writes — NOT focus),
+//           isPinned, terminal scrollback mtime/size
+//   UNUSED  transcriptByteOffset/LineCount (0 on every live row: ingestion is the
+//           app's cloud-analytics pipeline), builder_terminal_transcripts,
+//           builder_transcript_prompts (payload bodies), workspace_messages.message
+//           (bodies) and .status, pull_requests.title/authorLogin.
+//
+// CONTRACT
+//   - READ-ONLY: node:sqlite `readOnly: true`, a few SELECTs, closed. Never
+//     writes, never spawns. Credential tables are never named here. Message
+//     bodies and brief text are never selected (only presence/length).
+//   - FAIL-OPEN: no node:sqlite, no file, no `builders` table or no id/isActive
+//     column -> null ("no opinion"). Any OTHER missing column or table is read
+//     as null and listed in `snapshot.missing` ("table.column") so doctor can
+//     warn "DevSwarm app schema changed". Nothing here throws.
+//   - PATH: ANTIHALL_DEVSWARM_APP_DB overrides (a file path, or `off` to
+//     disable). Otherwise the app's per-OS data dir under the CALLER's home:
+//       darwin  <home>/Library/Application Support/DevSwarm/devswarm.db
+//       linux   $XDG_CONFIG_HOME|<home>/.config /DevSwarm/devswarm.db
+//     No home -> null (never falls through to the real user's home).
+//   - CACHE: one read per process per APP_DB_CACHE_MS (default 10 s).
+
+const fs = require('fs');
+const path = require('path');
+
+// Capability gate (companion/lib/devswarm-capabilities.js: DevSwarm version +
+// runtime detection). Every table, column and app-file read below asks
+// can('appdb.<table>') / can('appdb.<table>.<column>') / can('appfs.<name>');
+// every name is in the gate's registry (tests pin SCHEMA ⊆ registry). A gated
+// read degrades exactly like a missing column (fail-open, listed in `gated`).
+// `file` = the DB this module already opened, so the gate checks the same file.
+// Absent module -> ungated.
+let caps = null;
+try { caps = require('./devswarm-capabilities.js'); } catch (_) { caps = null; }
+function capOk(name, env, home, file) {
+  if (!caps || typeof caps.can !== 'function') return true;
+  try {
+    const r = caps.can(name, { env, home, appDbFile: file || undefined });
+    return !!(r && r.ok);
+  } catch (_) { return false; }
+}
+
+const DEFAULT_CACHE_MS = 10 * 1000;
+const BRIEF_DELIVERY_GRACE_MS = 3 * 60 * 1000;
+let memo = null; // { file, at, snap }
+
+// SCHEMA — every column this module reads. Pinned by tests: a fixture carrying
+// exactly these columns must produce `missing: []`.
+const SCHEMA = {
+  builders: ['id', 'repositoryId', 'sourceBranch', 'branchName', 'worktreePath', 'terminalId', 'label', 'createdAt',
+    'lastAccessed', 'rank', 'isHidden', 'pullRequestId', 'builderType', 'isPinned', 'isActive', 'lastSelectedAt'],
+  builder_terminals: ['id', 'builderId', 'terminalId', 'terminalType', 'aiAgent', 'ai_session_config', 'isActive',
+    'panelStatus', 'createdAt', 'lastViewedAt', 'initialPrompt', 'initialPromptDeliveredAt', 'initialPromptWithheldAt'],
+  pull_requests: ['id', 'repositoryId', 'branchName', 'number', 'state', 'isDraft', 'url', 'checkStatus', 'reviewStatus', 'lastSyncedAt'],
+  repositories: ['id', 'path', 'name', 'defaultBaseBranch'],
+  workspace_messages: ['repositoryId', 'toBranch', 'createdAt'],
+};
+// Columns whose absence makes the snapshot meaningless -> null.
+const CORE = { builders: ['id', 'isActive'] };
+
+function appDbPath(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const override = env && typeof env.ANTIHALL_DEVSWARM_APP_DB === 'string' ? env.ANTIHALL_DEVSWARM_APP_DB.trim() : '';
+  if (override) return override.toLowerCase() === 'off' ? null : override;
+  if (!o.home) return null;
+  const platform = o.platform || process.platform;
+  if (platform === 'darwin') return path.join(String(o.home), 'Library', 'Application Support', 'DevSwarm', 'devswarm.db');
+  if (platform === 'linux') {
+    const base = env && env.XDG_CONFIG_HOME ? String(env.XDG_CONFIG_HOME) : path.join(String(o.home), '.config');
+    return path.join(base, 'DevSwarm', 'devswarm.db');
+  }
+  return null;
+}
+
+function normPath(p) {
+  if (typeof p !== 'string' || !p) return null;
+  let r;
+  try { r = path.resolve(p); } catch (_) { return p; }
+  try { return fs.realpathSync(r); } catch (_) { return r; }
+}
+
+function tsMs(v) {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : Date.parse(String(v));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// tableColumns(db, table) -> Set | null (table absent).
+function tableColumns(db, table) {
+  try {
+    const rows = db.prepare('PRAGMA table_info(' + table + ')').all();
+    if (!rows.length) return null;
+    return new Set(rows.map((c) => String(c.name)));
+  } catch (_) { return null; }
+}
+
+// selectPresent(db, table, missing, gated, env, home, file) -> rows[] with every SCHEMA column
+// as a key (null when absent or capability-gated). `initialPrompt` is read as
+// presence + length only.
+function selectPresent(db, table, missing, gated, env, home, file) {
+  const cols = tableColumns(db, table);
+  if (!cols) { missing.push(table + ' (table)'); return []; }
+  if (!capOk('appdb.' + table, env, home, file)) { gated.push('appdb.' + table); return []; }
+  const exprs = [];
+  const nulls = [];
+  for (const c of SCHEMA[table]) {
+    if (!cols.has(c)) { missing.push(table + '.' + c); nulls.push(c); continue; }
+    if (!capOk('appdb.' + table + '.' + c, env, home, file)) { gated.push('appdb.' + table + '.' + c); nulls.push(c); continue; }
+    if (c === 'initialPrompt') exprs.push('length(initialPrompt) AS initialPromptLen');
+    else exprs.push('"' + c + '"');
+  }
+  if (!exprs.length) return [];
+  const rows = db.prepare('SELECT ' + exprs.join(', ') + ' FROM ' + table).all();
+  for (const r of rows) for (const c of nulls) r[c === 'initialPrompt' ? 'initialPromptLen' : c] = null;
+  return rows;
+}
+
+function parseSessionId(raw) {
+  if (raw == null) return null;
+  try {
+    const v = JSON.parse(String(raw));
+    return v && typeof v.sessionId === 'string' && v.sessionId ? v.sessionId : null;
+  } catch (_) { return null; }
+}
+
+// appVersion(dbFile) -> 'DevSwarm@x.y.z' | null, from the app's own crash-report
+// session file next to the DB (sentry/session.json `release`). Fail-open.
+function appVersion(dbFile) {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(path.dirname(dbFile), 'sentry', 'session.json'), 'utf8'));
+    return j && typeof j.release === 'string' ? j.release : null;
+  } catch (_) { return null; }
+}
+
+// scrollbackStat(dbFile, terminalId) -> { mtimeMs, size } | null. The app keeps a
+// raw PTY log per open terminal at terminal-scrollback/<terminalId with . -> _>.log.
+// Only its mtime/size are read — NEVER its content (raw shell output).
+function scrollbackStat(dbFile, terminalId) {
+  if (typeof terminalId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(terminalId)) return null;
+  try {
+    const st = fs.statSync(path.join(path.dirname(dbFile), 'terminal-scrollback', terminalId.replace(/\./g, '_') + '.log'));
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch (_) { return null; }
+}
+
+// readSnapshot(file, opts) -> snapshot | null. See CONTRACT above. opts.env feeds
+// the capability gate.
+function readSnapshot(file, opts) {
+  const env = (opts && opts.env) || process.env;
+  const home = (opts && opts.home) || null;
+  let sqlite;
+  try { sqlite = require('./sqlite-quiet.js').requireSqlite(); } catch (_) { return null; }
+  try { if (!fs.statSync(file).isFile()) return null; } catch (_) { return null; }
+  let db = null;
+  try {
+    db = new sqlite.DatabaseSync(file, { readOnly: true });
+    const bcols = tableColumns(db, 'builders');
+    if (!bcols) return null;
+    for (const c of CORE.builders) if (!bcols.has(c) || !capOk('appdb.builders.' + c, env, home, file)) return null;
+    const missing = [];
+    const gated = [];
+    const builders = selectPresent(db, 'builders', missing, gated, env, home, file);
+    const terminals = selectPresent(db, 'builder_terminals', missing, gated, env, home, file);
+    const prs = selectPresent(db, 'pull_requests', missing, gated, env, home, file);
+    const repos = selectPresent(db, 'repositories', missing, gated, env, home, file);
+    // workspace_messages is only schema-checked here (counts are a separate read).
+    const wm = tableColumns(db, 'workspace_messages');
+    if (!wm) missing.push('workspace_messages (table)');
+    else for (const c of SCHEMA.workspace_messages) if (!wm.has(c)) missing.push('workspace_messages.' + c);
+
+    const repoById = new Map();
+    const repositories = repos.filter((r) => r && r.id != null).map((r) => {
+      const v = { id: String(r.id), path: normPath(r.path), name: r.name == null ? null : String(r.name), defaultBaseBranch: r.defaultBaseBranch == null ? null : String(r.defaultBaseBranch) };
+      repoById.set(v.id, v);
+      return v;
+    });
+    const prById = new Map();
+    const prByBranch = new Map();
+    for (const p of prs) {
+      if (!p || p.id == null) continue;
+      const v = {
+        id: String(p.id), number: p.number == null ? null : Number(p.number), state: p.state == null ? null : String(p.state),
+        isDraft: p.isDraft == null ? null : Number(p.isDraft) === 1, url: p.url == null ? null : String(p.url),
+        checkStatus: p.checkStatus == null ? null : String(p.checkStatus), reviewStatus: p.reviewStatus == null ? null : String(p.reviewStatus),
+        lastSyncedAt: tsMs(p.lastSyncedAt),
+      };
+      prById.set(v.id, v);
+      if (p.repositoryId != null && p.branchName != null) prByBranch.set(String(p.repositoryId) + '\u0000' + String(p.branchName), v);
+    }
+    // Earliest recorded delivery: before it the app did not record delivery at all.
+    let deliveryTrackedSince = null;
+    const termsByBuilder = new Map();
+    for (const t of terminals) {
+      if (!t || t.builderId == null) continue;
+      const d = tsMs(t.initialPromptDeliveredAt);
+      if (d != null && (deliveryTrackedSince == null || d < deliveryTrackedSince)) deliveryTrackedSince = d;
+      const v = {
+        id: t.id == null ? null : String(t.id), terminalId: t.terminalId == null ? null : String(t.terminalId),
+        terminalType: t.terminalType == null ? null : String(t.terminalType), aiAgent: t.aiAgent == null ? null : String(t.aiAgent),
+        sessionId: parseSessionId(t.ai_session_config), isActive: t.isActive == null ? null : Number(t.isActive) === 1,
+        panelStatus: t.panelStatus == null ? null : String(t.panelStatus), createdAt: tsMs(t.createdAt), lastViewedAt: tsMs(t.lastViewedAt),
+        briefPending: t.initialPromptLen != null && Number(t.initialPromptLen) > 0, briefLen: t.initialPromptLen == null ? null : Number(t.initialPromptLen),
+        deliveredAt: d, withheldAt: tsMs(t.initialPromptWithheldAt),
+      };
+      const k = String(t.builderId);
+      if (!termsByBuilder.has(k)) termsByBuilder.set(k, []);
+      termsByBuilder.get(k).push(v);
+    }
+    const hasHidden = bcols.has('isHidden') && capOk('appdb.builders.isHidden', env, home, file);
+    const workspaces = [];
+    for (const b of builders) {
+      if (!b || b.id == null) continue;
+      const id = String(b.id);
+      const active = Number(b.isActive) === 1;
+      const archived = Number(b.isActive) === 0 && (!hasHidden || Number(b.isHidden) === 1);
+      const repo = b.repositoryId != null ? repoById.get(String(b.repositoryId)) : null;
+      const pr = (b.pullRequestId != null && prById.get(String(b.pullRequestId)))
+        || (b.repositoryId != null && b.branchName != null && prByBranch.get(String(b.repositoryId) + '\u0000' + String(b.branchName))) || null;
+      const terms = termsByBuilder.get(id) || [];
+      // CURRENT AI terminal: the open (isActive) one created last — a builder
+      // can carry several open AI terminals at once (measured: 9% of builders).
+      let aiActive = null;
+      for (const t of terms) {
+        if (t.terminalType !== 'ai' || t.isActive !== true) continue;
+        if (!aiActive || (t.createdAt || 0) > (aiActive.createdAt || 0)) aiActive = t;
+      }
+      workspaces.push({
+        id, repositoryId: b.repositoryId == null ? null : String(b.repositoryId),
+        repoPath: repo ? repo.path : null, repoName: repo ? repo.name : null,
+        label: b.label == null ? null : String(b.label), branchName: b.branchName == null ? null : String(b.branchName),
+        sourceBranch: b.sourceBranch == null ? null : String(b.sourceBranch), worktreePath: normPath(b.worktreePath),
+        // as the app stored it (= the cwd Claude was launched with; its transcript
+        // project dir is keyed on this spelling, not the realpath)
+        worktreePathRaw: b.worktreePath == null ? null : String(b.worktreePath),
+        builderType: b.builderType == null ? null : String(b.builderType),
+        rank: b.rank == null ? null : Number(b.rank), isPinned: b.isPinned == null ? null : Number(b.isPinned) === 1,
+        isHidden: b.isHidden == null ? null : Number(b.isHidden) === 1, active, archived,
+        createdAt: tsMs(b.createdAt), lastAccessed: tsMs(b.lastAccessed), lastSelectedAt: tsMs(b.lastSelectedAt),
+        pullRequest: pr, terminals: terms,
+        sessionId: aiActive ? aiActive.sessionId : null,
+        scrollback: active && aiActive && capOk('appfs.terminal-scrollback', env, home, file) ? scrollbackStat(file, aiActive.terminalId) : null,
+      });
+    }
+    return {
+      ok: true, file, appVersion: capOk('appfs.sentry-session', env, home, file) ? appVersion(file) : null, missing, gated, deliveryTrackedSince,
+      repositories, workspaces,
+    };
+  } catch (_) {
+    return null;
+  } finally {
+    try { if (db) db.close(); } catch (_) {}
+  }
+}
+
+function cacheTtl(env) {
+  const raw = Number(env && env.ANTIHALL_DEVSWARM_APP_DB_CACHE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_CACHE_MS;
+}
+
+// snapshot(opts) -> snapshot | null (cached per process). opts.fresh bypasses the cache.
+function snapshot(opts) {
+  const o = opts || {};
+  const file = appDbPath(o);
+  if (!file) return null;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const ttl = cacheTtl(o.env || process.env);
+  if (!o.fresh && memo && memo.file === file && now - memo.at >= 0 && now - memo.at < ttl) return memo.snap;
+  const snap = readSnapshot(file, { env: o.env || process.env, home: o.home || null });
+  memo = { file, at: now, snap };
+  return snap;
+}
+
+// --- cross-invocation archived-verdict cache -------------------------------
+// WHY: `memo` above is per-PROCESS only. `devswarm.js heartbeat`/`register`
+// run as a fresh short-lived CLI process on every call, so the 10s memo never
+// helps them — each call opened + queried the app's live SQLite DB. This adds
+// a small on-disk cache of `builderStates()` at
+// ~/.anti-hall/devswarm/cache/app-archived.json, keyed by the app DB file's
+// stat signature (mtime+size, plus its `-wal` file's when present) with a
+// ~30s TTL. Re-queried only when that signature changes or the TTL expires.
+// Read-only against the app DB; any cache read/write error is swallowed and
+// falls back to querying directly (fail-open, same posture as the rest of
+// this module). Write is atomic (tmp + rename, mirrors devswarm-store.js).
+const CROSS_CACHE_TTL_MS = 30 * 1000;
+
+function crossCacheFile(home) {
+  return path.join(String(home), '.anti-hall', 'devswarm', 'cache', 'app-archived.json');
+}
+
+// dbFileSig(file) -> { mtimeMs, size, walMtimeMs, walSize } | null (file gone
+// / unreadable -> null, caller must skip the cross-cache for this call).
+function dbFileSig(file) {
+  try {
+    const st = fs.statSync(file);
+    const sig = { mtimeMs: st.mtimeMs, size: st.size, walMtimeMs: null, walSize: null };
+    try {
+      const w = fs.statSync(file + '-wal');
+      sig.walMtimeMs = w.mtimeMs;
+      sig.walSize = w.size;
+    } catch (_) {}
+    return sig;
+  } catch (_) { return null; }
+}
+
+function sigMatches(a, b) {
+  return !!a && !!b && a.mtimeMs === b.mtimeMs && a.size === b.size && a.walMtimeMs === b.walMtimeMs && a.walSize === b.walSize;
+}
+
+// readCrossCache(home, file, sig, now) -> Map | null. Any mismatch (wrong
+// file, changed sig, expired TTL) or read/parse error -> null, meaning "query
+// the DB directly" -- never thrown, never a stale/wrong answer.
+function readCrossCache(home, file, sig, now) {
+  try {
+    const raw = fs.readFileSync(crossCacheFile(home), 'utf8');
+    const j = JSON.parse(raw);
+    if (!j || j.file !== file || !sigMatches(j.sig, sig)) return null;
+    if (!Number.isFinite(j.at) || now - j.at < 0 || now - j.at >= CROSS_CACHE_TTL_MS) return null;
+    if (!j.states || typeof j.states !== 'object') return null;
+    const map = new Map();
+    for (const id of Object.keys(j.states)) {
+      const v = j.states[id];
+      if (!v || typeof v !== 'object') continue;
+      map.set(id, {
+        active: v.active === true,
+        archived: v.archived === true ? true : v.archived === false ? false : null,
+        worktreePath: v.worktreePath == null ? null : String(v.worktreePath),
+        builderType: v.builderType == null ? null : String(v.builderType),
+      });
+    }
+    return map;
+  } catch (_) { return null; }
+}
+
+// writeCrossCache(home, file, sig, at, map) — best-effort atomic write
+// (tmp + rename). Any failure is swallowed: the caller already has its
+// answer from the DB it just read, a failed cache write never blocks it.
+function writeCrossCache(home, file, sig, at, map) {
+  try {
+    const target = crossCacheFile(home);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const states = {};
+    for (const [id, v] of map) states[id] = { active: v.active, archived: v.archived, worktreePath: v.worktreePath, builderType: v.builderType };
+    const payload = JSON.stringify({ file, sig, at, states });
+    const tmp = target + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, payload);
+    fs.renameSync(tmp, target);
+  } catch (_) {}
+}
+
+// builderStates(opts) -> Map(id -> { archived, active, worktreePath }) | null.
+// Cross-invocation cached (see above) ONLY when the caller opts in with
+// `opts.xcache: true` (AND opts.home is set AND opts.fresh is not set) --
+// this is off by default so read-only callers (`app-state`, doctor, sync-ui's
+// planning pass, the archive sweep) keep their documented "never writes"
+// contract. Callers that opt in are the short-lived, high-frequency CLI paths
+// this cache exists for: `devswarm.js register`/`ensure`/`heartbeat`'s
+// app-archive guards.
+function builderStates(opts) {
+  const o = opts || {};
+  const file = appDbPath(o);
+  if (!file) return null;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const useCross = !!o.xcache && !!o.home && !o.fresh;
+  const sig = useCross ? dbFileSig(file) : null;
+  if (useCross && sig) {
+    const cached = readCrossCache(o.home, file, sig, now);
+    if (cached) return cached;
+  }
+  const snap = snapshot(o);
+  if (!snap) return null;
+  const map = new Map();
+  for (const w of snap.workspaces) map.set(w.id, { active: w.active, archived: w.archived, worktreePath: w.worktreePath, builderType: w.builderType, branchName: w.branchName });
+  if (useCross && sig) writeCrossCache(o.home, file, sig, now, map);
+  return map;
+}
+
+// appArchivedVerdict({ home, env, id, worktreePath, now }) -> true | false | null.
+//   by id: the app's own record decides (archived -> true, otherwise false);
+//   else by worktree: any ACTIVE builder on that worktree -> false; only
+//   archived builders there -> true (a twin row sharing an archived worktree);
+//   no record either way -> null (no opinion).
+function appArchivedVerdict(opts) {
+  const o = opts || {};
+  try {
+    const map = builderStates(o);
+    if (!map) return null;
+    const id = o.id != null ? String(o.id) : '';
+    if (id && map.has(id)) return map.get(id).archived;
+    const wt = normPath(o.worktreePath);
+    if (!wt) return null;
+    let sawArchived = false;
+    for (const b of map.values()) {
+      if (b.worktreePath !== wt) continue;
+      if (b.active || !b.archived) return false;
+      sawArchived = true;
+    }
+    return sawArchived ? true : null;
+  } catch (_) { return null; }
+}
+
+// workspaceFor(snap, { id, worktreePath }) -> workspace | null. By id first; else
+// the ACTIVE builder on that worktree (never an archived twin).
+function workspaceFor(snap, q) {
+  if (!snap || !q) return null;
+  const id = q.id != null ? String(q.id) : '';
+  if (id) { const w = snap.workspaces.find((x) => x.id === id); if (w) return w; }
+  const wt = normPath(q.worktreePath);
+  if (!wt) return null;
+  return snap.workspaces.find((x) => x.active && x.worktreePath === wt) || null;
+}
+
+// transcriptCwdMatches(home, sessionId, worktreePath) -> true | false | null.
+// Verifies a session-map entry against Claude's own transcript: the file
+// <home>/.claude/projects/<encoded worktree>/<sessionId>.jsonl must exist and
+// its first recorded `cwd` (within the first 64 KiB) must be the worktree.
+// null = no transcript / no cwd found (unverified). Reads a bounded prefix only.
+function transcriptCwdMatches(home, sessionId, worktreePath) {
+  if (!home || typeof sessionId !== 'string' || !/^[A-Za-z0-9-]+$/.test(sessionId) || !worktreePath) return null;
+  let fd = null;
+  try {
+    const { projectDirFor } = require('./target-session.js');
+    const file = path.join(projectDirFor(worktreePath, home), sessionId + '.jsonl');
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(64 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const m = /"cwd"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(buf.subarray(0, n).toString('utf8'));
+    if (!m) return null;
+    let cwd;
+    try { cwd = JSON.parse(m[1]); } catch (_) { return null; }
+    return normPath(cwd) === normPath(worktreePath);
+  } catch (_) {
+    return null;
+  } finally {
+    try { if (fd != null) fs.closeSync(fd); } catch (_) {}
+  }
+}
+
+// sessionOwner(snap, sessionId) -> { builderId, worktreePath, builderType, repositoryId,
+// active, terminalActive } | null. One-way (see header): a hit is authoritative for
+// WHICH worktree the session belongs to; a miss proves nothing.
+function sessionOwner(snap, sessionId) {
+  if (!snap || typeof sessionId !== 'string' || !sessionId) return null;
+  for (const w of snap.workspaces) {
+    for (const t of w.terminals) {
+      if (t.sessionId === sessionId) {
+        return { builderId: w.id, worktreePath: w.worktreePath, worktreePathRaw: w.worktreePathRaw, builderType: w.builderType, repositoryId: w.repositoryId, active: w.active, terminalActive: t.isActive === true };
+      }
+    }
+  }
+  return null;
+}
+
+// sessionMap(snap) -> { [sessionId]: { builderId, worktreePath, builderType, active, terminalActive } }.
+function sessionMap(snap) {
+  const out = {};
+  if (!snap) return out;
+  for (const w of snap.workspaces) {
+    for (const t of w.terminals) {
+      if (!t.sessionId || t.terminalType !== 'ai') continue;
+      out[t.sessionId] = { builderId: w.id, worktreePath: w.worktreePath, builderType: w.builderType, active: w.active, terminalActive: t.isActive === true };
+    }
+  }
+  return out;
+}
+
+// briefDelivery(snap, ws, now) -> null | { status: 'pending'|'not-delivered'|'withheld', ageMs }.
+// Judges only ai terminals created after the app began recording delivery.
+function briefDelivery(snap, ws, now) {
+  if (!snap || !ws || !ws.active) return null;
+  const since = snap.deliveryTrackedSince;
+  const t = Number.isFinite(now) ? now : Date.now();
+  for (const term of ws.terminals) {
+    if (term.terminalType !== 'ai') continue;
+    const ageMs = term.createdAt != null ? t - term.createdAt : null;
+    if (!term.briefPending || term.deliveredAt != null) continue;
+    if (term.withheldAt != null) return { status: 'withheld', ageMs };
+    if (since == null || term.createdAt == null || term.createdAt < since) continue;
+    return { status: ageMs != null && ageMs >= BRIEF_DELIVERY_GRACE_MS ? 'not-delivered' : 'pending', ageMs };
+  }
+  return null;
+}
+
+// branchTipMtimeMs(worktreePath, branchName) -> ms | null: mtime of the branch's
+// loose ref file (the last time the branch moved). Pure fs, no git spawn; a
+// packed/unresolvable ref -> null.
+function branchTipMtimeMs(worktreePath, branchName) {
+  if (!worktreePath || typeof branchName !== 'string' || !branchName || branchName.includes('..')) return null;
+  try {
+    let gitDir = path.join(worktreePath, '.git');
+    const st = fs.statSync(gitDir);
+    if (st.isFile()) {
+      const m = /^gitdir:\s*(.+)\s*$/m.exec(fs.readFileSync(gitDir, 'utf8'));
+      if (!m) return null;
+      gitDir = path.resolve(worktreePath, m[1].trim());
+    }
+    let common = gitDir;
+    try { common = path.resolve(gitDir, fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim()); } catch (_) { common = gitDir; }
+    return fs.statSync(path.join(common, 'refs', 'heads', ...branchName.split('/'))).mtimeMs;
+  } catch (_) { return null; }
+}
+
+// finishSignal(ws) -> string | null. The app's pull-request record for this
+// workspace, e.g. "PR #12 merged" / "PR #12 merged, checks failed". Extra signal
+// only — never overrides the explicit completion gates. TRUSTED ONLY when the
+// app synced the PR after the branch last moved (lastSyncedAt > branch tip
+// mtime); otherwise (stale sync, or the tip time is unknown) -> null and the
+// git ground truth already in the roster stands. checkStatus is Title Case.
+function finishSignal(ws) {
+  const pr = ws && ws.pullRequest;
+  if (!pr || !pr.state) return null;
+  const tip = branchTipMtimeMs(ws.worktreePath, ws.branchName);
+  if (tip == null || pr.lastSyncedAt == null || pr.lastSyncedAt <= tip) return null;
+  let s = 'PR' + (pr.number != null ? ' #' + pr.number : '') + ' ' + pr.state + (pr.isDraft ? ' (draft)' : '');
+  if (pr.checkStatus && /fail/i.test(pr.checkStatus)) s += ', checks failed';
+  return s;
+}
+
+// lastSelected(snap, repositoryId) -> { id, at } | null: the builder the owner
+// most recently selected in the app (optionally within one repository).
+function lastSelected(snap, repositoryId) {
+  if (!snap) return null;
+  let best = null;
+  for (const w of snap.workspaces) {
+    if (repositoryId && w.repositoryId !== repositoryId) continue;
+    if (w.lastSelectedAt != null && (!best || w.lastSelectedAt > best.at)) best = { id: w.id, at: w.lastSelectedAt };
+  }
+  return best;
+}
+
+// focusedWorkspaceId(snap, now, windowMs) -> id | null. The builder the owner
+// has on screen in the app: the GLOBAL max lastSelectedAt (stamped on every
+// active-tab change), and only while that selection is recent (default 2 min —
+// a stale selection may mean the owner left the app).
+const FOCUS_WINDOW_MS = 2 * 60 * 1000;
+function focusedWorkspaceId(snap, now, windowMs) {
+  const best = lastSelected(snap, null);
+  if (!best) return null;
+  const t = Number.isFinite(now) ? now : Date.now();
+  const w = Number.isFinite(windowMs) && windowMs >= 0 ? windowMs : FOCUS_WINDOW_MS;
+  return t - best.at >= 0 && t - best.at <= w ? best.id : null;
+}
+
+// repositoryForWorktree(snap, worktreePath) -> repository | null: the repo whose
+// path is the worktree, or which owns a builder on that worktree.
+function repositoryForWorktree(snap, worktreePath) {
+  if (!snap) return null;
+  const wt = normPath(worktreePath);
+  if (!wt) return null;
+  const direct = snap.repositories.find((r) => r.path === wt);
+  if (direct) return direct;
+  const w = snap.workspaces.find((x) => x.worktreePath === wt && x.repositoryId);
+  return w ? (snap.repositories.find((r) => r.id === w.repositoryId) || { id: w.repositoryId, path: null, name: null }) : null;
+}
+
+// messageTimestamps(opts) -> Map(repositoryId -> [{ toBranch, createdAtMs }]) | null.
+// Counts/ids only: selects repositoryId, toBranch, createdAt — never `message`.
+// opts.sinceMs / opts.untilMs bound the window (createdAt is ISO text).
+function messageTimestamps(opts) {
+  const o = opts || {};
+  const file = appDbPath(o);
+  if (!file) return null;
+  let sqlite;
+  try { sqlite = require('./sqlite-quiet.js').requireSqlite(); } catch (_) { return null; }
+  let db = null;
+  try {
+    if (!fs.statSync(file).isFile()) return null;
+    db = new sqlite.DatabaseSync(file, { readOnly: true });
+    const env = o.env || process.env;
+    if (!capOk('appdb.workspace_messages', env, o.home, file)) return null;
+    const cols = tableColumns(db, 'workspace_messages');
+    if (!cols || !SCHEMA.workspace_messages.every((c) => cols.has(c) && capOk('appdb.workspace_messages.' + c, env, o.home, file))) return null;
+    const since = new Date(Number.isFinite(o.sinceMs) ? o.sinceMs : 0).toISOString();
+    const until = new Date(Number.isFinite(o.untilMs) ? o.untilMs : Date.now()).toISOString();
+    const rows = db.prepare('SELECT repositoryId, toBranch, createdAt FROM workspace_messages WHERE createdAt >= ? AND createdAt < ?').all(since, until);
+    const out = new Map();
+    for (const r of rows) {
+      const k = r.repositoryId == null ? '' : String(r.repositoryId);
+      if (!out.has(k)) out.set(k, []);
+      out.get(k).push({ toBranch: r.toBranch == null ? null : String(r.toBranch), createdAtMs: tsMs(r.createdAt) });
+    }
+    return out;
+  } catch (_) {
+    return null;
+  } finally {
+    try { if (db) db.close(); } catch (_) {}
+  }
+}
+
+// scheduledForDeletion(home) -> string[] | null: entry NAMES under the app's
+// ~/.devswarm/scheduled-for-deletion/ (report only, never acted on).
+function scheduledForDeletion(home, env) {
+  if (!home || !capOk('appfs.scheduled-for-deletion', env || process.env, home)) return null;
+  try { return fs.readdirSync(path.join(String(home), '.devswarm', 'scheduled-for-deletion')).filter((n) => !n.startsWith('.')); } catch (_) { return null; }
+}
+
+function resetCache() { memo = null; }
+
+// builderForWorktree({ home, env, worktreePath, now, activeOnly }) ->
+// { id, builderType, active } | null. The app's own builder record for a
+// worktree (v0.108.0 identity fix): the Primary's checkout is
+// `builderType = 'primary'`, a child workspace is `'standard'`. Prefers the
+// ACTIVE builder; exactly one candidate required (two active builders on one
+// path is ambiguous -> null). Falls back to archived/hidden rows when none
+// are active — UNLESS `opts.activeOnly` is true, in which case only active
+// rows are ever considered (0.117.1 round 3, R2-P2-archived-builder-fallback:
+// an ownership decision must never grant first-claim off a stale
+// archived/hidden row at a worktree path that was later reused while no
+// active row exists yet). Existing callers that don't pass `activeOnly` keep
+// the original fallback behavior unchanged. Fail-open null.
+function builderForWorktree(opts) {
+  const o = opts || {};
+  try {
+    const map = builderStates(o);
+    const wt = normPath(o.worktreePath);
+    if (!map || !wt) return null;
+    const all = [];
+    for (const [id, b] of map.entries()) if (b.worktreePath === wt) all.push({ id, builderType: b.builderType, active: b.active });
+    const act = all.filter((b) => b.active);
+    const pool = o.activeOnly ? act : (act.length ? act : all);
+    return pool.length === 1 ? pool[0] : null;
+  } catch (_) { return null; }
+}
+
+// activeTerminalSessions({ home, env, builderId }) -> string[] | null. The
+// Claude session ids of the builder's ACTIVE terminals (builder_terminals.
+// ai_session_config.sessionId, isActive = 1) — the session the app shows and
+// resumes (v0.108.0 Primary seat). Read through a FRESH snapshot (called once
+// per SessionStart), so it goes through the same capability gate as every
+// other app-DB read. Fail-open null (no DB / snapshot); [] when the builder
+// is unknown or has no active session.
+function activeTerminalSessions(opts) {
+  const o = opts || {};
+  if (!o.builderId) return null;
+  const snap = snapshot(Object.assign({}, o, { fresh: true }));
+  if (!snap) return null;
+  const w = snap.workspaces.find((x) => x.id === String(o.builderId));
+  if (!w) return [];
+  return w.terminals.filter((t) => t.isActive === true && t.sessionId).map((t) => t.sessionId);
+}
+
+module.exports = {
+  appDbPath, readSnapshot, snapshot, builderStates, appArchivedVerdict, builderForWorktree, activeTerminalSessions, workspaceFor, sessionOwner, sessionMap,
+  briefDelivery, finishSignal, branchTipMtimeMs, transcriptCwdMatches, lastSelected, focusedWorkspaceId, repositoryForWorktree, messageTimestamps, scheduledForDeletion,
+  resetCache, SCHEMA, DEFAULT_CACHE_MS, BRIEF_DELIVERY_GRACE_MS, FOCUS_WINDOW_MS,
+};

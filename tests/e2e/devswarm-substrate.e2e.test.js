@@ -1,0 +1,755 @@
+'use strict';
+// ============================================================================
+// DevSwarm substrate — FULL end-to-end suite.
+//
+// Unlike the per-module unit tests, this suite drives the REAL entry points end
+// to end inside an isolated temp HOME: it spawns the hooks as child processes and
+// runs the CLI as `node scripts/devswarm.js ... `, wiring the pieces together
+// (CLI writes registry/store/summary -> a spawned hook reads it -> CLI advances a
+// cursor -> the gate clears) and asserting REAL outcomes, not internal state.
+//
+// Every test uses a fresh tmp HOME and rm()'s it in a finally, so no state ever
+// lands outside the fixture. OS-gated primitives (symlink to /dev/zero, FIFO) are
+// skipped cleanly WITH a logged reason on platforms where they are unavailable.
+//
+// Coverage map (task items 1..9):
+//   1  guard: raw monitor/read-messages blocked, message-count + quoted/unquoted
+//      data allowed, symlink descriptor does not hang (fail-open).
+//   2  parent-inbox hook injects the real unread count; empty when zero.
+//   3  parent-gate blocks on unread, CLEARS after CLI inbox ack, cap resets on a
+//      changed unread set.
+//   4  child-turn/child-gate write + require a heartbeat; freshness drives
+//      active-vs-archived classification (both directions).
+//   5  store round-trip on BOTH backends (journal always; sqlite where available).
+//   6  ingest idempotence (replay -> no dupes) + single-consumer lock refusal.
+//   7  auto-migration: legacy registry + NDJSON inbox imported, count-verified,
+//      source intact, re-run is a no-op.
+//   8  CLI JSON shapes + exit codes for register/heartbeat/inbox/workspaces/nudge/
+//      archive.
+//   9  archive-ready: gates -> archive_ready -> parent-inbox surfaces the "inform
+//      the user to archive" nudge, cooldown'd + persistent across turns, ignore
+//      mark suppresses one while a second still-ready workspace keeps being
+//      reminded; anti-hall NEVER archives/deletes or removes a descriptor.
+// ============================================================================
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const { testHook, testHookRaw, bashPayload } = require('../helpers/spawn-hook.js');
+const H = require('./helpers.js');
+
+const store = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const ingest = require('../../plugins/anti-hall/companion/devswarm-ingest.js');
+const { readDescriptors } = require('../../plugins/anti-hall/companion/devswarm-supervisor.js');
+const { DEFAULT_IDLE_MS } = require('../../plugins/anti-hall/companion/lib/liveness.js');
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+
+// v0.57 mesh (PLAN-v0.57-mesh.md Phase 8): devswarm-parent-inbox.js now reads
+// ONE shared summaries/<repoKey>.json (keyed by repoKeyForWorktree(cwd)), not a
+// per-descriptor durable inbox/cursor file. H.REPO_ROOT (the anti-hall repo's
+// own checkout — a real, stable git worktree) is used as the COMMON cwd for
+// both the CLI calls (which write into store/<repoKey>/) and the hook payload
+// (which reads summaries/<repoKey>.json) below, so both sides agree on repoKey.
+const MESH_CWD = H.REPO_ROOT;
+const MESH_REPO_KEY = repokey.repoKeyForWorktree(MESH_CWD);
+
+// seedStoreUnread(home, id, bodies) — registers `id` and appends `bodies.length`
+// REAL messages into the shared store (the SAME production module/functions
+// devswarm-store.js's own callers use), then re-derives the projection. Unlike
+// a raw NDJSON-file write (the pre-mesh construction), the hook now sources
+// `unread` from the store's OWN tracked cursor, so a test proving the hook
+// surfaces real unread data must land it in the store, not a bypassed file.
+function seedStoreUnread(home, id, bodies, opts) {
+  const s = store.openStore({ home, hash: MESH_REPO_KEY });
+  try {
+    s.upsertRegistry({
+      id, worktreePath: (opts && opts.worktreePath) || MESH_CWD, sessionId: 'sess-' + id,
+      inboxPath: null, cursorPath: null, nudgeCommand: null,
+    });
+    bodies.forEach((body, i) => s.appendMessage({ workspaceId: id, body, hash: 'seed-' + id + '-' + i }));
+    if (opts && Number.isFinite(opts.cursor)) s.setCursor(id, opts.cursor);
+    store.deriveSummary(s, { home });
+  } finally { s.close(); }
+}
+
+// Env presets. isDevswarmActive => DEVSWARM_REPO_ID set; child => SOURCE_BRANCH set.
+const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' };
+const COORD_ENV = { CLAUDE_CODE_ENTRYPOINT: 'cli', DEVSWARM_REPO_ID: 'repo-1' };
+const childEnv = (branch) => ({ DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: branch });
+
+function ctxOf(r) {
+  return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+}
+// segOf(c, banner) -> the '\n\n'-separated additionalContext segment whose first
+// line starts with `banner`, or '' if absent. The parent-inbox hook now always
+// injects a live "DEVSWARM WORKSPACES" status table for active workspaces, so a
+// test asserting on the archive/inbox banner alone must isolate that segment.
+function segOf(c, banner) {
+  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+}
+
+// ============================================================================
+// 1. GUARD — command-guard.js DevSwarm destructive-read redirect, end to end.
+// ============================================================================
+
+test('1 GUARD: coordinator+DevSwarm blocks raw `monitor` (unconditional) with durable evidence on disk', () => {
+  const home = H.makeHome();
+  try {
+    const r = testHook('command-guard.js', bashPayload('hivecontrol workspace monitor'),
+      { home, env: COORD_ENV });
+    assert.strictEqual(r.status, 2, `monitor must block; stdout=${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+    assert.match(r.json.reason, /COORDINATOR-READ REDIRECT/);
+  } finally { H.rm(home); }
+});
+
+test('1 GUARD: `read-messages` blocks UNCONDITIONALLY under DevSwarm (Part B — no evidence needed)', () => {
+  const home = H.makeHome();
+  try {
+    // Part B: a raw native read desyncs the durable cursor REGARDLESS of any
+    // descriptor/evidence, so read-messages blocks unconditionally like `monitor`
+    // (the old durable-evidence gate is removed). No registration required.
+    const r = testHook('command-guard.js', bashPayload('hivecontrol workspace read-messages'),
+      { home, env: COORD_ENV });
+    assert.strictEqual(r.status, 2, `read-messages must block; stdout=${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+    assert.match(r.json.reason, /inbox pull|DISABLE_ANTIHALL_DEVSWARM=1/);
+  } finally { H.rm(home); }
+});
+
+test('1 GUARD: non-destructive `message-count` is allowed', () => {
+  const home = H.makeHome();
+  try {
+    const r = testHook('command-guard.js', bashPayload('hivecontrol workspace message-count'),
+      { home, env: COORD_ENV });
+    assert.strictEqual(r.status, 0, `message-count must allow; stdout=${r.stdout}`);
+    assert.strictEqual(r.stdout, '');
+  } finally { H.rm(home); }
+});
+
+test('1 GUARD: quoted AND unquoted data mentioning the subcommands is allowed (no false block)', () => {
+  const home = H.makeHome();
+  try {
+    // Quoted DATA arg to grep — the verb is grep, not hivecontrol.
+    const quoted = testHook('command-guard.js',
+      bashPayload("grep -n 'hivecontrol workspace read-messages' docs/KB.md"),
+      { home, env: COORD_ENV });
+    assert.strictEqual(quoted.status, 0, `quoted data must allow; stdout=${quoted.stdout}`);
+    // Unquoted data as args to echo — verb echo, hivecontrol is not command-position.
+    const unquoted = testHook('command-guard.js',
+      bashPayload('echo hivecontrol workspace monitor is destructive'),
+      { home, env: COORD_ENV });
+    assert.strictEqual(unquoted.status, 0, `unquoted data must allow; stdout=${unquoted.stdout}`);
+  } finally { H.rm(home); }
+});
+
+test('1 GUARD: a symlink descriptor (→/dev/zero) does NOT hang the read-messages guard', (t) => {
+  if (process.platform === 'win32') { t.skip('symlink-to-/dev/zero is POSIX-only'); return; }
+  if (!fs.existsSync('/dev/zero')) { t.skip('/dev/zero not present on this host'); return; }
+  const home = H.makeHome();
+  try {
+    // Part B removed the descriptor-scan evidence gate, so read-messages blocks
+    // unconditionally and never reads any descriptor. This test now just guards that
+    // a hostile symlink descriptor present on disk cannot hang the hook: it must
+    // return PROMPTLY with a real exit code (blocking, since read-messages is
+    // unconditional) — never spin on the infinite device.
+    fs.mkdirSync(H.workspacesDir(home), { recursive: true });
+    try {
+      fs.symlinkSync('/dev/zero', H.descriptorPath(home, 'zero'));
+    } catch (e) { t.skip('symlink unsupported here: ' + e.message); return; }
+
+    const started = Date.now();
+    const r = testHook('command-guard.js', bashPayload('hivecontrol workspace read-messages'),
+      { home, env: COORD_ENV });
+    // A hang would make spawnSync hit its 10s timeout (status null). Assert it
+    // completed with a real exit code, promptly.
+    assert.notStrictEqual(r.status, null, 'hook must not hang (spawn timeout)');
+    assert.strictEqual(r.status, 2, `read-messages blocks unconditionally; stdout=${r.stdout}`);
+    assert.ok(Date.now() - started < 8000, 'must return well under the spawn timeout');
+  } finally { H.rm(home); }
+});
+
+// ============================================================================
+// 2. PARENT-INBOX HOOK — injects the real unread count; empty when zero.
+// ============================================================================
+
+test('2 PARENT-INBOX: injects the exact unread count for a dummy inbox with N unread', () => {
+  const home = H.makeHome();
+  try {
+    // v0.57 mesh (Phase 8): unread now comes from the STORE's own tracked
+    // cursor, not a raw durable NDJSON file — seed 3 real store messages.
+    seedStoreUnread(home, 'wsA', ['{"m":1}', '{"m":2}', '{"m":3}']);
+
+    // v0.108.0 inbox grace: freshly seeded unread is held back for
+    // devswarm.inboxGraceSec (120 s) unless the child heartbeats; this test is
+    // about the exact count, so the grace window is switched off here (the
+    // grace itself is covered by devswarm-parent-inbox-grace-window.test.js).
+    const r = testHook('devswarm-parent-inbox.js',
+      { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: MESH_CWD },
+      { home, env: Object.assign({}, PRIMARY_ENV, { ANTIHALL_DEVSWARM_INBOX_GRACE_SEC: '0' }), expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctxOf(r);
+    assert.match(c, /DEVSWARM PARENT INBOX/);
+    assert.match(c, /wsA/);
+    assert.match(c, /3 unread/);
+  } finally { H.rm(home); }
+});
+
+test('2 PARENT-INBOX: no attention banner when the inbox is fully consumed (live table still lists the active workspace)', () => {
+  const home = H.makeHome();
+  try {
+    seedStoreUnread(home, 'wsA', ['{"m":1}', '{"m":2}'], { cursor: 2 }); // cursor==total
+    const r = testHook('devswarm-parent-inbox.js',
+      { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: MESH_CWD },
+      { home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctxOf(r);
+    // No unread/idle attention banner when the inbox is fully consumed...
+    assert.ok(!/DEVSWARM PARENT INBOX/.test(c), `no attention banner; ctx=${c}`);
+    // ...but the always-on live table still lists the active workspace (0 unread, active).
+    const tbl = segOf(c, 'DEVSWARM WORKSPACES');
+    assert.ok(tbl, `live table expected; ctx=${c}`);
+    assert.match(tbl, /\|\s*wsA\s*\|\s*active\s*\|[^|]*\|\s*0\s*\|/);
+  } finally { H.rm(home); }
+});
+
+// ============================================================================
+// 3. PARENT-GATE — blocks on unread, clears after CLI inbox ack (P1-A clear path),
+//    cap resets when the unread set changes.
+// ============================================================================
+
+test('3 PARENT-GATE: blocks on unread, then CLEARS after `devswarm inbox ack` advances the cursor', () => {
+  const home = H.makeHome();
+  try {
+    const inbox = path.join(H.swarmRoot(home), 'inbox', 'ws1.ndjson');
+    const cursor = path.join(H.swarmRoot(home), 'cursor', 'ws1.json');
+    fs.mkdirSync(path.dirname(inbox), { recursive: true });
+    H.runCli(home, ['register', 'ws1', '--worktree', '/wt/ws1', '--session', 'c1',
+      '--inbox', inbox, '--cursor', cursor]);
+    fs.writeFileSync(inbox, ['a', 'b', 'c'].join('\n') + '\n'); // 3 unread past cursor 0
+
+    const stop = { hook_event_name: 'Stop', session_id: 'gate-sess' };
+    const blocked = testHookRaw('devswarm-parent-gate.js', JSON.stringify(stop),
+      { home, env: PRIMARY_ENV });
+    assert.strictEqual(blocked.status, 0, 'stop hook always exit 0');
+    assert.ok(blocked.json && blocked.json.decision === 'block', `expected block; stdout=${blocked.stdout}`);
+    assert.match(blocked.json.reason, /ws1/);
+    assert.match(blocked.json.reason, /3 unread/);
+
+    // CLEAR PATH: the real CLI ack-all primitive advances the cursor.
+    const ack = H.runCli(home, ['inbox', 'ack', 'ws1']);
+    assert.ok(ack.json && ack.json.ok, 'ack ok');
+    assert.strictEqual(ack.json.cursor, 3, 'cursor advanced to consume all messages');
+
+    const cleared = testHookRaw('devswarm-parent-gate.js', JSON.stringify(stop),
+      { home, env: PRIMARY_ENV });
+    assert.strictEqual(cleared.status, 0);
+    assert.strictEqual(cleared.stdout, '', `gate must clear after ack; got ${cleared.stdout}`);
+  } finally { H.rm(home); }
+});
+
+test('3 PARENT-GATE: stable-kind cap goes quiet, stays quiet while mail grows, re-opens once the condition clears (Phase 5 #14)', () => {
+  const home = H.makeHome();
+  try {
+    const { inboxPath } = H.seedWorkspace(home, 'ws1', { inbox: ['a', 'b'], cursor: 0 }); // 2 unread
+    const env = { ...PRIMARY_ENV, ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    const stop = JSON.stringify({ hook_event_name: 'Stop', session_id: 'capsess' });
+
+    const b1 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.ok(b1.json && b1.json.decision === 'block', 'block #1');
+    const b2 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.ok(b2.json && b2.json.decision === 'block', 'block #2');
+    // effectiveBlocks === cap (2) on this pass -> ONE escalation block, not silence
+    // (§4.4 requirement D).
+    const b3 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.ok(b3.json && b3.json.decision === 'block', 'escalation pass must still block');
+    assert.match(b3.json.reason, /DEVSWARM ESCALATION/, 'must use escalation wording, not the normal nag');
+    // effectiveBlocks > cap on the NEXT pass -> now goes quiet (bounded at cap+1).
+    const b4 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.strictEqual(b4.stdout, '', 'capped: same set goes quiet the pass AFTER the escalation');
+
+    // Phase 5 shared Stop policy (#14): mail landing while the SAME kind of
+    // neglect persists no longer re-opens the budget (that was the
+    // self-amplification behind 369 Stop blocks in one field transcript).
+    fs.appendFileSync(inboxPath, 'c\n');
+    const grown = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.strictEqual(grown.stdout, '', 'same kind, grown count: stays quiet');
+
+    // The condition CLEARS (real ack-all) -> state reset -> new mail re-blocks.
+    const ack = H.runCli(home, ['inbox', 'ack', 'ws1']);
+    assert.ok(ack.json && ack.json.ok, 'ack ok');
+    const clear = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.strictEqual(clear.stdout, '', 'nothing pending -> allow');
+    fs.appendFileSync(inboxPath, 'd\n');
+    const after = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.ok(after.json && after.json.decision === 'block', 'new neglect after a clear gets a fresh budget');
+    assert.match(after.json.reason, /1 unread/);
+  } finally { H.rm(home); }
+});
+
+// ============================================================================
+// 4. CHILD-TURN / CHILD-GATE — write + require a heartbeat; freshness drives
+//    active-vs-archived classification (both directions).
+// ============================================================================
+
+// classify(home, id, now) — the design's active/archived rule, assembled from the
+// REAL primitives: a fresh turn-authored heartbeat AND a present descriptor => the
+// workspace is active; a stale heartbeat OR a missing descriptor => archived
+// (Verified fact #3: archival is implicit — absence of a live listener).
+function classify(home, id, now) {
+  let fresh = false;
+  try {
+    const hb = JSON.parse(fs.readFileSync(path.join(H.heartbeatsDir(home), id + '.json'), 'utf8'));
+    fresh = Number.isFinite(hb.ts) && (now - hb.ts) < DEFAULT_IDLE_MS;
+  } catch (_) { fresh = false; }
+  const present = readDescriptors(home).some((d) => d && d.id === id);
+  return (fresh && present) ? 'active' : 'archived';
+}
+
+test('4 CHILD-TURN: a child turn WRITES a fresh turn-authored heartbeat + reminds to report to parent', () => {
+  const home = H.makeHome();
+  try {
+    // DEVSWARM_BUILDER_ID intentionally UNSET here (childEnv() does not set it)
+    // — this is the "placeholder" case: substituteId() has no real id to
+    // substitute, so the emitted reminder text keeps the literal placeholder.
+    // See the paired UUID-substitution case directly below for the "real id
+    // gets substituted" side of the same behavior.
+    const r = testHook('devswarm-child-turn.js',
+      { hook_event_name: 'UserPromptSubmit', session_id: 'child-sess', prompt: 'work' },
+      { home, env: childEnv('feat-x'), expectJson: true });
+    assert.strictEqual(r.status, 0);
+    // v0.58 mesh-only messaging: native `message-parent` is blocked/deleted from
+    // every emitted hook string (PLAN.md HOOK-TEXT SWEEP) — the child is now
+    // reminded via the mesh CLI verbs instead (`heartbeat --summary` / `send
+    // --to-primary`), never the old native hivecontrol verb.
+    assert.match(ctxOf(r), /heartbeat <DEVSWARM_BUILDER_ID> --summary/, 'child is reminded to report to the parent');
+    assert.match(ctxOf(r), /send --to-primary/, 'child is reminded it can direct-message the parent via mesh');
+    assert.ok(!/message-parent/.test(ctxOf(r)), 'must never emit the blocked native verb');
+    const hbPath = path.join(H.heartbeatsDir(home), 'feat-x.json');
+    assert.ok(fs.existsSync(hbPath), 'a heartbeat must be written by the child turn');
+    const hb = JSON.parse(fs.readFileSync(hbPath, 'utf8'));
+    assert.strictEqual(hb.source, 'child-turn', 'heartbeat is turn-authored, not ticker-authored');
+    assert.ok(Date.now() - hb.ts < 60000, 'heartbeat ts is fresh (this turn)');
+  } finally { H.rm(home); }
+});
+
+test('4 CHILD-TURN: DEVSWARM_BUILDER_ID set (real uuid) -> reminder text substitutes the real id, not the placeholder', () => {
+  const home = H.makeHome();
+  try {
+    const uuid = '3f9e2a10-4b7c-4d21-9a55-8e1f6c2b7a90';
+    const r = testHook('devswarm-child-turn.js',
+      { hook_event_name: 'UserPromptSubmit', session_id: 'child-sess', prompt: 'work' },
+      { home, env: { ...childEnv('feat-x'), DEVSWARM_BUILDER_ID: uuid }, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.match(ctxOf(r), new RegExp('heartbeat ' + uuid + ' --summary'),
+      'child is reminded to report using its REAL id, not the placeholder');
+    assert.ok(!ctxOf(r).includes('<DEVSWARM_BUILDER_ID>'), 'the literal placeholder must not survive substitution');
+  } finally { H.rm(home); }
+});
+
+test('4 CHILD-GATE: a child stop is forced to emit a heartbeat / self-report (decision:block)', () => {
+  const home = H.makeHome();
+  try {
+    // devswarm-child-gate.js gates on isChildWorkspaceCorroborated(), which
+    // requires ON-DISK evidence in addition to DEVSWARM_SOURCE_BRANCH (defect
+    // a55d6b71a76f fix, root cause C — see plugins/anti-hall/hooks/lib/devswarm-role.js).
+    // A real child always carries DEVSWARM_BUILDER_ID and has a registered
+    // workspaces/<id>.json descriptor (written by cmdRegister/cmdHeartbeat's
+    // auto-ensure); model that here the same way
+    // tests/hooks/devswarm-child-gate.test.js's seedAllTestDescriptors does.
+    //
+    // DEVSWARM_BUILDER_ID is a REAL uuid here (Wave 3 P1: hooks/lib/devswarm-
+    // wake.js's resolvedId(env) substitution is now applied to this gate's own
+    // forced-block text too) so the assertion below can confirm the emitted
+    // reason names the REAL id, not the literal `<DEVSWARM_BUILDER_ID>`
+    // placeholder (see tests/hooks/devswarm-child-gate*.test.js for the
+    // paired "env unset -> placeholder" coverage of the same substitution).
+    const uuid = '9c4e7b21-6a3d-4f8e-b1c5-2d7a9f0e3b6c';
+    fs.mkdirSync(H.workspacesDir(home), { recursive: true });
+    fs.writeFileSync(H.descriptorPath(home, uuid), JSON.stringify({ id: uuid }));
+    const r = testHookRaw('devswarm-child-gate.js',
+      JSON.stringify({ hook_event_name: 'Stop', session_id: 'child-sess' }),
+      { home, env: { ...childEnv('feat-x'), DEVSWARM_BUILDER_ID: uuid } });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json && r.json.decision === 'block', `child gate must force a heartbeat; stdout=${r.stdout}`);
+    // v0.58 mesh-only messaging: the forced-ack reason names the mesh CLI verb
+    // (`heartbeat --summary`), never the blocked native `message-parent`.
+    assert.match(r.json.reason, new RegExp('devswarm\\.js heartbeat ' + uuid + ' --summary'),
+      'reason names the REAL id, not the placeholder');
+    assert.ok(!r.json.reason.includes('<DEVSWARM_BUILDER_ID>'), 'the literal placeholder must not survive substitution');
+    assert.ok(!/message-parent/.test(r.json.reason), 'must never emit the blocked native verb');
+  } finally { H.rm(home); }
+});
+
+test('4 CLASSIFY: fresh heartbeat + descriptor => ACTIVE (both real artifacts present)', () => {
+  const home = H.makeHome();
+  try {
+    // Register a descriptor for id 'feat-x', then let the child turn author a fresh heartbeat.
+    H.runCli(home, ['register', 'feat-x', '--worktree', '/wt/feat-x', '--session', 'c1']);
+    testHook('devswarm-child-turn.js',
+      { hook_event_name: 'UserPromptSubmit', session_id: 'c1', prompt: 'go' },
+      { home, env: childEnv('feat-x') });
+    assert.strictEqual(classify(home, 'feat-x', Date.now()), 'active');
+  } finally { H.rm(home); }
+});
+
+test('4 CLASSIFY: stale heartbeat => ARCHIVED, and a missing descriptor => ARCHIVED (both directions)', () => {
+  const home = H.makeHome();
+  try {
+    // Direction A: descriptor present but the heartbeat is old (> idle threshold).
+    H.runCli(home, ['register', 'stale-ws', '--worktree', '/wt/stale', '--session', 'c2']);
+    fs.mkdirSync(H.heartbeatsDir(home), { recursive: true });
+    fs.writeFileSync(path.join(H.heartbeatsDir(home), 'stale-ws.json'),
+      JSON.stringify({ id: 'stale-ws', ts: Date.now() - (2 * DEFAULT_IDLE_MS), source: 'seed' }));
+    assert.strictEqual(classify(home, 'stale-ws', Date.now()), 'archived', 'stale heartbeat -> archived');
+
+    // Direction B: a fresh heartbeat but NO descriptor in the registry (archived by absence).
+    fs.writeFileSync(path.join(H.heartbeatsDir(home), 'gone-ws.json'),
+      JSON.stringify({ id: 'gone-ws', ts: Date.now(), source: 'seed' }));
+    assert.strictEqual(classify(home, 'gone-ws', Date.now()), 'archived', 'no descriptor -> archived');
+  } finally { H.rm(home); }
+});
+
+// ============================================================================
+// 5. STORE — round-trip on BOTH backends (journal always; sqlite where available).
+// ============================================================================
+
+const backends = [{ name: 'journal', backend: 'journal' }];
+if (store.sqliteAvailable()) backends.push({ name: 'sqlite', backend: 'sqlite' });
+else {
+  test('5 STORE: sqlite backend SKIPPED', (t) => t.skip('node:sqlite unavailable on this runtime (journal-only)'));
+}
+
+for (const B of backends) {
+  test(`5 STORE [${B.name}]: write messages/registry/cursor/gates, derive atomic summary.json, read back`, () => {
+    const home = H.makeHome();
+    try {
+      const s = store.openStore({ home, backend: B.backend });
+      try {
+        assert.strictEqual(s.backend, B.backend, 'selected the intended backend');
+        s.upsertRegistry({ id: 'w', worktreePath: '/wt/w', sessionId: 'sw',
+          inboxPath: '/i', cursorPath: '/c', nudgeCommand: ['poke', 'w'] });
+        // idempotent-by-hash messages: the duplicate hash must not double-count.
+        assert.strictEqual(s.appendMessage({ workspaceId: 'w', body: 'm1', hash: 'h1' }).inserted, true);
+        assert.strictEqual(s.appendMessage({ workspaceId: 'w', body: 'm2', hash: 'h2' }).inserted, true);
+        assert.strictEqual(s.appendMessage({ workspaceId: 'w', body: 'm3', hash: 'h3' }).inserted, true);
+        assert.strictEqual(s.appendMessage({ workspaceId: 'w', body: 'm1', hash: 'h1' }).inserted, false);
+        s.setCursor('w', 1);
+        s.setGate({ workspaceId: 'w', name: 'done', value: true });
+        assert.strictEqual(s.messageCount('w'), 3, 'dedupe by hash: 3 distinct, not 4');
+
+        const sum = store.deriveSummary(s, { home, now: 4242 });
+        assert.strictEqual(sum.generatedAt, 4242);
+        const ws = sum.workspaces.w;
+        assert.strictEqual(ws.total, 3);
+        assert.strictEqual(ws.cursor, 1);
+        assert.strictEqual(ws.unread, 2);
+        assert.deepStrictEqual(ws.gates, { done: true });
+        assert.strictEqual(ws.archive_ready, false); // merged/tests_passed still missing
+        assert.deepStrictEqual(ws.nudgeCommand, ['poke', 'w'], 'argv round-trips through the store');
+      } finally { s.close(); }
+
+      // summary.json was written atomically (tmp+rename) and reads back identically.
+      // PER-PROJECT: this store was opened with no workspaceId, so it (and its
+      // derived summary) live under the DEFAULT_HASH bucket (s.hash) — not the
+      // legacy global swarmRoot/summary.json path.
+      assert.ok(fs.existsSync(store.summaryPathForHash(home, s.hash)), 'summary.json exists after derive');
+      const readBack = store.readSummaryForHash(home, s.hash);
+      assert.strictEqual(readBack.workspaces.w.unread, 2, 'read-back projection matches');
+
+      // Durability: a fresh store handle sees the persisted rows (append-only trail).
+      const s2 = store.openStore({ home, backend: B.backend });
+      try { assert.strictEqual(s2.messageCount('w'), 3, 'trail survives reopen'); }
+      finally { s2.close(); }
+
+      // Append-only evidence (journal backend keeps every physical row on disk).
+      // PER-PROJECT: the journal lives under store/<hash>/journal/, not the legacy
+      // global store/journal/.
+      if (B.backend === 'journal') {
+        const msgs = fs.readFileSync(path.join(store.journalDirForHash(home, s.hash), 'messages.ndjson'), 'utf8')
+          .split('\n').filter((l) => l.trim() !== '');
+        assert.strictEqual(msgs.length, 3, 'journal appended exactly the 3 distinct messages (dup not written)');
+      }
+    } finally { H.rm(home); }
+  });
+}
+
+// ============================================================================
+// 6. INGEST — replay idempotence (dedupe hash) + single-consumer lock refusal.
+// ============================================================================
+
+test('6 INGEST: replaying the same native batch inserts 0 the second time (dedupe hash)', () => {
+  const home = H.makeHome();
+  try {
+    const batch = JSON.stringify([
+      { message: 'hello', fromBranch: 'a', createdAt: '2026-01-01T00:00:00Z' },
+      { message: 'world', fromBranch: 'a', createdAt: '2026-01-01T00:00:01Z' },
+    ]);
+    const run = () => ({ ok: true, raw: batch });
+
+    // worktree: null (v0.57 mesh, D24) pins this daemon call to the LEGACY
+    // hash-based store selection (workspaceId-driven) — this test is about
+    // generic replay-dedupe mechanics, independent of the repoKey rekey
+    // (covered by its own dedicated mesh tests). Without this, the daemon would
+    // resolve a REAL repoKey from the test runner's own cwd (this repo) and
+    // write into store/<repoKey>/ instead of the store/<hashFromWorkspaceId('p')>/
+    // the read-back below targets.
+    const first = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1, run, sleep: () => {},
+    });
+    assert.strictEqual(first.started, true);
+    assert.strictEqual(first.stats.inserted, 2, 'first ingest inserts both messages');
+
+    const second = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1, run, sleep: () => {},
+    });
+    assert.strictEqual(second.stats.inserted, 0, 'replay of the same batch inserts nothing');
+    assert.strictEqual(second.stats.duplicate, 2, 'both counted as duplicates');
+
+    // PER-PROJECT: the ingest loop opened its store keyed by workspaceId 'p'; scope
+    // this read-back to the same store (a bare no-workspaceId handle opens the
+    // unrelated DEFAULT_HASH bucket).
+    const s = store.openStore({ home, backend: 'journal', workspaceId: 'p' });
+    try { assert.strictEqual(s.messageCount('p'), 2, 'store holds exactly 2, no dupes'); }
+    finally { s.close(); }
+  } finally { H.rm(home); }
+});
+
+test('6 INGEST: refuses to start while another monitor consumer holds the single-consumer lock', () => {
+  const home = H.makeHome();
+  try {
+    // Locks are PER-WORKTREE now (no cross-repo collision): hold the SAME worktree's
+    // lock the loop derives, then prove the loop refuses that worktree.
+    const wt = process.cwd();
+    const held = ingest.acquireIngestLock(home, undefined, wt);
+    assert.ok(held, 'first consumer acquires the per-worktree lock');
+    try {
+      const refused = ingest.runIngestLoop({
+        home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+        run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+      });
+      assert.strictEqual(refused.started, false, 'must refuse while the lock is held');
+      assert.match(refused.reason, /lock|consumer/i);
+    } finally { held(); }
+  } finally { H.rm(home); }
+});
+
+// ============================================================================
+// 7. AUTO-MIGRATION — legacy registry + NDJSON inbox -> store, count-verified,
+//    source intact, re-run idempotent.
+// ============================================================================
+
+test('7 MIGRATE: imports a legacy descriptor + NDJSON inbox, count-verified, source NOT destroyed, re-run no-op', () => {
+  const home = H.makeHome();
+  try {
+    // Seed a LEGACY registry + durable inbox in the tmp HOME (pre-store state).
+    const inbox = path.join(home, 'legacy-inbox.ndjson');
+    const cursor = path.join(home, 'legacy-cursor.json');
+    fs.writeFileSync(inbox, ['m1', 'm2', 'm3'].join('\n') + '\n');
+    fs.writeFileSync(cursor, '1');
+    fs.mkdirSync(H.workspacesDir(home), { recursive: true });
+    fs.writeFileSync(H.descriptorPath(home, 'legacy'), JSON.stringify({
+      id: 'legacy', worktreePath: '/wt/legacy', sessionId: 'sL', inboxPath: inbox, cursorPath: cursor,
+    }));
+
+    const inboxBytesBefore = fs.readFileSync(inbox, 'utf8');
+
+    const rep = H.runCli(home, ['migrate'], { ANTIHALL_DEVSWARM_STORE_BACKEND: 'journal' });
+    assert.strictEqual(rep.status, 0);
+    assert.ok(rep.json && rep.json.ok, `migrate ok; stdout=${rep.stdout}`);
+    assert.strictEqual(rep.json.verifiedAll, true, 'every workspace count-verified');
+    const m = rep.json.migrated.find((x) => x.id === 'legacy');
+    assert.strictEqual(m.imported, 3, 'all 3 legacy lines imported');
+    assert.strictEqual(m.legacyCount, 3);
+    assert.strictEqual(m.storeCount, 3);
+    assert.strictEqual(m.cursor, 1, 'legacy consumed-count carried forward');
+    assert.strictEqual(m.verified, true);
+
+    // NON-DESTRUCTIVE: the legacy source files are byte-for-byte intact.
+    assert.strictEqual(fs.readFileSync(inbox, 'utf8'), inboxBytesBefore, 'legacy inbox untouched');
+    assert.ok(fs.existsSync(H.descriptorPath(home, 'legacy')), 'legacy descriptor untouched');
+
+    // IDEMPOTENT: a second run imports 0 new (same physical lines dedupe-hash).
+    const rerun = H.runCli(home, ['migrate'], { ANTIHALL_DEVSWARM_STORE_BACKEND: 'journal' });
+    assert.ok(rerun.json && rerun.json.ok);
+    assert.strictEqual(rerun.json.verifiedAll, true);
+    assert.strictEqual(rerun.json.migrated.find((x) => x.id === 'legacy').imported, 0, 're-run is a no-op');
+  } finally { H.rm(home); }
+});
+
+// ============================================================================
+// 8. CLI — JSON shapes + exit codes for the core subcommands.
+// ============================================================================
+
+test('8 CLI: register/heartbeat/inbox count/workspaces list/nudge/archive emit well-formed JSON + correct exit codes', () => {
+  const home = H.makeHome();
+  try {
+    const inbox = path.join(home, 'inbox.ndjson');
+    const cursor = path.join(home, 'cursor.json');
+    fs.writeFileSync(inbox, 'x\ny\n');
+
+    // cwd: home (v0.57 mesh, D24) — `home` is a plain tmpdir, NOT a git repo, so
+    // this pins repoKey===null for every store-touching CLI call below,
+    // consistently across register/inbox/workspaces/archive — matching this
+    // test's own '/wt/w' FAKE --worktree flag (no real git repo involved).
+    // Without this, each subprocess would otherwise inherit the TEST RUNNER's
+    // OWN cwd (the real anti-hall repo) and resolve a REAL repoKey, splitting
+    // register's write and workspaces-list's read across two different stores.
+    const cwd = home;
+
+    const reg = H.runCli(home, ['register', 'w', '--worktree', '/wt/w', '--session', 's',
+      '--inbox', inbox, '--cursor', cursor, '--nudge', 'poke', '--nudge', 'w'], undefined, { cwd });
+    assert.strictEqual(reg.status, 0);
+    assert.deepStrictEqual({ ok: reg.json.ok, action: reg.json.action }, { ok: true, action: 'registered' });
+
+    const hb = H.runCli(home, ['heartbeat', 'w', '--progress', '50', '--phase', 'build'], undefined, { cwd });
+    assert.strictEqual(hb.status, 0);
+    assert.strictEqual(hb.json.action, 'heartbeat');
+    assert.strictEqual(hb.json.heartbeat.progress_pct, 50);
+
+    const count = H.runCli(home, ['inbox', 'count', 'w'], undefined, { cwd });
+    assert.strictEqual(count.status, 0);
+    assert.strictEqual(count.json.action, 'count');
+    assert.strictEqual(count.json.unread, 2);
+
+    // PER-PROJECT: target the 'w' workspace's own store explicitly (the CLI
+    // subprocess's cwd is the test runner's cwd, not any worktree tied to 'w', so a
+    // flagless `workspaces list` would resolve a different, unrelated project).
+    const list = H.runCli(home, ['workspaces', 'list', '--workspace', 'w'], undefined, { cwd });
+    assert.strictEqual(list.status, 0);
+    assert.strictEqual(list.json.action, 'workspaces');
+    assert.strictEqual(list.json.count, 1);
+    assert.strictEqual(list.json.workspaces[0].id, 'w');
+
+    // nudge with no nudgeCommand-descriptor escalates; still ok:true, exit 0.
+    const nudge = H.runCli(home, ['nudge', 'w'], undefined, { cwd });
+    assert.strictEqual(nudge.status, 0);
+    assert.strictEqual(nudge.json.action, 'nudge');
+    assert.ok(['nudged', 'escalate'].includes(nudge.json.result.action));
+
+    const archive = H.runCli(home, ['archive', 'w'], undefined, { cwd });
+    assert.strictEqual(archive.status, 0);
+    assert.strictEqual(archive.json.action, 'archive');
+    assert.strictEqual(archive.json.descriptorArchived, true);
+    assert.match(archive.json.manualStep, /DevSwarm app/);
+    assert.strictEqual(fs.existsSync(H.descriptorPath(home, 'w')), false, 'descriptor moved out of the active set');
+
+    // Error shape: inbox on an unregistered workspace -> ok:false + exit 2.
+    const bad = H.runCli(home, ['inbox', 'count', 'ghost'], undefined, { cwd });
+    assert.strictEqual(bad.status, 2);
+    assert.strictEqual(bad.json.ok, false);
+  } finally { H.rm(home); }
+});
+
+// ============================================================================
+// 9. ARCHIVE-READY — gates -> archive_ready -> parent-inbox surfaces the "inform
+//    the user to archive" nudge; cooldown'd + persistent; ignore suppresses one
+//    while a second still-ready workspace keeps being reminded; NEVER auto-archive.
+// ============================================================================
+
+// v0.57 mesh (Phase 8): the hook now reads summaries/<repoKey>.json keyed by
+// repoKeyForWorktree(cwd) — payload.cwd must resolve the SAME repoKey the CLI
+// calls below write into (MESH_CWD/MESH_REPO_KEY, declared near seedStoreUnread).
+const inboxPayload = () => ({ hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: MESH_CWD });
+
+test('9 ARCHIVE-READY: all gates met -> parent-inbox recommends the user archive it (never auto-archives)', () => {
+  const home = H.makeHome();
+  try {
+    // cwd: MESH_CWD (v0.57 mesh, D24/Phase 8) — a REAL git worktree, so
+    // register/gate write into store/<MESH_REPO_KEY>/, the SAME shared store
+    // devswarm-parent-inbox.js now reads via inboxPayload()'s cwd above.
+    const cwd = MESH_CWD;
+    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
+    const g = H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });
+    assert.ok(g.json && g.json.archive_ready === true, 'store derives archive_ready once all gates met');
+
+    const r = testHook('devswarm-parent-inbox.js', inboxPayload(),
+      { home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctxOf(r);
+    assert.match(c, /DEVSWARM ARCHIVE-READY/);
+    assert.match(c, /wsA/);
+    assert.match(c, /VERIFY this workspace is MERGED \+ TESTED \+ DEPLOYED/);
+    assert.match(c, /devswarm\.js archive-request/);
+    assert.match(c, /NEVER archive mechanically/i);
+
+    // INVARIANT: anti-hall never removed the descriptor / ran any archive command.
+    assert.ok(fs.existsSync(H.descriptorPath(home, 'wsA')), 'descriptor must remain (never auto-removed)');
+    // Cooldown state recorded so it does not repeat every single turn.
+    assert.ok(fs.existsSync(path.join(H.archiveNudgesDir(home), 'wsA.json')), 'cooldown recorded');
+  } finally { H.rm(home); }
+});
+
+test('9 ARCHIVE-READY: reminder is COOLDOWN\'d (not repeated next turn) but PERSISTS once the cooldown elapses', () => {
+  const home = H.makeHome();
+  try {
+    // cwd: MESH_CWD — see the D24/Phase 8 comment in the first test of this section.
+    const cwd = MESH_CWD;
+    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
+    H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });
+
+    // Turn 1: surfaced + cooldown recorded.
+    const t1 = testHook('devswarm-parent-inbox.js', inboxPayload(),
+      { home, env: PRIMARY_ENV, expectJson: true });
+    assert.match(ctxOf(t1), /DEVSWARM ARCHIVE-READY/);
+
+    // Turn 2 (immediately after): within cooldown -> the archive NUDGE banner is
+    // suppressed (not every-turn spam). The live status table still lists wsA with
+    // its factual archive-ready status — the cooldown gates the reminder, not the table.
+    // (emit-dedupe disabled for this turn only: an unchanged WORKSPACES table is
+    // otherwise deliberately collapsed on the next same-session turn — covered
+    // in tests/hooks/emit-dedupe.test.js — and this test asserts the row.)
+    const t2 = testHook('devswarm-parent-inbox.js', inboxPayload(),
+      { home, env: { ...PRIMARY_ENV, ANTIHALL_EMIT_DEDUPE: '0' }, expectJson: true });
+    assert.ok(!/DEVSWARM ARCHIVE-READY/.test(ctxOf(t2)), 'within cooldown the reminder is suppressed');
+    // wsA's `merged` gate is set against a non-existent worktree
+    // (`/wt/wsA`), so git ground-truth verification cannot resolve -> the
+    // row carries the "merged (unverified)" title-suffix marker (devswarm-
+    // git-truth.js report-only check); matched via [^|]*.
+    assert.match(segOf(ctxOf(t2), 'DEVSWARM WORKSPACES'), /\|\s*wsA[^|]*\|\s*archive-ready\s*\|/);
+
+    // Later turn: cooldown elapsed -> the SAME still-ready, still-present workspace is
+    // reminded AGAIN. Proves the reminder is persistent, not one-shot.
+    H.setArchiveNudgeState(home, 'wsA', Date.now() - (11 * 60 * 1000)); // > 10min default cooldown
+    const t3 = testHook('devswarm-parent-inbox.js', inboxPayload(),
+      { home, env: PRIMARY_ENV, expectJson: true });
+    assert.match(ctxOf(t3), /DEVSWARM ARCHIVE-READY/, 'persists: reminds again after cooldown elapses');
+    assert.match(ctxOf(t3), /wsA/);
+    // Still never removed.
+    assert.ok(fs.existsSync(H.descriptorPath(home, 'wsA')), 'descriptor still present');
+  } finally { H.rm(home); }
+});
+
+test('9 ARCHIVE-READY: `archive-ignore` suppresses ONE workspace while a second still-ready one keeps being reminded', () => {
+  const home = H.makeHome();
+  try {
+    // cwd: MESH_CWD — see the D24/Phase 8 comment in the first test of this section.
+    const cwd = MESH_CWD;
+    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
+    H.runCli(home, ['register', 'wsB', '--worktree', '/wt/wsB', '--session', 'sB'], undefined, { cwd });
+    H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });
+    H.runCli(home, ['gate', 'wsB', '--set', 'done,merged,tests_passed'], undefined, { cwd });
+
+    // Ignore wsA via the real CLI; ensure BOTH cooldowns are elapsed so the only
+    // reason wsA is silent is the ignore mark (not a fresh cooldown).
+    const ig = H.runCli(home, ['archive-ignore', 'wsA']);
+    assert.ok(ig.json && ig.json.ignored === true);
+    H.setArchiveNudgeState(home, 'wsA', Date.now() - (11 * 60 * 1000));
+    H.setArchiveNudgeState(home, 'wsB', Date.now() - (11 * 60 * 1000));
+
+    const r = testHook('devswarm-parent-inbox.js', inboxPayload(),
+      { home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctxOf(r);
+    // The ignore mark suppresses wsA in the archive NUDGE banner only (wsA is still
+    // listed in the factual live table — ignore governs the reminder, not the table).
+    const archive = segOf(c, 'DEVSWARM ARCHIVE-READY');
+    assert.ok(archive, 'wsB still surfaces');
+    assert.ok(!/wsA/.test(archive), `ignored workspace must be suppressed in the nudge; archive=${archive}`);
+    assert.match(archive, /wsB/, 'the non-ignored still-ready workspace keeps being reminded');
+
+    // The ignored workspace stays TRACKED (descriptor intact) — ignore silences the
+    // reminder only, it does not archive/delete.
+    assert.ok(fs.existsSync(H.descriptorPath(home, 'wsA')), 'ignored workspace stays tracked');
+  } finally { H.rm(home); }
+});

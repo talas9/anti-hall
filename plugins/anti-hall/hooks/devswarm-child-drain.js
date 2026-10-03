@@ -1,0 +1,242 @@
+#!/usr/bin/env node
+// anti-hall :: devswarm-child-drain (PostToolUse, matcher Bash, CHILD-ONLY)
+//
+// THE OPERATIVE FIX (a downstream project field incident): a DevSwarm child has NO mid-turn
+// re-entry point. devswarm-child-turn.js fires on UserPromptSubmit — once per
+// USER PROMPT, never during a long autonomous task. Field evidence: a child's
+// mesh-direct unread rose 14 -> 15 WHILE the child was actively committing —
+// a poke does not create a new UserPromptSubmit, so nothing re-surfaced the
+// backlog until the child happened to stop and wait for another prompt.
+// Children have NO OTHER per-tool-call re-entry: devswarm-parent-reply-
+// tracker.js (this file's structural twin) is Primary-only (returns early for
+// a child). This hook is the mirror image — CHILD-only, same PostToolUse/Bash
+// registration shape — so a child now gets a re-entry point on EVERY tool
+// call, not just once per prompt.
+//
+// SIGNAL: the shared union unread primitive (companion/lib/devswarm-unread.js
+// — NDJSON durable inbox ∪ store-only mesh-direct backlog, hash-deduped; see
+// that module's header for the root cause this closes: a `send --to` direct
+// is STORE-ONLY and invisible to an NDJSON-only reader). Read against the
+// child's OWN descriptor (workspaces/<DEVSWARM_BUILDER_ID>.json), the SAME
+// descriptor devswarm-child-turn.js / devswarm-child-gate.js already resolve.
+//
+// THROTTLE (context-bloat guard — MANDATORY, not optional): this hook fires
+// on EVERY Bash call. Injecting the same nudge every single call would drown
+// the child's context in repeated noise — the exact failure mode anti-hall
+// exists to prevent. A tiny persisted throttle state (child-drain/<id>.json)
+// suppresses re-injection UNLESS the unread count has CHANGED since the last
+// injection, or THROTTLE_MS has elapsed — so a growing/shrinking backlog is
+// always re-surfaced promptly, but a static one is nudged at most once per
+// window.
+//
+// Fail-open throughout: any error (malformed stdin, missing descriptor,
+// unresolvable repoKey, a store-open failure, an unwritable throttle state)
+// degrades to silent no-op — NEVER blocks, NEVER crashes, NEVER throws past
+// main()'s own try/catch.
+//
+// Contract (Claude Code PostToolUse hook):
+//   stdin  : JSON { hook_event_name?, tool_name, cwd?, ... }
+//   stdout : JSON { hookSpecificOutput: { hookEventName, additionalContext } }
+//            ONLY when injecting; nothing otherwise (empty-when-quiet, same
+//            discipline as devswarm-child-turn.js's per-segment nudges).
+//   exit 0 : always.
+//
+// stdout uses fs.writeSync(1, ...) — synchronous, avoids the macOS Node 18/20
+// async-flush race (project convention, see devswarm-child-turn.js).
+
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const { isDevswarmActive } = require('./lib/devswarm-detect.js');
+const { isChildWorkspace } = require('./lib/devswarm-role.js');
+const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
+const devswarmUnread = require('../companion/lib/devswarm-unread.js');
+
+// RAW_CLI — version-pinned plugin-cache path; only the FALLBACK for the
+// stable launcher below — see lib/stable-launcher.js header.
+const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
+// CLI — the path actually embedded in the drain-nudge text below.
+// devswarm.stableLauncher (default on) points it at ~/.anti-hall/bin/'s
+// version-independent launcher instead of RAW_CLI, so the printed command
+// survives an anti-hall update. Fail-open to RAW_CLI on any install failure
+// or when the setting is off.
+let CLI = RAW_CLI;
+try {
+  if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+    // installLauncher (not installLaunchers) — this hook only ever embeds
+    // CLI, never WATCHER; calling the plural form with no watcherFallback
+    // would also (re)write the wake-watch launcher with a null fallback,
+    // racing the correct fallback the other three DevSwarm hooks install.
+    CLI = require('./lib/stable-launcher.js').installLauncher('devswarm', RAW_CLI) || RAW_CLI;
+  }
+} catch (_) {
+  // fail-open: keep RAW_CLI
+}
+
+// THROTTLE_MS — re-injection cadence when the unread count has NOT changed.
+// 10 minutes: long enough that a busy child mid-task isn't nagged on every
+// one of dozens of tool calls, short enough that a genuinely stuck backlog is
+// re-surfaced well within one work session.
+const THROTTLE_MS = 10 * 60 * 1000;
+
+function throttleStatePath(home, id) {
+  return path.join(devswarmRoot(home), 'child-drain', String(id) + '.json');
+}
+
+// shouldInject(home, id, count, now) -> bool. Persists the decision's own
+// state atomically. Fail-open TOWARD injecting: an unreadable/corrupt
+// throttle file is treated as "never injected before" (inject now) rather
+// than silently suppressing a real backlog forever.
+function shouldInject(home, id, count, now) {
+  const p = throttleStatePath(home, id);
+  let prev = null;
+  try { prev = JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { prev = null; }
+  const lastCount = prev && Number.isFinite(prev.lastCount) ? prev.lastCount : null;
+  const lastInjectedAt = prev && Number.isFinite(prev.lastInjectedAt) ? prev.lastInjectedAt : null;
+  const changed = lastCount === null || lastCount !== count;
+  const elapsed = lastInjectedAt === null || (now - lastInjectedAt) >= THROTTLE_MS;
+  if (!changed && !elapsed) return false;
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ lastCount: count, lastInjectedAt: now }));
+    fs.renameSync(tmp, p);
+  } catch (_) { /* best-effort: a failed persist still lets this ONE injection through */ }
+  return true;
+}
+
+// ageMinutes(ms) -> a compact "Xm" string, or "unknown age" when the age is
+// not a known/finite non-negative number.
+function ageMinutes(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return 'unknown age';
+  return Math.floor(ms / 60000) + 'm';
+}
+
+function buildMessage(count, id, oldestMs) {
+  const age = ageMinutes(oldestMs);
+  return (
+    'DEVSWARM INBOX: ' + count + ' unread message(s) addressed to YOU (oldest ' + age
+    + '). Drain NOW via `node ' + CLI + ' inbox pull ' + id + ' && node ' + CLI
+    + ' inbox ack ' + id + '` before continuing; a parent ruling may change what you are building.'
+  );
+}
+
+function main() {
+  // Settings switch devswarm.childDrain (0.108.4): off -> no-op. Fail-open: any error runs the hook.
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'childDrain')) return; } catch (_) { /* run */ }
+  let payload = {};
+  try { payload = JSON.parse(fs.readFileSync(0, 'utf8')) || {}; } catch (_) { payload = {}; }
+
+  const env = process.env;
+  if (!isDevswarmActive(env)) return; // no-op for non-DevSwarm sessions
+  if (!isChildWorkspace(env)) return; // CHILD-ONLY (inverse of the Primary-only reply-tracker)
+
+  // Defensive: never assume the hooks.json matcher was honored.
+  if (payload && payload.tool_name !== undefined && payload.tool_name !== 'Bash') return;
+
+  // defect f0958b13fe2b: DEVSWARM_SOURCE_BRANCH/DEVSWARM_BUILDER_ID are
+  // inherited from the child by every subagent it spawns, so isChildWorkspace
+  // above is true for a subagent's own Bash calls too — this hook then told
+  // the SUBAGENT to "Drain NOW via `inbox pull ... && inbox ack ...`",
+  // exactly the command that advances the shared cursor out from under the
+  // workspace's own main thread. Field-measured: three child subagents ran
+  // that literal command (18:49:24Z/04:43:00Z/05:46:28Z). Only the workspace
+  // MAIN THREAD may receive this nudge — PostToolUse carries the same
+  // agent_id/agent_type markers PreToolUse does (see coordinator-detect.js).
+  // Uses isSubagentByPayload (PAYLOAD MARKERS ONLY, no CLAUDE_CODE_ENTRYPOINT
+  // env fallback — Wave R3 P2 fix): this hook's OWN gate above already reads
+  // DEVSWARM_SOURCE_BRANCH from env, so this env is inherited by the child
+  // workspace's entire process tree; falling back to the env-based
+  // isSubagent() here would let a leaked CLAUDE_CODE_ENTRYPOINT=agent_tool
+  // (from how the CHILD SESSION ITSELF was originally spawned) permanently
+  // silence this hook for that workspace's own main-thread cron tick /
+  // Monitor wake, defeating the mid-turn re-entry fix this hook exists to
+  // provide. Silent no-op for a subagent (not even a redirect line):
+  // command-guard.js's devswarm-subagent-mailbox-guard already blocks the
+  // drain command itself, and verify-first-subagent.js already tells a
+  // child-workspace subagent once, at spawn, that the main thread owns the
+  // mailbox — repeating that on every single Bash call here would be exactly
+  // the per-call noise this hook's own THROTTLE comment above says to avoid.
+  try {
+    const { isSubagentByPayload } = require('./coordinator-detect.js');
+    if (isSubagentByPayload(payload)) return;
+  } catch (_) {
+    // fail-open: if the subagent check itself throws, fall through to the
+    // pre-existing (main-thread-safe) behavior rather than crash.
+  }
+
+  // defect I6 fix: this hook fires on EVERY Bash call regardless of what that
+  // call was, including one that just ran `inbox read-primary` — which reads
+  // a DIFFERENT channel (Primary-originated mail) than this hook's own union
+  // signal (child's own pull/ack inbox). Injecting "Drain NOW via `inbox pull
+  // ... && inbox ack ...`" in that SAME turn contradicts the guidance
+  // everywhere else in this plugin (devswarm-child-role.js, devswarm-child-
+  // turn.js, lib/devswarm-wake.js's ACK_AFTER_READ): after `read-primary`,
+  // run the `ackCommand` IT returns — read-only, self-contained, no second
+  // competing verb pair. Skip this ONE injection when the triggering command
+  // was itself a `read-primary` call; the union backlog (if still nonzero)
+  // re-surfaces on the child's very next Bash call regardless, so nothing is
+  // silently dropped — only the confusing double-instruction is.
+  const triggerCommand = (payload && payload.tool_input && typeof payload.tool_input.command === 'string')
+    ? payload.tool_input.command : '';
+  if (/\binbox\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*read-primary\b/i.test(triggerCommand)) return;
+
+  const id = env.DEVSWARM_BUILDER_ID;
+  if (typeof id !== 'string' || !isSafeId(id)) return;
+
+  const home = os.homedir();
+  let desc = null;
+  try { desc = JSON.parse(fs.readFileSync(path.join(devswarmRoot(home), 'workspaces', id + '.json'), 'utf8')); } catch (_) { desc = null; }
+  if (!desc || typeof desc !== 'object' || !desc.inboxPath) return;
+
+  let union = null;
+  try {
+    const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: desc.worktreePath, id, home, env });
+    if (storeHandle) {
+      try {
+        // Phase 3 (reader_cursors): the CHILD reading its OWN mailbox — its own
+        // reader row (nearest harness ancestor, reader-identity.js), or the floor
+        // when headless (Codex). One countFor; unknown -> no nudge (this hook is
+        // informational; the Stop gate is what blocks on unknown).
+        let reader = null;
+        try { reader = require('../scripts/devswarm.js').deriveReaderNonce({ home }); } catch (_) { reader = null; }
+        const c = require('../companion/lib/reader-cursors.js').countFor(storeHandle, {
+          reader, partition: id, inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, home,
+        });
+        union = c.unknown ? null : c;
+      } finally {
+        try { storeHandle.close(); } catch (_) {}
+      }
+    } else {
+      // Fall back to the NDJSON-only cursor primitive (no store resolvable) —
+      // same fail-open posture as devswarm-child-gate.js's readDurableUnread.
+      const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
+      const u = readUnread(desc.inboxPath, desc.cursorPath);
+      union = { unread: u.known ? u.count : 0, oldestUnreadAgeMs: null };
+    }
+  } catch (_) { return; } // fail-open: never block/crash a tool call over this
+
+  if (!union || !(union.unread > 0)) return; // empty-when-zero
+
+  const now = Date.now();
+  if (!shouldInject(home, id, union.unread, now)) return;
+
+  const out = {
+    hookSpecificOutput: {
+      hookEventName: 'PostToolUse',
+      additionalContext: buildMessage(union.unread, id, union.oldestUnreadAgeMs),
+    },
+  };
+  fs.writeSync(1, JSON.stringify(out) + '\n');
+}
+
+try {
+  main();
+} catch (_) {
+  // Fail-open: any error -> no output, no crash.
+}
+process.exit(0);

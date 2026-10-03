@@ -1,0 +1,852 @@
+'use strict';
+// devswarm-reply-state — per-project reply tracking used by the parent
+// Stop-gate to distinguish "read" from "decided and replied" (§4.3 of
+// 2026-08-02-devswarm-parent-decide-gate.md). Covers fail-open reads, the
+// APPEND-ONLY write path (Task #4 redesign), fold/dedup correctness, the
+// concurrent-writer no-loss guarantee, the legacy->append-only forward
+// migration, and the unansweredQuestions fail-open-toward-unanswered filter.
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { Worker } = require('node:worker_threads');
+
+const { makeHome } = require('../helpers/fixtures.js');
+
+const MODULE_PATH = path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-reply-state.js',
+);
+const M = require(MODULE_PATH);
+
+const SESSION = 'sess-1';
+
+// --- fail-open reads --------------------------------------------------------
+test('readReplyState: missing file returns {}', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    assert.deepEqual(M.readReplyState(SESSION, home), {});
+  } finally { cleanup(); }
+});
+
+test('readReplyState: malformed/corrupt file returns {} (fail-open), never throws', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const p = M.replyStatePathFor(SESSION, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, '{not json');
+    assert.doesNotThrow(() => M.readReplyState(SESSION, home));
+    assert.deepEqual(M.readReplyState(SESSION, home), {});
+
+    // wrong shape (array line instead of object) also fails open to {}
+    fs.writeFileSync(p, JSON.stringify([1, 2, 3]));
+    assert.deepEqual(M.readReplyState(SESSION, home), {});
+  } finally { cleanup(); }
+});
+
+// A single corrupt line among valid append records must NOT poison the rest:
+// the fold skips the bad line and keeps every good sender (per-line fail-open).
+test('readReplyState: a corrupt line among valid records is skipped, the others survive', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const p = M.replyStatePathFor(SESSION, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p,
+      JSON.stringify({ m: 'child-a', t: 1000 }) + '\n' +
+      '{ this is not json\n' +
+      JSON.stringify({ m: 'child-b', t: 2000 }) + '\n');
+    const state = M.readReplyState(SESSION, home);
+    assert.equal(state['child-a'].lastReplyTs, 1000);
+    assert.equal(state['child-b'].lastReplyTs, 2000);
+    assert.equal(Object.keys(state).length, 2);
+  } finally { cleanup(); }
+});
+
+// --- null / unresolvable repoKey -------------------------------------------
+test('replyStatePathFor: a null/falsy repoKey returns null, never a shared fallback path', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    assert.strictEqual(M.replyStatePathFor(null, home), null);
+    assert.strictEqual(M.replyStatePathFor(undefined, home), null);
+    assert.strictEqual(M.replyStatePathFor('', home), null);
+  } finally { cleanup(); }
+});
+
+test('readReplyState(null, home) returns {} without creating any file', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const state = M.readReplyState(null, home);
+    assert.deepEqual(state, {});
+    const parentGateDir = path.join(home, '.anti-hall', 'devswarm', 'parent-gate');
+    assert.strictEqual(fs.existsSync(parentGateDir), false, 'no parent-gate dir/file should be created for a null key');
+  } finally { cleanup(); }
+});
+
+test('recordReply(null, home, ...) is a safe no-op: creates no file, never throws', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    assert.doesNotThrow(() => M.recordReply(null, home, 'child-a', 1000));
+    const parentGateDir = path.join(home, '.anti-hall', 'devswarm', 'parent-gate');
+    assert.strictEqual(fs.existsSync(parentGateDir), false, 'no parent-gate dir/file should be created for a null key');
+    assert.strictEqual(fs.existsSync(path.join(parentGateDir, 'norepo-replies.json')), false);
+  } finally { cleanup(); }
+});
+
+// --- write path round-trip + monotonic fold --------------------------------
+test('recordReply then readReplyState round-trips the value', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    M.recordReply(SESSION, home, 'child-a', 1000);
+    const state = M.readReplyState(SESSION, home);
+    assert.equal(state['child-a'].lastReplyTs, 1000);
+  } finally { cleanup(); }
+});
+
+test('recordReply: an earlier ts on a later call does not regress lastReplyTs (fold takes max)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    M.recordReply(SESSION, home, 'child-a', 5000);
+    M.recordReply(SESSION, home, 'child-a', 1000); // racing/late write, earlier ts
+    const state = M.readReplyState(SESSION, home);
+    assert.equal(state['child-a'].lastReplyTs, 5000, 'the fold must take the max ts, never regress');
+  } finally { cleanup(); }
+});
+
+test('recordReply: a later ts on a later call advances lastReplyTs', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    M.recordReply(SESSION, home, 'child-a', 1000);
+    M.recordReply(SESSION, home, 'child-a', 5000);
+    const state = M.readReplyState(SESSION, home);
+    assert.equal(state['child-a'].lastReplyTs, 5000);
+  } finally { cleanup(); }
+});
+
+test('recordReply: multiple senders each keep their own max, none clobbered', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    M.recordReply(SESSION, home, 'child-a', 1000);
+    M.recordReply(SESSION, home, 'child-b', 2000);
+    M.recordReply(SESSION, home, 'child-a', 1500);
+    const state = M.readReplyState(SESSION, home);
+    assert.equal(state['child-a'].lastReplyTs, 1500);
+    assert.equal(state['child-b'].lastReplyTs, 2000);
+  } finally { cleanup(); }
+});
+
+// --- APPEND-ONLY on-disk shape ---------------------------------------------
+// The core structural property: recordReply appends a newline-delimited record
+// and takes NO lock and stages NO tmp file. The absence of a .lock / .tmp.*
+// sibling is what proves the read-modify-write apparatus is truly gone.
+test('recordReply: writes an append-only JSONL log — one record per call, no lock/tmp siblings', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'append-shape-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    M.recordReply(repoKey, home, 'child-a', 1000);
+    M.recordReply(repoKey, home, 'child-b', 2000);
+    M.recordReply(repoKey, home, 'child-a', 3000);
+
+    const raw = fs.readFileSync(p, 'utf8');
+    const lines = raw.split('\n').filter(Boolean);
+    assert.equal(lines.length, 3, 'three recordReply calls -> three appended records');
+    for (const line of lines) {
+      const o = JSON.parse(line);
+      assert.equal(typeof o.m, 'string');
+      assert.equal(typeof o.t, 'number');
+      assert.ok(M.isAppendRecord(o), 'every line is a well-formed append record');
+    }
+
+    const siblings = fs.readdirSync(path.dirname(p));
+    const base = path.basename(p);
+    assert.ok(!siblings.includes(base + '.lock'), 'append-only must take NO lock file');
+    assert.deepEqual(siblings.filter((f) => f.startsWith(base + '.tmp.')), [], 'append-only stages NO tmp file');
+    assert.deepEqual(siblings.filter((f) => f.startsWith(base + '.lock.steal.')), [], 'append-only creates NO steal file');
+  } finally { cleanup(); }
+});
+
+// --- fold / dedup correctness ----------------------------------------------
+test('foldReplyLog: folds duplicate + out-of-order records to max ts per sender', () => {
+  const raw =
+    JSON.stringify({ m: 'a', t: 10 }) + '\n' +
+    JSON.stringify({ m: 'b', t: 5 }) + '\n' +
+    JSON.stringify({ m: 'a', t: 30 }) + '\n' +
+    JSON.stringify({ m: 'a', t: 20 }) + '\n' + // out of order, must not regress a
+    JSON.stringify({ m: 'b', t: 25 }) + '\n';
+  const folded = M.foldReplyLog(raw);
+  assert.equal(folded['a'].lastReplyTs, 30);
+  assert.equal(folded['b'].lastReplyTs, 25);
+  assert.equal(Object.keys(folded).length, 2);
+});
+
+test('foldReplyLog: reads a LEGACY single-merged-object line (backward compatible)', () => {
+  const legacy = JSON.stringify({ 'child-a': { lastReplyTs: 111 }, 'child-b': { lastReplyTs: 222 } });
+  const folded = M.foldReplyLog(legacy);
+  assert.equal(folded['child-a'].lastReplyTs, 111);
+  assert.equal(folded['child-b'].lastReplyTs, 222);
+});
+
+test('foldReplyLog: reads a MIXED legacy-line + appended-records file (folds both, max wins)', () => {
+  const raw =
+    JSON.stringify({ 'child-a': { lastReplyTs: 111 }, 'child-b': { lastReplyTs: 222 } }) + '\n' +
+    JSON.stringify({ m: 'child-a', t: 500 }) + '\n' + // newer than legacy 111
+    JSON.stringify({ m: 'child-c', t: 333 }) + '\n';
+  const folded = M.foldReplyLog(raw);
+  assert.equal(folded['child-a'].lastReplyTs, 500, 'appended record overtakes the legacy value');
+  assert.equal(folded['child-b'].lastReplyTs, 222, 'legacy-only sender preserved');
+  assert.equal(folded['child-c'].lastReplyTs, 333);
+});
+
+// The append-record discriminator must not misread a legacy map that literally
+// keys a sender named "m": its o.m is an OBJECT, so isAppendRecord is false and
+// it is folded as a legacy map, not mistaken for a `{m,t}` record.
+test('isAppendRecord / fold: a legacy map keyed by a sender literally named "m" is not mistaken for an append record', () => {
+  assert.strictEqual(M.isAppendRecord({ m: { lastReplyTs: 5 } }), false);
+  assert.strictEqual(M.isAppendRecord({ m: 'child-a', t: 5 }), true);
+  const folded = M.foldReplyLog(JSON.stringify({ m: { lastReplyTs: 5 }, t: { lastReplyTs: 9 } }));
+  assert.equal(folded['m'].lastReplyTs, 5);
+  assert.equal(folded['t'].lastReplyTs, 9);
+});
+
+// --- concurrent-writer no-loss (THE core win) ------------------------------
+// The old read-modify-write shape lost entries under concurrency (40 writers
+// retained only ~30). Append-only makes a lost update structurally impossible.
+// N=40 REAL concurrent OS-thread writers (worker_threads — a same-thread
+// Promise.all over sync fs calls would never reproduce genuine interleaving),
+// each appending a DIFFERENT sender to the SAME file, all released from a shared
+// barrier at once. ALL 40 must survive, and NO lock/tmp sibling may be created.
+test('recordReply: N concurrent OS-thread writers to the SAME repoKey all survive (append-only, lock-free)', async () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'concurrent-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    const WORKER_PATH = path.join(__dirname, '..', 'helpers', 'reply-state-race-worker.js');
+    const N = 40;
+    const sab = new Int32Array(new SharedArrayBuffer(4));
+    const runs = [];
+    for (let i = 0; i < N; i++) {
+      const w = new Worker(WORKER_PATH, { workerData: { i, home, repoKey, sabBuffer: sab.buffer, modulePath: MODULE_PATH } });
+      runs.push(new Promise((resolve, reject) => {
+        w.on('error', reject);
+        w.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('worker ' + i + ' exited ' + code))));
+      }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    Atomics.store(sab, 0, 1);
+    Atomics.notify(sab, 0);
+    await Promise.all(runs);
+
+    const state = M.readReplyState(repoKey, home);
+    const keys = Object.keys(state);
+    assert.equal(keys.length, N, 'all ' + N + ' concurrent writers must survive (got ' + keys.length + ')');
+    for (let i = 0; i < N; i++) {
+      assert.ok(state['child-' + i], 'entry from concurrent worker ' + i + ' must not be lost');
+      assert.equal(state['child-' + i].lastReplyTs, 1000 + i);
+    }
+    const base = path.basename(p);
+    const siblings = fs.readdirSync(path.dirname(p));
+    assert.ok(!siblings.includes(base + '.lock'), 'no lock file is ever created by the append-only path');
+    assert.deepEqual(siblings.filter((f) => f.startsWith(base + '.tmp.')), [], 'no tmp staging file is ever created');
+  } finally { cleanup(); }
+});
+
+// --- forward migration: legacy merged-object -> append-only JSONL ----------
+// The ONLY released on-disk form was the single merged object
+// `{ [meshId]: { lastReplyTs } }` (v0.69.0 .. v0.70.1). Migration folds it to
+// append-only losslessly.
+test('migrateReplyState: converts a legacy merged-object file to append-only JSONL, losslessly', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'legacy-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 111 }, 'child-b': { lastReplyTs: 222 } }));
+
+    const report = M.migrateReplyState(home);
+    assert.equal(report.scanned, 1);
+    assert.equal(report.migrated, 1);
+    assert.equal(report.errors, 0);
+
+    // On-disk: now pure append-only records, one per sender, sorted, no data lost.
+    const raw = fs.readFileSync(p, 'utf8');
+    const lines = raw.split('\n').filter(Boolean);
+    assert.equal(lines.length, 2);
+    for (const line of lines) assert.ok(M.isAppendRecord(JSON.parse(line)));
+
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111);
+    assert.equal(state['child-b'].lastReplyTs, 222);
+  } finally { cleanup(); }
+});
+
+test('migrateReplyState: idempotent — a second run converts nothing (already append-only), state unchanged', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'idempotent-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 111 } }));
+
+    const first = M.migrateReplyState(home);
+    assert.equal(first.migrated, 1);
+    const afterFirst = fs.readFileSync(p, 'utf8');
+
+    const second = M.migrateReplyState(home);
+    assert.equal(second.migrated, 0, 'nothing left to migrate');
+    assert.equal(second.alreadyAppendOnly, 1, 'the already-normalized file is detected and skipped');
+    assert.equal(fs.readFileSync(p, 'utf8'), afterFirst, 're-run is byte-identical (no churn)');
+  } finally { cleanup(); }
+});
+
+test('migrateReplyState: dryRun counts pending WITHOUT writing anything', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'dryrun-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const legacy = JSON.stringify({ 'child-a': { lastReplyTs: 111 } });
+    fs.writeFileSync(p, legacy);
+
+    const report = M.migrateReplyState(home, { dryRun: true });
+    assert.equal(report.pending, 1, 'dryRun reports the file as pending');
+    assert.equal(report.migrated, 0, 'dryRun writes nothing');
+    assert.equal(fs.readFileSync(p, 'utf8'), legacy, 'file is untouched in dryRun');
+  } finally { cleanup(); }
+});
+
+// A legacy file keyed by a session_id-style basename (the never-released dev
+// form) is migrated identically — the migration operates on every
+// *-replies.json regardless of how its basename was keyed.
+test('migrateReplyState: also normalizes a legacy file whose basename came from a session_id (prior dev form)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const dir = path.join(home, '.anti-hall', 'devswarm', 'parent-gate');
+    fs.mkdirSync(dir, { recursive: true });
+    // A session-id-shaped safe name, ending in the same -replies.json suffix.
+    const p = path.join(dir, 'sess_abc123_def456-replies.json');
+    fs.writeFileSync(p, JSON.stringify({ 'child-x': { lastReplyTs: 42 } }));
+
+    const report = M.migrateReplyState(home);
+    assert.equal(report.migrated, 1);
+    const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+    assert.equal(lines.length, 1);
+    assert.deepEqual(JSON.parse(lines[0]), { m: 'child-x', t: 42 });
+  } finally { cleanup(); }
+});
+
+test('migrateReplyState: a MIXED legacy-line + appended-records file folds to max, losslessly', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'mixed-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p,
+      JSON.stringify({ 'child-a': { lastReplyTs: 100 }, 'child-b': { lastReplyTs: 200 } }) + '\n' +
+      JSON.stringify({ m: 'child-a', t: 900 }) + '\n');
+
+    const report = M.migrateReplyState(home);
+    assert.equal(report.migrated, 1);
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 900, 'max across legacy + appended survives');
+    assert.equal(state['child-b'].lastReplyTs, 200);
+    // After migration every line is a pure append record.
+    for (const line of fs.readFileSync(p, 'utf8').split('\n').filter(Boolean)) {
+      assert.ok(M.isAppendRecord(JSON.parse(line)));
+    }
+  } finally { cleanup(); }
+});
+
+test('migrateReplyState: missing parent-gate dir is a safe zeroed no-op (fail-open)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const report = M.migrateReplyState(home);
+    assert.deepEqual(report, { scanned: 0, migrated: 0, alreadyAppendOnly: 0, pending: 0, errors: 0 });
+    assert.strictEqual(fs.existsSync(path.join(home, '.anti-hall', 'devswarm', 'parent-gate')), false);
+  } finally { cleanup(); }
+});
+
+// The doctor + update.js both reach the migration through migrate-state.js's
+// thin wrapper — confirm it delegates to the same code path.
+test('migrate-state.js migrateReplyState wrapper delegates to the reply-state module', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'wrapper-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 7 } }));
+
+    const migrateState = require(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'migrate-state.js'));
+    const dry = migrateState.migrateReplyState({ dryRun: true, home });
+    assert.equal(dry.pending, 1);
+    const applied = migrateState.migrateReplyState({ home });
+    assert.equal(applied.migrated, 1);
+    assert.deepEqual(JSON.parse(fs.readFileSync(p, 'utf8').split('\n').filter(Boolean)[0]), { m: 'child-a', t: 7 });
+  } finally { cleanup(); }
+});
+
+// --- FIX A: legacy file with NO trailing newline + append (data-loss) -------
+// A pre-migration legacy reply-file was written as `JSON.stringify(state)` with
+// NO trailing newline. If migration has not run, the FIRST recordReply append
+// must NOT concatenate onto that line (which would make line 1 invalid JSON and
+// lose BOTH the legacy state and the new reply). recordReply prepends a leading
+// newline when the file's last byte is not one, so both survive the fold.
+test('recordReply onto a legacy no-trailing-newline file: BOTH legacy state and the new reply survive', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'legacy-nonl-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // Legacy shape exactly as the OLD code wrote it: one JSON object, NO newline.
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 111 } }));
+    assert.notEqual(fs.readFileSync(p, 'utf8').slice(-1), '\n', 'precondition: legacy file has no trailing newline');
+
+    M.recordReply(repoKey, home, 'child-b', 222);
+
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111, 'legacy state must survive the append');
+    assert.equal(state['child-b'].lastReplyTs, 222, 'the newly appended reply must survive too');
+    assert.equal(Object.keys(state).length, 2, 'no reply lost — both present');
+
+    // On disk: the legacy object stays a valid standalone first line, the new
+    // record lands on its own second line — two parseable lines, nothing torn.
+    const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+    assert.equal(lines.length, 2);
+    for (const line of lines) assert.doesNotThrow(() => JSON.parse(line), 'each line is valid JSON');
+  } finally { cleanup(); }
+});
+
+// --- FIX B: a sender id equal to `__proto__` folds/reads/serializes ----------
+// isSafeId permits underscores, so `__proto__` is a legal sender id. On a plain
+// `{}` accumulator it would poison the prototype and vanish from Object.keys;
+// the null-prototype accumulator stores it as a real own key.
+test('foldReplyLog: a sender id of `__proto__` is stored as an own key, not a prototype poison', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'proto-repo';
+    M.recordReply(repoKey, home, '__proto__', 1000);
+    M.recordReply(repoKey, home, 'constructor', 1500); // also a prototype-hazard name
+    const state = M.readReplyState(repoKey, home);
+    assert.ok(Object.keys(state).includes('__proto__'), '`__proto__` must appear as an own key');
+    assert.ok(Object.keys(state).includes('constructor'), '`constructor` must appear as an own key');
+    assert.equal(state['__proto__'].lastReplyTs, 1000);
+    assert.equal(state['constructor'].lastReplyTs, 1500);
+  } finally { cleanup(); }
+});
+
+test('migrateReplyState: a legacy `__proto__` sender is serialized to disk, not dropped', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'proto-migrate-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // Raw JSON string (NOT an object literal, which would set the prototype):
+    // JSON.parse makes `__proto__` a real own key.
+    fs.writeFileSync(p, '{"__proto__":{"lastReplyTs":5},"child-a":{"lastReplyTs":9}}');
+
+    const report = M.migrateReplyState(home);
+    assert.equal(report.migrated, 1);
+    assert.equal(report.errors, 0);
+
+    const raw = fs.readFileSync(p, 'utf8');
+    assert.ok(/"m":"__proto__"/.test(raw), 'the `__proto__` sender must be serialized to an append record, not dropped');
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['__proto__'].lastReplyTs, 5);
+    assert.equal(state['child-a'].lastReplyTs, 9);
+  } finally { cleanup(); }
+});
+
+// --- FIX C: a late append during migration must not be lost -----------------
+// migrateReplyState reads a snapshot, folds, writes a tmp, then renames. If a
+// live recordReply append lands between the snapshot and the rename, the rename
+// replace would drop it. The re-read-before-rename convergence loop must fold
+// that late record in before renaming. Deterministically simulated by patching
+// fs.writeFileSync to inject a late append onto the source exactly once, right
+// after the migration's first tmp write.
+test('migrateReplyState: a late append arriving during migration is folded in, never lost', () => {
+  const { home, cleanup } = makeHome();
+  const realWriteFileSync = fs.writeFileSync;
+  try {
+    const repoKey = 'race-migrate-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 111 } }) + '\n');
+
+    // Inject ONE late append onto the source, triggered by the migration's first
+    // tmp write (path carries the '.migrate.' marker). Fires exactly once.
+    let injected = false;
+    fs.writeFileSync = function (file, data, ...rest) {
+      const r = realWriteFileSync.call(fs, file, data, ...rest);
+      if (!injected && typeof file === 'string' && file.includes('.migrate.')) {
+        injected = true;
+        // A live reply lands AFTER the snapshot fold but BEFORE the rename.
+        realWriteFileSync.call(fs, p, fs.readFileSync(p, 'utf8') + JSON.stringify({ m: 'child-b', t: 222 }) + '\n');
+      }
+      return r;
+    };
+
+    const report = M.migrateReplyState(home);
+    fs.writeFileSync = realWriteFileSync;
+
+    assert.ok(injected, 'the late-append injection must have fired (migration wrote a tmp)');
+    assert.equal(report.migrated, 1);
+    assert.equal(report.errors, 0);
+
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111, 'snapshot sender preserved');
+    assert.equal(state['child-b'].lastReplyTs, 222, 'the late append must be folded in, not lost by the rename');
+    assert.equal(Object.keys(state).length, 2);
+  } finally {
+    fs.writeFileSync = realWriteFileSync;
+    cleanup();
+  }
+});
+
+// --- FIX D: an oversized record is rejected without writing a torn line ------
+// O_APPEND atomicity only holds for payloads <= PIPE_BUF. A record assembling
+// past the conservative 512-byte cap must be skipped entirely (fail-open),
+// never written as a torn/oversized append; smaller records still append.
+test('recordReply: an oversized record is rejected (no torn write); normal records still append', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'oversize-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    const hugeMeshId = 'x'.repeat(600); // record assembles well past the 512-byte cap
+    M.recordReply(repoKey, home, hugeMeshId, 1000);
+    assert.strictEqual(fs.existsSync(p), false, 'an oversized record must not be written at all');
+
+    // A normal, in-bounds record still appends and reads back.
+    M.recordReply(repoKey, home, 'child-ok', 2000);
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-ok'].lastReplyTs, 2000, 'a normal record still appends after an oversized one is skipped');
+    assert.strictEqual(state[hugeMeshId], undefined, 'the oversized sender was never recorded');
+    // Only the one good record is on disk — no torn/oversized line.
+    assert.equal(fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).length, 1);
+  } finally { cleanup(); }
+});
+
+// --- SECOND BOUNDED FIX ROUND (fail-closed hardening: A2 / D2 / C2 / E2) ----
+
+// FIX A2: the legacy-line separator decision must FAIL CLOSED. A last-byte read
+// that THROWS must still result in the '\n' separator being applied (a leading
+// blank line is harmless — foldReplyLog skips it), never in a separator-less
+// append that concatenates onto an un-terminated legacy line and drops BOTH the
+// legacy state and this reply.
+test('recordReply (A2): a last-byte read failure on a legacy no-newline file still applies the separator — no data loss', () => {
+  const { home, cleanup } = makeHome();
+  const realReadSync = fs.readSync;
+  try {
+    const repoKey = 'a2-readfail-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const legacy = JSON.stringify({ 'child-a': { lastReplyTs: 111 } }); // NO trailing newline
+    fs.writeFileSync(p, legacy);
+    assert.notEqual(fs.readFileSync(p, 'utf8').slice(-1), '\n', 'precondition: no trailing newline');
+
+    // Force the last-byte read to THROW. HEAD swallowed this and appended WITHOUT
+    // a separator (fail-OPEN); A2 defaults to prepending on ANY read uncertainty.
+    fs.readSync = function () { const e = new Error('simulated read failure'); e.code = 'EIO'; throw e; };
+    M.recordReply(repoKey, home, 'child-b', 222);
+    fs.readSync = realReadSync;
+
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111, 'legacy state survives despite the last-byte read failure');
+    assert.equal(state['child-b'].lastReplyTs, 222, 'the appended reply survives too');
+    assert.equal(Object.keys(state).length, 2, 'no reply lost');
+    // On disk: two valid standalone lines (the separator WAS applied).
+    const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+    assert.equal(lines.length, 2);
+    for (const line of lines) assert.doesNotThrow(() => JSON.parse(line), 'each line is valid JSON — nothing torn');
+  } finally {
+    fs.readSync = realReadSync;
+    cleanup();
+  }
+});
+
+// FIX D2: the size cap must bound the EXACT bytes written — the assembled line
+// including the trailing '\n' AND any prepended leading '\n' — against a cap set
+// comfortably BELOW the 512-byte atomicity bound (480). A record that assembles
+// to >480 bytes only once the separator is counted must be rejected.
+test('recordReply (D2): the cap counts the full assembled line incl. separator; accepted writes stay within the atomicity bound', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'd2-cap-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // Legacy no-trailing-newline file forces recordReply to PREPEND a '\n', so
+    // the bytes actually written = record + 1.
+    const legacy = JSON.stringify({ 'child-a': { lastReplyTs: 1 } });
+    fs.writeFileSync(p, legacy);
+
+    // meshId sized so the record body (JSON + '\n') is EXACTLY 480 bytes, but the
+    // ACTUAL write (record + leading '\n' separator) is 481 — over the 480 cap.
+    // A cap measured on the record body alone (even at 480, and certainly the old
+    // 512) would let this through and write a 481-byte line that can tear a
+    // concurrent append; the cap must reject it because it measures the payload.
+    const recBytes = (L) => Buffer.byteLength(JSON.stringify({ m: 'x'.repeat(L), t: 1000 }) + '\n', 'utf8');
+    let L = 1; while (recBytes(L) < 480) L++;
+    assert.equal(recBytes(L), 480, 'precondition: record body is exactly 480 bytes (payload with separator = 481)');
+    const overId = 'x'.repeat(L);
+    M.recordReply(repoKey, home, overId, 1000);
+    assert.equal(fs.readFileSync(p, 'utf8'), legacy, 'the over-cap-with-separator record is rejected — file untouched');
+    assert.strictEqual(M.readReplyState(repoKey, home)[overId], undefined, 'the over-cap sender is never recorded');
+
+    // A normal record still appends, and EVERY line actually on disk (incl. its
+    // trailing newline) is within the 480-byte atomicity bound.
+    M.recordReply(repoKey, home, 'child-b', 2000);
+    for (const line of fs.readFileSync(p, 'utf8').split('\n').filter(Boolean)) {
+      assert.ok(Buffer.byteLength(line + '\n', 'utf8') <= 480, 'each written line incl. newline stays within the atomicity bound');
+    }
+    assert.equal(M.readReplyState(repoKey, home)['child-b'].lastReplyTs, 2000);
+  } finally { cleanup(); }
+});
+
+// FIX C2: a re-read that THROWS during the migration convergence loop must ABORT
+// that file (leave it exactly as-is, backward-compatible reader still folds it),
+// never authorize the rename — renaming over an unverified source could discard
+// a late append. Combined with a late append here to prove no data is lost.
+test('migrateReplyState (C2): a re-read that throws aborts the migration — file left intact, no reply lost', () => {
+  const { home, cleanup } = makeHome();
+  const realWrite = fs.writeFileSync;
+  const realRead = fs.readFileSync;
+  try {
+    const repoKey = 'c2-reread-throw-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 111 } }) + '\n');
+
+    let fired = false;
+    let armed = false;
+    fs.writeFileSync = function (file, data, ...rest) {
+      const r = realWrite.call(fs, file, data, ...rest);
+      if (!fired && typeof file === 'string' && file.includes('.migrate.')) {
+        fired = true;
+        // A live reply lands after the snapshot fold, before the re-read ...
+        realWrite.call(fs, p, realRead.call(fs, p, 'utf8') + JSON.stringify({ m: 'child-b', t: 222 }) + '\n');
+        // ... and then the migration's re-read of the source throws.
+        armed = true;
+      }
+      return r;
+    };
+    fs.readFileSync = function (file, ...rest) {
+      if (armed && file === p) { armed = false; const e = new Error('simulated EIO'); e.code = 'EIO'; throw e; }
+      return realRead.call(fs, file, ...rest);
+    };
+
+    const report = M.migrateReplyState(home);
+    fs.writeFileSync = realWrite;
+    fs.readFileSync = realRead;
+
+    assert.ok(fired, 'the injection must have fired');
+    assert.equal(report.migrated, 0, 'an uncertain re-read must NOT authorize a rename');
+    assert.equal(report.errors, 1, 'the file is counted as an aborted error, not migrated');
+
+    // Source left as-is — reader still folds BOTH the legacy sender and the late
+    // append. Nothing lost by a rename that (correctly) never happened.
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111, 'legacy sender intact');
+    assert.equal(state['child-b'].lastReplyTs, 222, 'the late append is NOT lost — no rename over an unverified source');
+    assert.equal(Object.keys(state).length, 2);
+    const leaked = fs.readdirSync(path.dirname(p)).filter((f) => f.includes('.migrate.'));
+    assert.deepEqual(leaked, [], 'no .migrate sidecar left behind (E2)');
+  } finally {
+    fs.writeFileSync = realWrite;
+    fs.readFileSync = realRead;
+    cleanup();
+  }
+});
+
+// FIX E2: the tmp/.migrate sidecar cleanup must be UNCONDITIONAL. A partial write
+// that creates the sidecar and then throws (HEAD only unlinked when wrote===true)
+// must not leak the sidecar — the finally-style cleanup always reclaims it.
+test('migrateReplyState (E2): a partial/aborted write leaves NO .migrate sidecar (unconditional cleanup)', () => {
+  const { home, cleanup } = makeHome();
+  const realWrite = fs.writeFileSync;
+  try {
+    const repoKey = 'e2-sidecar-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const legacy = JSON.stringify({ 'child-a': { lastReplyTs: 111 } }) + '\n';
+    fs.writeFileSync(p, legacy);
+
+    // Simulate a partial write: the tmp sidecar IS created on disk, then the write
+    // throws (e.g. ENOSPC mid-write). HEAD only unlinked the tmp when wrote===true,
+    // so a throw here leaked the sidecar forever.
+    let leftPartial = false;
+    fs.writeFileSync = function (file, data, ...rest) {
+      if (typeof file === 'string' && file.includes('.migrate.')) {
+        realWrite.call(fs, file, 'partial-body'); // a real partial file on disk
+        leftPartial = true;
+        const e = new Error('simulated ENOSPC'); e.code = 'ENOSPC'; throw e;
+      }
+      return realWrite.call(fs, file, data, ...rest);
+    };
+
+    const report = M.migrateReplyState(home);
+    fs.writeFileSync = realWrite;
+
+    assert.ok(leftPartial, 'the partial-write injection must have fired');
+    assert.equal(report.migrated, 0, 'the aborted write does not migrate');
+    assert.equal(report.errors, 1, 'the write failure is counted');
+    const leaked = fs.readdirSync(path.dirname(p)).filter((f) => f.includes('.migrate.'));
+    assert.deepEqual(leaked, [], 'the .migrate sidecar must be cleaned up unconditionally, even on a partial/aborted write');
+    assert.equal(fs.readFileSync(p, 'utf8'), legacy, 'source left intact on abort');
+  } finally {
+    fs.writeFileSync = realWrite;
+    cleanup();
+  }
+});
+
+// --- unansweredQuestions (unchanged consumer contract) ---------------------
+test('unansweredQuestions: separates answered (ts <= lastReplyTs) from unanswered (ts > lastReplyTs, or no entry)', () => {
+  const pendingQuestions = [
+    { from: 'child-a', ts: 500, seq: 1 },  // answered: lastReplyTs 1000 >= 500
+    { from: 'child-a', ts: 1500, seq: 2 }, // unanswered: newer than the reply
+    { from: 'child-b', ts: 100, seq: 3 },  // unanswered: no reply-state entry at all
+  ];
+  const replyState = { 'child-a': { lastReplyTs: 1000 } };
+  const result = M.unansweredQuestions(pendingQuestions, replyState);
+  assert.deepEqual(result.map((q) => q.seq), [2, 3]);
+});
+
+test('unansweredQuestions: ts exactly equal to lastReplyTs counts as answered (strictly greater required)', () => {
+  const pendingQuestions = [{ from: 'child-a', ts: 1000, seq: 1 }];
+  const replyState = { 'child-a': { lastReplyTs: 1000 } };
+  assert.deepEqual(M.unansweredQuestions(pendingQuestions, replyState), []);
+});
+
+// End-to-end through the real write+read path: a recorded reply clears its
+// question via unansweredQuestions (the decide+reply gate semantics preserved).
+test('recordReply -> readReplyState -> unansweredQuestions: a recorded reply clears its pending question', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'gate-semantics-repo';
+    const pending = [{ from: 'child-a', ts: 1000, seq: 1 }];
+    // Before any reply: the question is unanswered (blocks the gate).
+    assert.equal(M.unansweredQuestions(pending, M.readReplyState(repoKey, home)).length, 1);
+    // Record a reply strictly newer than the question ts.
+    M.recordReply(repoKey, home, 'child-a', 1001);
+    assert.deepEqual(M.unansweredQuestions(pending, M.readReplyState(repoKey, home)), [],
+      'a reply newer than the question ts clears it');
+    // A reply OLDER than a newer question does not clear that newer question.
+    const pending2 = [{ from: 'child-a', ts: 5000, seq: 2 }];
+    assert.equal(M.unansweredQuestions(pending2, M.readReplyState(repoKey, home)).length, 1,
+      'gate still blocks on a question newer than the last observed reply');
+  } finally { cleanup(); }
+});
+
+test('unansweredQuestions: fails open toward unanswered on malformed input, never throws', () => {
+  assert.doesNotThrow(() => M.unansweredQuestions(null, {}));
+  assert.deepEqual(M.unansweredQuestions(null, {}), []);
+  assert.deepEqual(M.unansweredQuestions('not-an-array', {}), []);
+
+  const malformedEntry = [{ ts: 100, seq: 1 }]; // no `from`
+  assert.doesNotThrow(() => M.unansweredQuestions(malformedEntry, {}));
+  assert.equal(M.unansweredQuestions(malformedEntry, {}).length, 1, 'a question missing `from` must be kept as unanswered, not dropped');
+
+  const questions = [{ from: 'child-a', ts: 100, seq: 1 }];
+  assert.doesNotThrow(() => M.unansweredQuestions(questions, 'not-an-object'));
+  assert.equal(M.unansweredQuestions(questions, 'not-an-object').length, 1, 'a malformed replyState must not silently clear a real question');
+
+  assert.doesNotThrow(() => M.unansweredQuestions(questions, null));
+  assert.equal(M.unansweredQuestions(questions, null).length, 1);
+
+  const weirdEntries = [null, undefined, 42, 'str', { from: 'child-a', ts: 5, seq: 9 }];
+  assert.doesNotThrow(() => M.unansweredQuestions(weirdEntries, {}));
+  assert.equal(M.unansweredQuestions(weirdEntries, {}).length, weirdEntries.length, 'every malformed entry must be kept as unanswered too');
+});
+
+// --- partitionUnanswered (R17 item 3: retired-sender questions) ------------
+// MUTATION CHECK: drop the `knownIds.has(...)` check (treat every question as
+// `blocking`) -> "a question from a sender with NO row anywhere is informational" fails.
+//
+// `{ archivedKnown: true }` below models a FRESH summary (post R18-critic-fix
+// computeSummary always stamps `archivedRegistryRows`, even as `[]`) so these
+// pre-existing cases still exercise the known/unknown-id partition itself.
+// The archived-registry-specific cases (further down) cover `archivedKnown`
+// itself.
+test('partitionUnanswered: a sender present in descriptors OR registryRows stays blocking', () => {
+  const unanswered = [{ from: 'child-a', ts: 1, seq: 1 }, { from: 'child-b', ts: 2, seq: 2 }];
+  const descriptors = [{ id: 'child-a', worktreePath: '/w/a' }];
+  const registryRows = [{ id: 'child-b', worktreePath: '/w/b' }];
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows, { archivedKnown: true });
+  assert.deepEqual(blocking.map((q) => q.seq), [1, 2]);
+  assert.deepEqual(informational, []);
+});
+
+test('partitionUnanswered: a sender with NO row anywhere (retired) is informational, never blocking', () => {
+  const unanswered = [{ from: 'child-live', ts: 1, seq: 1 }, { from: 'ghost-sender', ts: 2, seq: 2 }];
+  const descriptors = [{ id: 'child-live', worktreePath: '/w/a' }];
+  const registryRows = [{ id: 'child-live', worktreePath: '/w/a' }];
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows, { archivedKnown: true });
+  assert.deepEqual(blocking.map((q) => q.seq), [1]);
+  assert.deepEqual(informational.map((q) => q.seq), [2]);
+});
+
+test('partitionUnanswered: an EMPTY registry (both descriptors and registryRows absent) never manufactures informational entries', () => {
+  const unanswered = [{ from: 'someone', ts: 1, seq: 1 }];
+  assert.deepEqual(M.partitionUnanswered(unanswered, [], [], { archivedKnown: true }).blocking.map((q) => q.seq), [1],
+    'an unreadable/empty registry must never be mistaken for proof of retirement');
+  assert.deepEqual(M.partitionUnanswered(unanswered, [], [], { archivedKnown: true }).informational, []);
+});
+
+test('partitionUnanswered: a malformed question (no `from`) always stays blocking, unchanged', () => {
+  const unanswered = [{ ts: 1, seq: 1 }, null, { from: 'known', ts: 2, seq: 2 }];
+  const descriptors = [{ id: 'known', worktreePath: '/w' }];
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, [], { archivedKnown: true });
+  assert.equal(blocking.length, 3);
+  assert.deepEqual(informational, []);
+});
+
+test('partitionUnanswered: fails toward blocking on malformed input, never throws', () => {
+  assert.doesNotThrow(() => M.partitionUnanswered(null, null, null));
+  assert.deepEqual(M.partitionUnanswered(null, null, null), { blocking: [], informational: [] });
+  const unanswered = [{ from: 'x', ts: 1, seq: 1 }];
+  assert.deepEqual(M.partitionUnanswered(unanswered, 'not-an-array', 'not-an-array', { archivedKnown: true }).blocking.map((q) => q.seq), [1]);
+});
+
+// --- partitionUnanswered `archivedKnown` (R18 critic fix) ------------------
+// Root cause: `registryRows` used to be ACTIVE-only (Object.keys(summary.
+// workspaces), which structurally excludes an archived-but-still-live child —
+// see devswarm-store.js's computeSummary/archivedIds). A question from such a
+// sender matched no row anywhere in the OLD id spaces and was wrongly
+// downgraded to informational, even though `send --to <that id>` can still
+// resolve it and the sender can still ask again — a real, repliable question
+// silently stopped being nagged about.
+//
+// MUTATION CHECK: drop the `archivedKnown` gate (always run the known/unknown
+// partition) -> the legacy-summary case below wrongly goes informational.
+test('partitionUnanswered: an archived-but-live sender (row only in the archived half) stays blocking, once archivedKnown', () => {
+  const unanswered = [{ from: 'childA-uuid-1234', ts: 1, seq: 1 }];
+  // Neither `descriptors` (no active workspace file) nor the ACTIVE half of
+  // `registryRows` carries this id — only the ARCHIVED half does, exactly
+  // like a real archived-but-live child's registry row.
+  const descriptors = [];
+  const registryRows = [{ id: 'childA-uuid-1234', worktreePath: '/w/archived' }]; // caller already folded the archived half in
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows, { archivedKnown: true });
+  assert.deepEqual(blocking.map((q) => q.seq), [1], 'archived-but-live sender must still block — resolveSendTarget can still reach it');
+  assert.deepEqual(informational, []);
+});
+
+test('partitionUnanswered: legacy summary (archivedKnown omitted/false) fails open toward BLOCKING for an unmatched sender, never informational', () => {
+  const unanswered = [{ from: 'childA-uuid-1234', ts: 1, seq: 1 }, { from: 'ghost-sender', ts: 2, seq: 2 }];
+  const descriptors = [];
+  const registryRows = [{ id: 'some-other-live-child', worktreePath: '/w/live' }];
+  // No `opts` at all (mirrors a caller reading a summary written before this
+  // fix, which never emitted `archivedRegistryRows` — the caller cannot tell
+  // "no archived rows" apart from "archived half never computed").
+  const noOpts = M.partitionUnanswered(unanswered, descriptors, registryRows);
+  assert.deepEqual(noOpts.blocking.map((q) => q.seq), [1, 2], 'downgrading is the RISKY direction — stay blocking when the archived half is unverifiable');
+  assert.deepEqual(noOpts.informational, []);
+  // Explicit `archivedKnown: false` is identical.
+  const explicitFalse = M.partitionUnanswered(unanswered, descriptors, registryRows, { archivedKnown: false });
+  assert.deepEqual(explicitFalse.blocking.map((q) => q.seq), [1, 2]);
+  assert.deepEqual(explicitFalse.informational, []);
+});
+
+test('partitionUnanswered: id comparison is trimmed (registry ids are canonical; a stray-whitespace `from` still matches)', () => {
+  const unanswered = [{ from: '  child-a  ', ts: 1, seq: 1 }];
+  const descriptors = [{ id: 'child-a', worktreePath: '/w/a' }];
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, [], { archivedKnown: true });
+  assert.deepEqual(blocking.map((q) => q.seq), [1]);
+  assert.deepEqual(informational, []);
+});

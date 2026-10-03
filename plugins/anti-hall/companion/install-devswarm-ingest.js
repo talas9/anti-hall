@@ -1,0 +1,2290 @@
+#!/usr/bin/env node
+'use strict';
+// anti-hall :: install-devswarm-ingest — installs the DevSwarm ingest daemon as a
+// supervised background job. The daemon (devswarm-ingest.js) is the ONE native
+// consumer that wraps `hivecontrol workspace monitor` and folds drained messages
+// into the store; nothing auto-starts it, so this helper schedules it to run
+// continuously (and re-exec on exit).
+//
+//   node install-devswarm-ingest.js              install (continuous daemon)
+//   node install-devswarm-ingest.js --uninstall  remove
+//   node install-devswarm-ingest.js --dry-run    print what it would do
+//
+// CONTINUOUS DAEMON (not a periodic sweep): unlike the supervisor, the ingest
+// process's main() runs unbounded until killed. So the scheduler must RE-EXEC it
+// on exit rather than run it on an interval:
+//   macOS  -> LaunchAgent with KeepAlive (relaunch on exit), label
+//             com.anti-hall.devswarm-ingest.
+//   Linux  -> systemd --user .service, Type=simple, Restart=always; cron fallback
+//             (every minute, restart-if-dead) when systemctl is absent.
+//   Windows-> no pure-Node user-level long-running scheduler in built-ins
+//             (no launchd/systemd/cron), documented no-op, exit 0. The daemon can
+//             still be launched manually. (Note: unlike the supervisor's Windows
+//             no-op, the reason here is NOT kill-safety — the ingest daemon never
+//             kills anything — it is simply the absence of a built-in scheduler.)
+//
+// SCOPE = per-machine (per-home): the daemon's single-consumer lock lives at
+// ~/.anti-hall/devswarm/locks/ingest.lock, keyed on $HOME, exactly matching the
+// supervisor's per-machine scope. ONE unit per machine. A redundant install is
+// SAFE — the daemon takes an O_EXCL lock and only one instance ever wins; extra
+// launches refuse-and-exit (KeepAlive/cron then throttle-retries harmlessly).
+//
+// Idempotent refresh: reinstalling rewrites the unit and relaunches so the running
+// daemon picks up this build's code (launchctl unload+load on macOS / systemd
+// daemon-reload + restart on Linux).
+//
+// Distinct label + log from the supervisor. Agnostic: no hardcoded paths/users
+// (os.homedir(), process.execPath, __dirname). Fail-open: an install failure is
+// reported (exit 1) but never corrupts state; callers treat it as non-fatal.
+
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
+
+// D27 (PLAN-v0.57-mesh.md): guarded, NOT a bare require — this module is
+// itself required TOP-LEVEL by hooks (devswarm-parent-inbox.js/devswarm-
+// parent-gate.js), whose fail-open guarantee only wraps their own main()
+// call, not their top-level requires. A THROWING require here (a corrupt/
+// deleted devswarm-repokey.js) would therefore crash those hooks before
+// fail-open ever engages — exactly the class of bug D27 exists to prevent.
+// `repokey` is null on failure; every call site below already fails open
+// (returns null) when it is.
+let repokey = null;
+try { repokey = require('./lib/devswarm-repokey.js'); } catch (_) { repokey = null; }
+const { devswarmRoot } = require('./lib/liveness.js');
+
+const LABEL = 'com.anti-hall.devswarm-ingest';
+const UNIT = 'anti-hall-devswarm-ingest';
+const EXEC = process.execPath;
+const HOME = os.homedir();
+
+// resolveStableScript(env, home) -> absolute path | null. Prefers the git
+// marketplace clone's OWN copy of devswarm-ingest.js — the exact path
+// skills/update/scripts/update.js `git pull --ff-only`s IN PLACE (verified:
+// update.js:396 gitPullFfOnly runs against paths.marketplaceDir), so it NEVER
+// moves across an update. That is NOT true of a version-pinned cache dir (a NEW
+// directory per release) or of this installer's OWN __dirname (wherever the
+// plugin manager happened to resolve THIS install run's copy from — not
+// guaranteed stable). A daemon baked from either of those goes stale the moment
+// the plugin manager relocates/.bak's that directory out from under the
+// already-running daemon's launchd/systemd/cron unit — the confirmed root cause
+// of the ingest daemon crash-looping after a plugin update. ANTIHALL_MARKETPLACE_DIR
+// is the SAME test-only override update.js honors, so both stable-path
+// resolutions agree under test. Returns null (never throws) when the marketplace
+// clone isn't present on this machine (e.g. running straight off a git checkout
+// of the repo, not a marketplace install) — the caller then falls back to
+// __dirname, preserving today's dev-mode behavior.
+function resolveStableScript(env, home) {
+  const e = env || {};
+  let marketplaceDir = path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall');
+  const override = e.ANTIHALL_MARKETPLACE_DIR;
+  if (override) {
+    try { if (path.isAbsolute(override) && fs.statSync(override).isDirectory()) marketplaceDir = override; } catch (_) {}
+  }
+  const candidate = path.join(marketplaceDir, 'plugins', 'anti-hall', 'companion', 'devswarm-ingest.js');
+  try { if (fs.statSync(candidate).isFile()) return candidate; } catch (_) {}
+  return null;
+}
+
+const SCRIPT = resolveStableScript(process.env, HOME) || path.join(__dirname, 'devswarm-ingest.js');
+const LOG = path.join(HOME, '.anti-hall', 'devswarm-ingest.log');
+const RESTART_SEC = 5; // gap before systemd relaunches the daemon after it exits
+
+const args = process.argv.slice(2);
+const UNINSTALL = args.includes('--uninstall');
+// DRY-RUN SEAM — argv OR env. The env channel is NOT a convenience: this
+// installer is almost never invoked directly. Its real entry point is
+// scripts/devswarm.js's selfHeal -> defaultSpawnInstaller, which is ITSELF
+// already running inside a subprocess spawned by defaultSpawnReconcile. That
+// puts TWO process boundaries between any caller and this file, and `env` is
+// the only thing that crosses them — an in-process `io`/DI seam on planRun
+// provably cannot reach here, which is why the seam is an env var and not a
+// parameter.
+//
+// Why it exists: tests that exercise the REAL, unmocked reconcile path run
+// against throwaway tmp git fixtures. Without this, macInstallProject registers
+// a genuine KeepAlive LaunchAgent whose WorkingDirectory is that tmp dir;
+// teardown deletes the dir but never unloads the job, so launchd keeps the
+// registration and crash-loops it forever (exit 78, program gone). Setting
+// ANTIHALL_INGEST_DRY_RUN=1 makes planWrite/planRm/planRun no-ops, so the test
+// still proves the full spawn plumbing without mutating the host's launchd.
+// Opt-in only — never set in production, and absent in CI (where the upstream
+// DEVSWARM_REPO_ID gate is closed anyway).
+//
+// STRUCTURAL TEST-CONTEXT GUARD (v0.98.3 fix-wave R2, closes the CLASS of
+// defect ec33954162ef, not just the one instance): a test that forgets to set
+// ANTIHALL_INGEST_DRY_RUN=1 — exactly the mistake that caused the original
+// leak — used to have NO safety net left; the real installer would run for
+// real. Node sets `NODE_TEST_CONTEXT` in every `node --test` worker process
+// (verified on this machine: present in the worker AND inherited by a
+// spawnSync'd child — the exact shape `defaultSpawnInstaller`/
+// `defaultSchedRunViaPlan` spawn through), so this file also forces dry-run
+// whenever that env var is present, with NO opt-out. This is a fallback, not
+// a replacement for explicit ANTIHALL_INGEST_DRY_RUN=1 — a test run OUTSIDE
+// `node --test` (e.g. a plain `node install-devswarm-ingest.js` a developer
+// runs by hand to smoke-test) still needs the explicit flag/env.
+const EXPLICIT_DRYRUN = args.includes('--dry-run') || process.env.ANTIHALL_INGEST_DRY_RUN === '1';
+// underTest(): NODE_TEST_CONTEXT or the ANTIHALL_TEST_ISOLATION marker tests/helpers
+// set on every child they build (0.108.0 launchd leak: a stripped child env).
+// A lone copy of this file (no lib/ sibling) falls back to the same env check.
+let TEST_GUARD = null;
+try { TEST_GUARD = require('./lib/test-home-guard.js'); } catch (_) { TEST_GUARD = null; }
+const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && (TEST_GUARD
+  ? TEST_GUARD.underTest()
+  : !!(process.env.NODE_TEST_CONTEXT || process.env.ANTIHALL_TEST_ISOLATION));
+// TMP-HOME GUARD (defect d1c57e67998f, P1, field-verified): NODE_TEST_CONTEXT_GUARD
+// above only catches a run that is ITSELF under `node --test` (or a child it
+// spawned) — it has NO signal for a non-test experiment run by hand or by an
+// agent under a scratch/temp HOME (the live case: a review agent's temp-HOME
+// experiment, label `...r3repo-bare-i7ycii-cc6261`, registered a REAL launchd
+// job whose daemon then wrote into the operator's REAL ~/.anti-hall store —
+// because HOME was never pinned into the unit's own env, see unitEnvFor above,
+// and NODE_TEST_CONTEXT was never set for that run at all). A resolved HOME
+// realpath-prefixed by os.tmpdir() is never a plausible REAL operator home, so
+// this closes the class NODE_TEST_CONTEXT structurally cannot see. Opt-out via
+// ANTIHALL_INGEST_ALLOW_TMP_HOME=1 for a deliberate manual smoke-test under a
+// scratch HOME that genuinely wants the real spawn path.
+function homeIsUnderTmpdir(home) {
+  try {
+    // os.tmpdir() alone misses real tmp roots it doesn't resolve to: on
+    // macOS it returns the per-user $TMPDIR (/var/folders/.../T/), NOT
+    // /tmp or /private/tmp — a HOME under either of those (e.g. a session
+    // scratchpad path) previously sailed past this guard entirely. Check
+    // os.tmpdir() plus the two well-known tmp roots, each realpath'd so a
+    // symlinked root (macOS: /tmp -> /private/tmp) still matches once.
+    // macOS per-user temp roots live under /var/folders (-> /private/var/folders);
+    // os.tmpdir() only reports them when TMPDIR is set, and a stripped env
+    // (launchd, `env -i`, a spawned child) has none — so name them directly.
+    const roots = [os.tmpdir(), '/tmp', '/private/tmp'].concat(process.platform === 'darwin' ? ['/var/folders', '/private/var/folders'] : []);
+    const realRoots = new Set();
+    for (const r of roots) {
+      try { realRoots.add(fs.realpathSync(r)); } catch (_) { realRoots.add(r); }
+    }
+    let h = home;
+    try { h = fs.realpathSync(home); } catch (_) { /* home dir may not exist yet — compare raw */ }
+    for (const tmp of realRoots) {
+      const rel = path.relative(tmp, h);
+      if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return true;
+    }
+    return false;
+  } catch (_) { return false; } // fail-open: never block a real install on an unrelated fs error
+}
+const ALLOW_TMP_HOME = process.env.ANTIHALL_INGEST_ALLOW_TMP_HOME === '1';
+const TMP_HOME_GUARD = !EXPLICIT_DRYRUN && !ALLOW_TMP_HOME && homeIsUnderTmpdir(HOME);
+// `DRYRUN` is `let` (not `const`) because of TMP_WORKTREE_GUARD below: unlike HOME
+// (known at module load), the WorkingDirectory a real install would bake is only
+// known once main() resolves the worktree from cwd — so that guard can only trip
+// AFTER this initial assignment, and must be able to upgrade DRYRUN from false to
+// true for the rest of the run.
+let DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD || TMP_HOME_GUARD;
+
+function say(msg) { process.stdout.write(msg + '\n'); }
+
+// TMP-WORKTREE GUARD (defect: a launchd unit was installed on a REAL machine with
+// WorkingDirectory pointed at an e2e fixture repo under another session's
+// scratchpad — /tmp, /private/tmp, /var/folders — and crash-looped 34,584 times
+// at exit 78 EX_CONFIG because launchd could never even posix_spawn into a
+// WorkingDirectory that no longer existed. TMP_HOME_GUARD above only ever caught a
+// tmp $HOME; it has NO signal for a perfectly normal $HOME running the installer
+// from a cwd that happens to resolve to a scratch/tmp worktree (exactly the shape
+// an agent's scratchpad clone produces). Same tmp-root detection (homeIsUnderTmpdir
+// — already generic over any path, not just HOME), same opt-out env var
+// (ANTIHALL_INGEST_ALLOW_TMP_HOME=1) as TMP_HOME_GUARD, so one flag covers both.
+// Resolved PER-CALL (the worktree/WorkingDirectory is only known once main() runs),
+// so this trips DRYRUN dynamically rather than being a module-load-time constant.
+let TMP_WORKTREE_GUARD = false;
+let _tmpWorktreeGuardNoted = false;
+// applyTmpWorktreeGuard(p) -> bool (true iff `p` resolves under a tmp root and
+// this run is not explicitly opted out — i.e. whether the guard's condition
+// fired, INDEPENDENT of whatever else may have already forced DRYRUN, exactly
+// mirroring TMP_HOME_GUARD's own module-level-flag posture so the notice below
+// still fires when NODE_TEST_CONTEXT_GUARD already set DRYRUN=true first (the
+// common case for a subprocess test, which inherits NODE_TEST_CONTEXT from its
+// `node --test` parent either way). Idempotent: once tripped, DRYRUN stays true
+// for the rest of this process regardless of how many paths are checked
+// (workdir, mainWorktree, ...).
+function applyTmpWorktreeGuard(p) {
+  if (EXPLICIT_DRYRUN || ALLOW_TMP_HOME) return false;
+  if (!p || !homeIsUnderTmpdir(p)) return false;
+  TMP_WORKTREE_GUARD = true;
+  DRYRUN = true;
+  return true;
+}
+// noteTmpWorktreeGuardTripped(p) — the LOUD stderr notice, printed at most once
+// per process (mirrors noteTmpHomeGuardTripped's once-per-process posture), the
+// moment a real install would otherwise have baked a tmp-rooted WorkingDirectory.
+function noteTmpWorktreeGuardTripped(p) {
+  if (!TMP_WORKTREE_GUARD || _tmpWorktreeGuardNoted) return;
+  _tmpWorktreeGuardNoted = true;
+  try {
+    process.stderr.write(
+      'anti-hall: install-devswarm-ingest.js resolved a WorkingDirectory (' + p + ') under the system'
+      + ' temp directory — forcing dry-run to prevent registering a REAL launchd/systemd daemon whose'
+      + ' WorkingDirectory is a scratch/tmp worktree (the same defect class as TMP_HOME_GUARD: a review'
+      + ' agent or test fixture clone under a session scratchpad, which crash-loops launchd at exit 78'
+      + ' EX_CONFIG once the fixture is cleaned up). Set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if'
+      + ' this run genuinely needs the real, unmocked spawn path from a temp worktree.\n'
+    );
+  } catch (_) {}
+}
+
+// noteNodeTestContextGuardTripped() — prints the ONE stderr notice for the
+// NODE_TEST_CONTEXT fallback, but only at the moment it actually intercepts a
+// real write/rm/run call (planWrite/planRm/planRun below), not at module
+// load. Requiring this module under `node --test` (61+ test files do) must
+// stay silent — the notice fires only when a real mutation was actually
+// prevented, and at most once per process even if multiple calls are
+// intercepted.
+let _nodeTestContextGuardNoted = false;
+function noteNodeTestContextGuardTripped() {
+  if (!NODE_TEST_CONTEXT_GUARD || _nodeTestContextGuardNoted) return;
+  _nodeTestContextGuardNoted = true;
+  try {
+    process.stderr.write(
+      'anti-hall: install-devswarm-ingest.js detected NODE_TEST_CONTEXT (running under `node --test`'
+      + ' or a child process spawned from it) — forcing dry-run to prevent a real launchd/systemd'
+      + ' registration leak (defect ec33954162ef). Set ANTIHALL_INGEST_DRY_RUN=1 explicitly if this'
+      + ' run genuinely needs the real, unmocked spawn path.\n'
+    );
+  } catch (_) {}
+}
+
+// noteTmpHomeGuardTripped() — the LOUD stderr notice for TMP_HOME_GUARD, same
+// once-per-process/only-on-an-actually-intercepted-call posture as
+// noteNodeTestContextGuardTripped above.
+let _tmpHomeGuardNoted = false;
+function noteTmpHomeGuardTripped() {
+  if (!TMP_HOME_GUARD || _tmpHomeGuardNoted) return;
+  _tmpHomeGuardNoted = true;
+  try {
+    process.stderr.write(
+      'anti-hall: install-devswarm-ingest.js resolved HOME (' + HOME + ') under the system temp'
+      + ' directory — forcing dry-run to prevent registering a REAL launchd/systemd daemon whose'
+      + ' live process would then write into your operator ~/.anti-hall store instead of this'
+      + ' scratch one (defect d1c57e67998f: a review agent temp-HOME experiment did exactly this'
+      + ' live). Set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if this run genuinely needs the'
+      + ' real, unmocked spawn path under a temp HOME.\n'
+    );
+  } catch (_) {}
+}
+
+// ---------------------------------------------------------------------------
+// CLI arg validation (footgun fix): installing is a side-effecting action
+// (LaunchAgent/systemd unit write + launchctl/systemctl load, or a crontab
+// mutation). An unrecognized flag — a typo, or a user expecting `--help` to
+// just print usage — must NEVER fall through to a full daemon install. This
+// runs BEFORE any install side effect (called from the top of main(), which
+// only ever executes when this file is run directly — see `require.main ===
+// module` below — so requiring this module as a library never triggers it).
+// ---------------------------------------------------------------------------
+const KNOWN_FLAGS = ['--uninstall', '--dry-run', '--help', '-h'];
+function usageText() {
+  return [
+    'Usage: node install-devswarm-ingest.js [options]',
+    '',
+    '  (no options)  install the DevSwarm ingest daemon (continuous, supervised)',
+    '  --uninstall   remove the installed daemon',
+    '  --dry-run     print what would be done, without making any changes',
+    '  --help, -h    show this help and exit (no install)',
+  ].join('\n');
+}
+// validateArgs(argv) — exits the process directly (never returns) on --help/-h
+// or an unrecognized `-`-prefixed flag. Both paths run BEFORE workdir
+// resolution / unit writes / launchctl-systemctl-crontab calls, so neither can
+// ever reach an install side effect.
+function validateArgs(argv) {
+  const list = argv || [];
+  if (list.includes('--help') || list.includes('-h')) {
+    say(usageText());
+    process.exit(0);
+  }
+  for (const a of list) {
+    if (typeof a === 'string' && a.startsWith('-') && !KNOWN_FLAGS.includes(a)) {
+      process.stderr.write(`unknown option: ${a}\n`);
+      process.stderr.write(usageText() + '\n');
+      process.exit(1);
+    }
+  }
+}
+
+let _tmpCounter = 0;
+// Atomic unit write: NEVER truncate a live plist/service in place. Write the new
+// content to a unique same-directory temp file, then rename(2) over the target —
+// atomic on POSIX, so an ENOSPC/interruption can never leave a partial/corrupt
+// unit. On any error the temp file is unlinked and the original is left intact.
+function planWrite(file, contents) {
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would write ${file}`); return; }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${_tmpCounter++}.tmp`;
+  try {
+    fs.writeFileSync(tmp, contents);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    throw e;
+  }
+  say(`wrote ${file}`);
+}
+function planRm(file) {
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would remove ${file}`); return; }
+  try { fs.unlinkSync(file); say(`removed ${file}`); } catch (_e) { say(`(not present) ${file}`); }
+}
+// svcSpawnSync(cmd, argv, opts) -> the ONE seam every launchctl/systemctl/
+// crontab invocation goes through, mutating OR read-only alike (list/-l
+// probes included — 0.108.0's hygiene test forbids the real binary from
+// being reached at all under a test, not just writes). Routes through
+// TEST_GUARD.runServiceCmd, which refuses under a test regardless of this
+// installer's own DRYRUN state; falls back to a bare spawnSync only when the
+// guard module itself failed to load.
+function svcSpawnSync(cmd, argv, opts) {
+  return TEST_GUARD ? TEST_GUARD.runServiceCmd(cmd, argv, opts) : spawnSync(cmd, argv, Object.assign({ encoding: 'utf8' }, opts || {}));
+}
+function planRun(cmd, argv, opts) {
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
+  // launchctl/systemctl/crontab go through the ONE service seam, which refuses
+  // them under a test whatever this installer's own DRYRUN says.
+  const r = svcSpawnSync(cmd, argv, opts);
+  if (r.refused) { say(`[test-guard] refused under a test: ${cmd} ${argv.join(' ')}`); return r; }
+  if (r.error) say(`(warn) ${cmd} failed: ${r.error.message}`);
+  else say(`ran: ${cmd} ${argv.join(' ')} (exit ${r.status})`);
+  return r;
+}
+
+// XML-escape for plist <string> bodies. Order matters: & first, then < > " '.
+function xmlEscape(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+// POSIX shell single-quote (for the cron/shell line): wrap in '...' and rewrite
+// each embedded ' as '\'' — everything else inside single quotes is literal, so a
+// path with spaces/&/</>/;/#/$/backticks/quotes can NEVER break out of the token.
+function shSingleQuote(s) {
+  return `'` + String(s).replace(/'/g, `'\\''`) + `'`;
+}
+
+// systemd Exec quoting (for ExecStart): systemd does NOT run a shell for Exec, but
+// it DOES do its own tokenizing plus $VAR / ${VAR} expansion. Double-quote and
+// escape \  "  and $ per systemd.service(5) ($$ = a literal $), so a path with
+// quotes/backslashes/dollars cannot break the token or trigger variable expansion.
+function sdQuote(s) {
+  return `"` + String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '$$$$') + `"`;
+}
+
+// Belt-and-suspenders on top of per-target escaping: refuse to emit a unit for a
+// resolved node/script path that carries control characters or quote characters.
+// Returns false for such a path so the installer can fail-open (log + skip).
+function pathIsEmittable(p) {
+  return !/[\u0000-\u001f\u007f"']/.test(String(p));
+}
+
+// Resolve the git worktree the daemon must be launched FROM. `hivecontrol
+// workspace <cmd>` resolves its workspace by walking up from the process's cwd to
+// an enclosing git worktree (NOT from DEVSWARM_* env). launchd/systemd/cron default
+// a unit's cwd to $HOME, which is not a git repo — so a daemon with no baked cwd can
+// never resolve a workspace and drains nothing. We resolve the install-time worktree
+// here and bake it into the unit's working directory. Returns the absolute toplevel
+// path (outermost superproject root for a submodule), or null when `cwd` is not inside a git worktree (installer then fails open).
+function resolveWorktree(cwd) {
+  // identity.resolveContext(...).worktreeRoot, NOT a raw `git --show-toplevel`: from a
+  // submodule cwd the latter returned the SUBMODULE's own toplevel and baked it into
+  // the daemon's WorkingDirectory (and its primary-<hash> heartbeat key). The
+  // superproject-folding root is the same path for any non-submodule checkout.
+  try {
+    return require('./lib/identity.js').resolveContext(cwd, { memo: false }).worktreeRoot || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// hivecontrol RESOLUTION (v0.66) — the DURABLE half of the ENOENT-storm fix
+// ---------------------------------------------------------------------------
+// launchd/systemd/cron hand a unit a MINIMAL default PATH (observed on every
+// installed daemon via `ps eww`: PATH=/usr/bin:/bin:/usr/sbin:/sbin) and the
+// installed plists carried NO EnvironmentVariables key at all — so the daemon's
+// bare-name `hivecontrol` spawn failed ENOENT on every single poll.
+//
+// A hand-patched unit does NOT survive: anything that reconciles the install
+// (doctor --repair's ingest section, the update script) regenerates the unit
+// from buildPlist()/buildService() and unload/loads it, silently discarding the
+// patch. The resolution therefore has to live HERE, in the builders, so every
+// regeneration reproduces it byte-for-byte.
+//
+// DISCOVERED, NEVER ASSUMED: the path comes from the user's own login shell
+// (`command -v hivecontrol`) or from an explicit ANTIHALL_DEVSWARM_HIVECONTROL
+// env var. There are deliberately NO hardcoded install roots and no per-OS path
+// tables in this file — this is a public, machine-agnostic repo, and a binary we
+// cannot find is REPORTED, never guessed at.
+const HIVECONTROL_BIN_NAME = 'hivecontrol';
+const HIVECONTROL_ENV_VAR = 'ANTIHALL_DEVSWARM_HIVECONTROL';
+// The scheduler's own minimal default PATH, which the resolved bin dir is
+// PREPENDED to (never replaced — the daemon still spawns `git`, `ps`, etc).
+const MINIMAL_UNIT_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+// The installer itself may run with a minimal PATH (it is spawned by doctor,
+// by the update script, or by a scheduler), so a plain `command -v` in OUR
+// process env is not sufficient — the lookup is done in the USER's login shell.
+const LOOKUP_TIMEOUT_MS = 10000;
+
+// defaultLookupRun({cmd,args}) -> {ok, raw}. Injectable (opts.io.lookupRun) so
+// tests NEVER spawn a real shell. Bounded by LOOKUP_TIMEOUT_MS, enforced with
+// killSignal:'SIGKILL' — an interactive login shell (macOS default $SHELL=zsh,
+// attempt #1 below uses `-lic`) can IGNORE the default SIGTERM outright (job-
+// control shells do; verified: `spawnSync('/bin/zsh',['-ic','sleep N'],{timeout})`
+// with the default killSignal never returns), so plain `timeout:` alone is not
+// actually a bound. stdio stdin is explicitly 'ignore' so a shell that prompts
+// interactively can never block waiting on input either.
+function defaultLookupRun(spec) {
+  const o = spec || {};
+  try {
+    const r = spawnSync(o.cmd, o.args || [], {
+      encoding: 'utf8',
+      timeout: LOOKUP_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (r.error) return { ok: false, raw: '' };
+    return { ok: r.status === 0, raw: String(r.stdout || '') };
+  } catch (_) {
+    return { ok: false, raw: '' };
+  }
+}
+
+// firstBinLine(raw) -> the first absolute path whose basename is exactly the
+// binary name. An interactive login shell prints rc noise/warnings alongside the
+// answer, so the output is FILTERED rather than trusted wholesale — and the
+// basename check means a noise line can never masquerade as a resolution.
+function firstBinLine(raw) {
+  const lines = String(raw || '').split('\n');
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || !path.isAbsolute(t)) continue;
+    if (path.basename(t) !== HIVECONTROL_BIN_NAME) continue;
+    return t;
+  }
+  return null;
+}
+
+// isExecutableFile(p, F) -> bool. Never throws.
+function isExecutableFile(p, F) {
+  const fsi = F || fs;
+  try { if (!fsi.statSync(p).isFile()) return false; } catch (_) { return false; }
+  try { fsi.accessSync(p, fs.constants.X_OK); } catch (_) { return false; }
+  return true;
+}
+
+// ----- hivecontrol resolution cache (persisted last-known-good) -----
+// Recurring reliability bug this closes: a MINIMAL-env caller (a hook, a bare
+// subagent shell, a doctor --repair reinstall) has no login-shell PATH carrying
+// the DevSwarm CLI, so resolveHivecontrolPath's shell-lookup tier finds nothing
+// EVERY time it runs from such a caller — even on a machine where a PRIOR,
+// richer-env resolution (a normal terminal install) already found the binary
+// once. Persisting that one good resolution under the daemon's own per-machine
+// state root (devswarmRoot, same scope as its lock/heartbeat files) lets every
+// later minimal-env run reuse it instead of re-failing the same lookup forever.
+//
+// hivecontrolCachePath(home) — same per-machine (per-home) scope as the daemon's
+// own lock/heartbeat files (devswarmRoot(home)), so cleaning/relocating one
+// cleans/relocates the other consistently.
+function hivecontrolCachePath(home) {
+  return path.join(devswarmRoot(home), 'hivecontrol-path.json');
+}
+// readHivecontrolCache({home, io}) -> absolute path | null. Tolerates a missing,
+// corrupt, or stale (no-longer-executable) cache file — always fails open to the
+// next resolution tier rather than throwing or trusting unverified content.
+function readHivecontrolCache(opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  try {
+    const raw = F.readFileSync(hivecontrolCachePath(o.home), 'utf8');
+    const data = JSON.parse(raw);
+    const bin = data && typeof data.hivecontrol === 'string' ? data.hivecontrol : null;
+    if (bin && path.isAbsolute(bin) && isExecutableFile(bin, F)) return bin;
+  } catch (_) { /* missing/corrupt/stale -> fall through to the next tier */ }
+  return null;
+}
+// writeHivecontrolCache(bin, {home, io}) — persists the resolved path so the
+// NEXT minimal-env resolution can reuse it. Fail-open in every direction: a
+// cache write must never abort or fail an install (matches this file's existing
+// posture on every other side effect — planWrite/planRun/planRm).
+function writeHivecontrolCache(bin, opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  try {
+    const file = hivecontrolCachePath(o.home);
+    F.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.${_tmpCounter++}.tmp`;
+    F.writeFileSync(tmp, JSON.stringify({ hivecontrol: bin, updatedAt: new Date().toISOString() }, null, 2));
+    F.renameSync(tmp, file);
+  } catch (_) { /* fail-open: a cache-write failure must never fail the install */ }
+}
+
+// KNOWN_HIVECONTROL_LOCATIONS — last-resort probe of DISCOVERED, VERIFIED
+// install roots (never guessed) when the env var, cache, and login-shell lookup
+// all miss. macOS: the DevSwarm.app bundle's own CLI shim. Linux intentionally
+// carries NO entries — there is no confirmed, machine-agnostic install root to
+// probe there; a Linux user relies on ANTIHALL_DEVSWARM_HIVECONTROL, the login
+// shell, or the persisted cache instead.
+const KNOWN_HIVECONTROL_LOCATIONS = {
+  darwin: ['/Applications/DevSwarm.app/Contents/Resources/cli/hivecontrol'],
+};
+function knownHivecontrolLocations(platform) {
+  return KNOWN_HIVECONTROL_LOCATIONS[platform] || [];
+}
+
+// resolveHivecontrolPath({env, io, platform, home}) -> absolute path | null.
+// Order (first hit wins):
+//   1. an explicit ANTIHALL_DEVSWARM_HIVECONTROL (absolute + executable),
+//   2. the persisted last-known-good cache (hivecontrolCachePath) — reused
+//      resolution from a PRIOR, richer-env run, so a later minimal-env caller
+//      (hook / bare subagent shell / doctor --repair reinstall) never has to
+//      re-fail the same login-shell lookup,
+//   3. `command -v hivecontrol` in the user's LOGIN shell (interactive first —
+//      many users export PATH from an interactive rc, not a profile — then
+//      login-only, then a plain /bin/sh lookup as the last resort),
+//   4. a probe of KNOWN, VERIFIED install locations (KNOWN_HIVECONTROL_LOCATIONS).
+// Every successful resolution (tiers 1, 3, 4) is persisted to the cache so the
+// NEXT run — including a minimal-env one — can reuse it via tier 2.
+// Returns null when nothing resolves; the caller then installs ANYWAY and warns
+// (a daemon with no baked path still runs, still holds its lock and heartbeat,
+// and is now VISIBLY degraded to doctor — strictly better than no daemon).
+// Fail-open: never throws. win32 -> null (the installer is a no-op there).
+function resolveHivecontrolPath(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const F = (o.io && o.io.fs) || fs;
+  const platform = o.platform || process.platform;
+  const cacheOpts = { home: o.home, io: o.io };
+  if (platform === 'win32') return null;
+  try {
+    let explicit = env[HIVECONTROL_ENV_VAR];
+    if (!explicit) {
+      try { explicit = require('../hooks/lib/settings.js').get('devswarm', 'hivecontrol', '', { env, home: o.home }) || undefined; }
+      catch (_) { /* fall through */ }
+    }
+    if (typeof explicit === 'string' && explicit.trim() && path.isAbsolute(explicit.trim())
+      && isExecutableFile(explicit.trim(), F)) {
+      const bin = explicit.trim();
+      writeHivecontrolCache(bin, cacheOpts);
+      return bin;
+    }
+    const cached = readHivecontrolCache(cacheOpts);
+    if (cached) return cached;
+    const run = (o.io && o.io.lookupRun) || defaultLookupRun;
+    const shell = (typeof env.SHELL === 'string' && path.isAbsolute(env.SHELL)) ? env.SHELL : '/bin/sh';
+    const cmd = 'command -v ' + HIVECONTROL_BIN_NAME;
+    const attempts = [
+      { cmd: shell, args: ['-lic', cmd] },
+      { cmd: shell, args: ['-lc', cmd] },
+      { cmd: '/bin/sh', args: ['-c', cmd] },
+    ];
+    for (const a of attempts) {
+      let r = null;
+      try { r = run(a); } catch (_) { r = null; }
+      if (!r || !r.ok) continue;
+      const p = firstBinLine(r.raw);
+      if (p && isExecutableFile(p, F)) {
+        writeHivecontrolCache(p, cacheOpts);
+        return p;
+      }
+    }
+    for (const candidate of knownHivecontrolLocations(platform)) {
+      if (isExecutableFile(candidate, F)) {
+        writeHivecontrolCache(candidate, cacheOpts);
+        return candidate;
+      }
+    }
+  } catch (_) { /* fail-open: an install must never abort on a lookup failure */ }
+  return null;
+}
+
+// hivecontrolUnresolvedWarningLines() -> string[]. The LOUD, actionable notice
+// emitted (to stderr, prominently) when ALL resolution tiers miss: the daemon
+// will still be installed (fail-open) but will ENOENT on every poll until this
+// is fixed. Extracted as a pure function so the wording is locked down by test
+// without spawning a real installer subprocess.
+function hivecontrolUnresolvedWarningLines() {
+  const bar = '!'.repeat(70);
+  return [
+    bar,
+    `WARNING: could not resolve the ${HIVECONTROL_BIN_NAME} CLI (env var, cache, login shell,`,
+    '  and known install locations all missed).',
+    `  A scheduler-launched daemon gets a MINIMAL PATH (${MINIMAL_UNIT_PATH}), so without a`,
+    `  baked path every \`${HIVECONTROL_BIN_NAME} workspace monitor\` call will fail ENOENT and`,
+    '  NOTHING will be ingested until this is fixed.',
+    '  FIX: install/expose the DevSwarm CLI on your login shell\'s PATH, or export',
+    `  ${HIVECONTROL_ENV_VAR}=/absolute/path/to/${HIVECONTROL_BIN_NAME} and re-run this installer.`,
+    '  Installing anyway (the daemon runs in degraded mode and doctor will report it).',
+    bar,
+  ];
+}
+
+// unitEnvFor(hivecontrolPath, execPath) -> {PATH, ANTIHALL_DEVSWARM_HIVECONTROL?} | null.
+// PURE and DETERMINISTIC (same input -> byte-identical output), which is what
+// makes the generated unit byte-stable across the repeated reconcile/regenerate
+// cycles that silently reverted every hand-patched plist.
+//
+// BOTH hivecontrol keys are emitted on purpose: PATH alone would fix only this ONE
+// lookup (and only while the CLI stays put), whereas the explicit absolute binary
+// in ANTIHALL_DEVSWARM_HIVECONTROL is what the daemon actually spawns.
+//
+// execPath's DIRECTORY is prepended too (v0.86 — the `env: node: No such file or
+// directory` storm). The unit's ExecStart/ProgramArguments is an ABSOLUTE node
+// path (process.execPath at install time — commonly a version-manager dir such as
+// ~/.nvm/versions/node/vX/bin that is NOT on any scheduler's default PATH), so the
+// daemon ITSELF always starts. But `hivecontrol` is a SCRIPT whose shebang
+// re-resolves `node` THROUGH PATH — so every grandchild spawn died exit 127 and
+// reconciliation healed nothing, on every sweep, for every repo. Baking the node
+// bin dir into PATH is what makes the interpreter the daemon was launched with
+// resolvable to the processes it launches. This is the SINGLE chokepoint for the
+// unit environment: both installers' plist/service/cron emitters (six in total,
+// install-devswarm-supervisor.js imports this very function) derive from it, so
+// the fix cannot be applied to one emitter and missed on another.
+//
+// execPath is REQUIRED (no default): each emitter passes the SAME `exec` it bakes
+// into the unit, so the PATH can never disagree with the interpreter actually
+// launched. Passing neither an absolute hivecontrol nor an absolute exec yields
+// null (no environment emitted) — the pre-v0.66 fail-open shape.
+function unitEnvFor(hivecontrolPath, execPath) {
+  const usable = (p) => !!p && path.isAbsolute(String(p)) && pathIsEmittable(String(p));
+  const bin = usable(hivecontrolPath) ? String(hivecontrolPath) : null;
+  const nodeDir = usable(execPath) ? path.dirname(String(execPath)) : null;
+  const out = {};
+  // HOME/USERPROFILE (defect d1c57e67998f, P1, field-verified): a scheduler
+  // hands its unit ITS OWN default HOME, not the installer's — devswarm-ingest.js
+  // resolves its store root via `o.home || os.homedir()` with no `--home`
+  // ever passed on ProgramArguments/ExecStart, so an install that ran under a
+  // NON-DEFAULT HOME (a review agent's temp-HOME experiment; a test that forgot
+  // its own isolation) got a daemon that, once actually launched by launchd/
+  // systemd, silently wrote into the REAL ~/.anti-hall store instead of the
+  // one it was installed from. Pinning HOME here — a pure function of the
+  // module-level `HOME` this installer itself resolved (`os.homedir()` at
+  // require time) — makes the daemon's store root match the installer's,
+  // regardless of what HOME the scheduler itself later hands the process.
+  // USERPROFILE is paired with it for the SAME reason `os.homedir()` needs it
+  // on win32 elsewhere in this codebase (scripts/devswarm.js's own spawn env) —
+  // emitted unconditionally, independent of hivecontrol/exec resolving at all
+  // (unlike PATH/HIVECONTROL below, this fix does not depend on either).
+  out.HOME = HOME;
+  out.USERPROFILE = HOME;
+  if (!bin && !nodeDir) return out;
+  const parts = [];
+  const push = (p) => { if (p && parts.indexOf(p) === -1) parts.push(p); };
+  if (bin) push(path.dirname(bin));
+  push(nodeDir);
+  for (const p of MINIMAL_UNIT_PATH.split(':')) push(p);
+  out.PATH = parts.join(':');
+  // Only pinned when the binary itself is emittable — a PATH that resolves node
+  // is still worth emitting for a daemon whose hivecontrol could not be resolved.
+  if (bin) out[HIVECONTROL_ENV_VAR] = bin;
+  return out;
+}
+
+// RESOLVED_HIVECONTROL — resolved ONCE per installer run (in main(), before any
+// install branch) and consumed as the default by buildPlist/buildService/
+// buildCronLine, so every unit shape agrees without threading a parameter
+// through a dozen call sites. Stays null under test (main() never runs), so the
+// builders' pre-v0.66 output is unchanged unless a test passes one explicitly.
+let RESOLVED_HIVECONTROL = null;
+
+// ----- per-worktree identity (multi-repo, additive installs) -----
+// worktreeHash(wt, opts) — an 8-hex fingerprint of the worktree's REAL
+// (symlink-resolved) path. The daemon (devswarm-ingest.js) MUST compute the
+// identical hash from its resolved worktree so their per-worktree lock/label/
+// unit paths agree, so both sides canonicalize via realpathSync first.
+// Fail-open: if realpath can't stat the path (e.g. it doesn't exist yet),
+// fall back to path.resolve so a hash is still produced.
+//
+// WINDOWS PARITY (CI run — devswarm-send.test.js "to-primary ... self-address,
+// even when unregistered"): two DIFFERENT production call paths can hand this
+// function two DIFFERENT string spellings of the identical real directory —
+// `callerIdentity()` feeds it `git rev-parse --show-toplevel`'s raw output,
+// while `send --to-primary`'s `primaryMeshId` feeds it `resolveMainWorktree()`'s
+// `dirname(--git-common-dir)`. On POSIX both happen to collapse to the same
+// string via plain `fs.realpathSync`. On Windows they do NOT: GH Actions'
+// windows-latest exposes `%TEMP%` in 8.3 short-name form, and plain JS
+// `fs.realpathSync()` (unlike `.native()`) never queries the OS for the true
+// canonical casing/long-name (see devswarm-repokey.js's header comment for the
+// full mechanism — this is the SAME bug class run 29240821071 fixed for
+// `repoKeyForWorktree`). Fix: apply the SAME win32-only treatment here —
+// `realpathSync.native()` (expands short names, queries true casing) then
+// `winCanonicalizeCommonDir()` (strip `\\?\` prefix, forward slashes, drop
+// trailing separator, lowercase) — so two differently-spelled paths that
+// resolve to the same physical directory always hash identically, regardless
+// of which pipeline produced the input string. POSIX is untouched (isWin
+// gates every new line below). `opts.io` ({ fs, platform }) is injectable,
+// mirroring devswarm-repokey.js's own `gitCommonDir(worktree, {io})`, so this
+// win32 path is exercisable/testable from any host OS.
+// worktreeRealPath(wt, opts) — the CANONICAL real-path string that worktreeHash
+// hashes (its collision-free pre-image). Two differently-spelled paths for the same
+// physical directory (POSIX symlinks; win32 8.3 short-names / casing) normalize to
+// the SAME string here, while two DISTINCT directories NEVER collide (unlike the
+// 8-hex hash, which is a lossy sha256 slice). Callers that must decide "is this the
+// SAME worktree" — retireWorktreeDuplicates' candidate match — compare THIS instead
+// of the hash, so a hash collision can never mis-identify (and thus mis-tombstone) a
+// row for a different worktree. Same fail-open + win32 treatment worktreeHash used.
+function worktreeRealPath(wt, opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  const platform = (o.io && o.io.platform) || process.platform;
+  const isWin = platform === 'win32';
+  let p = String(wt || '');
+  try {
+    const nativeRealpath = isWin && F.realpathSync && typeof F.realpathSync.native === 'function'
+      ? F.realpathSync.native
+      : null;
+    p = nativeRealpath ? nativeRealpath(p) : F.realpathSync(p);
+  } catch (_) {
+    p = path.resolve(p);
+  }
+  if (isWin && repokey && typeof repokey.winCanonicalizeCommonDir === 'function') {
+    p = repokey.winCanonicalizeCommonDir(p);
+  }
+  return p;
+}
+function worktreeHash(wt, opts) {
+  return crypto.createHash('sha256').update(worktreeRealPath(wt, opts)).digest('hex').slice(0, 8);
+}
+// PER-WORKTREE unit identity. Base LABEL/UNIT are kept as the shared PREFIX so a
+// second repo's install creates a NEW unit (different hash), never overwriting the
+// first repo's. The base (hash-less) name is the LEGACY single-unit form still read
+// back for backward compat.
+function labelForWorktree(wt) { return `${LABEL}.${worktreeHash(wt)}`; }
+function unitForWorktree(wt) { return `${UNIT}-${worktreeHash(wt)}`; }
+function cronMarkerForWorktree(wt) { return `# ${unitForWorktree(wt)}`; }
+// primaryWorkspaceId(wt) — the store partition key for a worktree's Primary/parent
+// reception queue. Derived per-worktree (never the old hardcoded 'primary', which
+// collided rows across repos, #15). Always isSafeId-valid ([a-z0-9-]).
+function primaryWorkspaceId(wt) { return `primary-${worktreeHash(wt)}`; }
+
+// ----- PER-PROJECT identity (v0.57 mesh, PLAN-v0.57-mesh.md D1/D9/Phase5) -----
+// labelForProject/unitForProject/cronMarkerForProject — the ONE-per-project
+// scheduler identity, keyed by `repoKey` (companion/lib/devswarm-repokey.js),
+// NOT the per-worktree hash. `labelForWorktree`/`unitForWorktree`/
+// `cronMarkerForWorktree` (above) are KEPT — they remain the read-side identity
+// used to enumerate + reap this repo's LEGACY per-worktree units (D9
+// reap-before-drain); they are never removed. A repoKey always contains an
+// internal `-` (name + 6-hex suffix); a legacy 8-hex hash never does — the two
+// shapes are disjoint by construction (D28), so parsing back never confuses one
+// for the other (see listInstalledIngestUnits below).
+function labelForProject(repoKey) { return `${LABEL}.${repoKey}`; }
+function unitForProject(repoKey) { return `${UNIT}-${repoKey}`; }
+function cronMarkerForProject(repoKey) { return `# ${unitForProject(repoKey)}`; }
+
+// resolveMainWorktree(cwd, io) -> the absolute path of the repo's MAIN worktree
+// (dirname of `--git-common-dir`), or null (fail-open — non-git cwd, no git
+// binary, unresolvable path). The per-project daemon ALWAYS bakes THIS as its
+// WorkingDirectory — NEVER a linked/child worktree (a child worktree can be
+// removed mid-project; baking it would kill the whole project's ingest the
+// moment its cwd vanishes). `io.run`/`io.fs` are injectable so this is testable
+// without spawning a real `git` (mirrors devswarm-repokey.js's own posture).
+function resolveMainWorktree(cwd, io) {
+  if (!repokey) return null; // D27 fail-open: corrupt/missing repokey module
+  const cd = repokey.gitCommonDir(cwd, { io });
+  if (!cd) return null;
+  return path.dirname(cd);
+}
+
+// defaultGitRun(spec) -> { ok, raw }. ONE injectable `git` spawn for worktree
+// enumeration (mirrors devswarm-repokey.js's own defaultRun / devswarm-pull.js's
+// defaultRun pattern) so tests can simulate `git worktree list --porcelain`
+// output without spawning a real binary.
+function defaultGitRun(spec) {
+  const o = spec || {};
+  try {
+    const r = spawnSync('git', Array.isArray(o.args) ? o.args : [], { encoding: 'utf8', cwd: o.cwd });
+    if (r.error || r.status !== 0) return { ok: false, raw: '' };
+    return { ok: true, raw: String(r.stdout || '') };
+  } catch (_) {
+    return { ok: false, raw: '' };
+  }
+}
+
+// parseWorktreeListPorcelain(raw) -> string[] absolute worktree paths. Parses
+// `git worktree list --porcelain` output (one or more blocks, each starting with
+// a `worktree <path>` line) — the ONLY correct way to enumerate a project's
+// linked worktrees; `worktreeHash` is a ONE-WAY sha256 and cannot be inverted, so
+// there is no way to recover "which worktrees belong to this repo" from a hash
+// alone (Gap-2, D9/Phase5 step 1).
+function parseWorktreeListPorcelain(raw) {
+  const out = [];
+  const lines = String(raw || '').split('\n');
+  for (const line of lines) {
+    const m = line.match(/^worktree (.+)$/);
+    if (m) out.push(m[1].trim());
+  }
+  return out;
+}
+
+// listRepoWorktrees(mainWorktree, {io}) -> string[] absolute worktree paths — the
+// MAIN worktree plus every LINKED worktree of this repo, via `git worktree list
+// --porcelain` run FROM the main worktree. Fail-open [] on any spawn failure (the
+// reap step then simply has nothing to enumerate — never throws).
+function listRepoWorktrees(mainWorktree, opts) {
+  const o = opts || {};
+  const run = (o.io && o.io.run) || defaultGitRun;
+  if (!mainWorktree) return [];
+  const r = run({ args: ['-C', mainWorktree, 'worktree', 'list', '--porcelain'], cwd: mainWorktree });
+  if (!r || !r.ok) return [];
+  return parseWorktreeListPorcelain(r.raw);
+}
+
+// reapPlanForRepo(mainWorktree, opts) -> [{worktree, hash, label, unit, marker}].
+// PURE (no side effects) — the list of THIS repo's legacy per-worktree units,
+// derived by enumerating `git worktree list --porcelain` (NEVER by inverting the
+// one-way worktreeHash — impossible). Safe to call from tests without touching
+// any real scheduler.
+function reapPlanForRepo(mainWorktree, opts) {
+  return listRepoWorktrees(mainWorktree, opts).map((wt) => ({
+    worktree: wt,
+    hash: worktreeHash(wt),
+    label: labelForWorktree(wt),
+    unit: unitForWorktree(wt),
+    marker: cronMarkerForWorktree(wt),
+  }));
+}
+
+// defaultSchedRunViaPlan(spec) -> { status, stdout, error }. The PRODUCTION
+// default scheduler spawn ({cmd, args, input}) for reapLegacyUnitsForRepo —
+// routes through the module's OWN planRun (which already checks the
+// module-load-time DRYRUN flag) so `main() --dry-run` NEVER issues a real
+// launchctl/systemctl/crontab mutation, exactly like every other install/
+// uninstall path in this file. Tests NEVER hit this — they always inject
+// opts.io.schedRun, so this default is only ever exercised by a real `main()`.
+function defaultSchedRunViaPlan(spec) {
+  const o = spec || {};
+  const r = planRun(o.cmd, o.args || [], o.input !== undefined ? { input: o.input, encoding: 'utf8' } : undefined);
+  return { status: (r && r.status != null) ? r.status : null, stdout: (r && r.stdout) || '', error: (r && r.error) || null };
+}
+// defaultSchedRm(p) — the PRODUCTION default unit-file removal for
+// reapLegacyUnitsForRepo, routed through the module's OWN planRm (DRYRUN-aware,
+// logs "[dry-run] would remove ..." instead of unlinking under --dry-run).
+function defaultSchedRm(p) { planRm(p); }
+
+// defaultUnitFileExists(p) — plain fs.existsSync, fail-open to false (a read
+// error is treated the same as "not present": nothing to unload). Read-only,
+// so — unlike planRun/planRm — it is NEVER gated on DRYRUN; checking whether a
+// file exists mutates nothing.
+function defaultUnitFileExists(p) {
+  try { return fs.existsSync(p); } catch (_) { return false; }
+}
+
+// defaultReadTextFile(p) — plain fs.readFileSync('utf8'), fail-open to null
+// (missing/unreadable file). Read-only, never DRYRUN-gated, same rationale as
+// defaultUnitFileExists.
+function defaultReadTextFile(p) {
+  try { return fs.readFileSync(p, 'utf8'); } catch (_) { return null; }
+}
+
+// defaultIsAlivePid(pid) — the same kill(pid,0)-based liveness probe already
+// used elsewhere in this file (unitLiveness's 'hash' branch above); duplicated
+// here (not exported/shared) so this module has no new internal coupling.
+// EPERM means the OS found a real process at that pid owned by someone else —
+// still alive, just not signalable by us; any other error (ESRCH, etc) is dead.
+function defaultIsAlivePid(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+}
+
+// legacyLockHolderPid(entry, opts) -> pid | null. Best-effort read of the
+// LEGACY per-worktree ingest lock's recorded holder pid. null covers "no hash",
+// "file absent", and "unparseable" alike (fail-open — see stopLegacyUnitEntry's
+// caller, which treats null as "nothing to protect, safe to remove").
+function legacyLockHolderPid(entry, opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  if (!entry.hash) return null;
+  try {
+    const raw = F.readFileSync(path.join(devswarmRoot(o.home), 'locks', 'ingest-' + entry.hash + '.lock'), 'utf8');
+    const holder = JSON.parse(raw);
+    return holder && Number.isFinite(holder.pid) ? holder.pid : null;
+  } catch (_) { return null; }
+}
+
+// SAFETY (folds the build note "never run the real reap on this machine"):
+// git-worktree ENUMERATION (opts.io.run, consumed by listRepoWorktrees/
+// reapPlanForRepo above) is a distinct, non-destructive concern from the
+// STOPPING side below (opts.io.schedRun / opts.io.schedFs — deliberately a
+// DIFFERENT key so a test mocking one can never accidentally leak into the
+// other). Tests ALWAYS pass their own opts.io.schedRun/schedFs (pure mocks,
+// zero real spawns/unlinks). Production (main(), never under test) omits
+// opts.io.schedRun/schedFs and gets defaultSchedRunViaPlan/defaultSchedRm,
+// which route through this module's OWN DRYRUN-checking planRun/planRm — so
+// even a real invocation only ACTUALLY unloads/removes a unit when NOT run
+// with --dry-run, exactly like every other install/uninstall path here.
+//
+// Also unlinks the entry's LEGACY per-worktree ingest LOCK file (locks/ingest-
+// <hash>.lock) — without this, a reaped-but-not-yet-restarted legacy daemon's
+// now-dead pid is left on disk indefinitely, and devswarm-ingest.js's
+// probeLegacyHolders would misread it as a live holder for as long as that dead
+// pid happens to be reused by any later process (an unbounded, if low-
+// probability, wedge on this project's ingest). Removing it here — right where
+// the legacy unit is actually stopped — closes that gap for the normal
+// reap-before-drain path; it is the SAME best-effort file-removal `rm` already
+// used for the unit's plist/service file, so it participates in the identical
+// DRYRUN-aware / fully-mocked-under-test semantics.
+//
+// stopLegacyUnitEntry(entry, opts) -> void. Platform-specific STOP (scheduler-based,
+// NEVER kill(2)) for ONE legacy per-worktree ingest unit entry
+// {label, unit, hash, marker?, worktree?}. Extracted so BOTH reap paths reap a
+// unit IDENTICALLY: reapLegacyUnitsForRepo below (the LIVE handoff, git-worktree
+// enumeration, D9) and doctor-repair.js's belt-and-suspenders orphan sweep
+// (Phase 6, readback enumeration via listInstalledIngestUnits — it has no
+// `mainWorktree` to enumerate FROM, only the already-discovered unit itself).
+// `entry.marker` is used when present (reapPlanForRepo always sets it); otherwise
+// it is derived from `entry.unit` (`# ${entry.unit}`, matching
+// cronMarkerForWorktree's own `# ${unitForWorktree(wt)}` shape) — the shape
+// listInstalledIngestUnits' readback always produces for a Linux-sourced entry.
+// Fail-open per call: the caller wraps this in try/catch (one bad entry must
+// never block reaping the rest).
+function stopLegacyUnitEntry(entry, opts) {
+  const o = opts || {};
+  const platform = o.platform || process.platform;
+  const run = (o.io && o.io.schedRun) || defaultSchedRunViaPlan;
+  const rm = (o.io && o.io.schedFs) || defaultSchedRm;
+  // BACKWARD-COMPATIBLE DEFAULT: any caller that already injects its own
+  // opts.io (every existing test, plus doctor-repair.js's orphan sweep) but
+  // does NOT opt into this check via io.schedFsExists gets `exists: true` —
+  // i.e. the OLD "always unload" behavior, unchanged. Only a REAL, io-less
+  // production call (main() -> reapLegacyUnitsForRepo, no `io` passed at all)
+  // gets the real fs.existsSync default — the actual fix — so no test needs
+  // updating just to keep passing, and the skip path is exercised only by a
+  // test that deliberately injects io.schedFsExists.
+  const exists = (o.io && o.io.schedFsExists) || (o.io ? (() => true) : defaultUnitFileExists);
+  const marker = entry.marker || (entry.unit ? `# ${entry.unit}` : null);
+  if (platform === 'darwin') {
+    const plist = macPlistPath(entry.label);
+    // Only spawn `launchctl unload` when there is actually something to
+    // unload: the plist file is present on disk, OR the label is currently
+    // loaded in launchd (pre-fetched ONCE per reap pass into
+    // opts.loadedLabels by reapLegacyUnitsForRepo — never re-probed per
+    // entry). Live evidence (a downstream project workspace-spawn installer run): ~33
+    // already-reaped legacy per-worktree labels, each spawning `launchctl
+    // unload` anyway and printing "(not present)" for both the plist and the
+    // lock — this installer runs on EVERY workspace spawn, so that overhead
+    // was paid every single time with a guaranteed no-op outcome.
+    const loaded = !!(o.loadedLabels && o.loadedLabels.has(entry.label));
+    if (exists(plist) || loaded) {
+      run({ cmd: 'launchctl', args: ['unload', plist] }); // ignore err — best-effort
+    }
+    rm(plist);
+  } else if (platform === 'linux') {
+    // Attempt BOTH mechanisms — each is a harmless no-op when not applicable
+    // (systemctl absent -> failed spawn, ignored; no matching cron marker ->
+    // removeCronEntry reports changed:false). This self-heals reaping without
+    // needing to first detect which scheduler installed the legacy unit.
+    if (entry.unit) {
+      run({ cmd: 'systemctl', args: ['--user', 'disable', '--now', `${entry.unit}.service`] });
+      rm(path.join(unitDir(), `${entry.unit}.service`));
+    }
+    if (marker) {
+      const crRead = run({ cmd: 'crontab', args: ['-l'] });
+      const curCron = (crRead && !crRead.error) ? crRead.stdout : '';
+      const { next, changed } = removeCronEntry(curCron, marker);
+      if (changed) run({ cmd: 'crontab', args: ['-'], input: next });
+    }
+  }
+  // Delete the legacy lock file ONLY once its recorded holder is confirmed
+  // DEAD (or the record itself is absent/unparseable — nothing to protect).
+  // Deleting it unconditionally right after a best-effort `launchctl unload`
+  // (whose error is ignored — the unload may not have actually landed) used
+  // to race a still-alive legacy daemon: its lock vanishes while the process
+  // keeps running, so a NEW daemon can start beside it and split the
+  // destructive native queue between two consumers. Leaving the lock in place
+  // when the holder is still alive is safe — probeLegacyHolders correctly
+  // reads a live holder and backs off (reap-before-drain), and this same
+  // check runs again on the next reap pass once the holder actually exits.
+  if (entry.hash) {
+    const isAlive = (o.io && o.io.isAlive) || defaultIsAlivePid;
+    const holderPid = legacyLockHolderPid(entry, o);
+    if (holderPid === null || !isAlive(holderPid)) {
+      rm(path.join(devswarmRoot(o.home), 'locks', 'ingest-' + entry.hash + '.lock'));
+    }
+  }
+}
+
+// reapLegacyUnitsForRepo(mainWorktree, opts) -> { plan, stopped } — D9
+// REAP-BEFORE-DRAIN: stops+unloads EVERY legacy per-worktree unit belonging to
+// this repo (reapPlanForRepo) via stopLegacyUnitEntry (scheduler-based, never
+// kill(2)). Fail-open per-worktree: one unit that errors while stopping never
+// blocks reaping the rest (matches macInstall's existing "// ignore err" posture
+// on `launchctl unload`).
+function reapLegacyUnitsForRepo(mainWorktree, opts) {
+  const o = opts || {};
+  const plan = reapPlanForRepo(mainWorktree, o);
+  const stopped = [];
+  // Pre-fetch the loaded-label set ONCE per reap pass (a single `launchctl
+  // list` probe — listLoadedIngestLabels/defaultListLoadedLaunchd, the SAME
+  // no-label-arg bulk form the v0.98 orphan sweep already uses) instead of
+  // letting each entry decide "is anything even loaded" off its own unload
+  // spawn. Only fetched on darwin (the platform with a per-unit spawn cost)
+  // and only when there is at least one entry to reap. A failure here
+  // fails open to null — stopLegacyUnitEntry then falls back to its
+  // plist-existence check alone, never blocking the reap.
+  let loadedLabels = null;
+  if ((o.platform || process.platform) === 'darwin' && plan.length > 0) {
+    try {
+      loadedLabels = new Set(listLoadedIngestLabels(o).map((l) => l && l.label).filter(Boolean));
+    } catch (_) { loadedLabels = null; }
+  }
+  for (const entry of plan) {
+    try {
+      stopLegacyUnitEntry(entry, Object.assign({}, o, { loadedLabels }));
+      stopped.push(entry);
+    } catch (_) { /* fail-open: one bad worktree must never block reaping the rest */ }
+  }
+  return { plan, stopped };
+}
+
+const LAUNCHD_UNLOAD_WAIT_MS = 10000;
+const LAUNCHD_UNLOAD_POLL_MS = 200;
+
+// readLaunchdPid(label, opts) -> pid | null. Best-effort PID of a currently
+// loaded launchd job, parsed from `launchctl list <label>`'s plist-shaped dump
+// (a line like `"PID" = 1234;`). null covers "job not loaded", "launchctl
+// failed", and DRYRUN (planRun's dry stub carries no stdout) alike — every
+// caller treats null as "nothing to wait for", never as an error.
+function readLaunchdPid(label, opts) {
+  const o = opts || {};
+  const run = (o.io && o.io.run) || planRun;
+  try {
+    const r = run('launchctl', ['list', label]);
+    const out = (r && typeof r.stdout === 'string') ? r.stdout : '';
+    const m = out.match(/"PID"\s*=\s*(\d+);/);
+    return m ? Number(m[1]) : null;
+  } catch (_) { return null; }
+}
+
+// waitForLaunchdUnitGone(pidBefore, opts) — bounded poll for the OLD daemon
+// process to actually exit after `launchctl unload`, so the following
+// `launchctl load` never starts a SECOND consumer alongside a still-running
+// one (the install-time counterpart to the daemon's own dead-holder-immediate-
+// reclaim — see devswarm-ingest.js's acquireIngestLock P1-B comment). This is
+// what closes the actual field bug (12 duplicate daemons): `launchctl unload`
+// only unregisters the job from launchd's supervision table and signals it —
+// it does NOT wait for the process to exit, so a slow-to-die (or, pre-fix,
+// SIGTERM-ignoring) old daemon was still fully running when `load` started a
+// brand-new one right beside it. Fail-open at every step: no PID to wait for
+// is a no-op; a hung old daemon is SIGKILLed once the deadline passes rather
+// than blocking the install forever.
+// defaultReadCmdline(pid) -> string | null. Best-effort command-line readback
+// for the WRONG-PROCESS-SIGKILL guard below (Codex review P1-1): `ps -p <pid>
+// -o command=` prints the running command for a live pid, empty/non-zero-exit
+// for a dead/absent one. null on any failure — the caller treats null as
+// "cannot confirm identity", never as "safe to kill".
+function defaultReadCmdline(pid) {
+  try {
+    const r = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    if (r.error || r.status !== 0) return null;
+    const out = String(r.stdout || '').trim();
+    return out || null;
+  } catch (_) { return null; }
+}
+
+function waitForLaunchdUnitGone(pidBefore, opts) {
+  const o = opts || {};
+  if (!Number.isFinite(pidBefore) || pidBefore <= 0) return;
+  const isAlive = (o.io && o.io.isAlive) || defaultIsAlivePid;
+  const sleep = (o.io && o.io.sleep) || ((ms) => {
+    try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, Math.max(0, ms | 0)); } catch (_) {}
+  });
+  const now = (o.io && o.io.now) || Date.now;
+  const kill = (o.io && o.io.kill) || ((pid, sig) => { try { process.kill(pid, sig); } catch (_) {} });
+  const readCmdline = (o.io && o.io.readCmdline) || defaultReadCmdline;
+  const deadlineMs = Number.isFinite(o.deadlineMs) ? o.deadlineMs : LAUNCHD_UNLOAD_WAIT_MS;
+  const pollMs = Number.isFinite(o.pollMs) ? o.pollMs : LAUNCHD_UNLOAD_POLL_MS;
+  const deadline = now() + deadlineMs;
+  while (isAlive(pidBefore) && now() < deadline) {
+    sleep(pollMs);
+  }
+  if (!isAlive(pidBefore)) return;
+  // WRONG-PROCESS-SIGKILL GUARD (Codex review P1-1): `isAlive` is a bare
+  // kill(pid,0) — it proves SOME process holds this pid RIGHT NOW, not that it
+  // is still our old ingest daemon. Over a whole deadlineMs window the OS can
+  // recycle a pid to an unrelated process (this machine has had thousand-
+  // process spawn storms — see the memguard/mcp-reaper notes elsewhere in this
+  // repo), and unconditionally SIGKILLing whatever now sits at that pid would
+  // kill someone else's process. Re-confirm identity via the command line
+  // immediately before the kill; FAIL TOWARD NOT KILLING on any inconclusive
+  // read (probe throws, empty, or simply doesn't look like this daemon).
+  let cmdline = null;
+  try { cmdline = readCmdline(pidBefore); } catch (_) { cmdline = null; }
+  if (looksLikeIngestDaemonCmdline(cmdline)) {
+    say(`old ingest daemon (pid ${pidBefore}) did not exit within ${deadlineMs}ms of unload — SIGKILLing`);
+    kill(pidBefore, 'SIGKILL');
+  } else {
+    say(`pid ${pidBefore} is still alive past the ${deadlineMs}ms unload deadline but its command line no longer`
+      + ' matches the ingest daemon (' + (cmdline ? JSON.stringify(cmdline) : 'unreadable') + ') — NOT killing'
+      + ' (likely pid reuse by an unrelated process)');
+  }
+}
+
+// looksLikeIngestDaemonCmdline(cmdline) -> bool. Codex review round 2 on P1-1:
+// a bare `cmdline.includes('devswarm-ingest')` substring check is itself a
+// wrong-process hazard — it also matches `tail -f ~/.anti-hall/devswarm-
+// ingest.log`, `vim .../companion/devswarm-ingest.js`, or `grep devswarm-
+// ingest ...` landing on a reused pid, which is exactly the bug class this
+// guard exists to prevent.
+//
+// Also deliberately NOT `cmdline.includes(SCRIPT)` (this run's OWN resolved
+// script path): an old daemon started from a DIFFERENT install location (repo
+// checkout vs marketplace copy — this repo has shipped both) would then never
+// match and never be reclaimed, recreating the duplicate-daemon bug from the
+// other direction.
+//
+// Match the process SHAPE instead, independent of exactly which script path
+// it launched from: tokenize the `ps -o command=` output (space-split — good
+// enough for this fail-toward-not-killing identity check; ps does not shell-
+// quote its output) and require BOTH (a) the first token's basename is `node`
+// or `nodejs`, AND (b) some LATER argument ends with `/companion/devswarm-
+// ingest.js`. Anything else — a non-node command, or a node process running a
+// different script — is not a match.
+function looksLikeIngestDaemonCmdline(cmdline) {
+  if (typeof cmdline !== 'string') return false;
+  const tokens = cmdline.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return false;
+  const exeBase = path.basename(tokens[0]);
+  if (exeBase !== 'node' && exeBase !== 'nodejs') return false;
+  return tokens.slice(1).some((t) => t.endsWith('/companion/devswarm-ingest.js'));
+}
+
+// macInstallProject(mainWorktree, repoKey, opts) — install the PER-PROJECT
+// LaunchAgent, keyed by repoKey (not worktreeHash), baking `mainWorktree` as
+// WorkingDirectory. Mirrors macInstall's write/unload/load sequence, plus
+// (new) waits for the OLD daemon process to actually exit between unload and
+// load — see waitForLaunchdUnitGone. `opts.io` (run/isAlive/sleep/now/kill) is
+// a test-only DI seam; production (main(), the only real caller) omits it and
+// gets the real launchctl/process defaults above.
+function macInstallProject(mainWorktree, repoKey, opts) {
+  const o = opts || {};
+  const label = labelForProject(repoKey);
+  const plist = macPlistPath(label);
+  const desired = buildPlist({ label, workdir: mainWorktree });
+  const pidBefore = readLaunchdPid(label, o);
+  // ALREADY-INSTALLED, UNCHANGED short-circuit: skip the write+unload+load
+  // entirely when the plist already on disk is byte-identical to what this
+  // call would write AND the label is currently loaded (a live pid). Live
+  // evidence (a downstream project workspace-spawn installer run): this installer runs on
+  // EVERY workspace spawn and, before this fix, unconditionally rewrote +
+  // unloaded + reloaded an already-healthy daemon each time — restarting a
+  // perfectly fine process for no reason, discarding its accumulated monitor
+  // backoff/history, and paying the waitForLaunchdUnitGone poll every time.
+  // The real-fs default is skipped under DRYRUN (NODE_TEST_CONTEXT/--dry-run/
+  // TMP_HOME_GUARD) so a test that omits o.io.readUnitFile never touches the
+  // real HOME's ~/Library/LaunchAgents at all — it simply gets `existing:
+  // null`, which is the SAME "nothing to compare, go install" outcome as a
+  // fresh machine. A test that wants to exercise the skip path injects
+  // o.io.readUnitFile explicitly (a pure in-memory mock).
+  const readExisting = (o.io && o.io.readUnitFile) || (DRYRUN ? () => null : defaultReadTextFile);
+  let existing = null;
+  try { existing = readExisting(plist); } catch (_) { existing = null; }
+  if (existing !== null && existing === desired && pidBefore !== null) {
+    say(`ingest LaunchAgent ${label} already installed, unchanged (project ${repoKey}, worktree ${mainWorktree}, pid ${pidBefore}). Logs: ${LOG}`);
+    return;
+  }
+  planWrite(plist, desired);
+  planRun('launchctl', ['unload', plist]); // ignore err
+  waitForLaunchdUnitGone(pidBefore, o);
+  planRun('launchctl', ['load', plist]);
+  say(`installed LaunchAgent ${label} (continuous, KeepAlive; project ${repoKey}, worktree ${mainWorktree}). Logs: ${LOG}`);
+}
+function macUninstallProject(repoKey) {
+  const label = labelForProject(repoKey);
+  const plist = macPlistPath(label);
+  planRun('launchctl', ['unload', plist]); // ignore err
+  planRm(plist);
+  say(`uninstalled LaunchAgent ${label}`);
+}
+
+// linuxInstallProject(mainWorktree, repoKey) — install the PER-PROJECT systemd
+// --user service (or cron fallback), keyed by repoKey, baking `mainWorktree` as
+// WorkingDirectory. Mirrors linuxInstall's sequence exactly.
+function linuxInstallProject(mainWorktree, repoKey) {
+  const dir = unitDir();
+  const unit = unitForProject(repoKey);
+  const marker = cronMarkerForProject(repoKey);
+  planWrite(path.join(dir, `${unit}.service`), buildService({ workdir: mainWorktree }));
+  if (DRYRUN) {
+    say(`[dry-run] would run: systemctl --user daemon-reload && systemctl --user enable --now ${unit}.service && systemctl --user restart ${unit}.service`);
+    say(`[dry-run] if systemctl absent, would install this managed cron fallback (marker ${marker}; every minute, restart-if-dead):`);
+    say(`  ${marker}`);
+    say(`  ${buildCronLine({ workdir: mainWorktree })}`);
+    return;
+  }
+  if (!hasSystemctl()) {
+    say('systemctl not available; installing a managed cron fallback (every minute, restart-if-dead).');
+    installCron(mainWorktree, marker);
+    return;
+  }
+  planRun('systemctl', ['--user', 'daemon-reload']);
+  planRun('systemctl', ['--user', 'enable', '--now', `${unit}.service`]);
+  planRun('systemctl', ['--user', 'restart', `${unit}.service`]);
+  say(`installed systemd --user service ${unit}.service (continuous, Restart=always; project ${repoKey}, worktree ${mainWorktree}). Logs: ${LOG}`);
+}
+function linuxUninstallProject(repoKey) {
+  const dir = unitDir();
+  const unit = unitForProject(repoKey);
+  const marker = cronMarkerForProject(repoKey);
+  if (DRYRUN) {
+    say(`[dry-run] would run: systemctl --user disable --now ${unit}.service (if present) and remove any managed cron fallback (marker ${marker})`);
+  } else {
+    // Always attempt BOTH removal paths (each a self-healing no-op when not
+    // applicable), instead of gating cron-removal behind hasSystemctl() as the
+    // old `if (!hasSystemctl()) uninstallCron() else systemctl-disable` did. A
+    // project installed while systemctl was ABSENT falls back to a managed cron
+    // entry (linuxInstallProject); if systemctl later becomes available (e.g.
+    // installed on this host after the fact), the old either/or would only ever
+    // run the systemctl branch on uninstall and never touch that leftover cron
+    // entry — leaving it silently restarting the daemon every minute forever.
+    // `systemctl disable --now` on a unit that was never enabled is a harmless
+    // no-op error (ignored, matching this file's existing posture elsewhere);
+    // uninstallCron() itself no-ops when its marker isn't present.
+    uninstallCron(null, marker);
+    if (hasSystemctl()) planRun('systemctl', ['--user', 'disable', '--now', `${unit}.service`]);
+  }
+  planRm(path.join(dir, `${unit}.service`));
+  if (!DRYRUN && hasSystemctl()) planRun('systemctl', ['--user', 'daemon-reload']);
+  say(`uninstalled ${unit}`);
+}
+
+// ----- macOS -----
+// macPlistPath(label) — the LaunchAgent path for a given label (default = the base
+// LABEL, i.e. the legacy single-unit path). Per-worktree installs pass
+// labelForWorktree(workdir).
+function macPlistPath(label) { return path.join(HOME, 'Library', 'LaunchAgents', `${label || LABEL}.plist`); }
+
+// KeepAlive (not StartInterval): the ingest daemon runs continuously, so launchd
+// must relaunch it whenever it exits — the "re-exec on exit" contract the daemon
+// expects. RunAtLoad starts it at load/login.
+function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG, workdir, hivecontrol = RESOLVED_HIVECONTROL } = {}) {
+  // WorkingDirectory: launchd otherwise defaults the daemon's cwd to $HOME (not a
+  // git repo) and `hivecontrol workspace monitor` fails "Not in a git repository",
+  // draining nothing. Baking the install-time worktree lets the daemon resolve it.
+  const workdirKey = workdir
+    ? `  <key>WorkingDirectory</key>\n  <string>${xmlEscape(workdir)}</string>\n`
+    : '';
+  // EnvironmentVariables (v0.66): launchd gives a unit a MINIMAL PATH that does
+  // not contain the DevSwarm CLI, and this plist carried no environment at all —
+  // so every `hivecontrol workspace monitor` spawn failed ENOENT. Emitted in a
+  // FIXED key order from a pure function of `hivecontrol`, so regenerating the
+  // unit (doctor --repair / update reconcile) reproduces it byte-for-byte instead
+  // of dropping it. Omitted entirely when the binary could not be resolved.
+  const env = unitEnvFor(hivecontrol, exec);
+  const envKey = env
+    ? '  <key>EnvironmentVariables</key>\n  <dict>\n'
+      + Object.keys(env).sort().map((k) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(env[k])}</string>\n`).join('')
+      + '  </dict>\n'
+    : '';
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEscape(label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xmlEscape(exec)}</string>
+    <string>${xmlEscape(script)}</string>
+  </array>
+${workdirKey}${envKey}  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(log)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(log)}</string>
+</dict>
+</plist>
+`;
+}
+
+function macInstall(workdir) {
+  const label = labelForWorktree(workdir); // ADDITIVE: this repo's own unit, never overwrites another repo's
+  const plist = macPlistPath(label);
+  planWrite(plist, buildPlist({ label, workdir }));
+  planRun('launchctl', ['unload', plist]); // ignore err
+  planRun('launchctl', ['load', plist]);
+  say(`installed LaunchAgent ${label} (continuous, KeepAlive; worktree ${workdir}). Logs: ${LOG}`);
+}
+function macUninstall(workdir) {
+  // Uninstall targets THIS worktree's unit when cwd resolves to one; otherwise the
+  // legacy base-LABEL unit (so a pre-per-worktree install can still be torn down).
+  const label = workdir ? labelForWorktree(workdir) : LABEL;
+  const plist = macPlistPath(label);
+  planRun('launchctl', ['unload', plist]); // ignore err
+  planRm(plist);
+  say(`uninstalled LaunchAgent ${label}`);
+}
+
+// ----- Linux -----
+function unitDir() { return path.join(HOME, '.config', 'systemd', 'user'); }
+
+// Type=simple + Restart=always: a long-running daemon that systemd relaunches on
+// exit (the daemon's re-exec-on-exit contract). No .timer — this is a continuous
+// service, not a periodic sweep.
+// sdEnvValue(s) — systemd Environment= value quoting. systemd does NOT do $VAR
+// expansion inside Environment= (unlike ExecStart), but it DOES expand `%`
+// specifiers, and an unquoted value cannot contain whitespace — so quote, escape
+// \ and ", and double every % per systemd.unit(5).
+function sdEnvValue(s) {
+  return `"` + String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/%/g, '%%') + `"`;
+}
+
+function buildService({ exec = EXEC, script = SCRIPT, restartSec = RESTART_SEC, workdir, log = LOG, hivecontrol = RESOLVED_HIVECONTROL } = {}) {
+  // WorkingDirectory: systemd otherwise defaults the daemon's cwd to $HOME (not a
+  // git repo), so `hivecontrol workspace monitor` can never resolve a workspace.
+  // systemd-escaped like ExecStart (systemd tokenizes + does $VAR expansion).
+  const workdirLine = workdir ? `WorkingDirectory=${sdQuote(workdir)}\n` : '';
+  // Environment= (v0.66): systemd --user services inherit a minimal PATH that
+  // does not contain the DevSwarm CLI — the systemd-side equivalent of the
+  // launchd EnvironmentVariables fix above. Same pure, fixed-order derivation,
+  // so a regenerated unit is byte-identical.
+  const unitEnv = unitEnvFor(hivecontrol, exec);
+  const envLines = unitEnv
+    ? Object.keys(unitEnv).sort().map((k) => `Environment=${sdEnvValue(k + '=' + unitEnv[k])}\n`).join('')
+    : '';
+  // StandardOutput/StandardError: without these, a startup failure (bad
+  // WorkingDirectory, missing script) exits silently — nothing is captured
+  // anywhere. Append (not truncate) into the SAME stable log the macOS plist's
+  // StandardOutPath/StandardErrorPath already use, so both platforms are
+  // diagnosable from one file.
+  return `[Unit]
+Description=anti-hall DevSwarm ingest daemon (native monitor -> store)
+
+[Service]
+Type=simple
+${workdirLine}${envLines}ExecStart=${sdQuote(exec)} ${sdQuote(script)}
+Restart=always
+RestartSec=${restartSec}
+StandardOutput=append:${log}
+StandardError=append:${log}
+
+[Install]
+WantedBy=default.target
+`;
+}
+function hasSystemctl() {
+  const r = svcSpawnSync('systemctl', ['--user', '--version']);
+  return !r.error && r.status === 0;
+}
+// cron fallback: every minute, restart-if-dead. A live daemon holds the ingest
+// lock, so a duplicate launch refuses-and-exits immediately (single-consumer);
+// when the daemon is dead, the next tick takes over. Each path is POSIX
+// single-quoted so no path can inject shell (P0-2).
+function buildCronLine({ exec = EXEC, script = SCRIPT, workdir, log = LOG, hivecontrol = RESOLVED_HIVECONTROL } = {}) {
+  // cd into the install-time worktree first: cron runs from $HOME (not a git repo),
+  // so without this the daemon can never resolve a workspace. The worktree path is
+  // POSIX single-quoted like exec/script (no injection hole reintroduced).
+  const cd = workdir ? `cd ${shSingleQuote(workdir)} && ` : '';
+  // Environment assignment prefix (v0.66): cron's default PATH is even narrower
+  // than launchd's, so the cron fallback needs the same baked resolution the
+  // plist/service get. `VAR=value cmd` is a POSIX assignment prefix (scoped to
+  // this command only); every value is single-quoted exactly like exec/script.
+  // parseCronCommand's readback strips these back off — keep the two in sync.
+  const unitEnv = unitEnvFor(hivecontrol, exec);
+  const envPrefix = unitEnv
+    ? Object.keys(unitEnv).sort().map((k) => `${k}=${shSingleQuote(unitEnv[k])} `).join('')
+    : '';
+  // Append (not discard) into the SAME stable log the plist/service use — a
+  // startup failure on the cron fallback path used to vanish into /dev/null.
+  return `* * * * * ${cd}${envPrefix}${shSingleQuote(exec)} ${shSingleQuote(script)} >> ${shSingleQuote(log)} 2>&1`;
+}
+
+// The managed cron marker comment. It is BOTH the idempotence key (a second install
+// finds it and leaves the crontab untouched) AND the real "scheduled" signal that
+// capability-scan reads on Linux — a bare .service file is NOT proof of scheduling
+// (P1-2). Equal to `# <UNIT>` so capability-scan can derive it from the installer.
+const CRON_MARKER = `# ${UNIT}`;
+
+// buildCronEntry -> the managed 2-line block written to the crontab: the marker
+// comment followed by the (escaped) restart-if-dead line. `marker` defaults to the
+// base CRON_MARKER (legacy single-unit); a per-worktree install passes
+// cronMarkerForWorktree(workdir) so each repo gets its own managed entry.
+function buildCronEntry({ exec = EXEC, script = SCRIPT, workdir, marker = CRON_MARKER } = {}) {
+  return `${marker}\n${buildCronLine({ exec, script, workdir })}`;
+}
+
+// mergeCrontab(current, entry, marker) -> { next, changed }. Idempotent: if the
+// managed marker line is already present, the crontab is returned unchanged;
+// otherwise the managed entry is appended, preserving all existing entries.
+function mergeCrontab(current, entry, marker) {
+  const cur = typeof current === 'string' ? current : '';
+  if (cur.split('\n').some((l) => l.trim() === marker)) return { next: cur, changed: false };
+  const sep = cur === '' || cur.endsWith('\n') ? '' : '\n';
+  return { next: cur + sep + entry + '\n', changed: true };
+}
+
+// removeCronEntry(current, marker) -> { next, changed }. Strips the managed marker
+// line AND the command line immediately after it (the pair this installer wrote).
+function removeCronEntry(current, marker) {
+  const cur = typeof current === 'string' ? current : '';
+  const lines = cur.split('\n');
+  const out = [];
+  let changed = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === marker) {
+      changed = true;
+      if (i + 1 < lines.length) i++; // also drop the command line following the marker
+      continue;
+    }
+    out.push(lines[i]);
+  }
+  return { next: out.join('\n'), changed };
+}
+
+// readCrontab() -> current crontab text ('' if none/unreadable). Fail-open.
+function readCrontab() {
+  try {
+    const r = svcSpawnSync('crontab', ['-l']);
+    if (!r.error && typeof r.stdout === 'string') return r.stdout;
+  } catch (_) { /* no crontab / not installed -> empty */ }
+  return '';
+}
+
+// installCron(): idempotently add the managed cron fallback entry to the user's
+// crontab so the ingest daemon is ACTUALLY scheduled when systemctl is absent
+// (previously the installer only PRINTED the line and installed no scheduler —
+// yet capability-scan reported active; P1-2). `markerOverride` (v0.57 mesh) lets
+// the PER-PROJECT install path (linuxInstallProject) pass its own repoKey-keyed
+// marker instead of the per-worktree default.
+function installCron(workdir, markerOverride) {
+  const marker = markerOverride || cronMarkerForWorktree(workdir);
+  const { next, changed } = mergeCrontab(readCrontab(), buildCronEntry({ workdir, marker }), marker);
+  if (!changed) { say(`cron entry already present (marker ${marker}); crontab left as-is`); return; }
+  const r = planRun('crontab', ['-'], { input: next, encoding: 'utf8' });
+  if (r.error || r.status !== 0) {
+    say('(warn) could not install cron entry via `crontab -`; add it manually (crontab -e):');
+    say(`  ${marker}`);
+    say(`  ${buildCronLine({ workdir })}`);
+    return;
+  }
+  say(`installed cron fallback (managed marker ${marker}, every minute restart-if-dead). Logs: ${LOG}`);
+}
+
+// uninstallCron(): remove the managed cron fallback entry (marker + its line) for
+// this worktree (or the legacy base marker when cwd doesn't resolve to a
+// worktree). `markerOverride` (v0.57 mesh) lets the PER-PROJECT uninstall path
+// pass its own repoKey-keyed marker instead of deriving one from `workdir`.
+function uninstallCron(workdir, markerOverride) {
+  const marker = markerOverride || (workdir ? cronMarkerForWorktree(workdir) : CRON_MARKER);
+  const { next, changed } = removeCronEntry(readCrontab(), marker);
+  if (!changed) return;
+  const r = planRun('crontab', ['-'], { input: next, encoding: 'utf8' });
+  if (!r.error && r.status === 0) say(`removed cron fallback (managed marker ${marker})`);
+}
+
+function linuxInstall(workdir) {
+  const dir = unitDir();
+  const unit = unitForWorktree(workdir); // ADDITIVE: this repo's own unit
+  const marker = cronMarkerForWorktree(workdir);
+  planWrite(path.join(dir, `${unit}.service`), buildService({ workdir }));
+  if (DRYRUN) {
+    say(`[dry-run] would run: systemctl --user daemon-reload && systemctl --user enable --now ${unit}.service && systemctl --user restart ${unit}.service`);
+    say(`[dry-run] if systemctl absent, would install this managed cron fallback (marker ${marker}; every minute, restart-if-dead; the daemon's single-consumer lock makes redundant launches a no-op):`);
+    say(`  ${marker}`);
+    say(`  ${buildCronLine({ workdir })}`);
+    return;
+  }
+  if (!hasSystemctl()) {
+    say('systemctl not available; installing a managed cron fallback (every minute, restart-if-dead).');
+    installCron(workdir);
+    return;
+  }
+  planRun('systemctl', ['--user', 'daemon-reload']);
+  planRun('systemctl', ['--user', 'enable', '--now', `${unit}.service`]);
+  planRun('systemctl', ['--user', 'restart', `${unit}.service`]); // refresh a running daemon to this build's code
+  say(`installed systemd --user service ${unit}.service (continuous, Restart=always; worktree ${workdir}). Logs: ${LOG}`);
+}
+function linuxUninstall(workdir) {
+  const dir = unitDir();
+  const unit = workdir ? unitForWorktree(workdir) : UNIT;
+  if (!DRYRUN && !hasSystemctl()) {
+    say('systemctl not available; removing the managed cron fallback if present.');
+    uninstallCron(workdir);
+  } else {
+    planRun('systemctl', ['--user', 'disable', '--now', `${unit}.service`]);
+  }
+  planRm(path.join(dir, `${unit}.service`));
+  if (!DRYRUN && hasSystemctl()) planRun('systemctl', ['--user', 'daemon-reload']);
+  say(`uninstalled ${unit}`);
+}
+
+// ----- readback: enumerate INSTALLED ingest units (multi-repo) -----
+// These are the canonical reverse of the buildPlist/buildService/buildCronLine
+// escaping — kept HERE (next to the builders) so a change to the emit side updates
+// the read side in one place. doctor-repair.js's per-worktree healing delegates to
+// listInstalledIngestUnits rather than re-deriving any of this.
+function unescapeXml(s) {
+  return String(s)
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+function unSdQuote(s) {
+  let v = String(s).trim();
+  if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
+  return v.replace(/\$\$/g, '$').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+}
+function firstShToken(s) {
+  const m = String(s).match(/'((?:[^'\\]|\\.)*)'/);
+  return m ? m[1].replace(/'\\''/g, "'") : null;
+}
+function parsePlistUnit(xml) {
+  const out = { workingDir: null, scriptPath: null };
+  const wd = xml.match(/<key>WorkingDirectory<\/key>\s*<string>([\s\S]*?)<\/string>/);
+  if (wd) out.workingDir = unescapeXml(wd[1]);
+  const arr = xml.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/);
+  if (arr) {
+    const strs = arr[1].match(/<string>([\s\S]*?)<\/string>/g) || [];
+    if (strs.length >= 2) {
+      const m = strs[1].match(/<string>([\s\S]*?)<\/string>/);
+      if (m) out.scriptPath = unescapeXml(m[1]);
+    }
+  }
+  // hasHomeEnv (defect d1c57e67998f): does this ALREADY-INSTALLED plist pin
+  // HOME? An install from before this fix shipped will not — doctor surfaces
+  // that as an upgrade hint (reinstall), never auto-repairs it (the daemon
+  // must be re-registered, not hand-patched).
+  out.hasHomeEnv = /<key>HOME<\/key>/.test(xml);
+  return out;
+}
+function parseServiceUnit(svc) {
+  const out = { workingDir: null, scriptPath: null };
+  const wd = svc.match(/^WorkingDirectory=(.*)$/m);
+  if (wd) out.workingDir = unSdQuote(wd[1]);
+  const ex = svc.match(/^ExecStart=(.*)$/m);
+  if (ex) {
+    const toks = ex[1].match(/"((?:[^"\\]|\\.)*)"/g) || [];
+    if (toks.length >= 2) out.scriptPath = unSdQuote(toks[1]);
+  }
+  // hasHomeEnv — systemd equivalent of the plist check above.
+  out.hasHomeEnv = /^Environment="HOME=/m.test(svc);
+  return out;
+}
+function parseCronCommand(cmd) {
+  const out = { workingDir: null, scriptPath: null };
+  const cd = cmd.match(/cd\s+('((?:[^'\\]|\\.)*)')\s*&&/);
+  if (cd) out.workingDir = cd[2].replace(/'\\''/g, "'");
+  let afterCd = cd ? cmd.slice(cmd.indexOf('&&') + 2) : cmd;
+  // Strip the v0.66 `VAR='value' ` assignment prefix buildCronLine may emit
+  // (PATH / ANTIHALL_DEVSWARM_HIVECONTROL) BEFORE tokenizing — otherwise those
+  // quoted values would be read as the exec/script tokens and every consumer of
+  // this readback (doctor's install-shape classifier) would see a bogus script
+  // path. A line without any prefix is unaffected (the regex matches empty).
+  afterCd = afterCd.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:'(?:[^'\\]|\\.)*'|[^\s']*)\s+)*/, '');
+  const toks = afterCd.match(/'((?:[^'\\]|\\.)*)'/g) || [];
+  if (toks.length >= 2) out.scriptPath = firstShToken(toks[1]);
+  return out;
+}
+
+// DISJOINT unit-suffix shapes (D28): a legacy per-worktree hash is EXACTLY 8 hex
+// chars with no internal dash; a repoKey ALWAYS carries an internal `-` (name +
+// 6-hex suffix). The two regexes can therefore never both match the same suffix
+// — a repoKey unit is never mis-parsed/mis-reaped as a legacy one, and vice versa.
+const LEGACY_UNIT_HASH_RE = /^([0-9a-fA-F]{8})$/;
+const PROJECT_UNIT_KEY_RE = /^([a-z0-9-]{1,40}-[0-9a-f]{6})$/;
+
+// listInstalledIngestUnits({home, platform}) -> Array<{label, unit, hash, repoKey,
+// workingDir, scriptPath, source}>. The multi-unit successor to doctor-repair's
+// single-unit readback: scans EVERY installed ingest unit — legacy base-name,
+// legacy PER-WORKTREE hash-suffixed, AND (v0.57 mesh) PER-PROJECT repoKey-suffixed
+// — and reads back each unit's baked WorkingDirectory + script. `hash` is set for
+// a legacy per-worktree unit (null otherwise); `repoKey` is set for a per-project
+// unit (null otherwise) — the two are mutually exclusive by construction (the
+// disjoint regexes above). Fail-open: any unreadable dir/crontab/unit yields the
+// units it COULD read (never throws).
+function listInstalledIngestUnits(opts) {
+  const o = opts || {};
+  const home = o.home || HOME;
+  const platform = o.platform || process.platform;
+  const units = [];
+  try {
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch (_) { names = []; }
+      for (const name of names) {
+        if (!name.startsWith(LABEL) || !name.endsWith('.plist')) continue;
+        const rest = name.slice(LABEL.length, name.length - '.plist'.length); // '' (legacy) | '.<hash>' | '.<repoKey>'
+        let hash = null;
+        let repoKeyOut = null;
+        if (rest !== '') {
+          const suffix = rest.slice(1); // drop the leading '.'
+          if (LEGACY_UNIT_HASH_RE.test(suffix)) hash = suffix;
+          else if (PROJECT_UNIT_KEY_RE.test(suffix)) repoKeyOut = suffix;
+          else continue;
+        }
+        let xml;
+        try { xml = fs.readFileSync(path.join(dir, name), 'utf8'); } catch (_) { continue; }
+        const parsed = parsePlistUnit(xml);
+        units.push({
+          label: name.slice(0, -('.plist'.length)), unit: null, hash, repoKey: repoKeyOut,
+          workingDir: parsed.workingDir, scriptPath: parsed.scriptPath, source: 'launchd',
+          hasHomeEnv: parsed.hasHomeEnv,
+        });
+      }
+      return units;
+    }
+    if (platform === 'linux') {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch (_) { names = []; }
+      for (const name of names) {
+        if (!name.startsWith(UNIT) || !name.endsWith('.service')) continue;
+        const rest = name.slice(UNIT.length, name.length - '.service'.length); // '' (legacy) | '-<hash>' | '-<repoKey>'
+        let hash = null;
+        let repoKeyOut = null;
+        if (rest !== '') {
+          const suffix = rest.slice(1); // drop the leading '-'
+          if (LEGACY_UNIT_HASH_RE.test(suffix)) hash = suffix;
+          else if (PROJECT_UNIT_KEY_RE.test(suffix)) repoKeyOut = suffix;
+          else continue;
+        }
+        let svc;
+        try { svc = fs.readFileSync(path.join(dir, name), 'utf8'); } catch (_) { continue; }
+        const parsed = parseServiceUnit(svc);
+        units.push({
+          label: null, unit: name.slice(0, -('.service'.length)), hash, repoKey: repoKeyOut,
+          workingDir: parsed.workingDir, scriptPath: parsed.scriptPath, source: 'systemd',
+          hasHomeEnv: parsed.hasHomeEnv,
+        });
+      }
+      // cron fallback: scan the crontab for managed markers (legacy `# UNIT`,
+      // legacy per-worktree `# UNIT-<hash>`, AND per-project `# UNIT-<repoKey>`),
+      // parsing the command line following each.
+      let crontab = '';
+      try {
+        const r = svcSpawnSync('crontab', ['-l']);
+        if (!r.error && typeof r.stdout === 'string') crontab = r.stdout;
+      } catch (_) { crontab = ''; }
+      const clines = crontab.split('\n');
+      for (let i = 0; i < clines.length; i++) {
+        const t = clines[i].trim();
+        if (!t.startsWith(`# ${UNIT}`)) continue;
+        const rest = t.slice(`# ${UNIT}`.length); // '' (legacy) | '-<hash>' | '-<repoKey>'
+        let hash = null;
+        let repoKeyOut = null;
+        if (rest !== '') {
+          const suffix = rest.slice(1); // drop the leading '-'
+          if (LEGACY_UNIT_HASH_RE.test(suffix)) hash = suffix;
+          else if (PROJECT_UNIT_KEY_RE.test(suffix)) repoKeyOut = suffix;
+          else continue;
+        }
+        const parsed = parseCronCommand(clines[i + 1] || '');
+        units.push({
+          label: null, unit: t.slice(2), hash, repoKey: repoKeyOut,
+          workingDir: parsed.workingDir, scriptPath: parsed.scriptPath, source: 'cron',
+        });
+      }
+      return units;
+    }
+  } catch (_) { return units; }
+  return units; // win32 / unknown: no installed unit is readable
+}
+
+// v0.98 — launchd/systemd-list-based orphan detection (independent of git
+// worktree list, D9's blind spot for already-removed worktrees; defect
+// ec33954162ef). listInstalledIngestUnits above enumerates from the FILE
+// SYSTEM (plist/service/crontab present on disk); this enumerates from the
+// SCHEDULER'S OWN registration list (`launchctl list` / `systemctl --user
+// list-units`). A label can be loaded in the scheduler with NO matching file
+// on disk at all — confirmed live on this machine: a test fixture's tmp HOME
+// registered a real LaunchAgent, the HOME was deleted, the plist was never
+// written under the REAL home to begin with (module-level HOME, not the
+// fixture's), so `launchctl list` still shows it retrying forever (exit 78)
+// while listInstalledIngestUnits (which only reads from disk) can never see
+// it. D9's `git worktree list`-driven reap (reapLegacyUnitsForRepo) is
+// blind to this for the same reason: it enumerates FROM the worktree, and
+// the worktree is long gone.
+
+// defaultListLoadedLaunchd() -> [{label, pid, lastExit}] for every loaded
+// launchd label matching LABEL. `launchctl list`'s bare (no-label-arg) form
+// prints `PID\tStatus\tLabel` with a header row first; parsed defensively
+// (whitespace-split, length guard) — never assume fixed column widths.
+function defaultListLoadedLaunchd() {
+  let r;
+  try { r = svcSpawnSync('launchctl', ['list']); } catch (_) { return []; }
+  if (!r || r.error || r.status !== 0) return [];
+  return String(r.stdout || '').split('\n').slice(1)
+    .map((l) => l.trim().split(/\s+/))
+    .filter((f) => f.length >= 3 && f[2].startsWith(LABEL))
+    .map((f) => ({ label: f[2], pid: f[0] === '-' ? null : Number(f[0]), lastExit: f[1] }));
+}
+// defaultListLoadedSystemd() -> [{label:null, unit}] for every loaded
+// systemd --user unit matching UNIT. Cron has no "loaded" concept distinct
+// from the crontab itself — a crontab line IS the sole registration record,
+// so it needs no separate loaded-set probe (already covered by
+// listInstalledIngestUnits' own cron scan).
+function defaultListLoadedSystemd() {
+  let r;
+  try {
+    r = svcSpawnSync('systemctl', ['--user', 'list-units', '--all', '--no-legend', '--plain']);
+  } catch (_) { return []; }
+  if (!r || r.error || r.status !== 0) return [];
+  return String(r.stdout || '').split('\n')
+    .map((l) => l.trim().split(/\s+/)[0])
+    .filter((u) => u && u.startsWith(UNIT) && u.endsWith('.service'))
+    .map((u) => ({ label: null, unit: u.slice(0, -'.service'.length) }));
+}
+// listLoadedIngestLabels(opts) -> [{label|null, unit?|null, pid?, lastExit?}].
+// opts.io.listLoaded (test injection) overrides the platform-specific default.
+// Fail-open: any thrown error or unrecognized platform (incl. win32) -> [].
+function listLoadedIngestLabels(opts) {
+  const o = opts || {};
+  const platform = o.platform || process.platform;
+  const list = (o.io && o.io.listLoaded)
+    || (platform === 'darwin' ? defaultListLoadedLaunchd
+      : platform === 'linux' ? defaultListLoadedSystemd
+        : () => []);
+  try { return list() || []; } catch (_) { return []; }
+}
+
+// ingestHealthMod() — lazy, fail-open require of companion/lib/ingest-health.js
+// (D27: this file is required top-level by hooks whose fail-open guarantee
+// does not cover a throwing top-level require — see the repokey guard above
+// for the same rationale).
+function ingestHealthModForOrphans() {
+  try { return require('./lib/ingest-health.js'); } catch (_) { return {}; }
+}
+
+// parseLoadedSuffix(name, prefix, sep) -> {hash, repoKey} | null (neither set
+// when the suffix matches neither disjoint regex — an unrecognized label we
+// must never touch). Reuses LEGACY_UNIT_HASH_RE / PROJECT_UNIT_KEY_RE
+// VERBATIM (D28, same disjoint-by-construction pair listInstalledIngestUnits
+// already classifies installed units with) so a loaded label is classified
+// identically to how an installed one is — never a second parser.
+function parseLoadedSuffix(name, prefix, sep) {
+  if (!name || !name.startsWith(prefix)) return null;
+  const rest = name.slice(prefix.length);
+  if (rest === '') return { hash: null, repoKey: null };
+  if (!rest.startsWith(sep)) return null;
+  const suffix = rest.slice(sep.length);
+  if (LEGACY_UNIT_HASH_RE.test(suffix)) return { hash: suffix, repoKey: null };
+  if (PROJECT_UNIT_KEY_RE.test(suffix)) return { hash: null, repoKey: suffix };
+  return null;
+}
+
+// unitLiveness(kind, key, opts) -> bool. Approximates "this project/worktree
+// has a live session" — never-unload guard rule 3. Deliberately an OR of the
+// two independent signals (fresh heartbeat OR a live-pid lock), NOT
+// daemonHealth()'s stricter AND-of-both 'healthy' status: a project that is
+// merely mid-startup (live lock, heartbeat not yet written) or whose lock was
+// just released but whose heartbeat is still fresh must both still block
+// eligibility — either signal alone is enough to prove "not orphaned".
+// Mirrors D25's fail-open convention throughout: a missing/unreadable/
+// malformed file reads as NOT-live for that one signal, never throws.
+function unitLiveness(kind, key, opts) {
+  const o = opts || {};
+  const home = o.home || HOME;
+  if (kind === 'repoKey' && key) {
+    const health = ingestHealthModForOrphans();
+    if (typeof health.daemonHealth !== 'function') return true; // can't confirm dead -> never touch
+    let h;
+    try { h = health.daemonHealth(home, key, o); } catch (_) { return true; }
+    return !!(h && (h.fresh || h.liveLock));
+  }
+  if (kind === 'hash' && key) {
+    const F = (o.io && o.io.fs) || fs;
+    const isAlive = (o.io && o.io.isAlive) || ((pid) => {
+      if (!Number.isFinite(pid) || pid <= 0) return false;
+      try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+    });
+    // OR of TWO independent signals, matching the repoKey branch above (P1
+    // fix: a released lock with a still-fresh legacy heartbeat used to read
+    // as dead here — same devswarm-ingest.js ingestHeartbeatPath(home, hash)
+    // shape the daemon itself writes every sweep, heartbeats/ingest-<hash>.json).
+    let liveLock = false;
+    try {
+      const raw = F.readFileSync(path.join(devswarmRoot(home), 'locks', 'ingest-' + key + '.lock'), 'utf8');
+      const holder = JSON.parse(raw);
+      const pid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
+      liveLock = pid !== null && isAlive(pid);
+    } catch (_) { liveLock = false; } // missing/unreadable/malformed lock = NOT-live (D25 convention)
+    let freshHeartbeat = false;
+    try {
+      const now = Number.isFinite(o.now) ? o.now : Date.now();
+      const raw = F.readFileSync(path.join(devswarmRoot(home), 'heartbeats', 'ingest-' + key + '.json'), 'utf8');
+      const beat = JSON.parse(raw);
+      const ts = beat && Number.isFinite(beat.ts) ? beat.ts : null;
+      const staleMs = Number.isFinite(ingestHealthModForOrphans().HEARTBEAT_STALE_MS) ? ingestHealthModForOrphans().HEARTBEAT_STALE_MS : (3 * 60 * 1000);
+      freshHeartbeat = ts !== null && (now - ts) <= staleMs;
+    } catch (_) { freshHeartbeat = false; } // missing/unreadable/malformed = NOT-fresh (D25 convention)
+    return liveLock || freshHeartbeat;
+  }
+  return true; // unresolvable key -> can't confirm dead -> never touch
+}
+
+// classifyLoadedLabel(entry) -> one of 'healthy' | 'orphan-no-plist' |
+// 'orphan-path-gone' | 'unknown'. Pure — takes an already-resolved entry
+// {installed, pathExists, kind, live} and returns exactly the class table
+// documented in the design (duplicate-label-same-project is layered on top
+// by orphanReapPlan below, since it is a CROSS-entry property, not a
+// per-entry one). A label can be BOTH "no plist" and "path gone" at once
+// (sampled live) — orphan-no-plist wins (narrower: nothing to safely inspect
+// at all).
+function classifyLoadedLabel(entry) {
+  if (!entry.installed) return 'orphan-no-plist';
+  if (!entry.pathExists) return 'orphan-path-gone';
+  if (entry.kind === 'unknown') return 'unknown';
+  if (entry.live) return 'healthy';
+  // Plist present, path exists, but neither signal proves liveness (e.g. a
+  // daemon that has not yet written its first heartbeat/lock). Ambiguous —
+  // never assumed safe, never auto-unloaded; the EXISTING ingest-health
+  // reporting already surfaces this case elsewhere.
+  return 'unknown';
+}
+
+// orphanReapPlan(opts) -> [{label, unit, pid, scriptPath, workingDir,
+// plistPresent, pathExists, class, eligible}]. Composes
+// listLoadedIngestLabels + listInstalledIngestUnits + ingest-health.js's
+// daemonHealth exactly as designed. `eligible` is true ONLY for class
+// 'orphan-no-plist' AND no live heartbeat/lock for its repoKey/hash — i.e.
+// NO plist on disk AND NO resolvable path (an entry with either can never be
+// eligible; enforced by a final invariant check below). `orphan-path-gone`
+// and `duplicate-label-same-project` are ALWAYS report-only — a plist exists
+// on disk for both, so unloading them is the EXISTING reap machinery's job
+// (reapLegacyUnitsForRepo / stopLegacyUnitEntry), never this new
+// label-only bootout/stop path.
+function orphanReapPlan(opts) {
+  const o = opts || {};
+  const home = o.home || HOME;
+  const platform = o.platform || process.platform;
+  const loaded = listLoadedIngestLabels(o);
+  const installed = listInstalledIngestUnits(Object.assign({}, o, { home, platform }));
+  const entries = [];
+  for (const l of loaded) {
+    let parsed = null;
+    let matched = null;
+    let kind = 'unknown';
+    let key = null;
+    let unitName = null;
+    if (platform === 'darwin') {
+      parsed = parseLoadedSuffix(l.label, LABEL, '.');
+      matched = installed.find((u) => u.label === l.label) || null;
+      unitName = l.label;
+    } else if (platform === 'linux') {
+      parsed = parseLoadedSuffix(l.unit, UNIT, '-');
+      matched = installed.find((u) => u.unit === l.unit) || null;
+      unitName = l.unit;
+    }
+    if (parsed) {
+      if (parsed.hash) { kind = 'hash'; key = parsed.hash; }
+      else if (parsed.repoKey) { kind = 'repoKey'; key = parsed.repoKey; }
+      else { kind = 'legacy-base'; key = null; } // base label/unit, no suffix at all
+    }
+    const workingDir = matched ? matched.workingDir : null;
+    const scriptPath = matched ? matched.scriptPath : null;
+    let pathExists = false;
+    if (matched) {
+      try { pathExists = !!(workingDir && fs.existsSync(workingDir)); } catch (_) { pathExists = false; }
+    }
+    const live = parsed ? unitLiveness(kind, key, o) : true; // unrecognized suffix -> can't confirm dead
+    const cls = classifyLoadedLabel({ installed: matched, pathExists, kind: parsed ? kind : 'unknown', live });
+    entries.push({
+      label: l.label || null, unit: unitName && platform === 'linux' ? unitName : (l.unit || null),
+      pid: l.pid != null ? l.pid : null, scriptPath, workingDir,
+      plistPresent: !!matched, pathExists, kind, key, class: cls,
+      // SINGLE POINT OF ELIGIBILITY (P0 fix, defect ec33954162ef fix-wave R2):
+      // eligible for the NEW bootout/stop repair path ONLY for class
+      // 'orphan-no-plist' with no live heartbeat/lock. `orphan-path-gone`
+      // stays REPORT-ONLY here — a plist DOES exist for it, so it is the
+      // EXISTING reap machinery's job (reapLegacyUnitsForRepo /
+      // stopLegacyUnitEntry), never this new label-only unload. This is set
+      // exactly once and is NEVER reassigned by the duplicate-detection pass
+      // below (that pass only ever touches `class`).
+      eligible: cls === 'orphan-no-plist' && !live,
+    });
+  }
+  // Cross-entry duplicate detection: 2+ loaded entries whose repoKey resolves
+  // to the SAME project — only possible for the legacy hash form (a
+  // per-project label already IS 1:1 with repoKey by construction). This can
+  // only ever fire for an entry that HAS a plist to read a workingDir from
+  // (orphan-no-plist entries have no plist, so they never enter this pass,
+  // and eligibility was already fixed above regardless). REPORT-ONLY: a
+  // `duplicate-label-same-project` finding never sets `eligible` — even a
+  // provably-quiet duplicate is reported, never auto-unloaded by this path
+  // (P0 fix: the previous version marked BOTH members of a plist-present,
+  // worktree-present group eligible via this pass, which the apply loop
+  // — filtering on `eligible` alone — would have booted out for real).
+  if (repokey && typeof repokey.repoKeyForWorktree === 'function') {
+    const byRepoKey = new Map();
+    for (const e of entries) {
+      if (e.kind !== 'hash' || !e.workingDir || !e.pathExists) continue;
+      let rk = null;
+      try { rk = repokey.repoKeyForWorktree(e.workingDir); } catch (_) { rk = null; }
+      if (!rk) continue;
+      if (!byRepoKey.has(rk)) byRepoKey.set(rk, []);
+      byRepoKey.get(rk).push(e);
+    }
+    for (const [, group] of byRepoKey) {
+      if (group.length < 2) continue;
+      for (const e of group) {
+        e.class = 'duplicate-label-same-project';
+        e.eligible = false; // report-only, unconditionally — see comment above
+      }
+    }
+  }
+  // FINAL INVARIANT (P0 fix): any entry this function marks eligible MUST
+  // have no plist on disk and no resolvable path — anything else means a
+  // classification bug upstream could boot out a real, on-disk-registered
+  // unit. Fail CLOSED (empty plan, never a partially-trusted one) rather than
+  // ever returning a plan doctor-repair.js's apply loop might act on.
+  for (const e of entries) {
+    if (e.eligible && (e.plistPresent || e.pathExists)) {
+      try {
+        process.stderr.write(
+          'anti-hall: orphanReapPlan invariant violated — eligible entry ' + (e.label || e.unit || '(unknown)')
+          + ' has plistPresent=' + e.plistPresent + ' pathExists=' + e.pathExists
+          + ' (must both be false). Returning an EMPTY plan (fail-closed).\n'
+        );
+      } catch (_) {}
+      return [];
+    }
+  }
+  return entries;
+}
+
+// bootoutLoadedLabel(label, opts) -> {status, stdout, error}. macOS-only
+// unload for a label that has NO plist to unload with (orphan-no-plist has
+// nothing to `launchctl unload <path>` against) — `launchctl bootout
+// gui/$(id -u)/<label>` (10.11+, i.e. every currently-supported macOS; no
+// version probe needed) is the modern form that unloads by LABEL alone.
+// Never `kill -9` a PID directly (scheduler-mediated stop only, matching
+// every existing stop path in this file). Routed through opts.io.schedRun /
+// production defaultSchedRunViaPlan exactly like stopLegacyUnitEntry, so
+// `main() --dry-run` (or a mocked test) never issues a real spawn.
+function bootoutLoadedLabel(label, opts) {
+  const o = opts || {};
+  const run = (o.io && o.io.schedRun) || defaultSchedRunViaPlan;
+  const uid = (o.io && o.io.uid) || process.getuid;
+  let uidStr = '0';
+  try { uidStr = String(typeof uid === 'function' ? uid() : uid); } catch (_) { uidStr = '0'; }
+  return run({ cmd: 'launchctl', args: ['bootout', `gui/${uidStr}/${label}`] });
+}
+// stopLoadedUnit(unit, opts) -> {status, stdout, error}. Linux (systemd
+// --user) counterpart — `systemctl --user stop <unit>` only (never `disable`
+// here: there is no unit FILE to disable for an orphan-no-plist entry; the
+// existing `stopLegacyUnitEntry` already owns disable+rm for the case where a
+// unit file DOES exist alongside a dead process).
+function stopLoadedUnit(unit, opts) {
+  const o = opts || {};
+  const run = (o.io && o.io.schedRun) || defaultSchedRunViaPlan;
+  return run({ cmd: 'systemctl', args: ['--user', 'stop', `${unit}.service`] });
+}
+
+// ----- memory-guard / reaper detection (v0.65, DETECT-AND-REPORT ONLY) -----
+//
+// WHY THIS EXISTS (confirmed field incident, not a hypothetical): a locally
+// installed memory-guard script's "runaway node" post-pass SIGKILLs every
+// non-allowlisted node process whose PPID is 1. A launchd LaunchAgent (and a
+// systemd --user service, and a cron-launched process) ALWAYS has PPID 1, so
+// this ingest daemon matches that orphan-sweep exactly — it was SIGKILLed
+// (exit -9) mid-run, leaked its lock, and the scheduler's relaunch-on-exit
+// then turned that into a refuse -> exit(1) -> relaunch loop. The daemon-side
+// half of that failure is fixed by the lock reclaim/sweep work in
+// devswarm-ingest.js; this half makes the REMAINING external cause VISIBLE at
+// install time on any machine, instead of only on the one where a human
+// happened to hand-edit the guard.
+//
+// DETECT AND REPORT ONLY — by design, and non-negotiable. This NEVER rewrites,
+// patches, or creates anything outside the repo: the guard script belongs to
+// the user, may be under their own version control, and silently editing a
+// process-killing script on their behalf is exactly the class of change that
+// must stay human-initiated. The output names the file, the allowlist variable
+// and what to add; the human decides.
+//
+// Fail-open in every direction: no scripts dir, no matching script, an
+// unreadable file, or any thrown error -> `{found:false}` and total silence.
+
+const REAPER_NAME_RE = /(memguard|memory-?guard|reaper|memcheck)/i;
+// A candidate is only treated as a reaper if it actually KILLS something —
+// name alone is not evidence (a `*-memcheck.sh` that only prints must not
+// trigger a scary warning).
+const REAPER_KILL_RE = /\b(pkill|kill\s+-9|kill\s+-KILL|SIGKILL)\b/;
+// The allowlist variable an operator would extend, e.g. `MCP_ALLOWLIST='...'`.
+//
+// THIS IS ALSO THE FALSE-POSITIVE FILTER, not just a nicety (caught by running
+// the detector against a real machine before shipping it). There are two kinds
+// of reaper, and only ONE of them can ever hit this daemon:
+//   * kill-by-EXCLUSION ("kill every node process EXCEPT these"): the daemon is
+//     killed unless it is allowlisted. Dangerous — this is the one to report.
+//     It necessarily has an allowlist variable, since that is how it decides.
+//   * kill-by-INCLUSION ("kill only processes matching these MCP signatures"):
+//     the daemon never matches the include pattern, so it is never a target. It
+//     has no allowlist at all.
+// Requiring a named allowlist variable therefore both (a) suppresses the
+// inclusion-model false positive and (b) guarantees the advice we print names a
+// variable that actually exists in that file. Telling someone to add
+// 'devswarm-ingest' to an INCLUSION reaper's match pattern would be worse than
+// silence — it would turn a harmless script into one that hunts this daemon.
+const REAPER_ALLOWLIST_VAR_RE = /^[\s]*([A-Za-z_][A-Za-z0-9_]*ALLOW(?:LIST|ED)?[A-Za-z0-9_]*)\s*=/m;
+// The token that must appear in that allowlist for this daemon to survive.
+const REAPER_DAEMON_TOKEN = 'devswarm-ingest';
+const REAPER_MAX_FILES = 40;          // bound the scan
+const REAPER_MAX_BYTES = 512 * 1024;  // never slurp a huge file
+
+// claudeScriptsDir(home) — where Claude Code users keep helper scripts. This is
+// the ONLY directory scanned; nothing else on the machine is read.
+function claudeScriptsDir(home) { return path.join(home || HOME, '.claude', 'scripts'); }
+
+// detectReaperGuard({home, scriptsDir, fsi}) -> {
+//   found, file, allowlisted, allowlistVar, needsAction, scanned
+// }. `needsAction` is the single field a caller should branch on: a reaper that
+// would kill this daemon exists AND it does not allowlist it. Exported so
+// doctor can surface the identical finding without duplicating the heuristic.
+function detectReaperGuard(opts) {
+  const o = opts || {};
+  const F = o.fsi || fs;
+  const out = { found: false, file: null, allowlisted: false, allowlistVar: null, needsAction: false, scanned: 0 };
+  let dir;
+  try { dir = o.scriptsDir || claudeScriptsDir(o.home); } catch (_) { return out; }
+  let names;
+  try { names = F.readdirSync(dir); } catch (_) { return out; } // no scripts dir -> nothing to say
+  for (const raw of (names || [])) {
+    if (out.scanned >= REAPER_MAX_FILES) break;
+    const name = String(raw);
+    // Backups of a guard (`*.bak-*`) are not the live guard — reporting them
+    // would produce a warning the user cannot act on.
+    if (/\.bak/i.test(name)) continue;
+    if (!REAPER_NAME_RE.test(name)) continue;
+    out.scanned++;
+    const full = path.join(dir, name);
+    let body;
+    try {
+      const st = F.statSync(full);
+      if (!st.isFile() || st.size > REAPER_MAX_BYTES) continue;
+      body = F.readFileSync(full, 'utf8');
+    } catch (_) { continue; } // unreadable -> silently skip
+    if (!REAPER_KILL_RE.test(body)) continue; // names itself a reaper but kills nothing -> not our concern
+    const varMatch = body.match(REAPER_ALLOWLIST_VAR_RE);
+    if (!varMatch) continue; // kill-by-INCLUSION reaper (or unrecognizable): cannot target this daemon -> silent
+    const allowlisted = body.indexOf(REAPER_DAEMON_TOKEN) !== -1;
+    // Report the WORST case found: an already-protective guard must never mask
+    // a second, unprotective one.
+    if (!out.found || (out.allowlisted && !allowlisted)) {
+      out.found = true;
+      out.file = full;
+      out.allowlisted = allowlisted;
+      out.allowlistVar = varMatch[1];
+    }
+  }
+  out.needsAction = out.found && !out.allowlisted;
+  return out;
+}
+
+// reaperWarningLines(detection) -> string[]. Empty unless action is genuinely
+// needed, so a caller can `for (const l of reaperWarningLines(d)) say(l)`
+// unconditionally.
+function reaperWarningLines(detection) {
+  const d = detection || {};
+  if (!d.needsAction || !d.file || !d.allowlistVar) return [];
+  const varName = d.allowlistVar;
+  return [
+    '(warn) a process-reaping guard script was found that does NOT allowlist this daemon:',
+    `  ${d.file}`,
+    `  The ingest daemon is started by launchd/systemd/cron, so it ALWAYS runs with PPID 1 —`,
+    `  i.e. it looks exactly like an "orphaned node process" to a runaway/orphan sweep and can`,
+    `  be SIGKILLed mid-run (this has happened: the daemon then leaks its lock and the`,
+    `  scheduler's relaunch-on-exit turns it into a refuse->exit->relaunch loop).`,
+    `  FIX (manual, by you — anti-hall never edits files outside its own repo): add`,
+    `  '${REAPER_DAEMON_TOKEN}' to ${varName} in that script, then reload the guard.`,
+  ];
+}
+
+// ----- Windows -----
+function windowsNoop() {
+  say(
+    'anti-hall devswarm-ingest: Windows has no pure-Node user-level long-running\n' +
+      'scheduler in built-ins (no launchd/systemd/cron), so no background unit is\n' +
+      'installed (documented no-op). The ingest daemon does NOT kill anything, so\n' +
+      'this is not the supervisor\'s kill-safety limitation — it is simply the\n' +
+      'absence of a built-in scheduler. Run node companion/devswarm-ingest.js\n' +
+      'manually if you need ingest on Windows. Exit 0.'
+  );
+  process.exit(0);
+}
+
+function main() {
+  try {
+    validateArgs(args); // footgun fix: --help/-h or an unknown flag exits here, no install
+    if (process.platform === 'win32') return windowsNoop();
+    if (!fs.existsSync(SCRIPT)) { say(`error: ingest daemon script not found at ${SCRIPT}`); process.exit(1); return; }
+    // The node binary baked into the unit is validated the same way the script is.
+    // process.execPath is normally self-evidently present (it is the interpreter
+    // currently executing), so this is a cheap invariant assertion rather than a
+    // likely-to-fire branch — but the unit bakes EXEC as a PERMANENT absolute path,
+    // so emitting one for a path that is not a real file would install a daemon
+    // that can never start and whose failure surfaces only in a scheduler log.
+    if (!fs.existsSync(EXEC)) { say(`error: node binary not found at ${EXEC}; refusing to bake an unstartable unit`); process.exit(1); return; }
+    // Report (never fix) a local process-reaper that would SIGKILL this daemon.
+    // Emitted BEFORE the install branches so it is shown regardless of which
+    // path (per-project / legacy per-worktree / cron fallback) is taken, and
+    // skipped on --uninstall where it would be pure noise. Fully fail-open.
+    if (!UNINSTALL) {
+      try { for (const line of reaperWarningLines(detectReaperGuard({ home: HOME }))) say(line); } catch (_) {}
+      // v0.66: DISCOVER the hivecontrol binary ONCE, before any unit is built,
+      // so buildPlist/buildService/buildCronLine all bake the identical resolved
+      // path + PATH. Deterministic on a given machine => a regenerated unit is
+      // byte-identical (the property that makes this survive the reconcile that
+      // silently reverted every hand-patched plist). Fail-open: an unresolvable
+      // binary still installs the daemon — it just warns and the daemon runs
+      // visibly degraded (backed-off, and reported by doctor) instead of
+      // ENOENT-storming every 2 seconds.
+      try {
+        RESOLVED_HIVECONTROL = resolveHivecontrolPath({ env: process.env, home: HOME });
+      } catch (_) { RESOLVED_HIVECONTROL = null; }
+      if (RESOLVED_HIVECONTROL) {
+        say(`resolved ${HIVECONTROL_BIN_NAME}: ${RESOLVED_HIVECONTROL} (baked into the unit as ${HIVECONTROL_ENV_VAR} + PATH)`);
+      } else {
+        // LOUD + on stderr (not a quiet stdout log line): all resolution tiers
+        // missed, so the daemon is about to be installed PATH-less and will
+        // ENOENT-storm until this is fixed. Never abort the install (fail-open).
+        try { for (const line of hivecontrolUnresolvedWarningLines()) process.stderr.write(line + '\n'); } catch (_) {}
+      }
+    }
+    // Resolve the worktree the daemon must run FROM (see resolveWorktree). Only for
+    // install — uninstall must still tear the unit down regardless of cwd. If cwd is
+    // not inside a git worktree, do NOT install a non-draining daemon: fail open —
+    // log + skip, exit 0 (non-fatal). Better no daemon than one that drains nothing.
+    let workdir = null;
+    if (!UNINSTALL) {
+      workdir = resolveWorktree(process.cwd());
+      if (!workdir) {
+        say('ingest daemon not installed: no git worktree resolved from cwd; the daemon must run from a workspace worktree to drain its queue. Skipping install (no-op, exit 0).');
+        process.exit(0);
+        return;
+      }
+      // TMP_WORKTREE_GUARD: refuse to bake a scratch/tmp path as WorkingDirectory
+      // for a REAL launchd/systemd/cron registration — forces this run to dry-run
+      // instead (same posture as TMP_HOME_GUARD). See applyTmpWorktreeGuard above.
+      if (applyTmpWorktreeGuard(workdir)) noteTmpWorktreeGuardTripped(workdir);
+    } else {
+      // Uninstall targets the CURRENT worktree's per-worktree unit when cwd resolves
+      // to one (best-effort); when it doesn't, the *Uninstall helpers fall back to the
+      // legacy base-LABEL/UNIT so a pre-per-worktree install can still be torn down.
+      workdir = resolveWorktree(process.cwd());
+    }
+    // Belt-and-suspenders (defense in depth on top of per-target escaping): refuse
+    // to emit a unit/plist/cron entry for a node/script/worktree path carrying
+    // control chars or quote characters. Fail-open — log + skip install, exit 0
+    // (non-fatal), so a hostile path never yields an unsafe unit and never aborts hard.
+    if (!UNINSTALL && (!pathIsEmittable(EXEC) || !pathIsEmittable(SCRIPT) || !pathIsEmittable(workdir) || !pathIsEmittable(LOG))) {
+      say('error: node/script/worktree path contains control or quote characters; refusing to emit an unsafe unit. Skipping install (no-op, exit 0).');
+      process.exit(0);
+      return;
+    }
+    // v0.57 mesh (D1/D9/Phase5): resolve the PROJECT identity — the MAIN worktree
+    // (dirname of `--git-common-dir`, NEVER a linked/child worktree) + its repoKey.
+    // `workdir` above (git `--show-toplevel`) is the PER-WORKTREE resolution and
+    // stays the install-refusal / path-safety gate; `mainWorktree`/`repoKey` are
+    // project-wide and are what the NEW per-project unit bakes.
+    const mainWorktree = resolveMainWorktree(process.cwd());
+    if (!UNINSTALL && mainWorktree && applyTmpWorktreeGuard(mainWorktree)) noteTmpWorktreeGuardTripped(mainWorktree);
+    const repoKey = (mainWorktree && repokey) ? repokey.repoKeyForWorktree(mainWorktree) : null;
+    if (mainWorktree && repoKey && pathIsEmittable(mainWorktree)) {
+      if (UNINSTALL) {
+        // Uninstall targets BOTH the current worktree's legacy per-worktree unit
+        // (existing behavior, kept for back-compat / a pre-mesh install) AND this
+        // repo's per-project unit (best-effort — an absent project unit is a
+        // harmless no-op via the same ignore-err posture as macUninstall).
+        if (process.platform === 'darwin') { macUninstall(workdir); macUninstallProject(repoKey); }
+        else { linuxUninstall(workdir); linuxUninstallProject(repoKey); }
+        process.exit(0);
+        return;
+      }
+      // REAP-BEFORE-DRAIN (D9): stop+unload this repo's LEGACY per-worktree units
+      // FIRST — enumerated via `git worktree list --porcelain` from the main
+      // worktree (Gap-2: worktreeHash is one-way and cannot be inverted) — BEFORE
+      // the new per-project daemon is installed/(re)loaded. A brief buffered
+      // ingest pause during this handoff is EXPECTED (latency, not loss; the
+      // daemon's own reap-before-drain PROBE, devswarm-ingest.js, additionally
+      // backs off its first `monitor` while any legacy holder is still alive).
+      reapLegacyUnitsForRepo(mainWorktree, { platform: process.platform });
+      if (process.platform === 'darwin') macInstallProject(mainWorktree, repoKey);
+      else linuxInstallProject(mainWorktree, repoKey);
+      process.exit(0);
+      return;
+    }
+    // Fail-open fallback: repoKey/mainWorktree did not resolve even though
+    // `workdir` (a DIFFERENT git primitive, `--show-toplevel`) did, or the
+    // resolved mainWorktree path is not safely emittable. Extremely unlikely
+    // given both derive from the same real git repo, but rather than hard-exit,
+    // fall back to the OLD per-worktree install/uninstall so this never regresses
+    // to "no daemon at all".
+    if (process.platform === 'darwin') { if (UNINSTALL) macUninstall(workdir); else macInstall(workdir); }
+    else { if (UNINSTALL) linuxUninstall(workdir); else linuxInstall(workdir); }
+    process.exit(0);
+  } catch (e) {
+    say(`error: ${e && e.message ? e.message : e}`);
+    process.exit(1);
+  }
+}
+
+if (require.main === module) main();
+
+module.exports = {
+  LABEL, UNIT, SCRIPT, LOG, RESTART_SEC, CRON_MARKER,
+  // HOME (defect d1c57e67998f): the installer's own resolved home (os.homedir()
+  // at require time) — the SAME value now pinned into every unit's
+  // HOME/USERPROFILE via unitEnvFor. Exported so tests can assert against it
+  // directly instead of re-deriving os.homedir() themselves.
+  HOME,
+  // d1c57e67998f — tmp-HOME refusal guard, exported for direct test coverage.
+  homeIsUnderTmpdir, TMP_HOME_GUARD, ALLOW_TMP_HOME,
+  // tmp-WORKTREE refusal guard (WorkingDirectory under a scratch/tmp root),
+  // exported for direct test coverage. `TMP_WORKTREE_GUARD` reflects whether it
+  // has ALREADY tripped in this process (mutates after main() resolves a
+  // worktree) — tests call `applyTmpWorktreeGuard` directly rather than relying
+  // on process-level state.
+  applyTmpWorktreeGuard, get TMP_WORKTREE_GUARD() { return TMP_WORKTREE_GUARD; },
+  resolveStableScript,
+  xmlEscape, shSingleQuote, sdQuote, pathIsEmittable, resolveWorktree,
+  buildPlist, buildService, buildCronLine, buildCronEntry, mergeCrontab, removeCronEntry,
+  worktreeHash, worktreeRealPath, labelForWorktree, unitForWorktree, cronMarkerForWorktree, primaryWorkspaceId,
+  listInstalledIngestUnits,
+  // v0.57 mesh (D1/D9/Phase5) — per-project identity + reap-before-drain:
+  labelForProject, unitForProject, cronMarkerForProject,
+  resolveMainWorktree, listRepoWorktrees, parseWorktreeListPorcelain,
+  reapPlanForRepo, reapLegacyUnitsForRepo, stopLegacyUnitEntry,
+  macInstallProject, macUninstallProject, linuxInstallProject, linuxUninstallProject,
+  LEGACY_UNIT_HASH_RE, PROJECT_UNIT_KEY_RE,
+  // v0.65 — memory-guard/reaper detection (DETECT-AND-REPORT ONLY; doctor reuses these):
+  detectReaperGuard, reaperWarningLines, claudeScriptsDir, REAPER_DAEMON_TOKEN,
+  // v0.66 — hivecontrol discovery + baked unit environment:
+  HIVECONTROL_BIN_NAME, HIVECONTROL_ENV_VAR, MINIMAL_UNIT_PATH,
+  resolveHivecontrolPath, unitEnvFor, firstBinLine, sdEnvValue, parseCronCommand,
+  // Phase 4 (#12) — doctor's read-only leaked-unit scan parses EVERY anti-hall
+  // unit file (ingest, supervisor, reaper) with the same readers:
+  parsePlistUnit, parseServiceUnit,
+  // v0.72 — persisted last-known-good hivecontrol resolution cache + known-location
+  // probe (fixes minimal-env installs baking a PATH-less daemon on every run):
+  hivecontrolCachePath, readHivecontrolCache, writeHivecontrolCache,
+  KNOWN_HIVECONTROL_LOCATIONS, knownHivecontrolLocations, hivecontrolUnresolvedWarningLines,
+  // CLI arg validation (footgun fix): --help/unknown-flag must never install.
+  KNOWN_FLAGS, usageText, validateArgs,
+  // v0.98 — launchd/systemd-list-based orphan detection (independent of git
+  // worktree list, D9's blind spot for already-removed worktrees; ec33954162ef):
+  listLoadedIngestLabels, classifyLoadedLabel, orphanReapPlan,
+  bootoutLoadedLabel, stopLoadedUnit, parseLoadedSuffix, unitLiveness,
+  // v0.98.3 (Critic R2) — exported for direct test coverage that installCron/
+  // uninstallCron route their `crontab -` write through planRun (so --dry-run
+  // and the NODE_TEST_CONTEXT guard actually protect the crontab, not just
+  // the plist/service writes).
+  readCrontab, installCron, uninstallCron,
+  // Duplicate-daemon fix (installer waits for the old daemon before reload;
+  // legacy lock deleted only once its holder is confirmed dead) — exported
+  // for direct test coverage.
+  defaultIsAlivePid, legacyLockHolderPid, readLaunchdPid, waitForLaunchdUnitGone,
+  defaultReadCmdline, looksLikeIngestDaemonCmdline,
+  LAUNCHD_UNLOAD_WAIT_MS, LAUNCHD_UNLOAD_POLL_MS,
+};

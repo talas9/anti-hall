@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/talas9/anti-hall/security/advisories/new
+    about: Security issues go through a private advisory, never a public issue.
+  - name: Documentation
+    url: https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md
+    about: The extended guide covers hooks, skills, settings and troubleshooting.
+  - name: Questions and ideas
+    url: https://github.com/talas9/anti-hall/discussions
+    about: Ask a question or float an idea in Discussions.

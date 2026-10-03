@@ -1,0 +1,987 @@
+'use strict';
+// anti-hall :: devswarm-lifecycle — v0.108.0 workspace lifecycle on top of
+// DevSwarm's native archive/delete (hivecontrol 2.5.3+).
+//
+// FEATURE 1 — AUTO-ARCHIVE done workspaces (supervisor sweep).
+//   planAutoArchive() proves, per child builder, ALL of:
+//     (a) done      — EITHER the mesh summary's archive_ready (every required
+//                     gate: done,merged,tests_passed by default) OR the child's
+//                     structured done-report: the `done` gate row alone
+//                     (the child's `devswarm.js done` verb). See doneFact.
+//     (b) merged    — devswarm-git-truth.js gitMergeProof, the SAME proof the
+//                     `gate --set merged` verb records as merged_verified: HEAD
+//                     an ancestor of the REMOTE default branch (origin/HEAD's
+//                     target; a local branch ref never counts). When git cannot
+//                     decide, a `merged` gate the verb verified AT THE CURRENT
+//                     HEAD proves it; failing that (HEAD-bound done-report
+//                     only) an app DB pull_requests row with state=merged —
+//                     but NOT when origin/HEAD is unresolvable: then only the
+//                     verified gate proves it, else 'default-branch-unknown'
+//                     blocks (the PR row is matched by branch name, which
+//                     says nothing about the target). A resolved
+//                     "not an ancestor" (unmerged commits, or a squash merge)
+//                     always blocks. NOT `hivecontrol workspace check-merge` —
+//                     it is side-effecting (see devswarm-capabilities.js).
+//     (c) clean     — `git status --porcelain` is empty
+//     (d) no unread — zero unread TO the child and zero unread FROM it in any
+//                     other partition of the project's mesh store
+//     (e) not the Primary — app DB builderType 'primary' (the authority);
+//                     without that column, the Primary seat's main checkout.
+//                     A `primary-<hash>` descriptor id never decides it.
+//     (f) not being viewed — app DB builders.lastSelectedAt older than 10 min
+//     (g) idle      — last REAL work >= idleMin ago, and no real AI turn
+//                     open (0.109.0, devswarm-idle.js): the transcript is
+//                     classified turn by turn and the child's own mailbox-
+//                     wake / ping / heartbeat / status-report turns are
+//                     ignored; any other AI turn, tool call, a new inbound
+//                     direct message, or a commit resets it. Transcript
+//                     unreadable -> the pre-0.109 rule (heartbeat +
+//                     transcript mtime), which can only block.
+//     (h) not already auto-archived at this HEAD — the owner's only undo is
+//                     unarchiving in the DevSwarm app, so a workspace this
+//                     sweep archived at HEAD X is never auto-archived again at
+//                     X (see autoArchivedAt). A new done at a new HEAD re-arms.
+//   Any fact that cannot be READ counts as not proven -> no archive.
+//   Settings (<home>/.anti-hall/settings.json):
+//     devswarm.autoArchive.mode        "on" (default, owner decision) | "dry-run" | "off"
+//     devswarm.autoArchive.idleMin     30   (min 5)
+//     devswarm.autoArchive.maxPerSweep 3    (1..20)
+//     devswarm.autoArchive.ignorePings true (false = gate g uses the pre-0.109
+//                                      heartbeat + transcript-mtime rule)
+//   dry-run writes NOTHING and spawns nothing mutating: the plan rides the
+//   supervisor's stdout line and `devswarm.js auto-archive`. "on" archives at
+//   most maxPerSweep per sweep (facts re-gathered immediately before each
+//   archive), logs <home>/.anti-hall/logs/devswarm-auto-archive.ndjson, and
+//   sends the Primary one line with an undo hint. With "on" and the archive
+//   verb available, the parent-inbox "archive-ready" nag is skipped for the
+//   workspaces this sweep is about to archive (autoArchiveOwns).
+//   On DevSwarm < 2.5.3 the archive verb is absent: "on" degrades to the
+//   dry-run report with dormant: "requires DevSwarm >= 2.5.3".
+//
+// FEATURE 2 — PRUNE old archived workspaces (owner-approved only).
+//   planPrune({olderThanDays}) lists app-archived, non-Primary builders with
+//   evidence per row and stores the plan under a random nonce
+//   (<home>/.anti-hall/devswarm/prune-plans/<nonce>.json). executePrune()
+//   deletes ONLY when the ids exactly equal that plan's eligible ids, the plan
+//   is <= 15 min old and unconsumed, and each row is re-verified (still
+//   archived, not Primary, worktree clean) right before its delete.
+//   CALLER GUARD (kept simple): executePrune refuses when
+//   ANTIHALL_CALLER is set to anything but "interactive" — the supervisor sets
+//   ANTIHALL_CALLER=supervisor — and it is referenced from exactly ONE place,
+//   the `prune-archived --confirm-ids` dispatch in scripts/devswarm.js
+//   (asserted by tests/hygiene/devswarm-lifecycle-no-auto-delete.test.js). The
+//   skill flow gates that call behind AskUserQuestion with the exact list.
+//   Each deletion is logged to <home>/.anti-hall/logs/devswarm-prune.ndjson and
+//   tombstoned in anti-hall (pruned/<id>.json + the existing descriptor
+//   archive); no anti-hall store rows are deleted.
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
+const caps = require('./devswarm-capabilities.js');
+const gitTruth = require('./devswarm-git-truth.js');
+
+const VIEWED_GRACE_MS = 10 * 60 * 1000;
+const PLAN_TTL_MS = 15 * 60 * 1000;
+const GIT_TIMEOUT_MS = 10000;
+const HC_TIMEOUT_MS = 60000;
+const SIZE_WALK_CAP = 200000;
+const DEFAULT_SETTINGS = Object.freeze({ mode: 'on', idleMin: 30, maxPerSweep: 3 });
+const DEFAULT_IGNORE_PINGS = true;
+const UNDO_HINT = 'undo: unarchive it from the archived workspaces list in the DevSwarm app';
+
+function devswarmDir(home) { return path.join(home, '.anti-hall', 'devswarm'); }
+function logsDir(home) { return path.join(home, '.anti-hall', 'logs'); }
+
+// ---------- settings ----------
+// devswarm.autoArchive.{mode,idleMin,maxPerSweep} via the unified settings
+// store (hooks/lib/settings.js: env > settings.json > /config > default;
+// numbers clamp to the schema bounds). `override` (tests/CLI) wins.
+function readSettings(home, override, env) {
+  const settings = require('../../hooks/lib/settings.js');
+  const opts = { home, env: env || process.env };
+  const a = Object.assign({
+    mode: settings.get('devswarm', 'autoArchive.mode', DEFAULT_SETTINGS.mode, opts),
+    idleMin: settings.get('devswarm', 'autoArchive.idleMin', DEFAULT_SETTINGS.idleMin, opts),
+    maxPerSweep: settings.get('devswarm', 'autoArchive.maxPerSweep', DEFAULT_SETTINGS.maxPerSweep, opts),
+    ignorePings: settings.get('devswarm', 'autoArchive.ignorePings', DEFAULT_IGNORE_PINGS, opts),
+  }, override || {});
+  const mode = ['on', 'off', 'dry-run'].includes(a.mode) ? a.mode : DEFAULT_SETTINGS.mode;
+  const idle = Number(a.idleMin);
+  const max = Number(a.maxPerSweep);
+  return {
+    mode,
+    idleMin: Number.isFinite(idle) && idle >= 5 ? Math.floor(idle) : DEFAULT_SETTINGS.idleMin,
+    maxPerSweep: Number.isFinite(max) && max >= 1 ? Math.min(20, Math.floor(max)) : DEFAULT_SETTINGS.maxPerSweep,
+    ignorePings: a.ignorePings !== false && a.ignorePings !== 'false',
+  };
+}
+
+// ---------- default fact sources (all read-only) ----------
+function normPath(p) {
+  if (typeof p !== 'string' || !p) return null;
+  try { return fs.realpathSync(path.resolve(p)); } catch (_) { return path.resolve(p); }
+}
+
+function appDbRows(o) {
+  let sqlite;
+  try { sqlite = require('./sqlite-quiet.js').requireSqlite(); } catch (_) { return null; }
+  const file = require('./devswarm-app-db.js').appDbPath({ env: o.env, home: o.home });
+  if (!file) return null;
+  try { if (!fs.statSync(file).isFile()) return null; } catch (_) { return null; }
+  let db = null;
+  try {
+    db = new sqlite.DatabaseSync(file, { readOnly: true });
+    const cols = new Set(db.prepare('PRAGMA table_info(builders)').all().map((c) => String(c.name)));
+    const want = ['id', 'repositoryId', 'branchName', 'sourceBranch', 'worktreePath', 'builderType', 'isActive',
+      'isHidden', 'lastSelectedAt', 'label', 'pullRequestId'];
+    if (!cols.has('id') || !cols.has('isActive')) return null;
+    const sel = want.filter((c) => cols.has(c));
+    const builders = db.prepare('SELECT ' + sel.join(', ') + ' FROM builders').all().map((r) => Object.assign({}, r));
+    let prs = [];
+    const prCols = new Set(db.prepare('PRAGMA table_info(pull_requests)').all().map((c) => String(c.name)));
+    if (prCols.has('branchName') && prCols.has('state')) {
+      const ps = ['id', 'repositoryId', 'branchName', 'state', 'targetBranch'].filter((c) => prCols.has(c));
+      prs = db.prepare('SELECT ' + ps.join(', ') + ' FROM pull_requests').all().map((r) => Object.assign({}, r));
+    }
+    return { builders, prs, hasLastSelected: cols.has('lastSelectedAt'), hasBuilderType: cols.has('builderType') };
+  } catch (_) {
+    return null;
+  } finally {
+    try { if (db) db.close(); } catch (_) {}
+  }
+}
+
+function defaultGit(cwd, args) {
+  try {
+    // GIT_OPTIONAL_LOCKS=0: `git status` must not refresh (write) the index of
+    // a checkout we only inspect.
+    const env = Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: '0' });
+    const r = spawnSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', timeout: GIT_TIMEOUT_MS, env });
+    if (r.error || r.signal) return { ok: false, status: null, out: '' };
+    return { ok: r.status === 0, status: r.status, out: String(r.stdout || '') };
+  } catch (_) { return { ok: false, status: null, out: '' }; }
+}
+
+function defaultRepoKey(worktree) {
+  try { return require('./devswarm-repokey.js').repoKeyForWorktree(worktree) || null; } catch (_) { return null; }
+}
+
+function defaultSummary(home, repoKey) {
+  try { return require('./devswarm-store.js').readSummaryForHash(home, repoKey); } catch (_) { return null; }
+}
+
+// unread rows FROM any of `ids` still unread in another partition. null = unknown.
+function defaultUnreadFrom(home, repoKey, ids, summary) {
+  const store = require('./devswarm-store.js');
+  let total = 0;
+  const others = Object.values((summary && summary.workspaces) || {}).filter((w) => w && !ids.includes(String(w.id)) && Number(w.unread) > 0);
+  if (!others.length) return 0;
+  try { if (!fs.existsSync(store.storeDirForHash(home, repoKey))) return null; } catch (_) { return null; }
+  let s = null;
+  try {
+    s = store.openStore({ home, hash: repoKey, readOnly: true });
+    for (const w of others) {
+      const rows = s.listMessages(w.id, { sinceCursor: Number(w.cursor) || 0 }) || [];
+      for (const r of rows) if (r && r.sender != null && ids.includes(String(r.sender))) total++;
+    }
+    return total;
+  } catch (_) {
+    return null;
+  } finally { try { if (s) s.close(); } catch (_) {} }
+}
+
+function defaultActivityTs(desc, home) {
+  try { return require('./liveness.js').readActivityTs(desc, home).ts; } catch (_) { return null; }
+}
+
+function defaultRealActivity(desc, home) {
+  try { return require('./devswarm-idle.js').realActivity(desc, home); } catch (_) { return { known: false }; }
+}
+
+// defaultLastInboundTs -> ms of the newest inbound message another workspace
+// sent to any of `ids` (0 = none), or null when the store cannot be read.
+// Every row in the child's own partition counts unless it is a broadcast
+// (mtype 'broadcast'), a heartbeat, or the child's own: a row drained from the
+// native mailbox carries mtype null and IS an inbound message.
+function defaultLastInboundTs(home, repoKey, ids) {
+  if (!repoKey) return null;
+  const store = require('./devswarm-store.js');
+  try { if (!fs.existsSync(store.storeDirForHash(home, repoKey))) return null; } catch (_) { return null; }
+  let s = null;
+  try {
+    s = store.openStore({ home, hash: repoKey, readOnly: true });
+    let best = 0;
+    for (const id of ids) {
+      for (const r of s.listMessages(id) || []) {
+        if (!r || r.mtype === 'broadcast' || r.isHeartbeat || ids.includes(String(r.sender))) continue;
+        if (Number.isFinite(r.ts) && r.ts > best) best = r.ts;
+      }
+    }
+    return best;
+  } catch (_) {
+    return null;
+  } finally { try { if (s) s.close(); } catch (_) {} }
+}
+
+function defaultDescriptors(home) {
+  try { return require('../devswarm-supervisor.js').readDescriptors(home); } catch (_) { return []; }
+}
+
+function resolveDeps(o) {
+  const d = o.deps || {};
+  return {
+    appDb: d.appDb || (() => appDbRows(o)),
+    git: d.git || defaultGit,
+    repoKey: d.repoKey || defaultRepoKey,
+    summary: d.summary || defaultSummary,
+    unreadFrom: d.unreadFrom || defaultUnreadFrom,
+    activityTs: d.activityTs || defaultActivityTs,
+    realActivity: d.realActivity || defaultRealActivity,
+    lastInboundTs: d.lastInboundTs || defaultLastInboundTs,
+    descriptors: d.descriptors || defaultDescriptors,
+    run: d.run || ((spec) => caps.gatedRun(require('./devswarm-pull.js').defaultRun)(spec)),
+    can: d.can || ((name) => caps.can(name, { env: o.env, home: o.home })),
+    notifyPrimary: d.notifyPrimary || defaultNotifyPrimary,
+  };
+}
+
+// ---------- shared fact helpers ----------
+// isPrimaryBuilder(b, db, o) — gate (e). Authority: the app DB's builderType
+// when that column is readable AND carries a value for this row. Otherwise
+// (no column, or a NULL/empty value) the anti-hall Primary seat's own
+// definition (primary-seat.js primaryCheckout: the project's main checkout).
+// NEVER a `primary-<hash>` descriptor id: that is also the worktree label a
+// legacy CHILD descriptor carries, and matching it made a standard child count
+// as the Primary. Unresolvable -> true (fail-safe: stays blocked).
+function isPrimaryBuilder(b, db, o) {
+  const bt = String((b && b.builderType) || '').trim().toLowerCase();
+  if (db && db.hasBuilderType && bt) return bt === 'primary';
+  const wt = b && b.worktreePath;
+  if (!wt || !fs.existsSync(wt)) return true;
+  try {
+    const ic = require('./identity.js').resolveContext(wt, { memo: false, missingPath: 'ancestor' });
+    if (!ic || !ic.worktreeRoot) return true;
+    return !!require('./primary-seat.js').primaryCheckout({ home: o.home, env: o.env, cwd: wt });
+  } catch (_) { return true; }
+}
+
+// mergedFact(b, db, deps, { allowPr, head, verifiedHead }) -> { merged, via } —
+// gate (b). The proof is gitTruth.gitMergeProof, shared with the `gate --set
+// merged` verb, so the two can never disagree (they did: gate (b) used to stop
+// at a stale LOCAL `main` while the verb checked origin/main). Order:
+//   1. git resolved: contained -> merged; "not an ancestor" -> BLOCKED, always
+//      (HEAD has commits the remote default branch lacks — a reused branch
+//      with new commits, or a squash merge, which has no sha-level proof);
+//   2. git undeterminable: a `merged` gate the verb verified at THIS HEAD
+//      (opts.verifiedHead === head) proves it;
+//   3. default branch unknown (no origin/HEAD): BLOCKED, 'default-branch-unknown'
+//      — fail safe, no PR fallback (it matches by branch name alone) and no
+//      origin/<sourceBranch> guess;
+//   4. then, only with opts.allowPr (a done-report bound to the current HEAD),
+//      a merged app DB PR row.
+function mergedFact(b, db, deps, opts) {
+  const allowPr = !!(opts && opts.allowPr);
+  let head = opts && typeof opts.head === 'string' ? opts.head : null;
+  const wt = b.worktreePath;
+  let defaultUnknown = false;
+  if (wt && fs.existsSync(wt)) {
+    const g = gitTruth.gitMergeProof(wt, { head, git: deps.git });
+    if (g.merged === true) return { merged: true, via: g.via };
+    if (g.merged === false) return { merged: false, via: 'git:not-ancestor' };
+    defaultUnknown = g.via === 'default-branch-unknown';
+    head = head || g.head;
+  }
+  if (head && opts && opts.verifiedHead === head) return { merged: true, via: 'gate:merged_verified' };
+  if (defaultUnknown) return { merged: false, via: 'default-branch-unknown' };
+  if (!allowPr) return { merged: false, via: 'unproven' };
+  const pr = (db.prs || []).find((p) => (b.pullRequestId && p.id === b.pullRequestId)
+    || (p.branchName === b.branchName && (!p.repositoryId || !b.repositoryId || p.repositoryId === b.repositoryId)));
+  if (pr && String(pr.state || '').toLowerCase() === 'merged') return { merged: true, via: 'pr' };
+  return { merged: false, via: pr ? 'pr:' + String(pr.state || '').toLowerCase() : 'unproven' };
+}
+
+// verifiedMergeHead(summary, ids) -> sha | null — the HEAD at which the gate
+// verb PROVED a `merged` gate (merged gate set, merged_verified true, sha
+// recorded). An unverified or sha-less merged gate returns null.
+function verifiedMergeHead(summary, ids) {
+  const ws = (summary && summary.workspaces) || {};
+  for (const id of ids) {
+    const w = ws[id];
+    if (w && w.gates && w.gates.merged === true && w.mergedVerified === true
+      && typeof w.mergedVerifiedHead === 'string' && w.mergedVerifiedHead) return w.mergedVerifiedHead;
+  }
+  return null;
+}
+
+// doneFact(summary, ids, head) -> { done, via, boundToHead } — gate (a), scoped
+// to AUTO-ARCHIVE only (archive_ready keeps its meaning for the parent gate /
+// merge gate). A done row the child's `devswarm.js done` verb wrote carries the
+// HEAD it reported at (summary doneHead, P1-B). Passes on:
+//   'done-report' — that doneHead equals the worktree's CURRENT HEAD
+//                   (boundToHead: gate (b) may use the PR fallback when git
+//                   ancestry is undeterminable);
+//   'gates'       — archive_ready with a sha-less done (a manual gate --set);
+//   'done-gate'   — a sha-less done row alone (the Primary's manual
+//                   `gate <id> --set done`).
+// The sha-less paths are not bound to a HEAD, so gate (b) accepts only the
+// git-ancestry proof for them. A done-report at an OLD HEAD ('stale-head')
+// never passes: the child committed after reporting done (e.g. reused its
+// branch after a squash-merged PR). tests_passed is not required: gate (b)
+// proves the merge and an archive is reversible. Chat text never counts.
+function doneFact(summary, ids, head) {
+  const ws = (summary && summary.workspaces) || {};
+  const rows = ids.map((id) => ws[id]).filter(Boolean);
+  let manual = null;
+  let stale = null;
+  for (const w of rows) {
+    const doneRow = !!(w.gates && w.gates.done === true);
+    if (!doneRow && w.archive_ready !== true) continue;
+    if (doneRow && typeof w.doneHead === 'string' && w.doneHead) {
+      if (head && w.doneHead === head) return { done: true, via: 'done-report', boundToHead: true };
+      if (!stale) stale = w.doneHead;
+      continue;
+    }
+    if (!manual) manual = { done: true, via: w.archive_ready === true ? 'gates' : 'done-gate', boundToHead: false };
+  }
+  if (manual) return manual;
+  if (stale) return { done: false, via: 'stale-head', doneHead: stale };
+  return { done: false, via: null };
+}
+
+// worktreeHead(wt, deps) -> sha | null
+function worktreeHead(wt, deps) {
+  if (!wt || !fs.existsSync(wt)) return null;
+  const r = deps.git(wt, ['rev-parse', 'HEAD']);
+  const sha = r && r.ok ? String(r.out || '').trim() : '';
+  return sha || null;
+}
+
+function cleanFact(wt, deps) {
+  if (!wt || !fs.existsSync(wt)) return { clean: null, reason: 'worktree-missing' };
+  const r = deps.git(wt, ['status', '--porcelain']);
+  if (!r.ok) return { clean: null, reason: 'git-status-failed' };
+  return { clean: r.out.trim() === '', reason: r.out.trim() ? 'uncommitted-changes' : null };
+}
+
+// unreadFact(ids, repoKey, deps, opts) -> { toChild, toDirect, toBroadcast, fromChild }
+// (null = unknown). By default `toChild` folds in broadcastUnread (the
+// pre-0.108.3 behavior, still used by the prune gate below). Pass
+// { excludeBroadcast: true } (auto-archive gate d, 0.108.3) to make `toChild`
+// DIRECT-only — see the gate-d comment at evaluateCandidate for why: a
+// broadcast/FYI backlog in the child's own inbox is not mail addressed to it
+// and must never block auto-archive.
+function unreadFact(home, repoKey, ids, deps, opts) {
+  const o = opts || {};
+  if (!repoKey) return { toChild: null, toDirect: null, toBroadcast: null, fromChild: null };
+  const summary = deps.summary(home, repoKey);
+  if (!summary || !summary.workspaces) return { toChild: null, toDirect: null, toBroadcast: null, fromChild: null, summary: null };
+  let toDirect = 0;
+  let toBroadcast = 0;
+  let known = false;
+  for (const id of ids) {
+    const w = summary.workspaces[id];
+    if (!w) continue;
+    known = true;
+    toDirect += Number(w.unread) || 0;
+    toBroadcast += Number(w.broadcastUnread) || 0;
+  }
+  const toChild = known ? (o.excludeBroadcast ? toDirect : toDirect + toBroadcast) : null;
+  const fromChild = deps.unreadFrom(home, repoKey, ids, summary);
+  return { toChild, toDirect: known ? toDirect : null, toBroadcast: known ? toBroadcast : null, fromChild, summary };
+}
+
+// ---------- FEATURE 1: auto-archive ----------
+// gatherCandidates -> [{ builder, descriptors, ids }] for ACTIVE non-archived
+// builders that anti-hall tracks (a registered descriptor by id or worktree).
+function gatherCandidates(o, deps, db) {
+  const descs = deps.descriptors(o.home) || [];
+  const byId = new Map();
+  for (const b of db.builders) {
+    if (Number(b.isActive) !== 1) continue;
+    byId.set(String(b.id), { builder: b, descriptors: [] });
+  }
+  const byWt = new Map();
+  for (const c of byId.values()) { const k = normPath(c.builder.worktreePath); if (k) byWt.set(k, c); }
+  for (const d of descs) {
+    const c = byId.get(String(d.id)) || byWt.get(normPath(d.worktreePath));
+    if (c) c.descriptors.push(d);
+  }
+  return [...byId.values()].filter((c) => c.descriptors.length > 0)
+    .map((c) => Object.assign(c, { ids: [...new Set([String(c.builder.id)].concat(c.descriptors.map((d) => String(d.id))))] }));
+}
+
+// idleFact -> { ts, via, openRealTurn, pendingBackground } — gate (g)'s
+// activity time (0.109.0). pendingBackground (background agent/Bash work not
+// yet reported complete, devswarm-idle.js) blocks outright, like an open turn.
+// ignorePings on (default): per descriptor, the newest REAL-work turn from the
+// classified transcript (devswarm-idle.js), which skips only the child's own
+// wake/ping/heartbeat/status turns — heartbeat files are not read, since every
+// writer of one is such a turn. Folded in as floors: the newest inbound DIRECT
+// message (a follow-up resets idle even before the child acts on it) and the
+// HEAD commit time. A descriptor whose transcript cannot be classified keeps
+// the pre-0.109 rule (heartbeat + transcript mtime) for itself; no classified
+// descriptor at all, or an unreadable store, falls back to that rule for the
+// whole candidate — it can only block, never archive early.
+function idleFact(c, o, deps, settings, repoKey, wt) {
+  const legacy = () => {
+    let t = null;
+    for (const d of c.descriptors) {
+      const x = deps.activityTs(d, o.home);
+      if (Number.isFinite(x) && (t === null || x > t)) t = x;
+    }
+    return { ts: t, via: 'activity', openRealTurn: false };
+  };
+  if (settings.ignorePings === false) return legacy();
+  let act = null;
+  let open = false;
+  let bg = false;
+  let anyKnown = false;
+  for (const d of c.descriptors) {
+    let r = null;
+    try { r = deps.realActivity(d, o.home); } catch (_) { r = null; }
+    let t;
+    if (r && r.known === true && Number.isFinite(r.ts)) {
+      anyKnown = true;
+      t = r.ts;
+      if (r.openRealTurn) open = true;
+      if (r.pendingBackground) bg = true;
+    } else {
+      t = deps.activityTs(d, o.home); // this descriptor: the pre-0.109 rule
+      if (!Number.isFinite(t)) continue;
+    }
+    if (act === null || t > act) act = t;
+  }
+  if (!anyKnown) return legacy();
+  let inbound = null;
+  try { inbound = deps.lastInboundTs(o.home, repoKey, c.ids); } catch (_) { inbound = null; }
+  if (!Number.isFinite(inbound)) return Object.assign(legacy(), { pendingBackground: bg }); // pending work known from a transcript still blocks
+  if (inbound > act) act = inbound;
+  if (wt && fs.existsSync(wt)) {
+    const g = deps.git(wt, ['log', '-1', '--format=%ct', 'HEAD']);
+    const sec = g && g.ok ? Number(String(g.out).trim()) : NaN;
+    if (Number.isFinite(sec) && sec > 0 && sec * 1000 > act) act = sec * 1000;
+  }
+  return { ts: act, via: 'real-work', openRealTurn: open, pendingBackground: bg };
+}
+
+// evaluateCandidate -> { id, label, branch, eligible, blockers:[{gate, detail}], soft }
+function evaluateCandidate(c, o, deps, db, settings, now) {
+  const b = c.builder;
+  const blockers = [];
+  const facts = {};
+  if (isPrimaryBuilder(b, db, o)) blockers.push({ gate: 'e-primary', detail: 'Primary workspace' });
+  const repoKey = deps.repoKey(b.worktreePath || c.descriptors[0].worktreePath);
+  // Gate (d), 0.108.3: DIRECT-only. A broadcast/FYI backlog in the child's own
+  // inbox (mesh-wide rows it was never individually addressed by) must never
+  // block auto-archive — only unread DIRECT rows TO it, or unread rows FROM it
+  // the Primary hasn't seen (e.g. its done report), count.
+  const un = unreadFact(o.home, repoKey, c.ids, deps, { excludeBroadcast: true });
+  const head = worktreeHead(b.worktreePath, deps);
+  const done = doneFact(un.summary, c.ids, head);
+  facts.done = done.done;
+  facts.doneVia = done.via;
+  if (!done.done) {
+    blockers.push({ gate: 'a-done', detail: !un.summary ? 'no mesh summary'
+      : done.via === 'stale-head' ? 'done reported at ' + String(done.doneHead).slice(0, 12) + ' but HEAD is now ' + (head ? head.slice(0, 12) : 'unresolvable') + ' — run done again'
+      : 'no done-report (done gate unset) and finish gates not all set' });
+  }
+  const m = mergedFact(b, db, deps, { allowPr: done.done && done.boundToHead === true, head, verifiedHead: verifiedMergeHead(un.summary, c.ids) });
+  facts.merged = m;
+  if (!m.merged) blockers.push({ gate: 'b-merged', detail: m.via });
+  const cl = cleanFact(b.worktreePath, deps);
+  facts.clean = cl.clean;
+  if (cl.clean !== true) blockers.push({ gate: 'c-clean', detail: cl.reason });
+  facts.unread = { toChild: un.toChild, toDirect: un.toDirect, toBroadcast: un.toBroadcast, fromChild: un.fromChild };
+  if (un.toChild !== 0 || un.fromChild !== 0) {
+    blockers.push({
+      gate: 'd-unread',
+      detail: 'to_direct=' + un.toDirect + ' to_broadcast=' + un.toBroadcast + ' from=' + un.fromChild,
+    });
+  }
+  if (!db.hasLastSelected) {
+    blockers.push({ gate: 'f-viewed', detail: 'lastSelectedAt unavailable' });
+  } else if (b.lastSelectedAt) {
+    const t = Date.parse(b.lastSelectedAt);
+    if (!Number.isFinite(t) || now - t < VIEWED_GRACE_MS) blockers.push({ gate: 'f-viewed', detail: 'selected ' + (Number.isFinite(t) ? Math.round((now - t) / 60000) + 'm ago' : 'at unknown time') });
+  }
+  const idle = idleFact(c, o, deps, settings, repoKey, b.worktreePath);
+  const act = idle.ts;
+  facts.idleMin = act === null ? null : Math.floor((now - act) / 60000);
+  facts.idleVia = idle.via;
+  if (idle.pendingBackground) {
+    blockers.push({ gate: 'g-idle', detail: 'background work the child launched (agent/Bash) has not reported completion' });
+  } else if (idle.openRealTurn) {
+    blockers.push({ gate: 'g-idle', detail: 'an AI turn doing real work is still open' });
+  } else if (act === null || now - act < settings.idleMin * 60000) {
+    blockers.push({ gate: 'g-idle', detail: act === null ? 'no activity signal' : 'active ' + facts.idleMin + 'm ago' + (idle.via === 'real-work' ? ' (real work)' : '') });
+  }
+  // Gate (h): the owner unarchived what this sweep archived (the app's
+  // archived list is the ONLY undo). The done gate at that HEAD is still set,
+  // so without this the sweep re-archives it once the focus/idle windows pass.
+  facts.head = head;
+  const prior = autoArchivedAt(o.home, c.ids, head);
+  if (prior) {
+    blockers.push({ gate: 'h-rearchive', detail: 'auto-archived at ' + head.slice(0, 12) + ' (' + prior.ts
+      + ') and unarchived since — never re-archived at the same HEAD; a new done at a new HEAD re-enables' });
+  }
+  const soft = blockers.length > 0 && blockers.every((x) => x.gate === 'g-idle' || x.gate === 'f-viewed');
+  return {
+    id: String(b.id), label: b.label || null, branch: b.branchName || null, repositoryId: b.repositoryId || null,
+    worktreePath: b.worktreePath || null, repoKey, eligible: blockers.length === 0, soft, blockers, facts,
+  };
+}
+
+// ---- DURABLE gate-(h) state (0.108.4) --------------------------------------
+// Gate (h) originally depended SOLELY on <home>/.anti-hall/logs/devswarm-
+// auto-archive.ndjson to remember "this id was already auto-archived at this
+// HEAD" — a general-purpose LOG file that log rotation/pruning elsewhere in
+// this codebase could legitimately remove, which would silently re-open the
+// exact re-archive-after-owner-unarchive hole gate (h) exists to close. This
+// state now lives in its OWN durable, purpose-built file that nothing else
+// ever rotates/prunes/rewrites:
+//   <home>/.anti-hall/devswarm/auto-archived.json
+//   shape: { "<id>": [ { doneHead, at }, ... ], ... }
+// APPEND-ONLY by construction: autoArchivedStateAppend only ever ADDS an
+// entry (idempotent — a duplicate {id,doneHead} is never re-added), never
+// removes one. autoArchivedAt below checks this file FIRST, falling back to
+// the ndjson log ONLY for pre-0.108.4 records the migration below has not
+// (yet) backfilled — so a caller who never runs the migration keeps working
+// exactly as before, and the durable file is authoritative once populated.
+function autoArchivedStatePath(home) { return path.join(devswarmDir(home), 'auto-archived.json'); }
+
+// readAutoArchivedState(home) -> { "<id>": [{doneHead, at}, ...] }. Fail-open
+// to {} on any missing/unreadable/malformed file — this state only ever
+// NARROWS what gate (h) can prove (the ndjson-log fallback below still
+// applies), so a read failure must never wrongly ALLOW or BLOCK an archive
+// on its own; it simply falls through to the existing log-based check.
+function readAutoArchivedState(home) {
+  try {
+    const raw = fs.readFileSync(autoArchivedStatePath(home), 'utf8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (_) { return {}; }
+}
+
+// autoArchivedStateAppend(home, id, doneHead, at) — best-effort, idempotent,
+// APPEND-ONLY durable record of one successful auto-archive. Read-modify-
+// write under an atomic tmp+rename (same idiom as markArchiveNudged
+// elsewhere in this file) — a lost race just means the next sweep's write
+// retries; nothing is ever corrupted by two writers racing since the merge
+// is a plain array push, deduped by (doneHead) before writing. Never
+// throws — a failure here must never break the archive it is recording.
+function autoArchivedStateAppend(home, id, doneHead, at) {
+  try {
+    const p = autoArchivedStatePath(home);
+    const state = readAutoArchivedState(home);
+    const key = String(id);
+    const list = Array.isArray(state[key]) ? state[key] : [];
+    if (!list.some((e) => e && e.doneHead === doneHead)) {
+      list.push({ doneHead: doneHead || null, at });
+      state[key] = list;
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const tmp = p + '.tmp-' + process.pid + '-' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(state));
+      fs.renameSync(tmp, p);
+    }
+  } catch (_) { /* best-effort — the ndjson log below remains the fallback source of truth */ }
+}
+
+// autoArchivedAt(home, ids, head) -> { id, doneHead, ts } | null — the
+// successful auto-archive of one of `ids` recorded at `head`. Checks the
+// DURABLE state file first (never rotated/pruned), falling back to the
+// auto-archive log (<home>/.anti-hall/logs/devswarm-auto-archive.ndjson:
+// append-only, never deleted or rewritten by THIS module; the durable state
+// file exists precisely because something ELSE in the codebase legitimately
+// could) for any record the migration has not backfilled yet. Records
+// before 0.108.3 carry no doneHead and never match either source.
+function autoArchivedAt(home, ids, head) {
+  if (!head) return null;
+  const state = readAutoArchivedState(home);
+  for (const id of ids) {
+    const list = state[String(id)];
+    if (!Array.isArray(list)) continue;
+    for (const e of list) {
+      if (e && e.doneHead === head) return { id: String(id), doneHead: e.doneHead, ts: e.at != null ? new Date(e.at).toISOString() : null };
+    }
+  }
+  let lines = [];
+  try { lines = fs.readFileSync(path.join(logsDir(home), 'devswarm-auto-archive.ndjson'), 'utf8').split('\n'); } catch (_) { return null; }
+  for (const l of lines) {
+    if (!l) continue;
+    try {
+      const r = JSON.parse(l);
+      if (r && r.action === 'auto-archive' && r.ok === true && r.doneHead === head && ids.includes(String(r.id))) {
+        return { id: String(r.id), doneHead: r.doneHead, ts: r.ts };
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+// migrateAutoArchivedState(home, {dryRun}) -> { scanned, migrated, pending,
+// errors }. Idempotent forward-migration: scans the ndjson log for every
+// successful `auto-archive` record and seeds the durable state file with any
+// (id, doneHead) pair it does not already carry (autoArchivedStateAppend's
+// own dedupe makes a re-run of this migration a true no-op — `migrated`
+// counts only entries genuinely ADDED this pass). dryRun:true reports the
+// pending count without writing anything. Fail-open: a missing/unreadable
+// log yields an all-zero report, never a throw.
+function migrateAutoArchivedState(home, opts) {
+  const o = opts || {};
+  const report = { scanned: 0, migrated: 0, pending: 0, errors: 0 };
+  let lines = [];
+  try { lines = fs.readFileSync(path.join(logsDir(home), 'devswarm-auto-archive.ndjson'), 'utf8').split('\n'); }
+  catch (_) { return report; }
+  const existing = readAutoArchivedState(home);
+  for (const l of lines) {
+    if (!l) continue;
+    let r;
+    try { r = JSON.parse(l); } catch (_) { report.errors++; continue; }
+    if (!(r && r.action === 'auto-archive' && r.ok === true && r.id)) continue;
+    report.scanned++;
+    const key = String(r.id);
+    const list = Array.isArray(existing[key]) ? existing[key] : [];
+    const already = list.some((e) => e && e.doneHead === r.doneHead);
+    if (already) continue;
+    report.pending++;
+    if (!o.dryRun) {
+      const at = r.at != null ? r.at : (r.ts ? Date.parse(r.ts) : Date.now());
+      autoArchivedStateAppend(home, r.id, r.doneHead || null, Number.isFinite(at) ? at : Date.now());
+      // Keep `existing` in sync within this loop so two records for the SAME
+      // id in one migration pass both land (autoArchivedStateAppend re-reads
+      // the file each call, so this is a correctness no-op, purely avoiding
+      // a redundant re-count of the same pair later in the same log).
+      list.push({ doneHead: r.doneHead || null, at });
+      existing[key] = list;
+      report.migrated++;
+    }
+  }
+  return report;
+}
+
+// planAutoArchive(opts) -> { ok, mode, settings, capability, candidates, toArchive, dormant? }
+// PURE READ: never writes, never spawns anything but git reads + --help probes.
+function planAutoArchive(opts) {
+  const o = Object.assign({ home: os.homedir(), env: process.env }, opts || {});
+  const deps = resolveDeps(o);
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const settings = o.settings || readSettings(o.home, null, o.env);
+  const db = deps.appDb();
+  if (!db) {
+    return { ok: false, reason: 'app-db-unavailable', mode: settings.mode, settings, capability: { ok: false, reason: 'not probed', version: null }, candidates: [], toArchive: [] };
+  }
+  const capability = deps.can('workspace.archive');
+  const out = { ok: true, mode: settings.mode, settings, capability: { ok: !!capability.ok, reason: capability.reason || null, version: capability.version || null }, candidates: [], toArchive: [] };
+  if (!capability.ok) out.dormant = capability.reason === 'hivecontrol-absent' ? 'DevSwarm not installed' : String(capability.reason);
+  for (const c of gatherCandidates(o, deps, db)) {
+    try { out.candidates.push(evaluateCandidate(c, o, deps, db, settings, now)); } catch (_) { /* fail closed: not listed */ }
+  }
+  out.toArchive = out.candidates.filter((c) => c.eligible).slice(0, settings.maxPerSweep).map((c) => c.id);
+  return out;
+}
+
+function appendNdjson(file, rec) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify(rec) + '\n');
+  } catch (_) {}
+}
+
+// verbArgv(verb, detail, target) -> ['workspace', verb, <id>] | null.
+// DevSwarm 2.5.3 `archive|delete [idOrBranch]` DEFAULT TO THE CURRENT
+// WORKSPACE when the argument is omitted, have no --yes flag and never
+// prompt. So the explicit workspace UUID is ALWAYS passed (never a branch —
+// ids are unambiguous) regardless of what the parsed help shows, and no
+// target id means no call at all (null): an argument-less archive/delete
+// would act on whatever workspace the command runs in.
+function verbArgv(verb, detail, target) {
+  const id = target && typeof target.id === 'string' ? target.id.trim() : '';
+  if (!id || id.startsWith('-')) return null;
+  return ['workspace', verb, id];
+}
+
+function primaryWorktreeFor(db, repositoryId) {
+  const p = (db.builders || []).find((b) => String(b.builderType || '').trim().toLowerCase() === 'primary'
+    && (!repositoryId || b.repositoryId === repositoryId) && b.worktreePath && fs.existsSync(b.worktreePath));
+  return p ? p.worktreePath : null;
+}
+
+// defaultNotifyPrimary(home, candidate, text) — one line into the Primary's
+// mesh partition via THE partition door (scripts/devswarm.js appendIntoPartition).
+function defaultNotifyPrimary(home, cand, text, o) {
+  try {
+    // THE identity resolver (companion/lib/identity.js): the Primary's mesh id
+    // is the main worktree's, identical for every worktree of the project.
+    const idc = require('./identity.js').resolveContext(cand.worktreePath);
+    const parentId = idc && idc.primaryMeshId;
+    if (!parentId || !cand.repoKey) return 'no-primary';
+    const store = require('./devswarm-store.js');
+    const s = store.openStore({ home, hash: cand.repoKey, env: o && o.env });
+    try {
+      const dw = require('../../scripts/devswarm.js');
+      const row = { workspaceId: parentId, ts: Date.now(), hash: 'auto-archive:' + cand.id, body: text };
+      const st = dw.appendIntoPartition(s, home, parentId, [row], { via: 'message' }).status;
+      if (st === 'ok') { try { store.deriveSummary(s, { home, env: o && o.env }); } catch (_) {} }
+      return st;
+    } finally { s.close(); }
+  } catch (_) { return 'error'; }
+}
+
+// autoArchiveSweep(opts) — the supervisor hook. dry-run/off/dormant: returns the
+// plan and writes NOTHING. on: archives toArchive (re-verified), logs, reports.
+function autoArchiveSweep(opts) {
+  const o = Object.assign({ home: os.homedir(), env: process.env }, opts || {});
+  const settings = o.settings || readSettings(o.home, null, o.env);
+  if (settings.mode === 'off') return { mode: 'off', archived: [] };
+  const plan = planAutoArchive(Object.assign({}, o, { settings }));
+  const summary = {
+    mode: settings.mode, dormant: plan.dormant || null, candidates: plan.candidates.length,
+    wouldArchive: plan.toArchive, archived: [], failed: [],
+  };
+  if (settings.mode !== 'on' || !plan.capability.ok || !plan.ok) return summary;
+  const deps = resolveDeps(o);
+  const cap = deps.can('workspace.archive');
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const db = deps.appDb();
+  for (const id of plan.toArchive) {
+    // Re-gather every fact immediately before acting (the plan may be seconds old).
+    const again = planAutoArchive(Object.assign({}, o, { settings, now: Number.isFinite(o.now) ? o.now : Date.now() }));
+    const cand = again.candidates.find((c) => c.id === id);
+    if (!cand || !cand.eligible) { summary.failed.push({ id, reason: 'no-longer-eligible' }); continue; }
+    const argv = verbArgv('archive', cap.detail, cand);
+    if (!argv) { summary.failed.push({ id, reason: 'no-workspace-id' }); continue; }
+    const cwd = (db && primaryWorktreeFor(db, cand.repositoryId)) || cand.worktreePath;
+    const res = deps.run({ args: argv, env: o.env, cwd, timeout: HC_TIMEOUT_MS });
+    // doneHead + at: the HEAD this archive acted on — gate (h) reads it back so
+    // an owner-unarchived workspace is never re-archived at the same HEAD.
+    const rec = { ts: new Date(now).toISOString(), at: now, action: 'auto-archive', id, doneHead: cand.facts.head || null, branch: cand.branch, label: cand.label, argv, ok: !!(res && res.ok), error: res && !res.ok ? String(res.error || '') : null };
+    appendNdjson(path.join(logsDir(o.home), 'devswarm-auto-archive.ndjson'), rec);
+    if (!res || !res.ok) { summary.failed.push({ id, reason: rec.error }); continue; }
+    // DURABLE gate-(h) record (0.108.4) — see the "DURABLE gate-(h) state"
+    // header above. Written alongside (never instead of) the ndjson log.
+    autoArchivedStateAppend(o.home, id, cand.facts.head || null, now);
+    summary.archived.push(id);
+    const name = cand.label || cand.branch || id;
+    const text = 'auto-archived "' + name + '" (' + id + ') — done, merged (' + cand.facts.merged.via + '), clean, no unread, idle '
+      + cand.facts.idleMin + 'm. ' + UNDO_HINT + '.';
+    deps.notifyPrimary(o.home, cand, text, o);
+  }
+  // Which done workspaces the sweep now owns (eligible, or only waiting on
+  // idle/viewed) — the parent-inbox nag skips exactly these (mode on only).
+  const owned = plan.candidates.filter((c) => c.eligible || c.soft).map((c) => c.id);
+  try {
+    const p = path.join(devswarmDir(o.home), 'auto-archive-state.json');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p + '.tmp', JSON.stringify({ at: now, owned }));
+    fs.renameSync(p + '.tmp', p);
+  } catch (_) {}
+  return summary;
+}
+
+// autoArchiveOwns(home, id, opts) -> bool. True only when mode is "on", the
+// archive verb is available, and the last sweep (<= 1 h ago) owns this id.
+function autoArchiveOwns(home, id, opts) {
+  try {
+    const o = opts || {};
+    if (readSettings(home).mode !== 'on') return false;
+    const st = JSON.parse(fs.readFileSync(path.join(devswarmDir(home), 'auto-archive-state.json'), 'utf8'));
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    if (!st || !Array.isArray(st.owned) || !(now - Number(st.at) < 60 * 60 * 1000)) return false;
+    if (!st.owned.includes(String(id))) return false;
+    return caps.can('workspace.archive', { home, env: o.env || process.env }).ok === true;
+  } catch (_) { return false; }
+}
+
+// ---------- FEATURE 2: prune archived ----------
+function dirSize(root) {
+  let bytes = 0;
+  let n = 0;
+  const stack = [root];
+  while (stack.length) {
+    const d = stack.pop();
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
+    for (const e of ents) {
+      if (++n > SIZE_WALK_CAP) return { bytes, capped: true };
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) stack.push(p);
+      else if (e.isFile()) { try { bytes += fs.lstatSync(p).size; } catch (_) {} }
+    }
+  }
+  return { bytes, capped: false };
+}
+
+// archivedSince(home, id) -> { ts, source } | null. Conservative (never older
+// than the truth): our own auto-archive log, else the anti-hall archived
+// marker's ctime (link/write time — at or after the archive).
+function archivedSince(home, id) {
+  let best = null;
+  try {
+    const lines = fs.readFileSync(path.join(logsDir(home), 'devswarm-auto-archive.ndjson'), 'utf8').split('\n');
+    for (const l of lines) {
+      if (!l) continue;
+      try { const r = JSON.parse(l); if (r.id === id && r.ok) best = { ts: Date.parse(r.ts), source: 'auto-archive-log' }; } catch (_) {}
+    }
+  } catch (_) {}
+  if (best && Number.isFinite(best.ts)) return best;
+  try {
+    const st = fs.statSync(path.join(devswarmDir(home), 'archived', id + '.json'));
+    return { ts: st.ctimeMs, source: 'archived-marker' };
+  } catch (_) { return null; }
+}
+
+function prunePlansDir(home) { return path.join(devswarmDir(home), 'prune-plans'); }
+
+// evaluateArchived(b) -> row with evidence + blockers
+function evaluateArchived(b, o, deps, db, now, olderThanDays) {
+  const id = String(b.id);
+  const blockers = [];
+  const since = archivedSince(o.home, id);
+  const ageDays = since && Number.isFinite(since.ts) ? Math.floor((now - since.ts) / 86400000) : null;
+  if (ageDays === null) blockers.push('archive-age-unknown');
+  else if (ageDays < olderThanDays) blockers.push('younger-than-' + olderThanDays + 'd');
+  if (isPrimaryBuilder(b, db, o)) blockers.push('primary');
+  const m = mergedFact(b, db, deps);
+  if (!m.merged) blockers.push('not-merged(' + m.via + ')');
+  const cl = cleanFact(b.worktreePath, deps);
+  if (cl.clean !== true) blockers.push(cl.reason || 'unclean');
+  const repoKey = b.worktreePath ? deps.repoKey(b.worktreePath) : null;
+  const un = repoKey ? unreadFact(o.home, repoKey, [id], deps) : { toChild: null, fromChild: null };
+  if (un.toChild || un.fromChild) blockers.push('unread');
+  const size = b.worktreePath && fs.existsSync(b.worktreePath) ? (o.sizeOf || dirSize)(b.worktreePath) : null;
+  return {
+    id, label: b.label || null, branch: b.branchName || null, repositoryId: b.repositoryId || null,
+    worktreePath: b.worktreePath || null,
+    archivedSince: since && Number.isFinite(since.ts) ? new Date(since.ts).toISOString() : null,
+    archivedSinceSource: since ? since.source : null, ageDays,
+    merged: m.merged, mergedVia: m.via, uncommitted: cl.clean === null ? null : !cl.clean,
+    unread: { toChild: un.toChild, fromChild: un.fromChild },
+    worktreeBytes: size ? size.bytes : null, worktreeBytesCapped: size ? size.capped : null,
+    eligible: blockers.length === 0, blockers,
+  };
+}
+
+// planPrune({ olderThanDays }) -> { ok, nonce, expiresAt, rows, eligibleIds, capability }
+// DRY RUN: the only write is the plan file itself.
+function planPrune(opts) {
+  const o = Object.assign({ home: os.homedir(), env: process.env }, opts || {});
+  const deps = resolveDeps(o);
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const olderThanDays = Number(o.olderThanDays);
+  if (!Number.isFinite(olderThanDays) || olderThanDays < 0) return { ok: false, error: '--older-than <days> is required (a number >= 0)' };
+  const capability = deps.can('workspace.delete');
+  const db = deps.appDb();
+  if (!db) return { ok: false, error: 'DevSwarm app database unavailable' };
+  const rows = [];
+  for (const b of db.builders) {
+    if (!(Number(b.isActive) === 0 && Number(b.isHidden) === 1)) continue; // archived only
+    try { rows.push(evaluateArchived(b, o, deps, db, now, olderThanDays)); } catch (_) {}
+  }
+  const eligibleIds = rows.filter((r) => r.eligible).map((r) => r.id).sort();
+  const nonce = crypto.randomBytes(8).toString('hex');
+  const plan = { nonce, createdAt: now, expiresAt: now + PLAN_TTL_MS, olderThanDays, eligibleIds, rows };
+  try {
+    fs.mkdirSync(prunePlansDir(o.home), { recursive: true });
+    fs.writeFileSync(path.join(prunePlansDir(o.home), nonce + '.json'), JSON.stringify(plan, null, 2));
+  } catch (e) { return { ok: false, error: 'could not store the plan: ' + String((e && e.message) || e) }; }
+  return {
+    ok: true, dryRun: true, nonce, expiresAt: new Date(plan.expiresAt).toISOString(), olderThanDays, rows, eligibleIds,
+    capability: { ok: !!capability.ok, reason: capability.reason || null, version: capability.version || null },
+    dormant: capability.ok ? null : (capability.reason === 'hivecontrol-absent' ? 'DevSwarm not installed' : String(capability.reason)),
+    next: eligibleIds.length
+      ? 'ask the owner to approve EXACTLY these ids, then: devswarm.js prune-archived --confirm-ids ' + eligibleIds.join(',') + ' --plan ' + nonce
+      : 'nothing eligible',
+  };
+}
+
+function assertInteractiveCaller(env) {
+  const c = env && env.ANTIHALL_CALLER;
+  if (c && c !== 'interactive') {
+    throw new Error('prune-archived deletion refused: caller "' + c + '" is automated (only an owner-approved interactive run may delete)');
+  }
+}
+
+// executePrune({ ids, nonce }) — deletes ONLY an owner-approved, fresh, exact plan.
+function executePrune(opts) {
+  const o = Object.assign({ home: os.homedir(), env: process.env }, opts || {});
+  assertInteractiveCaller(o.env);
+  const deps = resolveDeps(o);
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const logFile = path.join(logsDir(o.home), 'devswarm-prune.ndjson');
+  const ids = [...new Set((o.ids || []).map(String).filter(Boolean))].sort();
+  if (!o.nonce || !/^[0-9a-f]{16}$/.test(String(o.nonce))) return { ok: false, error: '--confirm-ids requires --plan <nonce> from a prune-archived dry run' };
+  const planPath = path.join(prunePlansDir(o.home), String(o.nonce) + '.json');
+  let plan;
+  try { plan = JSON.parse(fs.readFileSync(planPath, 'utf8')); } catch (_) { return { ok: false, error: 'unknown plan nonce ' + o.nonce }; }
+  if (plan.consumedAt) return { ok: false, error: 'plan ' + o.nonce + ' was already used' };
+  if (!(now <= plan.expiresAt && now >= plan.createdAt)) return { ok: false, error: 'plan ' + o.nonce + ' expired (plans are valid 15 min) — re-run the dry run' };
+  const planned = (plan.eligibleIds || []).slice().sort();
+  if (!ids.length || ids.length !== planned.length || ids.some((x, i) => x !== planned[i])) {
+    return { ok: false, error: '--confirm-ids must exactly match the plan\'s eligible ids: ' + planned.join(',') };
+  }
+  const cap = deps.can('workspace.delete');
+  if (!cap.ok) return { ok: false, error: 'deletion unavailable: ' + (cap.reason === 'hivecontrol-absent' ? 'DevSwarm not installed' : cap.reason), dormant: true };
+  try {
+    plan.consumedAt = now;
+    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+  } catch (e) { return { ok: false, error: 'could not mark the plan consumed: ' + String((e && e.message) || e) }; }
+  const db = deps.appDb();
+  if (!db) return { ok: false, error: 'DevSwarm app database unavailable' };
+  const results = [];
+  for (const id of ids) {
+    const b = db.builders.find((x) => String(x.id) === id);
+    const rec = { ts: new Date(now).toISOString(), action: 'prune-delete', plan: plan.nonce, id, branch: b ? b.branchName : null };
+    // Re-verify ourselves — never rely on the CLI's own guards alone.
+    let refuse = null;
+    if (!b) refuse = 'builder-not-found';
+    else if (!(Number(b.isActive) === 0 && Number(b.isHidden) === 1)) refuse = 'no-longer-archived';
+    else if (isPrimaryBuilder(b, db, o)) refuse = 'primary';
+    else {
+      const cl = cleanFact(b.worktreePath, deps);
+      if (cl.clean !== true) refuse = cl.reason || 'unclean';
+    }
+    if (refuse) {
+      appendNdjson(logFile, Object.assign(rec, { ok: false, refused: refuse }));
+      results.push({ id, ok: false, refused: refuse });
+      continue;
+    }
+    const argv = verbArgv('delete', cap.detail, { id, branch: b.branchName });
+    if (!argv) { results.push({ id, ok: false, refused: 'no-workspace-id' }); continue; }
+    const cwd = primaryWorktreeFor(db, b.repositoryId) || o.cwd || process.cwd();
+    const res = deps.run({ args: argv, env: o.env, cwd, timeout: HC_TIMEOUT_MS });
+    const ok = !!(res && res.ok);
+    appendNdjson(logFile, Object.assign(rec, { argv, ok, error: ok ? null : String((res && res.error) || '') }));
+    if (!ok) { results.push({ id, ok: false, error: String((res && res.error) || '') }); continue; }
+    const tomb = tombstone(o, id, b, plan.nonce, now);
+    results.push({ id, ok: true, tombstone: tomb });
+  }
+  return { ok: results.every((r) => r.ok), plan: plan.nonce, results, log: logFile };
+}
+
+// tombstone — anti-hall side only; NEVER deletes store rows or files.
+function tombstone(o, id, b, nonce, now) {
+  const out = { marker: false, descriptorArchived: null };
+  try {
+    const dir = path.join(devswarmDir(o.home), 'pruned');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify({ id, prunedAt: now, plan: nonce, branch: b.branchName || null, worktreePath: b.worktreePath || null }));
+    out.marker = true;
+  } catch (_) {}
+  if (typeof o.archiveDescriptor === 'function' && fs.existsSync(path.join(devswarmDir(o.home), 'workspaces', id + '.json'))) {
+    try { const r = o.archiveDescriptor(id); out.descriptorArchived = !!(r && r.ok); } catch (_) { out.descriptorArchived = false; }
+  }
+  return out;
+}
+
+module.exports = {
+  DEFAULT_SETTINGS, VIEWED_GRACE_MS, PLAN_TTL_MS, UNDO_HINT,
+  readSettings, planAutoArchive, autoArchiveSweep, autoArchiveOwns,
+  planPrune, executePrune, assertInteractiveCaller, archivedSince, verbArgv,
+  notifyPrimary: defaultNotifyPrimary,
+  // 0.108.4 durable gate-(h) state (auto-archived.json) + its migration.
+  autoArchivedStatePath, readAutoArchivedState, autoArchivedStateAppend,
+  autoArchivedAt, migrateAutoArchivedState,
+};

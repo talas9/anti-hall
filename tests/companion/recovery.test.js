@@ -1,0 +1,1012 @@
+'use strict';
+// recovery: confirm-gated precise kill + TOCTOU re-confirm + group-kill +
+// single-writer stale-steal lock + DETACHED resume + N-cap escalate. ALL
+// kill/spawn/lock/fs/reconfirm is injected — NO real process is ever touched. The
+// load-bearing assertions: never broad-kill, abstain on ambiguity, re-confirm
+// before EACH signal (pid-recycle defense), group-signal children, escalate after
+// N, single-writer with dead-holder steal, Windows never kills, a timed-out resume
+// is never falsely marked alive. Workaround for #39755.
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const cp = require('node:child_process');
+
+const M = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'recovery.js',
+));
+const { livenessPathFor } = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'liveness.js',
+));
+const storeLib = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js',
+));
+const inst = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js',
+));
+const repokeyLib = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-repokey.js',
+));
+
+const UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+// The parent (Primary) is REGISTERED in its store, as `register-primary` leaves it:
+// an escalation notice goes through appendIntoPartition, which delivers only into a
+// registered destination (else it parks a retry intent — see recovery.test.js
+// 'escalation into an UNREGISTERED parent').
+function registerParent(storeMod, home, parentId, hash, extra) {
+  const s = storeMod.openStore(Object.assign({ home, workspaceId: parentId, hash: hash || undefined }, extra || {}));
+  try { s.upsertRegistry({ id: parentId, worktreePath: '/parent/' + parentId, sessionId: 'sess-parent' }); } finally { s.close(); }
+}
+
+function makeHome() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-recovery-'));
+  return { home, cleanup: () => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
+}
+function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
+// makeGitRepo(tag) — a REAL git repo, so repoKeyForWorktree (devswarm-repokey.js)
+// resolves non-null. Mirrors tests/companion/install-ingest-repokey.test.js /
+// tests/scripts/devswarm-fold-mesh.test.js's own local copy of this helper.
+function makeGitRepo(tag) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-recovery-repo-' + tag + '-'));
+  cp.spawnSync('git', ['init', '-q', dir]);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.email', 'a@b.c']);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'README.md'), tag);
+  cp.spawnSync('git', ['-C', dir, 'add', '.']);
+  cp.spawnSync('git', ['-C', dir, 'commit', '-q', '-m', 'init']);
+  return dir;
+}
+function descriptor(home) {
+  const worktreePath = path.join(home, 'wt');
+  fs.mkdirSync(worktreePath, { recursive: true });
+  const inboxPath = path.join(worktreePath, 'inbox.ndjson');
+  const cursorPath = path.join(worktreePath, 'cursor');
+  fs.writeFileSync(inboxPath, JSON.stringify({ m: 'do the thing' }) + '\n');
+  fs.writeFileSync(cursorPath, '0');
+  return { id: 'w1', worktreePath, inboxPath, cursorPath, sessionId: UUID };
+}
+// A spy io: records single-pid kills, GROUP kills, and spawn calls. kill(pid,0)
+// reports alive until told otherwise. reconfirm defaults TRUE (identity holds).
+function spyIo(overrides) {
+  const killed = [];   // single-pid signals: [pid, signal]
+  const groups = [];   // process-group signals: [pid, signal]
+  const spawns = [];
+  const io = Object.assign({
+    platform: 'darwin',
+    selfPid: 999999,
+    sleep: () => {},
+    reconfirm: () => true,
+    kill: (pid, signal) => { killed.push([pid, signal]); return signal === 0 ? false : true; }, // dead after SIGTERM
+    killGroup: (pid, signal) => { groups.push([pid, signal]); return true; },
+    spawnResume: (a) => { spawns.push(a); return { output: 'ok', status: 0 }; },
+  }, overrides || {});
+  return { io, killed, groups, spawns };
+}
+
+test('ABSTAIN target -> never kills; writes ambiguous verdict + logs', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io, killed, groups } = spyIo();
+    const r = M.recover({ descriptor: d, target: { ambiguous: true, reason: 'multiple-candidates' }, home, io });
+    assert.strictEqual(r.action, 'abstain');
+    assert.strictEqual(killed.length, 0);
+    assert.strictEqual(groups.length, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'ambiguous');
+    assert.ok(fs.readFileSync(path.join(home, '.anti-hall', 'devswarm', 'recovery.log'), 'utf8').includes('abstain'));
+  } finally { cleanup(); }
+});
+
+test('Windows: escalate-only, never kills regardless of target', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io, killed, groups } = spyIo({ platform: 'win32' });
+    const r = M.recover({ descriptor: d, target: { pid: 123, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'win32-no-kill');
+    assert.strictEqual(killed.length, 0);
+    assert.strictEqual(groups.length, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+  } finally { cleanup(); }
+});
+
+test('happy path: SIGTERM the ONE pid + its GROUP, resume, increment recoveries', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io, killed, groups, spawns } = spyIo();
+    const r = M.recover({ descriptor: d, target: { pid: 555, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'resumed');
+    assert.strictEqual(r.recoveries, 1);
+    // exactly one pid targeted; SIGTERM then alive-check (signal 0). No SIGKILL (died on TERM).
+    assert.deepStrictEqual(killed.map((k) => k[0]), [555, 555]);
+    assert.deepStrictEqual(killed.map((k) => k[1]), ['SIGTERM', 0]);
+    // P0-5: the process GROUP is signaled alongside the parent (children not orphaned).
+    assert.deepStrictEqual(groups, [[555, 'SIGTERM']]);
+    // A timed-out/unconfirmed resume is never marked 'alive' — status stays 'recovering'.
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'recovering');
+    assert.ok(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).recoveredAt > 0);
+    // resume from the worktree cwd, backlog fed as prompt.
+    assert.strictEqual(spawns.length, 1);
+    assert.strictEqual(spawns[0].cwd, d.worktreePath);
+    assert.strictEqual(spawns[0].uuid, UUID);
+    assert.ok(spawns[0].prompt.includes('do the thing'));
+  } finally { cleanup(); }
+});
+
+test('SIGKILL + group-SIGKILL only when the pid survives the grace window', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    // kill(pid,0) reports alive -> forces the SIGKILL branch.
+    const { io, killed, groups } = spyIo({ kill: (pid, signal) => { killed.push([pid, signal]); return true; } });
+    M.recover({ descriptor: d, target: { pid: 42, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.deepStrictEqual(killed.map((k) => k[1]), ['SIGTERM', 0, 'SIGKILL']);
+    assert.ok(killed.every((k) => k[0] === 42)); // NEVER any pid but the target
+    assert.deepStrictEqual(groups, [[42, 'SIGTERM'], [42, 'SIGKILL']]);
+  } finally { cleanup(); }
+});
+
+test('TOCTOU pre-SIGTERM: identity gone on fresh data -> ABSTAIN, no signal at all', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io, killed, groups } = spyIo({ reconfirm: () => false }); // re-derive fails immediately
+    const r = M.recover({ descriptor: d, target: { pid: 77, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'abstain');
+    assert.strictEqual(killed.length, 0);
+    assert.strictEqual(groups.length, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'ambiguous');
+  } finally { cleanup(); }
+});
+
+test('TOCTOU pre-SIGKILL: pid recycled during the grace window -> NO SIGKILL (abstain)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    let calls = 0;
+    const { io, killed, groups } = spyIo({
+      kill: (pid, signal) => { killed.push([pid, signal]); return true; }, // always "alive" -> reaches pre-kill re-confirm
+      reconfirm: () => { calls += 1; return calls === 1; },               // ok before SIGTERM, GONE before SIGKILL
+    });
+    const r = M.recover({ descriptor: d, target: { pid: 88, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'abstain');
+    // SIGTERM (and its group) happened; the alive-check happened; but NO SIGKILL.
+    assert.deepStrictEqual(killed.map((k) => k[1]), ['SIGTERM', 0]);
+    assert.ok(!killed.some((k) => k[1] === 'SIGKILL'), 'must not SIGKILL a recycled pid');
+    assert.deepStrictEqual(groups, [[88, 'SIGTERM']]);
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'ambiguous');
+  } finally { cleanup(); }
+});
+
+test('DETACHED resume that outlives the readiness window is NOT killed and NOT marked alive', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    // spawnResume reports the child is still running (timedOut) with no early output.
+    const { io, killed } = spyIo({ spawnResume: (a) => ({ pid: 4242, timedOut: true, output: '' }) });
+    const r = M.recover({ descriptor: d, target: { pid: 5, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'resumed');
+    assert.strictEqual(r.recoveries, 1);
+    // the long-running resumed child (pid 4242) is NEVER signaled by recovery.
+    assert.ok(!killed.some((k) => k[0] === 4242), 'resumed child must not be killed');
+    // unconfirmed resume -> status 'recovering' (+recoveredAt), never a false 'alive'.
+    const v = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(v.status, 'recovering');
+    assert.ok(v.recoveredAt > 0);
+  } finally { cleanup(); }
+});
+
+test('"No conversation found" -> expected escalate, not thrown', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io } = spyIo({ spawnResume: () => ({ output: 'No conversation found', status: 1 }) });
+    const r = M.recover({ descriptor: d, target: { pid: 7, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'no-conversation-found');
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+  } finally { cleanup(); }
+});
+
+test('escalate after N recoveries (cap)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    fs.mkdirSync(path.join(home, '.anti-hall', 'devswarm', 'liveness'), { recursive: true });
+    fs.writeFileSync(livenessPathFor('w1', home), JSON.stringify({ status: 'stale', lastOutboundTs: 1, staleSince: 1, recoveries: 3 }));
+    const { io, killed } = spyIo();
+    const r = M.recover({ descriptor: d, target: { pid: 9, uuid: UUID, worktreePath: d.worktreePath }, home, io, maxRecoveries: 3 });
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'max-recoveries');
+    assert.strictEqual(killed.length, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+  } finally { cleanup(); }
+});
+
+test('single-writer: a live-holder lock -> second attempt skips (no kill)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    // Hold the lock by calling acquireLock directly; do not release. The holder pid
+    // is THIS live process, so recovery must respect it (no dead-holder steal).
+    const held = M.acquireLock('w1', home, { fs });
+    assert.ok(held, 'first lock must succeed');
+    const { io, killed } = spyIo();
+    const r = M.recover({ descriptor: d, target: { pid: 3, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'skip');
+    assert.strictEqual(r.reason, 'locked');
+    assert.strictEqual(killed.length, 0);
+    held(); // release
+  } finally { cleanup(); }
+});
+
+test('acquireLock: a DEAD-holder lock is stolen; a LIVE-holder lock is respected', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const p = M.lockPathFor('w1', home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // Pre-write a lock owned by a (pretend) DEAD holder, fresh timestamp.
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: Date.now() }));
+    const stolen = M.acquireLock('w1', home, { fs, isAlive: () => false });
+    assert.ok(stolen, 'dead-holder lock must be stealable (crash must not disable recovery)');
+    stolen();
+    // Pre-write a lock owned by a LIVE holder, fresh timestamp -> must NOT steal.
+    fs.writeFileSync(p, JSON.stringify({ pid: 4243, ts: Date.now() }));
+    const blocked = M.acquireLock('w1', home, { fs, isAlive: () => true });
+    assert.strictEqual(blocked, null, 'a live, fresh holder must be respected');
+  } finally { cleanup(); }
+});
+
+// TOCTOU FIX (defect #21's real root cause -- discovered via the
+// devswarm-primary-seat "concurrent adoption" test flaking on macOS CI).
+// acquireLock used to `openSync(p, 'wx')` then, as a SEPARATE syscall,
+// `writeSync(fd, ...)` the {pid, ts, token} payload. A second acquireLock
+// call that hit EEXIST in the window between those two syscalls read the
+// lock file WHILE IT WAS STILL EMPTY: JSON.parse('') threw, `holder` stayed
+// null, and the old `stale = holderTs === null || ...` check read a null
+// holder as unconditionally stale -- stealing a lock its rightful, live,
+// milliseconds-old owner was still writing. Two real processes were observed
+// both reporting a successful acquire for the SAME id at the SAME
+// Date.now() millisecond. The fix publishes the lock via write-then-link
+// (linkSync fails EEXIST the same way `wx` did, but only ever exposes a
+// FULLY WRITTEN file) so this interleaving can no longer produce a
+// visible-but-empty lock file.
+test('acquireLock: TOCTOU fix — a racer that hits EEXIST inside the write-then-publish window never sees an empty/unparseable lock file, and respects the (now fully-written) live holder instead of stealing it', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'race-toctou';
+    const p = M.lockPathFor(id, home);
+    let sawEmptyOrUnparseable = false;
+    const tracedFs = Object.assign({}, fs, {
+      readFileSync(file, enc) {
+        const raw = fs.readFileSync(file, enc);
+        if (file === p) {
+          try { JSON.parse(raw); } catch (_) { sawEmptyOrUnparseable = true; }
+        }
+        return raw;
+      },
+    });
+    // Fire a SECOND, fully-nested acquireLock call from inside the FIRST
+    // call's own linkSync -- the tightest possible interleaving (tighter
+    // than two real OS processes could ever guarantee), landing exactly in
+    // the old two-syscall gap this fix closes.
+    let racerResult = 'not-run';
+    const racingFs = Object.assign({}, tracedFs, {
+      linkSync(src, dest) {
+        if (dest === p && racerResult === 'not-run') {
+          racerResult = M.acquireLock(id, home, { fs: tracedFs, isAlive: () => true });
+        }
+        return fs.linkSync(src, dest);
+      },
+    });
+    const outer = M.acquireLock(id, home, { fs: racingFs, isAlive: () => true });
+    assert.notStrictEqual(racerResult, 'not-run', 'the nested racer must actually have run inside the window');
+    // Exactly one of {outer, racer} wins (gets a release fn); the other gets
+    // null because it correctly reads the WINNER's fully-written, live,
+    // fresh lock -- never because it saw an empty file and stole a live lock.
+    const results = [outer, racerResult];
+    const winners = results.filter((r) => typeof r === 'function');
+    assert.strictEqual(winners.length, 1, 'exactly one acquireLock call wins the race: ' + JSON.stringify(results.map((r) => typeof r)));
+    assert.ok(results.includes(null), 'the loser is null (a respected live holder), not a second, silently-granted lock');
+    assert.strictEqual(sawEmptyOrUnparseable, false, 'the fix guarantees the lock file is never observed with missing/unparseable content');
+    winners[0]();
+  } finally { cleanup(); }
+});
+
+// FIX (P3, v0.108.1 follow-up -- code-review regression from the TOCTOU fix
+// above): if linkSync fails with anything other than EEXIST (EPERM/ENOTSUP/
+// EXDEV/ENOSYS -- e.g. ~/.anti-hall mounted on SMB/exFAT), the write-then-link
+// publish path used to just throw the raw error straight out of the try block
+// to the OUTER catch, which treats any non-EEXIST error as "fail-open, no
+// lock" -- meaning EVERY acquireLock call on such a filesystem returned null,
+// and withIdLock refused every DevSwarm mutation it gates, permanently, on
+// that filesystem. acquireLock now falls back to the pre-fix create-then-
+// write (openSync(p, 'wx') + writeSync) for that one attempt instead.
+test('acquireLock: P3 fix — linkSync failing with a non-EEXIST error (EPERM: e.g. SMB/exFAT) falls back to the old create-then-write path instead of refusing every acquire', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'link-unsupported';
+    const p = M.lockPathFor(id, home);
+    let linkSyncCalls = 0;
+    const noLinkFs = Object.assign({}, fs, {
+      linkSync() {
+        linkSyncCalls++;
+        const err = new Error('EPERM: operation not permitted, link');
+        err.code = 'EPERM';
+        throw err;
+      },
+    });
+    const held = M.acquireLock(id, home, { fs: noLinkFs, isAlive: () => true });
+    assert.strictEqual(linkSyncCalls, 1, 'precondition: linkSync was actually exercised and made to fail');
+    assert.strictEqual(typeof held, 'function', 'acquireLock must still succeed via the create-then-write fallback, not fail-open to null');
+    const onDisk = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.strictEqual(onDisk.pid, process.pid, 'the fallback path still publishes a real, correct holder record');
+    // A second acquirer on the SAME (still-linkSync-broken) filesystem must
+    // see the live holder and be refused, exactly as the normal path would.
+    const blocked = M.acquireLock(id, home, { fs: noLinkFs, isAlive: () => true });
+    assert.strictEqual(blocked, null, 'the fallback-published lock is still respected by a concurrent acquirer');
+    held();
+    assert.strictEqual(fs.existsSync(p), false, 'release still works normally after a fallback-path acquire');
+  } finally { cleanup(); }
+});
+
+test('acquireLock: P3 fix — a linkSync EEXIST (a real concurrent winner) is NOT swallowed by the fallback; the normal dead/stale-holder logic still runs', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'link-unsupported-eexist';
+    const p = M.lockPathFor(id, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: 4321, ts: Date.now(), token: 'live-holder' }));
+    const eexistOnlyFs = Object.assign({}, fs, {
+      linkSync() {
+        const err = new Error('EEXIST: file already exists, link');
+        err.code = 'EEXIST';
+        throw err;
+      },
+    });
+    const blocked = M.acquireLock(id, home, { fs: eexistOnlyFs, isAlive: () => true });
+    assert.strictEqual(blocked, null, 'an EEXIST from linkSync must still route into the normal live-holder respect path, not the wx fallback');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(p, 'utf8')).token, 'live-holder', 'the live holder is untouched');
+  } finally { cleanup(); }
+});
+
+// FIX (P1, pre-existing -- the stale-lock RECLAIM race; NOT introduced by the
+// write-then-link change above). Two callers that both read the SAME dead/
+// stale holder used to both decide "steal it" and both call a blind
+// `unlinkSync(p)` -- whichever ran SECOND deleted the FIRST's brand-new,
+// legitimately-published lock (not the dead one it actually read), so BOTH
+// then recreated a lock for the SAME id and BOTH returned a release fn.
+// Reproduced directly via a nested acquireLock call interposed inside the
+// OUTER call's own readFileSync (tighter than two real processes could ever
+// guarantee, landing exactly in the read -> reclaim-decision -> unlink gap).
+test('acquireLock: P1 fix — two reclaimers racing the SAME dead holder never both win; the second respects the first\'s fresh lock instead of deleting it', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'reclaim-race';
+    const p = M.lockPathFor(id, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: 999999, ts: Date.now(), token: 'dead' }));
+    // Interposed on readFileSync (the FIRST thing the EEXIST-handling branch
+    // does after linkSync fails) so the nested call runs with the ORIGINAL
+    // dead-holder content still on disk -- exactly the window the old code
+    // raced on.
+    let nested = 'not-run';
+    const tracedFs = Object.assign({}, fs, {
+      readFileSync(file, enc) {
+        const raw = fs.readFileSync(file, enc);
+        if (file === p && nested === 'not-run') {
+          nested = M.acquireLock(id, home, { fs, isAlive: () => false });
+        }
+        return raw;
+      },
+    });
+    const outer = M.acquireLock(id, home, { fs: tracedFs, isAlive: (pid) => pid === process.pid });
+    assert.notStrictEqual(nested, 'not-run', 'precondition: the nested reclaimer actually ran inside the read -> reclaim window');
+    const results = [outer, nested];
+    const winners = results.filter((r) => typeof r === 'function');
+    assert.strictEqual(winners.length, 1, 'exactly one reclaimer wins: ' + JSON.stringify(results.map((r) => typeof r)));
+    assert.ok(results.includes(null), 'the loser is null (respects the winner\'s fresh lock), never a second silently-granted lock');
+    // No leftover .reap-* scratch file: the loser's restore (on a token
+    // mismatch) or the winner's discard (on a token match) both clean it up.
+    const dir = path.dirname(p);
+    const leftoverReap = fs.readdirSync(dir).filter((n) => n.includes('.reap-'));
+    assert.deepStrictEqual(leftoverReap, [], 'no .reap-* scratch file left behind: ' + JSON.stringify(leftoverReap));
+    winners[0]();
+  } finally { cleanup(); }
+});
+
+test('acquireLock: P1 fix — a genuinely dead holder with NO racer is still reclaimed normally (no regression on the common case)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'reclaim-solo';
+    const p = M.lockPathFor(id, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: 424242, ts: Date.now(), token: 'dead-solo' }));
+    const held = M.acquireLock(id, home, { fs, isAlive: () => false });
+    assert.strictEqual(typeof held, 'function', 'a dead holder with no concurrent racer must still be reclaimable');
+    assert.strictEqual(JSON.parse(fs.readFileSync(p, 'utf8')).token === 'dead-solo', false, 'the lock now carries OUR token, not the dead one');
+    held();
+  } finally { cleanup(); }
+});
+
+test('sweepStaleLockScratchFiles: removes *.lock.tmp-* / *.lock.reap-* older than 15 min, leaves fresh ones and real locks alone', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const p = M.lockPathFor('sweep-id', home);
+    const dir = path.dirname(p);
+    fs.mkdirSync(dir, { recursive: true });
+    const old = Date.now() - (M.LOCK_SCRATCH_STALE_MS + 60000);
+    const oldTmp = p + '.tmp-111-aaa';
+    const oldReap = p + '.reap-222-bbb';
+    const freshTmp = p + '.tmp-333-ccc';
+    fs.writeFileSync(oldTmp, '{}'); fs.utimesSync(oldTmp, old / 1000, old / 1000);
+    fs.writeFileSync(oldReap, '{}'); fs.utimesSync(oldReap, old / 1000, old / 1000);
+    fs.writeFileSync(freshTmp, '{}'); // fresh mtime -- must survive
+    fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'live' })); // real lock -- must survive regardless of age
+    fs.utimesSync(p, old / 1000, old / 1000);
+
+    const dry = M.sweepStaleLockScratchFiles(home, { dryRun: true });
+    assert.strictEqual(dry.pending, true);
+    assert.ok(fs.existsSync(oldTmp) && fs.existsSync(oldReap), 'dry-run must not delete anything');
+
+    const applied = M.sweepStaleLockScratchFiles(home, { dryRun: false });
+    assert.strictEqual(applied.swept.length, 2);
+    assert.strictEqual(fs.existsSync(oldTmp), false, 'old .tmp- scratch file removed');
+    assert.strictEqual(fs.existsSync(oldReap), false, 'old .reap- scratch file removed');
+    assert.strictEqual(fs.existsSync(freshTmp), true, 'fresh scratch file left alone');
+    assert.strictEqual(fs.existsSync(p), true, 'the real lock file itself is never touched by this sweep, regardless of age');
+
+    const clean = M.sweepStaleLockScratchFiles(home, { dryRun: true });
+    assert.strictEqual(clean.pending, false, 'idempotent: nothing left to sweep');
+  } finally { cleanup(); }
+});
+
+test('sweepStaleLockScratchFiles: covers every migrated lock dir (~/.anti-hall, logs, store journals) incl. .hb. and stale .reclaim; never other files', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const ah = path.join(home, '.anti-hall');
+    const logs = path.join(ah, 'logs');
+    const journal = path.join(ah, 'devswarm', 'store', 'abc123', 'journal');
+    const locks = path.join(ah, 'devswarm', 'locks');
+    for (const d of [logs, journal, locks]) fs.mkdirSync(d, { recursive: true });
+    const old = (Date.now() - (M.LOCK_SCRATCH_STALE_MS + 60000)) / 1000;
+    const mk = (full, age) => { fs.writeFileSync(full, '{}'); if (age) fs.utimesSync(full, age, age); return full; };
+    const doomed = [
+      mk(path.join(ah, 'settings.json.lock.tmp-1-a'), old),
+      mk(path.join(ah, 'repair-on-reload.lock.hb.2-b'), old),
+      mk(path.join(logs, 'devswarm.jsonl.rotate.lock.reap-3-c'), old),
+      mk(path.join(journal, 'messages.lock.tmp-4-d'), old),
+      mk(path.join(locks, 'pull-x.lock.reclaim'), old),
+      mk(path.join(locks, 'retention.lock.reclaim.tmp-5-e'), old),
+    ];
+    const kept = [
+      mk(path.join(ah, 'settings.json.lock.tmp-6-f')), // fresh
+      mk(path.join(locks, 'sweep.lock.reclaim')), // fresh sidecar: a reclaim in flight
+      mk(path.join(ah, 'settings.json'), old), // not lock scratch
+      mk(path.join(ah, 'swarm-spawns.lock'), old), // a real lock
+      mk(path.join(logs, 'devswarm.jsonl'), old),
+      mk(path.join(ah, 'notes.tmp-7-g'), old), // tmp-like but not a lock's
+    ];
+    const dry = M.sweepStaleLockScratchFiles(home, { dryRun: true });
+    assert.strictEqual(dry.pending, true);
+    assert.ok(doomed.every((f) => fs.existsSync(f)), 'dry-run deletes nothing');
+    const applied = M.sweepStaleLockScratchFiles(home, { dryRun: false });
+    assert.deepStrictEqual(applied.swept.slice().sort(), doomed.slice().sort());
+    for (const f of doomed) assert.ok(applied.detail.includes(path.basename(f)), 'detail names ' + path.basename(f));
+    for (const f of doomed) assert.strictEqual(fs.existsSync(f), false, f + ' removed');
+    for (const f of kept) assert.strictEqual(fs.existsSync(f), true, f + ' left alone');
+    assert.strictEqual(M.sweepStaleLockScratchFiles(home, { dryRun: true }).pending, false);
+  } finally { cleanup(); }
+});
+
+test('resume prompt PREPENDS the state-check guardrail before the backlog', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io, spawns } = spyIo();
+    M.recover({ descriptor: d, target: { pid: 555, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(spawns.length, 1);
+    assert.ok(spawns[0].prompt.startsWith(M.RESUME_GUARDRAIL), 'guardrail must be prepended');
+    assert.ok(spawns[0].prompt.includes('do the thing'), 'backlog still included after the guardrail');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: nudgeCommand fires, persists `nudged` + nudgeAttempts, logs — NEVER a kill', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'wake-up'] });
+    const nudges = [];
+    const killed = [];
+    const io = { nudge: (cmd) => { nudges.push(cmd); }, kill: (...a) => killed.push(a), killGroup: (...a) => killed.push(a) };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const now = Date.now();
+    const r = M.pokeOrEscalate(d, verdict, { home, now, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, io);
+    assert.strictEqual(r.action, 'nudged');
+    assert.deepStrictEqual(nudges, [['echo', 'wake-up']]);
+    assert.strictEqual(killed.length, 0);
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.status, 'nudged');
+    assert.strictEqual(persisted.nudgeAttempts, 1);
+    assert.strictEqual(persisted.nudgedAt, now);
+    assert.ok(fs.readFileSync(path.join(home, '.anti-hall', 'devswarm', 'recovery.log'), 'utf8').includes('nudged'));
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: attempts exhausted -> escalate, never nudges again, NEVER a kill', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'wake-up'] });
+    const nudges = [];
+    const killed = [];
+    const io = { nudge: (cmd) => { nudges.push(cmd); }, kill: (...a) => killed.push(a), killGroup: (...a) => killed.push(a) };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 2, nudgedAt: Date.now() - 500000, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, io);
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'poke-exhausted');
+    assert.strictEqual(nudges.length, 0, 'must not nudge again once exhausted');
+    assert.strictEqual(killed.length, 0);
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.status, 'escalated');
+    assert.ok(fs.readFileSync(path.join(home, '.anti-hall', 'devswarm', 'recovery.log'), 'utf8').includes('poke-exhausted'));
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: no nudgeCommand on the descriptor -> straight to escalate, no nudge attempted', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home); // no nudgeCommand
+    const nudges = [];
+    const io = { nudge: (cmd) => { nudges.push(cmd); } };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home }, io);
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(nudges.length, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: escalateCommand fires once on escalation', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { escalateCommand: ['echo', 'help'] });
+    const escalated = [];
+    const io = { escalate: (cmd) => { escalated.push(cmd); } };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home }, io);
+    assert.strictEqual(r.action, 'escalate');
+    assert.deepStrictEqual(escalated, [['echo', 'help']]);
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: fail-open — a throwing nudge io -> error result, never throws out, never kills', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    // nudge() itself is wrapped in try/catch inside pokeOrEscalate, so a throwing
+    // nudge must still result in a handled 'nudged' outcome, not an uncaught throw.
+    const r = M.pokeOrEscalate(d, verdict, { home }, { nudge: () => { throw new Error('boom'); } });
+    assert.strictEqual(r.action, 'nudged');
+  } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// 0.117.1 item C: `pokeOrEscalate` used to return {action:'escalate',
+// reason:'poke-exhausted'} on exhaustion with NO indication of why every
+// poke failed — the field report cited `devswarm.js nudge <id>` returning
+// this bare shape with no clue the session was actually unreachable
+// (ENOTFOUND). FIX: a nudge() failure is now persisted as `lastNudgeError`
+// (carried across sweep ticks via PRESERVED_VERDICT_FIELDS), and surfaced on
+// the eventual escalate result as `lastNudgeError` + a human `message`.
+// ---------------------------------------------------------------------------
+
+test('item C FIX: a failing nudge persists lastNudgeError, and the nudged result carries it', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home }, { nudge: () => { throw new Error('ENOTFOUND session unreachable'); } });
+    assert.strictEqual(r.action, 'nudged');
+    assert.strictEqual(r.nudgeError, 'ENOTFOUND session unreachable');
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.lastNudgeError, 'ENOTFOUND session unreachable');
+  } finally { cleanup(); }
+});
+
+test('item C FIX: once attempts are exhausted, escalate carries the LAST nudge error + a human "unreachable" line', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    // Simulates the verdict a PRIOR sweep tick persisted after its own last
+    // (failing) nudge attempt — exactly what pokeOrEscalate's escalate branch
+    // reads `lastNudgeError` from (it attempts no nudge of its own here).
+    const verdict = {
+      status: 'nudged', lastOutboundTs: 1, staleSince: 1,
+      nudgeAttempts: 2, nudgedAt: Date.now() - 500000, pending: true,
+      lastNudgeError: 'ENOTFOUND session unreachable',
+    };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, { nudge: () => {} });
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'poke-exhausted');
+    assert.strictEqual(r.lastNudgeError, 'ENOTFOUND session unreachable');
+    assert.ok(typeof r.message === 'string' && /unreachable/.test(r.message)
+      && /manual continue in the DevSwarm app/.test(r.message),
+      'human line must name the session as unreachable and point at the manual continue: ' + r.message);
+  } finally { cleanup(); }
+});
+
+test('item C NEGATIVE CONTROL: escalate with NO prior nudge error carries neither lastNudgeError nor message (unchanged shape)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    const verdict = { status: 'nudged', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 2, nudgedAt: Date.now() - 500000, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, { nudge: () => {} });
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'poke-exhausted');
+    assert.strictEqual(r.lastNudgeError, undefined);
+    assert.strictEqual(r.message, undefined);
+  } finally { cleanup(); }
+});
+
+test('item C: a SUCCESSFUL nudge clears a previously-recorded lastNudgeError', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    const verdict = {
+      status: 'nudged', lastOutboundTs: 1, staleSince: 1,
+      nudgeAttempts: 0, nudgedAt: null, pending: true,
+      lastNudgeError: 'stale error from a prior tick',
+    };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 3, nudgeCooldownMs: 120000 }, { nudge: () => {} });
+    assert.strictEqual(r.action, 'nudged');
+    assert.strictEqual(r.nudgeError, null);
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.lastNudgeError, null, 'a clean nudge must clear the stale error');
+  } finally { cleanup(); }
+});
+
+test('fail-open: a throwing spawnResume -> error result, never throws out', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io } = spyIo({ spawnResume: () => { throw new Error('boom'); } });
+    const r = M.recover({ descriptor: d, target: { pid: 1, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'error');
+  } finally { cleanup(); }
+});
+
+// P1: persistVerdict (recover()'s own bookkeeping) and persistNudgeVerdict
+// (pokeOrEscalate's) write the SAME liveness file. Each must preserve the FULL
+// union of cross-cutting fields from `prev`, not just the ones it owns — else an
+// interleaved sweep silently resets the OTHER path's counter (defeating the
+// recovery cap / nudge budget).
+test('interleave: a nudge verdict AFTER a recovery must NOT clobber recoveries/recoveredAt', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io } = spyIo();
+    const r = M.recover({ descriptor: d, target: { pid: 555, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'resumed');
+    assert.strictEqual(r.recoveries, 1);
+    const afterRecover = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(afterRecover.recoveries, 1);
+    assert.ok(afterRecover.recoveredAt > 0);
+
+    // The AUTOMATIC sweep later nudges the SAME workspace — an independent path
+    // writing the same liveness file.
+    const dWithNudge = Object.assign({}, d, { nudgeCommand: ['echo', 'wake-up'] });
+    const nudgeVerdict = Object.assign({ nudgeAttempts: 0, nudgedAt: null }, afterRecover);
+    const pr = M.pokeOrEscalate(dWithNudge, nudgeVerdict, { home, now: Date.now() }, { nudge: () => {} });
+    assert.strictEqual(pr.action, 'nudged');
+
+    const afterNudge = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(afterNudge.nudgeAttempts, 1, 'nudge attempt recorded');
+    assert.strictEqual(afterNudge.recoveries, 1, 'recoveries must NOT be dropped by a nudge verdict write');
+    assert.strictEqual(afterNudge.recoveredAt, afterRecover.recoveredAt, 'recoveredAt must NOT be dropped by a nudge verdict write');
+  } finally { cleanup(); }
+});
+
+test('interleave (reverse): a recovery AFTER a nudge must NOT clobber nudgeAttempts/nudgedAt', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'wake-up'] });
+    const nudgeVerdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const now = Date.now();
+    const pr = M.pokeOrEscalate(d, nudgeVerdict, { home, now, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, { nudge: () => {} });
+    assert.strictEqual(pr.action, 'nudged');
+    const afterNudge = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(afterNudge.nudgeAttempts, 1);
+    assert.strictEqual(afterNudge.nudgedAt, now);
+
+    // A manual recover() runs on the SAME workspace afterward — same liveness file.
+    const { io } = spyIo();
+    const r = M.recover({ descriptor: d, target: { pid: 666, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'resumed');
+
+    const afterRecover = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(afterRecover.recoveries, 1);
+    assert.strictEqual(afterRecover.nudgeAttempts, 1, 'nudgeAttempts must NOT be dropped by a recovery verdict write');
+    assert.strictEqual(afterRecover.nudgedAt, now, 'nudgedAt must NOT be dropped by a recovery verdict write');
+  } finally { cleanup(); }
+});
+
+// ---- #19: escalation MECHANICALLY notifies the PARENT/Primary's store --------
+// (owner principle #20: the daemon actively pushes into the parent's STORE — not
+// just a local log — so an idle parent learns without taking a turn first).
+
+test('pokeOrEscalate: escalation appends a synthetic notice into the PARENT store', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home); // id 'w1', no nudgeCommand -> straight to escalate
+    const now = Date.now();
+    const staleSince = now - 12 * 60 * 1000; // 12 minutes stale
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const parentId = inst.primaryWorkspaceId(d.worktreePath);
+    registerParent(storeLib, home, parentId);
+    const r = M.pokeOrEscalate(d, verdict, { home, now }, {});
+    assert.strictEqual(r.action, 'escalate');
+
+    const s = storeLib.openStore({ home, workspaceId: parentId }); // parent's own per-project store
+    let msgs;
+    try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+    assert.strictEqual(msgs.length, 1, 'exactly one notice landed in the parent store');
+    assert.match(msgs[0].body, /child w1 idle 12m/);
+    // item 1: pokes exhausted -> the notice now tells the owner to click/continue
+    // the workspace in the DevSwarm app (still allows reassign/archive too).
+    assert.match(msgs[0].body, /click\/continue the workspace in the DevSwarm app/);
+    assert.match(msgs[0].body, /reassign\/archive/);
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: repeated escalate on an ALREADY-escalated verdict does NOT duplicate the parent notice (idempotent)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const now = Date.now();
+    const staleSince = now - 5 * 60 * 1000;
+    const first = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    registerParent(storeLib, home, inst.primaryWorkspaceId(d.worktreePath));
+    const r1 = M.pokeOrEscalate(d, first, { home, now }, {});
+    assert.strictEqual(r1.action, 'escalate');
+
+    // Simulate a second sweep / a manual re-nudge passing the NOW-persisted verdict —
+    // must NOT append a second notice (the TRANSITION already happened).
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.status, 'escalated');
+    const r2 = M.pokeOrEscalate(d, persisted, { home, now: now + 1000 }, {});
+    assert.strictEqual(r2.action, 'escalate');
+
+    const parentId = inst.primaryWorkspaceId(d.worktreePath);
+    const s = storeLib.openStore({ home, workspaceId: parentId }); // parent's own per-project store
+    let msgs;
+    try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+    assert.strictEqual(msgs.length, 1, 'a repeated escalate call must NOT duplicate the parent notice');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: a throwing parent-store open fails OPEN — escalate still persists, never throws/crashes', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const now = Date.now();
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: now - 60000, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const io = { openParentStore: () => { throw new Error('boom'); } };
+    const r = M.pokeOrEscalate(d, verdict, { home, now }, io);
+    assert.strictEqual(r.action, 'escalate', 'a parent-store notice failure must never surface as an error/crash');
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: never notifies itself when the escalating workspace IS the resolved parent id', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = path.join(home, 'wt-self');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const inboxPath = path.join(worktreePath, 'inbox.ndjson');
+    const cursorPath = path.join(worktreePath, 'cursor');
+    fs.writeFileSync(inboxPath, JSON.stringify({ m: 'x' }) + '\n');
+    fs.writeFileSync(cursorPath, '0');
+    const selfId = inst.primaryWorkspaceId(worktreePath);
+    const d = { id: selfId, worktreePath, inboxPath, cursorPath, sessionId: UUID };
+    let opened = false;
+    const io = { openParentStore: () => { opened = true; throw new Error('must not be called'); } };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: Date.now() - 60000, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home, now: Date.now() }, io);
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(opened, false, 'must never open the parent store to notify itself');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: a NUDGE (not an escalate) never touches the parent store', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'wake-up'] });
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: Date.now(), nudgeAttempts: 0, nudgedAt: null, pending: true };
+    let opened = false;
+    const io = { nudge: () => {}, openParentStore: () => { opened = true; return { appendMessage() {}, close() {} }; } };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, io);
+    assert.strictEqual(r.action, 'nudged');
+    assert.strictEqual(opened, false, 'a nudge must never open/notify the parent store');
+  } finally { cleanup(); }
+});
+
+// ---- GAP A: notifyParentEscalation must open the PARENT's REPOKEY store (not
+// the legacy hashFromWorkspaceId bucket) AND re-derive its projection. Pre-fix
+// it called `open({ home, workspaceId: parentId, ... })` with NO `hash`, so
+// openStore fell back to the legacy 8-hex bucket store.hashFromWorkspaceId(parentId)
+// — a store no other mesh participant reads — and never called deriveSummary at
+// all, so even a correctly-placed row would stay invisible to every projection
+// reader. -----------------------------------------------------------------------
+
+test('notifyParentEscalation: appends into the PARENT repoKey store (not the legacy hash bucket) and re-derives its projection', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const gitRepoDir = makeGitRepo('gapA');
+    try {
+      const expectedRepoKey = repokeyLib.repoKeyForWorktree(gitRepoDir);
+      assert.ok(expectedRepoKey, 'sanity: this environment must resolve a real repoKey for a real git repo — otherwise this test would be vacuous');
+
+      const parentId = inst.primaryWorkspaceId(gitRepoDir);
+      const d = { id: 'child-gapA', worktreePath: gitRepoDir, sessionId: UUID };
+      assert.notStrictEqual(d.id, parentId, 'sanity: the child id must differ from the resolved parent id');
+
+      const now = Date.now();
+      const staleSince = now - 7 * 60 * 1000;
+      const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+
+      registerParent(storeLib, home, parentId, expectedRepoKey);
+      // NO openParentStore override -> exercises the REAL store.
+      M.notifyParentEscalation(d, verdict, { home, now }, undefined);
+
+      // 1) The escalation row landed in the REPOKEY store.
+      const s = storeLib.openStore({ home, workspaceId: parentId, hash: expectedRepoKey });
+      let msgs;
+      try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+      assert.ok(msgs.some((m) => m.body.includes(d.id)), 'the repoKey parent store carries a notice naming the child');
+
+      // 2) The PROJECTION reflects it — pre-fix nothing ever derived it, so this
+      //    was null.
+      const sum = storeLib.readSummaryForHash(home, expectedRepoKey);
+      assert.ok(sum, 'the repoKey summary was (re-)derived by notifyParentEscalation');
+
+      // 3) ANTI-REGRESSION: the LEGACY 8-hex bucket got NOTHING (only meaningful
+      //    when the two keys actually differ — a repoKey always contains an
+      //    internal `-`, a legacy 8-hex hash never does, so they are disjoint by
+      //    construction, but assert the precondition rather than assume it).
+      const legacyHash = storeLib.hashFromWorkspaceId(parentId);
+      if (legacyHash !== expectedRepoKey) {
+        const sLegacy = storeLib.openStore({ home, workspaceId: parentId, hash: legacyHash });
+        let legacyMsgs;
+        try { legacyMsgs = sLegacy.listMessages(parentId, {}); } finally { sLegacy.close(); }
+        assert.strictEqual(legacyMsgs.length, 0, 'the legacy hash bucket must receive NOTHING');
+      }
+    } finally { rm(gitRepoDir); }
+  } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// 0.117.1 item D: notifyParentEscalation's row literal had no `sender` at
+// all, so the escalation notice read as sender:null in the parent's store —
+// devswarm.js's own "from: " rendering (`row.sender != null ? ... : ''`)
+// showed a BLANK from-line for a system-authored notice, giving the parent
+// no clue where it came from. FIX: `sender: 'system'`.
+// ---------------------------------------------------------------------------
+
+test('item D FIX: the escalation notice carries sender:\'system\' (not null)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const gitRepoDir = makeGitRepo('itemD');
+    try {
+      const expectedRepoKey = repokeyLib.repoKeyForWorktree(gitRepoDir);
+      const parentId = inst.primaryWorkspaceId(gitRepoDir);
+      const d = { id: 'child-itemD', worktreePath: gitRepoDir, sessionId: UUID };
+      const now = Date.now();
+      const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: now - 60000, nudgeAttempts: 0, nudgedAt: null, pending: true };
+
+      registerParent(storeLib, home, parentId, expectedRepoKey);
+      M.notifyParentEscalation(d, verdict, { home, now }, undefined);
+
+      const s = storeLib.openStore({ home, workspaceId: parentId, hash: expectedRepoKey });
+      let msgs;
+      try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+      const notice = msgs.find((m) => m.body && m.body.includes(d.id));
+      assert.ok(notice, 'the escalation notice must be present');
+      assert.strictEqual(notice.sender, 'system', 'the notice must carry sender:\'system\', not null: ' + JSON.stringify(notice));
+    } finally { rm(gitRepoDir); }
+  } finally { cleanup(); }
+});
+
+// ---- GAP A2: notifyParentEscalation must address the PARENT's mesh id, not the
+// CHILD's own. primaryWorkspaceId() is a PURE hash of whatever path it is handed —
+// it does no git resolution. Pre-fix the call site hashed descriptor.worktreePath
+// directly, which for a LINKED worktree (the normal DevSwarm child shape) is the
+// child's OWN worktree root, so the "parent" id computed was actually the child's
+// own id and the notice was filed into a queue the parent never reads. ------------
+
+test('notifyParentEscalation (linked worktree): addresses the notice to the PARENT id, not the CHILD\'s own mesh id', () => {
+  const { home, cleanup } = makeHome();
+  let mainRepo = null;
+  let parentDir = null;
+  try {
+    mainRepo = makeGitRepo('gapA2-main');
+    // FIXTURE MUST STAY A LINKED WORKTREE — not a plain git repo. This is not a style
+    // preference. For a plain repo, resolveMainWorktree(repo) === repo, so the parent id
+    // and the child's own id COINCIDE and the wrong-addressee failure is structurally
+    // UNREPRESENTABLE. The earlier plain-repo fixture was not weakly asserted — it was
+    // STRUCTURALLY BLIND: a fixture that cannot express the failing topology passes
+    // forever no matter how many assertions are bolted onto it. Do not "simplify" this
+    // back to a plain repo; doing so silently re-blinds the test.
+    parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-recovery-wtparent-'));
+    const childDir = path.join(parentDir, 'child-wt');
+    const wtAdd = cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'add', '-q', childDir, '-b', 'wt-gapA2']);
+    assert.strictEqual(wtAdd.status, 0, `git worktree add must succeed: ${wtAdd.stderr}`);
+    // PRECONDITION: a linked worktree's `.git` is a FILE (a gitdir pointer), not a
+    // directory — else this scenario is vacuous (it would behave like a plain repo).
+    assert.ok(fs.statSync(path.join(childDir, '.git')).isFile(), 'sanity: linked worktree .git must be a FILE');
+
+    const d = { id: 'child-gapA2', worktreePath: childDir, sessionId: UUID };
+    const expectedParentId = inst.primaryWorkspaceId(inst.resolveMainWorktree(childDir));
+    const childOwnId = inst.primaryWorkspaceId(childDir);
+    // NON-VACUITY GUARD: if these ever coincide, the whole scenario below proves
+    // nothing — fail loudly rather than silently pass.
+    assert.notStrictEqual(expectedParentId, childOwnId, 'sanity: parent id and child\'s own id must differ for this fixture to be meaningful');
+
+    const now = Date.now();
+    const staleSince = now - 7 * 60 * 1000;
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+
+    registerParent(storeLib, home, expectedParentId, repokeyLib.repoKeyForWorktree(childDir));
+    // NO openParentStore override -> exercises the REAL store, same as production.
+    M.notifyParentEscalation(d, verdict, { home, now }, undefined);
+
+    const expectedRepoKey = repokeyLib.repoKeyForWorktree(childDir);
+    assert.ok(expectedRepoKey, 'sanity: a real git worktree must resolve a real repoKey');
+
+    // 1) Row lands under the PARENT's key.
+    const sParent = storeLib.openStore({ home, workspaceId: expectedParentId, hash: expectedRepoKey });
+    let parentMsgs;
+    try { parentMsgs = sParent.listMessages(expectedParentId, {}); } finally { sParent.close(); }
+    assert.ok(parentMsgs.some((m) => m.body.includes(d.id)), 'the PARENT partition carries a notice naming the child');
+
+    // 2) Row is ABSENT from the child's own key (same repoKey store, different partition).
+    const sChild = storeLib.openStore({ home, workspaceId: childOwnId, hash: expectedRepoKey });
+    let childMsgs;
+    try { childMsgs = sChild.listMessages(childOwnId, {}); } finally { sChild.close(); }
+    assert.strictEqual(childMsgs.length, 0, 'the child\'s own partition must receive NOTHING — it is not the addressee');
+
+    // 3) The projection the parent reads reflects it. The parent is registered
+    //    (registerParent — escalations deliver only into a registered destination),
+    //    so computeSummary projects it as `summary.workspaces[parentId]`.
+    const sum = storeLib.readSummaryForHash(home, expectedRepoKey);
+    assert.ok(sum, 'the repoKey summary was (re-)derived by notifyParentEscalation');
+    const parentEntry = sum.workspaces && sum.workspaces[expectedParentId];
+    assert.ok(parentEntry, 'the projection surfaces the registered parent partition');
+    assert.ok(parentEntry.unread > 0, 'the parent partition shows non-zero unread in the projection');
+
+    // 4) ANTI-REGRESSION: the LEGACY 8-hex bucket (hashFromWorkspaceId(parentId)) gets
+    //    NOTHING, guarded by a keys-differ precondition (disjoint by construction, but
+    //    assert it rather than assume it).
+    const legacyHash = storeLib.hashFromWorkspaceId(expectedParentId);
+    if (legacyHash !== expectedRepoKey) {
+      const sLegacy = storeLib.openStore({ home, workspaceId: expectedParentId, hash: legacyHash });
+      let legacyMsgs;
+      try { legacyMsgs = sLegacy.listMessages(expectedParentId, {}); } finally { sLegacy.close(); }
+      assert.strictEqual(legacyMsgs.length, 0, 'the legacy hash bucket must receive NOTHING');
+    }
+  } finally {
+    try {
+      if (mainRepo) {
+        const childDir = parentDir ? path.join(parentDir, 'child-wt') : null;
+        if (childDir) cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childDir]);
+      }
+    } catch (_) {}
+    if (parentDir) rm(parentDir);
+    if (mainRepo) rm(mainRepo);
+    cleanup();
+  }
+});

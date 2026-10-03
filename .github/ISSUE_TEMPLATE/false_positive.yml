@@ -1,0 +1,80 @@
+name: False positive
+description: A guard blocked something that was legitimate
+title: "false positive: <guard> blocked <what>"
+labels: ["false-positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problem? Do not post it here; see SECURITY.md and use private vulnerability reporting.
+  - type: input
+    id: version
+    attributes:
+      label: anti-hall version
+      description: Run `/anti-hall:doctor` (its first line prints the version), or read the `version` field in `plugins/anti-hall/.claude-plugin/plugin.json`.
+      placeholder: "0.120.12"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Claude Code
+        - Codex
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: guard
+    attributes:
+      label: Hook or guard that blocked it
+      description: The guard name is in the block message. Names come from `plugins/anti-hall/hooks/hooks.json`.
+      options:
+        - git-guard command-guard edit-guard api-guard swarm-guard model-routing-guard merge-gate scan-throttle ship-it-guard inbox-read-guard compact-declaration-guard compact-advice-guard task-guard tasklist-guard speculation-guard speculation-judge output-verify-guard claim-ledger silent-agent-nudge failure-root-cause-nudge devswarm-comms-guard devswarm-parent-gate devswarm-child-gate
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: blocked
+    attributes:
+      label: The exact command or text that was blocked
+      description: Paste it verbatim (a command, an edit, or a reply).
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: message
+    attributes:
+      label: The exact block message
+      description: The full text anti-hall showed, including the guard name.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What you expected to happen, and why this should be allowed.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Anything unusual about the setup
+      description: Non-default settings, quoted or piped input, a subagent or the main session.
+  - type: checkboxes
+    id: sanitized
+    attributes:
+      label: Sanitized
+      options:
+        - label: I removed secrets and private paths from the pasted text
+          required: true

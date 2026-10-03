@@ -1,0 +1,1907 @@
+'use strict';
+// devswarm-child-turn (UserPromptSubmit hook). For a DevSwarm CHILD workspace
+// (liveness supervisor active AND DEVSWARM_SOURCE_BRANCH non-empty) it (1) writes
+// a turn-authored heartbeat under ~/.anti-hall/devswarm/heartbeats/<branch>.json
+// and (2) injects a short report-progress/listen-to-parent reminder. Primary,
+// non-DevSwarm sessions, and malformed stdin are silent no-ops (no output, exit 0).
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
+const { makeHome } = require('../helpers/fixtures.js');
+const { readDescriptors } = require('../../plugins/anti-hall/companion/devswarm-supervisor.js');
+const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+
+const HOOK = 'devswarm-child-turn.js';
+// Stable substring surviving the v0.58 hook-text sweep (the OLD marker,
+// 'message-parent', is now a BLOCKED native verb and must never appear).
+const REMINDER_PHRASE = 'stay visible on the parent';
+
+// This test process's own cwd (the anti-hall repo, a real git worktree) —
+// findGitToplevel resolves it with NO git spawn, exactly like devswarm-parent-
+// inbox.test.js's REPO_CWD pattern. '/tmp' (the default promptPayload cwd) has no
+// enclosing .git, so registerChildDescriptor stays a no-op unless a test opts in
+// by passing REPO_CWD explicitly — existing tests above are unaffected.
+const REPO_CWD = process.cwd();
+
+function promptPayload(sessionId, cwd) {
+  return { hook_event_name: 'UserPromptSubmit', session_id: sessionId || 't', prompt: 'go', cwd: cwd || '/tmp' };
+}
+
+function workspaceDescPath(home, id) {
+  return path.join(home, '.anti-hall', 'devswarm', 'workspaces', id + '.json');
+}
+
+function ctx(r) {
+  return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+}
+
+function heartbeatDir(home) {
+  return path.join(home, '.anti-hall', 'devswarm', 'heartbeats');
+}
+function readBeat(home, key) {
+  return JSON.parse(fs.readFileSync(path.join(heartbeatDir(home), key + '.json'), 'utf8'));
+}
+
+// Register a child's own durable descriptor (workspaces/<id>.json) plus its NDJSON
+// inbox + cursor, so the hook's NON-DESTRUCTIVE unread check has something to read.
+function seedChildInbox(home, id, lines, consumed) {
+  const dsw = path.join(home, '.anti-hall', 'devswarm');
+  const inboxPath = path.join(dsw, id + '.inbox.ndjson');
+  const cursorPath = path.join(dsw, id + '.cursor.json');
+  fs.mkdirSync(dsw, { recursive: true });
+  fs.writeFileSync(inboxPath, lines.map((l) => l).join('\n') + (lines.length ? '\n' : ''));
+  fs.writeFileSync(cursorPath, String(consumed));
+  const wdir = path.join(dsw, 'workspaces');
+  fs.mkdirSync(wdir, { recursive: true });
+  fs.writeFileSync(path.join(wdir, id + '.json'), JSON.stringify({ id, inboxPath, cursorPath }));
+  return { inboxPath, cursorPath };
+}
+
+test('CHILD: DevSwarm active + branch set -> reminder injected AND heartbeat written, keyed by builderId', () => {
+  const h = makeHome();
+  try {
+    const before = Date.now();
+    const r = testHook(HOOK, promptPayload('sess-abc'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'b-1', DEVSWARM_BUILDER_NAME: 'main-repo1' },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.ok(r.json, `stdout must be valid JSON; stdout=${r.stdout}`);
+    assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), `reminder must mention ${REMINDER_PHRASE}; ctx=${ctx(r)}`);
+
+    // Heartbeat is keyed by the child's OWN builderId (b-1), NOT the shared
+    // parent branch (main) — this is what the parent-inbox hook's
+    // readHeartbeat(home, d.id) looks up.
+    const beat = readBeat(h.home, 'b-1');
+    assert.strictEqual(beat.source, 'child-turn', 'heartbeat must be marked turn-authored');
+    assert.strictEqual(beat.branch, 'main');
+    assert.strictEqual(beat.builderId, 'b-1');
+    assert.strictEqual(beat.builderName, 'main-repo1');
+    assert.strictEqual(beat.repoId, 'repo-1');
+    assert.strictEqual(beat.sessionId, 'sess-abc');
+    assert.ok(Number.isFinite(beat.ts) && beat.ts >= before, 'ts must be a fresh timestamp from this turn');
+    // Must NOT fabricate progress the child never reported.
+    assert.ok(!('progress_pct' in beat), 'must not fabricate progress_pct');
+    assert.ok(!('phase' in beat), 'must not fabricate phase');
+    // No branch-keyed file must be written when builderId is present.
+    assert.ok(!fs.existsSync(path.join(heartbeatDir(h.home), 'main.json')), 'must not also write a branch-keyed heartbeat');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('CHILD SIBLINGS: same parent branch, different builderId -> distinct heartbeat files, no collision', () => {
+  const h = makeHome();
+  try {
+    const rA = testHook(HOOK, promptPayload('sess-a'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-a' },
+    });
+    const rB = testHook(HOOK, promptPayload('sess-b'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-b' },
+    });
+    assert.strictEqual(rA.status, 0);
+    assert.strictEqual(rB.status, 0);
+
+    const beatA = readBeat(h.home, 'child-a');
+    const beatB = readBeat(h.home, 'child-b');
+    assert.strictEqual(beatA.sessionId, 'sess-a', 'sibling A heartbeat must carry its OWN session');
+    assert.strictEqual(beatB.sessionId, 'sess-b', 'sibling B heartbeat must carry its OWN session');
+    assert.strictEqual(beatA.branch, 'main');
+    assert.strictEqual(beatB.branch, 'main');
+
+    // No single shared main.json cross-contaminating both siblings' liveness.
+    assert.ok(!fs.existsSync(path.join(heartbeatDir(h.home), 'main.json')), 'siblings must not collapse onto one branch-keyed file');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PARENT JOIN: parent-side heartbeats/<builderId>.json read resolves the child\'s heartbeat', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-join'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'feature/x', DEVSWARM_BUILDER_ID: 'join-child' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    // Mirrors devswarm-parent-inbox.js's heartbeatPathFor(home, d.id) where
+    // d.id === DEVSWARM_BUILDER_ID (readDescriptors' descriptor id).
+    const parentReadPath = path.join(heartbeatDir(h.home), 'join-child.json');
+    assert.ok(fs.existsSync(parentReadPath), 'the parent\'s heartbeats/<builderId>.json lookup must find a file');
+    const beat = JSON.parse(fs.readFileSync(parentReadPath, 'utf8'));
+    assert.strictEqual(beat.builderId, 'join-child');
+    assert.strictEqual(beat.sessionId, 'sess-join');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FALLBACK: no builderId -> heartbeat still keyed by (sanitized) branch', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-fb'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    assert.strictEqual(r.status, 0);
+    const beat = readBeat(h.home, 'main');
+    assert.strictEqual(beat.sessionId, 'sess-fb');
+    assert.strictEqual(beat.builderId, null, 'builderId absent -> null, never fabricated');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FAIL-OPEN: heartbeats dir unwritable -> exit 0, no crash, reminder still emitted', () => {
+  const h = makeHome();
+  try {
+    const dsw = path.join(h.home, '.anti-hall', 'devswarm');
+    fs.mkdirSync(dsw, { recursive: true });
+    // Plant a FILE where the heartbeat write needs a directory -> mkdirSync throws.
+    fs.writeFileSync(path.join(dsw, 'heartbeats'), 'not-a-directory');
+
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'b-1' },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), 'reminder must still be emitted despite a heartbeat-write failure');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('CHILD: unsafe branch name is sanitized + hashed into a safe heartbeat filename', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'feature/new-thing' },
+    });
+    assert.strictEqual(r.status, 0);
+    const files = fs.readdirSync(heartbeatDir(h.home)).filter((f) => f.endsWith('.json'));
+    assert.strictEqual(files.length, 1, `exactly one heartbeat file; got ${JSON.stringify(files)}`);
+    const name = files[0];
+    assert.ok(!name.includes('/') && !name.includes('\\'), 'filename must contain no path separators');
+    assert.ok(/^feature-new-thing-[0-9a-f]{8}\.json$/.test(name), `expected sanitized+hashed name; got ${name}`);
+    const beat = JSON.parse(fs.readFileSync(path.join(heartbeatDir(h.home), name), 'utf8'));
+    assert.strictEqual(beat.branch, 'feature/new-thing', 'raw branch preserved inside the file');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('UNREAD: durable child inbox with unread parent messages -> count + safe read path surfaced', () => {
+  const h = makeHome();
+  try {
+    // 2 messages, cursor at 0 -> 2 unread.
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now', 'from parent: status?'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(/2 unread parent message/.test(c), `must surface the unread count; ctx=${c}`);
+    // Fix Wave 5 Item 3: `inbox read <id>` never advances any cursor (see
+    // hooks/devswarm-child-turn.js's buildUnreadSegment header comment) — a
+    // child following that verb would see the same "unread" count forever.
+    // The safe durable path is the ACKING `read-primary` verb.
+    assert.ok(/inbox read-primary child-1/.test(c), `must name the safe, cursor-advancing durable read path; ctx=${c}`);
+    assert.ok(!/inbox read child-1\b/.test(c), `must never name the non-acking bare "inbox read <id>" form; ctx=${c}`);
+    assert.ok(/read-messages|monitor/.test(c), `must warn off the destructive drains; ctx=${c}`);
+    assert.ok(c.includes(REMINDER_PHRASE), 'the base reminder must still be present');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('UNREAD NONE: cursor caught up -> no unread segment, reminder only (empty-when-zero)', () => {
+  const h = makeHome();
+  try {
+    // 1 message, cursor at 1 -> 0 unread.
+    seedChildInbox(h.home, 'child-1', ['from parent: old'], 1);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/unread parent message/.test(ctx(r)), 'no unread -> no unread segment');
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), 'reminder still present');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('UNREAD NO-DESCRIPTOR: child without a durable inbox descriptor -> reminder only, no crash', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/unread parent message/.test(ctx(r)), 'absent descriptor -> no unread segment');
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), 'reminder still present');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('NO-OP: DevSwarm active but branch empty (Primary) -> no output, no heartbeat', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: '' },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.ok(!fs.existsSync(heartbeatDir(h.home)), 'no heartbeat dir must be created for Primary');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('NO-OP: no DevSwarm at all (no env) -> no output, no heartbeat', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), { home: h.home });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.ok(!fs.existsSync(heartbeatDir(h.home)), 'no heartbeat dir must be created');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('NO-OP: branch set but DevSwarm not active -> no output, no heartbeat', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      env: { DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.ok(!fs.existsSync(heartbeatDir(h.home)), 'no heartbeat dir must be created when dormant');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('KILL-SWITCH: DISABLE_ANTIHALL_DEVSWARM=1 -> dormant even for a child', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DISABLE_ANTIHALL_DEVSWARM: '1' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.ok(!fs.existsSync(heartbeatDir(h.home)), 'kill-switch must suppress the heartbeat too');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FRESH: a second turn refreshes ts (turn-authored, not a stuck ticker)', () => {
+  const h = makeHome();
+  try {
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' };
+    testHook(HOOK, promptPayload(), { home: h.home, env });
+    const t1 = readBeat(h.home, 'main').ts;
+    // small spin so wall-clock advances at least 1ms
+    const spinUntil = Date.now() + 5;
+    while (Date.now() < spinUntil) { /* noop */ }
+    testHook(HOOK, promptPayload(), { home: h.home, env });
+    const t2 = readBeat(h.home, 'main').ts;
+    assert.ok(t2 >= t1, `second turn must not go backwards; t1=${t1} t2=${t2}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FAIL-OPEN: empty stdin -> exit 0, no crash', () => {
+  const h = makeHome();
+  try {
+    const r = testHookRaw(HOOK, '', { home: h.home, env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' } });
+    assert.strictEqual(r.status, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FAIL-OPEN: malformed JSON stdin -> exit 0, no crash', () => {
+  const h = makeHome();
+  try {
+    const r = testHookRaw(HOOK, '{bad', { home: h.home, env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' } });
+    assert.strictEqual(r.status, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- #31 HOTFIX: mechanical descriptor registration -----
+
+test('REGISTER: a child turn writes a descriptor readDescriptors accepts, and the parent sees it', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-reg', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'reg-child' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    const descPath = workspaceDescPath(h.home, 'reg-child');
+    assert.ok(fs.existsSync(descPath), 'descriptor file must be written');
+    const desc = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(desc.id, 'reg-child');
+    assert.strictEqual(desc.sessionId, 'sess-reg');
+    assert.strictEqual(desc.worktreePath, path.resolve(REPO_CWD), 'worktreePath must resolve to the git toplevel');
+
+    // The EXACT gate readDescriptors applies (companion/devswarm-supervisor.js):
+    // d.worktreePath && d.sessionId && isSafeId(d.id).
+    const seen = readDescriptors(h.home);
+    const match = seen.find((d) => d.id === 'reg-child');
+    assert.ok(match, 'parent readDescriptors must see the newly registered child');
+    assert.strictEqual(match.worktreePath, desc.worktreePath);
+    assert.strictEqual(match.sessionId, 'sess-reg');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('REGISTER: repoId is populated from DEVSWARM_REPO_ID (#36 cross-project-bleed fix)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-repo', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'repo-child' },
+    });
+    assert.strictEqual(r.status, 0);
+    const desc = JSON.parse(fs.readFileSync(workspaceDescPath(h.home, 'repo-child'), 'utf8'));
+    assert.strictEqual(desc.repoId, 'repo-x', 'descriptor must carry the child\'s DEVSWARM_REPO_ID');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('REGISTER: Primary session (branch empty) does NOT get a child descriptor written', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-p', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: '', DEVSWARM_BUILDER_ID: 'would-be-child' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!fs.existsSync(workspaceDescPath(h.home, 'would-be-child')), 'Primary must never register a child descriptor');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('REGISTER MERGE: an existing inboxPath/cursorPath (e.g. from a prior `inbox pull`) is preserved, never clobbered', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const customInbox = path.join(h.home, '.anti-hall', 'devswarm', 'custom.inbox.ndjson');
+    const customCursor = path.join(h.home, '.anti-hall', 'devswarm', 'custom.cursor.json');
+    fs.writeFileSync(path.join(wdir, 'reg-child.json'), JSON.stringify({
+      id: 'reg-child', worktreePath: '/stale/path', sessionId: 'stale-sess',
+      inboxPath: customInbox, cursorPath: customCursor,
+    }));
+
+    const r = testHook(HOOK, promptPayload('sess-new', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'reg-child' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    const desc = JSON.parse(fs.readFileSync(path.join(wdir, 'reg-child.json'), 'utf8'));
+    assert.strictEqual(desc.sessionId, 'sess-new', 'sessionId must refresh to this turn\'s truthful value');
+    assert.strictEqual(desc.worktreePath, path.resolve(REPO_CWD), 'worktreePath must refresh to the resolved toplevel');
+    assert.strictEqual(desc.inboxPath, customInbox, 'existing inboxPath must be preserved, not clobbered');
+    assert.strictEqual(desc.cursorPath, customCursor, 'existing cursorPath must be preserved, not clobbered');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---- P1 TRUNCATION-PROOF PRECREATE (hardened): register's inbox precreate --
+// used to use `wx` (exclusive create, fails closed on EEXIST). O_EXCL
+// exclusivity is documented as unreliable over some network filesystems, so
+// the precreate now uses append mode (`a`) instead: it creates the file if
+// absent, and appending '' can never truncate existing content on ANY
+// filesystem, with no reliance on O_EXCL at all.
+test('REGISTER re-run: a PRE-EXISTING durable inbox with real content survives re-registration (append-create never truncates)', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const customInbox = path.join(h.home, '.anti-hall', 'devswarm', 'durable.inbox.ndjson');
+    const customCursor = path.join(h.home, '.anti-hall', 'devswarm', 'durable.cursor.json');
+    fs.mkdirSync(path.dirname(customInbox), { recursive: true });
+    fs.writeFileSync(customInbox, JSON.stringify({ _h: 'native:d1', message: 'do not lose me' }) + '\n');
+    fs.writeFileSync(path.join(wdir, 'reg-child2.json'), JSON.stringify({
+      id: 'reg-child2', worktreePath: '/stale/path', sessionId: 'stale-sess',
+      inboxPath: customInbox, cursorPath: customCursor,
+    }));
+
+    const r = testHook(HOOK, promptPayload('sess-new2', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'reg-child2' },
+    });
+    assert.strictEqual(r.status, 0);
+    const finalContent = fs.readFileSync(customInbox, 'utf8');
+    assert.ok(finalContent.includes('do not lose me'),
+      `durable inbox content must survive re-registration; got: ${finalContent}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('REGISTER fresh: a genuinely-absent inbox is still created, empty, at the default path', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-fresh', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'reg-fresh' },
+    });
+    assert.strictEqual(r.status, 0);
+    const inboxPath = path.join(h.home, '.anti-hall', 'devswarm', 'inbox', 'reg-fresh.ndjson');
+    assert.ok(fs.existsSync(inboxPath), 'a genuinely absent inbox must be created on register');
+    assert.strictEqual(fs.readFileSync(inboxPath, 'utf8'), '', 'a freshly-created inbox must be empty');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FAIL-OPEN: workspaces dir unwritable -> exit 0, no crash, reminder still emitted', () => {
+  const h = makeHome();
+  try {
+    const dsw = path.join(h.home, '.anti-hall', 'devswarm');
+    fs.mkdirSync(dsw, { recursive: true });
+    // Plant a FILE where the descriptor write needs a directory -> mkdirSync throws.
+    fs.writeFileSync(path.join(dsw, 'workspaces'), 'not-a-directory');
+
+    const r = testHook(HOOK, promptPayload('sess-x', REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'reg-child' },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), 'reminder must still be emitted despite a descriptor-write failure');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- #29: priority wording + archive-request marker -----
+
+test('PRIORITY WORDING: the unread segment uses IMPERATIVE stop-and-address wording', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    const c = ctx(r);
+    assert.ok(/STOP and address these parent message\(s\) FIRST/.test(c), `must use imperative priority wording; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ARCHIVE REQUEST: marker in an unread message -> a DISTINCT archive-request segment is surfaced', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: please [[ANTIHALL_ARCHIVE_REQUEST]] this workspace'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    const c = ctx(r);
+    assert.ok(/DEVSWARM ARCHIVE REQUEST/.test(c), `must surface a distinct archive-request segment; ctx=${c}`);
+    assert.ok(/archive child-1/.test(c), `must name the archive command with this workspace's id; ctx=${c}`);
+    assert.ok(/Confirm with YOUR user/.test(c), 'must require the child\'s own user to confirm, never auto-archive');
+    assert.ok(/NEVER\s+auto-archive/.test(c), 'must explicitly forbid auto-archiving');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ARCHIVE REQUEST ABSENT: unread messages with no marker -> no archive-request segment', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: status?'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    const c = ctx(r);
+    assert.ok(!/DEVSWARM ARCHIVE REQUEST/.test(c), 'no marker present -> no archive-request segment');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- Phase 7 (PLAN-v0.57-mesh.md D25/D26): daemon-liveness STALE banner —
+// the SAME warning devswarm-parent-inbox.js renders to the Primary, surfaced to
+// a CHILD too (children depend on their project's per-project ingest daemon —
+// it drains their native parent->child queue via `inbox pull`). Requires a
+// resolvable git worktree (REPO_CWD), same precondition as the descriptor-
+// registration tests above. -----
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
+const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-stale' };
+
+function lockDir(home) {
+  return path.join(home, '.anti-hall', 'devswarm', 'locks');
+}
+function writeDaemonHeartbeat(home, repoKey, ts, pid) {
+  const p = path.join(heartbeatDir(home), 'ingest-' + repoKey + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  // pid is optional: a caller asserting 'healthy' must pass the SAME pid it
+  // wrote into the lock (writeDaemonLock) — ingest-health.js's daemonHealth
+  // requires the heartbeat and lock to agree on pid (SAME-INCARNATION guard)
+  // before reporting healthy; real production writers (devswarm-ingest.js)
+  // always stamp both records from the same process.pid already.
+  fs.writeFileSync(p, JSON.stringify(pid === undefined ? { ts } : { ts, pid }));
+}
+function writeDaemonLock(home, repoKey, pid) {
+  const p = path.join(lockDir(home), 'ingest-project-' + repoKey + '.lock');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ pid, ts: Date.now(), token: 'test' }));
+}
+function staleBanner(c) {
+  return c.split('\n\n').find((s) => s.includes('DEVSWARM STALE DATA')) || '';
+}
+
+test('CHILD STALE: healthy daemon (fresh heartbeat + live lock) -> NO banner', () => {
+  const h = makeHome();
+  try {
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 5000, process.pid); // SAME pid as the lock below — one incarnation
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(staleBanner(ctx(r)), '', `healthy daemon must not warn; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD STALE: missing heartbeat entirely -> banner surfaced FIRST, above the REMINDER', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const banner = staleBanner(c);
+    assert.ok(banner, `missing heartbeat must warn; ctx=${c}`);
+    assert.ok(/ingest daemon last alive/.test(banner), `banner text; banner=${banner}`);
+    const iBanner = c.indexOf('DEVSWARM STALE DATA');
+    const iReminder = c.indexOf(REMINDER_PHRASE);
+    assert.ok(iBanner >= 0 && iReminder >= 0 && iBanner < iReminder, `banner must sit above the reminder; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD D25: DEAD process with a still-fresh heartbeat file -> reported NOT-healthy -> banner shown', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 5000); // fresh
+    writeDaemonLock(h.home, REPO_KEY, 999999); // implausible/dead pid
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.ok(staleBanner(ctx(r)), `a dead-process lock must still warn despite a fresh heartbeat; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD D25: LIVE process holding the lock but a MISSING heartbeat -> reported NOT-fresh -> banner shown', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeDaemonLock(h.home, REPO_KEY, process.pid); // live, but no heartbeat file
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.ok(staleBanner(ctx(r)), `a live lock alone (no heartbeat) must still warn; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD STALE: cwd not a git worktree -> NO banner, no throw (fail-open)', () => {
+  const h = makeHome();
+  try {
+    // Default promptPayload cwd ('/tmp') has no enclosing .git.
+    const r = testHook(HOOK, promptPayload('sess-stale'), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(staleBanner(ctx(r)), '', `no worktree -> no banner, no throw; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+// ----- v0.66 monitor-outcome FAULT banner (daemonHealth() status:'failed' —
+// alive but `hivecontrol workspace monitor` is failing, ingesting NOTHING).
+// Strictly MORE severe than 'stale': the SAME wiring slot renders
+// buildMonitorFaultBanner() instead of buildStaleBanner() when status is
+// 'failed'. daemonHealth's status is a single mutually-exclusive string (see
+// its own doc comment / companion/lib/ingest-health.js), so 'failed' and
+// 'stale' can never both be true for one call — these tests lock in that only
+// the monitor-fault wording renders for 'failed', never the stale wording,
+// and vice versa. -----
+function writeDaemonHeartbeatFull(home, repoKey, fields) {
+  const p = path.join(heartbeatDir(home), 'ingest-' + repoKey + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(fields));
+}
+function monitorFaultBanner(c) {
+  return c.split('\n\n').find((s) => s.includes('DEVSWARM INGEST FAILING')) || '';
+}
+
+test('CHILD MONITOR-FAULT: alive (fresh heartbeat + live lock) but monitor failing past threshold -> monitor-fault banner, NOT the stale banner', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 5, // >= MONITOR_FAILURE_FAIL_THRESHOLD (3)
+      lastMonitorOkMs: null,
+      lastMonitorErrorCode: 'ENOENT',
+    });
+    writeDaemonLock(h.home, REPO_KEY, process.pid); // SAME pid -> same incarnation, baseHealthy
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const banner = monitorFaultBanner(c);
+    assert.ok(banner, `monitor-failing daemon must render the monitor-fault banner; ctx=${c}`);
+    assert.ok(/hivecontrol workspace monitor/.test(banner), banner);
+    assert.ok(/5x/.test(banner), banner);
+    assert.ok(/anti-hall:doctor/.test(banner), banner);
+    assert.strictEqual(staleBanner(c), '', `must NOT also render the stale banner; ctx=${c}`);
+    // exactly ONE banner segment, never two.
+    const bannerSegs = c.split('\n\n').filter((s) => s.includes('DEVSWARM STALE DATA') || s.includes('DEVSWARM INGEST FAILING'));
+    assert.strictEqual(bannerSegs.length, 1, `exactly one banner must render; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD MONITOR-FAULT: timeout fault -> plain wording without a doctor call to action, once per episode, again after recover-then-relapse', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    const timeoutBeat = () => writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 5, lastMonitorOkMs: null, lastMonitorErrorCode: null,
+      lastMonitorError: 'monitor hivecontrol ETIMEDOUT after 40000ms',
+    });
+    const prompt = () => ctx(testHook(HOOK, promptPayload('sess-once', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV }));
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    timeoutBeat();
+    const first = monitorFaultBanner(prompt());
+    assert.ok(/DEVSWARM INGEST FAILING/.test(first), first);
+    assert.ok(/healthy/.test(first) && /not answering/.test(first) && /mesh messages/.test(first) && /DevSwarm app/.test(first), first);
+    assert.ok(!/Run \/anti-hall:doctor/.test(first), `timeout must not tell the user to run doctor: ${first}`);
+    assert.strictEqual(monitorFaultBanner(prompt()), '', '2nd prompt in the same episode emits nothing');
+    assert.strictEqual(monitorFaultBanner(prompt()), '', '3rd prompt in the same episode emits nothing');
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, { ts: Date.now() - 5000, pid: process.pid, consecutiveMonitorFailures: 0, lastMonitorOkMs: Date.now() });
+    assert.strictEqual(monitorFaultBanner(prompt()), '', 'recovered -> nothing');
+    timeoutBeat();
+    assert.ok(monitorFaultBanner(prompt()), 'a new failure after a successful poll is a NEW episode and emits again');
+  } finally { h.cleanup(); }
+});
+
+test('CHILD MONITOR-FAULT: healthy monitor (consecutiveMonitorFailures:0) -> neither banner renders', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 0,
+      lastMonitorOkMs: Date.now(),
+    });
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.strictEqual(staleBanner(c), '', `healthy daemon must not warn stale; ctx=${c}`);
+    assert.strictEqual(monitorFaultBanner(c), '', `healthy daemon must not warn monitor-fault either; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+// ----- D26 (PLAN-v0.57-mesh.md, Phase 8 step 3): mesh DIRECT surfacing. A mesh
+// direct addressed to this child's meshId lands, via the addressing join, in
+// the child's OWN builder-id partition inside the shared store — this hook
+// additionally reads the SAME shared summaries/<repoKey>.json projection the
+// Primary reads, for THIS child's OWN entry's directUnread/urgencyMax, and
+// renders the SAME urgency-tiered nudge (D4). Distinct from the OLD durable-
+// NDJSON-based unreadInfo/buildUnreadSegment reception path above (both can
+// coexist). -----
+
+const meshStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+
+// seedMeshDirect(home, id, count, urgency) — inserts `count` REAL mesh-direct
+// rows addressed to `id` into the shared store (the SAME production
+// appendMeshMessage primitive `mesh send` uses), then re-derives the
+// projection. A DIRECT summary write would be silently overwritten by the
+// hook's OWN registerStoreDescriptor->deriveSummary call (D24 gap-close,
+// which now runs on every child turn BEFORE this block), so the store is the
+// only durable way to seed this scenario.
+function seedMeshDirect(home, id, count, urgency) {
+  const s = meshStore.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try {
+    for (let i = 0; i < count; i++) {
+      meshStore.appendMeshMessage(s, {
+        from: 'primary-seed', to: id, type: 'direct',
+        message: 'seed message ' + i, urgency: urgency || 'normal',
+        hash: 'seed-' + id + '-' + i,
+      });
+    }
+    meshStore.deriveSummary(s, { home });
+  } finally { s.close(); }
+}
+function meshDirectSegment(c) {
+  return c.split('\n\n').find((s) => s.startsWith('DEVSWARM MESH DIRECT')) || '';
+}
+
+test('D26 MESH DIRECT: this child\'s own directUnread>0 in the shared summary -> surfaced with the standard nudge', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'child-stale', 2, 'normal');
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    const seg = meshDirectSegment(ctx(r));
+    assert.ok(seg, `mesh-direct segment expected; ctx=${ctx(r)}`);
+    assert.ok(seg.includes('2 unread mesh direct'), `must report the count; seg=${seg}`);
+    assert.ok(seg.includes('child-stale'), 'must name this child\'s own id for the read-primary CLI command');
+    assert.ok(seg.includes('inbox read-primary'), `must state the read-primary clear path; seg=${seg}`);
+    assert.ok(!seg.includes('URGENT'), 'a null-urgency mesh direct must not use the URGENT wording');
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT: age surfacing — an old unread row renders "(oldest Xm)" from oldestDirectUnreadTs', () => {
+  const h = makeHome();
+  try {
+    const s = meshStore.openStore({ home: h.home, workspaceId: 'child-stale', hash: REPO_KEY });
+    const oldTs = Date.now() - 25 * 60 * 1000; // 25 minutes ago
+    try {
+      const fields = { from: 'primary-seed', to: 'child-stale', type: 'direct', message: 'old one', timestamp: oldTs, urgency: 'normal' };
+      meshStore.appendMeshMessage(s, Object.assign({}, fields, { hash: meshStore.meshMessageHash(fields) }));
+      meshStore.deriveSummary(s, { home: h.home });
+    } finally { s.close(); }
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    const seg = meshDirectSegment(ctx(r));
+    assert.match(seg, /\(oldest 2[0-9]m\)/, `must surface the oldest-unread age; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT URGENT: urgencyMax urgent/high -> the LOUD URGENT wording (D4)', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'child-stale', 1, 'urgent');
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    const seg = meshDirectSegment(ctx(r));
+    assert.match(seg, /DEVSWARM MESH DIRECT — URGENT/, `seg=${seg}`);
+    assert.match(seg, /STOP and read them FIRST/);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT ABSENT: no mesh directs at all -> no mesh-direct segment', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(meshDirectSegment(ctx(r)), '', `no mesh directs -> no segment; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT ABSENT: another workspace\'s directUnread in the shared summary does not leak onto this child', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'some-other-child', 5, 'urgent');
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(meshDirectSegment(ctx(r)), '', `a DIFFERENT workspace's unread must not surface here; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT: coexists with the OLD durable-inbox unread segment (both surfaced, no clobber)', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'child-1', 1, 'normal');
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    const c = ctx(r);
+    assert.ok(meshDirectSegment(c), `mesh-direct segment present; ctx=${c}`);
+    assert.ok(/DEVSWARM CHILD INBOX — PRIORITY/.test(c), `durable-inbox segment also present; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT: cwd not a git worktree -> no segment, no throw (fail-open)', () => {
+  const h = makeHome();
+  try {
+    // Default promptPayload cwd ('/tmp') has no enclosing .git -> repoKey never
+    // resolves, so there is nothing to seed (registerStoreDescriptor is ALSO a
+    // no-op for the same reason) — this proves the fully-inert path directly.
+    const r = testHook(HOOK, promptPayload('sess-mesh'), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(meshDirectSegment(ctx(r)), '', `unresolvable worktree -> no mesh-direct segment; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+// A raw pre-seeded corrupt summaries/<repoKey>.json is NOT a reachable D26
+// fail-open scenario here: registerStoreDescriptor (D24 gap-close, above)
+// unconditionally re-derives + atomically overwrites that SAME file on every
+// child turn BEFORE the mesh-direct block reads it, healing any pre-existing
+// corruption first. The lazy/guarded-require fail-open contract (D27) IS
+// exercised directly — via an isolated plugin-tree copy, never mutating the
+// shared repo-tree module — in tests/hooks/devswarm-mesh-projection.test.js's
+// "8b" test, which covers BOTH devswarm-parent-inbox.js and
+// devswarm-parent-gate.js; devswarm-child-turn.js's OWN lazy-required
+// ingest-health.js/devswarm-repokey.js block already has direct unit coverage
+// in tests/companion/ingest-health.test.js's "D27 contract" test (same
+// require-fails-safely pattern, asserted without any shared-file mutation).
+
+// ---------------------------------------------------------------------------
+// v0.58 "mesh-only messaging": terse per-turn OVERRIDE_REASSERT + hook-text sweep.
+
+// ---------------------------------------------------------------------------
+// SELF-CONTINUE: the inter-round idle-latency fix. A child that voluntarily
+// ends its turn between rounds of a multi-round autonomous task waits a full
+// wake-cycle (supervisor cron) before it resumes — nothing mechanical forces
+// that pause. This directive tells the child to keep issuing tool calls
+// across rounds within the SAME turn instead.
+
+test('SELF-CONTINUE: per-turn directive to keep issuing tool calls across rounds is present, unconditionally, for a child', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(/AUTONOMY ACROSS ROUNDS/.test(c), `self-continue directive must be present; ctx=${c}`);
+    assert.ok(/do NOT end your turn to wait between rounds/.test(c), `must tell the child not to idle between rounds; ctx=${c}`);
+    assert.ok(/proceed to the next round within the SAME turn/.test(c), `must tell the child to self-continue; ctx=${c}`);
+    assert.ok(/genuine BLOCK needing a parent decision/.test(c), `must name the legitimate Stop conditions; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('OVERRIDE: terse per-turn COMMS OVERRIDE re-assertion is present, unconditionally, for a child', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(/DEVSWARM COMMS OVERRIDE/.test(ctx(r)), `override must be present; ctx=${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HOOK-TEXT SWEEP: emitted child-turn text never contains the blocked native verbs', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    const c = ctx(r);
+    assert.ok(!/message-parent/.test(c), `must never emit message-parent; ctx=${c}`);
+    assert.ok(!/message-child/.test(c), `must never emit message-child; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// v0.58 item 6: child-turn surfaces summary.archive_requested (a field Lane B
+// adds to deriveSummary; read here defensively — undefined = falsy = no
+// surface). devswarm-store.js's deriveSummary does NOT yet compute this field
+// (a separate lane), and this hook's OWN registerStoreDescriptor unconditionally
+// re-derives + overwrites summaries/<repoKey>.json from the store BEFORE this
+// block reads it (the SAME caveat the D26 tests document above) — so these
+// tests pass an EMPTY session_id, the one input that makes registerChildDescriptor
+// (and therefore registerStoreDescriptor) a no-op, letting a hand-seeded summary
+// file survive untouched for this block to read.
+
+function archiveRequestPromptPayload(cwd) {
+  return { hook_event_name: 'UserPromptSubmit', session_id: '', prompt: 'go', cwd: cwd || '/tmp' };
+}
+function writeRawSummary(home, repoKey, workspaces) {
+  const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, repoKey + '.json'), JSON.stringify({ workspaces }));
+}
+
+test('ITEM 6: summary.archive_requested:true surfaces the archive-request segment', () => {
+  const h = makeHome();
+  try {
+    writeRawSummary(h.home, REPO_KEY, {
+      'child-ar': { directUnread: 0, unread: 0, archive_requested: true },
+    });
+    const r = testHook(HOOK, archiveRequestPromptPayload(REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(/DEVSWARM ARCHIVE REQUEST/.test(c), `must surface the archive-request segment; ctx=${c}`);
+    assert.ok(/archive child-ar/.test(c), `must name this workspace's archive command; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ITEM 6: summary.archive_requested absent/undefined -> no surface (defensive read, back-compat)', () => {
+  const h = makeHome();
+  try {
+    writeRawSummary(h.home, REPO_KEY, {
+      'child-ar': { directUnread: 0, unread: 0 }, // no archive_requested field at all
+    });
+    const r = testHook(HOOK, archiveRequestPromptPayload(REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/DEVSWARM ARCHIVE REQUEST/.test(ctx(r)), `undefined field must not surface; ctx=${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ITEM 6: another workspace\'s archive_requested does not leak onto this child', () => {
+  const h = makeHome();
+  try {
+    writeRawSummary(h.home, REPO_KEY, {
+      'other-child': { directUnread: 0, unread: 0, archive_requested: true },
+      'child-ar': { directUnread: 0, unread: 0 },
+    });
+    const r = testHook(HOOK, archiveRequestPromptPayload(REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/DEVSWARM ARCHIVE REQUEST/.test(ctx(r)), `a DIFFERENT workspace's flag must not surface here; ctx=${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ITEM 6: dedupe — NDJSON marker path and summary.archive_requested both true in the same turn -> segment appears once', () => {
+  const h = makeHome();
+  try {
+    writeRawSummary(h.home, REPO_KEY, {
+      'child-ar': { directUnread: 0, unread: 0, archive_requested: true },
+    });
+    seedChildInbox(h.home, 'child-ar', ['from parent: please [[ANTIHALL_ARCHIVE_REQUEST]] this workspace'], 0);
+    const r = testHook(HOOK, archiveRequestPromptPayload(REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const count = (c.match(/DEVSWARM ARCHIVE REQUEST/g) || []).length;
+    assert.strictEqual(count, 1, `segment must appear exactly once, not double-pushed; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// P1 fix: a DevSwarm child's cwd is its PROJECT WORKTREE, not the plugin root,
+// so a RELATIVE `scripts/devswarm.js` (or a bare `devswarm.js` with no
+// interpreter/path at all) in emitted text is unrunnable there. Every `node
+// <cli>` instruction this hook emits — REMINDER/RECEIVE_NUDGE (unconditional)
+// plus the unread/mesh-direct/archive-request segments — must carry an
+// ABSOLUTE path that actually exists on disk.
+
+function assertAbsoluteExistingCliPaths(c, { min } = {}) {
+  const matches = [...c.matchAll(/`node ([^`]*?devswarm\.js)\b/g)];
+  assert.ok(matches.length >= (min || 1), `expected node devswarm.js instruction(s); ctx=${c}`);
+  for (const m of matches) {
+    const cliPath = m[1];
+    assert.ok(path.isAbsolute(cliPath), `emitted CLI path must be absolute, not relative: ${cliPath}`);
+    assert.ok(fs.existsSync(cliPath), `emitted CLI path must exist on disk: ${cliPath}`);
+    assert.ok(cliPath.endsWith(path.join('scripts', 'devswarm.js')), `must resolve to scripts/devswarm.js: ${cliPath}`);
+  }
+  // No bare `devswarm.js` reference should survive without a preceding `node <abs-path>`.
+  assert.ok(!/[^/]\bdevswarm\.js\b/.test(c.replace(/`node [^`]*?devswarm\.js\b/g, '')),
+    `a bare/relative devswarm.js reference leaked through unconverted; ctx=${c}`);
+}
+
+test('P1 FIX: unconditional REMINDER + RECEIVE_NUDGE carry an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    assertAbsoluteExistingCliPaths(ctx(r), { min: 3 }); // heartbeat + inbox pull + inbox read
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('P1 FIX: durable-unread PRIORITY segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assertAbsoluteExistingCliPaths(ctx(r));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('P1 FIX: mesh-direct segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'child-stale', 1, 'urgent');
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assertAbsoluteExistingCliPaths(ctx(r));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('P1 FIX: archive-request segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: please [[ANTIHALL_ARCHIVE_REQUEST]] this workspace'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assertAbsoluteExistingCliPaths(ctx(r));
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Text/mechanism mismatch (P1 follow-up, option (a)): REMINDER previously
+// implied a direct `send --to-primary` was an equivalent alternative to
+// `heartbeat --summary` for "keeping the parent updated" — but
+// devswarm-child-gate.js's alreadyReportedThisEpisode() only recognizes an
+// OUTBOUND row in the shared summary's `recent[]`, which is populated ONLY by
+// a broadcast/heartbeat --summary call (deriveSummary reads it from the
+// broadcast partition) — a direct send lands in the RECIPIENT's own partition
+// and never touches `recent[]`. REMINDER now explicitly names `heartbeat
+// --summary` as what satisfies the Stop-gate and calls out `send --to-primary`
+// as a separate, non-substitute channel.
+
+test('MISMATCH FIX: REMINDER names heartbeat --summary as satisfying the Stop-gate, and send --to-primary as a non-substitute', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    const c = ctx(r);
+    assert.ok(/heartbeat <DEVSWARM_BUILDER_ID> --summary[\s\S]*?satisfies your Stop-gate report/.test(c),
+      `must name heartbeat --summary as satisfying the Stop-gate; ctx=${c}`);
+    assert.ok(/send --to-primary[\s\S]*?SEPARATE direct[\s\S]*?not a substitute/.test(c),
+      `must call out send --to-primary as a separate, non-substitute channel; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- P0 (money path): SessionStart phantom-rescue. cmdSpawn registers a spawn
+// phantom ({id:meshId, sessionId:null}); a Primary `send --to <meshId>` issued
+// BEFORE the child exists lands in that dead phantom partition. The child reads mesh
+// directs by its DEVSWARM_BUILDER_ID, so it never sees them until a fold runs. Pre-fix
+// the fold ran ONLY via a later CLI `inbox pull` (cmdRegister) — NOT guaranteed on the
+// child's first turn. This wires the identical retireWorktreeDuplicates fold into the
+// mechanical SessionStart store-register path, so the phantom's real directs are
+// forwarded into the child's builder-id partition and the phantom is tombstoned on the
+// child's FIRST self-register. -----
+const instP0 = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+
+test('P0 phantom-rescue: the SessionStart store-register FOLDS a same-worktree spawn phantom — forwards its real directs into the child\'s builder-id partition and tombstones the phantom, deterministically (not only on a later inbox pull)', () => {
+  const h = makeHome();
+  const BUILDER = 'child-p0-rescue-builder';
+  try {
+    const mesh = instP0.primaryWorkspaceId(instP0.resolveWorktree(REPO_CWD)); // the spawn phantom's id
+    // Seed the phantom row (exactly what cmdSpawn's best-effort auto-register writes:
+    // store-only, NO on-disk descriptor, sessionId null) PLUS a real mesh direct that a
+    // Primary `send --to <mesh>` landed in the phantom partition before the child existed.
+    {
+      const s = meshStore.openStore({ home: h.home, workspaceId: mesh, hash: REPO_KEY });
+      try {
+        s.upsertRegistry({ id: mesh, worktreePath: REPO_CWD, sessionId: null, inboxPath: null, cursorPath: null, nudgeCommand: null });
+        const fields = { from: 'primary-sender', to: mesh, type: 'direct', message: 'landed-in-phantom', urgency: 'normal', hash: 'p0-phantom-direct' };
+        meshStore.appendMeshMessage(s, fields);
+        meshStore.deriveSummary(s, { home: h.home });
+      } finally { s.close(); }
+    }
+
+    const r = testHook(HOOK, promptPayload('sess-p0', REPO_CWD), {
+      home: h.home, expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: BUILDER },
+    });
+    assert.strictEqual(r.status, 0);
+
+    const s = meshStore.openStore({ home: h.home, workspaceId: BUILDER, hash: REPO_KEY });
+    try {
+      // (a) FORWARDED: the phantom's real direct now sits in the child's OWN partition.
+      const childBodies = s.listMessages(BUILDER, {}).map((m) => m.body);
+      assert.ok(childBodies.includes('landed-in-phantom'),
+        'the phantom\'s real direct must be forwarded into the child\'s builder-id partition on first self-register; got ' + JSON.stringify(childBodies));
+      // (b) TOMBSTONED: the store-only phantom row is gone from the registry.
+      const stillPhantom = s.listRegistry().some((d) => String(d.id) === String(mesh));
+      assert.ok(!stillPhantom, 'the spawn phantom row must be tombstoned after the fold');
+      // (c) NON-DESTRUCTIVE: the phantom partition's original message rows are preserved.
+      assert.deepStrictEqual(s.listMessages(mesh, {}).map((m) => m.body), ['landed-in-phantom'],
+        'the retired partition\'s message rows are preserved (forwarded, never deleted)');
+    } finally { s.close(); }
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- F1 (P1, v0.62.2 lock hardening): registerStoreDescriptor is a THIRD writer
+// of the shared registry row for an id (alongside cmdRegister and
+// rekeySubdirRegistryRows, both of which take the per-id lock) — it must ALSO run
+// its upsertRegistry write under withIdLock(id), never unlocked, mirroring G1/G5. -----
+const recoveryP1c = require('../../plugins/anti-hall/companion/lib/recovery.js');
+
+test('F1: registerStoreDescriptor does NOT write the shared registry while the id\'s lock is held, and writes it once released', () => {
+  const h = makeHome();
+  const BUILDER = 'child-f1-lock';
+  try {
+    const readRow = () => {
+      const s = meshStore.openStore({ home: h.home, workspaceId: BUILDER, hash: REPO_KEY });
+      try { return s.listRegistry().find((r) => String(r.id) === BUILDER) || null; } finally { s.close(); }
+    };
+    assert.strictEqual(readRow(), null, 'precondition: no row for this id yet');
+
+    // (a) lock HELD by another op -> the hook's mechanical self-register must skip
+    // the store-registry write entirely (fail-closed, not an unlocked write).
+    const release = recoveryP1c.acquireLock(BUILDER, h.home);
+    assert.equal(typeof release, 'function', 'precondition: the per-id lock is held');
+    try {
+      const r = testHook(HOOK, promptPayload('sess-f1', REPO_CWD), {
+        home: h.home, expectJson: true,
+        env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: BUILDER },
+      });
+      assert.strictEqual(r.status, 0, 'a lock-busy registration must never crash/block the turn');
+      assert.strictEqual(readRow(), null,
+        'no registry row may be written while the id\'s lock is held by another operation');
+    } finally { release(); }
+
+    // (b) lock RELEASED -> the identical turn now writes the row normally.
+    const r2 = testHook(HOOK, promptPayload('sess-f1', REPO_CWD), {
+      home: h.home, expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: BUILDER },
+    });
+    assert.strictEqual(r2.status, 0);
+    const row = readRow();
+    assert.ok(row, 'once unlocked, the mechanical self-register writes the row');
+    assert.strictEqual(row.worktreePath, REPO_CWD);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- F3 (defensive hardening): a live incident showed hivecontrol's
+// DEVSWARM_BUILDER_ID (a UUID) arriving TRUNCATED by a couple of trailing hex
+// chars. registerChildDescriptor used to trust it as a filename with zero shape
+// validation, writing a phantom descriptor (dead inbox/cursor paths) under the
+// short id every turn. Two hardenings: (1) a UUID-shaped-but-short id is either
+// corrected to the full id (recovered from this turn's OWN sessionId, when it
+// proves the truncation) or skipped outright — never written verbatim; (2) any
+// OTHER same-worktree descriptor file whose OWN id is itself truncated
+// (TRUNCATED_UUID_RE and not FULL_UUID_RE) is retired via the sanctioned
+// archive path on the next real registration. (P1 fix: retirement used to
+// ALSO fire on id !== sessionId alone — ground-truth audit showed 100% of
+// real descriptors have id !== sessionId by design, so that trigger falsely
+// retired healthy same-worktree workspaces. Truncation-shape is now the ONLY
+// signal.) -----
+
+const TRUNCATED_ID = 'aaaaaaaa-bbbb-cccc-dddd-c45c1d4196'; // 10 hex in last group (2 short)
+const FULL_ID = 'aaaaaaaa-bbbb-cccc-dddd-c45c1d4196ac'; // the real, untruncated UUID
+
+test('F3 VALIDATE: a truncated UUID-shaped DEVSWARM_BUILDER_ID is corrected to the full id recovered from this turn\'s own sessionId, never written verbatim', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(FULL_ID, REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: TRUNCATED_ID },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0 (fail-open)');
+
+    assert.ok(!fs.existsSync(workspaceDescPath(h.home, TRUNCATED_ID)),
+      'the truncated id must NEVER get its own phantom descriptor file');
+    const descPath = workspaceDescPath(h.home, FULL_ID);
+    assert.ok(fs.existsSync(descPath), 'the recovered full id must get the real descriptor');
+    const desc = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(desc.id, FULL_ID);
+    assert.strictEqual(desc.sessionId, FULL_ID);
+
+    const seen = readDescriptors(h.home);
+    assert.ok(!seen.some((d) => d.id === TRUNCATED_ID), 'the parent-facing view must never see the truncated id');
+    assert.ok(seen.some((d) => d.id === FULL_ID), 'the parent-facing view must see the recovered full id');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 VALIDATE: a truncated UUID-shaped DEVSWARM_BUILDER_ID with NO recoverable full id is skipped, not written under the bad id', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('unrelated-session-does-not-extend-it', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: TRUNCATED_ID },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0 (fail-open)');
+    assert.ok(!fs.existsSync(workspaceDescPath(h.home, TRUNCATED_ID)),
+      'with no safe recovery available, no phantom descriptor may be written under the truncated id');
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    const names = fs.existsSync(wdir) ? fs.readdirSync(wdir) : [];
+    assert.deepStrictEqual(names, [], 'nothing at all should be written this turn when recovery is impossible');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 RETIRE: registering a real child auto-retires a PROVEN same-worktree phantom descriptor (id is itself TRUNCATED-UUID-shaped), non-destructively', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    // Seed the phantom exactly as the incident produced it: a real fs descriptor
+    // (so it passes readDescriptors' filter and looks live-ish) whose OWN id is
+    // itself UUID-shaped-but-short — the truncation signature, and the ONLY
+    // retirement signal after the P1 fix.
+    const phantomId = TRUNCATED_ID;
+    fs.writeFileSync(path.join(wdir, phantomId + '.json'), JSON.stringify({
+      id: phantomId, worktreePath: path.resolve(REPO_CWD), sessionId: 'phantom-dup-1-full-session-id',
+      inboxPath: path.join(h.home, '.anti-hall', 'devswarm', 'inbox', phantomId + '.ndjson'),
+      cursorPath: path.join(h.home, '.anti-hall', 'devswarm', 'cursors', phantomId + '.cursor'),
+    }));
+    assert.ok(fs.existsSync(path.join(wdir, phantomId + '.json')), 'precondition: phantom descriptor seeded');
+
+    const r = testHook(HOOK, promptPayload('real-child-99', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-99' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    // The REAL child's own descriptor is untouched.
+    const realDesc = JSON.parse(fs.readFileSync(workspaceDescPath(h.home, 'real-child-99'), 'utf8'));
+    assert.strictEqual(realDesc.id, 'real-child-99');
+    assert.strictEqual(realDesc.sessionId, 'real-child-99');
+
+    // The phantom's ACTIVE descriptor is gone (retired), never raw-deleted: it
+    // must have been moved into archived/ (cmdArchive's sanctioned path), not
+    // simply unlinked with no trace.
+    assert.ok(!fs.existsSync(path.join(wdir, phantomId + '.json')),
+      'the proven phantom\'s active descriptor must be retired');
+    const archivedPath = path.join(h.home, '.anti-hall', 'devswarm', 'archived', phantomId + '.json');
+    assert.ok(fs.existsSync(archivedPath),
+      'retirement must be a non-destructive archive (hardlink into archived/), not a raw unlink');
+
+    const seen = readDescriptors(h.home);
+    assert.ok(!seen.some((d) => d.id === phantomId), 'the retired phantom must no longer surface to the parent');
+    assert.ok(seen.some((d) => d.id === 'real-child-99'), 'the real child must still surface to the parent');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 RETIRE is LOCAL-ONLY: the hook never spawns hivecontrol, even when the app DB lists the phantom id as an open standard builder and hivecontrol 2.5.3 can archive', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const phantomId = TRUNCATED_ID;
+    fs.writeFileSync(path.join(wdir, phantomId + '.json'), JSON.stringify({
+      id: phantomId, worktreePath: path.resolve(REPO_CWD), sessionId: 'phantom-dup-1-full-session-id',
+      inboxPath: path.join(h.home, '.anti-hall', 'devswarm', 'inbox', phantomId + '.ndjson'),
+      cursorPath: path.join(h.home, '.anti-hall', 'devswarm', 'cursors', phantomId + '.cursor'),
+    }));
+    // Worst case for the gate: the app DB DOES hold this exact id as an open
+    // standard builder, so only the hook's appArchive:false stops the spawn.
+    const { DatabaseSync } = require('node:sqlite');
+    const dbPath = path.join(h.home, 'fixture-devswarm-app.db');
+    const db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, builderType TEXT, worktreePath TEXT)');
+    db.prepare('INSERT INTO builders VALUES (?, 1, 0, ?, ?)').run(phantomId, 'standard', path.resolve(REPO_CWD));
+    db.close();
+    const FIXD = path.join(__dirname, '..', 'fixtures', 'devswarm-capabilities');
+    const { fakeHivecontrol, readCalls } = require('../helpers/fake-hivecontrol.js');
+    const fake = fakeHivecontrol(path.join(h.home, 'fake-hc'), {
+      version: '2.5.3',
+      workspaceHelp: path.join(FIXD, 'hivecontrol-2.5.3-workspace-help.txt'),
+      verbHelp: { archive: path.join(FIXD, 'hivecontrol-2.5.3-archive-help.txt') },
+    });
+
+    const r = testHook(HOOK, promptPayload('real-child-99', REPO_CWD), {
+      home: h.home,
+      env: {
+        DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-99',
+        PATH: fake.dir + path.delimiter + process.env.PATH, ANTIHALL_DEVSWARM_APP_DB: dbPath,
+      },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!fs.existsSync(path.join(wdir, phantomId + '.json')), 'precondition: the phantom WAS retired locally this turn');
+    assert.deepStrictEqual(readCalls(fake.callsFile), [], 'a hook must never spawn hivecontrol (no probe, no archive)');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 RETIRE P1 FIX: a HEALTHY same-worktree descriptor with id !== sessionId (both full UUIDs, distinct namespaces — the NORMAL shape for every real descriptor) is NOT retired', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    // This is the shape of essentially every live descriptor in production:
+    // `id` is the workspace/builder id, `sessionId` is a DIFFERENT Claude
+    // session UUID (or null) — a different namespace entirely, per
+    // docs/KB-devswarm-hivecontrol.md. It must never be treated as a phantom
+    // signal on its own.
+    const otherId = 'bbbbbbbb-1111-2222-3333-444444444444';
+    const otherSessionId = 'cccccccc-5555-6666-7777-888888888888';
+    fs.writeFileSync(path.join(wdir, otherId + '.json'), JSON.stringify({
+      id: otherId, worktreePath: path.resolve(REPO_CWD), sessionId: otherSessionId,
+      inboxPath: path.join(h.home, '.anti-hall', 'devswarm', 'inbox', otherId + '.ndjson'),
+      cursorPath: path.join(h.home, '.anti-hall', 'devswarm', 'cursors', otherId + '.cursor'),
+    }));
+
+    const r = testHook(HOOK, promptPayload('real-child-101', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-101' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    assert.ok(fs.existsSync(path.join(wdir, otherId + '.json')),
+      'a healthy descriptor with id !== sessionId must never be retired merely for sharing a worktree');
+    const archivedPath = path.join(h.home, '.anti-hall', 'devswarm', 'archived', otherId + '.json');
+    assert.ok(!fs.existsSync(archivedPath), 'must not have been archived either');
+    const seen = readDescriptors(h.home);
+    assert.ok(seen.some((d) => d.id === otherId), 'the untouched descriptor must still surface to the parent');
+    assert.ok(seen.some((d) => d.id === 'real-child-101'), 'the real child must still surface to the parent');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 RETIRE: a same-worktree descriptor whose id === its own sessionId (could be a distinct live child) is LEFT untouched', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const otherId = 'other-live-child-1';
+    fs.writeFileSync(path.join(wdir, otherId + '.json'), JSON.stringify({
+      id: otherId, worktreePath: path.resolve(REPO_CWD), sessionId: otherId,
+    }));
+
+    const r = testHook(HOOK, promptPayload('real-child-100', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-100' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    assert.ok(fs.existsSync(path.join(wdir, otherId + '.json')),
+      'a descriptor whose id === its own sessionId must never be retired, even if it shares a worktree');
+    const seen = readDescriptors(h.home);
+    assert.ok(seen.some((d) => d.id === otherId), 'the untouched descriptor must still surface to the parent');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// F-A regression (v0.61.2): retirePhantomWorktreeDuplicates used to call
+// cmdArchive DIRECTLY, which (unlike foldGroupIntoSurvivor, used by
+// retireWorktreeDuplicates/foldMeshDuplicates) does NOT forward unread direct
+// messages before tombstoning the registry row. A truncated-id phantom CAN
+// still hold an unread direct (mesh routes via registry/worktree, not the
+// phantom's dead inboxPath), so retiring it via the old path silently dropped
+// that message. The fix forwards via the SAME shared foldGroupIntoSurvivor
+// primitive before archiving.
+test('F-A RETIRE: a truncated-id phantom holding an unread direct is retired WITHOUT losing the message (forwarded into the survivor)', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const phantomId = TRUNCATED_ID;
+    fs.writeFileSync(path.join(wdir, phantomId + '.json'), JSON.stringify({
+      id: phantomId, worktreePath: path.resolve(REPO_CWD), sessionId: 'phantom-dup-1-full-session-id',
+      inboxPath: path.join(h.home, '.anti-hall', 'devswarm', 'inbox', phantomId + '.ndjson'),
+      cursorPath: path.join(h.home, '.anti-hall', 'devswarm', 'cursors', phantomId + '.cursor'),
+    }));
+    assert.ok(fs.existsSync(path.join(wdir, phantomId + '.json')), 'precondition: phantom descriptor seeded');
+
+    // Seed an UNREAD direct addressed to the phantom's own partition — mesh
+    // routes via the registry/worktree, not the phantom's dead inboxPath, so
+    // this is reachable even though nothing ever reads the phantom's descriptor
+    // inbox. Seeded into the SAME store partition (hash=repoKey for REPO_CWD)
+    // production code opens.
+    const repoKey = repokey.repoKeyForWorktree(path.resolve(REPO_CWD));
+    assert.ok(repoKey, 'precondition: REPO_CWD must resolve a repoKey');
+    const seedStore = storeLib.openStore({ home: h.home, workspaceId: phantomId, hash: repoKey, backend: 'journal' });
+    try {
+      const fields = { from: 'someone', to: phantomId, type: 'direct', message: 'unread-for-phantom', timestamp: Date.now() };
+      storeLib.appendMeshMessage(seedStore, Object.assign({}, fields, { hash: storeLib.meshMessageHash(fields) }));
+    } finally { seedStore.close(); }
+
+    // Force the SAME backend the seed store used (journal) for the hook
+    // subprocess too — production auto-selects sqlite-when-available, which
+    // would otherwise silently diverge from a hand-forced 'journal' seed
+    // depending on the Node version running the suite (18/20 lack node:sqlite,
+    // 22/24 have it), making the message land in a store the hook never reads.
+    const r = testHook(HOOK, promptPayload('real-child-fa', REPO_CWD), {
+      home: h.home,
+      env: {
+        DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-fa',
+        ANTIHALL_DEVSWARM_STORE_BACKEND: 'journal',
+      },
+    });
+    assert.strictEqual(r.status, 0);
+
+    // Phantom retired (same sanctioned archive path as F3).
+    assert.ok(!fs.existsSync(path.join(wdir, phantomId + '.json')), 'the proven phantom must still be retired');
+    const archivedPath = path.join(h.home, '.anti-hall', 'devswarm', 'archived', phantomId + '.json');
+    assert.ok(fs.existsSync(archivedPath), 'retirement must remain a non-destructive archive');
+
+    // The unread message must have been FORWARDED into the real child's own
+    // partition — not lost.
+    const readStore = storeLib.openStore({ home: h.home, workspaceId: 'real-child-fa', hash: repoKey, backend: 'journal' });
+    let bodies;
+    try { bodies = readStore.listMessages('real-child-fa', {}).map((m) => m.body); }
+    finally { readStore.close(); }
+    assert.ok(bodies.includes('unread-for-phantom'), 'the phantom\'s unread direct must be forwarded into the survivor, not dropped: ' + JSON.stringify(bodies));
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- git push-state (unpushed/no-upstream ground truth on the heartbeat) -----
+//
+// Real temp git repos (never the actual anti-hall checkout, whose own
+// upstream state is not deterministic across environments/CI). Mirrors
+// tests/companion/devswarm-git-truth.test.js's fixture shape.
+
+function git(dir, args) {
+  const r = require('node:child_process').spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error('git ' + args.join(' ') + ' failed: ' + r.stderr);
+  return r.stdout;
+}
+function makeBareRemote() {
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-remote-'));
+  require('node:child_process').spawnSync('git', ['init', '-q', '--bare', dir]);
+  return dir;
+}
+function makeSyncedRepo() {
+  const os = require('node:os');
+  const remote = makeBareRemote();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-repo-'));
+  git(dir, ['init', '-q', '-b', 'main']);
+  git(dir, ['config', 'user.email', 'a@example.com']);
+  git(dir, ['config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'f.txt'), '1');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-q', '-m', 'c1']);
+  git(dir, ['remote', 'add', 'origin', remote]);
+  git(dir, ['push', '-q', '-u', 'origin', 'main']);
+  return { dir, remote };
+}
+function rmDir(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
+
+test('HEARTBEAT PUSH-STATE: upstream configured + ahead -> heartbeat carries noUpstream:false, unpushed:N', () => {
+  const h = makeHome();
+  const { dir, remote } = makeSyncedRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'g.txt'), '2');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c2']);
+    const r = testHook(HOOK, promptPayload('sess-push', dir), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'push-child' },
+    });
+    assert.strictEqual(r.status, 0);
+    const beat = readBeat(h.home, 'push-child');
+    assert.strictEqual(beat.noUpstream, false);
+    assert.strictEqual(beat.unpushed, 1);
+  } finally {
+    h.cleanup();
+    rmDir(dir); rmDir(remote);
+  }
+});
+
+test('HEARTBEAT PUSH-STATE: no upstream configured -> heartbeat carries noUpstream:true, unpushed:null (never 0)', () => {
+  const h = makeHome();
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-noup-'));
+  try {
+    git(dir, ['init', '-q', '-b', 'main']);
+    git(dir, ['config', 'user.email', 'a@example.com']);
+    git(dir, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(dir, 'f.txt'), '1');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c1']);
+    const r = testHook(HOOK, promptPayload('sess-noup', dir), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'noup-child' },
+    });
+    assert.strictEqual(r.status, 0);
+    const beat = readBeat(h.home, 'noup-child');
+    assert.strictEqual(beat.noUpstream, true);
+    assert.strictEqual(beat.unpushed, null);
+  } finally {
+    h.cleanup();
+    rmDir(dir);
+  }
+});
+
+test('HEARTBEAT PUSH-STATE: no resolvable worktree (default /tmp cwd) -> keys omitted entirely, never fabricated', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-nowt'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'nowt-child' },
+    });
+    assert.strictEqual(r.status, 0);
+    const beat = readBeat(h.home, 'nowt-child');
+    assert.ok(!('noUpstream' in beat), 'noUpstream must be omitted, not fabricated');
+    assert.ok(!('unpushed' in beat), 'unpushed must be omitted, not fabricated');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// P0-2 — THIS WRITER MUST PARTICIPATE IN THE PER-ID LOCK.
+//
+// registerChildDescriptor publishes `workspaces/<id>.json` with an ATOMIC
+// REPLACE (writeFileSync(tmp) + renameSync), which installs a NEW INODE at that
+// pathname. scripts/devswarm.js's archive/retire path classifies a descriptor,
+// then hardlinks + inode-verifies + unlinks it BY PATHNAME under
+// `withIdLock(<id>)`. While THIS hook took no lock, the two could interleave:
+// retirement verifies the inode, this hook renames a FRESH LIVE descriptor over
+// the pathname, retirement unlinks the new one. A live child workspace silently
+// de-registered, with only the OLD generation surviving in `archived/`.
+//
+// Fingerprinting on the retirement side cannot close that — Node has no
+// unlink-by-inode, so nothing makes check-then-unlink atomic except BOTH writers
+// holding the same lock.
+//
+// MUTATION CHECK M8 — a variant that skips the lock here. Note what does NOT
+// kill it: merely observing that `locks/<id>.lock` was touched during the run.
+// Other parts of this same hook (the phantom-duplicate retirement, which calls
+// cmdArchive) take per-id locks AFTER the descriptor write, so a lock-touch
+// assertion passes for the unlocked variant too — verified by running M8
+// against exactly such a test. The discriminating observable is TIMING OF THE
+// WRITE ITSELF: with the lock, the descriptor cannot appear while a live holder
+// still owns the lock; without it, the descriptor appears immediately.
+// ---------------------------------------------------------------------------
+
+const cpMod = require('node:child_process');
+const HOOK_ABS = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', HOOK);
+
+function lockPath(home, id) {
+  return path.join(home, '.anti-hall', 'devswarm', 'locks', id + '.lock');
+}
+// Plant a LIVE, FRESH lock holder: this very test process (alive) with ts = now
+// (not stale). recovery.js's acquireLock respects exactly this and refuses.
+function plantLiveLock(home, id) {
+  const p = lockPath(home, id);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
+  return p;
+}
+// Async spawn of the hook with the SAME controlled env tests/helpers/spawn-hook.js
+// builds (PATH + HOME only on POSIX; USERPROFILE/HOMEDRIVE/HOMEPATH added on
+// win32 because os.homedir() ignores $HOME there). Spawned ASYNCHRONOUSLY —
+// unlike testHook's spawnSync — because this test must observe the filesystem
+// WHILE the hook is still running.
+function spawnHookAsync(home, id, sessionId) {
+  const env = process.platform === 'win32'
+    ? (() => {
+      const e = { ...process.env };
+      for (const k of Object.keys(e)) if (/^DEVSWARM_/.test(k) || /^ANTIHALL_/.test(k)) delete e[k];
+      const root = path.parse(home).root;
+      return { ...e, HOME: home, USERPROFILE: home, HOMEDRIVE: root, HOMEPATH: home.slice(root.length) };
+    })()
+    : { PATH: process.env.PATH, HOME: home };
+  const child = cpMod.spawn(process.execPath, [HOOK_ABS], {
+    env: {
+      ...env,
+      DEVSWARM_REPO_ID: 'repo-1',
+      DEVSWARM_SOURCE_BRANCH: 'main',
+      DEVSWARM_BUILDER_ID: id,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', () => {});
+  child.stdin.end(JSON.stringify(promptPayload(sessionId || 'sess-lock', REPO_CWD)));
+  const done = new Promise((resolve) => child.on('close', (code) => resolve({ code, stdout: out })));
+  return { child, done };
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('P0-2: the descriptor write is SERIALIZED by the per-id lock — it cannot land while a live holder owns it', async () => {
+  const h = makeHome();
+  try {
+    const id = 'lock-contended';
+    const descPath = workspaceDescPath(h.home, id);
+    const lp = plantLiveLock(h.home, id);
+
+    const { done } = spawnHookAsync(h.home, id);
+
+    // Baseline sanity: an UNCONTENDED hook writes its descriptor in well under
+    // this window (the sibling REGISTER tests above complete end-to-end in ~150ms
+    // via spawnSync). So if the descriptor is absent here, it is because the
+    // writer is WAITING on the lock we are holding — not because it is slow.
+    let appearedWhileHeld = false;
+    for (let i = 0; i < 14; i++) {              // ~700ms, inside the 1000ms budget
+      await sleep(50);
+      if (fs.existsSync(descPath)) { appearedWhileHeld = true; break; }
+    }
+    assert.strictEqual(appearedWhileHeld, false,
+      'the descriptor must NOT be published while another holder owns locks/<id>.lock');
+
+    // Release: the hook's bounded retry now succeeds and it publishes normally.
+    fs.unlinkSync(lp);
+    const r = await done;
+    assert.strictEqual(r.code, 0, 'the hook exits cleanly');
+    assert.ok(fs.existsSync(descPath), 'and the descriptor IS published once the lock frees');
+    const desc = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(desc.id, id);
+    assert.strictEqual(desc.worktreePath, path.resolve(REPO_CWD));
+  } finally { h.cleanup(); }
+});
+
+test('P0-2 FAIL-OPEN: a lock held past the budget NEVER breaks the turn — the descriptor is still written and the reminder still emitted', async () => {
+  const h = makeHome();
+  try {
+    const id = 'lock-failopen';
+    // Held for the WHOLE run. Refusing to register would make this child
+    // undiscoverable to the parent gate for the entire turn — strictly worse
+    // than the narrow residual race. So after the bounded budget it writes anyway.
+    plantLiveLock(h.home, id);
+    const { done } = spawnHookAsync(h.home, id, 'sess-failopen');
+    const r = await done;
+    assert.strictEqual(r.code, 0, 'exit 0 — a hook must never fail a turn on a lock');
+    assert.ok(fs.existsSync(workspaceDescPath(h.home, id)),
+      'the descriptor MUST still be written (fail-open)');
+    const parsed = JSON.parse(r.stdout);
+    const additional = parsed && parsed.hookSpecificOutput && parsed.hookSpecificOutput.additionalContext;
+    assert.ok(String(additional).includes(REMINDER_PHRASE), 'and the turn output is unaffected');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// defect 735b179362e8: REMINDER/RECEIVE_NUDGE previously embedded the LITERAL
+// `<DEVSWARM_BUILDER_ID>` placeholder unconditionally — a child agent then had
+// nothing to substitute and used the wrong id (its own meshId) instead. Both
+// segments now substitute the REAL env.DEVSWARM_BUILDER_ID (via
+// substituteId()) when it is present and passes the same isSafeId charset
+// check every other id in this file is validated against; the placeholder is
+// preserved, byte-identical to pre-fix, when the env var is absent/unsafe.
+// ---------------------------------------------------------------------------
+
+test('ID SUBSTITUTION (735b179362e8): env.DEVSWARM_BUILDER_ID set -> the real id replaces the placeholder in both REMINDER and RECEIVE_NUDGE', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-abc123' },
+    });
+    const c = ctx(r);
+    assert.ok(c.includes('heartbeat child-abc123 --summary'), `REMINDER must substitute the real id; ctx=${c}`);
+    assert.ok(c.includes('inbox pull child-abc123'), `RECEIVE_NUDGE must substitute the real id (pull step); ctx=${c}`);
+    assert.ok(c.includes('inbox read-primary child-abc123'), `RECEIVE_NUDGE must substitute the real id (read-primary step); ctx=${c}`);
+    assert.ok(!c.includes('<DEVSWARM_BUILDER_ID>'), `the placeholder must not leak through once a real safe id is available; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('ID SUBSTITUTION (735b179362e8): env.DEVSWARM_BUILDER_ID absent -> the placeholder is preserved, byte-identical to pre-fix', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    const c = ctx(r);
+    assert.ok(c.includes('heartbeat <DEVSWARM_BUILDER_ID> --summary'), `REMINDER must keep the placeholder with no real id available; ctx=${c}`);
+    assert.ok(c.includes('inbox pull <DEVSWARM_BUILDER_ID>'), `RECEIVE_NUDGE must keep the placeholder (pull step); ctx=${c}`);
+    assert.ok(c.includes('inbox read-primary <DEVSWARM_BUILDER_ID>'), `RECEIVE_NUDGE must keep the placeholder (read-primary step); ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('ID SUBSTITUTION (735b179362e8): an UNSAFE DEVSWARM_BUILDER_ID (path traversal / shell metacharacters) never gets interpolated — placeholder preserved', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: '../../etc/passwd' },
+    });
+    const c = ctx(r);
+    assert.ok(!c.includes('../../etc/passwd'), `an unsafe id must never be interpolated into emitted text; ctx=${c}`);
+    assert.ok(c.includes('<DEVSWARM_BUILDER_ID>'), `must fall back to the placeholder on an unsafe id; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.childTurn=false: no reminder and no heartbeat', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    switchOff(h.home, 'devswarm', 'childTurn');
+    const r = testHook(HOOK, promptPayload('sess-abc'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'b-1', DEVSWARM_BUILDER_NAME: 'main-repo1' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+    assert.ok(!fs.existsSync(path.join(heartbeatDir(h.home), 'b-1.json')), 'no heartbeat written when off');
+  } finally { h.cleanup(); }
+});
+
+// ----- design B: "archive tells the live child to stop" -----
+// An archived workspace's descriptor must never be rewritten by
+// registerChildDescriptor (it has no archive check of its own — that is the
+// bug), and the child must instead see one ARCHIVED banner segment telling it
+// to write a handover and stop taking new work. archived/<id>.json is anti-
+// hall's own archive marker (row-state.js's contract — see
+// tests/companion/row-state.test.js): matching worktreePath + sessionId.
+
+function archivedMarkerPath(home, id) {
+  return path.join(home, '.anti-hall', 'devswarm', 'archived', id + '.json');
+}
+function writeArchivedMarker(home, id, worktreePath, sessionId) {
+  const dir = path.dirname(archivedMarkerPath(home, id));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(archivedMarkerPath(home, id), JSON.stringify({ id, worktreePath, sessionId }));
+}
+
+test('ARCHIVED CHILD: descriptor is never rewritten, and the ARCHIVED banner is surfaced', () => {
+  const h = makeHome();
+  try {
+    const id = 'archived-child-1';
+    const sessId = 'sess-archived-1';
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+
+    // Turn 1: normal registration, NOT yet archived.
+    const r1 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r1.status, 0);
+    const descPath = workspaceDescPath(h.home, id);
+    const beforeRaw = fs.readFileSync(descPath, 'utf8');
+    const before = JSON.parse(beforeRaw);
+    assert.strictEqual(before.worktreePath, path.resolve(REPO_CWD));
+    assert.ok(!ctx(r1).includes('DEVSWARM CHILD ARCHIVED'), 'not yet archived on turn 1 -> no banner');
+
+    // Archive it: SAME worktreePath + SAME live sessionId (row-state.js does
+    // not treat this as superseded — the still-running session continues).
+    writeArchivedMarker(h.home, id, before.worktreePath, sessId);
+
+    // Turn 2: same session continues after the archive.
+    const r2 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r2.status, 0);
+    const afterRaw = fs.readFileSync(descPath, 'utf8');
+    assert.strictEqual(afterRaw, beforeRaw, 'an archived child\'s descriptor must never be rewritten');
+    assert.ok(ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), `must surface the ARCHIVED banner; ctx=${ctx(r2)}`);
+    assert.ok(ctx(r2).includes('/anti-hall:handover'), 'must direct the child to write a handover');
+    assert.ok(ctx(r2).includes('stop'), 'must direct the child to stop');
+    assert.ok(ctx(r2).includes('.anti-hall/handovers/<date>/<session_id>/HANDOVER.md, never a flat file'), 'must name the one handover format');
+  } finally { h.cleanup(); }
+});
+
+test('ARCHIVED CHILD: metrics record the refused re-registration and the turn-after-archive', () => {
+  const h = makeHome();
+  try {
+    const id = 'archived-child-metrics';
+    const sessId = 'sess-archived-metrics';
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+    const r1 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r1.status, 0);
+    const before = JSON.parse(fs.readFileSync(workspaceDescPath(h.home, id), 'utf8'));
+    writeArchivedMarker(h.home, id, before.worktreePath, sessId);
+
+    testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+
+    const metricsLib = require('../../plugins/anti-hall/companion/lib/archived-child-metrics.js');
+    const m = metricsLib.readMetrics(h.home);
+    assert.strictEqual(m.totals['reregistration-refused'], 1);
+    assert.strictEqual(m.totals['turn-after-archive'], 1);
+    assert.strictEqual(m.byId[id]['reregistration-refused'], 1);
+  } finally { h.cleanup(); }
+});
+
+test('NON-ARCHIVED CHILD: unaffected — descriptor keeps refreshing turn over turn, no banner', () => {
+  const h = makeHome();
+  try {
+    const id = 'plain-child-1';
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+    testHook(HOOK, promptPayload('sess-plain-1', REPO_CWD), { home: h.home, env });
+    const descPath = workspaceDescPath(h.home, id);
+    const firstRaw = fs.readFileSync(descPath, 'utf8');
+    assert.strictEqual(JSON.parse(firstRaw).sessionId, 'sess-plain-1');
+
+    const r2 = testHook(HOOK, promptPayload('sess-plain-2', REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r2.status, 0);
+    const second = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(second.sessionId, 'sess-plain-2', 'a non-archived child must keep refreshing its descriptor every turn');
+    assert.ok(!ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), 'no archive -> no banner');
+  } finally { h.cleanup(); }
+});
+
+test('SWITCH devswarm.archivedChildStop=false: an archived child reverts to the old behaviour (descriptor rewritten, no banner)', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    const id = 'archived-child-off';
+    const sessId = 'sess-archived-off';
+    const env = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id };
+    testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    const descPath = workspaceDescPath(h.home, id);
+    const before = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    writeArchivedMarker(h.home, id, before.worktreePath, sessId);
+
+    switchOff(h.home, 'devswarm', 'archivedChildStop');
+    const r2 = testHook(HOOK, promptPayload(sessId, REPO_CWD), { home: h.home, env });
+    assert.strictEqual(r2.status, 0);
+    assert.ok(!ctx(r2).includes('DEVSWARM CHILD ARCHIVED'), 'setting off -> no banner, pre-fix behaviour');
+    const after = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(after.sessionId, sessId, 'setting off -> descriptor still refreshed (old behaviour)');
+  } finally { h.cleanup(); }
+});

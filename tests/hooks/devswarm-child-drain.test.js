@@ -1,0 +1,208 @@
+'use strict';
+// devswarm-child-drain (PostToolUse hook, matcher Bash, CHILD-ONLY). The
+// operative mid-turn re-entry fix: a store-only mesh-direct backlog (`send
+// --to`, invisible to an NDJSON-only reader) must surface on a Bash tool
+// call, not just once per UserPromptSubmit.
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { testHook, postToolUseBashPayload } = require('../helpers/spawn-hook.js');
+const { makeHome } = require('../helpers/fixtures.js');
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const store = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+
+const HOOK = 'devswarm-child-drain.js';
+const REPO_CWD = process.cwd();
+const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
+
+const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' };
+const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' };
+
+function payload(env) {
+  const p = postToolUseBashPayload('git status', {});
+  p.cwd = REPO_CWD;
+  return p;
+}
+
+// SUBAGENT payload — agent_id present, same cmux-reliable discriminator
+// command-guard.js's coordinator-detect.js uses.
+function subagentPayload() {
+  const p = postToolUseBashPayload('git status', { agentId: 'sub-1' });
+  p.cwd = REPO_CWD;
+  return p;
+}
+
+function seedDescriptor(home, id, overrides) {
+  const dsw = path.join(home, '.anti-hall', 'devswarm');
+  const inboxPath = path.join(dsw, id + '.inbox.ndjson');
+  const cursorPath = path.join(dsw, id + '.cursor');
+  fs.mkdirSync(dsw, { recursive: true });
+  fs.writeFileSync(inboxPath, ''); // empty durable NDJSON — no native-drained backlog
+  fs.writeFileSync(cursorPath, '0');
+  const wdir = path.join(dsw, 'workspaces');
+  fs.mkdirSync(wdir, { recursive: true });
+  const desc = Object.assign({ id, inboxPath, cursorPath, worktreePath: REPO_CWD }, overrides || {});
+  fs.writeFileSync(path.join(wdir, id + '.json'), JSON.stringify(desc));
+  return desc;
+}
+
+function seedStoreOnlyDirect(home, id, message) {
+  const s = store.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try {
+    const fields = { from: 'primary-abc', to: id, type: 'direct', message: message || 'hi', timestamp: Date.now() };
+    store.appendMeshMessage(s, Object.assign({}, fields, { hash: store.meshMessageHash(fields) }));
+  } finally { s.close(); }
+}
+
+function ctx(r) {
+  return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+}
+
+test('CHILD, store-only mesh-direct unread (NDJSON empty) -> injects DEVSWARM INBOX nudge', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    const r = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json, `must emit JSON on inject; stdout=${r.stdout}`);
+    assert.ok(ctx(r).includes('DEVSWARM INBOX'), `must carry the DEVSWARM INBOX banner; ctx=${ctx(r)}`);
+    assert.ok(ctx(r).includes('1 unread'), `must report the store-only unread count; ctx=${ctx(r)}`);
+    assert.ok(ctx(r).includes('inbox ack child-1'), `must prescribe the cursor-advancing ack command; ctx=${ctx(r)}`);
+    assert.ok(!ctx(r).includes('inbox read child-1`'), 'must NOT prescribe the non-mutating `inbox read` as the remedy');
+  } finally { h.cleanup(); }
+});
+
+// defect I6 (7-workspace sweep, 2026-09-27): this hook fires unconditionally
+// on every Bash call, so when the triggering command was itself `inbox
+// read-primary` (a DIFFERENT channel than this hook's own union unread
+// signal), it used to ALSO inject "Drain NOW via `inbox pull ... && inbox
+// ack ...`" in that same turn — contradicting the read-primary + ackCommand
+// guidance given everywhere else in this plugin. Fix: skip the injection
+// when the triggering command is a read-primary call.
+test('CHILD, triggering command is `inbox read-primary` -> no Drain-NOW nudge injected this turn (even with store-only unread pending)', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    const p = postToolUseBashPayload('node /path/to/devswarm.js inbox read-primary child-1', {});
+    p.cwd = REPO_CWD;
+    const r = testHook(HOOK, p, { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', `must not inject right after read-primary; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('PRIMARY payload (same env otherwise) -> silent no-op even with store-only unread', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'hello');
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', 'Primary payload must produce zero output');
+  } finally { h.cleanup(); }
+});
+
+test('CHILD with zero unread (no descriptor, no store row) -> silent no-op', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', 'zero unread must produce zero output');
+  } finally { h.cleanup(); }
+});
+
+test('THROTTLE: same unread count within the window -> second call is suppressed', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'first');
+    const r1 = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.ok(ctx(r1).includes('DEVSWARM INBOX'), 'first call must inject');
+    const r2 = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r2.stdout.trim(), '', 'second call with an UNCHANGED count within the throttle window must be suppressed');
+  } finally { h.cleanup(); }
+});
+
+test('THROTTLE: unread count CHANGES -> re-injects even within the window', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'first');
+    const r1 = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.ok(ctx(r1).includes('1 unread'));
+    seedStoreOnlyDirect(h.home, 'child-1', 'second, distinct body so it is not deduped');
+    const r2 = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.ok(ctx(r2).includes('2 unread'), `count change must re-inject with the new count; ctx=${ctx(r2)}`);
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-OPEN: malformed stdin -> exit 0, no crash', () => {
+  const { testHookRaw } = require('../helpers/spawn-hook.js');
+  const r = testHookRaw(HOOK, '{bad json', { env: CHILD_ENV });
+  assert.strictEqual(r.status, 0);
+});
+
+test('FAIL-OPEN: empty stdin -> exit 0, no crash', () => {
+  const { testHookRaw } = require('../helpers/spawn-hook.js');
+  const r = testHookRaw(HOOK, '', { env: CHILD_ENV });
+  assert.strictEqual(r.status, 0);
+});
+
+// defect f0958b13fe2b addendum: this hook previously instructed WHOEVER made
+// the Bash call — including a subagent, which inherits the child's env — to
+// "Drain NOW via `inbox pull ... && inbox ack ...`". Field-measured: three
+// child subagents ran exactly that at 18:49:24Z/04:43:00Z/05:46:28Z,
+// advancing the shared cursor so the workspace's own main thread missed the
+// mail. A subagent must get NOTHING from this hook (command-guard.js's
+// devswarm-subagent-mailbox-guard already blocks the drain command itself if
+// a subagent tries it; this hook must not be the thing that told it to).
+test('SUBAGENT payload -> silent no-op even with a real store-only unread backlog', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    const r = testHook(HOOK, subagentPayload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', `SUBAGENT payload must produce zero output; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('MAIN THREAD payload (no subagent markers) still injects the drain nudge, unaffected by the subagent gate', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    const r = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.ok(ctx(r).includes('DEVSWARM INBOX'), `main-thread injection must be unaffected; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('NO-OP: DevSwarm not active at all -> silent no-op', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'hello');
+    const r = testHook(HOOK, payload(), { home: h.home, env: { DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' } });
+    assert.strictEqual(r.stdout.trim(), '', 'inactive supervisor must produce zero output regardless of backlog');
+  } finally { h.cleanup(); }
+});
+
+// 0.108.4: the per-hook settings switch. Same fixture as the positive test
+// above, switch off -> silent no-op (exit 0, no stdout).
+test('SWITCH devswarm.childDrain=false: store-only unread is not re-surfaced', () => {
+  const { switchOff } = require('../helpers/settings-switch.js');
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    switchOff(h.home, 'devswarm', 'childDrain');
+    const r = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '');
+  } finally { h.cleanup(); }
+});
