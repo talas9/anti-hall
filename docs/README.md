@@ -27,6 +27,7 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 | Doc | What it covers |
 |---|---|
 | [`KB-jev-classifier.md`](./KB-jev-classifier.md) | Jev (TypeSafe System One) opt-in classifier: [Enable Jev](./KB-jev-classifier.md#enable-jev) (full text and the measured result), every wired integration, metrics, cost and budget watch. |
+| [`HOOK-LATENCY.md`](./HOOK-LATENCY.md) | Measured hook latency: wall p50/p95 and CPU per hook, and the per-tool-call total for each event. |
 | [`KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) | DevSwarm & the `hivecontrol` CLI — multi-workspace orchestration. |
 | [`KB-devswarm-app-db.md`](./KB-devswarm-app-db.md) | The DevSwarm desktop app's database: what anti-hall reads (read-only), field evidence, sync, screenshot sync, 2.5.3 notes. |
 
