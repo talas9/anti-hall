@@ -618,11 +618,8 @@ function scanTranscript(transcriptPath, preLines, opts) {
   return { launched, terminal, pendingMessages };
 }
 
-// runningAgents(transcriptPath) -> [{ id, description, launchedAtMs, pendingMessage? }] —
-// launched in this transcript and not yet terminal. null when unreadable.
-function runningAgents(transcriptPath, preLines, opts) {
-  const scan = scanTranscript(transcriptPath, preLines, opts);
-  if (!scan) return null;
+// rowsOf(scan) -> the running rows (launched, not terminal).
+function rowsOf(scan) {
   const out = [];
   for (const [id, rec] of scan.launched) {
     if (scan.terminal.has(id)) continue;
@@ -634,22 +631,51 @@ function runningAgents(transcriptPath, preLines, opts) {
   return out;
 }
 
-// runningAgentsOrNull(transcriptPath, preLines) -> [{...}] | null. Like
-// runningAgents, but null ("unknown") when the count cannot be trusted: the scan
-// is unreadable, or the transcript is larger than the capped tail window and no
-// agent was found in it — a launch that sits BEFORE the window is invisible, so
-// an empty result there is "unknown", not "0 running" (L34 field: DISPATCH NOW
-// said "0 running" while a pre-window agent was still pending).
-function runningAgentsOrNull(transcriptPath, preLines, opts) {
-  const out = runningAgents(transcriptPath, preLines, opts);
-  if (out === null) return null;
-  if (out.length === 0) {
-    try {
-      const { MAX_TAIL_BYTES } = require('./transcript-tail.js');
-      if (require('fs').statSync(transcriptPath).size > MAX_TAIL_BYTES) return null;
-    } catch (_) { return null; }
-  }
-  return out;
+// runningAgents(transcriptPath) -> [{ id, description, launchedAtMs, pendingMessage? }] —
+// launched in this transcript and not yet terminal. null when unreadable.
+function runningAgents(transcriptPath, preLines, opts) {
+  const scan = scanTranscript(transcriptPath, preLines, opts);
+  return scan ? rowsOf(scan) : null;
 }
 
-module.exports = { scanTranscript, runningAgents, runningAgentsOrNull, extractTexts, TERMINAL_NOTIFICATION_STATUS };
+// WIDE_TAIL_BYTES — the one-shot widened read used ONLY when the normal 1.5MB
+// window shows no running agent but the file is larger than it. ROOT CAUSE of the
+// "running-agent count unknown" line firing after agents had launched AND
+// completed a few turns earlier: an empty in-window result on an over-window file
+// was always "unknown" (a pre-window launch is invisible), even though the window
+// already held the launches and their terminal notifications. Reading further
+// back lets the scan PROVE the count for any session whose agents sit within this
+// bound; beyond it the count stays unprovable and the caller says so.
+const WIDE_TAIL_BYTES = 12 * 1024 * 1024;
+
+// agentCountProof(transcriptPath, preLines, opts) -> { running: [...] | null, seen: string[], windowBytes }
+// running null = UNPROVEN. seen = ids of agents launched in the scanned window
+// (all finished when running is null), so a caller can say what it did see.
+function agentCountProof(transcriptPath, preLines, opts) {
+  const scan = scanTranscript(transcriptPath, preLines, opts);
+  if (!scan) return { running: null, seen: [], windowBytes: 0 };
+  const rows = rowsOf(scan);
+  if (rows.length > 0) return { running: rows, seen: [...scan.launched.keys()], windowBytes: 0 };
+  const { MAX_TAIL_BYTES, readTail } = require('./transcript-tail.js');
+  let size;
+  try { size = require('fs').statSync(transcriptPath).size; } catch (_) { return { running: null, seen: [], windowBytes: 0 }; }
+  if (size <= MAX_TAIL_BYTES) return { running: rows, seen: [...scan.launched.keys()], windowBytes: size };
+  const wide = scanTranscript(transcriptPath, readTail(transcriptPath, WIDE_TAIL_BYTES), opts);
+  if (!wide) return { running: null, seen: [...scan.launched.keys()], windowBytes: MAX_TAIL_BYTES };
+  const wrows = rowsOf(wide);
+  const seen = [...wide.launched.keys()];
+  if (wrows.length > 0) return { running: wrows, seen, windowBytes: WIDE_TAIL_BYTES };
+  if (size <= WIDE_TAIL_BYTES) return { running: [], seen, windowBytes: size };
+  return { running: null, seen, windowBytes: WIDE_TAIL_BYTES };
+}
+
+// runningAgentsOrNull(transcriptPath, preLines) -> [{...}] | null. Like
+// runningAgents, but null ("unknown") when the count cannot be trusted: the scan
+// is unreadable, or the transcript is larger than the widened window and no
+// agent was found in it (a launch before the window is invisible, so an empty
+// result there is "unknown", not "0 running" — L34 field).
+function runningAgentsOrNull(transcriptPath, preLines, opts) {
+  return agentCountProof(transcriptPath, preLines, opts).running;
+}
+
+module.exports = { scanTranscript, runningAgents, runningAgentsOrNull, agentCountProof, WIDE_TAIL_BYTES, extractTexts, TERMINAL_NOTIFICATION_STATUS };

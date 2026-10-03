@@ -354,12 +354,13 @@ function fillerEntry(bytes) {
   return { type: 'user', timestamp: iso(8), message: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(bytes) }] } };
 }
 
+// 13MB filler: beyond the widened (12MB) proof window too, so the launch is unreachable.
 test('L34: agent launched BEFORE the tail window (still pending) -> count unknown, NO "DISPATCH NOW (0 running)"', () => {
   const h = makeHome();
   try {
     const tp = h.writeTranscript([
       ...agentLaunch('toolu_a1', 'abcdef123456', 'long-running reviewer'),
-      fillerEntry(1.7 * 1024 * 1024),
+      fillerEntry(13 * 1024 * 1024),
       ...createTasks(['write the docs'], 1),
     ]);
     const r = testHook(TRACKER, trackerPayload(tp), { home: h.home, env: Object.assign({}, NO_DEDUPE, HIGH_CAP) });

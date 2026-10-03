@@ -246,7 +246,8 @@ function freshnessNote(payload) {
     const actionable = classifyOpen(open, state.taskMap);
     if (actionable.length >= 1 && DD.enabled()) {
       let running = null;
-      try { running = require('./lib/agent-scan.js').runningAgentsOrNull(tp, lines); } catch (_) { running = null; }
+      let proof = { running: null, seen: [], windowBytes: 0 };
+      try { proof = require('./lib/agent-scan.js').agentCountProof(tp, lines); running = proof.running; } catch (_) { running = null; }
       const res = DD.evaluate({ actionable, knownIds: [...state.taskMap.keys()], inProgressIds: open.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running });
       if (res.fire) {
         // Jev dispatchTier (advisory, default on): "→ <tier> (<conf>)" per task
@@ -263,12 +264,20 @@ function freshnessNote(payload) {
         if (tier) { try { tier.commit(); } catch (_) {} }
         demandShown = res.dispatch.length;
       } else if (res.unknown) {
-        out += 'Background-agent running-agent count unknown (transcript window too short to prove none are in flight): check before dispatching more. ';
+        // Actionable: say what WAS seen and why the rest cannot be proven.
+        const ids = proof.seen.slice(0, 3).join(', ') + (proof.seen.length > 3 ? ' +' + (proof.seen.length - 3) + ' more' : '');
+        const mb = proof.windowBytes ? Math.round(proof.windowBytes / (1024 * 1024)) : 0;
+        out += 'Background-agent running-agent count unknown (' +
+          (proof.seen.length ? 'saw ' + proof.seen.length + ' launched, all finished: ' + ids + '; ' : 'none seen; ') +
+          (mb ? 'launches older than the last ' + mb + 'MB of transcript cannot be checked' : 'transcript unreadable') +
+          '): check before dispatching more. ';
       }
     }
 
     // (b) freshness note about open tasks (in_progress subject if any).
-    const inProg = open.find((t) => /in[-_]?progress/i.test(t.status || ''));
+    const blocked = open.filter((t) => DD.isOwnerBlocked(t));
+    const counted = open.filter((t) => !DD.isOwnerBlocked(t));
+    const inProg = counted.find((t) => /in[-_]?progress/i.test(t.status || ''));
     // FIX 7: control-char strip (oneLine) THEN JSON.stringify so the task-supplied
     // subject is rendered as an inert quoted string and can never inject
     // instruction-shaped content into the UserPromptSubmit additionalContext.
@@ -281,7 +290,17 @@ function freshnessNote(payload) {
     const inProgHasSubject = inProg && inProg.content != null && String(inProg.content) !== String(inProg.id);
     const subj = inProg ? oneLine(inProgHasSubject ? inProg.content : '(subject unknown)', 50) : '';
     const tail2 = inProg && subj ? ' (oldest in_progress subject: ' + JSON.stringify(subj) + ')' : '';
-    const freshLine = 'open tasks: ' + open.length + tail2 + ' — update or close them.';
+    // Owner/external-blocked tasks (same predicate as the Stop task-guard) are not
+    // work the agent can close: excluded from N, shown as "(+K blocked: why)".
+    const nBlocked = blocked.length;
+    const why = [...new Set(blocked.map((t) => {
+      const bo = typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : '';
+      return bo || 'owner';
+    }))].join('/');
+    const blockedTail = nBlocked ? ' (+' + nBlocked + ' blocked: ' + why + ')' : '';
+    const freshLine = counted.length === 0
+      ? 'open tasks: 0' + blockedTail + '.'
+      : 'open tasks: ' + counted.length + blockedTail + tail2 + ' — update or close them.';
 
     const base = out ? out + ' ' + freshLine : freshLine;
     return unk ? base + ' ' + unk : base;
