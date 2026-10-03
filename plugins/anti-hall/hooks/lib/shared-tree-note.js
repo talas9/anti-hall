@@ -33,6 +33,28 @@ function writeCapable(inp) {
   return true;
 }
 
+// A spawn is treated as working OUTSIDE the session's git tree only when its prompt
+// ESTABLISHES a scratch working location: "work in a scratch clone/dir", or a
+// work-in / cd / cwd statement whose target is a /tmp, /private/tmp, /var/folders or
+// scratchpad path. A bare mention ("use a scratch directory for notes", "verify in a
+// scratch clone afterwards", an output/spec path, a verify clone) establishes nothing.
+// Silent also requires no in-place statement about the session repo and no negation.
+// When unsure: warn.
+const SCRATCH_PATH = String.raw`[\x60'"]?(?:\/private\/tmp\/|\/tmp\/|\/var\/folders\/|[^\s\x60'"]*scratchpad\b)`;
+const SCRATCH_RE = new RegExp([
+  String.raw`\bwork(?:ing)?\s+(?:in|inside)\s+(?:a|an|the|your)?\s*scratch\s+(?:clone|dir(?:ectory)?|copy)\b`,
+  String.raw`\b(?:cwd\s+is|cwd|work(?:ing)?\s+(?:in|inside)|working\s+dir(?:ectory)?|cd(?:\s+into)?)\s*[:=]?\s*` + SCRATCH_PATH,
+  String.raw`\bscratch\s+(?:clone|dir(?:ectory)?|copy)\s+(?:under|at|in)\s+` + SCRATCH_PATH,
+  String.raw`\bclone\s+(?:\S+\s+)?into\s+` + SCRATCH_PATH + String.raw`[^\s]*\s+and\s+(?:work|edit|make|fix)\b`,
+].join('|'), 'i');
+const SCRATCH_NEGATED_RE = /\b(?:not|no|without|instead\s+of)\s+(?:in\s+|a\s+|the\s+|any\s+)?scratch\b/i;
+const IN_PLACE_RE = /\bin\s+place\b|\bin\s+(?:the\s+)?(?:session\s+)?repo\b|\brepo\s+files\b|\b(?:session|main)\s+(?:checkout|working\s+tree)\b|\bin\s+the\s+(?:working\s+tree|checkout)\b|\bworking\s+copy\b|\bchecked[- ]out\s+(?:files?|tree|copy|branch)\b|\bon\s+main\b|\bmain\s+branch\b/i;
+function inScratch(inp) {
+  const i = inp && typeof inp === 'object' ? inp : {};
+  const t = String(i.prompt || '') + '\n' + String(i.description || '');
+  return SCRATCH_RE.test(t) && !SCRATCH_NEGATED_RE.test(t) && !IN_PLACE_RE.test(t);
+}
+
 function isolated(inp) {
   const v = inp && typeof inp.isolation === 'string' ? inp.isolation.trim().toLowerCase() : '';
   return v === 'worktree' || v === 'remote';
@@ -43,13 +65,13 @@ function sharedTreeNote(payload, opts) {
   try {
     if (!require('./settings.js').enabled('guards', 'sharedTreeAgentNote')) return '';
     const inp = payload && payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : null;
-    if (!inp || !writeCapable(inp) || isolated(inp)) return '';
+    if (!inp || !writeCapable(inp) || isolated(inp) || inScratch(inp)) return '';
     const tp = payload.transcript_path;
     if (!tp || typeof tp !== 'string') return '';
     const agents = require('./agent-scan.js').runningAgents(tp);
     if (!Array.isArray(agents)) return '';
     // Another agent counts only when its own spawn input is known, write-capable and not isolated.
-    if (!agents.some((a) => a && a.spawnInput && writeCapable(a.spawnInput) && !isolated(a.spawnInput))) return '';
+    if (!agents.some((a) => a && a.spawnInput && writeCapable(a.spawnInput) && !isolated(a.spawnInput) && !inScratch(a.spawnInput))) return '';
     const home = opts && opts.home;
     const noWt = require('./dispatch-tier.js').repoDocsMatch(String(payload.cwd || process.cwd()), home, NO_WORKTREES_RE);
     return 'SHARED-TREE (advisory): another write-capable agent is still running in this working tree, and this spawn is write-capable too. '
@@ -60,4 +82,4 @@ function sharedTreeNote(payload, opts) {
   } catch (_) { return ''; }
 }
 
-module.exports = { sharedTreeNote, writeCapable, isolated };
+module.exports = { sharedTreeNote, writeCapable, isolated, inScratch };

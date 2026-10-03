@@ -78,7 +78,25 @@ const RESEARCH_RE =
 // bounded corpus (same RESEARCH_RE approach: raw, case-insensitive, \b-anchored).
 // Prefix stems (modif, migrat, refactor, implement) match common inflections.
 const WRITE_RE =
-  /\b(write|edit|modif|commit|push|tag|release|bump|changelog|create\s+(?:a\s+|the\s+)?file|apply|patch|build|deploy|install|migrat|refactor|implement|fix)\b/i;
+  /\b(write|edit|modif|commit|push|changelog|create\s+(?:an?\s+|the\s+|new\s+)?files?|migrat|refactor|implement)\b/i;
+
+// Ambiguous stems (also nouns: "the build", "release tag", "patch notes", "fixes") count
+// as write signals only in INSTRUCTION position: at the start of a line/sentence or
+// after then/and/also/please/to ("Fix the bug", "...then build it", "and install deps").
+const WRITE_IMPERATIVE_RE =
+  /(?:^|[.;:!?]\s+|\b(?:then|and|also|please|to)\s+)(?:tag|release|bump|apply|patch|build|deploy|install|fix)\b/im;
+
+// Imperative/object forms a bare word would over-match ("find where save is handled",
+// "the clone logic", "places that run the generator" are read-only): save ... to <path>,
+// clone <repo> into/to <path>, git clone / git format-patch, or run the generator/
+// tests/build as an instruction (sentence start, "then", "and").
+const WRITE_PHRASE_RE =
+  /\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch)\b|(?:^|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b/im;
+
+// Explicit read-only statements. They override the ambiguous/bare WRITE_RE and
+// imperative stems, but NOT WRITE_PHRASE_RE (saving a report file is still a write).
+const READONLY_OVERRIDE_RE =
+  /\b(?:report\s+only|read[- ]?only|(?:do\s+not|don'?t|never)\s+(?:edit|modify|write|change|commit)|no\s+(?:edits|changes|writes))\b/i;
 
 // Mechanical signals -> haiku (execution-only). Multi-word phrases are checked as
 // adjacent tokens after tokenization (see hasToken / hasPhrase).
@@ -588,7 +606,9 @@ function main() {
   // nudging them toward Explore would recommend the wrong agent type (false-positive
   // guard added v0.37.x after a release agent was wrongly nudged due to "audit/find"
   // in its description).
-  if (isGenericAgent && RESEARCH_RE.test(corpus) && !WRITE_RE.test(corpus)) {
+  const writeShaped = WRITE_PHRASE_RE.test(corpus) ||
+    (!READONLY_OVERRIDE_RE.test(corpus) && (WRITE_RE.test(corpus) || WRITE_IMPERATIVE_RE.test(corpus)));
+  if (isGenericAgent && RESEARCH_RE.test(corpus) && !writeShaped) {
     advise(
       'AGENT-ROUTING (advisory): this spawn looks research/read-only-shaped but uses ' +
       "subagent_type:'general-purpose', which carries the Agent tool and can recurse " +
