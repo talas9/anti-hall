@@ -25,7 +25,7 @@ const ENVS = [
   { DEVSWARM_REPO_ID: 'r' },
   { DEVSWARM_REPO_ID: 'r' },
 ];
-const FIRST_LINE = 'To run or re-check it yourself: write the command to a scratchpad script and run `<interpreter> <script>` with run_in_background (then read its output).';
+const FIRST_LINE = 'To capture READ-ONLY output yourself: write the command to a scratchpad script and run it with run_in_background (then read its output); each script run is counted as main-thread work. State changes (commit, push, patch apply, gh mutations, repo edits) and test runs go to a subagent.';
 
 // Each row: [command, statuses] ordered env0-fg, env0-bg, env1-fg, env1-bg, ...
 const ROWS = [

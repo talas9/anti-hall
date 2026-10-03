@@ -3553,13 +3553,281 @@ function cdAwareContexts(segments, delims, payload) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Script-file runs and inline interpreter code (coordinator drift, Phase 4).
+// A script run is WORK unless an ordered exemption applies: an anti-hall CLI
+// (ANTI_HALL_CLI_PATTERNS), an anti-hall plugin root, a binary/non-file direct
+// exec, a freshness-proof managed location, a tracked-and-clean (or
+// non-coordinator-writable, old) repo script, or an old script in a personal
+// tool dir. Inline `-c`/`-e` code is WORK when it runs state-changing git/gh
+// or writes a literal non-notes repo file (precise, blockable); looser matches
+// are count-only. Nothing here is executed.
+// ---------------------------------------------------------------------------
+
+const ANTI_HALL_CLI_PATTERNS = Object.freeze([
+  anchoredAntiHallStableLauncher('devswarm.js'),
+  anchoredAntiHallStableLauncher('wake-watch.js'),
+  anchoredAntiHallCli('scripts', 'devswarm', '(?=\\s|$)'),
+]);
+
+const SCRIPT_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
+const SCRIPT_INTERPRETERS = new Set(['sh', 'bash', 'zsh', 'dash', 'node', 'python', 'python3', 'ruby', 'perl']);
+// Flags that mean "not a script-file run" (inline code, module, syntax check, stdin), per family.
+const SCRIPT_NOT_A_RUN_FLAG = {
+  shell: /^-[A-Za-z]*[cns]/,
+  python: /^-[A-Za-z]*[cm]/,
+  node: /^(?:-[A-Za-z]*[epc]|--(?:eval|print|check|interactive)(?:=|$))/,
+  rubyperl: /^-[A-Za-z]*[eEc]/,
+};
+const SCRIPT_VALUE_FLAGS = new Set(['-o', '+o', '-O', '+O', '-W', '-X', '-r', '--require', '--import', '--loader', '--experimental-loader', '-I']);
+const BINARY_MAGICS = ['7f454c46', 'feedface', 'feedfacf', 'cafebabe', 'cffaedfe', 'cefaedfe', 'bebafeca'];
+const HOME_MANAGED_DIRS = ['.nvm', '.pyenv', '.rbenv', '.cargo/bin', '.volta', '.asdf', 'go/bin', '.dotnet/tools', '.bun/bin'];
+const HOME_PERSONAL_DIRS = ['.local/bin', 'Library', '.claude/plugins'];
+
+// argvWithoutRedirects(segment) -> dequoted tokens minus redirect tokens (and a bare operator's target).
+function argvWithoutRedirects(segment) {
+  const raw = tokenizeQuoted(segment);
+  const toks = [];
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '' && REDIRECT_TOKEN_RE.test(raw[i])) { if (BARE_REDIRECT_TOKEN_RE.test(raw[i])) i++; continue; }
+    toks.push(raw[i]);
+  }
+  return toks;
+}
+
+// scriptRunToken(segment) -> { token, direct } for `<interpreter> [flags] <file>`
+// or a direct exec (argv[0] contains `/`), else null. source/., inline
+// -c/-e/-E, -m, `bash -n` and stdin are never script runs.
+function scriptRunToken(segment) {
+  const verb = effectiveVerb(segment).replace(/["']/g, '');
+  if (!verb || verb === 'source' || verb === '.') return null;
+  const toks = argvWithoutRedirects(segment);
+  const vi = toks.findIndex((t) => basename(t).toLowerCase() === verb);
+  if (vi === -1) return null;
+  if (SCRIPT_INTERPRETERS.has(verb)) {
+    const fam = SCRIPT_SHELLS.has(verb) ? 'shell' : verb.startsWith('python') ? 'python' : verb === 'node' ? 'node' : 'rubyperl';
+    for (let i = vi + 1; i < toks.length; i++) {
+      const t = toks[i];
+      if (t === '--') return toks[i + 1] ? { token: toks[i + 1], direct: false } : null;
+      if (t === '-') return null;
+      if (/^[-+]/.test(t) && t.length > 1) {
+        if (SCRIPT_NOT_A_RUN_FLAG[fam].test(t)) return null;
+        if (SCRIPT_VALUE_FLAGS.has(t)) i++;
+        continue;
+      }
+      return { token: t, direct: false };
+    }
+    return null;
+  }
+  return toks[vi].includes('/') ? { token: toks[vi], direct: true } : null;
+}
+
+// hookHomeRaw() -> the hook's HOME (resolveHome), '' when unavailable; hookHome() realpath'd.
+function hookHomeRaw() {
+  try { return require('../companion/lib/test-home-guard.js').resolveHome() || ''; } catch (_) { return ''; }
+}
+function hookHome() {
+  const h = hookHomeRaw();
+  return h ? require('./lib/scratchpad.js').realpathOrSelf(h) : '';
+}
+
+// resolveScriptPath(token, ctx) -> { real } | { unresolvable: true } | null
+// (null: a relative path under an unknown cwd). `~` expands from HOME,
+// `$NAME`/`${NAME}` from process.env (PWD = the effective cwd).
+function resolveScriptPath(token, ctx) {
+  let t = String(token);
+  if (t === '~' || t.startsWith('~/')) {
+    const h = hookHomeRaw();
+    if (!h) return { unresolvable: true };
+    t = h + t.slice(1);
+  }
+  if (/`|\$\(/.test(t)) return { unresolvable: true };
+  let unset = false;
+  t = t.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (m, a, b) => {
+    const name = a || b;
+    const v = name === 'PWD' ? ctx.cwd : process.env[name];
+    if (typeof v !== 'string' || !v) { unset = true; return ''; }
+    return v;
+  });
+  if (unset || t.includes('$')) return { unresolvable: true };
+  if (!path.isAbsolute(t)) {
+    if (ctx.cwdUnknown) return null;
+    t = ctx.cwd.replace(/\/+$/, '') + '/' + t;
+  }
+  try { return { real: fs.realpathSync.native(t) }; } catch (_) {
+    return { real: require('./lib/scratchpad.js').realpathOrSelf(path.resolve(t)) };
+  }
+}
+
+// isTextScript(real, st) -> true for a regular file starting with `#!` or with
+// no ELF/Mach-O magic in its first 4 bytes; false on a read error.
+function isTextScript(real, st) {
+  if (!st || !st.isFile()) return false;
+  let fd = null;
+  try {
+    fd = fs.openSync(real, 'r');
+    const buf = Buffer.alloc(4);
+    const n = fs.readSync(fd, buf, 0, 4, 0);
+    if (n >= 2 && buf[0] === 0x23 && buf[1] === 0x21) return true;
+    return !BINARY_MAGICS.includes(buf.subarray(0, n).toString('hex'));
+  } catch (_) {
+    return false;
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) { /* ignore */ }
+  }
+}
+
+// gitCleanTracked(root, abs, cache) -> true only when `git status --porcelain
+// --ignored -- <rel>` prints nothing (tracked and clean). Memoised per call.
+function gitCleanTracked(root, abs, cache) {
+  const key = root + '\0' + abs;
+  if (cache && cache.has(key)) return cache.get(key);
+  let clean = false;
+  try {
+    const out = require('child_process').execFileSync('git', ['status', '--porcelain=v1', '--ignored', '--', path.relative(root, abs)],
+      { cwd: root, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] });
+    clean = String(out).trim() === '';
+  } catch (_) { clean = false; }
+  if (cache) cache.set(key, clean);
+  return clean;
+}
+
+// scriptPathVerdict(real, info) -> { work, step } (pure). info = { root, home,
+// fresh, isScratchOrTmp, notesTarget: () => bool, gitClean: () => bool }.
+// Decision 3 steps 5-8, first match wins.
+function scriptPathVerdict(real, info) {
+  const i = info || {};
+  const under = (dir) => !!dir && real.startsWith(dir.replace(/\/+$/, '') + '/');
+  const root = i.root || null;
+  const home = i.home || '';
+  const inRoot = !!root && under(root);
+  if (i.isScratchOrTmp || (root && under(path.join(root, '.anti-hall')))) return { work: true, step: 'scratch' };
+  if (/^\/(?:bin|sbin|Applications)\//.test(real) || (/^\/(?:usr|opt)\//.test(real) && !inRoot)
+    || (home && HOME_MANAGED_DIRS.some((d) => under(path.join(home, d))))
+    || /(?:^|\/)node_modules\/\.bin\//.test(real) || /(?:^|\/)(?:\.venv|venv|\.virtualenv)\/bin\//.test(real)) {
+    return { work: false, step: 'managed' };
+  }
+  if (inRoot) {
+    if (!i.fresh && !i.notesTarget()) return { work: false, step: 'in-repo' };
+    return { work: !i.gitClean(), step: 'in-repo' };
+  }
+  if (home && HOME_PERSONAL_DIRS.some((d) => under(path.join(home, d)))) return { work: !!i.fresh, step: 'outside' };
+  return { work: true, step: 'outside' };
+}
+
+// scriptFileRun(segment, ctx, payload, opts, cache, rootOf) -> null | { path, step }
+// (non-null = a WORK script run). Steps 1-4 here, 5-8 in scriptPathVerdict.
+function scriptFileRun(segment, ctx, payload, opts, cache, rootOf) {
+  const run = scriptRunToken(segment);
+  if (!run) return null;
+  const r = resolveScriptPath(run.token, ctx);
+  if (!r) return null;
+  if (r.unresolvable) return { path: run.token, step: 'unresolvable' };
+  if (ANTI_HALL_CLI_PATTERNS.some((re) => re.test(segment))) return null;
+  const real = r.real;
+  if (isInsideAntiHallPlugin(real)) return null;
+  let st = null;
+  try { st = fs.statSync(real); } catch (_) { st = null; }
+  if (run.direct && !isTextScript(real, st)) return null;
+  const sp = require('./lib/scratchpad.js');
+  const eg = require('./edit-guard.js');
+  const home = hookHome();
+  const { toplevel } = rootOf(ctx.cwd);
+  const root = toplevel || ctx.cwd;
+  // A tmp-root path counts as scratch only outside the cwd's git work tree and
+  // outside HOME (a HOME that itself lives under a tmp root keeps its own steps).
+  const inHome = !!home && sp.isInsideDir(real, home);
+  const isScratchOrTmp = isScratchpadOrTmpPath(real, { payload, ownOnly: true })
+    || (isScratchpadOrTmpPath(real, { payload }) && !(toplevel && sp.isInsideDir(real, toplevel)) && !inHome);
+  const v = scriptPathVerdict(real, {
+    root,
+    home,
+    fresh: !!st && st.isFile() && st.mtimeMs >= opts.sessionStartTs,
+    isScratchOrTmp,
+    notesTarget: () => eg.isNotesTarget(real, root, Object.assign({}, payload, { cwd: root })),
+    gitClean: () => (toplevel ? gitCleanTracked(toplevel, real, cache) : false),
+  });
+  return v.work ? { path: real, step: v.step } : null;
+}
+
+const INLINE_VERBS = new Set(['python', 'python3', 'perl', 'ruby', 'node']);
+const INLINE_EXEC_RE = /\b(?:subprocess|system|exec|execSync|execFileSync|spawn|spawnSync|popen|child_process)\b|\brun\s*\(|`/;
+const INLINE_GIT_GH_LITERAL_RE = /(['"`])\s*((?:git|gh)\s[^'"`]*)\1/g;
+const INLINE_GIT_GH_ARRAY_RE = /\[\s*(['"])(git|gh)\1((?:\s*,\s*(['"])[^'"]*\4)*)\s*\]/g;
+const INLINE_OPEN_RE = /\bopen\s*\(\s*(['"])([^'"]+)\1\s*,\s*(['"])([^'"]*)\3\s*[,)]/g;
+const INLINE_OPEN_NONLIT_RE = /\bopen\s*\(\s*[^'"\s)][^,)]*,\s*(['"])([^'"]*)\1\s*[,)]/g;
+const INLINE_WRITEFILE_RE = /(?:write|append)File(?:Sync)?\(\s*(['"])([^'"]+)\1/g;
+const INLINE_FILE_WRITE_RE = /(?:File|IO)\.write\(\s*(['"])([^'"]+)\1/g;
+const INLINE_WRITE_NONLIT_RE = /(?:(?:write|append)File(?:Sync)?|(?:File|IO)\.write)\(\s*[^'"\s)]/;
+const INLINE_REDIRECT_RE = /['"][^'"]*\s>>?\s*([\w./~-]+)/;
+const isWriteMode = (m) => /^[rwaxbt+]{1,4}$/.test(m) && /[wax+]/.test(m);
+
+// inlineCodeWork(segment, ctx, payload, rootOf) -> null | { precise } for
+// `python|python3 -c` / `perl|ruby|node -e|-E` bodies (Decision 3, never executed).
+function inlineCodeWork(segment, ctx, payload, rootOf) {
+  const verb = effectiveVerb(segment).replace(/["']/g, '');
+  if (!INLINE_VERBS.has(verb)) return null;
+  const toks = tokenizeQuoted(segment);
+  const vi = toks.findIndex((t) => basename(t).toLowerCase() === verb);
+  const flags = verb.startsWith('python') ? ['-c'] : ['-e', '-E'];
+  const fi = toks.findIndex((t, k) => k > vi && flags.includes(t));
+  if (vi === -1 || fi === -1 || typeof toks[fi + 1] !== 'string') return null;
+  const body = toks[fi + 1];
+  const exec = INLINE_EXEC_RE.test(body);
+  if (exec) {
+    const cmds = [];
+    for (const m of body.matchAll(INLINE_GIT_GH_LITERAL_RE)) cmds.push(m[2]);
+    for (const m of body.matchAll(INLINE_GIT_GH_ARRAY_RE)) {
+      cmds.push([m[2]].concat([...m[3].matchAll(/(['"])([^'"]*)\1/g)].map((x) => x[2])).join(' '));
+    }
+    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c))) return { precise: true };
+  }
+  const sp = require('./lib/scratchpad.js');
+  // 'tmp' (tmp/scratch), 'notes' (a coordinator-writable repo file), 'repo' (non-notes repo file) or 'outside'.
+  const targetKind = (t) => {
+    if (ctx.cwdUnknown && !path.isAbsolute(t) && !t.startsWith('~')) return 'outside';
+    const expanded = t === '~' || t.startsWith('~/') ? hookHomeRaw() + t.slice(1) : t;
+    const resolved = path.resolve(ctx.cwd, expanded);
+    const abs = path.join(sp.realpathOrSelf(path.dirname(resolved)), path.basename(resolved));
+    const r = rootOf(ctx.cwd);
+    const inTop = !!r.toplevel && sp.isInsideDir(abs, r.toplevel);
+    if (isScratchpadOrTmpPath(abs, { payload, ownOnly: true })) return 'tmp';
+    if (!inTop && isScratchpadOrTmpPath(abs, { payload })) return 'tmp';
+    if (!sp.isInsideDir(abs, r.base)) return 'outside';
+    return require('./edit-guard.js').isNotesTarget(abs, r.base, Object.assign({}, payload, { cwd: r.base })) ? 'notes' : 'repo';
+  };
+  const literals = [];
+  for (const m of body.matchAll(INLINE_OPEN_RE)) if (isWriteMode(m[4])) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_WRITEFILE_RE)) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_FILE_WRITE_RE)) literals.push(m[2]);
+  let loose = false;
+  for (const t of literals) {
+    const k = targetKind(t);
+    if (k === 'repo') return { precise: true };
+    if (k === 'outside') loose = true;
+  }
+  if ([...body.matchAll(INLINE_OPEN_NONLIT_RE)].some((m) => isWriteMode(m[2])) || INLINE_WRITE_NONLIT_RE.test(body)) loose = true;
+  if (exec) {
+    const m = body.match(INLINE_REDIRECT_RE);
+    if (m && targetKind(m[1]) !== 'tmp') loose = true;
+  }
+  return loose ? { precise: false } : null;
+}
+
 const MAX_CLASSIFY_LEN = 65536;
 
-function classifyBashWork(command, payload, opts = {}, depth = 0) {
+function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null) {
   const res = { work: false, blockable: false, labels: new Set(), editBlocks: [] };
   if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return res;
   const o = Object.assign({ sessionStartTs: Date.now() - 21600000 }, opts || {});
   const p = payload || {};
+  const sh = shared || { command, gitCache: new Map(), trusted: undefined };
+  const trusted = () => {
+    if (sh.trusted === undefined) {
+      try { sh.trusted = !!matchedProjectCommandAllowPattern(sh.command, (typeof p.cwd === 'string' && p.cwd) || ''); } catch (_) { sh.trusted = false; }
+    }
+    return sh.trusted;
+  };
   const sp = require('./lib/scratchpad.js');
   const eg = require('./edit-guard.js');
   const roots = new Map();
@@ -3567,6 +3835,7 @@ function classifyBashWork(command, payload, opts = {}, depth = 0) {
     if (!roots.has(cwd)) {
       let toplevel = null;
       try { toplevel = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { toplevel = null; }
+      if (toplevel) toplevel = sp.realpathOrSelf(toplevel);
       roots.set(cwd, { toplevel, base: toplevel || cwd });
     }
     return roots.get(cwd);
@@ -3574,7 +3843,8 @@ function classifyBashWork(command, payload, opts = {}, depth = 0) {
   const blocks = new Set();
 
   const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
-  const { segments, delims } = splitSegmentsDetailed(masked.text);
+  // `${NAME}` -> `$NAME` (not before an identifier char): the splitter cuts at braces.
+  const { segments, delims } = splitSegmentsDetailed(masked.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?![A-Za-z0-9_])/g, '$$$1'));
   const ctxs = cdAwareContexts(segments, delims, p);
   segments.forEach((seg, i) => {
     let segWork = false;
@@ -3587,6 +3857,13 @@ function classifyBashWork(command, payload, opts = {}, depth = 0) {
     if (isHeavyGhSegment(seg, command)) { segWork = true; res.labels.add('gh'); }
     const isGit = effectiveVerb(seg) === 'git';
     for (const ctx of ctxs[i]) {
+      if (scriptFileRun(seg, ctx, p, o, sh.gitCache, rootOf) && !trusted()) { segWork = true; res.labels.add('script'); }
+      const inl = inlineCodeWork(seg, ctx, p, rootOf);
+      if (inl) {
+        res.work = true;
+        res.labels.add('inline');
+        if (inl.precise) segWork = true;
+      }
       for (const t of bashWriteTargets(seg, ctx.cwd)) {
         if (/[$`*?[\]{}]/.test(t) || t.startsWith('~')) continue;
         if (ctx.cwdUnknown && !path.isAbsolute(t)) continue;
@@ -3623,7 +3900,7 @@ function classifyBashWork(command, payload, opts = {}, depth = 0) {
     }
     inner.push(...extractSubstitutions(masked.text), ...masked.inners);
     for (const sub of inner) {
-      const r = classifyBashWork(sub, payload, o, depth + 1);
+      const r = classifyBashWork(sub, payload, o, depth + 1, sh);
       res.work = res.work || r.work;
       res.blockable = res.blockable || r.blockable;
       for (const l of r.labels) res.labels.add(l);
@@ -3933,15 +4210,15 @@ function main() {
   const INLINE_ALLOWED_HINT =
     'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
     '`node --test <1-2 files>`, `[npx] vitest run|jest <1-2 *.test|spec files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
-    'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
-    'Everything else goes to a subagent.';
+    'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`.';
   // The path that WORKS comes first, in one line, in every variant (fp: agents
   // re-checking a subagent's claim read the long delegate-only text and missed it).
   // TEXT ONLY: same rule, same inline-allowed set. Rules clause keeps the exact
   // shapes the carve-out accepts.
   const SCRATCHPAD_SCRIPT_HINT =
-    'To run or re-check it yourself: write the command to a scratchpad script and run `<interpreter> <script>` with run_in_background (then read its output). ' +
-    'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A scratchpad script piped to tail is STILL blocked in the foreground. ';
+    'To capture READ-ONLY output yourself: write the command to a scratchpad script and run it with run_in_background (then read its output); each script run is counted as main-thread work. ' +
+    'State changes (commit, push, patch apply, gh mutations, repo edits) and test runs go to a subagent. ' +
+    'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A script piped to tail is STILL blocked in the foreground. ';
   // A leading `cd <dir>;` leaves the cwd unknown (only an unconditional `&&`
   // cd is tracked), so a relative-path check fails ONLY because of the `;`.
   // Hint exactly then: the same command joined with `&&` would qualify.
@@ -3998,6 +4275,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ANTI_HALL_CLI_PATTERNS,
+  scriptPathVerdict,
   classifyBashWork,
   isStateChangingGitSegment,
   isRecoveryGitSegment,

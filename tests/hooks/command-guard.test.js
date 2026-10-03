@@ -1181,16 +1181,16 @@ const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature
 
 // The exact pre-fix baseline reason (npm run build -> verb npm).
 const BASELINE_REASON =
-  'To run or re-check it yourself: write the command to a scratchpad script and run `<interpreter> <script>` with run_in_background (then read its output). ' +
-  'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute scratchpad path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A scratchpad script piped to tail is STILL blocked in the foreground. ' +
+  'To capture READ-ONLY output yourself: write the command to a scratchpad script and run it with run_in_background (then read its output); each script run is counted as main-thread work. ' +
+  'State changes (commit, push, patch apply, gh mutations, repo edits) and test runs go to a subagent. ' +
+  'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A script piped to tail is STILL blocked in the foreground. ' +
   'COMMAND-DELEGATION RULE: heavy/long/state-changing commands never run inline in ' +
   'the main coordinator context (raw output floods the main thread). Otherwise ' +
   'DELEGATE to a subagent (cheap model: Haiku or similar): pass the command, let it ' +
   'run and return only a tight summary. Heavy command detected (verb: npm) — ' +
   'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
   '`node --test <1-2 files>`, `[npx] vitest run|jest <1-2 *.test|spec files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
-  'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
-  'Everything else goes to a subagent.';
+  'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`.';
 
 test('DEVSWARM PRIMARY in a repo whose CLAUDE.md forbids workspaces: BLOCKED, reason does NOT name `devswarm.js spawn`', () => {
   const h = makeHome();
@@ -1213,7 +1213,9 @@ test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js s
   assert.ok(/devswarm\.js spawn <branch> -p/.test(reason),
     `Primary reason must name devswarm.js spawn: ${reason}`);
   assert.ok(/workspace-scale/i.test(reason), `Primary reason must state the choice rule: ${reason}`);
-  assert.ok(reason.indexOf('devswarm.js spawn') < reason.indexOf('subagent'),
+  // Measured from the rule text: the leading scratchpad hint names a subagent for state changes.
+  const rule = reason.indexOf('DEVSWARM COMMAND-DELEGATION RULE');
+  assert.ok(rule > 0 && reason.indexOf('devswarm.js spawn', rule) < reason.indexOf('subagent', rule),
     `workspace exit must precede the subagent alternative: ${reason}`);
   assert.ok(/Do NOT hand a workspace-scale matter to a subagent/.test(reason),
     `Primary reason must forbid subagent-for-workspace-scale: ${reason}`);

@@ -225,7 +225,7 @@ test('background-scratch direct exec: refused for non-exec, foreign scratchpad, 
 test('command-guard block text states the allowed background shapes and the no VAR= prefix rule', () => {
   const r = runOwn('node @SP@/modal-shot.mjs && VARIANTS="A B" @SP@/shoot.sh');
   assert.strictEqual(r.status, 2);
-  assert.match(r.json.reason, /run `<interpreter> <script>` with run_in_background.*an executable scratchpad path, in the background; no VAR=… prefix/);
+  assert.match(r.json.reason, /run it with run_in_background.*an executable scratchpad path, in the background; no VAR=… prefix/);
 });
 
 test('command-guard names git pull/fetch as state-changing remote operations (verdict unchanged: still blocked)', () => {
