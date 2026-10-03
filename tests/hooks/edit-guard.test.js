@@ -14,6 +14,8 @@ const path = require('node:path');
 const { testHook, testHookRaw, editPayload } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
+const { skipCommand } = require('../../plugins/anti-hall/hooks/lib/skip-cmd.js');
+
 const HOOK = 'edit-guard.js';
 const COORD = { CLAUDE_CODE_ENTRYPOINT: 'cli' };
 
@@ -183,8 +185,8 @@ const PLAIN_REASON = (tool) =>
   'a subagent to make this edit and have it report a tight summary. The ' +
   'coordinator synthesizes the summary; raw edits never happen in the main ' +
   'thread. If the user EXPLICITLY instructed you to make THIS edit yourself, ' +
-  "that is the documented override — run 'node scripts/devswarm.js skip " +
-  "edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min TTL), " +
+  'that is the documented override — run ' + skipCommand('edit-guard') +
+  ' to record your consent (~/.anti-hall/skip.json, 15-min TTL), ' +
   'then retry. Never skip on your own initiative. (tool: ' + tool + ')';
 
 test('CONTINUE-HERE.md REGRESSION: normal source file still BLOCKED with unchanged reason', () => {
@@ -592,8 +594,8 @@ test('DEVSWARM CHILD: block reason is UNCHANGED (no workspace redirect — child
     'report a tight summary. Session notes/reports can go in .anti-hall/history/** ' +
     'or the scratchpad (exempt); repo docs need a subagent or a trusted ' +
     '.anti-hall/edit-allow.json. If the user EXPLICITLY instructed you to make THIS ' +
-    "edit yourself, that is the documented override — run 'node scripts/devswarm.js " +
-    "skip edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min TTL), " +
+    'edit yourself, that is the documented override — run ' + skipCommand('edit-guard') +
+    ' to record your consent (~/.anti-hall/skip.json, 15-min TTL), ' +
     'then retry. Never skip on your own initiative. (tool: Edit)',
   );
 });

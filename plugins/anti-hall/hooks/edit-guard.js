@@ -65,6 +65,8 @@ const path = require('path');
 const { ownScratchpadDirs, realpathOrSelf } = require('./lib/scratchpad.js');
 
 // Tools this guard applies to. Anything else passes through untouched.
+const { skipCommand } = require('./lib/skip-cmd.js');
+
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 // Default allow-globs: paths the coordinator is documented/expected to touch
@@ -652,6 +654,202 @@ function isPlanMode(payload) {
   return typeof m === 'string' && m.toLowerCase() === 'plan';
 }
 
+// Verdict for ONE Edit-family target, coordinator context assumed (main() does
+// the launcher-dir deny and the isCoordinator gate first). Returns
+//   'allow' | 'block-self-edit' | 'block-handover' | 'block'
+// so other hooks (command-guard's Bash edit parity) reuse the exact same rules.
+// The honesty checks (allowlistIsHonest) live in here; plan mode comes from payload.
+function editVerdict(filePath, cwd, payload) {
+  // An allowlist match is honored ONLY when the path is honest (not a symlink /
+  // reparse point, and not reached through one) — see allowlistIsHonest().
+  // The project doc-edit allowlist file itself is never edited in the main
+  // thread (it must not be able to authorize itself — and DEFAULT_ALLOW's
+  // '.anti-hall/**' would otherwise let it through). Only while the feature is on.
+  const projectEditAllow = projectEditAllowOn();
+  if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) return 'block-self-edit';
+
+  if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return 'allow';
+  // Same check against the PROJECT ROOT when the payload cwd is not the root
+  // (a subdirectory the shell cd'd into, a submodule, or a symlinked spelling
+  // such as /tmp vs /private/tmp): '.anti-hall/**' etc. are root-relative, but
+  // the cwd-relative path above reads '../.anti-hall/...' and misses them.
+  // Additive only — never narrows the check above.
+  const canon = canonicalUnderProjectRoot(filePath, cwd);
+  if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return 'allow';
+
+  // Per-project doc-edit allowlist (trusted .anti-hall/edit-allow.json).
+  if (projectEditAllow && isProjectEditAllowed(filePath, cwd)) return 'allow';
+
+  // HARNESS PLAN FILE (~/.claude/plans/*.md) — see isHarnessPlanFile() above.
+  // Unconditional (not gated on permission_mode): the reported false positive
+  // was the coordinator blocked revising this file OUTSIDE plan mode, which
+  // the PLAN-MODE-NARROWED exemption further below does not reach.
+  if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return 'allow';
+
+  // OWN-SESSION SCRATCHPAD EXEMPTION — see isOwnScratchpadPath()/
+  // ownScratchpadDirs() above for the full rationale and anti-bypass scoping
+  // (session-id + cwd + real uid computed path only, honesty-checked).
+  if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) {
+    return 'allow';
+  }
+
+  // COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION — see isHandoverDoc()
+  // above for the exclusion's rationale and its four anti-bypass constraints
+  // (basename-only match, .md-only gate, symlink/hardlink honesty, cwd
+  // containment). Applies in ANY coordinator context (DevSwarm or not), same
+  // as the allowlist line above and for the same reason. Runs AFTER the
+  // allowlist check; requires BOTH isWithinCwd (blocks writing the doc outside
+  // the project entirely) AND allowlistIsHonest (blocks a symlinked/hardlinked
+  // lookalike), so neither an escape nor a lookalike can slip a real write
+  // through under a handover-shaped name.
+  //
+  // WRONG-LOCATION REDIRECT (owner amendment 2026-08-07, thread 3). This
+  // exclusion USED TO allow a handover-named .md ANYWHERE under cwd — a field
+  // failure produced a 177-line handover written to docs/ that
+  // handover-resume.js (which scans ONLY .anti-hall/handovers/**) can never
+  // find. Paths INSIDE .anti-hall/handovers/** already exit at the allowlist
+  // check above (DEFAULT_ALLOW '.anti-hall/**'), so they never reach this
+  // block — unaffected. A file OUTSIDE that dir which ALREADY EXISTS on disk
+  // (a legacy repo HANDOVER-*.md, or root CONTINUE-HERE.md, which is also
+  // separately allowlisted above) is unaffected too — only a NEW write
+  // (target doesn't exist yet) at a wrong location gets redirected instead of
+  // silently allowed. Fail-open on ambiguity: an unknown cwd behaves exactly
+  // as before (allowed) since the redirect has nowhere reliable to check
+  // existence against. Skippable via the existing skip.json mechanism (the
+  // 'edit-guard' key), already honored at the top of main().
+  // Legacy CONTINUE-HERE names ride the same rule: an existing file stays
+  // editable (never strand a user's file), a NEW one is redirected.
+  if ((isHandoverDoc(filePath) || isLegacyContinueHere(filePath, cwd)) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {
+    if (!cwd) {
+      return 'allow'; // ambiguous cwd -> old broad-allow behavior, unchanged
+    }
+    let alreadyExists = false;
+    try {
+      alreadyExists = fs.existsSync(path.resolve(String(cwd), String(filePath)));
+    } catch (_) {
+      alreadyExists = true; // can't check -> ambiguous -> fail-open (old broad-allow behavior)
+    }
+    if (alreadyExists) {
+      return 'allow'; // legacy file at its existing location -> unaffected
+    }
+    return 'block-handover';
+  }
+
+  // PLAN MODE (NARROWED): a plan-mode session is doing read-only planning, so
+  // drafting a doc/scratch/plan artifact is legitimate orchestrator work and the
+  // guard firing there is the reported false positive (a DevSwarm Primary in plan
+  // mode blocked from Writing its own plan file). But plan mode does NOT hard-remove
+  // Write from the toolset — it is enforced by a system-prompt instruction + the
+  // standing permission-prompt gate (docs/KB-model-modes.md) — so edit-guard KEEPS
+  // its source-file gate even in plan mode: the exemption applies ONLY when the
+  // target is not likely source. This closes the abuse vector where a plan-mode
+  // session could otherwise slip an undelegated source write past the delegation
+  // gate. Runs AFTER the allowlist check, so a symlinked allowlisted lookalike
+  // (isAllowed but dishonest) has already failed to exit and, being a NON-source
+  // NAME, must ALSO pass the honesty check here before plan mode can allow it —
+  // otherwise the plan-mode path would reopen the symlink bypass the allowlist line
+  // guards against. permission_mode is harness-set (see isPlanMode), so it cannot
+  // be spoofed via tool_input.
+  if (isPlanMode(payload) && !isLikelySource(filePath) && allowlistIsHonest(filePath, cwd)) {
+    return 'allow';
+  }
+
+  return 'block';
+}
+
+// True when filePath is a "notes" target the coordinator may write directly:
+// an allowlisted path, the project-root-canonical variant, its own scratchpad,
+// or the harness plan file (all honesty-checked). Used by command-guard's Bash
+// edit parity; unlike editVerdict it ignores plan mode, handover and edit-allow.
+function isNotesTarget(filePath, cwd, payload) {
+  if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return true;
+  const canon = canonicalUnderProjectRoot(filePath, cwd);
+  if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return true;
+  if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) return true;
+  if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return true;
+  return false;
+}
+
+// The coordinator delegation block text for `toolLabel` (e.g. 'Edit', 'Write').
+function delegationReason(toolLabel, cwd) {
+  // DevSwarm-aware wording switch (lazy-require, mirrors this file's pattern).
+  let devswarmActive = false;
+  try {
+    devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+  } catch (_) {
+    devswarmActive = false; // fail-open: treat as standalone/dormant
+  }
+
+  // SKIP-GUARD OVERRIDE HINT (papercut fix): the block message never told the
+  // agent the sanctioned override exists, and the reason title's "DEVSWARM
+  // EDIT-DELEGATION RULE" mismatched the real skip key ("edit-guard"), which
+  // misled agents into writing a useless "devswarm-edit-delegation" key instead.
+  // Appended verbatim to ALL THREE reason branches below — the skip key is
+  // ALWAYS "edit-guard" regardless of DevSwarm role/activity.
+  const SKIP_HINT = ' If the user EXPLICITLY instructed you to make THIS edit ' +
+    'yourself, that is the documented override — run ' + skipCommand('edit-guard') +
+    ' to record your consent (~/.anti-hall/skip.json, 15-min TTL), then retry. ' +
+    'Never skip on your own initiative.';
+
+  // Points at the exempt locations so a coordinator's own notes/reports need no
+  // delegation; repo docs still need a subagent or a trusted edit-allow.json.
+  const NOTES_HINT = ' Session notes/reports can go in .anti-hall/history/** or the ' +
+    'scratchpad (exempt); repo docs need a subagent or a trusted .anti-hall/edit-allow.json.';
+
+  let reason;
+  if (devswarmActive) {
+    // Topology-aware noun: a child workspace is a sub-orchestrator, but the root
+    // session is the primary/main orchestrator — the old wording hardcoded
+    // "sub-orchestrator" even for the Primary. Fail-open: if devswarm-role
+    // require/throws, default to the current (sub-orchestrator) wording. This only
+    // changes the noun; the block decision is identical for both roles.
+    let childWorkspace = true; // default to current wording on any failure
+    try {
+      childWorkspace = require('./lib/devswarm-role.js').isChildWorkspace(process.env);
+    } catch (_) {
+      childWorkspace = true; // fall back to current generic (sub-orchestrator) wording
+    }
+    // PRIMARY redirect names the RIGHT primitive first. The Primary's top fan-out
+    // tier is a CHILD WORKSPACE (docs/KB-devswarm-hivecontrol.md §8.1-8.2); naming
+    // "spawn a subagent" as the only exit at the exact point the Primary is blocked
+    // from working is what drove Primaries to decompose feature-scale work into
+    // subagents instead of workspaces. No mechanical scale classifier is used (a
+    // false positive would break legitimate subagent use) — the reason states the
+    // CHOICE and lets the model classify. The CHILD wording is unchanged, and the
+    // BLOCK DECISION is identical for both roles (only the redirect text differs).
+    // The workspace recommendation is shared with the other Primary tier text
+    // (lib/primary-tier.js): a repo that forbids workspaces for real work (or
+    // devswarm.dispatchTierText off) gets the subagent-only advice. Fail-open
+    // to the subagent-only text. Advice text only; the block is unchanged.
+    let tierText = false;
+    try { tierText = !childWorkspace && require('./lib/primary-tier.js').primaryTierTextOn(process.env, cwd); } catch (_) { tierText = false; }
+    reason = childWorkspace
+      ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
+         'directly in its workspace — spawn a subagent to make this edit and have it ' +
+         'report a tight summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolLabel + ')')
+      : !tierText
+      ? ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
+         'files directly — spawn a subagent to make this edit and have it report a tight ' +
+         'summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolLabel + ')')
+      : ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
+         'files directly. CHOOSE THE TIER: if this edit belongs to a workspace-scale ' +
+         'MATTER (a feature/fix/deploy — multi-step, own branch, own review), spin a ' +
+         'CHILD WORKSPACE and let it own the work: `node scripts/devswarm.js spawn ' +
+         '<branch> -p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for ' +
+         'genuinely small/scoped work (a one-file tweak, a mechanical transform): spawn ' +
+         'a subagent to make this edit and have it report a tight summary. Do NOT hand a ' +
+         'workspace-scale matter to a subagent.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolLabel + ')');
+  } else {
+    reason =
+      'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
+      'a subagent to make this edit and have it report a tight summary. The ' +
+      'coordinator synthesizes the summary; raw edits never happen in the main ' +
+      'thread.' + SKIP_HINT + ' (tool: ' + toolLabel + ')';
+  }
+
+  return reason;
+}
+
 function main() {
   // Settings switch safety.editGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('safety', 'editGuard')) return; } catch (_) { /* run */ }
@@ -723,13 +921,9 @@ function main() {
     }
   } catch (_) { /* fail-open */ }
 
-  // An allowlist match is honored ONLY when the path is honest (not a symlink /
-  // reparse point, and not reached through one) — see allowlistIsHonest().
-  // The project doc-edit allowlist file itself is never edited in the main
-  // thread (it must not be able to authorize itself — and DEFAULT_ALLOW's
-  // '.anti-hall/**' would otherwise let it through). Only while the feature is on.
-  const projectEditAllow = projectEditAllowOn();
-  if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) {
+  const verdict = editVerdict(filePath, cwd, payload);
+  if (verdict === 'allow') process.exit(0);
+  if (verdict === 'block-self-edit') {
     fs.writeSync(1, JSON.stringify({
       decision: 'block',
       reason:
@@ -740,71 +934,7 @@ function main() {
     }) + '\n');
     process.exit(2);
   }
-
-  if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
-  // Same check against the PROJECT ROOT when the payload cwd is not the root
-  // (a subdirectory the shell cd'd into, a submodule, or a symlinked spelling
-  // such as /tmp vs /private/tmp): '.anti-hall/**' etc. are root-relative, but
-  // the cwd-relative path above reads '../.anti-hall/...' and misses them.
-  // Additive only — never narrows the check above.
-  const canon = canonicalUnderProjectRoot(filePath, cwd);
-  if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) process.exit(0);
-
-  // Per-project doc-edit allowlist (trusted .anti-hall/edit-allow.json).
-  if (projectEditAllow && isProjectEditAllowed(filePath, cwd)) process.exit(0);
-
-  // HARNESS PLAN FILE (~/.claude/plans/*.md) — see isHarnessPlanFile() above.
-  // Unconditional (not gated on permission_mode): the reported false positive
-  // was the coordinator blocked revising this file OUTSIDE plan mode, which
-  // the PLAN-MODE-NARROWED exemption further below does not reach.
-  if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
-
-  // OWN-SESSION SCRATCHPAD EXEMPTION — see isOwnScratchpadPath()/
-  // ownScratchpadDirs() above for the full rationale and anti-bypass scoping
-  // (session-id + cwd + real uid computed path only, honesty-checked).
-  if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) {
-    process.exit(0);
-  }
-
-  // COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION — see isHandoverDoc()
-  // above for the exclusion's rationale and its four anti-bypass constraints
-  // (basename-only match, .md-only gate, symlink/hardlink honesty, cwd
-  // containment). Applies in ANY coordinator context (DevSwarm or not), same
-  // as the allowlist line above and for the same reason. Runs AFTER the
-  // allowlist check; requires BOTH isWithinCwd (blocks writing the doc outside
-  // the project entirely) AND allowlistIsHonest (blocks a symlinked/hardlinked
-  // lookalike), so neither an escape nor a lookalike can slip a real write
-  // through under a handover-shaped name.
-  //
-  // WRONG-LOCATION REDIRECT (owner amendment 2026-08-07, thread 3). This
-  // exclusion USED TO allow a handover-named .md ANYWHERE under cwd — a field
-  // failure produced a 177-line handover written to docs/ that
-  // handover-resume.js (which scans ONLY .anti-hall/handovers/**) can never
-  // find. Paths INSIDE .anti-hall/handovers/** already exit at the allowlist
-  // check above (DEFAULT_ALLOW '.anti-hall/**'), so they never reach this
-  // block — unaffected. A file OUTSIDE that dir which ALREADY EXISTS on disk
-  // (a legacy repo HANDOVER-*.md, or root CONTINUE-HERE.md, which is also
-  // separately allowlisted above) is unaffected too — only a NEW write
-  // (target doesn't exist yet) at a wrong location gets redirected instead of
-  // silently allowed. Fail-open on ambiguity: an unknown cwd behaves exactly
-  // as before (allowed) since the redirect has nowhere reliable to check
-  // existence against. Skippable via the existing skip.json mechanism (the
-  // 'edit-guard' key), already honored at the top of main().
-  // Legacy CONTINUE-HERE names ride the same rule: an existing file stays
-  // editable (never strand a user's file), a NEW one is redirected.
-  if ((isHandoverDoc(filePath) || isLegacyContinueHere(filePath, cwd)) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {
-    if (!cwd) {
-      process.exit(0); // ambiguous cwd -> old broad-allow behavior, unchanged
-    }
-    let alreadyExists = false;
-    try {
-      alreadyExists = fs.existsSync(path.resolve(String(cwd), String(filePath)));
-    } catch (_) {
-      alreadyExists = true; // can't check -> ambiguous -> fail-open (old broad-allow behavior)
-    }
-    if (alreadyExists) {
-      process.exit(0); // legacy file at its existing location -> unaffected
-    }
+  if (verdict === 'block-handover') {
     fs.writeSync(1, JSON.stringify({
       decision: 'block',
       reason:
@@ -813,114 +943,23 @@ function main() {
         'which computes <date>/<session-id> for you) — not at this path. Write ' +
         'handovers under .anti-hall/handovers/** (exempt); copy elsewhere afterwards ' +
         'if the project wants one. If this is an intentional exception, honor it via ' +
-        "the existing skip mechanism — run 'node scripts/devswarm.js skip edit-guard' " +
+        "the existing skip mechanism — run " + skipCommand('edit-guard') + " " +
         '(~/.anti-hall/skip.json, 15-min TTL), then retry. Never skip on your own ' +
         'initiative. (tool: ' + toolName + ')',
     }) + '\n');
     process.exit(2);
   }
-
-  // PLAN MODE (NARROWED): a plan-mode session is doing read-only planning, so
-  // drafting a doc/scratch/plan artifact is legitimate orchestrator work and the
-  // guard firing there is the reported false positive (a DevSwarm Primary in plan
-  // mode blocked from Writing its own plan file). But plan mode does NOT hard-remove
-  // Write from the toolset — it is enforced by a system-prompt instruction + the
-  // standing permission-prompt gate (docs/KB-model-modes.md) — so edit-guard KEEPS
-  // its source-file gate even in plan mode: the exemption applies ONLY when the
-  // target is not likely source. This closes the abuse vector where a plan-mode
-  // session could otherwise slip an undelegated source write past the delegation
-  // gate. Runs AFTER the allowlist check, so a symlinked allowlisted lookalike
-  // (isAllowed but dishonest) has already failed to exit and, being a NON-source
-  // NAME, must ALSO pass the honesty check here before plan mode can allow it —
-  // otherwise the plan-mode path would reopen the symlink bypass the allowlist line
-  // guards against. permission_mode is harness-set (see isPlanMode), so it cannot
-  // be spoofed via tool_input.
-  if (isPlanMode(payload) && !isLikelySource(filePath) && allowlistIsHonest(filePath, cwd)) {
-    process.exit(0);
-  }
-
-  // DevSwarm-aware wording switch (lazy-require, mirrors this file's pattern).
-  let devswarmActive = false;
-  try {
-    devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
-  } catch (_) {
-    devswarmActive = false; // fail-open: treat as standalone/dormant
-  }
-
-  // SKIP-GUARD OVERRIDE HINT (papercut fix): the block message never told the
-  // agent the sanctioned override exists, and the reason title's "DEVSWARM
-  // EDIT-DELEGATION RULE" mismatched the real skip key ("edit-guard"), which
-  // misled agents into writing a useless "devswarm-edit-delegation" key instead.
-  // Appended verbatim to ALL THREE reason branches below — the skip key is
-  // ALWAYS "edit-guard" regardless of DevSwarm role/activity.
-  const SKIP_HINT = ' If the user EXPLICITLY instructed you to make THIS edit ' +
-    "yourself, that is the documented override — run 'node scripts/devswarm.js " +
-    "skip edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min " +
-    'TTL), then retry. Never skip on your own initiative.';
-
-  // Points at the exempt locations so a coordinator's own notes/reports need no
-  // delegation; repo docs still need a subagent or a trusted edit-allow.json.
-  const NOTES_HINT = ' Session notes/reports can go in .anti-hall/history/** or the ' +
-    'scratchpad (exempt); repo docs need a subagent or a trusted .anti-hall/edit-allow.json.';
-
-  let reason;
-  if (devswarmActive) {
-    // Topology-aware noun: a child workspace is a sub-orchestrator, but the root
-    // session is the primary/main orchestrator — the old wording hardcoded
-    // "sub-orchestrator" even for the Primary. Fail-open: if devswarm-role
-    // require/throws, default to the current (sub-orchestrator) wording. This only
-    // changes the noun; the block decision is identical for both roles.
-    let childWorkspace = true; // default to current wording on any failure
-    try {
-      childWorkspace = require('./lib/devswarm-role.js').isChildWorkspace(process.env);
-    } catch (_) {
-      childWorkspace = true; // fall back to current generic (sub-orchestrator) wording
-    }
-    // PRIMARY redirect names the RIGHT primitive first. The Primary's top fan-out
-    // tier is a CHILD WORKSPACE (docs/KB-devswarm-hivecontrol.md §8.1-8.2); naming
-    // "spawn a subagent" as the only exit at the exact point the Primary is blocked
-    // from working is what drove Primaries to decompose feature-scale work into
-    // subagents instead of workspaces. No mechanical scale classifier is used (a
-    // false positive would break legitimate subagent use) — the reason states the
-    // CHOICE and lets the model classify. The CHILD wording is unchanged, and the
-    // BLOCK DECISION is identical for both roles (only the redirect text differs).
-    // The workspace recommendation is shared with the other Primary tier text
-    // (lib/primary-tier.js): a repo that forbids workspaces for real work (or
-    // devswarm.dispatchTierText off) gets the subagent-only advice. Fail-open
-    // to the subagent-only text. Advice text only; the block is unchanged.
-    let tierText = false;
-    try { tierText = !childWorkspace && require('./lib/primary-tier.js').primaryTierTextOn(process.env, cwd); } catch (_) { tierText = false; }
-    reason = childWorkspace
-      ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
-         'directly in its workspace — spawn a subagent to make this edit and have it ' +
-         'report a tight summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')')
-      : !tierText
-      ? ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
-         'files directly — spawn a subagent to make this edit and have it report a tight ' +
-         'summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')')
-      : ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
-         'files directly. CHOOSE THE TIER: if this edit belongs to a workspace-scale ' +
-         'MATTER (a feature/fix/deploy — multi-step, own branch, own review), spin a ' +
-         'CHILD WORKSPACE and let it own the work: `node scripts/devswarm.js spawn ' +
-         '<branch> -p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for ' +
-         'genuinely small/scoped work (a one-file tweak, a mechanical transform): spawn ' +
-         'a subagent to make this edit and have it report a tight summary. Do NOT hand a ' +
-         'workspace-scale matter to a subagent.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolName + ')');
-  } else {
-    reason =
-      'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
-      'a subagent to make this edit and have it report a tight summary. The ' +
-      'coordinator synthesizes the summary; raw edits never happen in the main ' +
-      'thread.' + SKIP_HINT + ' (tool: ' + toolName + ')';
-  }
-
-  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+  fs.writeSync(1, JSON.stringify({ decision: 'block', reason: delegationReason(toolName, cwd) }) + '\n');
   process.exit(2);
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: never block a turn due to a hook bug.
+if (require.main === module) {
+  try {
+    main();
+  } catch (_) {
+    // Fail-open: never block a turn due to a hook bug.
+  }
+  process.exit(0);
 }
-process.exit(0);
+
+module.exports = { editVerdict, isNotesTarget, isAllowed, delegationReason, DEFAULT_ALLOW };
