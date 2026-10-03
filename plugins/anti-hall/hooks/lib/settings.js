@@ -168,6 +168,9 @@ function coerceValue(entry, raw) {
       // Math.min(max, v))`). An in-range-but-off value (env typo, a stale
       // settings.json) still resolves to something usable at this tier
       // instead of silently falling through to a lower one.
+      // rejectBelowMin: below min falls through (an env `-1` must not
+      // silently mean `0` = off for keys where 0 disables the feature).
+      if (entry.rejectBelowMin && Number.isFinite(entry.min) && n < entry.min) return undefined;
       if (Number.isFinite(entry.min) && n < entry.min) n = entry.min;
       if (Number.isFinite(entry.max) && n > entry.max) n = entry.max;
       return n;

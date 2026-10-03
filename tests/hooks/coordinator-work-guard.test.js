@@ -347,3 +347,67 @@ test('dispatch-report --json: attempted share = (work + blocks)/(calls + blocks)
   assert.match(t.stdout, /baseline: node scripts\/coordinator-work-baseline\.js <transcript\.jsonl>/);
   assert.match(t.stdout, /known gaps: /);
 });
+
+// ---- fix wave 1 ----
+
+test('safety.commandGuard off or command-guard skipped: no block, no state', () => {
+  for (const mode of ['off', 'skip']) {
+    const { home, writeSkip } = makeHome();
+    const env = mode === 'off' ? { ANTIHALL_COMMAND_GUARD: 'off' } : {};
+    if (mode === 'skip') writeSkip({ 'command-guard': Date.now() + 15 * 60000 });
+    post(home, WORK, { env });
+    assert.deepStrictEqual(sessionFiles(home), [], mode);
+    seed(home, 's1', { firstTs: Date.now() - 3600000, ts: recent(6), armed: false, calls: 6, work: 6 });
+    const before = fs.readFileSync(statePath(home, 's1'), 'utf8');
+    assert.strictEqual(pre(home, WORK, { env }).status, 0, mode);
+    post(home, WORK, { env });
+    assert.strictEqual(fs.readFileSync(statePath(home, 's1'), 'utf8'), before, mode);
+  }
+});
+
+function hookAt(home, event, command, toolUseId) {
+  const p = payload(command, 's1', event, { tool_use_id: toolUseId });
+  if (event === 'PreToolUse') return testHook(HOOK, p, { home, env: COORD });
+  p.tool_response = { stdout: '' };
+  const r = childProcess.spawnSync(process.execPath, [HOOK, '--post'], { input: JSON.stringify(p), encoding: 'utf8', env: childEnv(home), timeout: 60000 });
+  return { status: r.status };
+}
+
+test('Post uses the Pre verdict for the same tool_use_id (a script removed by the command still counts)', () => {
+  const { home } = makeHome();
+  const s1 = put(path.join(REPO, 'new2.sh'), SH, 0o755);
+  assert.strictEqual(hookAt(home, 'PreToolUse', 'bash ./new2.sh && rm new2.sh', 'tu-1').status, 0);
+  fs.rmSync(s1);
+  hookAt(home, 'PostToolUse', 'bash ./new2.sh && rm new2.sh', 'tu-1');
+  let s = readJson(statePath(home, 's1'));
+  assert.deepStrictEqual([s.calls, s.work, s.ts.length], [1, 1, 1]);
+  const gone = put(path.join(X, 'x', 'gone.sh'), SH, 0o755);
+  const c = gone + ' && rm ' + gone;
+  hookAt(home, 'PreToolUse', c, 'tu-2');
+  fs.rmSync(gone);
+  hookAt(home, 'PostToolUse', c, 'tu-2');
+  s = readJson(statePath(home, 's1'));
+  assert.deepStrictEqual([s.calls, s.work, s.ts.length], [2, 2, 2]);
+  assert.ok(!(s.pre || []).some((e) => e.id === 'tu-1' || e.id === 'tu-2'), 'consumed entries are removed');
+});
+
+test('Pre verdicts are capped at 20 per session (oldest dropped)', () => {
+  const L = lib();
+  const s = L.emptyState('9.9.9');
+  for (let i = 0; i < 25; i++) L.rememberPre(s, 'id' + i, { work: true, blockable: true });
+  assert.strictEqual(s.pre.length, 20);
+  assert.strictEqual(s.pre[0].id, 'id5');
+  assert.deepStrictEqual(L.takePre(s, 'id24'), { work: true, blockable: true });
+  assert.strictEqual(L.takePre(s, 'id24'), null);
+  assert.strictEqual(L.normalize({ pre: [{ id: 'a', work: true, blockable: false }, { id: 3 }, null] }).pre.length, 1);
+});
+
+test('NUDGE: the block clause is dropped when blockAt <= 0', () => {
+  const L = lib();
+  assert.match(L.NUDGE(4, CFG), /the 7th within the window is blocked/);
+  for (const blockAt of [0, -1]) {
+    const t = L.NUDGE(4, Object.assign({}, CFG, { blockAt }));
+    assert.doesNotMatch(t, /blocked|\b0th\b/);
+    assert.match(t, /Delegate the rest to a subagent now\.$/);
+  }
+});

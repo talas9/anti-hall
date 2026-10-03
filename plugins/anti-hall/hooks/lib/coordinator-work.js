@@ -24,6 +24,7 @@ const SIX_H = 21600000;
 const TRIP_MAX_BYTES = 1024 * 1024;
 const SESSION_RE = /^coordinator-work-session-.+\.json$/;
 const COUNTERS = ['calls', 'work', 'blocks', 'skippedWouldBlock'];
+const PRE_CAP = 20;
 
 const VERSION = (() => {
   try {
@@ -51,7 +52,24 @@ function config() {
 }
 
 function emptyState(version) {
-  return { v: 1, version: version || VERSION, firstTs: 0, ts: [], armed: true, calls: 0, work: 0, blocks: 0, lastBlockAt: 0, skippedWouldBlock: 0 };
+  return { v: 1, version: version || VERSION, firstTs: 0, ts: [], armed: true, calls: 0, work: 0, blocks: 0, lastBlockAt: 0, skippedWouldBlock: 0, pre: [] };
+}
+
+// Pre verdicts keyed by tool_use_id: Post reuses the verdict taken before the
+// command ran (a script the command itself deletes is gone by Post time).
+function rememberPre(state, id, v) {
+  state.pre = (state.pre || []).filter((e) => e.id !== id);
+  state.pre.push({ id, work: !!v.work, blockable: !!v.blockable });
+  if (state.pre.length > PRE_CAP) state.pre = state.pre.slice(-PRE_CAP);
+  return state;
+}
+
+function takePre(state, id) {
+  const list = state && Array.isArray(state.pre) ? state.pre : [];
+  const k = list.findIndex((e) => e.id === id);
+  if (k === -1) return null;
+  const e = list.splice(k, 1)[0];
+  return { work: e.work, blockable: e.blockable };
 }
 
 // normalize(raw) -> a well-formed state, or null when raw is not an object.
@@ -61,6 +79,10 @@ function normalize(raw) {
   if (Number.isFinite(raw.firstTs) && raw.firstTs > 0) s.firstTs = raw.firstTs;
   if (Array.isArray(raw.ts)) s.ts = raw.ts.filter((t) => Number.isFinite(t));
   s.armed = raw.armed !== false;
+  if (Array.isArray(raw.pre)) {
+    s.pre = raw.pre.filter((e) => e && typeof e.id === 'string' && e.id && typeof e.work === 'boolean' && typeof e.blockable === 'boolean')
+      .map((e) => ({ id: e.id, work: e.work, blockable: e.blockable })).slice(-PRE_CAP);
+  }
   for (const k of COUNTERS.concat(['lastBlockAt'])) if (Number.isFinite(raw[k]) && raw[k] >= 0) s[k] = raw[k];
   return s;
 }
@@ -313,7 +335,7 @@ function BLOCK(count, cfg, skipCmd) {
 
 function NUDGE(count, cfg) {
   return 'COORDINATOR DRIFT: ' + count + ' state-changing calls in the main thread within ' + fmtMin(cfg) +
-    ' min. Delegate the rest to a subagent now; the ' + cfg.blockAt + 'th within the window is blocked.';
+    ' min. Delegate the rest to a subagent now' + (cfg.blockAt > 0 ? '; the ' + cfg.blockAt + 'th within the window is blocked.' : '.');
 }
 
 // replay(rows, cfg, classify) -> what the window would have done over a log.
@@ -356,7 +378,7 @@ function replay(rows, cfg, classify) {
 }
 
 module.exports = {
-  DEFAULTS, VERSION, config, emptyState, sessionStart, prune, checkPre, stepPost,
+  DEFAULTS, VERSION, config, emptyState, normalize, rememberPre, takePre, sessionStart, prune, checkPre, stepPost,
   sessionPath, metricsPath, readState, update, bumpMetrics, logTrip, foldStale, summary,
   BLOCK, NUDGE, replay,
 };

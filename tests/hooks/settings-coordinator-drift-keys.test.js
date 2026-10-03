@@ -95,3 +95,18 @@ test('plugin.json userConfig stays at 14 entries', () => {
   const uc = require(path.join(PLUGIN, '.claude-plugin', 'plugin.json')).userConfig || {};
   assert.strictEqual(Object.keys(uc).length, 14);
 });
+
+test('a negative env value for the 4 numeric keys falls back to the default, not 0', () => {
+  const home = emptyHome();
+  for (const [key, , dflt, env] of NUM) {
+    assert.strictEqual(settings.get('guards', key, undefined, { home, env: { [env]: '-3' } }), dflt, key);
+  }
+  const L = require(path.join(PLUGIN, 'hooks', 'lib', 'coordinator-work.js'));
+  const saved = {};
+  for (const [, , , env] of NUM) { saved[env] = process.env[env]; process.env[env] = '-1'; }
+  try {
+    assert.deepStrictEqual(L.config(), { tMs: 600000, nudgeAt: 4, blockAt: 7, cap: 50 });
+  } finally {
+    for (const [env, v] of Object.entries(saved)) { if (v === undefined) delete process.env[env]; else process.env[env] = v; }
+  }
+});
