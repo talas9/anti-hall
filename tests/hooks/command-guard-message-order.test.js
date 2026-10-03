@@ -4,6 +4,10 @@
 // is unchanged. ROWS is the pre-change exit-code table (captured at 0.122.0) for
 // 49 commands x {none, DevSwarm child, Primary, Primary in a no-workspace repo} x
 // {foreground, run_in_background}; the message rewrite must not move a single cell.
+// The child gets TMPDIR=os.tmpdir() so the scratch fixtures sit inside the hook's tmp
+// roots on EVERY platform (testHook's env is {PATH,HOME}, so a macOS child fell back to
+// /tmp while the fixtures lived under /var/folders; Linux has /tmp for both). Hence the
+// `@SP@` rows: a background scratch script is allowed ('2' foreground, '0' background).
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -67,8 +71,8 @@ const ROWS = [
   ["ctest -R foo | tail -3", '00000000'],
   ["npm run build --dry-run", '22222222'],
   ["git clone --depth 1 https://example.com/x.git /tmp/x", '22222222'],
-  ["python3 @SP@/a.py --check", '22222222'],
-  ["python3 @SP@/a.py", '22222222'],
+  ["python3 @SP@/a.py --check", '20202020'],
+  ["python3 @SP@/a.py", '20202020'],
   ["node @SP@/a.js && npm test", '22222222'],
   ["cd repo; python3 -m pytest -q one.py | tail -2", '00000000'],
   ["cd repo && python3 -m pytest -q one.py | tail -2", '00000000'],
@@ -92,7 +96,7 @@ function run(command, envIdx, bg) {
     const toolInput = { command: command.split('@SP@').join(sp) };
     if (bg) toolInput.run_in_background = true;
     const payload = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: toolInput, session_id: 't', cwd: envIdx === 3 ? noWs : plain };
-    return testHook(HOOK, payload, { home: h.home, env: Object.assign({}, COORD, ENVS[envIdx]) });
+    return testHook(HOOK, payload, { home: h.home, env: Object.assign({ TMPDIR: os.tmpdir() }, COORD, ENVS[envIdx]) });
   } finally { h.cleanup(); }
 }
 

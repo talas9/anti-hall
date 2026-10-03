@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Fixed
+
+- **Two tests that failed only on Linux CI:** the command-guard message-order differential now gives its hook child `TMPDIR=os.tmpdir()` so the scratch fixtures sit inside the hook's tmp roots on every platform (the pinned table was macOS-specific), and the wake-watch lock-stale-bound test re-asserts its torn lock record and waits for the stderr lines instead of relying on a single write racing the watcher's read-then-rename. Test-only; no product change.
+
 ## 0.122.1 (2026-10-03)
 
 ### Added

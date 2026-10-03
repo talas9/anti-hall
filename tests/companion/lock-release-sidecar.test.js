@@ -178,12 +178,21 @@ test('wake-watch: transient errors persisting past the lock stale threshold fall
     w = startWatcher(home, id, preload);
     assert.ok(await waitFor(() => fs.existsSync(lockPath), 5000), 'watcher armed');
     await sleep(300);
-    // Persistent transient error: a torn (unparseable) lock record.
-    fs.writeFileSync(lockPath, '{torn');
-    await sleep(500);
-    assert.strictEqual(w.st.exit, undefined, 'within the bound the watcher keeps running; stderr=' + w.st.err);
-    fs.writeFileSync(flag, '1'); // time passes beyond the stale threshold
-    assert.ok(await waitFor(() => w.st.exit !== undefined, 5000), 'watcher exits after the bound');
+    // Persistent transient error: a torn (unparseable) lock record. A single write is a
+    // race: the watcher's refresh() reads the lock, then renames a fresh tmp over it, so a
+    // torn write landing between that read and rename is silently replaced by a valid
+    // record and the error never persists (seen on a loaded Linux runner). Re-assert the
+    // torn record every 20 ms so the error is persistent regardless of tick phase.
+    const tear = () => { try { fs.writeFileSync(lockPath, '{torn'); } catch (_) {} };
+    tear();
+    const reTear = setInterval(tear, 20);
+    try {
+      await sleep(500);
+      assert.strictEqual(w.st.exit, undefined, 'within the bound the watcher keeps running; stderr=' + w.st.err);
+      fs.writeFileSync(flag, '1'); // time passes beyond the stale threshold
+      // Wait for the exit AND the stderr lines: 'exit' can fire before the piped stderr is drained.
+      assert.ok(await waitFor(() => w.st.exit !== undefined && /LOCK LOST: lock-held/.test(w.st.err), 15000), 'watcher exits after the bound; stderr=' + w.st.err);
+    } finally { clearInterval(reTear); }
     assert.strictEqual(w.st.exit, 0);
     assert.match(w.st.err, /longer than the lock stale threshold/);
     assert.match(w.st.err, /LOCK LOST: lock-held/);
