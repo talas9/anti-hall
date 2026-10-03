@@ -1,0 +1,26 @@
+name: pr-source
+
+# main accepts pull requests from dev only. The "main protection" ruleset
+# requires this check, so a pull request from any other branch cannot merge.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dev-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the dev branch of this repository as the source
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REF" != "dev" ] || [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "main accepts pull requests from $BASE_REPO:dev only (got $HEAD_REPO:$HEAD_REF)."
+            exit 1
+          fi
+          echo "Source is dev: OK."
