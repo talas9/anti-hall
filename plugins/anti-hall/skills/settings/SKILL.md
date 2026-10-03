@@ -152,7 +152,10 @@ per-turn reminder block (VERIFY-FIRST, the DevSwarm PRIMARY dispatch-tier/
 top-fan-out-tier suffixes) once its first-turn/post-compact copy is consumed,
 default 10, 0 = every turn; `guards.codexQuotaDetect` — record a Codex
 quota/rate-limit exhaustion seen in a `codex:codex-rescue` result so other
-sessions stop rediscovering it independently, default on),
+sessions stop rediscovering it independently, default on;
+`guards.coordinatorWorkWindowMinutes` (default 10, 0 = off; main-thread state-changing Bash calls counted over that many minutes — in a non-git project only coordinator-writable or fresh scripts count),
+`guards.coordinatorWorkNudgeAt` (default 4, 0 = no nudge), `guards.coordinatorWorkBlockAt` (default 7, 0 = no block; recovery commands and loosely matched inline code are never blocked),
+`guards.coordinatorWorkMaxEntries` (default 50, min 1) and `guards.bashEditParity` (default on — command-guard applies edit-guard's verdict to Bash writes into repo files in the main thread)),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
 parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin;
 `dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` (independent of it) the once-per-session
