@@ -1698,6 +1698,44 @@ const GH_MUTATING_SUBCOMMANDS = {
 };
 const GH_API_MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
+// isReadOnlyGhGraphql(tokens, ghIdx) -> true only for a provably read-only
+// `gh api graphql` call (closed read set; anything unknown => false):
+// endpoint `graphql`|`/graphql`, fields only as separated -f/-F/--field/
+// --raw-field pairs with exactly one `query=` whose value is empty or starts
+// with `{` / `query` + [space { (], and has no `$`, backtick, leading `@` or
+// `mutation`; every other flag must be in the read set below.
+const GH_GQL_VALUE_FLAGS = new Set(['--jq', '-q', '-H', '--header', '--hostname', '--cache', '-t', '--template']);
+const GH_GQL_BOOL_FLAGS = new Set(['--paginate', '--slurp', '--silent', '-i', '--include', '--verbose']);
+const GH_GQL_FIELD_FLAGS = new Set(['-f', '-F', '--field', '--raw-field']);
+function isReadOnlyGhGraphql(tokens, ghIdx) {
+  if (!/^\/?graphql$/i.test(tokens[ghIdx + 2] || '')) return false;
+  let queries = 0;
+  for (let i = ghIdx + 3; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (GH_GQL_BOOL_FLAGS.has(t)) continue;
+    if (GH_GQL_VALUE_FLAGS.has(t)) {
+      if (i + 1 >= tokens.length) return false;
+      i++;
+      continue;
+    }
+    if (GH_GQL_FIELD_FLAGS.has(t)) {
+      if (i + 1 >= tokens.length) return false;
+      const v = tokens[++i];
+      const eq = v.indexOf('=');
+      if (eq === -1) return false;
+      if (v.slice(0, eq) !== 'query') continue;
+      const q = v.slice(eq + 1);
+      if (/[$`]/.test(q) || q.startsWith('@') || /\bmutation\b/i.test(q)) return false;
+      const qt = q.trim();
+      if (qt !== '' && !qt.startsWith('{') && !/^query[\s{(]/.test(qt)) return false;
+      queries++;
+      continue;
+    }
+    return false;
+  }
+  return queries === 1;
+}
+
 // isHeavyGhSegment(segment) -> true iff this is a `gh` invocation of a
 // mutating subcommand: pr merge/close/edit/create/review, issue
 // create/close/delete/edit, release create/delete/edit/upload, repo
@@ -1707,7 +1745,7 @@ const GH_API_MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 // method). Gated on effectiveVerb(segment) === 'gh' first, same discipline
 // as isHeavyGitSegment, so `gh` appearing only as quoted DATA is never
 // misread as a real invocation.
-function isHeavyGhSegment(segment) {
+function isHeavyGhSegment(segment, command) {
   if (effectiveVerb(segment) !== 'gh') return false;
   const tokens = tokenizeQuoted(segment);
   const ghIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'gh');
@@ -1717,9 +1755,17 @@ function isHeavyGhSegment(segment) {
   if (group === 'workflow' && sub === 'run') return true;
   if (GH_MUTATING_SUBCOMMANDS[group] && GH_MUTATING_SUBCOMMANDS[group].has(sub)) return true;
   if (group === 'api') {
+    // The splitter cuts a segment AT a backtick, so a trailing `query=`\`cmd\``
+    // looks empty here; any backtick in the whole command voids the read proof.
+    if (isReadOnlyGhGraphql(tokens, ghIdx) && !(command || '').includes('`')) return false;
+    // `gh api graphql` always POSTs: heavy unless proven a read above.
+    if (tokens.slice(ghIdx + 2).some((t) => /^\/?graphql$/i.test(t))) return true;
     for (let i = ghIdx + 2; i < tokens.length; i++) {
       const t = tokens[i];
       if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
+      // Attached forms (-fk=v, -Fk=v, --field=k=v, --raw-field=k=v) and a
+      // request body (--input f / --input=f) are data args, same as separated.
+      if (/^-[fF]./.test(t) || /^--(field|raw-field|input)=/.test(t) || t === '--input') return true;
       if (t === '-X' || t === '--method') {
         if (GH_API_MUTATING_METHODS.has((tokens[i + 1] || '').toUpperCase())) return true;
       }
@@ -1792,7 +1838,7 @@ function isHeavySegment(segment, command) {
   if (isSafeNodeEval(segment)) return false;
   if (isNodeDashEInvocation(segment)) return true;
   if (isHeavyGitSegment(segment)) return true;
-  if (isHeavyGhSegment(segment)) return true;
+  if (isHeavyGhSegment(segment, command)) return true;
   if (isFlaggedInterpreterScript(segment)) return true;
   const verb = effectiveVerb(segment);
   if (verb && HEAVY_VERBS.has(verb)) return true;
