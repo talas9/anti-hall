@@ -1023,7 +1023,18 @@ function splitSegmentsDetailed(cmd) {
     cur = '';
   }
 
+  let heredoc = null; // the pending heredoc whose body starts after its opener line
+
   while (i < n) {
+    if (heredoc && i >= heredoc.lineEnd) {
+      // End of the opener line: the heredoc closes the logical command.
+      flush('heredoc');
+      i = Math.max(i, heredoc.end);
+      heredoc = null;
+      inSingle = false;
+      inDouble = false;
+      continue;
+    }
     const c = cmd[i];
     const c2 = i + 1 < n ? cmd[i + 1] : '';
 
@@ -1073,16 +1084,17 @@ function splitSegmentsDetailed(cmd) {
       continue;
     }
 
-    // Heredoc: consume the opener on the current segment, then skip the BODY
-    // (up to and including the terminator line) without emitting it as
-    // segments. See the heredoc-handling comment above splitSegments.
-    if (c === '<' && c2 === '<') {
+    // Heredoc: the operator word stays on the current segment and the rest of
+    // the opener line is split as usual (`cat <<EOF | git commit -F -` is two
+    // segments); at that line's newline the BODY (up to and including the
+    // terminator line) is skipped without emitting segments. A second `<<` on
+    // the same line is left as text (its body is not skipped: stricter).
+    if (c === '<' && c2 === '<' && !heredoc) {
       const parsed = parseHeredocAt(cmd, i);
       if (parsed) {
-        cur += parsed.openerText;
-        i = parsed.end;
-        // The heredoc construct closes the current logical command/segment.
-        flush('heredoc');
+        cur += cmd.slice(i, parsed.openerEnd);
+        i = parsed.openerEnd;
+        if (parsed.lineEnd !== undefined) heredoc = parsed;
         continue;
       }
     }
@@ -3288,6 +3300,7 @@ function isBackgroundScratchScript(command, payload) {
 // ---------------------------------------------------------------------------
 // WORK classifier (coordinator drift) + Bash edit parity (F3).
 // classifyBashWork(command, payload, opts) -> { work, blockable, labels, editBlocks }.
+// opts.editOnly (F3) skips the script-run and inline-code probes.
 // WORK = a state-changing git segment, a gh mutation, or a Bash write into a
 // non-notes repo file. Recovery git commands are WORK but never blockable.
 // editBlocks = Bash write targets edit-guard's own verdict would block for
@@ -3408,6 +3421,56 @@ function readRedirectTarget(s, i) {
   return out || null;
 }
 
+// blankTestOperators(text) -> text with every `<`/`>` inside `[[ … ]]`,
+// `(( … ))` and `$(( … ))` replaced by a space (same length). There they are
+// string/number comparisons, not redirects. A `$( … )` nested inside is a
+// command context again and is left alone. Quotes, `$'…'`, backslash escapes
+// and heredoc bodies are copied unchanged.
+function blankTestOperators(text) {
+  if (!/[<>]/.test(text) || !/\(\(|\[\[/.test(text)) return text;
+  const n = text.length;
+  const stack = []; // 'a' arithmetic, 'b' [[ ]], 'g' group inside a/b, 'p' command
+  const testCtx = () => { const t = stack[stack.length - 1]; return t === 'a' || t === 'b' || t === 'g'; };
+  const wordStart = (i) => i === 0 || /[\s;&|(!]/.test(text[i - 1]);
+  let out = '';
+  let i = 0;
+  let q = '';
+  while (i < n) {
+    const c = text[i];
+    const c2 = text[i + 1];
+    if (q) {
+      if (c === '\\' && q === '"' && i + 1 < n) { out += c + c2; i += 2; continue; }
+      out += c; if (c === q) q = ''; i++; continue;
+    }
+    if (c === '\\' && i + 1 < n) { out += c + c2; i += 2; continue; }
+    if (c === '$' && c2 === "'") {
+      let j = i + 2;
+      while (j < n && text[j] !== "'") j += text[j] === '\\' ? 2 : 1;
+      j = Math.min(j + 1, n);
+      out += text.slice(i, j); i = j; continue;
+    }
+    if (c === "'" || c === '"') { q = c; out += c; i++; continue; }
+    if (c === '<' && c2 === '<' && !testCtx()) {
+      const h = parseHeredocAt(text, i);
+      if (h) { out += text.slice(i, h.end); i = h.end; continue; }
+    }
+    if (c === '$' && c2 === '(' && text[i + 2] === '(') { stack.push('a'); out += '$(('; i += 3; continue; }
+    if (c === '$' && c2 === '(') { stack.push('p'); out += '$('; i += 2; continue; }
+    if (c === '(' && c2 === '(' && !testCtx() && wordStart(i)) { stack.push('a'); out += '(('; i += 2; continue; }
+    if (c === '(') { stack.push(testCtx() ? 'g' : 'p'); out += c; i++; continue; }
+    if (c === ')') {
+      if (stack[stack.length - 1] === 'a' && c2 === ')') { stack.pop(); out += '))'; i += 2; continue; }
+      if (stack.length) stack.pop();
+      out += c; i++; continue;
+    }
+    if (c === '[' && c2 === '[' && !testCtx() && wordStart(i) && /\s/.test(text[i + 2] || '')) { stack.push('b'); out += '[['; i += 2; continue; }
+    if (c === ']' && c2 === ']' && stack[stack.length - 1] === 'b' && /[\s;&|)]|^$/.test(text[i + 2] || '')) { stack.pop(); out += ']]'; i += 2; continue; }
+    out += (c === '<' || c === '>') && testCtx() ? ' ' : c;
+    i++;
+  }
+  return out;
+}
+
 const REDIRECT_TOKEN_RE = /^\d*(?:&?>>?|>\||<)/;
 const BARE_REDIRECT_TOKEN_RE = /^\d*(?:&?>>?|>\||<+)$/;
 
@@ -3422,11 +3485,19 @@ function bashWriteTargets(segment, cwd) {
     if (!t || t.startsWith('&') || t.startsWith('(') || t.includes('>') || /^\/dev\//.test(t)) return;
     out.push(t);
   };
-  // (a) redirects: operators found on the quote-neutralized text, targets read from the original.
-  const neutral = neutralizeQuotedContents(segment);
+  // (a) redirects: operators found on the quote-neutralized text (test /
+  // arithmetic comparisons blanked), targets read from the original. A `\>`
+  // (odd run of backslashes before it) is a literal `>`, not a redirect.
+  const neutral = blankTestOperators(neutralizeQuotedContents(segment));
   const re = /(^|[^<>&])(>\||&?>>?)/g;
   let m;
-  while ((m = re.exec(neutral))) keep(readRedirectTarget(segment, m.index + m[1].length + m[2].length));
+  while ((m = re.exec(neutral))) {
+    const op = m.index + m[1].length;
+    let bs = 0;
+    while (op - 1 - bs >= 0 && neutral[op - 1 - bs] === '\\') bs++;
+    if (bs % 2) continue;
+    keep(readRedirectTarget(segment, op + m[2].length));
+  }
 
   // (b) argv without redirect tokens (and the word after a bare operator).
   const raw = tokenizeQuoted(segment);
@@ -3679,13 +3750,14 @@ function isTextScript(real, st) {
 
 // gitCleanTracked(root, abs, cache) -> true only when `git status --porcelain
 // --ignored -- <rel>` prints nothing (tracked and clean). Memoised per call.
+// GIT_OPTIONAL_LOCKS=0: a read-only probe must not refresh/lock .git/index.
 function gitCleanTracked(root, abs, cache) {
   const key = root + '\0' + abs;
   if (cache && cache.has(key)) return cache.get(key);
   let clean = false;
   try {
     const out = require('child_process').execFileSync('git', ['status', '--porcelain=v1', '--ignored', '--', path.relative(root, abs)],
-      { cwd: root, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] });
+      { cwd: root, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: '0' }) });
     clean = String(out).trim() === '';
   } catch (_) { clean = false; }
   if (cache) cache.set(key, clean);
@@ -3850,6 +3922,9 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
   const blocks = new Set();
 
   const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
+  // `(( n > 5 ))` / `$((3 > 2))`: the splitter cuts at `(`, so comparisons are
+  // blanked before splitting or they would read as redirects.
+  masked.text = blankTestOperators(masked.text);
   // `${NAME}` -> `$NAME` (not before an identifier char): the splitter cuts at braces.
   const { segments, delims } = splitSegmentsDetailed(masked.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?![A-Za-z0-9_])/g, '$$$1'));
   const ctxs = cdAwareContexts(segments, delims, p);
@@ -3864,8 +3939,8 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
     if (isHeavyGhSegment(seg, command)) { segWork = true; res.labels.add('gh'); }
     const isGit = effectiveVerb(seg) === 'git';
     for (const ctx of ctxs[i]) {
-      if (scriptFileRun(seg, ctx, p, o, sh.gitCache, rootOf) && !trusted()) { segWork = true; res.labels.add('script'); }
-      const inl = inlineCodeWork(seg, ctx, p, rootOf);
+      if (!o.editOnly && scriptFileRun(seg, ctx, p, o, sh.gitCache, rootOf) && !trusted()) { segWork = true; res.labels.add('script'); }
+      const inl = o.editOnly ? null : inlineCodeWork(seg, ctx, p, rootOf);
       if (inl) {
         res.work = true;
         res.labels.add('inline');
@@ -3884,7 +3959,9 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
         if (isScratchpadOrTmpPath(abs, { payload: p, ownOnly: true })) continue;
         if (!inTop && isScratchpadOrTmpPath(abs, { payload: p })) continue;
         const egPayload = Object.assign({}, p, { cwd: r.base });
-        if (sp.isInsideDir(abs, r.base) && !eg.isNotesTarget(abs, r.base, egPayload)) {
+        // F3 judges writes into the session project only ("into repo files").
+        if (!sp.isInsideDir(abs, r.base)) continue;
+        if (!eg.isNotesTarget(abs, r.base, egPayload)) {
           segWork = true;
           res.labels.add('repo-write');
         }
@@ -4095,7 +4172,7 @@ function main() {
       && require('./lib/settings.js').enabled('safety', 'editGuard')
       && !isSkipped('edit-guard')
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
-      if (classifyBashWork(command, payload).editBlocks.length) {
+      if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
         const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect)', payload.cwd);
         fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
         process.exit(2);

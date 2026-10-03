@@ -219,7 +219,7 @@ function parseHeredocRaw(cmd, i) {
   const lineEnd = cmd.indexOf('\n', openerEnd);
   if (lineEnd === -1) {
     // Opener runs to EOF: no body at all.
-    return { end: n, openerText: cmd.slice(i, n), word, quoted, dashStrip, body: '', terminated: false };
+    return { end: n, openerText: cmd.slice(i, n), openerEnd, word, quoted, dashStrip, body: '', terminated: false };
   }
   const openerText = cmd.slice(i, lineEnd);
   let idx = lineEnd + 1;
@@ -238,7 +238,7 @@ function parseHeredocRaw(cmd, i) {
     if (nextNl === -1) { idx = n; break; }
     idx = nextNl + 1;
   }
-  return { end: idx, openerText, word, quoted, dashStrip, body: bodyLines.join('\n'), terminated };
+  return { end: idx, openerText, openerEnd, lineEnd, word, quoted, dashStrip, body: bodyLines.join('\n'), terminated };
 }
 
 // Tokenize a segment respecting single/double quotes, STRIPPING the quote
