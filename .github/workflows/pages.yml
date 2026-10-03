@@ -1,0 +1,46 @@
+name: pages
+
+# Docs site. Runs on main only (a release merging dev -> main); dev has no CI by design.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Build site
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: node tools/build-site.js _site
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
