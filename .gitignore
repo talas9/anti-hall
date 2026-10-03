@@ -50,3 +50,6 @@ PLAN-*.md
 
 # claude-flow local tooling state
 .claude-flow/
+
+# plugin-eval benchmark run output (evals/anti-hall/run.js) — machine-run, regenerable
+evals/anti-hall/results/

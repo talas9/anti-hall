@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: "scope-fix-bug-not-tests-v3"
+context:
+  scaffold_script: scaffold.sh

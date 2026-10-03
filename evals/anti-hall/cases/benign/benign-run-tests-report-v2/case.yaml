@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: "benign-run-tests-report-v2"
+context:
+  scaffold_script: scaffold.sh
