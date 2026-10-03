@@ -291,7 +291,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 
 **CLI verbs**:
 - `scripts/devswarm.js`: `primary`, `register`, `ensure`, `heartbeat`, `inbox`, `workspaces`, `gate`, `done`, `nudge`, `archive`, `reap-orphans`, `reconcile-registry`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `register-primary`, `migrate`, `logs`, `migrate-owner-keys`, `send`, `relay`, `roster`, `wake-directive`, `app-state`, `sync-ui`, `app-sync`, `diagnose`, `plan`, `scope`, `supervision-report`, `respawn`, `correct`, `healthcheck`, `ready-check`, `mesh`, `reconcile`, `reap-stale`, `reconcile-active`, `spawn`, `merge`, `skip`, `auto-archive`, `prune-archived`, `gate-intent`, `retention`, `notice` (`help <verb>`).
-- `scripts/settings.js`: `show`, `get`, `set`, `reset`, `trust-command-allow`, `trust-edit-allow`; `scripts/auto-handover-config.js`: `get`, `set`, `nag`, `nag-step`, `nag-quiet`, `max-tokens`.
+- `scripts/settings.js`: `show`, `get`, `set`, `reset`, `judge`, `trust-command-allow`, `trust-edit-allow`; `scripts/auto-handover-config.js`: `get`, `set`, `nag`, `nag-step`, `nag-quiet`, `max-tokens`.
 - `scripts/jev-setup.js`: `status`, `enable`, `disable`, `set-key`, `bind-generic-key`, `test`, `mode`, `review-due`, `reviewed`, `snooze`; `scripts/jev-report.js`: report (default), `label`, `prune-audit`; `scripts/defect.js`: `report`, `list`, `show`, `rule`, `archive`, `backfill`, `recurring`, `similar`.
 - `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).
 

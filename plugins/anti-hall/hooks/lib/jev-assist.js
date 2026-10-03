@@ -1075,12 +1075,28 @@ function consultRelax(opts) {
   } catch (_) { return null; }
 }
 
+// speculationBackend(home) -> {backend:'jev'|'api'|'lexical', apiJudgeFlag, jevMode}.
+// WHO is the semantic speculation judge right now, mirroring the real hooks:
+// Jev enabled + integration "speculation" on -> speculation-guard asks Jev and
+// speculation-judge.js (the paid API judge) exits early; otherwise the API judge
+// when jev.semanticJudge is true; otherwise lexical speculation-guard only.
+// Does not check that a key resolves. Never throws.
+function speculationBackend(home) {
+  let jevMode = 'off';
+  let apiJudgeFlag = false;
+  try { jevMode = getMode('speculation', readJevJson(home), home); } catch (_) { /* off */ }
+  try { apiJudgeFlag = require('./settings.js').get('jev', 'semanticJudge', false, { home: homeDir(home) }) === true; } catch (_) { /* off */ }
+  const backend = jevMode === 'on' ? 'jev' : (apiJudgeFlag ? 'api' : 'lexical');
+  return { backend, apiJudgeFlag, jevMode };
+}
+
 module.exports = {
   ask,
   askSync,
   askDetached,
   consultRelax,
   turnRefFromTranscript,
+  speculationBackend,
   RELAX_SYNC_CAP_MS,
   // finalize is exported for the small set of callers that already HAVE a
   // Jev answer from a cache another feature populated (e.g. jev-triage.js's

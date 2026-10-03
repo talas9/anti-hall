@@ -115,6 +115,22 @@ it. A symlinked file is refused. Absolute paths, `..` and match-everything globs
 all), `.claude`, `.codex`, hook config, or `~/.claude`. Subagents are unaffected.
 Kill-switch: `guards.projectEditAllow=false`.
 
+## Semantic judge: `judge on|off|status`
+
+The opt-in speculation-judge (`jev.semanticJudge`, off by default) has a one-line switch:
+
+```bash
+node "$ANTI_HALL_ROOT/scripts/settings.js" judge on|off|status
+```
+
+`on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
+itself; a key stored as a plugin option is visible to hooks only, so "not visible" means
+unverified from the CLI) and how to add one, and prints the cost: about $0.0001–0.001 and
+1–3 s per turn end, estimated, not measured; no precision eval yet. `status` shows on/off, key
+visibility and the model (`jev.judgeModel`). Relay that output; do not add claims about accuracy.
+
+On Codex the judge hook is registered (`codex/hooks/hooks.json`), but it needs `guards.allowAnthropicEnvKey` true in `~/.anti-hall/settings.json` plus `ANTHROPIC_API_KEY` exported, since Codex has no plugin options; I have not run it live on Codex.
+
 ## Turning a hook off
 
 Every hook the Codex port registers reads the same switch as on Claude Code, so "turn

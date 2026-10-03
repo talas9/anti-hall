@@ -1911,5 +1911,17 @@ if (REPAIR_RESURRECTED) {
   } catch (_) { /* report-only */ }
 })();
 
+// --- 5r. semantic judge hint (INFO ONLY) -------------------------------------
+// The opt-in speculation-judge is off by default; point at the one-line enable.
+(function judgeHintSection() {
+  try {
+    const sb = require('./lib/jev-assist.js').speculationBackend();
+    head('semantic judge');
+    if (sb.backend === 'jev') infol('semantic judge: Jev (speculation-guard) is active; the paid API judge is skipped.');
+    else if (sb.backend === 'api') infol('semantic judge: Anthropic API (jev.semanticJudge on); needs an anthropic_api_key.');
+    else infol('speculation-judge is off (opt-in). Enable: node scripts/settings.js judge on (or /anti-hall:settings). Costs about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated, not measured.');
+  } catch (_) { /* report-only */ }
+})();
+
 // --- 6. Summary --------------------------------------------------------------
 emitVerdictAndExit();

@@ -128,6 +128,20 @@ it. A symlinked file is refused. Absolute paths, `..` and match-everything globs
 all), `.claude`, `.codex`, hook config, or `~/.claude`. Subagents are unaffected.
 Kill-switch: `guards.projectEditAllow=false`.
 
+## Semantic judge: `judge on|off|status`
+
+The opt-in speculation-judge (`jev.semanticJudge`, off by default) has a one-line switch:
+
+```bash
+node <plugin-root>/scripts/settings.js judge on|off|status
+```
+
+`on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
+itself; a key stored as a plugin option is visible to hooks only, so "not visible" means
+unverified from the CLI) and how to add one, and prints the cost: about $0.0001–0.001 and
+1–3 s per turn end, estimated, not measured; no precision eval yet. `status` shows on/off, key
+visibility and the model (`jev.judgeModel`). Relay that output; do not add claims about accuracy.
+
 ## Turning a hook off
 
 "Turn off the task-list nudge", "stop the per-turn verify-first line", "disable the

@@ -376,6 +376,8 @@ enabled: off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL
 (the env var wins when set to an on/off value). When off, it has zero cost, zero latency, and
 zero network activity — it is as if it were not registered at all.
 
+**Quick switch:** `node scripts/settings.js judge on|off|status` (or ask `/anti-hall:settings`) sets `jev.semanticJudge`, reports whether a key is visible to that process (never the key), and prints the cost estimate (about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; no precision eval yet). It also names the active backend: when `jev.enabled` is on and the `speculation` integration is `on`, speculation-guard already asks Jev (a remote classifier, not a local one) and this API judge exits early. `doctor` prints an info line with the backend, or this command while the judge is off.
+
 **To enable:** either set `jev.semanticJudge` to `true` (`/anti-hall:settings`), or:
 
 ```bash
