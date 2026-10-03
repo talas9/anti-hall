@@ -485,9 +485,17 @@ function migrateJevIntegrationsSection(home) {
 // check runs again under the settings lock, together with "still unset".
 //
 // Scope: every pluginOption setting except the 10 headline keys (they keep their
-// rows), `locked` keys and `homeOnly` keys (safety/credential switches stay on
-// the legacy read tier, never copied), and the sensitive credential options
-// (not in the schema; never read from settings.json). A value equal to the
+// rows), `homeOnly` keys (credential switches, never read from /config at all),
+// and the sensitive credential options (not in the schema; never read from
+// settings.json). `locked` (safety) keys ARE copied, written with
+// `confirmed: true` — the same settings.set() call `settings.js set <key>
+// <value> --confirmed` makes; the lock persists no marker, it only gates the
+// write. A value stored in pluginConfigs can only have been set by the person
+// in /config, so it already IS a human-confirmed choice, and the guard below
+// still only copies it when it is the current effective value: the copy keeps
+// that choice alive after its row leaves the manifest (otherwise e.g. an armed
+// guards.stashGuard would fall back to its default `false`), and never changes
+// what any guard does today. A value equal to the
 // schema default is skipped (it is Claude Code's seeded default, not a choice);
 // a null schema default (jev.budget.usdPerDay/usdPerWeek/minCreditUsd) has no
 // default to equal, so any valid stored value counts as non-default.
@@ -503,7 +511,7 @@ function migrateLegacyPluginOptions(home, opts) {
   if (!opt) return { migrated, skipped, errors };
   try {
     for (const entry of schemaLib.allSettings()) {
-      if (!entry.pluginOption || entry.headline || entry.locked || entry.homeOnly) continue;
+      if (!entry.pluginOption || entry.headline || entry.homeOnly) continue;
       if (!Object.prototype.hasOwnProperty.call(opt, entry.pluginOption)) continue;
       try {
         const stored = opt[entry.pluginOption];
@@ -512,7 +520,7 @@ function migrateLegacyPluginOptions(home, opts) {
         if (!v.ok) continue;
         const guard = (store) => settingsLib.lookup(store[entry.section], entry.key) === undefined
           && settingsLib.get(entry.section, entry.key, undefined, o) === v.value;
-        const r = settingsLib.set(entry.section, entry.key, v.value, Object.assign({}, o, { guard }));
+        const r = settingsLib.set(entry.section, entry.key, v.value, Object.assign({}, o, { guard }, entry.locked ? { confirmed: true } : null));
         if (!r.ok) errors++; else if (r.skipped) skipped++; else migrated++;
       } catch (_) { errors++; }
     }

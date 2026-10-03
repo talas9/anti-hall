@@ -27,7 +27,7 @@ On Codex, run `show` (one table per category), then `show --section <category> [
 change with `set` / `reset`. This skill (over `scripts/settings.js`) is the ONLY way to see or change a
 setting. It is complete (every setting, advanced included), and a value set here lands
 in `~/.anti-hall/settings.json`, which both platforms read from the same `~/.anti-hall/` home.
-On Claude Code, values stored in Claude Code's plugin options by earlier versions were copied into `~/.anti-hall/settings.json` on update and still resolve; `/anti-hall:settings` is the place to see and change every setting.
+On Claude Code, a non-default value stored in Claude Code's plugin options by earlier versions is copied into `~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that runs the migration (safety keys are copied as human-confirmed values), and still resolves until then; `/anti-hall:settings` is the place to see and change every setting.
 
 ## Direct named changes: one `set`, no table
 

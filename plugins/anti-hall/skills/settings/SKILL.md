@@ -27,9 +27,11 @@ the API keys. Every other setting lives in `~/.anti-hall/settings.json`, grouped
    `node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section <category> [--all]`
 3. Change with `set <section.key> <value>`, undo with `reset <section.key>` (below).
 
-Values set in Claude Code's plugin options in earlier versions were copied into
-`~/.anti-hall/settings.json` on update and still resolve (a stored plugin option stays a
-read-only source below the settings file); `/anti-hall:settings` is the place to see and change every setting.
+A non-default value set in Claude Code's plugin options in earlier versions is copied into
+`~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that
+runs the migration (safety keys are copied as human-confirmed values), and still resolves
+until then (a stored plugin option stays a read-only source below the settings file);
+`/anti-hall:settings` is the place to see and change every setting.
 
 ## Direct named changes: one `set`, no table
 
@@ -47,7 +49,7 @@ needs the extra `--confirmed` step instead of a plain `set`.
 
 A value set this way is stored in settings.json and WINS over any stored plugin option
 (env > file > plugin option > legacy > default); `reset <section.key>` removes the override
-so the plugin option (headline rows only), the legacy source or the default takes over again.
+so the stored plugin option (any setting that has one, row or not), the legacy source or the default takes over again.
 Known limitation: a plugin-option value equal to the default counts as unset (a lower tier
 answers); to pin a default-valued setting, `set` it here.
 
