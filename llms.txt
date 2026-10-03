@@ -222,7 +222,8 @@ until the one-time migration is stamped.
 Numbers clamp to schema bounds. Every feature has a settings key in ~/.anti-hall/settings.json, reachable through
 /anti-hall:settings and grouped by category; Claude Code's plugin options (`/config`) show only the 10 headline
 switches, the safety guards and the 4 keys (14 userConfig options; a drift test pins them). Older stored plugin
-options keep resolving as a read-only source and were copied into settings.json in 0.122.0. Enum switches are a string
+options keep resolving as a read-only source and are copied into settings.json by the first update / doctor --repair
+that runs the migration (locked safety keys as human-confirmed values). Enum switches are a string
 type whose description lists the allowed values, since `/config` requires Claude Code ≥ 2.1.269 for those rows.
 Codex: no `/config`, use the skill.
 
