@@ -11,6 +11,7 @@ the update.
 ### Changed
 
 - Contributing: day-to-day work lands on dev; main changes only through a pull request from dev.
+- Docs: `docs/CONTRACT-1.0.md` drafts the 1.0 contract, the settings, CLI verbs, hooks and state paths that semver will freeze.
 
 ### Fixed
 

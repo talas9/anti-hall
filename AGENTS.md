@@ -72,6 +72,7 @@ reproduce/validate/lint steps and run them before claiming success.
 - Commit/push only when the human asks.
 - **Branch flow:** day-to-day work is committed and pushed to `dev` (pushes to `dev` run no CI, so run the full `node --test` first). `main` changes only through a pull request from `dev`; direct pushes, force pushes and deletion of `main` are blocked by a ruleset, the required `dev-only` check fails for any other source branch, and the required `tests-passed` check fails unless every test shard passed. Merge with a merge commit or fast-forward, never squash.
 - **Releases:** follow the [RELEASING.md](RELEASING.md) checklist for every shipped version (bump on `dev`, pull request `dev` → `main`, then tag).
+- **Public surface:** [docs/CONTRACT-1.0.md](docs/CONTRACT-1.0.md) lists what semver freezes (settings keys, CLI verbs, hooks, state paths).
 
 ## Orchestration + task-list discipline (always apply)
 
