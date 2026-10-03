@@ -264,7 +264,11 @@ test('git spawn counts (execFileSync stub)', (t) => {
   assert.deepStrictEqual(got, rows.map((r) => r[1]));
 });
 
-test('latency: classifyBashWork p95 < 150 ms on a 5,000-char command', (t) => {
+// CPU time (process.cpuUsage user + system), not wall time: wall time also
+// counts waiting for a busy machine's scheduler (163-221 ms at load 12-23
+// for a ~55 ms classify), so it flaked under load. The git status child's own
+// CPU is not in cpuUsage, so the spawn count is asserted separately (<= 1).
+test('latency: classifyBashWork CPU p95 < 150 ms on a 5,000-char command', (t) => {
   const tail = 'sed -i s/a/b/ src/a.js && bash .claude/tracked.sh';
   const chunk = 'git status && echo x >> /tmp/l.log && sed -n 1p a.txt && ';
   let command = '';
@@ -273,15 +277,24 @@ test('latency: classifyBashWork p95 < 150 ms on a 5,000-char command', (t) => {
   assert.ok(command.length >= 4990 && command.length <= 5010, String(command.length));
   const r = cls(command);
   assert.ok(r.work && r.labels.has('repo-write') && !r.labels.has('script'), JSON.stringify([...r.labels]));
+  const real = childProcess.execFileSync;
   const times = [];
-  for (let i = 0; i < 21; i++) {
-    const s = process.hrtime.bigint();
-    cg.classifyBashWork(command, { session_id: 't', cwd: REPO }, { sessionStartTs: START() });
-    times.push(Number(process.hrtime.bigint() - s) / 1e6);
-  }
+  const spawns = [];
+  try {
+    for (let i = 0; i < 21; i++) {
+      let n = 0;
+      childProcess.execFileSync = function (file) { if (file === 'git') n++; return real.apply(this, arguments); };
+      const c0 = process.cpuUsage();
+      cg.classifyBashWork(command, { session_id: 't', cwd: REPO }, { sessionStartTs: START() });
+      const d = process.cpuUsage(c0);
+      times.push((d.user + d.system) / 1000);
+      spawns.push(n);
+    }
+  } finally { childProcess.execFileSync = real; }
   const sorted = times.slice(1).sort((a, b) => a - b);
-  t.diagnostic(`p95 ${sorted[18].toFixed(1)} ms (len ${command.length})`);
-  assert.ok(sorted[18] < 150, `p95 ${sorted[18]} ms`);
+  t.diagnostic(`cpu p95 ${sorted[18].toFixed(1)} ms (len ${command.length}); git spawns ${spawns.join(',')}`);
+  assert.ok(spawns.every((n) => n <= 1), 'git spawns per call: ' + spawns.join(','));
+  assert.ok(sorted[18] < 150, `cpu p95 ${sorted[18]} ms`);
 });
 
 test('hint: read-only output capture; state changes and test runs go to a subagent', () => {
