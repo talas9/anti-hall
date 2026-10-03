@@ -94,4 +94,21 @@ function hasLiveChild(home, cwd, opts) {
   return s.known ? s.live : true;
 }
 
-module.exports = { hasLiveChild, liveChildState };
+// idleSkipApplies(home, cwd, opts) -> boolean. THE one idle-skip decision for
+// a Primary's wake watcher: devswarm.wakeWatchIdleSkip on AND positive proof
+// of zero live (non-held, non-ignored) children. Unknown liveness -> false
+// (keep advising/arming). Shared by wake-watch's own gate and every surface
+// that advises arming it (update.js, doctor), so they can never disagree.
+function idleSkipApplies(home, cwd, opts) {
+  const o = opts || {};
+  try {
+    let on = true;
+    try { on = require('../../hooks/lib/settings.js').getWithEnv('devswarm', 'wakeWatchIdleSkip', true, o.env || process.env) !== false; }
+    catch (_) { on = true; }
+    if (!on) return false;
+    const s = liveChildState(home, cwd, { ...o, excludeHeldIgnored: true });
+    return !!(s.known && !s.live);
+  } catch (_) { return false; }
+}
+
+module.exports = { hasLiveChild, liveChildState, idleSkipApplies };

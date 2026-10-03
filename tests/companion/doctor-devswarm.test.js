@@ -172,10 +172,25 @@ test('wakeMonitorLiveCheck: a lock held by a genuinely dead pid -> WARN not live
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, ts: Date.now(), token: 'x' }));
 
-    const r = D.wakeMonitorLiveCheck(shipped.watcherMod, shipped.watcherPath, home, {}, process.cwd());
+    const r = D.wakeMonitorLiveCheck(shipped.watcherMod, shipped.watcherPath, home, { ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP: '0' }, process.cwd());
     assert.strictEqual(r.status, D.WARN);
     assert.match(r.message, /NOT live/);
     assert.ok(fs.existsSync(lockPath), 'read-only: a dead-holder lock must never be deleted by this reporter');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('wakeMonitorLiveCheck: no live children (empty registry) -> PASS idleSkip, no "arm it" advice; setting off -> WARN advice', () => {
+  const shipped = D.wakeMonitorShipped(REAL_PLUGIN_ROOT);
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-ds-idle-'));
+  try {
+    const r = D.wakeMonitorLiveCheck(shipped.watcherMod, shipped.watcherPath, home, {}, process.cwd());
+    assert.strictEqual(r.status, D.PASS);
+    assert.strictEqual(r.idleSkip, true);
+    assert.match(r.message, /wake watcher not needed now/);
+    assert.doesNotMatch(r.message, /arm it/);
+    const off = D.wakeMonitorLiveCheck(shipped.watcherMod, shipped.watcherPath, home, { ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP: '0' }, process.cwd());
+    assert.strictEqual(off.status, D.WARN);
+    assert.match(off.message, /arm it/);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 

@@ -2782,6 +2782,21 @@ function wakeMonitorPostUpdate(opts) {
         detail: 'wake-monitor shipped + LIVE — a watcher already holds the lock for ' + identity.role + ' ' + identity.id + ' (pid ' + pid + ')',
       };
     }
+    // Same idle-skip decision the watcher itself applies (one shared helper):
+    // arming would exit at once, so do not advise it. `live` keeps its meaning.
+    if (identity.role === 'primary') {
+      let idleSkip = false;
+      try {
+        idleSkip = require(path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-live-children.js'))
+          .idleSkipApplies(home, identity.cwd || cwd, { env, ...(o.liveChildOpts || {}) });
+      } catch (_) { idleSkip = false; }
+      if (idleSkip) {
+        return {
+          attempted: true, shipped: true, live: false, idleSkip: true, stateDirEnsured,
+          detail: 'wake-monitor shipped; wake watcher not needed now (no live child workspaces; the mailbox tick covers you) for ' + identity.role + ' ' + identity.id,
+        };
+      }
+    }
     return {
       attempted: true, shipped: true, live: false, stateDirEnsured,
       detail: 'wake-monitor shipped but NOT live for ' + identity.role + ' ' + identity.id + ' — arm it: ' + armCmd + '.',

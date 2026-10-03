@@ -1847,7 +1847,7 @@ test('wakeMonitorPostUpdate: gate open + real watcher shipped but NOT live -> sh
   try {
     const result = U.wakeMonitorPostUpdate({
       paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
-      env: { DEVSWARM_REPO_ID: 'r1' },
+      env: { DEVSWARM_REPO_ID: 'r1', ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP: '0' },
       cwd: repo,
       home,
     });
@@ -1862,6 +1862,58 @@ test('wakeMonitorPostUpdate: gate open + real watcher shipped but NOT live -> sh
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(repo, { recursive: true, force: true });
   }
+});
+
+// Idle-skip agreement: update's advice must match the watcher's own decision.
+function wakeMonIdle(liveChildOpts, extraEnv) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-idle-'));
+  const repo = makeGitRepoForUpdate('wakemon-idle');
+  try {
+    return U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: Object.assign({ DEVSWARM_REPO_ID: 'r1' }, extraEnv || {}),
+      cwd: repo, home, liveChildOpts,
+    });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+const LC_ROW = [{ id: 'c1', worktreePath: '/nonexistent/child', sessionId: 's' }];
+const LC_BASE = { repoKeyForWorktree: () => 'K' };
+
+test('wakeMonitorPostUpdate: no live children -> no "arm it" advice, idleSkip:true, live stays false', () => {
+  const r = wakeMonIdle({ ...LC_BASE, readDescriptors: () => [] });
+  assert.strictEqual(r.idleSkip, true);
+  assert.strictEqual(r.live, false);
+  assert.match(r.detail, /wake watcher not needed now/);
+  assert.doesNotMatch(r.detail, /arm it|Monitor/);
+});
+
+test('wakeMonitorPostUpdate: held-only child -> idle-skip (no "arm it")', () => {
+  const r = wakeMonIdle({ ...LC_BASE, readDescriptors: () => LC_ROW,
+    rowEligibility: () => ({ archived: false, held: true }) });
+  assert.strictEqual(r.idleSkip, true);
+  assert.doesNotMatch(r.detail, /arm it/);
+});
+
+test('wakeMonitorPostUpdate: live child -> advice unchanged, no idleSkip', () => {
+  const r = wakeMonIdle({ ...LC_BASE, readDescriptors: () => LC_ROW,
+    rowEligibility: () => ({ archived: false }) });
+  assert.ok(!r.idleSkip);
+  assert.match(r.detail, /arm it/);
+});
+
+test('wakeMonitorPostUpdate: unknown liveness -> advice unchanged', () => {
+  const r = wakeMonIdle({ readDescriptors: () => LC_ROW, repoKeyForWorktree: () => null });
+  assert.ok(!r.idleSkip);
+  assert.match(r.detail, /arm it/);
+});
+
+test('wakeMonitorPostUpdate: devswarm.wakeWatchIdleSkip off -> advice unchanged', () => {
+  const r = wakeMonIdle({ ...LC_BASE, readDescriptors: () => [] }, { ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP: '0' });
+  assert.ok(!r.idleSkip);
+  assert.match(r.detail, /arm it/);
 });
 
 test('wakeMonitorPostUpdate: gate open + a lock genuinely held by THIS live process -> live:true, never touches the lock file (read-only)', () => {

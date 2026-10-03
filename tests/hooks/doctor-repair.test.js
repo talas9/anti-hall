@@ -1414,7 +1414,7 @@ test('wake-monitor: reports the exact manual arm command when shipped but not li
     // gateOpen every neighbouring DevSwarm repair uses, so the real
     // shipped/live check (and its git-spawning identity resolution) only runs
     // for a DevSwarm-active session — hence DEVSWARM_REPO_ID here.
-    const results = repair.runRepairs({ cwd: repo, env: { DEVSWARM_REPO_ID: 'r1' }, home, dryRun: true, platform: 'win32' });
+    const results = repair.runRepairs({ cwd: repo, env: { DEVSWARM_REPO_ID: 'r1', ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP: '0' }, home, dryRun: true, platform: 'win32' });
     const r = results.find((x) => x.id === 'wake-monitor');
     assert.ok(r);
     // On a real checkout of this repo the watcher is genuinely shipped; no
