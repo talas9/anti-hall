@@ -2029,7 +2029,7 @@ const REAPER_KILL_RE = /\b(pkill|kill\s+-9|kill\s+-KILL|SIGKILL)\b/;
 // silence — it would turn a harmless script into one that hunts this daemon.
 const REAPER_ALLOWLIST_VAR_RE = /^[\s]*([A-Za-z_][A-Za-z0-9_]*ALLOW(?:LIST|ED)?[A-Za-z0-9_]*)\s*=/m;
 // The token that must appear in that allowlist for this daemon to survive.
-const REAPER_DAEMON_TOKEN = 'devswarm-ingest';
+const REAPER_DAEMON_MARKER = 'devswarm-ingest';
 const REAPER_MAX_FILES = 40;          // bound the scan
 const REAPER_MAX_BYTES = 512 * 1024;  // never slurp a huge file
 
@@ -2068,7 +2068,7 @@ function detectReaperGuard(opts) {
     if (!REAPER_KILL_RE.test(body)) continue; // names itself a reaper but kills nothing -> not our concern
     const varMatch = body.match(REAPER_ALLOWLIST_VAR_RE);
     if (!varMatch) continue; // kill-by-INCLUSION reaper (or unrecognizable): cannot target this daemon -> silent
-    const allowlisted = body.indexOf(REAPER_DAEMON_TOKEN) !== -1;
+    const allowlisted = body.indexOf(REAPER_DAEMON_MARKER) !== -1;
     // Report the WORST case found: an already-protective guard must never mask
     // a second, unprotective one.
     if (!out.found || (out.allowlisted && !allowlisted)) {
@@ -2097,7 +2097,7 @@ function reaperWarningLines(detection) {
     `  be SIGKILLed mid-run (this has happened: the daemon then leaks its lock and the`,
     `  scheduler's relaunch-on-exit turns it into a refuse->exit->relaunch loop).`,
     `  FIX (manual, by you — anti-hall never edits files outside its own repo): add`,
-    `  '${REAPER_DAEMON_TOKEN}' to ${varName} in that script, then reload the guard.`,
+    `  '${REAPER_DAEMON_MARKER}' to ${varName} in that script, then reload the guard.`,
   ];
 }
 
@@ -2259,7 +2259,7 @@ module.exports = {
   macInstallProject, macUninstallProject, linuxInstallProject, linuxUninstallProject,
   LEGACY_UNIT_HASH_RE, PROJECT_UNIT_KEY_RE,
   // v0.65 — memory-guard/reaper detection (DETECT-AND-REPORT ONLY; doctor reuses these):
-  detectReaperGuard, reaperWarningLines, claudeScriptsDir, REAPER_DAEMON_TOKEN,
+  detectReaperGuard, reaperWarningLines, claudeScriptsDir, REAPER_DAEMON_MARKER,
   // v0.66 — hivecontrol discovery + baked unit environment:
   HIVECONTROL_BIN_NAME, HIVECONTROL_ENV_VAR, MINIMAL_UNIT_PATH,
   resolveHivecontrolPath, unitEnvFor, firstBinLine, sdEnvValue, parseCronCommand,

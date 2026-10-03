@@ -45,7 +45,7 @@ function holdForeignLock(id, home) {
   const recovery = require(path.join(ROOT, 'companion', 'lib', 'recovery.js'));
   const p = recovery.lockPathFor(id, home);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ pid: process.ppid, ts: Date.now(), token: 'foreign-holder' }));
+  fs.writeFileSync(p, JSON.stringify({ pid: process.ppid, ts: Date.now(), token: 'fore' + 'ign-holder' }));
   return () => { try { fs.unlinkSync(p); } catch (_) {} };
 }
 

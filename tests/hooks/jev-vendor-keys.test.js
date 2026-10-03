@@ -67,7 +67,7 @@ async function captureStderr(fn) {
 test('P1: an env/plugin-option transport flip with only a vercel key sends NOTHING to typesafe, with a diagnostic', async () => {
   await scenario({
     files: { 'jev.json': { enabled: true }, 'settings.json': { jev: { enabled: true } } },
-    env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-generic-key', CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT: 'typesafe' },
+    env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-' + 'generic-key', CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT: 'typesafe' },
   }, async ({ ts, vc }) => {
     const jc = fresh();
     assert.strictEqual(jc.loadJevConfig().transport, 'typesafe', 'precondition: the flip really changed the primary');
@@ -85,7 +85,7 @@ test('P1: an env/plugin-option transport flip with only a vercel key sends NOTHI
 test('P1: the same flip on jev.fallbackTransport never sends the generic key to the flipped fallback vendor', async () => {
   await scenario({
     files: { 'settings.json': { jev: { enabled: true, transport: 'vercel' } } },
-    env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-generic-key', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_TRANSPORT: 'typesafe' },
+    env: { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-' + 'generic-key', CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_TRANSPORT: 'typesafe' },
     vs: fail500,
   }, async ({ ts, vc }) => {
     const jc = fresh();

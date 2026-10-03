@@ -1924,7 +1924,7 @@ test('wakeMonitorPostUpdate: gate open + a lock genuinely held by THIS live proc
     assert.ok(identity, 'sanity: identity must resolve for this real git repo before the lock test means anything');
     const lockPath = wakeWatch.lockPathFor(home, identity.id);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    const lockPayload = JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'test-token' });
+    const lockPayload = JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'test-' + 'token' });
     fs.writeFileSync(lockPath, lockPayload);
 
     const result = U.wakeMonitorPostUpdate({

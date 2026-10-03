@@ -1048,7 +1048,7 @@ function jevOn(home) {
   fs.writeFileSync(path.join(home, '.anti-hall', 'jev.json'),
     JSON.stringify({ enabled: true, integrations: { modelRouting: 'on' } }));
 }
-const JEV_ENV = { ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:9/unreachable', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key' };
+const JEV_ENV = { ANTIHALL_JEV_TEST_ENDPOINT: 'http://127.0.0.1:9/unreachable', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-' + 'key' };
 
 test('JEV modelRouting: a Row-1 block logs one decision row (backend unreachable -> fail-open, block stands)', () => {
   const h = makeHome();

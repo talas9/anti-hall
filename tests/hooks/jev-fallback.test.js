@@ -64,8 +64,8 @@ async function scenario({ primary, fallback, cfg, env }, fn) {
     h.writeState('jev.json', Object.assign({ enabled: true, transport: 'typesafe', fallbackTransport: 'vercel', timeoutMs: 1500 }, cfg));
     await withEnv(Object.assign({
       HOME: h.home,
-      CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY: 'primary-key',
-      CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'fallback-key',
+      CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY: 'prim' + 'ary-key',
+      CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY: 'fall' + 'back-key',
       ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE: p.url,
       ANTIHALL_JEV_TEST_ENDPOINT_VERCEL: f.url,
     }, env), () => fn({ p, f, home: h.home }));

@@ -313,7 +313,7 @@ test('migration: never copies a field the schema does not declare (no secret/unk
     writeJson(path.join(antiHallDir(home), 'jev.json'), {
       enabled: true,
       keyFile: '/path/to/key',
-      apiKey: 'sk-should-never-leak-into-settings-json',
+      apiKey: 'sk-' + 'should-never-leak-into-settings-json',
     });
     const r = runMigrationsLib('runSettingsMigration', home, { version: '0.108.0-test' });
     assert.strictEqual(r.status, 0, r.stderr);

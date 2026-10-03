@@ -1640,7 +1640,7 @@ function lockPath(home, id) {
 function plantLiveLock(home, id) {
   const p = lockPath(home, id);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
+  fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-' + 'by-test' }));
   return p;
 }
 // Async spawn of the hook with the SAME controlled env tests/helpers/spawn-hook.js

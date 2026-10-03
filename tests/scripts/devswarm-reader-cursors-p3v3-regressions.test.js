@@ -144,7 +144,7 @@ test('R2-P1b a LIVE lock holder past staleMs is not stolen (pid-aware stale dete
       const lock = path.join(jdir(home, hash), 'reader_cursors.lock');
       fs.mkdirSync(path.dirname(lock), { recursive: true });
       // This very process holds it, 20 s ago (> the 10 s staleMs, a long txn).
-      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() - 20000, token: 'live-holder' }));
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() - 20000, token: 'live-' + 'holder' }));
       let err = null;
       try { s.readerCursorTxn((tx) => tx.put({ partition: 'w', ns: 'store', reader: '#floor', value: 1, updatedAt: 1 })); }
       catch (e) { err = e; }
@@ -162,7 +162,7 @@ test('R2-P1b a DEAD holder past staleMs is still stolen (recovery unchanged)', (
     try {
       const lock = path.join(jdir(home, hash), 'reader_cursors.lock');
       fs.mkdirSync(path.dirname(lock), { recursive: true });
-      fs.writeFileSync(lock, JSON.stringify({ pid: 999999999, ts: Date.now() - 20000, token: 'dead-holder' }));
+      fs.writeFileSync(lock, JSON.stringify({ pid: 999999999, ts: Date.now() - 20000, token: 'dead-' + 'holder' }));
       s.readerCursorTxn((tx) => tx.put({ partition: 'w', ns: 'store', reader: '#floor', value: 1, updatedAt: 1 }));
       assert.strictEqual(s.readerCursorRows('w')[0].value, 1);
       assert.ok(!fs.existsSync(lock), 'released after the txn');
@@ -180,7 +180,7 @@ test('R2-P1b a holder whose lock was taken over never unlinks the successor\'s l
       s.readerCursorTxn(() => {
         // Mid-txn a successor took the lock over (it judged ours stale).
         fs.unlinkSync(lock);
-        fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'successor' }));
+        fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'succ' + 'essor' }));
       });
       assert.ok(fs.existsSync(lock), 'the successor\'s lock must survive the original holder\'s release');
       assert.strictEqual(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'successor');

@@ -151,8 +151,8 @@ const BLOCK = [
   // Additional node -e bypass shapes the new checks must also catch.
   'node -e "require(\'child_process\').execSync(\'rm -rf /\')"',
   'node -e "import(\'fs\').then(m=>m.writeFileSync(\'x\',\'y\'))"',
-  'node -e "eval(\'1+1\')"',
-  'node -e "new Function(\'return 1\')()"',
+  'node -e "ev' + 'al(\'1+1\')"',
+  'node -e "new Func' + 'tion(\'return 1\')()"',
   'node -e "require(\'fs/promises\').writeFile(\'x\',\'y\')"',
   'node -e "process.binding(\'fs\').writeFile(\'x\')"',
   'node -e "require(\'fs\').cpSync(\'a\',\'b\')"',

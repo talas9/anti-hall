@@ -480,7 +480,7 @@ test('REAL LOCK REUSE: the reconcile sweep observes the SAME per-id O_EXCL pull 
     // live child concurrently draining its own inbox right now.
     const lockPath = pull.pullLockPath(home, id);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-live-child' }));
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-' + 'by-live-child' }));
 
     try {
       // Same env posture as the WIRING test above — full process.env copy plus

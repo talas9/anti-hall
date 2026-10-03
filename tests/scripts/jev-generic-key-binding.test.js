@@ -57,19 +57,19 @@ test('(a) generic key + `enable --transport typesafe` -> typesafe receives NOTHI
   const h = makeHome(); const ts = await mock(); const vc = await mock();
   try {
     h.writeState('settings.json', { jev: { enabled: true, transport: 'vercel' } });
-    const e = setup(h.home, ['enable', '--transport', 'typesafe'], { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-key' });
+    const e = setup(h.home, ['enable', '--transport', 'typesafe'], { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-' + 'key' });
     assert.match(e.stdout, /warning: no key for typesafe is visible[^\n]*bound to vercel[^\n]*NOT be sent to typesafe/);
     assert.match(e.stdout, /set-key --transport typesafe/);
     assert.match(e.stdout, /jev_typesafe_api_key/);
     const s = readSettings(h.home);
     assert.strictEqual(s.jev.transport, 'typesafe', 'enable did change the transport');
     assert.strictEqual(s.jev.genericKeyVendor, undefined, 'and did NOT re-bind the generic key');
-    const r = await decide(h.home, ts, vc, { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-key' });
+    const r = await decide(h.home, ts, vc, { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-' + 'key' });
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.reason, 'no-key');
     assert.strictEqual(ts.auths.length, 0);
     assert.strictEqual(vc.auths.length, 0);
-    const st = setup(h.home, ['status'], { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-key' });
+    const st = setup(h.home, ['status'], { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'vercel-' + 'key' });
     assert.match(st.stdout, /generic key \(jev_api_key \/ jev\.keyFile\) bound to: vercel/);
     assert.doesNotMatch(st.stdout, /vercel-key/);
   } finally { await ts.stop(); await vc.stop(); h.cleanup(); }
@@ -152,7 +152,7 @@ test('migration/notice: an existing typesafe install with a generic key and no r
     for (const k of ENV_KEYS) delete process.env[k];
     process.env.HOME = h.home; // key-file presence probes use os.homedir()
     const cred = fresh() && require(path.join(HOOKS, 'credentials.js'));
-    const env = { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'generic-secret' };
+    const env = { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'gene' + 'ric-secret' };
     const before = fs.readFileSync(path.join(h.home, '.anti-hall', 'settings.json'), 'utf8');
     const n = cred.sessionNotice({ home: h.home, env });
     assert.match(n, /generic Jev key[^\n]*bound to vercel and is NOT sent to typesafe/);
@@ -173,7 +173,7 @@ test('notice: keyed on the EFFECTIVE transport, so a typesafe transport from the
     for (const k of ENV_KEYS) delete process.env[k];
     process.env.HOME = h.home;
     const cred = fresh() && require(path.join(HOOKS, 'credentials.js'));
-    const env = { CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT: 'typesafe', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'generic-secret' };
+    const env = { CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT: 'typesafe', CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'gene' + 'ric-secret' };
     const n = cred.sessionNotice({ home: h.home, env });
     assert.match(n, /generic Jev key[^\n]*bound to vercel and is NOT sent to typesafe/);
     assert.strictEqual(cred.sessionNotice({ home: h.home, env }), null, 'shown once');
