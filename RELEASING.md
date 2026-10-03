@@ -6,7 +6,7 @@ Every behavioral or shipped-content change bumps the version and follows this ch
 
 - Day-to-day work is committed and pushed to `dev`. Pushes to `dev` run no CI, so run the full local suite (`node --test` from the repo root) before pushing.
 - `main` changes only through a pull request from `dev`. A repository ruleset blocks direct pushes, force pushes and deletion of `main`.
-- A pull request to `main` runs the full test workflow (`test.yml`, `pull_request` trigger) and `.github/workflows/pr-source.yml`. Its `dev-only` job is a required check that fails unless the source branch is this repository's `dev`.
+- A pull request to `main` runs the full test workflow (`test.yml`, `pull_request` trigger) and `.github/workflows/pr-source.yml`. Two checks are required to merge: `dev-only` (from `pr-source.yml`), which fails unless the source branch is this repository's `dev`, and `tests-passed` (the last job of `test.yml`), which fails unless every test shard passed.
 - `main` is what users and the plugin directory install from, so every merge to `main` is a release-quality event.
 
 ## Checklist (in order)
@@ -25,7 +25,7 @@ Every behavioral or shipped-content change bumps the version and follows this ch
    - `gh run list --commit <sha>` → wait for the run at that sha to finish; `gh run view <id> --json jobs` → every job of the run (the `plan matrix` job plus all 10 `node:test` shard jobs) `success`.
    - Red → fix on `dev`, push, tag the new commit `rc-v<version>.2`, and repeat.
    - Tag retention: `rc-v*` tags are left in place after the release; the owner prunes old ones. Do not delete them as part of a release. The update check needs at least one `vX.Y.Z` tag, and release notes live in `CHANGELOG.md`, not in old tags.
-7. - [ ] **Pull request `dev` → `main`.** Open it with `gh pr create --base main --head dev`. The full test workflow and the required `dev-only` check must be green. Merging IS the release: the marketplace clone fetches only `refs/heads/main` and fast-forwards it, and the updater copies a version into the plugin cache only when that version's directory is absent — so a red commit on `main` gets installed and cannot be replaced under the same version number (0.102.2 shipped red this way). Never merge on a red run. Merge with a merge commit or fast-forward, never squash: `dev` and `main` must stay in step.
+7. - [ ] **Pull request `dev` → `main`.** Open it with `gh pr create --base main --head dev`. The required `tests-passed` and `dev-only` checks must be green. Merging IS the release: the marketplace clone fetches only `refs/heads/main` and fast-forwards it, and the updater copies a version into the plugin cache only when that version's directory is absent — so a red commit on `main` gets installed and cannot be replaced under the same version number (0.102.2 shipped red this way). Never merge on a red run. Merge with a merge commit or fast-forward, never squash: `dev` and `main` must stay in step.
 8. - [ ] After the merge: pull `main`, then TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Create a GitHub Release from the tag with that version's CHANGELOG section.
 9. - [ ] Propagate to the live marketplace dir only (`~/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/`); do NOT overwrite version-pinned `cache/.../<ver>/` snapshots.
 10. - [ ] Consider publish venues (see below) for notable releases.
