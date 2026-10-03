@@ -1160,7 +1160,11 @@ test('DEVSWARM FILE-READ gate off: inbox cat allowed when DevSwarm inactive', ()
 function runHeavy(command, extraEnv) {
   const h = makeHome();
   try {
-    return testHook(HOOK, bashPayload(command), {
+    // cwd = the fresh fake home, NOT process.cwd(): the Primary tier text is
+    // suppressed when the repo's CLAUDE.md/AGENTS.md says "no workspaces for real
+    // work" (lib/primary-tier.js), and a developer's local gitignored CLAUDE.md in
+    // this checkout says exactly that. A docs-free cwd keeps the test hermetic.
+    return testHook(HOOK, Object.assign(bashPayload(command), { cwd: h.home }), {
       home: h.home,
       env: Object.assign({}, COORD, extraEnv || {}),
     });
@@ -1184,6 +1188,19 @@ const BASELINE_REASON =
   '`node --test <1-2 files>`, `[npx] vitest run|jest <1-2 *.test|spec files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
   'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`. ' +
   'Everything else goes to a subagent.';
+
+test('DEVSWARM PRIMARY in a repo whose CLAUDE.md forbids workspaces: BLOCKED, reason does NOT name `devswarm.js spawn`', () => {
+  const h = makeHome();
+  try {
+    require('node:fs').writeFileSync(require('node:path').join(h.home, 'CLAUDE.md'), 'NO WORKSPACES FOR REAL WORK\n');
+    const r = testHook(HOOK, Object.assign(bashPayload('npm run build'), { cwd: h.home }),
+      { home: h.home, env: Object.assign({}, COORD, PRIMARY_ENV) });
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(!/devswarm\.js spawn/.test(r.json.reason), `no spawn exit in a no-workspaces repo: ${r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
 
 test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js spawn` as the primary exit', () => {
   const r = runHeavy('npm run build', PRIMARY_ENV);

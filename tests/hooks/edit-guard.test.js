@@ -545,10 +545,24 @@ test('DEVSWARM PRIMARY: coordinator + primary env (no source branch) + Edit -> b
 // and only for a Primary.
 
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-x' }; // no SOURCE_BRANCH -> Primary
+// Docs-free cwd for the workspace-tier assertions: the Primary tier text is
+// suppressed when the cwd's repo CLAUDE.md/AGENTS.md says "no workspaces for real
+// work" (lib/primary-tier.js), and a developer's local gitignored CLAUDE.md in this
+// checkout says exactly that. process.cwd() would make these tests env-dependent.
+const CLEAN_CWD = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-edit-cwd-')));
+process.on('exit', () => { try { fs.rmSync(CLEAN_CWD, { recursive: true, force: true }); } catch (_) { /* own temp dir */ } });
 const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' };
 
+test('DEVSWARM PRIMARY in a repo whose CLAUDE.md forbids workspaces: BLOCKED, reason does NOT name `devswarm.js spawn`', () => {
+  const d = fs.mkdtempSync(path.join(CLEAN_CWD, 'nows-'));
+  fs.writeFileSync(path.join(d, 'CLAUDE.md'), 'NO WORKSPACES FOR REAL WORK\n');
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js', cwd: d }), PRIMARY_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(!/devswarm\.js spawn/.test(r.json.reason), `no spawn exit in a no-workspaces repo: ${r.json.reason}`);
+});
+
 test('DEVSWARM PRIMARY: block reason names `devswarm.js spawn` as the PRIMARY exit', () => {
-  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), PRIMARY_ENV);
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js', cwd: CLEAN_CWD }), PRIMARY_ENV);
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
   const reason = r.json.reason;
   assert.ok(/devswarm\.js spawn <branch> -p/.test(reason),
