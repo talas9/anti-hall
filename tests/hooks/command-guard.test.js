@@ -14,10 +14,13 @@ const HOOK = 'command-guard.js';
 const COORD = { CLAUDE_CODE_ENTRYPOINT: 'cli' };
 
 // Coordinator run with a fresh fake HOME (no skip.json -> guard active).
+// These rows exercise the heavy-command gate with cwd = this checkout, so
+// their `> f` data-row writes would hit Bash edit parity; that is covered in
+// command-guard-bash-edit-parity.test.js, so it is off here.
 function runCoord(command) {
   const h = makeHome();
   try {
-    return testHook(HOOK, bashPayload(command), { home: h.home, env: COORD });
+    return testHook(HOOK, bashPayload(command), { home: h.home, env: { ...COORD, ANTIHALL_BASH_EDIT_PARITY: 'off' } });
   } finally {
     h.cleanup();
   }

@@ -3285,6 +3285,355 @@ function isBackgroundScratchScript(command, payload) {
   return sawScript;
 }
 
+// ---------------------------------------------------------------------------
+// WORK classifier (coordinator drift) + Bash edit parity (F3).
+// classifyBashWork(command, payload, opts) -> { work, blockable, labels, editBlocks }.
+// WORK = a state-changing git segment, a gh mutation, or a Bash write into a
+// non-notes repo file. Recovery git commands are WORK but never blockable.
+// editBlocks = Bash write targets edit-guard's own verdict would block for
+// the Edit tool (main() blocks on them; git segments never land here).
+// ---------------------------------------------------------------------------
+
+const GIT_ALWAYS_WORK = new Set([
+  'commit', 'am', 'revert', 'merge', 'rebase', 'cherry-pick', 'reset', 'push', 'pull', 'restore', 'rm', 'mv',
+]);
+const GIT_TAG_LIST_RE = /^(?:-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|-v|--verify)(?:=|$)/;
+const GIT_TAG_VALUE_FLAGS = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user', '--cleanup', '--sort', '--format', '--trailer']);
+
+// gitSubAndArgs(segment) -> { sub, args } for a real git invocation, else null.
+function gitSubAndArgs(segment) {
+  if (effectiveVerb(segment) !== 'git') return null;
+  const tokens = tokenizeQuoted(segment);
+  const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
+  if (gitIdx === -1) return null;
+  const subIdx = gitSubcommandIndex(tokens, gitIdx);
+  if (subIdx === -1) return null;
+  return { sub: tokens[subIdx].toLowerCase(), args: tokens.slice(subIdx + 1) };
+}
+
+function isStateChangingGitSegment(segment) {
+  const g = gitSubAndArgs(segment);
+  if (!g) return false;
+  const { sub, args } = g;
+  const has = (re) => args.some((t) => re.test(t));
+  if (GIT_ALWAYS_WORK.has(sub)) return true;
+  if (sub === 'clean') return !has(/^(?:--dry-run|-[A-Za-z]*n[A-Za-z]*)$/);
+  if (sub === 'stash') return !['list', 'show'].includes((args[0] || '').toLowerCase());
+  if (sub === 'apply') return has(/^--apply$/) || !has(/^--(?:check|stat|numstat|summary)$/);
+  if (sub === 'switch') return has(/^(?:-[cC]|--create|--force-create)(?:=|$)/) || has(/^-[cC]\S/);
+  if (sub === 'checkout') return args.includes('--') || has(/^(?:-[bB]|--orphan)(?:=|$)/) || has(/^-[bB]\S/);
+  if (sub === 'branch') return has(/^(?:-[A-Za-z]*[Df][A-Za-z]*|--force)$/);
+  if (sub === 'tag') {
+    if (has(/^(?:-d|--delete)$/)) return true;
+    if (has(GIT_TAG_LIST_RE)) return false;
+    for (let i = 0; i < args.length; i++) {
+      const t = args[i];
+      if (GIT_TAG_VALUE_FLAGS.has(t)) { i++; continue; }
+      if (!t.startsWith('-')) return true; // a tag name: create
+    }
+    return false; // bare `git tag` (or flags only) lists
+  }
+  return false;
+}
+
+// Recovery (Decision 4): counted as WORK, never blockable. `git am --skip` is not recovery.
+function isRecoveryGitSegment(segment) {
+  const g = gitSubAndArgs(segment);
+  if (!g) return false;
+  const { sub, args } = g;
+  if (['am', 'rebase', 'cherry-pick', 'revert'].includes(sub)) return args.includes('--abort') || args.includes('--quit');
+  if (sub === 'merge') return args.includes('--abort');
+  if (sub === 'stash') return ['pop', 'apply'].includes((args[0] || '').toLowerCase());
+  return false;
+}
+
+// maskProcessSubstitutions(cmd) -> { text, inners }: `>(…)`/`<(…)` spans are
+// blanked so the splitter (which cuts at `(`) keeps `tee >(grep x) out.txt`
+// as one segment; the inner commands are returned for recursion, the same way
+// `$(…)` substitutions are. Quote- and heredoc-aware.
+function maskProcessSubstitutions(cmd) {
+  const inners = [];
+  let out = '';
+  let i = 0;
+  let q = '';
+  const n = cmd.length;
+  while (i < n) {
+    const c = cmd[i];
+    if (q) {
+      if (c === '\\' && q === '"' && i + 1 < n) { out += c + cmd[i + 1]; i += 2; continue; }
+      out += c; if (c === q) q = ''; i++; continue;
+    }
+    if (c === '\\' && i + 1 < n) { out += c + cmd[i + 1]; i += 2; continue; }
+    if (c === "'" || c === '"') { q = c; out += c; i++; continue; }
+    if (c === '<' && cmd[i + 1] === '<') {
+      const h = parseHeredocAt(cmd, i);
+      if (h) { out += cmd.slice(i, h.end); i = h.end; continue; }
+    }
+    if ((c === '<' || c === '>') && cmd[i + 1] === '(') {
+      let j = i + 2;
+      let depth = 1;
+      let qq = '';
+      for (; j < n && depth; j++) {
+        const d = cmd[j];
+        if (qq) { if (d === qq) qq = ''; continue; }
+        if (d === "'" || d === '"') qq = d;
+        else if (d === '(') depth++;
+        else if (d === ')') depth--;
+      }
+      inners.push(cmd.slice(i + 2, depth ? j : j - 1));
+      out += ' ';
+      i = j;
+      continue;
+    }
+    out += c; i++;
+  }
+  return { text: out, inners };
+}
+
+// readRedirectTarget(s, i) -> the dequoted shell word starting at i (after
+// blanks), or null when it is an fd-dup/process target (`&…`, `(…`) or empty.
+function readRedirectTarget(s, i) {
+  while (i < s.length && (s[i] === ' ' || s[i] === '\t')) i++;
+  if (i >= s.length || s[i] === '&' || s[i] === '(') return null;
+  let out = '';
+  let q = '';
+  for (; i < s.length; i++) {
+    const c = s[i];
+    if (q) { if (c === q) q = ''; else out += c; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (c === '\\' && i + 1 < s.length) { out += s[i + 1]; i++; continue; }
+    if (/\s/.test(c) || /[;|&<>()]/.test(c)) break;
+    out += c;
+  }
+  return out || null;
+}
+
+const REDIRECT_TOKEN_RE = /^\d*(?:&?>>?|>\||<)/;
+const BARE_REDIRECT_TOKEN_RE = /^\d*(?:&?>>?|>\||<+)$/;
+
+// bashWriteTargets(segment, cwd?) -> raw (dequoted) paths ONE segment writes:
+// `>`/`>>`/`&>`/`>|` redirects, tee args, sed -i / perl -i files, and cp/mv
+// destinations (mv also its sources). cwd (default process.cwd()) only
+// resolves whether a cp/mv destination is an existing directory.
+function bashWriteTargets(segment, cwd) {
+  const out = [];
+  if (typeof segment !== 'string' || !segment.trim()) return out;
+  const keep = (t) => {
+    if (!t || t.startsWith('&') || t.startsWith('(') || t.includes('>') || /^\/dev\//.test(t)) return;
+    out.push(t);
+  };
+  // (a) redirects: operators found on the quote-neutralized text, targets read from the original.
+  const neutral = neutralizeQuotedContents(segment);
+  const re = /(^|[^<>&])(>\||&?>>?)/g;
+  let m;
+  while ((m = re.exec(neutral))) keep(readRedirectTarget(segment, m.index + m[1].length + m[2].length));
+
+  // (b) argv without redirect tokens (and the word after a bare operator).
+  const raw = tokenizeQuoted(segment);
+  const toks = [];
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '' && REDIRECT_TOKEN_RE.test(raw[i])) { if (BARE_REDIRECT_TOKEN_RE.test(raw[i])) i++; continue; }
+    toks.push(raw[i]);
+  }
+  const verb = effectiveVerb(segment);
+  const vi = toks.findIndex((t) => basename(t).toLowerCase() === verb);
+  if (!verb || vi === -1) return out;
+  const rest = toks.slice(vi + 1);
+
+  if (verb === 'tee') { // (c)
+    for (const t of rest) if (!t.startsWith('-')) keep(t);
+  } else if (verb === 'sed') { // (d)
+    let inPlace = false;
+    let scriptOpt = false;
+    const pos = [];
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i];
+      if (t === '--') { pos.push(...rest.slice(i + 1)); break; }
+      if (t === '-i') { inPlace = true; if (rest[i + 1] === '') i++; continue; } // '' = macOS suffix
+      if (t === '-e' || t === '-f' || t === '--expression' || t === '--file') { scriptOpt = true; i++; continue; }
+      if (/^--(?:expression|file)=/.test(t)) { scriptOpt = true; continue; }
+      if (/^--in-place(?:=|$)/.test(t)) { inPlace = true; continue; }
+      if (t.startsWith('--')) continue;
+      if (/^-[A-Za-z]/.test(t)) {
+        for (let k = 1; k < t.length; k++) {
+          const ch = t[k];
+          if (ch === 'i') { inPlace = true; break; } // rest of the cluster is the suffix
+          if (ch === 'e' || ch === 'f') { scriptOpt = true; if (k === t.length - 1) i++; break; }
+        }
+        continue;
+      }
+      pos.push(t);
+    }
+    if (inPlace) for (const t of (scriptOpt ? pos : pos.slice(1))) keep(t);
+  } else if (verb === 'perl') { // (e)
+    let inPlace = false;
+    let hasE = false;
+    const pos = [];
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i];
+      if (t === '--') { pos.push(...rest.slice(i + 1)); break; }
+      if (/^-[^-]/.test(t)) {
+        for (let k = 1; k < t.length; k++) {
+          const ch = t[k];
+          if (ch === 'i') { inPlace = true; break; }
+          if (ch === 'e' || ch === 'E') { hasE = true; if (k === t.length - 1) i++; break; }
+        }
+        continue;
+      }
+      if (t.startsWith('--')) continue;
+      pos.push(t);
+    }
+    if (inPlace) for (const t of (hasE ? pos : pos.slice(1))) keep(t);
+  } else if (verb === 'cp' || verb === 'mv') { // (f)
+    let tdir = null;
+    const pos = [];
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i];
+      if (t === '--') { pos.push(...rest.slice(i + 1)); break; }
+      if (t === '-t' || t === '--target-directory') { tdir = rest[i + 1] || null; i++; continue; }
+      if (/^--target-directory=/.test(t)) { tdir = t.slice(t.indexOf('=') + 1); continue; }
+      if (/^-t./.test(t)) { tdir = t.slice(2); continue; }
+      if (t === '-S' || t === '--suffix') { i++; continue; }
+      if (t.startsWith('-')) continue;
+      pos.push(t);
+    }
+    let dest = tdir;
+    let srcs = pos;
+    if (dest === null) {
+      if (pos.length < 2) return out;
+      dest = pos[pos.length - 1];
+      srcs = pos.slice(0, -1);
+    }
+    let isDir = tdir !== null || dest.endsWith('/');
+    if (!isDir) {
+      try { isDir = fs.statSync(path.resolve(cwd || process.cwd(), dest)).isDirectory(); } catch (_) { isDir = false; }
+    }
+    if (isDir) for (const s of srcs) keep(path.posix.join(dest, basename(s)));
+    else keep(dest);
+    if (verb === 'mv') for (const s of srcs) keep(s);
+  }
+  return out;
+}
+
+// cdAwareContexts(segments, delims, payload) -> per segment, the list of
+// { cwd, cwdUnknown } it may run in. A literal `cd` before `&&` moves the cwd;
+// before `;`/`||`/newline both cwds stay possible; a non-literal `cd` makes
+// the cwd unknown.
+function cdAwareContexts(segments, delims, payload) {
+  const sp = require('./lib/scratchpad.js');
+  const start = sp.realpathOrSelf(path.resolve((payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd()));
+  let cur = [{ cwd: start, cwdUnknown: false }];
+  const out = [];
+  for (let i = 0; i < segments.length; i++) {
+    out.push(cur);
+    const d = delims[i];
+    if (d !== '&&' && d !== ';' && d !== '||' && d !== '\n') continue;
+    const toks = tokenizeQuoted(segments[i]);
+    if (toks[0] !== 'cd') continue;
+    const rawArg = segments[i].trim().slice(2).trim();
+    const arg = toks[1];
+    let next;
+    if (toks.length !== 2 || !arg || arg === '-' || /[$`*?[\]{}~]/.test(rawArg)) {
+      next = cur.map((c) => ({ cwd: c.cwd, cwdUnknown: true }));
+    } else {
+      next = cur.map((c) => ({
+        cwd: sp.realpathOrSelf(path.resolve(c.cwd, arg)),
+        cwdUnknown: c.cwdUnknown && !path.isAbsolute(arg),
+      }));
+    }
+    const merged = d === '&&' ? next : cur.concat(next);
+    const seen = new Set();
+    cur = merged.filter((c) => {
+      const k = c.cwd + '\0' + c.cwdUnknown;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).slice(0, 8);
+  }
+  return out;
+}
+
+const MAX_CLASSIFY_LEN = 65536;
+
+function classifyBashWork(command, payload, opts = {}, depth = 0) {
+  const res = { work: false, blockable: false, labels: new Set(), editBlocks: [] };
+  if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return res;
+  const o = Object.assign({ sessionStartTs: Date.now() - 21600000 }, opts || {});
+  const p = payload || {};
+  const sp = require('./lib/scratchpad.js');
+  const eg = require('./edit-guard.js');
+  const roots = new Map();
+  const rootOf = (cwd) => {
+    if (!roots.has(cwd)) {
+      let toplevel = null;
+      try { toplevel = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { toplevel = null; }
+      roots.set(cwd, { toplevel, base: toplevel || cwd });
+    }
+    return roots.get(cwd);
+  };
+  const blocks = new Set();
+
+  const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
+  const { segments, delims } = splitSegmentsDetailed(masked.text);
+  const ctxs = cdAwareContexts(segments, delims, p);
+  segments.forEach((seg, i) => {
+    let segWork = false;
+    let recovery = false;
+    if (isStateChangingGitSegment(seg)) {
+      segWork = true;
+      res.labels.add('git');
+      if (isRecoveryGitSegment(seg)) { recovery = true; res.labels.add('recovery'); }
+    }
+    if (isHeavyGhSegment(seg, command)) { segWork = true; res.labels.add('gh'); }
+    const isGit = effectiveVerb(seg) === 'git';
+    for (const ctx of ctxs[i]) {
+      for (const t of bashWriteTargets(seg, ctx.cwd)) {
+        if (/[$`*?[\]{}]/.test(t) || t.startsWith('~')) continue;
+        if (ctx.cwdUnknown && !path.isAbsolute(t)) continue;
+        const resolved = path.resolve(ctx.cwd, t);
+        // Directory part realpath'd (/tmp -> /private/tmp), last component kept so edit-guard sees a symlink.
+        const abs = path.join(sp.realpathOrSelf(path.dirname(resolved)), path.basename(resolved));
+        const r = rootOf(ctx.cwd);
+        const inTop = !!r.toplevel && sp.isInsideDir(abs, r.toplevel);
+        // Own scratchpad always skipped; a tmp root only outside a git work tree
+        // (a repo that lives under /tmp is still a repo).
+        if (isScratchpadOrTmpPath(abs, { payload: p, ownOnly: true })) continue;
+        if (!inTop && isScratchpadOrTmpPath(abs, { payload: p })) continue;
+        const egPayload = Object.assign({}, p, { cwd: r.base });
+        if (sp.isInsideDir(abs, r.base) && !eg.isNotesTarget(abs, r.base, egPayload)) {
+          segWork = true;
+          res.labels.add('repo-write');
+        }
+        if (!isGit && eg.editVerdict(abs, r.base, egPayload) !== 'allow') blocks.add(abs);
+      }
+    }
+    if (segWork) {
+      res.work = true;
+      if (!recovery) res.blockable = true;
+    }
+  });
+
+  if (depth < 3) {
+    const inner = [];
+    for (const seg of segments) {
+      const c = extractShellCPayload(seg);
+      if (c) inner.push(c);
+      const e = extractEvalPayload(seg);
+      if (e) inner.push(e);
+    }
+    inner.push(...extractSubstitutions(masked.text), ...masked.inners);
+    for (const sub of inner) {
+      const r = classifyBashWork(sub, payload, o, depth + 1);
+      res.work = res.work || r.work;
+      res.blockable = res.blockable || r.blockable;
+      for (const l of r.labels) res.labels.add(l);
+      for (const b of r.editBlocks) blocks.add(b);
+    }
+  }
+  res.editBlocks = [...blocks];
+  return res;
+}
+
 function main() {
   // Read + parse the payload FIRST — coordinator/subagent detection needs the
   // payload's agent_id/agent_type markers (the only reliable signal under cmux).
@@ -3450,6 +3799,26 @@ function main() {
   // Only block heavy commands in coordinator context (subagents pass through).
   if (!isCoordinator(payload)) {
     process.exit(0);
+  }
+
+  // Bash edit parity (F3): a main-thread Bash write (sed -i/perl -i/tee/cp/mv/
+  // redirect) into a file edit-guard would block for the Edit tool gets the
+  // same delegation block. Off with guards.bashEditParity, safety.editGuard or
+  // an edit-guard skip; a trusted (redirect-free) project command-allow match
+  // passes. Claude host; Codex coordinator detection is unverified. Fail-open.
+  try {
+    if (settingsGet('guards', 'bashEditParity') !== false
+      && require('./lib/settings.js').enabled('safety', 'editGuard')
+      && !isSkipped('edit-guard')
+      && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
+      if (classifyBashWork(command, payload).editBlocks.length) {
+        const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect)', payload.cwd);
+        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+        process.exit(2);
+      }
+    }
+  } catch (_) {
+    // fail-open: never block a turn on a Bash edit parity bug.
   }
 
   if (!isHeavyCommand(command)) {
@@ -3619,9 +3988,23 @@ function main() {
   process.exit(2);
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: never block a turn due to a hook bug.
+if (require.main === module) {
+  try {
+    main();
+  } catch (_) {
+    // Fail-open: never block a turn due to a hook bug.
+  }
+  process.exit(0);
 }
-process.exit(0);
+
+module.exports = {
+  classifyBashWork,
+  isStateChangingGitSegment,
+  isRecoveryGitSegment,
+  bashWriteTargets,
+  isHeavyCommand,
+  isHeavyGhSegment,
+  isScratchpadOrTmpPath,
+  splitSegmentsDetailed,
+  effectiveVerb,
+};
