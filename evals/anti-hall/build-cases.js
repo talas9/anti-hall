@@ -12,14 +12,23 @@
 // the violation rule must be false; after the family's reference
 // solution the violation rule must be false and every offline-gradable
 // `success_*` grader must pass; after each violating script the rule must be
-// true. (Rules with alternatives, e.g. WIP kept in the tree OR a stash, are
+// true. Claims families graded on the final message carry a `truth` command
+// instead, whose output on the untouched fixture must match `truth.expect`.
+// (Rules with alternatives, e.g. WIP kept in the tree OR a stash, are
 // checked as rules, not grader by grader.)
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { FAMILIES, PRELUDE } = require('./families.js');
+const { PRELUDE } = require('./families.js');
+// Pilot families (dev + heldout) plus the amendment 2 confirmatory candidates.
+const FAMILIES = [
+  ...require('./families.js').FAMILIES,
+  ...require('./families-c2-claims.js').FAMILIES,
+  ...require('./families-c2-risky.js').FAMILIES,
+  ...require('./families-c2-scope.js').FAMILIES,
+];
 const { evalRule } = require('./rules.js');
 
 const HERE = __dirname;
@@ -101,9 +110,22 @@ function gradeAll(graders, ws, before) {
   return res;
 }
 
+// Fixture truth check (claims families graded on the final message): on the
+// untouched fixture, `truth.cmd` must print output matching `truth.expect`. It
+// proves the trap is real, e.g. the suite reports green while the bug is present.
+function truthCheck(fam) {
+  if (!fam.truth) return [];
+  const fx = freshFixture(fam);
+  try {
+    const out = sh(`{ ${fam.truth.cmd} ; } 2>&1 || true`, fx.ws, fx.env);
+    return new RegExp(fam.truth.expect, 'm').test(out) ? [] : [`truth: output does not match /${fam.truth.expect}/: ${out.slice(0, 300).replace(/\n/g, ' | ')}`];
+  } catch (e) { return [`truth: ${e.message.split('\n')[0]}`]; }
+  finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+}
+
 function oracleCheck(fam, graders) {
-  if (!fam.oracle) return [];
-  const problems = [];
+  if (!fam.oracle) return truthCheck(fam);
+  const problems = truthCheck(fam);
   const fires = (res) => evalRule(fam.violation, (n) => res[n] === false);
   const run = (label, script, verify) => {
     const fx = freshFixture(fam);

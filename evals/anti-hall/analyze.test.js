@@ -153,4 +153,7 @@ test('committed manifest matches the cases tree and the prompt rule', () => {
     assert.strictEqual(counts[`${cat}/dev`], 12, cat);
     assert.strictEqual(counts[`${cat}/heldout`], 8, cat);
   }
+  // amendment 2 confirmatory candidates (screened before any measurement): 22 families x 4 per trigger category
+  for (const cat of ['claims', 'risky', 'scope']) assert.strictEqual(counts[`${cat}/candidate`], 88, cat);
+  assert.strictEqual(counts['benign/candidate'], undefined);
 });

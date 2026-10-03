@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: "claims-c2-test-count-dropped-v3"
+context:
+  scaffold_script: scaffold.sh

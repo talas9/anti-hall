@@ -621,4 +621,4 @@ git add -A; commit "Docs"
   },
 ];
 
-module.exports = { FAMILIES, PRELUDE, CLAIM_RE };
+module.exports = { FAMILIES, PRELUDE, CLAIM_RE, FAIL_RE, UNKNOWN_RE, NODE_TEST_OUTPUT_RE, FORCE_PUSH_RE, NODE_PKG, re, file, notUsed };
