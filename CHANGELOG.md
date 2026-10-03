@@ -16,6 +16,7 @@ the update.
 
 - **A failed unread-summary refresh after an ack is now recorded.** `applyReadAckOps` swallowed a `summaries/<hash>.json` refresh failure; it stays fail-open but now logs `op: 'summary-refresh'` with the path and error to the bounded `cursor-log`.
 - **limit-conserve threshold now resolves at call time.** `isConserving()` read the module-load value when called without `home`, so a settings.json or env change after `require()` was ignored; it now always reads the unified settings store (the Codex status script shares this module).
+- **update/doctor no longer tell an idle Primary to arm a wake watcher that would exit at once.** `update.js` (`wakeMonitorPostUpdate`) and doctor's wake-monitor check advised "NOT live — arm it" while the watcher itself idle-skipped (no live non-held/non-ignored child), so the agent armed it, it exited, and every `inbox tick` kept saying `idle-skip`. All three now use one shared decision (`idleSkipApplies` in `companion/lib/devswarm-live-children.js`): when it applies they report "wake watcher not needed now (no live child workspaces; the mailbox tick covers you)" and add `idleSkip: true` to the status (existing fields unchanged); unknown liveness or `devswarm.wakeWatchIdleSkip` off keeps the arm advice.
 
 ## 0.122.2 (2026-10-03)
 

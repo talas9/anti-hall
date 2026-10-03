@@ -251,6 +251,13 @@ function wakeMonitorLiveCheck(watcherMod, watcherPath, home, env, cwd) {
   if (alive) {
     return { status: PASS, message: 'wake-monitor: LIVE for ' + identity.role + ' ' + identity.id + ' (pid ' + pid + ')' };
   }
+  if (identity.role === 'primary') {
+    let idleSkip = false;
+    try { idleSkip = require('./devswarm-live-children.js').idleSkipApplies(home, identity.cwd || cwd, { env }); } catch (_) { idleSkip = false; }
+    if (idleSkip) {
+      return { status: PASS, idleSkip: true, message: 'wake-monitor: wake watcher not needed now (no live child workspaces; the mailbox tick covers you) for ' + identity.role + ' ' + identity.id };
+    }
+  }
   return { status: WARN, message: 'wake-monitor: shipped but NOT live for ' + identity.role + ' ' + identity.id + ' — arm it: ' + armCmd + '.' };
 }
 
