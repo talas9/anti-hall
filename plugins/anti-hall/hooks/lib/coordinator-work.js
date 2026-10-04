@@ -327,15 +327,23 @@ function summary(home) {
 const fmtMin = (cfg) => Math.round(cfg.tMs / 60000);
 
 function BLOCK(count, cfg, skipCmd) {
-  return 'COORDINATOR-WORK LIMIT: ' + count + ' state-changing calls in the main thread within the last ' + fmtMin(cfg) +
-    ' min. Hand this and the remaining steps to a subagent (Agent tool) that returns a tight summary; patch application and test runs included. ' +
-    'Reads, recovery commands (--abort/--quit, stash pop/apply) and loosely matched inline code stay allowed, and the window clears as calls age out. ' +
-    'If the user EXPLICITLY asked you to do this yourself: ' + skipCmd + ' (15-min TTL). Never skip on your own initiative.';
+  return require('./block-message.js').blockMessage({
+    guard: 'coordinator-work-guard',
+    what: count + ' state-changing calls in the main thread within ' + fmtMin(cfg) + ' min; this one is blocked.',
+    why: 'Too much hands-on work in the main thread; the window clears as calls age out.',
+    instead: 'hand this and the remaining steps (patch applies and test runs included) to a subagent (Agent tool) that returns a tight summary.',
+    allowed: 'reads, recovery commands (--abort/--quit, stash pop/apply) and loosely matched inline code.',
+    override: skipCmd + ' (15-min TTL)',
+  });
 }
 
 function NUDGE(count, cfg) {
-  return 'COORDINATOR DRIFT: ' + count + ' state-changing calls in the main thread within ' + fmtMin(cfg) +
-    ' min. Delegate the rest to a subagent now' + (cfg.blockAt > 0 ? '; the ' + cfg.blockAt + 'th within the window is blocked.' : '.');
+  return require('./block-message.js').message({
+    kind: 'warn',
+    guard: 'coordinator-work-guard',
+    what: count + ' state-changing calls in the main thread within ' + fmtMin(cfg) + ' min.',
+    instead: 'delegate the rest to a subagent now' + (cfg.blockAt > 0 ? '; call ' + cfg.blockAt + ' in the window is blocked.' : '.'),
+  });
 }
 
 // replay(rows, cfg, classify) -> what the window would have done over a log.

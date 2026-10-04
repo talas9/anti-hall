@@ -32,23 +32,24 @@ const fs = require('fs');
 const os = require('os');
 
 function buildReason(kind) {
-  const killSwitch =
-    ' To disable this guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
+  const bm = require('./lib/block-message.js');
+  const override = 'set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely';
   if (kind === 'deny-store') {
-    return 'DEVSWARM STORE READ-GUARD: reading the raw DevSwarm store (the SQLite ' +
-      'db + sidecars, or the store journal NDJSON) directly is blocked. The store ' +
-      'is the write/derive layer — hooks and agents NEVER open it (devswarm-store.js ' +
-      'layering); a raw read risks a partial/inconsistent view and a store-layering ' +
-      'violation. Read through the wrapper instead: `devswarm.js inbox read <id>` ' +
-      '(or `devswarm.js inbox pull <id>` to import first).' + killSwitch;
+    return bm.blockMessage({
+      guard: 'devswarm-store-read',
+      what: 'reading the raw DevSwarm store (SQLite db, sidecars, journal NDJSON) directly is blocked.',
+      why: 'The store is the write/derive layer; a raw read risks a partial view and a layering violation.',
+      instead: '`devswarm.js inbox read <id>` (or `devswarm.js inbox pull <id>` first to import).',
+      override,
+    });
   }
-  return 'DEVSWARM INBOX READ-GUARD: reading the raw DevSwarm inbox file directly ' +
-    'is blocked. This does NOT drain the queue (the inbox is append-only NDJSON), ' +
-    'but a raw read BYPASSES THE DURABLE CURSOR — it causes CURSOR DESYNC (messages ' +
-    'get re-processed or skipped) and violates the store layering (hooks/agents never ' +
-    'open the inbox directly; only the wrapper does). Read pending messages the safe, ' +
-    'cursor-tracked way via the anti-hall DevSwarm CLI: `devswarm.js inbox pull <id>` ' +
-    'then `devswarm.js inbox read <id>`.' + killSwitch;
+  return bm.blockMessage({
+    guard: 'devswarm-inbox-read',
+    what: 'reading the raw DevSwarm inbox file directly is blocked.',
+    why: 'It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.',
+    instead: '`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.',
+    override,
+  });
 }
 
 function main() {
