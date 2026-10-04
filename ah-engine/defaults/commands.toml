@@ -56,6 +56,9 @@ value = { args = "<cwd> <put|take|len|set|setex|get> [args]", read_only = false,
 [cmd.maintain]
 doc = "Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report."
 value = { args = "", read_only = false, status = "implemented" }
+[cmd.jev]
+doc = "The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line."
+value = { args = "<ask|status|scrub>", read_only = false, status = "implemented" }
 
 [cmd.schedule]
 doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."

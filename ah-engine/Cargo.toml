@@ -12,6 +12,11 @@ libc = "0.2.190"
 # Embedded storage (D19, D73): SQLite compiled in (`bundled`), so there is nothing for the user to install; `backup` is the
 # online backup API used by `ah-engine backup` (D27).
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "cache"] }
+# Jev (D34-D38): a pure-Rust HTTPS client. `ureq` over `rustls` (ring provider, webpki roots) is blocking, which suits the
+# daemon's thread model, has no OpenSSL or async runtime, and exposes the knobs the key rules need (no redirects, no proxy,
+# one global deadline). `ring` is already in the tree through rustls; it is named here only for its SHA-256.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+ring = { version = "0.17", default-features = false }
 
 [build-dependencies]
 # Compiles defaults/*.toml into static data (build.rs); not linked into the binary.

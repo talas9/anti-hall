@@ -186,6 +186,28 @@ hooks at dev bcddfb7:
 Earlier phases also ran the git-guard Node test payloads (1366, 7 deferred) and larger fuzz sets (46000 and 30000 lines)
 at 100%; those corpora are not committed (size cap).
 
+`parity/run-jev.js` is the Jev lane's harness. The Node client at dev 3d36268 is the authority; both sides talk to a
+loopback mock server and a fixture home, never the real network or home. It compares the outbound scrub, the HTTP request
+bodies and headers, the decisions and the `jev-assist.ndjson` rows, and the resolved settings and modes:
+
+```
+node run-jev.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks --cmds <cmds.jsonl> [--scrub-n 12000 --fuzz-n 25000 --body-n 150]
+```
+
+| what | n | agreement |
+|---|---|---|
+| outbound scrub: real recorded commands (8,400 with secret-like text, 3,600 without) plus fuzz (25,000) plus edge cases | 37005 | **100%** |
+| decisions (modes x trust x baselines x server answers x fallback x breaker x redirect x timeout x cache) | 711 | **100%** |
+| request bodies and headers, per vendor | 1398 | **100%** |
+| `jev-assist.ndjson` rows, field for field and in key order | 699 | **100%** |
+| resolved settings and modes over a settings matrix | 418 | **100%** |
+| shipped integration table against `settings-schema.js` | 43 | **100%** |
+
+The three deliberate differences (relax-block is observe-only, a `true` advisory baseline is never lowered, an off call
+writes no row) are asserted separately, not skipped. Only the one-shot CLI exists for Jev, so there is no daemon mode until
+the dispatcher lane wires it in. A mutation run (a changed scrub rule and breaker threshold) drops agreement to 99.7%, so the
+harness is not vacuous.
+
 `parity/run.js` is the phase-2 decision-agreement harness for the regex rules; the force-push and AI-credit regex rules
 are examples, not ports, because a regex cannot tokenize shell.
 
@@ -268,4 +290,5 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Config files: layered over the defaults, watched, validated, hot-swapped; `config`, `config validate` (D18, file part)
 - [x] Shared read paths: transcript index (X1) and per-repo git cache (X3, D61); no check uses them yet (D75 wave 2)
 - [x] Scheduler and ticker, `ah-engine schedule` (D33)
-- [ ] Mailbox (D45), Jev lane (D34-D38), config in storage and rollback (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases
+- [x] Jev lane: client, transports, modes, trust, cache, log, parity harness (D34-D38); wiring it into the dispatcher is planned (D58)
+- [ ] Mailbox (D45), config in storage and rollback (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases

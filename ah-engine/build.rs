@@ -20,7 +20,7 @@ const FILES: [&str; 11] = [
     "transcript.toml",
     "gitcache.toml",
     "schedules.toml",
-    "small_guards.toml",
+const FILES: [&str; 2] = ["small_guards.toml", "jev.toml"];
 ];
 
 fn value(v: &toml::Value, out: &mut String) {

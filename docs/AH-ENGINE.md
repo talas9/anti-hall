@@ -88,7 +88,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Agent-targeted jobs delivered to a session's mailbox | planned (D45) | D45 |
 | Adding and removing jobs from the command line, schedules in versioned config | planned (D33, D18) | D33, D18 |
 | Mesh messaging, Monitor push, chat database | planned (D45) | D45 |
-| Jev decision lane inside the engine | planned (D34-D38) | D34-D38 |
+| Jev lane: Vercel and TypeSafe transports with fallback and breaker, Noul and Choice calls, off/shadow/on modes, add-block and advisory trust, cache, async queue with budgets, the `jev-assist.ndjson` rows, `ah-engine jev` | implemented, one-shot only | D34-D38 |
+| Jev wired into the dispatcher and the daemon, spend budget watch, audit snippets, daily rollups, persisted breaker and cache | planned (D58, D38) | D38, D58 |
 | Backups and restore: online snapshot of both databases, scrubbed; restore keeps the current state first | implemented | D27 |
 | Issue log and opt-in upload | planned (D28) | D28 |
 | Update checks as a scheduled job | planned (D44) | D44 |
@@ -116,6 +117,7 @@ arguments, is in the generated reference.
 | `ah-engine reset` | no | Clear the breaker, crash-loop stop and failure record. |
 | `ah-engine maintain` | no | Size control: move inactive rows to `archive.db`, prune derived bookkeeping, checkpoint and VACUUM; prints a report. |
 | `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. A write the engine cannot take is spooled. |
+| `ah-engine jev <ask\|status\|scrub>` | no | The optional Jev lane: `ask` reads JSON requests (one per stdin line) and prints each decision, `status` prints the resolved settings and every integration's mode (never a key), `scrub` redacts secrets from JSON strings. |
 | `ah-engine backup [--to <dir>]` | no | A consistent, scrubbed snapshot of `hot.db` and `archive.db`; prints its manifest. |
 | `ah-engine restore <snapshot-dir>` | no | Keep the current state as a pre-restore snapshot, stop the daemon, swap in the snapshot. |
 | `ah-engine config [--json]` | yes | The effective config with the source of every value (`default`, `config_toml`, `settings`, `env`), the files read, the active version, any rejected edit and settings pending a restart. Asks the running daemon, else reads the files. |
@@ -133,7 +135,7 @@ memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evict
 and `bus_dropped`, for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is sharing syncs), and for
 the spool `spool_applied` and `spool_quarantined`, for the scheduler `schedule_runs` and `schedule_missed`, and for
 size control `db_hot_bytes`, `db_hot_wal_bytes`,
-`db_archive_bytes`, `db_archive_wal_bytes`, `maintain_runs` and `maintain_last_ms`.
+`db_archive_bytes`, `db_archive_wal_bytes`, `maintain_runs` and `maintain_last_ms`, and for the Jev lane `jev_calls`, `jev_verdicts`, `jev_cost_micro_usd`, `jev_timeouts`, `jev_cooldowns`, `jev_changed` and `jev_latency_us`.
 
 **Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. They
 are stored in `hot.db` with exact per-combination totals, so counts survive a restart; the project is only ever a short
@@ -307,6 +309,41 @@ so setting it in `config.toml`, `settings.json` or the environment takes effect 
 - **Agent jobs.** A job of kind `agent` is meant for a session's mailbox; until that lands (planned, D45) each of its
   runs is recorded with the status `planned` (D45), never as a failure.
 
+## The Jev lane
+
+Jev is TypeSafe's "System One" decision model, reached through the Vercel AI Gateway or TypeSafe's own API. It is optional
+and off by default: with it off, missing, over budget or failing, every caller gets its own deterministic baseline, which is
+exactly what it would get without the lane (D35). Anything a deterministic rule can decide never goes to Jev (D34); only
+judgement calls do.
+
+- **Questions.** A Noul question is yes/no (the answer is true when the reported probability is at least a half, and the
+  confidence is how far from a half it is); a Choice question picks one labelled option. The request body is written byte
+  for byte as the Node client writes it, after the one outbound scrub that redacts secrets (tokens, keys, URLs with
+  credentials, emails, long opaque runs).
+- **Vendors and keys.** The primary vendor is `jev.transport`; an optional backup (`jev.fallbackTransport`) is tried once,
+  inside the same time budget, after a timeout, a network error, a 5xx, a 402, a 429, or a 400 or 403 that names an exhausted
+  balance. A rejected key (401) is never masked by the backup. Each vendor has its own circuit breaker: after three
+  consecutive eligible failures it is skipped for five minutes, then probed once. A key goes only to the vendor it was entered
+  for, only in the Authorization header; a redirect is never followed and a proxy variable is never used. A test endpoint
+  override is honoured only for a loopback host.
+- **Modes.** Each integration (the table in `jev.toml`, with the defaults from the Node settings schema) is `off`, `shadow`
+  or `on`. `shadow` consults Jev and logs what it would have changed but never changes an outcome. `on` applies the call's
+  trust rule: `add-block` may turn a non-blocking baseline into a block; `advisory` may supply a label or an advisory. Jev
+  never removes a block or an advisory, and it is never the only safety gate (D36). The Node `relax-block` rule is observe-only
+  here.
+- **Cost of being off.** A disabled Jev costs a call one settings snapshot and nothing else: no hash, cache lookup, network,
+  thread or log write.
+- **Budget, queue, cache.** A call has a time budget (default 1.5 s, at most 3 s) covering connect, request and body. A
+  caller either waits for it (`ask`) or queues it and moves on (`ask_async`: a bounded queue, a worker thread started on first
+  use, a full queue answered with the baseline). Answers are cached by content hash, bounded to 500 entries, in memory for
+  now (persisting them in `hot.db` is planned, D21).
+- **The log.** One row per decision in `~/.anti-hall/logs/jev-assist.ndjson`, in the row shape `jev report` reads: hashes,
+  verdicts, confidences, latencies, costs and the reason a call produced nothing; never prompt text, never a key. It rotates
+  at 2 MB. The daily rollups and the spend budget watch the Node client also writes are planned (D38).
+- **Parity.** `parity/run-jev.js` checks request bodies, headers, decisions, log rows, settings and the scrub against the Node
+  client (`ah-engine/parity/run-jev.js`). The deliberate differences (relax-block, a `true` advisory baseline, no row for an
+  off call) are asserted separately.
+
 ## Reliability and safety
 
 - **Hard budget.** The client enforces a total deadline (default 2 s) with a watchdog thread; `hooks.json`'s own timeout is
@@ -338,6 +375,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
 | `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
+| `jev.toml` | the Jev lane: vendor endpoints and models, budgets, breaker and fallback timing, the integration table with its default modes, cache and log limits, key-file rules, messages |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or

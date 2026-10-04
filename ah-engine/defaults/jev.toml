@@ -1,0 +1,331 @@
+# ah-engine shipped Jev defaults (D34-D38): the optional Jev lane (the `src/jev/` module). Format: see the header of engine.toml.
+#
+# Every value mirrors the Node client it ports (hooks/lib/jev-client.js, jev-assist.js, settings-schema.js); the comment on each
+# entry names its Node source so a change there shows up here in review. Jev is OFF unless the owner enables it; with it off,
+# or missing, over budget or failing, every caller gets its own deterministic baseline (D35).
+
+# ---- environment variable names (the names the Node client reads, so one config drives both) ---------------
+
+[env.jev_enabled]
+doc = "Master switch variable: 1 force-enables Jev, 0 force-disables it and wins over every file setting (Node: ANTIHALL_JEV)."
+value = "ANTIHALL_JEV"
+
+[env.jev_test_endpoint]
+doc = "Test-only endpoint override for the primary transport; honoured only for a loopback host, so a key can never be sent elsewhere (Node: ANTIHALL_JEV_TEST_ENDPOINT)."
+value = "ANTIHALL_JEV_TEST_ENDPOINT"
+
+[env.jev_test_endpoint_vercel]
+doc = "Test-only endpoint override for the Vercel transport, loopback only (Node: ANTIHALL_JEV_TEST_ENDPOINT_VERCEL)."
+value = "ANTIHALL_JEV_TEST_ENDPOINT_VERCEL"
+
+[env.jev_test_endpoint_typesafe]
+doc = "Test-only endpoint override for the TypeSafe transport, loopback only (Node: ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE)."
+value = "ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE"
+
+[env.jev_key_vercel]
+doc = "The key stored in the plugin's options screen for the Vercel vendor; it is only ever sent to Vercel (Node: CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY)."
+value = "CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY"
+
+[env.jev_key_typesafe]
+doc = "The key stored in the plugin's options screen for the TypeSafe vendor; it is only ever sent to TypeSafe (Node: CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY)."
+value = "CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY"
+
+[env.jev_key_generic]
+doc = "The legacy vendor-less key option, used only for the vendor it is bound to (Node: CLAUDE_PLUGIN_OPTION_JEV_API_KEY)."
+value = "CLAUDE_PLUGIN_OPTION_JEV_API_KEY"
+
+[env.jev_legacy_key_vercel]
+doc = "Legacy Vercel key variable, read only when the jev.allowLegacyKeyRead setting is on (Node: AI_GATEWAY_API_KEY)."
+value = "AI_GATEWAY_API_KEY"
+
+[env.jev_legacy_key_typesafe]
+doc = "Legacy TypeSafe key variable, read only when the jev.allowLegacyKeyRead setting is on (Node: TYPESAFE_API_KEY)."
+value = "TYPESAFE_API_KEY"
+
+[env.jev_integration_prefix]
+doc = "Prefix of the per-integration kill switch: the integration id in upper snake case is appended and a value of 0 forces that one integration off (Node: ANTIHALL_JEV_<ID>)."
+value = "ANTIHALL_JEV_"
+
+[env.jev_option_prefix]
+doc = "Prefix Claude Code gives the plugin options it exports to hook processes; the option name in upper case is appended."
+value = "CLAUDE_PLUGIN_OPTION_"
+
+# ---- vendors, endpoints and timing -------------------------------------------------------------------------
+
+[jev.endpoint_vercel]
+doc = "Vercel AI Gateway TypeSafe passthrough that serves the Jev system-one API (Node: jev-client.js GATEWAY.endpoint)."
+value = "https://ai-gateway.vercel.sh/typesafe/v1/systemone"
+
+[jev.model_vercel]
+doc = "Model name sent to the Vercel transport (Node: GATEWAY.model)."
+value = "typesafe-ai/jev"
+
+[jev.endpoint_typesafe]
+doc = "TypeSafe's own direct API endpoint (Node: TYPESAFE.endpoint)."
+value = "https://api.typesafe.ai/v1/systemone"
+
+[jev.model_typesafe]
+doc = "Model name sent to the direct TypeSafe transport (Node: TYPESAFE.model)."
+value = "jev-latest"
+
+[jev.timeout_ms]
+doc = "Per-call time budget for one Jev call, request, headers and body together (Node: DEFAULT_TIMEOUT_MS)."
+value = 1500
+min = 1
+max = 3000
+unit = "ms"
+
+[jev.max_timeout_ms]
+doc = "Hard ceiling on any configured or per-call timeout, so a Jev call can never outlast the hook that asked (Node: MAX_TIMEOUT_MS)."
+value = 3000
+unit = "ms"
+
+[jev.confidence_threshold]
+doc = "Default minimum confidence for an answer to count as trusted, a decimal between 0 and 1 (Node: DEFAULT_CONFIDENCE_THRESHOLD)."
+value = "0.85"
+
+[jev.async_budget_ms]
+doc = "Time budget of an asynchronous (fire-and-forget) call: nobody waits for it, so it may use the full ceiling (Node: DETACHED_DEFAULT_BUDGET_MS)."
+value = 3000
+unit = "ms"
+
+[jev.queue_cap]
+doc = "Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15)."
+value = 64
+min = 1
+max = 4096
+
+[jev.drain_poll_ms]
+doc = "How often `drain` checks whether the asynchronous queue has emptied (tests and shutdown only)."
+value = 2
+unit = "ms"
+
+[jev.env_cache_cap]
+doc = "Distinct session environments whose resolved settings are kept (the engine serves many sessions, each with its own environment); the oldest is dropped first."
+value = 8
+min = 1
+max = 256
+
+[jev.settings_recheck_ms]
+doc = "How often the settings files are re-checked for changes; between checks a call costs one clock read, so an off Jev stays off the hot path."
+value = 2000
+unit = "ms"
+
+# ---- fallback transport and the per-vendor circuit breaker (D13) ------------------------------------------
+
+[jev.breaker_threshold]
+doc = "Consecutive fallback-eligible failures that open a vendor's breaker (Node: BREAKER_THRESHOLD)."
+value = 3
+min = 1
+
+[jev.breaker_cooldown_ms]
+doc = "How long an open breaker skips its vendor before a probe is allowed (Node: BREAKER_COOLDOWN_MS)."
+value = 300000
+unit = "ms"
+
+[jev.min_fallback_ms]
+doc = "Below this much remaining budget no real call can finish, so the fallback is skipped (Node: MIN_FALLBACK_MS)."
+value = 150
+unit = "ms"
+
+[jev.fallback_reserve_ms]
+doc = "Budget held back from the primary for the fallback when one is configured (Node: FALLBACK_RESERVE_MS)."
+value = 600
+unit = "ms"
+
+[jev.fallback_reserve_pct]
+doc = "The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4))."
+value = 40
+min = 0
+max = 100
+
+[jev.balance_pattern]
+doc = "A 400 or 403 body matching this expression (case-insensitive) is an out-of-balance answer and makes the call fallback-eligible (Node: BALANCE_BODY_RE)."
+value = "insufficient|credit|balance|quota|billing"
+
+[jev.balance_body_bytes]
+doc = "How much of an error body is read to classify an out-of-balance answer; the body is never logged (Node: slice(0, 2048))."
+value = 2048
+unit = "bytes"
+
+# ---- keys: where a vendor's key may come from (credentials.js) --------------------------------------------
+
+[jev.key_file_vercel]
+doc = "Default key file for the Vercel vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath)."
+value = ".config/vercel/ai-gateway-key"
+
+[jev.key_file_typesafe]
+doc = "Default key file for the TypeSafe vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath)."
+value = ".config/typesafe/key"
+
+[jev.key_file_roots]
+doc = "Directories under the home directory a key file must really live in once symlinks are resolved (Node: readKeyFile)."
+value = [".config", ".anti-hall"]
+
+[jev.key_file_max_bytes]
+doc = "Largest key file that is read (Node: MAX_KEY_FILE_BYTES)."
+value = 4096
+unit = "bytes"
+
+# ---- trust, modes and the cache ----------------------------------------------------------------------------
+
+[jev.integrations]
+doc = "Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36)."
+value = { speculation = "on", triage = "on", newRequest = "shadow", claimLedger = "shadow", outputVerifyGuard = "shadow", gitGuardSelfCredit = "shadow", modelRouting = "shadow", tasklistTrivial = "shadow", codexNudgeSubstantial = "shadow", mergeGateHedge = "shadow", parentGateQuestion = "shadow", supervisorBlockerLabel = "shadow", findingDedup = "on", postHandoverGate = "off", speculationFramed = "shadow", dispatchTier = "on", devswarmOnBrief = "on", devswarmExtraSanctioned = "on", devswarmWaitKind = "on", devswarmLoop = "on", devswarmStepMap = "on" }
+
+[jev.unlisted_mode]
+doc = "Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones)."
+value = "shadow"
+
+[jev.legacy_on_default]
+doc = "Integrations that predate the per-integration modes and stay on by default; consulted only for an id missing from the table (Node: LEGACY_ON_DEFAULT)."
+value = ["speculation", "triage"]
+
+[jev.legacy_triage_key]
+doc = "Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off."
+value = "triage"
+
+[jev.cache_max_entries]
+doc = "Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES)."
+value = 500
+min = 1
+
+[jev.question_version]
+doc = "Part of the cache key, bumped when a question's wording changes so old answers are not reused (Node: QUESTION_VERSION)."
+value = "v1"
+
+[jev.hash_len]
+doc = "Hex characters of the SHA-256 content hash kept as the cache key and the log's h field (Node: slice(0, 16))."
+value = 16
+min = 8
+max = 64
+
+# ---- pricing for the log's cost field (computeCostUsd) -----------------------------------------------------
+
+[jev.price_usd_per_m_input]
+doc = "USD per million input tokens used when a response reports tokens but no cost; Jev's own published rate (Node: jev.priceUsdPerMInput)."
+value = "0.042"
+
+[jev.price_usd_per_m_output]
+doc = "USD per million output tokens used when a response reports tokens but no cost; output is free on the published rate (Node: jev.priceUsdPerMOutput)."
+value = "0"
+
+# ---- the decision log ----------------------------------------------------------------------------------------
+
+[jev.log_file]
+doc = "The decision log, relative to the anti-hall home directory, in the row shape the Node jev report reads (Node: logs/jev-assist.ndjson)."
+value = "logs/jev-assist.ndjson"
+
+[jev.log_max_bytes]
+doc = "Size at which the decision log rotates (Node: DECISION_LOG_MAX_BYTES)."
+value = 2097152
+unit = "bytes"
+
+[jev.log_rotated_files]
+doc = "Rotated generations kept, .1 to .N (Node: the jev.logRotatedFiles setting)."
+value = 10
+min = 1
+max = 100
+
+[jev.log_off_rows]
+doc = "1 also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does; 0 (default) writes nothing and does no I/O at all for such a call, so a disabled Jev costs the hot path nothing."
+value = 0
+min = 0
+max = 1
+
+[jev.settings_file]
+doc = "The unified settings file, relative to the anti-hall home directory (Node: settings.json)."
+value = "settings.json"
+
+[jev.legacy_file]
+doc = "The legacy Jev config file, relative to the anti-hall home directory, read below settings.json (Node: jev.json)."
+value = "jev.json"
+
+[jev.bool_true_tokens]
+doc = "Words that read as true in an environment or settings value (Node: TRUE_TOKENS)."
+value = ["1", "on", "true", "yes"]
+
+[jev.bool_false_tokens]
+doc = "Words that read as false in an environment or settings value (Node: FALSE_TOKENS)."
+value = ["0", "off", "false", "no"]
+
+# ---- messages -------------------------------------------------------------------------------------------------
+
+[msg.jev_endpoint_ignored]
+doc = "Printed once per process to stderr when a test endpoint override is refused because its host is not loopback; it never names the URL or a key."
+value = "anti-hall jev: ANTIHALL_JEV_TEST_ENDPOINT* ignored (non-loopback host); using the built-in endpoint"
+
+[msg.jev_generic_key_bound]
+doc = "Why a vendor-less Jev key option was not used: it is bound to the other vendor. Placeholders: bound, option, vendor."
+value = "the generic Jev key is bound to {bound}; set {option} for {vendor}, or re-bind the generic key deliberately"
+
+[msg.jev_key_outside_roots]
+doc = "Why a Jev key file was refused: it does not really live under one of the allowed directories."
+value = "the key file path is outside the allowed directories"
+
+[msg.jev_key_not_file]
+doc = "Why a Jev key file was refused: it is not a regular file."
+value = "the key file is not a regular file"
+
+[msg.jev_key_too_large]
+doc = "Why a Jev key file was refused: it is larger than the limit. Placeholder: max."
+value = "the key file is larger than {max} bytes"
+
+[msg.jev_key_multiline]
+doc = "Why a Jev key file was refused: its content is not a single line without whitespace."
+value = "the key file content is not a single line without whitespace"
+
+[msg.jev_key_unreadable]
+doc = "Why a Jev key file was refused: it could not be read."
+value = "the key file is unreadable"
+
+[msg.jev_unknown_question_type]
+doc = "Why a Jev request was refused: its question type is neither noul nor choice. Placeholder: kind."
+value = "unknown question type {kind}: use noul or choice"
+
+[msg.jev_bad_default_mode]
+doc = "Why the shipped integration table is invalid: an integration lists a mode that is not on, shadow or off. Placeholder: id."
+value = "the shipped Jev integration {id} has no valid default mode (use on, shadow or off)"
+
+[msg.jev_no_home]
+doc = "Printed by `ah-engine jev` when the home directory variable is not set, because the settings and the log live under it."
+value = "the home directory is not set, so there are no Jev settings to read"
+
+[msg.jev_usage]
+doc = "Usage line of `ah-engine jev`."
+value = "usage: ah-engine jev ask|status|scrub (ask reads one JSON request per line on stdin, scrub one JSON string per line)"
+
+# ---- metrics (D51) --------------------------------------------------------------------------------------------
+
+[metric.jev_calls]
+doc = "Jev decisions asked for, by backend (jev, cache or baseline-only) and mode."
+value = { kind = "counter", unit = "calls", labels = ["backend", "mode"] }
+
+[metric.jev_timeouts]
+doc = "Jev calls that ran out of their time budget."
+value = { kind = "counter", unit = "calls", labels = [] }
+
+[metric.jev_cooldowns]
+doc = "Jev calls skipped because a vendor's circuit breaker was open."
+value = { kind = "counter", unit = "calls", labels = [] }
+
+[metric.jev_verdicts]
+doc = "What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped)."
+value = { kind = "counter", unit = "decisions", labels = ["id", "verdict"] }
+
+[metric.jev_cost_micro_usd]
+doc = "Cost of fresh Jev calls in millionths of a US dollar, as reported by the vendor or priced from the reported tokens; a cache hit adds nothing. Never an estimate of what a judge call would have cost."
+value = { kind = "counter", unit = "micro-usd", labels = [] }
+
+[metric.jev_changed]
+doc = "Decisions in on mode where Jev changed the outcome (always an added block or advisory)."
+value = { kind = "counter", unit = "decisions", labels = [] }
+
+[metric.jev_latency_us]
+doc = "Latency of fresh Jev network calls."
+value = { kind = "histogram", unit = "us", labels = [] }
+
+[jev.max_response_bytes]
+doc = "Largest response body read from a vendor; a longer one is treated as unparsable, so a misbehaving endpoint cannot grow the daemon's memory (D15)."
+value = 1048576
+unit = "bytes"

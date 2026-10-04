@@ -33,6 +33,10 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/cli.rs", "for name in [\"job\"", "the schedule history command's flag names: part of the command line itself"),
     ("src/rules.rs", "for k in [\"command\"", "tool_input field names a rule can match by default: the host hook payload schema, an adapter concern (D30)"),
     ("src/health.rs", "for key in [\"breaker_until\"", "keys of the files.* settings the operator reset clears: names of settings, not values"),
+    // ---- the Jev lane: security grammar kept in code on purpose ----------------------------------------------
+    ("src/jev/scrub.rs", "const WS", "JavaScript's whitespace class, the grammar of the redaction patterns; part of the byte-exact scrub parity, not a tunable"),
+    ("src/jev/scrub.rs", "ci_any(&[\"secret\"", "the secret-word grammar of the outbound redaction, kept in code so a config edit cannot weaken what leaves the machine (D16); mirrors secret-scrub.js"),
+    ("src/jev/settings.rs", "\"127.0.0.1\" | \"localhost\"", "the loopback host set that gates the test endpoint override: a security rule, not overridable, so a config or environment value can never widen where an API key may be sent"),
     // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
     ("src/sql.rs", "", "the SQL schema migrations and statements: the schema is code, versioned with the binary, and every tunable value is bound as a parameter at run time"),
 ];

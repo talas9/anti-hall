@@ -1,6 +1,6 @@
 # ah-engine decision record
 
-**Version: 1.55** (2026-10-05). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
+**Version: 1.56** (2026-10-05). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
 
 Status: living document. Owner decisions from 2026-10-04, recorded in the order they were made. Where a later decision supersedes an earlier one, that is stated. Branch: `engine-proto`.
 
@@ -121,6 +121,69 @@ Status: living document. Owner decisions from 2026-10-04, recorded in the order 
   - Source: 2026-10-04T17:47:58Z and 17:48:11Z.
 - **D38. All Jev work moves into the engine,** following the per-feature verdicts from the Jev review.
   - Jev may make real decisions inside the engine, not only classify. Rust plus Jev together should stay well under Node's latency ("you can utilize JEV even more with rust so you can make it actually decide for rust, and since it is super fast, and also JEV is fast both together won't be as slow as node", 2026-10-04T17:46:05Z). Only judgement calls, never "simple mechanical things" (17:46:27Z).
+
+### Jev lane implementation (Wave 1, lane `w1-jev`)
+
+The lane is the `src/jev/` module (settings in `defaults/jev.toml`), a port of the Node client and assist layer. Each Rust
+item cites its Node source in its doc comment; the module doc has the file-by-file table.
+
+- **HTTP client: `ureq` 3 over `rustls`, ring provider, webpki roots.** Pure Rust: no OpenSSL, no async runtime. Why this one:
+  it is blocking, which matches the daemon's thread model (no tokio to start, no executor in a 3.7 MB daemon); it exposes
+  exactly the knobs the key rules need (no redirects, no proxy, status returned instead of raised, one global deadline); it
+  has a connection pool, which is the "warm connection" of D36. `ring` comes in through `rustls` and is used directly only for
+  SHA-256, so the content hash costs no extra crate. Cost, measured on this machine (macOS arm64, release profile
+  `opt-level = "z"`, LTO, strip), the same source with and without the lane: 2,829,856 bytes (engine-proto f25e6fe) against
+  3,894,080 bytes, +1,064,224 bytes (+1.0 MiB, +37.6%). The same delta (+1,064,224) was measured at the lane's first build
+  on the earlier base e072e99 (2,579,712 to 3,643,936), so later additions to the lane fit inside the segment padding. That figure is the
+  whole lane (the Jev code and `ureq`, `rustls`, `ring`, `webpki-roots` and their small helpers); the code and the
+  dependencies were not measured apart. `ah-engine version` start-up, 1,000 runs each, alternating, on a heavily loaded machine
+  (load average about 130): median 7.28 ms without the lane, 6.97 ms with it, so no measurable cost (the difference is noise;
+  nothing in the lane runs at start-up, every table is a lazy `OnceLock`). Not built or measured: `reqwest`, `minreq`, `attohttpc`, a hand-written TLS layer. `ring` needs a C
+  compiler to build, which the bundled SQLite already needs. A cargo feature that drops the lane from a slim build is
+  possible; not done, because Jev has to be switchable at run time anyway (D35).
+- **Keys.** Resolved by vendor (`credentials.rs`): the vendor's own option; the vendor-less option only for the vendor it is
+  bound to; the legacy variables and key file only behind the home-only `jev.allowLegacyKeyRead`. A `Key` has no `Display`
+  and a redacted `Debug`. The transport sends it only in the Authorization header, never follows a redirect (a 3xx is a
+  network error and the redirect target is never contacted, tested against a real loopback server), and ignores proxy
+  variables in the environment (the Node `fetch` does not use them either; `ureq` would by default). The test endpoint
+  override (`ANTIHALL_JEV_TEST_ENDPOINT*`) is honoured only for `127.0.0.1`, `localhost` or `[::1]` without credentials.
+- **Trust (D36), deliberately stricter than Node in two places.** `add-block` is identical. `advisory` never lowers a
+  baseline of `true` (Node's can). `relax-block`, which lets Jev turn a block into a non-block in Node, is observe-only: the
+  call is consulted and logged like a shadow call and never changes the outcome. A caller that needs a block removed
+  decides that itself, deterministically. These are the only differences in the decision rows (the harness asserts them
+  separately).
+- **Hot path.** With Jev disabled or the integration off, `ask` returns after one clock read and one settings snapshot: no
+  hashing, no cache lookup, no network, no thread and, unlike Node, no log row (the key `jev.log_off_rows` restores it). The
+  settings files are re-checked at most every `jev.settings_recheck_ms`. The asynchronous path (`ask_async`) does not even
+  queue an off call; its worker thread starts on the first real call, the queue is bounded (`jev.queue_cap`, a full queue is
+  logged as `busy`), and the thread ends when the lane is dropped.
+- **Parity (D31).** `parity/run-jev.js` compares, against the Node files on dev: the outbound scrub over 37,005 texts (real
+  commands from the field corpus plus fuzz), the request bodies and headers, the decisions and the `jev-assist.ndjson` rows
+  over a matrix of integrations x trust x baselines x server behaviour x fallback x breaker x redirect x timeout x cache, and
+  the resolved settings and modes over a settings matrix; the shipped integration table is checked against
+  `settings-schema.js`. Only the one-shot CLI path exists: the lane is not wired into the daemon until the dispatcher lane lands.
+- **JavaScript details reproduced on purpose:** the scrub patterns use look-behind and back-references and JavaScript's `\s`
+  and ASCII-only `\b` and `i`, none of which the `regex` crate matches by default, so each is translated by hand (module doc
+  of `scrub.rs`); a Choice question's integer-like keys go out first and ascending, as `JSON.stringify` orders them; a
+  numeric setting is clamped, not rejected, as Node's settings resolver does; the decision layer reads
+  `confidenceThreshold` from the legacy jev.json before settings.json, as `jev-assist.js` does.
+- **Per-session environment (D76).** `AskRequest.env` carries the calling session's environment (the switches, kill switches,
+  plugin-option keys and test endpoints that decision obeys); the files are read once and shared, and each distinct
+  environment's resolution is memoized in a small bounded set (`jev.env_cache_cap`) until a file changes. Without it the engine's
+  own environment applies, which is only right for the one-shot CLI. The dispatcher lane supplies the env.
+- **Telemetry (D78).** Counters registered in `defaults/jev.toml` and drained into the metrics registry with `JevStats::drain_into`:
+  `jev_calls` (backend, mode), `jev_verdicts` (integration, verdict: added, changed, would-change, none, no-answer),
+  `jev_cost_micro_usd`, `jev_timeouts`, `jev_cooldowns`, `jev_changed`, `jev_latency_us` (histogram). They are plain atomics and a
+  small lock-guarded list: no I/O, no text. `hooks/lib/telemetry.js` does not exist on dev yet (3d36268), so the names follow the
+  D78 text; align them when it lands. Writing the Jev decisions into the impact ledger is planned (D52).
+- **Settings.** The lane resolves its own settings (`settings.rs`) with the Node precedence for the `jev` and `jevIntegrations`
+  keys, rather than through the config lane's `cfgstore`, because it reads Node's keys and the legacy `jev.json`. Folding
+  it into the layered config (and its hot-swap) is planned (D18).
+- **Not done, planned (D38):** the spend budget watch and audit snippets (opt-in, off by default), the daily rollups written
+  when the log rotates, the credit-balance call, the `jev-triage` worker and the per-integration callers (they belong with the
+  guard and dispatcher lanes), persisting the breaker and the answer cache in `hot.db` behind the `Store` trait (D21, D22:
+  the cache sits behind its own `JevCache` trait now because the storage lane owns `Store`), recording Jev decisions in the
+  impact ledger (D52), and the plugin-option tier that Node reads from Claude's stored options file (D18).
 
 ## Code standards
 
@@ -468,3 +531,4 @@ Each D-item gets a status (`done` / `partial` / `not started` / `superseded`) wi
 - **1.53** (2026-10-05, lane w1-ports-small): D29-D31, D75. `scan-throttle` ported (`src/checks/scan_throttle/`). The offload map listed throttle counters for it; the Node guard has no state, only a user-pattern match, so none is kept. User patterns are JavaScript regexes: a validated plain subset is matched with the translated Rust regex, everything else defers (no guessing). `jsre` gains `\D`, `\W` and a fallible compile. `parity/run-scan-throttle.js`: 11290 scenarios over 109 environments (pattern sets, switches, PATH variants, real field commands, fuzz) at 100% outside the deliberate deferrals (non-plain patterns only).
 - **1.54** (2026-10-05, lane w1-ports-small): D29-D31, D75. `coordinator-work-guard` ported in part (`src/checks/coordinator_work/`): the payload-provable exits (not Bash, no session id, subagent markers by the exact Node truthiness rules, including the Codex variant) are answered; every main-thread call defers, because the window needs `classifyBashWork` (command-guard port) and `CLAUDE_CODE_ENTRYPOINT` from the hook's environment. The engine keeps no window state, so there is no state to disagree with Node's. Offload effect measured on the field data: 238360 of 269361 recorded Bash calls (88 percent) carry subagent markers. `parity/run-coordinator-work-guard.js`: 8327 scenarios, 0 mismatches; deferrals are exactly the main-thread calls.
 - **1.55** (2026-10-05, lane w1-ports-small): D29-D31, D75. `compact-declaration-guard` ported (`src/checks/compact_decl/`): the new-work test (`BASH_WORK_RE` with its two lookarounds done by hand, quote blanking, handover exemption) and the transcript-tail turn reconstruction are exact; the phrase analysis (`compact-advice.js` `findAdvice`) is not ported, a turn whose text contains "safe" defers to Node. Blocks (stdout JSON plus stderr, exit 2) defer because the engine reply carries one or the other, not both: the dispatcher lane's reply format may remove that limit. `parity/run-compact-declaration-guard.js`: 17458 scenarios (hand-written transcripts, 700 windows of real Claude and Codex transcripts, 6000 real commands plus 6000 fuzzed ones and 1500 real file paths against an active declaration) with 0 mismatches and 0 work-classification divergences.
+- **1.56** (2026-10-05): the Jev lane (D34-D38) implemented as `src/jev/`: HTTPS client (`ureq` over `rustls`, +1.0 MiB measured), Vercel and TypeSafe transports with a per-vendor breaker and a fallback, Noul and Choice questions, off/shadow/on modes with `add-block` and `advisory` trust (relax-block observe-only, D36), a content-hash cache, async queue with budgets, and the `jev-assist.ndjson` rows; `ah-engine jev ask|status|scrub`; `parity/run-jev.js` at 100%.

@@ -55,6 +55,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("restore", cmd_restore),
         ("config", cmd_config),
         ("schedule", cmd_schedule),
+        ("jev", crate::jev::cli::run_cmd),
     ]
 }
 

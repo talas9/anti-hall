@@ -16,6 +16,7 @@ pub mod gitcache;
 pub mod health;
 pub mod hookio;
 pub mod impact;
+pub mod jev;
 pub mod limits;
 pub mod maintain;
 pub mod metrics;
