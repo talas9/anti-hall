@@ -249,3 +249,61 @@ test('gcloud-reads: every other redirection stays blocked', () => {
   ];
   assert.deepStrictEqual(block.filter((cmd) => run(cmd).status !== 2), [], 'expected BLOCK');
 });
+
+// A sink after a read must be stdin-only: the closed grammar (isClosedSinkStage)
+// rejects a file operand or an unknown flag, so a "bounded" stage can never read
+// a file or switch into a different program mode. `gcloud ... describe` is not a
+// heavy command, so the gcloud carve-out is asserted on the predicate itself;
+// the heavy verification pipeline is asserted end to end through the hook.
+const { isAllowedGcloudReadCommand } = require('../../plugins/anti-hall/hooks/command-guard.js');
+const GD = 'gcloud functions describe fn --format=json';
+
+test('gcloud-reads: sink stages with a file operand or unknown flag are refused', () => {
+  const block = [
+    GD + ' | head /etc/passwd',
+    GD + ' | tail -n +1 --pid=123',
+    GD + ' | tail /etc/passwd',
+    GD + ' | head -n 5 /etc/passwd',
+    GD + ' | head -5 /etc/passwd',
+    GD + ' | wc -l /etc/passwd',
+    GD + ' | grep -c root /etc/passwd',
+    GD + ' | grep -m 1 root /etc/passwd',
+    GD + ' | grep -c -r root',
+    GD + ' | tail -f',
+    GD + ' | tail -n 5 -f',
+    GD + ' | head -q',
+    GD + ' | tail -F x',
+    'T=$(gcloud auth print-access-token); curl -s https://x.googleapis.com/v1/y | head /etc/passwd',
+  ];
+  assert.deepStrictEqual(block.filter((cmd) => isAllowedGcloudReadCommand(cmd)), [], 'expected refused');
+});
+
+test('gcloud-reads: closed-grammar sink stages are still accepted', () => {
+  const allow = [
+    GD + ' | head',
+    GD + ' | head -5',
+    GD + ' | tail -n 5',
+    GD + ' | tail -n +1',
+    GD + ' | head -c 3000',
+    GD + ' | wc -l',
+    GD + ' | grep -c root',
+    GD + ' | grep -m 3 -E "^a|b"',
+    GD + ' 2>&1 | head -c 3000',
+  ];
+  assert.deepStrictEqual(allow.filter((cmd) => !isAllowedGcloudReadCommand(cmd)), [], 'expected accepted');
+});
+
+test('bounded verification pipeline: a sink with a file operand or unknown flag stays blocked', () => {
+  const T = 'node --test tests/a.test.js 2>&1 | ';
+  const block = [
+    T + 'tail /etc/passwd',
+    T + 'head -n 5 /etc/passwd',
+    T + 'grep -c ok /etc/passwd',
+    T + 'wc -l /etc/passwd',
+    T + 'tail -n +1 --pid=1',
+    T + 'head -q',
+  ];
+  assert.deepStrictEqual(block.filter((cmd) => run(cmd).status !== 2), [], 'expected BLOCK');
+  const allow = [T + 'tail -5', T + 'head -n 5', T + 'wc -l', T + 'grep -c ok'];
+  assert.deepStrictEqual(allow.filter((cmd) => run(cmd).status === 2), [], 'expected ALLOW');
+});

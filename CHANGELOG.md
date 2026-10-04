@@ -11,7 +11,7 @@ the update.
 ### Fixed
 
 - Jev: `speculationFramed` is now registered in `jev-setup.js` `KNOWN_INTEGRATIONS`, so `jev status` / `jev mode` can see and switch it (a registry test derives every call-site id and asserts it is in `KNOWN_INTEGRATIONS` and the settings schema). `modelRouting` decisions now record `wouldChange` plus an audit snippet whenever Jev's tier differs from the rule-based verdict (also in `on` mode, regardless of confidence), so `jev report` can count and label them.
-
+- command-guard: a pipe sink that decides an allow (the gcloud read carve-out and the bounded verification pipeline) now has to match the closed stdin-only grammar. `... | head /etc/passwd` and `... | tail -n +1 --pid=123` no longer pass as bounded sinks; `head|tail -c N` and `grep -m N -E PAT` stay accepted.
 - DevSwarm child workspaces no longer get the COMMS OVERRIDE / SELF_CONTINUE / REMINDER block on every delivered turn: `devswarm-child-turn.js` now uses the `guards.injectionRepeatEvery` keepalive (re-sent on change, after compaction, and every N turns), matching the parent hook. The Codex port runs the same hook.
 
 ### Added

@@ -1755,26 +1755,43 @@ function isWholeCommandReadOnlyForm(command) {
 
 // isClosedSinkStage(segment) -> true iff the stage is EXACTLY one of the closed
 // stdin-only sink shapes (no file operand, no unknown flag; only used by
-// isWholeCommandReadOnlyForm — isBoundedSinkSegment's looser rule is untouched):
-//   head|tail            [no args | -N | -n N | -n +N]   (numeric only)
+// isWholeCommandReadOnlyForm AND isBoundedSinkSegment, so every sink that
+// decides an allow uses this one grammar):
+//   head|tail            [no args | -N | -n N | -nN | -n +N | -c N | -cN]   (numeric only)
 //   wc                   [-l|-c|-w|-m ...], no operands
-//   grep -c PATTERN | grep -m N PATTERN   (one pattern token, no file operand)
+//   grep [-E|-F|-G|-i|-v|-w|-x|-n|-H|-h|-o|-a]... (-c | -m N) PATTERN   (one pattern token, no file operand)
 function isClosedSinkStage(segment) {
   if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
-  const t = tokenizeQuoted(segment);
+  return closedSinkTokens(tokenizeQuoted(segment));
+}
+function closedSinkTokens(t) {
   if (!t.length) return false;
   const rest = t.slice(1);
   if (t[0] === 'head' || t[0] === 'tail') {
     if (rest.length === 0) return true;
-    if (rest.length === 1) return /^-\d+$/.test(rest[0]);
-    if (rest.length === 2) return rest[0] === '-n' && /^\+?\d+$/.test(rest[1]);
+    if (rest.length === 1) return /^-(?:\d+|[nc]\+?\d+)$/.test(rest[0]);
+    if (rest.length === 2) return (rest[0] === '-n' || rest[0] === '-c') && /^\+?\d+$/.test(rest[1]);
     return false;
   }
   if (t[0] === 'wc') return rest.every((a) => /^-[lcwm]$/.test(a));
   if (t[0] === 'grep') {
-    if (rest.length === 2) return rest[0] === '-c' && !rest[1].startsWith('-');
-    if (rest.length === 3) return rest[0] === '-m' && /^\d+$/.test(rest[1]) && !rest[2].startsWith('-');
-    return false;
+    // Bounded by -c or -m N; match-mode flags from a closed set; exactly one
+    // non-flag operand (the pattern). No -f/-e/-r/-R/--include/--file: nothing
+    // that names a file or a second pattern source.
+    let bounded = false;
+    let pattern = 0;
+    for (let i = 0; i < rest.length; i++) {
+      const a = rest[i];
+      if (a === '-c') { bounded = true; continue; }
+      if (a === '-m') {
+        if (!/^\d+$/.test(rest[i + 1] || '')) return false;
+        bounded = true; i++; continue;
+      }
+      if (/^-[EFGivwxnHhoa]+$/.test(a)) continue;
+      if (a.startsWith('-')) return false;
+      pattern++;
+    }
+    return bounded && pattern === 1;
   }
   return false;
 }
@@ -2413,7 +2430,10 @@ function isQualifyingSingleTargetCheck(segment, ctx) {
   return false;
 }
 
-function isBoundedSinkSegment(segment) {
+// isLooseSinkShape(segment) -> true iff the stage NAMES a sink-like command
+// (tail/head/wc, or grep with -c / -m N somewhere). Shape only: it says nothing
+// about operands or flags, so it never decides an allow by itself.
+function isLooseSinkShape(segment) {
   const verb = effectiveVerb(segment);
   if (!verb) return false;
   if (verb === 'tail' || verb === 'head' || verb === 'wc') return true;
@@ -2421,6 +2441,33 @@ function isBoundedSinkSegment(segment) {
     return /(^|\s)-c(?=\s|$)/.test(segment) || /(^|\s)-m\s*\d+(?=\s|$)/.test(segment);
   }
   return false;
+}
+
+// isBoundedSinkSegment(segment) -> true iff the stage is a sink-shaped command
+// that ALSO satisfies the closed grammar (isClosedSinkStage): stdin-only, no
+// file operand, no unknown flag. `head /etc/passwd` / `tail -n +1 --pid=1` are
+// NOT sinks. `2>&1` only merges stderr into the pipe, so it is judged without it.
+function isBoundedSinkSegment(segment) {
+  if (!isLooseSinkShape(segment)) return false;
+  // A leading `command ` (bypass an alias, e.g. a grep wrapper) is the one wrapper kept.
+  return isClosedSinkStage(segment.replace(/(^|\s)2>&1(?=\s|$)/g, ' ').trim().replace(/^command\s+/, ''));
+}
+
+// isScratchFileSinkSegment(segment, ctx) -> true iff the stage is a closed sink
+// whose only file operands are scratchpad/tmp paths (isScratchpadOrTmpPath). Used
+// ONLY by the background scratch-script chain, whose documented remedy shape is
+// `script > out; wc -l out; grep -c PAT out`: the sink reads the script's own
+// output file, never an arbitrary path.
+function isScratchFileSinkSegment(segment, ctx) {
+  if (!isLooseSinkShape(segment)) return false;
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const t = tokenizeQuoted(segment.trim().replace(/^command\s+/, ''));
+  let end = t.length;
+  // grep: exactly one trailing file operand (the token before it is the
+  // pattern, never a path); wc/head/tail: any number of trailing operands.
+  const maxStrip = t[0] === 'grep' ? 1 : t.length;
+  for (let n = 0; n < maxStrip && end > 1 && !t[end - 1].startsWith('-') && isScratchpadOrTmpPath(t[end - 1], ctx); n++) end--;
+  return closedSinkTokens(t.slice(0, end));
 }
 
 // Read-only FILTER stages that may sit between a qualifying check and its
@@ -2552,7 +2599,10 @@ function isBoundedVerificationCommand(command, ctx) {
       kind = 'check';
       sawQualifying = true;
       pipelineHasCheck = true;
-    } else if (isBoundedSinkSegment(seg)) {
+    } else if (isLooseSinkShape(seg)) {
+      // A sink-shaped stage that breaks the closed grammar (file operand,
+      // unknown flag) bounds nothing and is never a light segment either.
+      if (!isBoundedSinkSegment(seg)) return false;
       const precedingDelim = idx > 0 ? delims[idx - 1] : null;
       if (precedingDelim !== '|') return false; // sequential (;/&&), not piped: not bounded
       kind = 'sink';
@@ -3400,7 +3450,7 @@ function isBackgroundScratchScript(command, payload) {
     const seg = segments[i].trim();
     if (!seg) return false;
     if (isBackgroundScratchScriptSegment(seg, ctx)) sawScript = true;
-    else if (!isBoundedSinkSegment(seg)) return false;
+    else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx)) return false;
   }
   return sawScript;
 }
@@ -4486,6 +4536,7 @@ module.exports = {
   isRecoveryGitSegment,
   bashWriteTargets,
   isHeavyCommand,
+  isAllowedGcloudReadCommand,
   isHeavyGhSegment,
   isScratchpadOrTmpPath,
   splitSegmentsDetailed,

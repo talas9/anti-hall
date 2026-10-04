@@ -125,6 +125,21 @@ test('background-scratch: script chained with bounded read sinks passes in the b
   assert.strictEqual(run(cmds[0], { bg: false }).status, 2);
 });
 
+test('background-scratch: a sink with a file operand outside scratch or an unknown flag stays blocked', () => {
+  const out = path.join(dir, 'out.txt');
+  const cmds = [
+    'python3 ' + pyFile + '; head /etc/passwd',
+    'python3 ' + pyFile + '; tail -n +1 --pid=123',
+    'python3 ' + pyFile + '; wc -l /etc/passwd',
+    'python3 ' + pyFile + '; grep -c root /etc/passwd',
+    'python3 ' + pyFile + ' | head -q',
+    'python3 ' + pyFile + '; tail -f ' + out,
+    'python3 ' + pyFile + '; head -n 5 ' + out + ' /etc/passwd',
+  ];
+  const wrong = cmds.filter((c) => run(c).status !== 2);
+  assert.deepStrictEqual(wrong, []);
+});
+
 test('background-scratch: chains to anything but bounded sinks stay blocked', () => {
   const cmds = [
     'python3 ' + pyFile + '; npm test',
