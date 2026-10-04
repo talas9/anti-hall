@@ -47,7 +47,13 @@ pub struct Config {
 impl Config {
     /// Read the limits from the shipped defaults, applying any `AH_ENGINE_*` overrides.
     pub fn from_env() -> Config {
-        use crate::defaults::{millis, num};
+        Config::from_effective(&crate::cfgstore::Effective::defaults())
+    }
+
+    /// Build the limits from a resolved config (`cfgstore`): defaults, user files and environment layered.
+    pub fn from_effective(e: &crate::cfgstore::Effective) -> Config {
+        let millis = |k: &str| Duration::from_millis(e.num(k));
+        let num = |k: &str| e.num(k);
         Config {
             workers: num("daemon.workers") as usize,
             queue: num("daemon.queue") as usize,

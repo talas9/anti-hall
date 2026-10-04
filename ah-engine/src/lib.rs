@@ -1,6 +1,7 @@
 //! anti-hall engine: a tiny hook daemon + client. See README.md.
 #![deny(missing_docs)]
 pub mod backup;
+pub mod cfgstore;
 pub mod checks;
 pub mod cli;
 pub mod client;

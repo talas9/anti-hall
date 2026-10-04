@@ -20,6 +20,7 @@ never a submodule (D69).
 | `src/main.rs`, `src/cli.rs` | the command line: registry of commands, `--json` everywhere |
 | `src/daemon.rs`, `src/client.rs`, `src/frame.rs` | the resident daemon, the hook client, the framed wire protocol |
 | `src/health.rs`, `src/limits.rs`, `src/paths.rs`, `src/config.rs` | breaker, crash loop, advisory, resource caps, locations, limits |
+| `src/cfgstore.rs` | config layering (env, `settings.json`, `config.toml`, defaults), file watching, atomic hot-swap, `config` command data (D18) |
 | `src/checks/` | the `Check` trait and registry; `checks/git/` is the git-guard port (tokenizer, segments, aliases, heredoc, runners, launcher) |
 | `src/rules.rs`, `src/hookio.rs` | the rules format (JSON) and hook payload to output translation |
 | `src/telemetry.rs`, `src/metrics.rs`, `src/impact.rs`, `src/storage.rs` | metrics, the impact ledger and the `Store` trait with its SQLite and in-memory stores |
@@ -218,4 +219,5 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Backup and restore (D27)
 - [x] Metrics and impact persisted through the SQLite `Store` (D51, D52)
 - [x] Storage phase measured (README, Measurements)
-- [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases
+- [x] Config files: layered over the defaults, watched, validated, hot-swapped; `config`, `config validate` (D18, file part)
+- [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage and rollback (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases

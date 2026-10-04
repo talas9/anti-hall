@@ -89,8 +89,8 @@ pub struct Stats {
 
 /// Everything the request handler and the threads share.
 pub struct Shared {
-    /// The limits this daemon runs with.
-    pub cfg: Config,
+    /// The active config (D18): files layered over the shipped defaults, swapped atomically when they change.
+    pub config: crate::cfgstore::ConfigStore,
     /// This build's version string, compared with each client's for handoff.
     pub own: String,
     /// The active rule set; swapped whole on reload, so a request sees one consistent set.
@@ -146,7 +146,7 @@ impl Shared {
         Shared {
             sessions: Mutex::new(Buckets::new(cfg.session_rps, cfg.session_burst)),
             projects: Mutex::new(Buckets::new(cfg.project_rps, cfg.project_burst)),
-            cfg,
+            config: crate::cfgstore::ConfigStore::fixed(cfg),
             own: own.to_string(),
             rules: RwLock::new(Arc::new(rules)),
             seen: Mutex::new(mtime(&rules_path)),
@@ -170,6 +170,25 @@ impl Shared {
             db: None,
             storage: defaults::text("msg.storage_off").to_string(),
         }
+    }
+
+    /// The active config snapshot. A request takes it once and uses it throughout, so it sees one version entirely.
+    pub fn cfg(&self) -> Arc<crate::cfgstore::Snapshot> {
+        self.config.snapshot()
+    }
+
+    /// Re-read the config files (`ctl reload`, or the watcher once a change has settled) and apply new rate limits.
+    fn reload_config(&self) -> crate::cfgstore::Reload {
+        let r = self.config.reload();
+        self.sync_limits();
+        r
+    }
+
+    /// Give the rate-limit buckets the active config's rates.
+    fn sync_limits(&self) {
+        let c = self.cfg();
+        lk(&self.sessions).set_rate(c.session_rps, c.session_burst);
+        lk(&self.projects).set_rate(c.project_rps, c.project_burst);
     }
 
     /// Keep impact events (and, through later layers, project state) in `db` instead of memory.
@@ -244,6 +263,7 @@ impl Shared {
 
     fn status(&self) -> String {
         let rules = self.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let cfg = self.cfg();
         let b = health::breaker_remaining();
         let c = health::crashloop_remaining();
         serde_json::json!({
@@ -254,8 +274,8 @@ impl Shared {
             "rss_kb": limits::rss_kb(),
             "cpu_s": (limits::process_cpu_secs() * 1000.0).round() / 1000.0,
             "queue_depth": self.depth.load(SeqCst),
-            "queue_cap": self.cfg.queue,
-            "workers": self.cfg.workers,
+            "queue_cap": cfg.queue,
+            "workers": cfg.workers,
             "requests": self.stats.requests.load(SeqCst),
             "busy_replies": self.stats.busy.load(SeqCst),
             "errors": self.stats.errors.load(SeqCst),
@@ -270,7 +290,8 @@ impl Shared {
             "summary": self.telemetry.headline(),
             "mem_limit": self.rlimit,
             "storage": self.storage,
-            "rss_cap_kb": self.cfg.rss_cap_kb,
+            "rss_cap_kb": cfg.rss_cap_kb,
+            "config": {"version": cfg.version, "pending_restart": cfg.pending_restart, "last_error": cfg.last_error},
         })
         .to_string()
     }
@@ -278,13 +299,18 @@ impl Shared {
 
 /// Pure-ish request handler (no socket I/O) so it is unit-testable.
 pub fn handle_request(req: &[u8], sh: &Shared) -> (Reply, After) {
+    handle_request_with(req, sh, &sh.cfg())
+}
+
+/// `handle_request` under one config snapshot, so a request that spans several reads of the config sees a single version.
+pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snapshot) -> (Reply, After) {
     sh.stats.requests.fetch_add(1, SeqCst);
     sh.telemetry.request();
     sh.last_request.store(sh.ms(), SeqCst);
     let text = String::from_utf8_lossy(req);
     let (head, body) = text.split_once('\n').unwrap_or((&text, ""));
     if let Some(v) = head.strip_prefix("V ") {
-        let reply = hook(body, sh);
+        let reply = hook(body, sh, cfg);
         let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
@@ -299,11 +325,13 @@ pub fn handle_request(req: &[u8], sh: &Shared) -> (Reply, After) {
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
         Some("reload") => {
             sh.reload();
+            sh.reload_config();
             (Reply::Ok("ok".into()), After::Continue)
         }
+        Some("config") => (Reply::Ok(sh.config.report().to_string()), After::Continue),
         Some("stop") => (Reply::Ok("ok".into()), After::Exit),
         Some("status") => (Reply::Ok(sh.status()), After::Continue),
-        Some(_) if sh.cfg.test_hooks => test_verb(ctl.unwrap_or(""), sh),
+        Some(_) if cfg.test_hooks => test_verb(ctl.unwrap_or(""), sh),
         _ => (Reply::Err(defaults::text("msg.reply_unknown_request").into()), After::Continue),
     }
 }
@@ -341,7 +369,7 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
     }
 }
 
-fn hook(body: &str, sh: &Shared) -> Reply {
+fn hook(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     let started = Instant::now();
     let Ok(p) = serde_json::from_str::<serde_json::Value>(body) else {
         sh.stats.errors.fetch_add(1, SeqCst);
@@ -359,7 +387,7 @@ fn hook(body: &str, sh: &Shared) -> Reply {
         return Reply::Busy;
     }
     let rules = sh.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let (start, budget) = (limits::thread_cpu_us(), sh.cfg.eval_budget_us);
+    let (start, budget) = (limits::thread_cpu_us(), cfg.eval_budget_us);
     let over = move || budget > 0 && limits::thread_cpu_us().saturating_sub(start) > budget;
     let obs = DaemonObserver { t: &sh.telemetry, project: &phash };
     let reply = match crate::hookio::respond_observed(&p, &rules, &over, &obs) {
@@ -465,16 +493,17 @@ fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) {
 
 fn serve_conn(mut s: UnixStream, sh: &Shared) -> After {
     s.set_nonblocking(false).ok();
-    let req = match read_request(&mut s, &sh.cfg) {
+    let cfg = sh.cfg();
+    let req = match read_request(&mut s, &cfg) {
         Ok(r) => r,
         Err(why) => {
             sh.stats.errors.fetch_add(1, SeqCst);
             sh.telemetry.with_metrics(|m| m.inc("errors", &[]));
-            write_reply(&mut s, &Reply::Err(why.into()), &sh.cfg);
+            write_reply(&mut s, &Reply::Err(why.into()), &cfg);
             return After::Continue;
         }
     };
-    let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request(&req, sh))) {
+    let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
         Err(_) => {
             sh.stats.panics.fetch_add(1, SeqCst);
@@ -484,7 +513,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared) -> After {
             (Reply::Err(defaults::text("msg.reply_internal").into()), After::Continue)
         }
     };
-    write_reply(&mut s, &reply, &sh.cfg);
+    write_reply(&mut s, &reply, &cfg);
     after
 }
 
@@ -536,12 +565,13 @@ fn watchdog(sh: Arc<Shared>) {
     let mut last_rss = Instant::now();
     let mut last_idle_check = Instant::now();
     loop {
-        std::thread::sleep(sh.cfg.watchdog_tick);
+        std::thread::sleep(sh.cfg().watchdog_tick);
         if sh.draining.load(SeqCst) {
             continue;
         }
+        let cfg = sh.cfg();
         let now = sh.ms();
-        if now.saturating_sub(sh.loop_beat.load(SeqCst)) > sh.cfg.stall.as_millis() as u64 {
+        if now.saturating_sub(sh.loop_beat.load(SeqCst)) > cfg.stall.as_millis() as u64 {
             health::log_event("watchdog", "stall", defaults::text("msg.log_stall"));
             health::record_failure("watchdog", "stall", defaults::text("msg.failure_stall"));
             begin_drain(&sh, defaults::text("msg.exit_reason_stall"), true);
@@ -549,7 +579,7 @@ fn watchdog(sh: Arc<Shared>) {
         }
         for (i, b) in sh.busy_since.iter().enumerate() {
             let since = b.load(SeqCst);
-            if since != 0 && now.saturating_sub(since - 1) > sh.cfg.stuck.as_millis() as u64 {
+            if since != 0 && now.saturating_sub(since - 1) > cfg.stuck.as_millis() as u64 {
                 health::log_event("watchdog", "stuck", &defaults::render("msg.log_stuck", &[("i", &i)]));
                 health::record_failure("watchdog", "stuck", defaults::text("msg.failure_stuck"));
                 begin_drain(&sh, defaults::text("msg.exit_reason_stuck"), true);
@@ -557,7 +587,7 @@ fn watchdog(sh: Arc<Shared>) {
             }
         }
         // Idle exit is off unless configured (D7): the engine stays resident so the scheduler and mailbox keep running.
-        if let Some(idle) = sh.cfg.idle_exit {
+        if let Some(idle) = cfg.idle_exit {
             if last_idle_check.elapsed() >= defaults::millis("daemon.idle_check_ms") {
                 last_idle_check = Instant::now();
                 let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0;
@@ -567,12 +597,12 @@ fn watchdog(sh: Arc<Shared>) {
                 }
             }
         }
-        if last_rss.elapsed() >= sh.cfg.rss_check {
+        if last_rss.elapsed() >= cfg.rss_check {
             last_rss = Instant::now();
             let rss = limits::rss_kb();
             sh.rss_kb.store(rss, SeqCst);
-            if sh.cfg.rss_cap_kb > 0 && rss > sh.cfg.rss_cap_kb {
-                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &rss), ("cap", &sh.cfg.rss_cap_kb)]));
+            if cfg.rss_cap_kb > 0 && rss > cfg.rss_cap_kb {
+                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &rss), ("cap", &cfg.rss_cap_kb)]));
                 begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
             }
         }
@@ -611,7 +641,6 @@ fn io_code(e: &std::io::Error) -> String {
 
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
 pub fn serve() {
-    let cfg = Config::from_env();
     let sock = paths::socket();
     let lock_path = paths::lock_for(&sock);
     // state dir + socket dir: private (0700), ours, not a symlink
@@ -657,6 +686,9 @@ pub fn serve() {
         libc::signal(libc::SIGHUP, on_hup as extern "C" fn(libc::c_int) as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
     }
+    // Config is read once the singleton lock is ours, so a refused second daemon never logs a config error twice.
+    let store = crate::cfgstore::ConfigStore::load();
+    let cfg = store.snapshot().config.clone();
     let rlimit = limits::apply_mem_limit(cfg.mem_mb);
     limits::apply_nice(cfg.nice);
     health::write_marker();
@@ -666,6 +698,7 @@ pub fn serve() {
 
     let rules_path = paths::rules_file();
     let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);
+    sh.config = store;
     sh.rlimit = rlimit;
     sh.starts = starts;
     // Storage is opened after the singleton lock, so only one daemon ever writes the databases. A storage failure
@@ -679,7 +712,7 @@ pub fn serve() {
     }
     drain_spool(&sh); // writes spooled while the engine was down, before any new one
     let sh = Arc::new(sh);
-    for i in 0..sh.cfg.workers {
+    for i in 0..sh.cfg().workers {
         let s = sh.clone();
         std::thread::spawn(move || worker(s, i));
     }
@@ -763,7 +796,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 continue; // dropped: another uid never gets a reply
             }
             let mut q = lk(&sh.queue);
-            if q.len() >= sh.cfg.queue {
+            if q.len() >= sh.cfg().queue {
                 drop(q);
                 sh.stats.busy.fetch_add(1, SeqCst);
                 sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
@@ -787,7 +820,12 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             let now = mtime(&sh.rules_path);
             if HUP.swap(false, SeqCst) || now != *lk(&sh.seen) {
                 sh.reload();
+                sh.reload_config();
             }
+        }
+        // config files (D18): a settled change is validated and swapped in without a restart
+        if !draining && sh.config.poll().is_some() {
+            sh.sync_limits();
         }
     }
 }

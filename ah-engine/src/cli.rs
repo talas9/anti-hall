@@ -53,6 +53,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("maintain", cmd_maintain),
         ("backup", cmd_backup),
         ("restore", cmd_restore),
+        ("config", cmd_config),
     ]
 }
 
@@ -319,6 +320,75 @@ fn cmd_proj(p: &Parsed) -> i32 {
             1
         }
     }
+}
+
+/// `config [--json]`: the effective config and where each value comes from (the running daemon's active version when
+/// one is up, else what a fresh start would load from the files); `config validate <file>`: check a user TOML file.
+fn cmd_config(p: &Parsed) -> i32 {
+    match p.rest.first().map(String::as_str) {
+        None => {
+            let mut v = client::ctl_json("config").map(|mut v| {
+                v["from"] = json!("daemon");
+                v
+            });
+            if v.is_none() {
+                let mut f = crate::cfgstore::report_from_files();
+                f["from"] = json!("files");
+                v = Some(f);
+            }
+            let v = v.unwrap_or(Value::Null);
+            emit(p, config_text(&v), v);
+            0
+        }
+        Some("validate") => match p.rest.get(1) {
+            None => {
+                let msg = defaults::text("msg.cfg_validate_usage");
+                emit(p, msg.to_string(), json!({"error": msg}));
+                64
+            }
+            Some(file) => match crate::cfgstore::validate_file(std::path::Path::new(file)) {
+                Ok(n) => {
+                    let msg = defaults::render("msg.cfg_valid", &[("path", file), ("count", &n)]);
+                    emit(p, msg.clone(), json!({"valid": true, "path": file, "settings": n}));
+                    0
+                }
+                Err(e) => {
+                    let msg = defaults::render("msg.cfg_invalid_cli", &[("err", &e)]);
+                    emit(p, msg.clone(), json!({"valid": false, "path": file, "code": e.code(), "error": e.to_string()}));
+                    1
+                }
+            },
+        },
+        Some(other) => {
+            // versions, rollback, export: planned with the config database
+            let decision = defaults::raw("cmd.config").str_field("planned_decision");
+            let msg = defaults::render("msg.cli_planned", &[("command", &format!("{} {other}", p.command)), ("decision", &decision)]);
+            emit(p, msg.clone(), json!({"error": msg, "planned": decision}));
+            64
+        }
+    }
+}
+
+/// Human rendering of a config report: where it came from, the files, then one line per setting with its source.
+fn config_text(v: &Value) -> String {
+    let mut out = vec![defaults::render("msg.cfg_show_header", &[("version", &v["version"]), ("from", &v["from"].as_str().unwrap_or(""))])];
+    for f in v["files"].as_array().into_iter().flatten() {
+        let state = defaults::text(if f["present"].as_bool().unwrap_or(false) { "msg.cfg_state_present" } else { "msg.cfg_state_absent" });
+        out.push(defaults::render(
+            "msg.cfg_show_file",
+            &[("kind", &f["kind"].as_str().unwrap_or("")), ("path", &f["path"].as_str().unwrap_or("")), ("state", &state)],
+        ));
+    }
+    if let Some(e) = v["last_error"].as_str() {
+        out.push(defaults::render("msg.cfg_show_error", &[("err", &e)]));
+    }
+    if let Some(p) = v["pending_restart"].as_array().filter(|p| !p.is_empty()) {
+        out.push(defaults::render("msg.cfg_show_pending", &[("keys", &p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))]));
+    }
+    for (k, s) in v["settings"].as_object().into_iter().flatten() {
+        out.push(defaults::render("msg.cfg_show_setting", &[("key", k), ("value", &s["value"]), ("source", &s["source"].as_str().unwrap_or(""))]));
+    }
+    out.join("\n")
 }
 
 #[cfg(test)]

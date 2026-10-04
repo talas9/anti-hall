@@ -26,6 +26,11 @@ impl Buckets {
     pub fn new(rps: f64, burst: f64) -> Buckets {
         Buckets { map: HashMap::new(), rps, burst: burst.max(1.0), cap: crate::defaults::num("daemon.bucket_cap") as usize }
     }
+    /// Change the rate and burst for later requests (a config swap, D18); existing tokens are kept.
+    pub fn set_rate(&mut self, rps: f64, burst: f64) {
+        self.rps = rps;
+        self.burst = burst.max(1.0);
+    }
     /// True when `key` may proceed; false when it is over its rate.
     pub fn allow(&mut self, key: &str) -> bool {
         self.allow_at(key, Instant::now())

@@ -69,7 +69,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Size control: retention, the hot-to-archive mover, WAL checkpoints and VACUUM, `ah-engine maintain` | implemented | D26 |
 | Running maintenance on a schedule | planned (D33) | D33 |
 | Compressed export of old chat | planned (D26, D45) | D26, D45 |
-| Config loaded into versioned storage with reload and rollback | planned (D18) | D18 |
+| Config files layered over the shipped defaults, watched, validated and swapped in atomically; `config` and `config validate` | implemented | D18 |
+| Config loaded into versioned storage, `config versions`, `rollback`, `export`, restart handoff for restart-only keys | planned (D18) | D18 |
 | Durable write spool when the engine is down or busy: retry with backoff, fsync'd spool, drained exactly once in order | implemented | D24 |
 | Scheduler and ticker, `ah-engine schedule` | planned (D33) | D33 |
 | Mesh messaging, Monitor push, chat database | planned (D45) | D45 |
@@ -97,14 +98,17 @@ arguments, is in the generated reference.
 | `ah-engine docs` | yes | The generated reference (`--format md`, or `--json`). |
 | `ah-engine check <name>` | yes | Run one check on a payload from stdin (parity harness). |
 | `ah-engine version` | yes | The version this build reports. |
-| `ah-engine ctl <verb>` | no | `ping`, `reload`, `stop`, `status`. |
+| `ah-engine ctl <verb>` | no | `ping`, `reload` (also re-reads the config files), `stop`, `status`, `config`. |
 | `ah-engine stop` | no | Drain and exit. |
 | `ah-engine reset` | no | Clear the breaker, crash-loop stop and failure record. |
 | `ah-engine maintain` | no | Size control: move inactive rows to `archive.db`, prune derived bookkeeping, checkpoint and VACUUM; prints a report. |
 | `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. A write the engine cannot take is spooled. |
 | `ah-engine backup [--to <dir>]` | no | A consistent, scrubbed snapshot of `hot.db` and `archive.db`; prints its manifest. |
 | `ah-engine restore <snapshot-dir>` | no | Keep the current state as a pre-restore snapshot, stop the daemon, swap in the snapshot. |
-| `ah-engine schedule`, `config` | no | planned (D33, D18); they say so and exit 64. |
+| `ah-engine config [--json]` | yes | The effective config with the source of every value (`default`, `config_toml`, `settings`, `env`), the files read, the active version, any rejected edit and settings pending a restart. Asks the running daemon, else reads the files. |
+| `ah-engine config validate <file>` | yes | Check an engine TOML file against the schema: exit 0 when valid, 1 with the reason when not. |
+| `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
+| `ah-engine schedule` | no | planned (D33); it says so and exits 64. |
 
 ## Metrics and the impact ledger
 
@@ -229,11 +233,30 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `commands.toml` | the command registry data |
 | `telemetry.toml` | the metric and impact-kind registries and the savings method |
 | `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention, backups |
+| `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
 message is written in Rust instead (`no_hardcoded_tunables`), and another if code and defaults disagree. User-level
-overrides loaded from files and versioned storage are planned (D18).
+overrides are layered on at start and on every change (below); persisting each version in storage is planned (D18).
+
+### Config layering and hot-swap (D18)
+
+Highest layer first, mirroring `get()` in `plugins/anti-hall/hooks/lib/settings.js`:
+
+1. **Environment**: the setting's own `env` variable (numeric settings).
+2. **`settings.json`**: `~/.anti-hall/settings.json` (or `AH_ENGINE_SETTINGS`), the file the Node settings code reads. The setting `section.key` is `settings[section]` then `key`, flat or dotted-nested, coerced like Node (trimmed, bad values fall through, numbers clamped, booleans accept `1/on/true/yes` and `0/off/false/no`).
+3. **`config.toml`** in the state directory (or `AH_ENGINE_CONFIG`): the engine's own file, written as `[daemon]` then `queue = 32`. It is strict: an unknown key, a wrong type or an out-of-range number invalidates the file.
+4. **The shipped default.**
+
+The daemon watches both files (polling, `config.watch_ms`, debounced by `config.debounce_ms`) and on `ctl reload`/SIGHUP.
+A change is parsed and validated first and swapped in only if valid; a request takes one snapshot when it starts and sees
+that version throughout. An invalid or unreadable file keeps the last good config and logs `config_invalid`; a deleted
+file falls back to the next layer. A corrupt `settings.json` counts as invalid here (Node reads it as empty), so a
+half-written edit cannot swap the daemon to defaults. Settings in `config.restart_only` keep their running value until
+the next start and are listed as `pending_restart`; an automatic handoff for them is planned (D18). Today the swap
+reaches every daemon limit (`daemon.*`: request and reply deadlines, size and CPU budgets, queue, rate limits, watchdog
+and idle timing); moving the remaining readers of shipped defaults onto the snapshot is incremental work (D17).
 
 State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.db` and `archive.db`, the write spool
 `spool.log` and its `spool.quarantine`, the `backups/` directory, the event log,

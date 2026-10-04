@@ -1,0 +1,145 @@
+# ah-engine config layering and hot-swap (D18, file part). Same format as engine.toml.
+
+[env.config]
+doc = "Overrides the path of the engine's own user config file (default: config.toml in the state directory)."
+value = "AH_ENGINE_CONFIG"
+
+[env.settings]
+doc = "Overrides the path of anti-hall's settings.json (default: settings.json in the base directory under the home directory)."
+value = "AH_ENGINE_SETTINGS"
+
+[config.user_file]
+doc = "Name of the engine's own user config (TOML) inside the state directory."
+value = "config.toml"
+
+[config.settings_file]
+doc = "Name of anti-hall's settings file inside the base directory (the file hooks/lib/settings.js reads)."
+value = "settings.json"
+
+[config.watch_ms]
+doc = "How often the daemon checks the config files for a change."
+value = 500
+env = "AH_ENGINE_CONFIG_WATCH_MS"
+min = 10
+max = 60000
+unit = "ms"
+
+[config.debounce_ms]
+doc = "A change must stay unchanged this long before it is loaded, so a half-written or rapidly edited file is read once."
+value = 300
+env = "AH_ENGINE_CONFIG_DEBOUNCE_MS"
+min = 0
+max = 60000
+unit = "ms"
+
+[config.true_tokens]
+doc = "Words a settings.json boolean may be written as to mean true (matches TRUE_TOKENS in hooks/lib/settings-schema.js)."
+value = ["1", "on", "true", "yes"]
+
+[config.false_tokens]
+doc = "Words a settings.json boolean may be written as to mean false (matches FALSE_TOKENS in hooks/lib/settings-schema.js)."
+value = ["0", "off", "false", "no"]
+
+[config.restart_only]
+doc = "Settings (or key prefixes ending in a dot) that only take effect when the daemon starts; an edit is held as pending until then."
+value = ["daemon.workers", "daemon.mem_mb", "daemon.nice", "paths.", "storage.", "store.", "files."]
+
+[msg.cfg_err_io]
+doc = "A config file could not be read."
+value = "Cannot read config file {path}: {err}"
+
+[msg.cfg_err_parse]
+doc = "A config file is not valid TOML or JSON."
+value = "Config file {path} is not valid: {err}"
+
+[msg.cfg_err_not_object]
+doc = "settings.json is valid JSON but not an object."
+value = "Config file {path} must hold a JSON object at its top level"
+
+[msg.cfg_err_unknown]
+doc = "A config file names a setting the engine does not have."
+value = "Config file {path}: {key} is not a known setting"
+
+[msg.cfg_err_type]
+doc = "A config value has the wrong type."
+value = "Config file {path}: {key} must be {expected}, found {found}"
+
+[msg.cfg_err_range]
+doc = "A numeric config value is outside the setting's bounds."
+value = "Config file {path}: {key} = {value} is outside {min} to {max}"
+
+[msg.cfg_err_unsupported]
+doc = "A TOML value has a type that settings cannot hold."
+value = "Config file {path}: {key} uses a value type settings cannot hold ({found})"
+
+[msg.cfg_log_applied]
+doc = "Event-log detail when a new config version became active."
+value = "config version {version} active ({changed} settings changed)"
+
+[msg.cfg_log_pending]
+doc = "Event-log detail when an edit changed settings that only apply at the next start."
+value = "restart needed for: {keys}"
+
+[msg.cfg_valid]
+doc = "Printed by `config validate` when the file is valid."
+value = "ok: {path} is valid ({count} settings)"
+
+[msg.cfg_validate_usage]
+doc = "Printed by `config validate` without a file."
+value = "usage: ah-engine config validate <file>"
+
+[msg.cfg_invalid_cli]
+doc = "Printed by `config validate` when the file is invalid (the reason follows)."
+value = "invalid: {err}"
+
+[msg.cfg_type_integer]
+doc = "Type name used in config errors."
+value = "an integer"
+
+[msg.cfg_type_boolean]
+doc = "Type name used in config errors."
+value = "a boolean"
+
+[msg.cfg_type_string]
+doc = "Type name used in config errors."
+value = "a string"
+
+[msg.cfg_type_list]
+doc = "Type name used in config errors."
+value = "a list"
+
+[msg.cfg_type_table]
+doc = "Type name used in config errors."
+value = "a table"
+
+[msg.cfg_type_other]
+doc = "Type name used in config errors for a value of another kind."
+value = "something else"
+
+[msg.cfg_show_header]
+doc = "First line of `config` output."
+value = "config version {version} (read from {from})"
+
+[msg.cfg_show_file]
+doc = "One config file line of `config` output."
+value = "  {kind}: {path} ({state})"
+
+[msg.cfg_state_present]
+doc = "A config file exists."
+value = "present"
+
+[msg.cfg_state_absent]
+doc = "A config file does not exist."
+value = "absent"
+
+[msg.cfg_show_error]
+doc = "The last rejected config edit, in `config` output."
+value = "  last error: {err}"
+
+[msg.cfg_show_pending]
+doc = "Settings waiting for a restart, in `config` output."
+value = "  pending restart: {keys}"
+
+[msg.cfg_show_setting]
+doc = "One setting line of `config` output."
+value = "{key} = {value}  ({source})"

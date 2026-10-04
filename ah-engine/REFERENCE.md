@@ -10,7 +10,7 @@ Every command accepts `--json`. Read-only commands never change state.
 |---|---|---|---|---|
 | `backup` | `[--to <dir>]` | no | implemented | Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given directory; prints its manifest. |
 | `check` | `<name>` | yes | implemented | Run one built-in check in-process on a hook payload from stdin (used by the parity harness). |
-| `config` | `<versions\|rollback\|export>` | no | planned (D18) | Show config versions, roll back, export. |
+| `config` | `[validate <file>]` | yes | implemented | Show the effective config and where each value comes from, or validate a config file; versions, rollback and export are planned (D18, they need the config database). |
 | `ctl` | `<ping\|reload\|stop\|status>` | no | implemented | Send a control verb to the daemon: ping, reload, stop or status. |
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `hook` | `[--fallback <hook.js>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. |
@@ -392,6 +392,25 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `tier.item_overhead` | `96` |  | bytes | Bytes charged per item on top of its text, for the map and ordering entries that hold it. |
 | `tier.project_channel_prefix` | `project:` |  |  | Channel name prefix for a project's notifications; the hashed project key follows it. |
 
+### config.toml / config
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `config.debounce_ms` | `300` | `AH_ENGINE_CONFIG_DEBOUNCE_MS` | ms | A change must stay unchanged this long before it is loaded, so a half-written or rapidly edited file is read once. |
+| `config.false_tokens` | `0, off, false, no` |  |  | Words a settings.json boolean may be written as to mean false (matches FALSE_TOKENS in hooks/lib/settings-schema.js). |
+| `config.restart_only` | `7 items` |  |  | Settings (or key prefixes ending in a dot) that only take effect when the daemon starts; an edit is held as pending until then. |
+| `config.settings_file` | `settings.json` |  |  | Name of anti-hall's settings file inside the base directory (the file hooks/lib/settings.js reads). |
+| `config.true_tokens` | `1, on, true, yes` |  |  | Words a settings.json boolean may be written as to mean true (matches TRUE_TOKENS in hooks/lib/settings-schema.js). |
+| `config.user_file` | `config.toml` |  |  | Name of the engine's own user config (TOML) inside the state directory. |
+| `config.watch_ms` | `500` | `AH_ENGINE_CONFIG_WATCH_MS` | ms | How often the daemon checks the config files for a change. |
+
+### config.toml / env
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `env.config` | `AH_ENGINE_CONFIG` |  |  | Overrides the path of the engine's own user config file (default: config.toml in the state directory). |
+| `env.settings` | `AH_ENGINE_SETTINGS` |  |  | Overrides the path of anti-hall's settings.json (default: settings.json in the base directory under the home directory). |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -505,6 +524,31 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_runner_placeholder` | Block: a runner placeholder stands for the command or subcommand beside a force or delete flag. |
 | `git.msg_runner_push` | Block: a push through xargs or parallel. Placeholder: {runner}. |
 | `git.msg_trailer_remap` | Block: a trailer remap to an AI self-credit key. |
+| `msg.cfg_err_io` | A config file could not be read. |
+| `msg.cfg_err_not_object` | settings.json is valid JSON but not an object. |
+| `msg.cfg_err_parse` | A config file is not valid TOML or JSON. |
+| `msg.cfg_err_range` | A numeric config value is outside the setting's bounds. |
+| `msg.cfg_err_type` | A config value has the wrong type. |
+| `msg.cfg_err_unknown` | A config file names a setting the engine does not have. |
+| `msg.cfg_err_unsupported` | A TOML value has a type that settings cannot hold. |
+| `msg.cfg_invalid_cli` | Printed by `config validate` when the file is invalid (the reason follows). |
+| `msg.cfg_log_applied` | Event-log detail when a new config version became active. |
+| `msg.cfg_log_pending` | Event-log detail when an edit changed settings that only apply at the next start. |
+| `msg.cfg_show_error` | The last rejected config edit, in `config` output. |
+| `msg.cfg_show_file` | One config file line of `config` output. |
+| `msg.cfg_show_header` | First line of `config` output. |
+| `msg.cfg_show_pending` | Settings waiting for a restart, in `config` output. |
+| `msg.cfg_show_setting` | One setting line of `config` output. |
+| `msg.cfg_state_absent` | A config file does not exist. |
+| `msg.cfg_state_present` | A config file exists. |
+| `msg.cfg_type_boolean` | Type name used in config errors. |
+| `msg.cfg_type_integer` | Type name used in config errors. |
+| `msg.cfg_type_list` | Type name used in config errors. |
+| `msg.cfg_type_other` | Type name used in config errors for a value of another kind. |
+| `msg.cfg_type_string` | Type name used in config errors. |
+| `msg.cfg_type_table` | Type name used in config errors. |
+| `msg.cfg_valid` | Printed by `config validate` when the file is valid. |
+| `msg.cfg_validate_usage` | Printed by `config validate` without a file. |
 
 ## Metrics
 
