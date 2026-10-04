@@ -449,6 +449,19 @@ test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet and the workhorse
   } finally { h.cleanup(); }
 });
 
+test('INJECTOR: advisory never calls a Claude model a separate weekly bucket', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ fiveHour: 90 }));
+    const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    const ctx = additionalContext(r);
+    assert.ok(ctx.length > 0, 'advisory should be emitted');
+    assert.ok(!/(sonnet|opus|haiku)[^.;]{0,40}(separate|own|different)[^.;]{0,20}(weekly )?(bucket|pool|limit)/i.test(ctx),
+      `advisory must not call a Claude model a separate bucket; got: ${ctx}`);
+    assert.ok(!/separate weekly bucket|flagship weekly bucket/i.test(ctx), `stale bucket claim; got: ${ctx}`);
+  } finally { h.cleanup(); }
+});
+
 test('INJECTOR DOWNSHIFT: conserving -> warns against a smaller-context (sub-1M) model', () => {
   const h = makeHome();
   try {

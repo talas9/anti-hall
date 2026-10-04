@@ -8,6 +8,7 @@ the update.
 
 ## Unreleased
 
+- Fixed the limit-conservation advisory (`limit-conserve-inject.js`, Codex `anti-hall-context-conserve` skill) claiming Sonnet draws on a "SEPARATE weekly bucket" or that a downshift preserves a "flagship weekly bucket". Per-model weekly buckets are not documented, and the usage screen shows only "All models" and "Fable only". The text now says only that Codex has its own limit and that cheaper models or fewer agents use less of the shared Claude pool, and makes no claim about Fable's relation to "All models". A test fails if the advisory ever again calls Sonnet, Opus or Haiku a separate bucket.
 - Removed the Flutter-specific `flutter-debug` skill and agent; anti-hall is language-agnostic. The removed code remains in git history.
 
 ## 0.202.0 (2026-10-04)
