@@ -107,7 +107,8 @@ the upper bound of the histogram bucket that holds that rank, so they are upper 
 `requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `hook_calls`, `hook_latency_us`,
 `check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth`, `uptime_s`, and for the
 memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evictions`, `tier_expired`, `bus_published`
-and `bus_dropped`.
+and `bus_dropped`, and for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is
+sharing syncs).
 
 **Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. They
 are stored in `hot.db` with exact per-combination totals, so counts survive a restart; the project is only ever a short
@@ -132,10 +133,16 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
 | `hot.db` | frequent small writes: impact events and their totals, per-project mailboxes and key-value pairs, applied write ids | WAL, `synchronous=FULL`: a write is on disk before it is acknowledged |
 | `archive.db` | append-mostly history; opened on first use | WAL, `synchronous=NORMAL`, batched commits |
 
-- **One writer.** A single writer thread owns the `hot.db` write connection. Requests hand it their writes over a bounded
-  queue (`storage.write_queue`; when it is full the write is refused as busy). Whatever is queued while a commit runs
-  goes into the next transaction, so concurrent writes share one sync, and each write sits in its own savepoint, so a
-  refused write never undoes its neighbours. Reads use a second connection.
+- **One writer, group commit (D23).** A single writer thread owns the `hot.db` write connection. Requests hand it their
+  writes over a bounded queue (`storage.write_queue`; when it is full the write is refused as busy). The writer takes a
+  write, gathers more for up to `storage.group_commit_ms` (default 0: only what is already queued, which still groups
+  writes that arrive during a commit), commits them in one transaction and only then answers each one. Each write sits
+  in its own savepoint, so a refused write never undoes its neighbours. Reads use a second connection.
+- **Acknowledged means committed.** A project write is answered only after its transaction is on disk; a write that does
+  not commit within `storage.ack_timeout_ms` is answered with an error, and its write id makes a retry harmless. The test
+  `tests/durability.rs` kills the daemon with SIGKILL in the middle of a burst of writes from four threads, fifty times
+  in a row, and checks after each restart that every acknowledged write is present, nothing present was invented or
+  torn, and every write id matches exactly one row.
 - **Hooks never wait on storage.** Impact events from the hook path are queued without waiting; a later read first waits
   for everything queued before it, so it sees them. If storage cannot open, the daemon logs why, shows it as `storage` in
   `status`, and keeps serving hooks with the impact ledger in memory.

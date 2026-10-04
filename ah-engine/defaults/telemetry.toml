@@ -132,6 +132,14 @@ value = { kind = "gauge", unit = "notifications", labels = [] }
 doc = "Pub/sub notifications a full subscriber queue could not take since the daemon started (the data stays in SQLite)."
 value = { kind = "gauge", unit = "notifications", labels = [] }
 
+[metric.db_commits]
+doc = "hot.db transactions the writer committed since the daemon started; fewer than db_writes means group commit is sharing syncs."
+value = { kind = "gauge", unit = "commits", labels = [] }
+
+[metric.db_writes]
+doc = "Writes carried by those transactions since the daemon started."
+value = { kind = "gauge", unit = "writes", labels = [] }
+
 # ---- impact kinds ---------------------------------------------------------------------------------------
 
 [impact.block]

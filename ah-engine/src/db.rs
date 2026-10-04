@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// One write the writer thread applies.
 #[derive(Debug, Clone)]
@@ -67,6 +68,10 @@ pub struct Mem {
     pub bus: Bus,
     /// Bumped by every write that touches `kv`, so a read that raced a write does not promote a stale value.
     seq: std::sync::atomic::AtomicU64,
+    /// Transactions the writer committed since open (group commit puts several writes in one).
+    pub commits: std::sync::atomic::AtomicU64,
+    /// Writes those transactions carried.
+    pub writes: std::sync::atomic::AtomicU64,
 }
 
 impl Mem {
@@ -75,6 +80,8 @@ impl Mem {
             kv: Mutex::new(Tiered::new(defaults::num("tier.budget_kb") as usize * 1024)),
             bus: Bus::new(defaults::num("tier.bus_queue") as usize, defaults::num("tier.bus_channels") as usize),
             seq: std::sync::atomic::AtomicU64::new(0),
+            commits: std::sync::atomic::AtomicU64::new(0),
+            writes: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -182,13 +189,18 @@ fn open_file(path: &Path, sync_key: &str, migrations: &[&str]) -> Result<Connect
 impl Db {
     /// Open (creating and migrating as needed) hot.db in `dir` and start the writer. archive.db opens on first use.
     pub fn open(dir: &Path) -> Result<Arc<Db>, DbError> {
+        Db::open_with_window(dir, defaults::millis("storage.group_commit_ms"))
+    }
+
+    /// [`Db::open`] with an explicit group-commit window (`storage.group_commit_ms` is the configured one).
+    pub fn open_with_window(dir: &Path, window: Duration) -> Result<Arc<Db>, DbError> {
         let hot = dir.join(defaults::text("storage.hot_file"));
         let write = open_file(&hot, "storage.hot_synchronous", sql::HOT_MIGRATIONS)?;
         let read = open_file(&hot, "storage.hot_synchronous", sql::HOT_MIGRATIONS)?;
         let (tx, rx) = mpsc::sync_channel(defaults::num("storage.write_queue") as usize);
         let mem = Arc::new(Mem::new());
         let m = mem.clone();
-        let handle = std::thread::spawn(move || writer(write, rx, &m));
+        let handle = std::thread::spawn(move || writer(write, rx, &m, window));
         Ok(Arc::new(Db {
             tx: Mutex::new(Some(tx)),
             read: Mutex::new(read),
@@ -262,16 +274,21 @@ impl Drop for Db {
     }
 }
 
-/// The writer thread: take one job, add whatever else is already queued (up to `storage.batch_max`), commit them as
-/// one transaction, then answer each. Ends when every sender is gone and the queue is empty.
-fn writer(mut conn: Connection, rx: Receiver<Job>, mem: &Mem) {
+/// The writer thread (group commit, D23): take one job, then gather more for up to `window` (with a zero window,
+/// only what is already queued), at most `storage.batch_max`; commit them as one transaction, then answer each. A
+/// longer window trades the first write's latency for fewer syncs under load. Ends when every sender is gone and the
+/// queue is empty.
+fn writer(mut conn: Connection, rx: Receiver<Job>, mem: &Mem, window: Duration) {
     let max = defaults::num("storage.batch_max") as usize;
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
+        let deadline = Instant::now() + window;
         while batch.len() < max {
-            match rx.try_recv() {
-                Ok(j) => batch.push(j),
-                Err(_) => break,
+            let left = deadline.saturating_duration_since(Instant::now());
+            let next = if left.is_zero() { rx.try_recv().ok() } else { rx.recv_timeout(left).ok() };
+            match next {
+                Some(j) => batch.push(j),
+                None => break,
             }
         }
         commit_batch(&mut conn, batch, mem);
@@ -285,7 +302,12 @@ fn commit_batch(conn: &mut Connection, batch: Vec<Job>, mem: &Mem) {
         batch.iter().for_each(|_| results.push(Ok(String::new())));
         Ok(())
     } else {
-        run_tx(conn, &batch, &mut results)
+        let r = run_tx(conn, &batch, &mut results);
+        if r.is_ok() {
+            mem.commits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            mem.writes.fetch_add(batch.len() as u64, std::sync::atomic::Ordering::SeqCst);
+        }
+        r
     };
     if let Err(e) = outcome {
         results = batch.iter().map(|_| Err(e.clone())).collect();
@@ -470,6 +492,31 @@ mod tests {
         let other = Connection::open(d.0.join("hot.db")).unwrap();
         let n: i64 = other.query_row("SELECT count FROM impact_totals", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn concurrent_writes_share_commits_within_the_window() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let d = TempDir::new("group");
+        let db = Db::open_with_window(&d.0, Duration::from_millis(100)).unwrap();
+        let threads: Vec<_> = (0..20)
+            .map(|_| {
+                let db = db.clone();
+                std::thread::spawn(move || db.write(Op::Impact(ev("block"))).unwrap())
+            })
+            .collect();
+        threads.into_iter().for_each(|t| {
+            t.join().unwrap();
+        });
+        let (commits, writes) = (db.mem.commits.load(SeqCst), db.mem.writes.load(SeqCst));
+        assert_eq!(writes, 20);
+        assert!(commits < 20, "20 concurrent writes inside one window share commits: {commits}");
+        let solo = TempDir::new("solo");
+        let db = Db::open_with_window(&solo.0, Duration::ZERO).unwrap();
+        for _ in 0..5 {
+            db.write(Op::Impact(ev("block"))).unwrap();
+        }
+        assert_eq!(db.mem.commits.load(SeqCst), 5, "sequential writes with no window commit one by one");
     }
 
     #[test]

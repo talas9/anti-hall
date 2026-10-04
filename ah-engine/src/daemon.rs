@@ -200,6 +200,8 @@ impl Shared {
                 ("tier_expired", t.expired as f64),
                 ("bus_published", db.mem.bus.published.load(SeqCst) as f64),
                 ("bus_dropped", db.mem.bus.dropped.load(SeqCst) as f64),
+                ("db_commits", db.mem.commits.load(SeqCst) as f64),
+                ("db_writes", db.mem.writes.load(SeqCst) as f64),
             ]);
         }
         self.telemetry.metrics_json(&check, &gauges)

@@ -71,6 +71,13 @@ doc = "Most writes committed in one transaction."
 value = 256
 min = 1
 
+[storage.group_commit_ms]
+doc = "Group-commit window: after taking a write, the writer waits up to this long for more before committing them together (D23); 0 commits at once with whatever is already queued, which still groups writes that arrive during a commit."
+value = 0
+env = "AH_ENGINE_GROUP_COMMIT_MS"
+unit = "ms"
+max = 1000
+
 [storage.ack_timeout_ms]
 doc = "How long a request waits for its write to commit before it is answered with an error (the client then retries or spools; the write id makes a late commit harmless); kept below client.ctl_timeout_ms so the client hears the error."
 value = 1000

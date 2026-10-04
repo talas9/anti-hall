@@ -83,6 +83,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | Residency: stays up when idle by default; idle exit is a config key | `tests/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
 | Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/agent_cli.rs` |
 | Tiered lifecycle: write-through after commit, LRU budget loses nothing, TTL ends the lifecycle but keeps the row, a restart rebuilds only active items, idempotent write ids, pub/sub never blocks | `tier::tests`, `store::tests` |
+| Durability: SIGKILL mid-burst, 50 loops: every acknowledged write present, nothing torn, invented or duplicated, write ids match rows; group commit shares syncs within its window | `tests/durability.rs`, `db::tests::concurrent_writes_share_commits_within_the_window` |
 | Storage: WAL and configured durability, versioned idempotent migrations, a newer schema refused, acknowledged only after commit, queued writes committed on close; both `Store` backends behave the same | `db::tests`, `storage::tests` |
 
 Known limits: CI runs the whole suite on ubuntu and macOS (`.github/workflows/ah-engine.yml`); the Linux CI run found a real
@@ -173,5 +174,6 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] README and `docs/AH-ENGINE.md` (D54)
 - [x] Storage backend: SQLite pair, WAL, configured durability, versioned migrations, `Store` over SQLite (D19, D21, D73)
 - [x] Tiered lifecycle and the in-memory layer: key-value with TTL, pub/sub, byte budget (D20, D22, D25)
-- [ ] Storage: durability tests, spool, size control, backup, persisted metrics (D20, D22-D27, D51, D52): this phase
+- [x] Durability and group commit, with the kill -9 crash test (D23)
+- [ ] Storage: spool, size control, backup, persisted metrics (D24, D26, D27, D51, D52): this phase
 - [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases
