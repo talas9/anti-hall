@@ -48,6 +48,7 @@ the update.
 - Jev triage: the per-hash claim and the arrival drain lock now use the single lock primitive (`companion/lib/lock.js`) instead of hand-rolled O_EXCL markers; the lock gained `adopt(path, token)` so the detached drain worker takes over the lock its spawning hook acquired. Behaviour unchanged; the hygiene allowlist entry is gone.
 
 ### Changed
+- Manifest: `plugin.json` now sets `termsOfServiceUrl` (the MIT LICENSE), so the plugin directory listing shows a terms link next to support and privacy. The Codex manifest already had it.
 
 - speculation-judge now sends the judge the latest user request (up to 2000 characters) and the
   newest tool evidence from the transcript (up to about 6000 characters, secret-scrubbed) besides the
