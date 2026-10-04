@@ -1,0 +1,10 @@
+{
+  "scenario": "tasklist-guard-nag",
+  "outputs": [
+    {
+      "label": "tasklist-guard.js",
+      "status": 0,
+      "text": "You made 4 file-changing actions this session but tracked NO tasks. Capture this work as priority-sorted tasks via TaskCreate/TaskUpdate (check TaskList FIRST to dedup/relate — do not duplicate an existing task; link related ones with addBlockedBy/addBlocks), set statuses (in_progress/completed), and update <CWD>/.anti-hall/progress/<DATE>/00000000-0000-0000-0000-000000000000.md (done/in-progress/next); if creating it, put this header at the very top: <!-- session: 00000000-0000-0000-0000-000000000000 | started: <TS> -->. Gitignore it so it never ships. Also append each COMPLETED task to <CWD>/.anti-hall/history/<DATE>/00000000-0000-0000-0000-000000000000.md (append-only ledger, one entry per task: Cause / Fix / Verified; gitignore it too). That file usually EXISTS already (the task-lifecycle hook writes it) — APPEND with the Edit tool or a one-line `>>`, NEVER the Write tool (it overwrites the existing ledger). The progress file is the one to Write/Edit freely. Never use a Bash heredoc (its body is scanned as shell by git-guard.js). Also: significant work this session and no handover exists — consider /anti-hall:handover before ending. If the user has explicitly confirmed this exact condition is fine, ack it for the rest of this session (advisory only afterward, never blocks again for this exact signature) by writing {\"tasklist-guard:6623c450da2f75b4\": <EPOCH>} into <HOME>/.anti-hall/stop-ack/stop-ack-00000000-0000-0000-0000-000000000000.json (merge with any existing keys)."
+    }
+  ]
+}

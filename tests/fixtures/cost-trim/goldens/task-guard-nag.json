@@ -1,0 +1,10 @@
+{
+  "scenario": "task-guard-nag",
+  "outputs": [
+    {
+      "label": "task-guard.js",
+      "status": 0,
+      "text": "IDLE NEGLECT: 2 non-blocked, unassigned task(s) with NO in-flight agent on them — DISPATCH NOW in PARALLEL (one background agent each, cap 14): #1 \"task 1\", #2 \"task 2\". Do not end the turn idle; only stop if a task truly needs the user (then say which + why). If a task is genuinely blocked on the OWNER (hardware, a decision only a human can make), mark it non-dispatchable honestly — metadata.blockedOn:'owner' (or 'user'/'human'/'external'), or an \"OWNER:\" / \"OWNER DECISION\" subject prefix — never a fake blockedBy dependency. If a task waits on an in-flight task, set its blockedBy (TaskUpdate addBlockedBy) instead of dispatching it. If a running agent already covers a task, set the task's owner to it (TaskUpdate owner) and it counts as attended."
+    }
+  ]
+}

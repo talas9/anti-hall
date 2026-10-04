@@ -441,6 +441,7 @@ function profile(beforeDir, afterDir, opts) {
 function writeGoldens(p, outDir) {
   fs.mkdirSync(outDir, { recursive: true });
   for (const [id, sc] of Object.entries(p.scenarios)) {
+    if (sc.channel === 'sequence') continue; // D3 sequence is asserted, not frozen
     const body = { scenario: id, outputs: sc.outputs.map((o) => (o.skipped ? { label: o.label, skipped: true } : { label: o.label, status: o.status, text: o.text })) };
     fs.writeFileSync(path.join(outDir, id + '.json'), JSON.stringify(body, null, 2) + '\n');
   }
