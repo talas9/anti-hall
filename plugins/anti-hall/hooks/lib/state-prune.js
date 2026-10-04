@@ -136,7 +136,7 @@ function pruneJevTriage(home, opts) {
     const stamp = path.join(dir, '.prune-stamp-jev-triage');
     try {
       const age = now - fs.statSync(stamp).mtimeMs;
-      if (age >= 0 && age < throttleMs) return 0;
+      if (throttleMs > 0 && age >= -5 && age < throttleMs) return 0; // mtime can sit ~1 ms ahead of Date.now()
     } catch (_) { /* no stamp -> sweep */ }
     try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(stamp, ''); } catch (_) { return 0; }
 

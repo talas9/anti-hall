@@ -69,3 +69,18 @@ test('pruneJevTriage removes stale claims/lock/queue only; keeps fresh ones and 
     assert.ok(fs.existsSync(queue));
   } finally { h.cleanup(); }
 });
+
+test('pruneJevTriage throttle holds when the stamp mtime is 1 ms in the future (fs/clock skew)', () => {
+  const h = makeHome();
+  try {
+    const dir = cacheDir(h.home);
+    const claims = path.join(dir, 'jev-triage.claims');
+    fs.mkdirSync(claims, { recursive: true });
+    const stale = path.join(claims, 'stale'); fs.writeFileSync(stale, ''); age(stale, 30 * 60 * 1000);
+    const now = Date.now();
+    const stamp = path.join(dir, '.prune-stamp-jev-triage'); fs.writeFileSync(stamp, '');
+    const t = (now + 1) / 1000; fs.utimesSync(stamp, t, t);
+    assert.strictEqual(pruneJevTriage(h.home, { now }), 0, 'a future-by-1ms stamp still throttles');
+    assert.ok(fs.existsSync(stale), 'nothing was swept');
+  } finally { h.cleanup(); }
+});
