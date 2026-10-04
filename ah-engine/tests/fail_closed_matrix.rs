@@ -1,0 +1,367 @@
+//! D74: the fail-closed invariant matrix. A guard event (`dispatch.guard_events`) crossed with every injected failure.
+//!
+//! The invariant, for every combination: the call EITHER exits 2 with a non-empty message on stderr (the engine could
+//! not run the guards, or a hook really blocked), OR ends the way Node's separate hooks would (a real block stays a
+//! block with its exit code and message, a real decision stays a decision). It is never exit 0 with empty stdout and
+//! stderr unless a hook that actually ran allowed: every injected hook touches a marker file first, so "a hook ran" is
+//! proved, not assumed.
+//!
+//! Table-driven: a new failure mode is one `Row` line in [`rows`]. The input-side rows (a bad payload, a missing tool)
+//! are crossed with an allowing and a blocking hook; the hook-side rows carry their own hook command and expectation.
+//! Every row runs for every host and guard event the dispatch table has entries for.
+//!
+//! Not injectable end to end, and covered by unit tests instead: a spawn failure from the shell itself (EAGAIN; a NUL in
+//! the command stands in for it here), a hook timeout (it needs the table's real timeout; `dispatch::node` tests it with
+//! a short one and the dispatcher logs it), and a panicking check (the panic is caught per check and defers to Node).
+
+mod common;
+
+use ah_engine::dispatch::table;
+use serde_json::Value;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+/// What the dispatcher reads from stdin.
+#[derive(Clone, Copy)]
+enum Stdin {
+    /// A valid payload for the event.
+    Valid,
+    /// A payload cut off by `client.max_stdin`: valid JSON up to a point, then more bytes than the client reads.
+    Truncated,
+    /// Text that is not JSON.
+    NotJson,
+    /// Bytes that are not UTF-8.
+    NotUtf8,
+    /// Valid JSON without a `tool_name`.
+    NoToolName,
+    /// A stdin whose read fails (a directory).
+    ReadError,
+}
+
+/// Whether the wiring passes `--tool`.
+#[derive(Clone, Copy)]
+enum Tool {
+    /// The tool the payload names (`Bash`).
+    Given,
+    /// No `--tool` argument.
+    Omitted,
+    /// A tool no entry knows.
+    Unknown,
+}
+
+/// The injected Node hook.
+#[derive(Clone, Copy)]
+enum Hook {
+    /// An input-side failure: run once with an allowing hook and once with a blocking one.
+    Crossed,
+    /// This command replaces the first Node hook of the event; `second` replaces the next one.
+    Cmd { first: &'static str, second: &'static str },
+}
+
+/// What the call must do.
+#[derive(Clone, Copy)]
+enum Want {
+    /// Exit 2 with the engine's "could not run the guards" message.
+    Closed,
+    /// Exit 2 and stderr contains this (a real block stays a block).
+    Blocks(&'static str),
+    /// Exit 0 and stdout is ONE JSON object containing this.
+    OneJson(&'static str),
+    /// The engine had nothing to run, or no entry applies: exit 0 is right.
+    Quiet,
+    /// Exit 2 (closed) or a real allow from a hook that ran.
+    ClosedOrAllow,
+}
+
+#[derive(Clone, Copy)]
+struct Row {
+    name: &'static str,
+    stdin: Stdin,
+    tool: Tool,
+    hook: Hook,
+    want: Want,
+    /// `false`: no plugin root in the environment and no fallback map, so the table's own commands cannot run.
+    runnable: bool,
+    host_arg: Option<&'static str>,
+    event_arg: Option<&'static str>,
+    /// Only these events (empty: every guard event).
+    events: &'static [&'static str],
+}
+
+const BASE: Row = Row {
+    name: "",
+    stdin: Stdin::Valid,
+    tool: Tool::Given,
+    hook: Hook::Crossed,
+    want: Want::ClosedOrAllow,
+    runnable: true,
+    host_arg: None,
+    event_arg: None,
+    events: &[],
+};
+
+const MARK: &str = r#"touch "$AH_TEST_MARK""#;
+const BLOCK: &str = r#"touch "$AH_TEST_MARK"; echo BLOCKME >&2; exit 2"#;
+const PRE: &[&str] = &["PreToolUse"];
+
+// Two contexts of 6000 characters each: inline for the host one by one, over its 10000 cap when joined.
+const CTX_ASK: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"r","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' a)""#;
+const CTX_DEFER: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' a)""#;
+const CTX_DENY: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"DENYME","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' a)""#;
+const CTX_BLOCK_EXIT2: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' a)"; echo BLOCKME >&2; exit 2"#;
+const CTX_PLAIN: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' a)""#;
+const CTX_OTHER: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' b)""#;
+const JSON_X1: &str = r#"touch "$AH_TEST_MARK"; printf '{"systemMessage":"one","x":1}\n'"#;
+const JSON_X2_ASK: &str = r#"printf '{"x":2,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"r"}}\n'"#;
+
+/// One line per failure mode.
+fn rows() -> Vec<Row> {
+    vec![
+        // ---- input side: crossed with an allowing and a blocking hook ----
+        Row { name: "truncated payload, tool given", stdin: Stdin::Truncated, ..BASE },
+        Row { name: "truncated payload, no --tool", stdin: Stdin::Truncated, tool: Tool::Omitted, ..BASE },
+        Row { name: "invalid JSON, tool given", stdin: Stdin::NotJson, ..BASE },
+        Row { name: "invalid JSON, no --tool", stdin: Stdin::NotJson, tool: Tool::Omitted, ..BASE },
+        Row { name: "non-UTF-8 stdin, tool given", stdin: Stdin::NotUtf8, ..BASE },
+        Row { name: "non-UTF-8 stdin, no --tool", stdin: Stdin::NotUtf8, tool: Tool::Omitted, ..BASE },
+        Row { name: "stdin read error, tool given", stdin: Stdin::ReadError, ..BASE },
+        Row { name: "stdin read error, no --tool", stdin: Stdin::ReadError, tool: Tool::Omitted, ..BASE },
+        Row { name: "no --tool, valid payload", tool: Tool::Omitted, ..BASE },
+        Row { name: "no --tool, payload without tool_name", stdin: Stdin::NoToolName, tool: Tool::Omitted, ..BASE },
+        // ---- unknown tool / event: nothing applies, so a quiet exit 0 is right ----
+        Row { name: "unknown tool", tool: Tool::Unknown, hook: Hook::Cmd { first: MARK, second: MARK }, want: Want::Quiet, events: PRE, ..BASE },
+        Row { name: "unknown event", event_arg: Some("NoSuchEvent"), hook: Hook::Cmd { first: MARK, second: MARK }, want: Want::Quiet, ..BASE },
+        // ---- wiring ----
+        Row { name: "bad host", host_arg: Some("nope"), want: Want::Closed, ..BASE },
+        Row { name: "unset plugin root", runnable: false, want: Want::Closed, ..BASE },
+        // ---- hook side ----
+        Row { name: "hook cannot spawn", hook: Hook::Cmd { first: "a\0b", second: "true" }, want: Want::Closed, ..BASE },
+        Row { name: "hook killed by a signal", hook: Hook::Cmd { first: "touch \"$AH_TEST_MARK\"; kill -9 $$", second: "true" }, want: Want::Closed, ..BASE },
+        Row {
+            name: "exit 2 while a grandchild holds stdout and stderr",
+            hook: Hook::Cmd { first: r#"touch "$AH_TEST_MARK"; echo BLOCKME >&2; (exec sleep 3) & exit 2"#, second: "true" },
+            want: Want::Blocks("BLOCKME"),
+            ..BASE
+        },
+        Row {
+            name: "exit 0 with a JSON deny while a grandchild holds the pipes",
+            hook: Hook::Cmd {
+                first: r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"DENYME"}}\n'; (exec sleep 3) & exit 0"#,
+                second: "true",
+            },
+            want: Want::OneJson("DENYME"),
+            events: PRE,
+            ..BASE
+        },
+        Row {
+            name: "exit 0 with partial output while a grandchild holds the pipes",
+            hook: Hook::Cmd { first: r#"touch "$AH_TEST_MARK"; echo partial; (exec sleep 3) & exit 0"#, second: "true" },
+            want: Want::Closed,
+            ..BASE
+        },
+        Row {
+            name: "two hooks print JSON that cannot be merged field by field",
+            hook: Hook::Cmd { first: JSON_X1, second: JSON_X2_ASK },
+            want: Want::OneJson("\"ask\""),
+            events: PRE,
+            ..BASE
+        },
+        // ---- joined context over the host's cap, with every kind of decision ----
+        Row { name: "over-cap context with an ask", hook: Hook::Cmd { first: CTX_ASK, second: CTX_OTHER }, want: Want::OneJson("\"ask\""), events: PRE, ..BASE },
+        Row { name: "over-cap context with a defer", hook: Hook::Cmd { first: CTX_DEFER, second: CTX_OTHER }, want: Want::OneJson("\"defer\""), events: PRE, ..BASE },
+        Row { name: "over-cap context with a JSON deny", hook: Hook::Cmd { first: CTX_DENY, second: CTX_OTHER }, want: Want::OneJson("DENYME"), events: PRE, ..BASE },
+        Row { name: "over-cap context with an exit-2 block", hook: Hook::Cmd { first: CTX_BLOCK_EXIT2, second: CTX_OTHER }, want: Want::Blocks("BLOCKME"), events: PRE, ..BASE },
+        Row { name: "over-cap context with an allow", hook: Hook::Cmd { first: CTX_PLAIN, second: CTX_OTHER }, want: Want::OneJson("additionalContext"), events: PRE, ..BASE },
+    ]
+}
+
+struct Run {
+    code: i32,
+    out: String,
+    err: String,
+    marked: bool,
+}
+
+struct Case {
+    host: &'static str,
+    event: String,
+    dir: PathBuf,
+}
+
+impl Drop for Case {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn payload(event: &str, dir: &std::path::Path) -> Value {
+    if event == "PreToolUse" {
+        serde_json::json!({"session_id": "fc", "cwd": dir, "hook_event_name": event, "tool_name": "Bash", "tool_input": {"command": "ls"}})
+    } else {
+        serde_json::json!({"session_id": "fc", "cwd": dir, "hook_event_name": event})
+    }
+}
+
+fn stdin_bytes(s: Stdin, event: &str, dir: &std::path::Path) -> Vec<u8> {
+    match s {
+        Stdin::Valid => payload(event, dir).to_string().into_bytes(),
+        Stdin::Truncated => {
+            let mut b = br#"{"tool_name":"Bash","tool_input":{"command":"git push --force "#.to_vec();
+            b.resize(ah_engine::defaults::num("client.max_stdin") as usize + 4096, b'x');
+            b
+        }
+        Stdin::NotJson => br#"{"tool_name":"Bash","tool_input":{"command":"git push --force"#.to_vec(),
+        Stdin::NotUtf8 => {
+            let mut b = br#"{"tool_name":"Bash","tool_input":{"command":"ls "#.to_vec();
+            b.extend_from_slice(&[0xff, 0xfe, 0xfd]);
+            b.extend_from_slice(br#""}}"#);
+            b
+        }
+        Stdin::NoToolName => br#"{"session_id":"fc"}"#.to_vec(),
+        Stdin::ReadError => Vec::new(),
+    }
+}
+
+/// Run the real binary for one row with one hook pair; the fallback map replaces every Node hook of the event.
+fn run(case: &Case, row: &Row, first: &str, second: &str) -> Run {
+    let _ = std::fs::remove_dir_all(&case.dir);
+    std::fs::create_dir_all(case.dir.join("home")).unwrap();
+    let mark = case.dir.join("mark");
+    let valid = payload(&case.event, &case.dir);
+    let selected = table::select(case.host, &case.event, &valid, Some("Bash"));
+    let mut node_only = selected.iter().filter(|e| e.check.is_none()).map(|e| e.id.clone());
+    let (id1, id2) = (node_only.next(), node_only.next());
+    let events: serde_json::Map<String, Value> = table::entries(case.host, &case.event)
+        .into_iter()
+        .map(|e| {
+            let cmd = if Some(&e.id) == id1.as_ref() {
+                first
+            } else if Some(&e.id) == id2.as_ref() {
+                second
+            } else {
+                "true"
+            };
+            (e.id, cmd.into())
+        })
+        .collect();
+    let map = case.dir.join("map.json");
+    std::fs::write(&map, serde_json::json!({ case.event.as_str(): events }).to_string()).unwrap();
+
+    let event_arg = row.event_arg.unwrap_or(&case.event).to_string();
+    let mut args: Vec<String> = vec!["hook".into(), "--event".into(), event_arg, "--host".into(), row.host_arg.unwrap_or(case.host).into()];
+    match row.tool {
+        Tool::Given if case.event == "PreToolUse" => args.extend(["--tool".into(), "Bash".into()]),
+        Tool::Unknown => args.extend(["--tool".into(), "NoSuchTool".into()]),
+        _ => {}
+    }
+    if row.runnable {
+        args.extend(["--fallback-map".into(), map.to_string_lossy().to_string()]);
+    }
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(&args)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", case.dir.join("home"))
+        .env("AH_ENGINE_DIR", case.dir.join("state"))
+        .env("AH_ENGINE_VERSION", "fail-closed-matrix")
+        .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+        .env("AH_TEST_MARK", &mark)
+        .current_dir(&case.dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if row.runnable {
+        let root_var = ah_engine::defaults::raw("dispatch.root_vars").get(case.host).map(|v| v.strings()[0].to_string()).unwrap();
+        c.env(root_var, &case.dir);
+    }
+    let writer = match row.stdin {
+        Stdin::ReadError => {
+            c.stdin(std::fs::File::open("/").unwrap());
+            None
+        }
+        s => {
+            c.stdin(Stdio::piped());
+            Some(stdin_bytes(s, &case.event, &case.dir))
+        }
+    };
+    let mut ch = c.spawn().unwrap();
+    let feeder = writer.map(|bytes| {
+        let mut si = ch.stdin.take().unwrap();
+        std::thread::spawn(move || {
+            let _ = si.write_all(&bytes); // the client may stop reading at its cap
+        })
+    });
+    let o = ch.wait_with_output().unwrap();
+    if let Some(f) = feeder {
+        let _ = f.join();
+    }
+    Run {
+        code: o.status.code().unwrap_or(-1),
+        out: String::from_utf8_lossy(&o.stdout).to_string(),
+        err: String::from_utf8_lossy(&o.stderr).to_string(),
+        marked: mark.exists(),
+    }
+}
+
+fn check(what: &str, row: &Row, want: Want, r: &Run) {
+    let ctx = format!("{what}: code {} out {:?} err {:?} marked {}", r.code, r.out.chars().take(300).collect::<String>(), r.err, r.marked);
+    // the universal invariant: a silent exit 0 needs a hook that ran
+    if r.code == 0 && r.out.is_empty() && r.err.is_empty() && !r.marked && !matches!(want, Want::Quiet) {
+        panic!("SILENT ALLOW with no hook having run: {ctx}");
+    }
+    if r.code == 2 {
+        assert!(!r.err.is_empty(), "exit 2 without a message: {ctx}");
+    }
+    let closed = r.code == 2 && r.err.contains("could not run the guards");
+    match want {
+        Want::Closed => assert!(closed, "expected fail-closed: {ctx}"),
+        Want::Blocks(s) => assert!(r.code == 2 && r.err.contains(s), "expected the hook's block {s:?}: {ctx}"),
+        Want::OneJson(s) => {
+            let v: Result<Value, _> = serde_json::from_str(r.out.trim());
+            assert!(r.code == 0 && v.as_ref().is_ok_and(Value::is_object) && r.out.contains(s), "expected one JSON object with {s:?}: {ctx}");
+        }
+        Want::Quiet => assert_eq!(r.code, 0, "{ctx}"),
+        Want::ClosedOrAllow => assert!(closed || (r.code == 0 && r.marked), "expected closed or a real allow: {ctx}"),
+    }
+    let _ = row;
+}
+
+#[test]
+fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
+    let mut cases = Vec::new();
+    for host in table::hosts() {
+        for event in ah_engine::defaults::list("dispatch.guard_events") {
+            if !table::entries(host, event).is_empty() {
+                let host: &'static str = Box::leak(host.to_string().into_boxed_str());
+                cases.push(Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-fc-{host}-{event}-{}", std::process::id())) });
+            }
+        }
+    }
+    assert!(cases.iter().any(|c| c.event == "PreToolUse") && cases.iter().any(|c| c.event == "Stop"), "the matrix must cover PreToolUse and Stop");
+    let mut failures = Vec::new();
+    for case in &cases {
+        for row in rows() {
+            if !row.events.is_empty() && !row.events.contains(&case.event.as_str()) {
+                continue;
+            }
+            let label = |v: &str| format!("[{}/{}] {} ({v})", case.host, case.event, row.name);
+            let attempts: Vec<(String, Run, Want)> = match row.hook {
+                Hook::Crossed if matches!(row.want, Want::Closed) => vec![
+                    (label("allowing hook"), run(case, &row, MARK, MARK), Want::Closed),
+                    (label("blocking hook"), run(case, &row, BLOCK, MARK), Want::Closed),
+                ],
+                Hook::Crossed => vec![
+                    (label("allowing hook"), run(case, &row, MARK, MARK), Want::ClosedOrAllow),
+                    (label("blocking hook"), run(case, &row, BLOCK, MARK), Want::Blocks("")),
+                ],
+                Hook::Cmd { first, second } => vec![(label("injected"), run(case, &row, first, second), row.want)],
+            };
+            for (what, r, want) in attempts {
+                if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&what, &row, want, &r))) {
+                    failures.push(p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or(what));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} fail-closed violations:\n{}", failures.len(), failures.join("\n"));
+}
