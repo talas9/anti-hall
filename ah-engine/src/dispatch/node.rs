@@ -43,16 +43,19 @@ pub struct Finished {
 struct Capture {
     buf: Arc<Mutex<Vec<u8>>>,
     done: Arc<AtomicBool>,
+    /// The read failed before the end of the pipe: what is in `buf` is not the whole output.
+    failed: Arc<AtomicBool>,
 }
 
 impl Capture {
-    /// The bytes so far, as text, and whether the pipe reached its end. Waits up to `dispatch.read_ms` for the end.
+    /// The bytes so far, as text, and whether the pipe was read to its end (a read error is not an end). Waits up to
+    /// `dispatch.read_ms` for the end.
     fn collect(&self) -> (String, bool) {
         let deadline = Instant::now() + defaults::millis("dispatch.read_ms");
         while !self.done.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::sleep(defaults::millis("dispatch.poll_ms"));
         }
-        let complete = self.done.load(Ordering::Acquire);
+        let complete = self.done.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire);
         let bytes = self.buf.lock().map(|b| b.clone()).unwrap_or_default();
         (String::from_utf8_lossy(&bytes).to_string(), complete)
     }
@@ -70,8 +73,8 @@ pub struct Running {
 
 fn reader<R: Read + Send + 'static>(r: Option<R>) -> Option<Capture> {
     let mut r = r?;
-    let cap = Capture { buf: Arc::new(Mutex::new(Vec::new())), done: Arc::new(AtomicBool::new(false)) };
-    let (buf, done) = (cap.buf.clone(), cap.done.clone());
+    let cap = Capture { buf: Arc::new(Mutex::new(Vec::new())), done: Arc::new(AtomicBool::new(false)), failed: Arc::new(AtomicBool::new(false)) };
+    let (buf, done, failed) = (cap.buf.clone(), cap.done.clone(), cap.failed.clone());
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
         loop {
@@ -83,7 +86,10 @@ fn reader<R: Read + Send + 'static>(r: Option<R>) -> Option<Capture> {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
+                Err(_) => {
+                    failed.store(true, Ordering::Release);
+                    break;
+                }
             }
         }
         done.store(true, Ordering::Release);
@@ -273,5 +279,35 @@ mod tests {
         let rs = finish(vec![start(&entry("nospawn", "a\0b", 5), b""), start(&entry("killed", "kill -9 $$", 5), b"")]);
         assert_eq!((rs[0].fate, rs[0].result.code), (Fate::Spawn, None));
         assert_eq!((rs[1].fate, rs[1].result.code), (Fate::Died, None));
+    }
+
+    /// Some bytes, then a read error (not an end of file).
+    struct Broken(bool);
+
+    impl Read for Broken {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 {
+                return Err(std::io::Error::other("injected read error"));
+            }
+            self.0 = true;
+            buf[..4].copy_from_slice(b"part");
+            Ok(4)
+        }
+    }
+
+    #[test]
+    fn a_read_error_on_a_pipe_is_incomplete_output_not_a_whole_answer() {
+        let running = Running {
+            id: "broken".into(),
+            child: None,
+            out: reader(Some(Broken(false))),
+            err: None,
+            timeout: Duration::from_secs(5),
+            started: Instant::now(),
+        };
+        let f = conclude(running, Waited::Code(0));
+        assert_eq!(f.fate, Fate::Incomplete);
+        assert_eq!(f.result.code, Some(1));
+        assert!(f.result.out.is_empty(), "{f:?}");
     }
 }
