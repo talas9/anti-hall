@@ -1,4 +1,4 @@
-# anti-hall engine (phase 2)
+# anti-hall engine (phase 3a: git-guard port)
 
 **Off by default.** `engine.enabled` stays off; nothing in the plugin starts or calls this binary unless an owner turns it on. This branch is a prototype.
 
@@ -9,6 +9,7 @@ Crates: serde, serde_json, regex. Unix only (macOS, Linux).
 ## Layout
 - `src/hookio.rs` parse the hook payload (Claude Code and Codex share field names) and build per-event output
 - `src/rules.rs` rules format v1 (JSON) + matcher; `rules.json` ships 3 example rules ported from git-guard / command-guard
+- `src/gitguard/` the built-in `check = "git"`: a port of the Node git-guard (see "Built-in checks" below)
 - `src/daemon.rs` singleton daemon, reload, version handoff; `src/client.rs` fail-open client; `src/paths.rs` socket/lock paths
 - `tests/e2e.rs` real daemon end-to-end (isolated HOME + engine dir); `wall.zsh`, `base.js` measurements
 
@@ -39,7 +40,9 @@ that fails to parse keeps the previous rules.
   "pattern":"regex",               // Rust regex syntax (linear time), unanchored
   "action":"deny",                 // deny | warn | context
   "message":"...",
-  "paths":["/abs/project"]         // optional; applies only when payload cwd is at/under one
+  "paths":["/abs/project"],        // optional; applies only when payload cwd is at/under one
+  "check":"git",                   // optional built-in check (see below); then `pattern`/`message` are ignored
+  "options":{"plugin_root":"/p"}   // optional, per check
 }]}
 ```
 Loaded in file order; all matches contribute; any `deny` wins. Reload on SIGHUP, `engine ctl reload`, or file change; a file that fails to parse keeps the previous rules.
@@ -73,7 +76,35 @@ Failure advisory (once per session, only on calls served by the fallback): envir
 
 State (all under the engine state dir): `engine.log` (64 KiB, trimmed), `failure.json`, `breaker.until`, `crashloop.until`, `daemon.run` (run marker; a leftover one with a dead pid is logged as one crash), `starts`, `advised/` (one empty file per advised session). Project-partitioned in-memory state (`P <cwd>` requests, `engine proj <cwd> put|take|len|set|get`): the daemon derives the partition from `cwd` (nearest `.git` ancestor); caps: 256 projects, 64 mailbox entries, 64 keys.
 
-## Parity harness (`parity/`)
+## Built-in checks (phase 3)
+A rule with `"check":"git"` runs real logic instead of a regex: a port of the Node git-guard (PreToolUse on Bash) from the `dev` build 0.201.0 (bcddfb7), std + regex only (`src/gitguard/`, about 200 KiB over 10 files). It carries the shell tokenizer and segment splitter, wrapper and verb resolution (sudo/env/timeout/nice/flock/...), `eval`/`sh -c`/`env -S` payloads, xargs/find/parallel runners with placeholders, the heredoc data mask, force/delete push detection with git's option abbreviations, inline aliases, self-credit detection on every message route (`-m`, `--trailer`, `-F -`, `-F path`, `gh` bodies, whole-command trailer lines), config-valued commands, `~/.anti-hall/bin` launcher writes, the quote-blind backstops, and the handover-commit check. Alias resolution (`git config --get-regexp`), reused-message reads (`git log -1`) and the handover queries run `git` through `std::process::Command` with the same timeouts and budgets as Node.
+
+Output follows the Node guard: a block is **exit 2 with the reason on stderr** (the daemon replies `AHEXIT 2\n<reason>`, the client prints it to stderr and exits 2); the handover-budget advisory is a stdout JSON line, exit 0. Settings are read per call from `$HOME/.anti-hall/settings.json` and `skip.json` (`safety.gitGuard`, `guards.gitGuardHeredocData`, `guards.gitAliasResolve`, `guards.gitReusedMessageCheck`, `guards.handoverCommitGuard`, a `git-guard` skip entry); the matching `ANTIHALL_*` / `CLAUDE_PLUGIN_OPTION_*` env overrides are read from the **daemon's** environment (fixed at its start). The override hint in block text names `<plugin_root>/scripts/devswarm.js`, with `plugin_root` from the rule's `options` or `ANTIHALL_ENGINE_PLUGIN_ROOT`.
+
+Deliberate differences from the Node guard:
+- **Jev add-block consult** (`gitGuardSelfCredit`) is not performed. Only mode `on` with Jev enabled can change a verdict, so in that configuration the check answers `AHFALLBACK`, the daemon replies ERR and the client runs the Node hook (`--fallback`); in the default `shadow` mode the engine writes no `jev-assist` telemetry rows.
+- A payload `serde_json` rejects but JS accepts (a lone surrogate escape) gets the same ERR, so Node decides.
+- Pathological nesting (`xargs xargs ...` more than 1500 deep) and any panic in the port answer `AHFALLBACK` too: the check runs on a 64 MB-stack thread so it cannot overflow a worker, and Node (which allows on its own stack overflow) decides. The substitution scanners stop at 1500 levels and scan the raw text, as Node's caller does after its own overflow.
+- The PostToolUse `--audit` pass (recent-commit trailer audit) is not ported.
+- Plugin options stored in Claude's own settings are not read, only the env form.
+- Relative file reads (`-F path`, `--body-file`, templates) resolve against the payload `cwd`, as Node resolves them against the hook's cwd.
+
+## Parity harness (`parity/`) - full outcome for the git check
+`parity/run-git.js` runs each command through the Node git-guard (authority) and the engine and compares **exit code, stdout and stderr** exactly. `--mode oneshot` runs `engine gitguard` (the logic in-process, no daemon), `--mode daemon` runs `engine hook` against a real daemon (framing, exit code, stderr passthrough), `--mode both` does both. Corpora: `build-corpus.js --maxlen 0` (the 1253-line phase-2 corpus, uncapped), `build-git-corpus.js` (git-related commands sampled from the real recorded-command corpus, half uniform, half from the risky shapes), the git-guard test payloads (the Node test suite run with its spawn helper dual-running the engine on every git-guard payload, same env, HOME and cwd), the adversarial probe lists from this week (`tfa*`, `gg*`, replayed through a recording shim) and two fuzzers (`fuzz-git.js`: mutation of all of the above, and `--gen`: grammar composition).
+
+| corpus | n | node blocks | agreement (exit + stdout + stderr) |
+|---|---|---|---|
+| committed `corpus.jsonl` (<=400 chars) | 526 | 141 | **100%** oneshot and daemon |
+| uncapped phase-2 corpus | 1253 | 362 | **100%** oneshot and daemon |
+| real recorded git commands (seeded sample) | 5000 | 117 | **100%** oneshot and daemon |
+| git-guard Node test payloads (11 test files, 1311 tests pass) | 1366 | - | **100%** (7 deferred to Node: 5 Jev mode `on`, 2 empty/malformed stdin) |
+| adversarial probe lists (tfa, tfa2, tfa4-6, gg*) | 536 | 399 | **100%** oneshot and daemon |
+| mutation fuzz, seeds 7, 11, 31 | 46000 | 17489 | **100%** (7 payloads deferred to Node: lone-surrogate JSON escapes) |
+| grammar fuzz, seeds 5 and 77 | 30000 | 17772 | **100%** |
+
+Two real mismatch classes were found and fixed on the way: advisory JSON key order (serde sorted the keys) and per-segment O(n) work that made 20000-segment commands slow (cached per request, as Node caches per process).
+
+## Parity harness (`parity/`) - decision agreement (phase 2, regex rules)
 `node build-corpus.js --cmds <cmds.jsonl> --tests <repo>/tests/hooks > corpus.jsonl`, then `node run.js --engine ../target/release/engine --hooks <repo>/plugins/anti-hall/hooks --corpus corpus.jsonl`. Runs each command through the Node hook and the engine (isolated HOME and engine dir) and diffs decision and message. The committed `corpus.jsonl` (526 lines, kept under the 256 KiB source cap) = up to 120 relevant + 120 benign commands per rule, each at most 400 chars, from real recorded commands plus single-line literals from the Node guard tests. The 400-char cut drops the long heredoc-heavy commands, so it flatters the engine; the uncapped build (`--cap 250`, no length limit; 1252 lines, 1.1 MB, not committed) is the harder measure.
 
 Results (decision agreement on the two git rules):
@@ -84,8 +115,10 @@ Results (decision agreement on the two git rules):
 
 On the uncapped corpus the engine over-blocks 86 commands whose force-push text is only data (heredocs, `echo`) and under-blocks 16 (aliases, `-c` prefixes, redirect-before-flag, heredoc fed to a shell). All mismatches are one class: the Node guard tokenizes (heredoc bodies, quoting, aliases, redirections, `$(...)`) and a regex cannot. So the force-push and AI-credit rules are **examples, not ports**: a port needs the tokenizer in Rust, or the guard stays fallback-only. `rm-rf-root-or-home` has no Node counterpart (command-guard.js neither blocks nor warns on it), so it is an example with no parity claim.
 
-## Phase 3 checklist (not done)
-- [ ] Real ports: tokenizer-equivalent matching for git-guard / command-guard (or keep them fallback-only), then re-run parity to 100% on the safety guards
+## Phase 3 checklist
+- [x] Real port of git-guard (this section above): 100% full-outcome agreement on every corpus
+- [ ] Real port of command-guard (tokenizer shared with git-guard: `src/gitguard/shell.rs`) and re-run parity to 100%
+- [ ] Port the PostToolUse `--audit` pass; a Jev client in the engine so the `on` deferral can go
 - [ ] Wire the plugin shims (`hooks.json`) to `engine hook --fallback`, behind `engine.enabled`; settings key + `/anti-hall:settings` entry
 - [ ] Linux run of `tests/reliability.rs` (only macOS verified; the `SO_PEERCRED` and Linux `RLIMIT_DATA` paths are compiled out here)
 - [ ] End-to-end tests for the per-project rate limit and the write deadline
@@ -97,6 +130,18 @@ On the uncapped corpus the engine over-blocks 86 commands whose force-push text 
 When enabled, the first hook call starts `engine serve` as a detached background process (no launchd/systemd unit). It runs per user, listens only on a Unix socket in a private (0700) directory, makes no network connections, runs at lowered priority, and exits cleanly when it exceeds its memory cap, stalls, is stopped (`engine ctl stop`, SIGTERM) or is replaced by a newer build. It deletes nothing outside its own state dir. If it keeps failing it stops respawning (crash-loop stop) and hooks run on the Node implementation.
 
 ## Measurements
+git check, warm daemon, `zsh wall-git.zsh <git-guard.js>` (macOS, brew rust 1.99, release build; the first run was on a quiet machine, a second run under load from other agents read 8.7-10.7 ms vs 44-48 ms):
+
+| | engine client | Node git-guard.js |
+|---|---|---|
+| wall, force-push block (median of 30) | 2.7 ms | 24.4 ms |
+| wall, allow (`git status && ls -la`) | 2.9 ms | 24.7 ms |
+| wall, commit with heredoc body | 2.7 ms | 21.0 ms |
+| peak RSS per call (median of 10) | 2.0 MB | 47.9 MB |
+
+Daemon RSS 4.3 MB idle and 4.3 MB after 1000 commit-with-heredoc requests. A 480 KB command of 30000 `git commit -m x;` segments plus a trailing force push takes about 0.01 s in the engine (Node: 0.04 s; `time`, 3 runs each, quiet machine).
+
+Phase 2 numbers (regex rules only):
 macOS, brew rust 1.99, release build (opt-level z, lto), quiet machine, `zsh wall.zsh` (phase 2 build, framed protocol):
 
 | | Rust client | node baseline |

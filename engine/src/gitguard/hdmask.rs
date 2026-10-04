@@ -260,6 +260,9 @@ fn hd_denied_first_word(skel: &str) -> bool {
     false
 }
 
+/// Nesting limit for the substitution scanners (JS overflows its stack far deeper and its caller then scans the raw text, which is what `None` means here).
+const MAX_NEST: usize = 1500;
+
 const HEREDOC_BAD_DIRS: &[&str] = &[".git", ".husky", ".githooks", "hooks", ".ssh", ".config", ".claude", ".codex", ".local", ".gnupg"];
 
 fn hd_bad_path(p: &str) -> bool {
@@ -277,7 +280,10 @@ fn at(s: &[char], i: usize) -> Option<char> {
     s.get(i).copied()
 }
 
-fn hd_skip_quote(s: &[char], i: usize) -> Option<usize> {
+fn hd_skip_quote(s: &[char], i: usize, depth: usize) -> Option<usize> {
+    if depth > MAX_NEST {
+        return None;
+    }
     if s[i] == '\'' {
         return s[i + 1..].iter().position(|&c| c == '\'').map(|p| p + i + 2);
     }
@@ -292,12 +298,12 @@ fn hd_skip_quote(s: &[char], i: usize) -> Option<usize> {
             return Some(k + 1);
         }
         if c == '$' && at(s, k + 1) == Some('(') {
-            let e = hd_subst_end(s, k + 2, ')')?;
+            let e = hd_subst_end(s, k + 2, ')', depth + 1)?;
             k = e + 1;
             continue;
         }
         if c == '`' {
-            let e = hd_subst_end(s, k + 1, '`')?;
+            let e = hd_subst_end(s, k + 1, '`', depth + 1)?;
             k = e + 1;
             continue;
         }
@@ -306,7 +312,10 @@ fn hd_skip_quote(s: &[char], i: usize) -> Option<usize> {
     None
 }
 
-fn hd_subst_end(s: &[char], mut i: usize, closer: char) -> Option<usize> {
+fn hd_subst_end(s: &[char], mut i: usize, closer: char, depth_nest: usize) -> Option<usize> {
+    if depth_nest > MAX_NEST {
+        return None;
+    }
     let mut depth: i32 = 0;
     let mut word_start = true;
     while i < s.len() {
@@ -320,17 +329,17 @@ fn hd_subst_end(s: &[char], mut i: usize, closer: char) -> Option<usize> {
             continue;
         }
         if c == '\'' || c == '"' {
-            i = hd_skip_quote(s, i)?;
+            i = hd_skip_quote(s, i, depth_nest + 1)?;
             word_start = false;
             continue;
         }
         if c == '$' && at(s, i + 1) == Some('(') {
-            let e = hd_subst_end(s, i + 2, ')')?;
+            let e = hd_subst_end(s, i + 2, ')', depth_nest + 1)?;
             i = e + 1;
             continue;
         }
         if c == '`' && closer != '`' {
-            let e = hd_subst_end(s, i + 1, '`')?;
+            let e = hd_subst_end(s, i + 1, '`', depth_nest + 1)?;
             i = e + 1;
             continue;
         }
@@ -574,13 +583,13 @@ fn hd_levels(text: &[char], levels: &mut Vec<Level>, next_id: &mut usize, depth:
             continue;
         }
         if c == '$' && at(text, i + 1) == Some('(') {
-            let Some(e) = hd_subst_end(text, i + 2, ')') else { return false };
+            let Some(e) = hd_subst_end(text, i + 2, ')', 0) else { return false };
             lift!(i + 2, e);
             i = e + 1;
             continue;
         }
         if c == '`' {
-            let Some(e) = hd_subst_end(text, i + 1, '`') else { return false };
+            let Some(e) = hd_subst_end(text, i + 1, '`', 0) else { return false };
             lift!(i + 1, e);
             i = e + 1;
             continue;
@@ -596,13 +605,13 @@ fn hd_levels(text: &[char], levels: &mut Vec<Level>, next_id: &mut usize, depth:
                     continue;
                 }
                 if d == '$' && at(text, i + 1) == Some('(') {
-                    let Some(e) = hd_subst_end(text, i + 2, ')') else { return false };
+                    let Some(e) = hd_subst_end(text, i + 2, ')', 0) else { return false };
                     lift!(i + 2, e);
                     i = e + 1;
                     continue;
                 }
                 if d == '`' {
-                    let Some(e) = hd_subst_end(text, i + 1, '`') else { return false };
+                    let Some(e) = hd_subst_end(text, i + 1, '`', 0) else { return false };
                     lift!(i + 1, e);
                     i = e + 1;
                     continue;

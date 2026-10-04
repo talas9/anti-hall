@@ -33,8 +33,33 @@ const mut = s => {
   if (k === 7) { const i = ri(s.length + 1); return s.slice(0, i) + '\\' + s.slice(i); }
   return s.slice(0, a) + s.slice(a, a + ri(20)) + s.slice(a);
 };
+// --gen: compose from a grammar instead of mutating seeds (random wrappers, quoting, flags, heredoc consumers).
+const quoteTok = t => { const k = ri(8); return k === 0 ? `"${t}"` : k === 1 ? `'${t}'` : k === 2 ? `$'${t}'` : k === 3 ? t.split('').join('""') : t; };
+const PUSHFLAGS = ['-f', F, '--force-with-lease', '+main', 'origin', 'main', ':b', '--delete', '-d', '--no-verify', '-u', '--tags', '--mirror', '--prune', '--', '-fv', '--force-if-includes', '--for', '--del', 'HEAD:refs/heads/x', '+HEAD:x', '--repo=r'];
+const gitCmd = () => {
+  const k = ri(6);
+  const pre = pick(['', '', 'sudo ', 'env A=1 ', 'command ', 'nice -n 3 ', 'timeout 9 ', 'time ', 'exec ', 'flock /tmp/l ', 'FOO=1 ', '/usr/bin/', '\\']);
+  const glob = pick(['', '', '-C . ', '-c core.x=1 ', '--no-pager ', '-c alias.p=push ', '--git-dir=.git ']);
+  if (k <= 2) { const n = 1 + ri(4); const fl = Array.from({ length: n }, () => quoteTok(pick(PUSHFLAGS))); return `${pre}git ${glob}${quoteTok(pick([P, P, P, 'p']))} ${fl.join(' ')}`; }
+  if (k === 3) return `${pre}git ${glob}commit ${pick(['-m', '-am', '--message=', '-F -', '--trailer', '-C HEAD', '--amend --no-edit', '-t f'])} ${quoteTok(pick(['x', `y\\n\\n${CO}: Claude <n@a.com>`, `${GEN} Claude Code`, 'ok']))}`;
+  if (k === 4) return `${pre}git ${glob}${pick(['status', 'log -1', 'config alias.x ' + quoteTok('!git ' + P + ' ' + F), 'tag -a v1 -m ' + quoteTok(CO + ': Claude <a@b.c>'), 'add -A', 'stash', 'fetch', 'config --global alias.q ' + quoteTok(P + ' -f')])}`;
+  return pick(['echo hi', 'ls', 'cat x', 'true', 'cd /tmp', 'export X=1', `echo ${quoteTok(`git ${P} ${F}`)}`, 'node -e "1"', `python3 -c ${quoteTok('print(1)')}`]);
+};
+const genCmd = () => {
+  let c = gitCmd();
+  for (let i = 0, n = ri(3); i < n; i++) c = pick(WRAP)(c);
+  const parts = [c];
+  for (let i = 0, n = ri(3); i < n; i++) parts.push(pick(WRAP)(gitCmd()));
+  const sep = [' ; ', ' && ', ' | ', '\n', ' || ', ' & '];
+  return parts.map((p, i) => (i ? pick(sep) : '') + p).join('');
+};
 const out = new Set();
 let guard = 0;
+if (process.argv.includes('--gen')) {
+  while (out.size < N && guard++ < N * 5) { const c = genCmd(); if (c.length <= MAXLEN && c.trim()) out.add(c); }
+  for (const c of out) console.log(JSON.stringify({ command: c, cwd: '/tmp', source: 'gen' }));
+  process.exit(0);
+}
 while (out.size < N && guard++ < N * 5) {
   const base = rnd() < 0.7 && seeds.length ? pick(seeds).command : pick(FRAG);
   let c = base;

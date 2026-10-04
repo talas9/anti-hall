@@ -39,6 +39,9 @@ pub struct Ctx {
     pub raw_credit: Option<bool>,
     /// A Jev add-block consult would have run (see `Outcome::Fallback`).
     pub jev_wanted: bool,
+    /// Runner recursion depth and whether it hit its bound (the answer is then deferred to the Node hook).
+    pub rec: usize,
+    pub overflow: bool,
     pub home: String,
     pub proc_cwd: String,
     pub git_cache: HashMap<String, Option<String>>,
@@ -67,6 +70,8 @@ impl Ctx {
             self_credit_cache: HashMap::new(),
             raw_credit: None,
             jev_wanted: false,
+            rec: 0,
+            overflow: false,
             home: settings.home.clone(),
             proc_cwd: proc_cwd.to_string(),
             git_cache: HashMap::new(),
@@ -154,9 +159,17 @@ fn looks_like_file_write_shape(cmd: &str) -> bool {
 
 const TIP: &str = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `devswarm.js send --message-file <path>`).";
 
-/// The git-guard PreToolUse decision for one Bash command.
+/// The git-guard PreToolUse decision for one Bash command. Runs on a thread with a large stack and turns a panic
+/// into `Fallback`, so a bug or a pathological command can never take a daemon worker down.
 pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Outcome {
-    check_with(Settings::from_process(), cmd, cwd, plugin_root)
+    let settings = Settings::from_process();
+    let r = std::thread::scope(|sc| {
+        std::thread::Builder::new().stack_size(64 << 20).spawn_scoped(sc, || check_with(settings, cmd, cwd, plugin_root)).map(|h| h.join())
+    });
+    match r {
+        Ok(Ok(o)) => o,
+        _ => Outcome::Fallback,
+    }
 }
 
 /// `check_bash` with explicit settings (tests pass an isolated home).
@@ -176,7 +189,7 @@ pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root:
     ctx.raw_cmd = cmd.to_string();
     let base = if cwd_s.is_empty() { None } else { Some(cwd_s) };
     let hit = scan::scan_command(&mut ctx, cmd, 0, base);
-    if ctx.jev_wanted && ctx.settings.jev_self_credit_on() {
+    if ctx.overflow || (ctx.jev_wanted && ctx.settings.jev_self_credit_on()) {
         return Outcome::Fallback;
     }
     if let Some(m) = hit {

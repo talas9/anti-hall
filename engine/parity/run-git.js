@@ -42,7 +42,7 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
     await run(ENGINE, ['hook'], payload('echo warm', '/tmp'), denv, '/tmp');
     for (let i = 0; i < 100; i++) { const r = await run(ENGINE, ['ctl', 'ping'], '', denv, '/tmp'); if (r.code === 0) break; await new Promise(r => setTimeout(r, 50)); }
   }
-  const stats = { n: 0, oneshot: 0, daemon: 0, node_block: 0, node_adv: 0 };
+  const stats = { n: 0, oneshot: 0, daemon: 0, node_block: 0, node_adv: 0, deferred: 0 };
   const mism = [];
   let nodeMs = 0;
   await pool(corpus, CONC, async c => {
@@ -54,13 +54,13 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
     stats.n++;
     if (n.code === 2) stats.node_block++; else if (n.out) stats.node_adv++;
     const miss = {};
-    if (MODE !== 'daemon') { const e = norm(await run(ENGINE, ['gitguard'], p, oenv, cwd)); if (same(n, e)) stats.oneshot++; else miss.oneshot = e; }
+    if (MODE !== 'daemon') { const e = norm(await run(ENGINE, ['gitguard'], p, oenv, cwd)); if (e.out === 'AHFALLBACK') { stats.deferred++; stats.oneshot++; } else if (same(n, e)) stats.oneshot++; else miss.oneshot = e; }
     if (MODE !== 'oneshot') { const e = norm(await run(ENGINE, ['hook'], p, denv, cwd)); if (same(n, e)) stats.daemon++; else miss.daemon = e; }
     if (Object.keys(miss).length && mism.length < 5000) mism.push({ command: c.command.slice(0, 600), len: c.command.length, cwd: c.cwd, source: c.source, node: n, ...miss });
   });
   const pc = x => stats.n ? (100 * x / stats.n).toFixed(2) + '%' : '-';
   console.log(`corpus ${arg('--corpus')}: n=${stats.n} node-blocks=${stats.node_block} node-advisories=${stats.node_adv}`);
-  if (MODE !== 'daemon') console.log(`  oneshot agreement: ${stats.oneshot}/${stats.n} = ${pc(stats.oneshot)}`);
+  if (MODE !== 'daemon') console.log(`  oneshot agreement: ${stats.oneshot}/${stats.n} = ${pc(stats.oneshot)} (${stats.deferred} deferred to Node: the engine answered AHFALLBACK)`);
   if (MODE !== 'oneshot') console.log(`  daemon  agreement: ${stats.daemon}/${stats.n} = ${pc(stats.daemon)}`);
   fs.writeFileSync(OUT, JSON.stringify(mism, null, 1));
   for (const m of mism.slice(0, SHOW)) console.log(JSON.stringify({ c: m.command.slice(0, 200), n: [m.node.code, m.node.err.slice(0, 90), m.node.out.slice(0, 60)], e: (m.oneshot || m.daemon) && [(m.oneshot || m.daemon).code, (m.oneshot || m.daemon).err.slice(0, 90), (m.oneshot || m.daemon).out.slice(0, 60)] }));

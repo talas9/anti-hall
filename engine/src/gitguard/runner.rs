@@ -299,12 +299,19 @@ pub fn shell_script_is_input_pub(sh: &[Tok], repls: &[Repl]) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 pub fn runner_verdict(ctx: &mut Ctx, cmd_tokens: &[Tok], runner: &str, d: usize, cmd: &str, hb: &Hb, cwd: Option<&str>, use_jev: bool, repls: &[Repl]) -> Option<String> {
+    // `xargs xargs xargs ...` recurses once per word; JS overflows its stack (and then allows). Bound it and defer to Node.
+    if ctx.rec > 1500 {
+        ctx.overflow = true;
+        return None;
+    }
+    ctx.rec += 1;
     let saved = ctx.active_repls.clone();
     if !repls.is_empty() {
         ctx.active_repls.extend(repls.iter().cloned());
     }
     let r = runner_verdict_in(ctx, cmd_tokens, runner, d, cmd, hb, cwd, use_jev);
     ctx.active_repls = saved;
+    ctx.rec -= 1;
     r
 }
 
