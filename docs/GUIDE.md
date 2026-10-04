@@ -17,6 +17,7 @@ owner-approved prune and message retention. Per-component detail is in the
 ## Contents
 - [What it is, and why it exists](#what-it-is-and-why-it-exists)
 - [What it blocks, and how to turn it off](#what-it-blocks-and-how-to-turn-it-off)
+- [Limits and escape hatches](#limits-and-escape-hatches)
 - [Network and data](#network-and-data)
 - [Install, verify and uninstall](#install-verify-and-uninstall)
 - [Requirements](#requirements)
@@ -75,6 +76,53 @@ The main guards. Every one can be switched off with its setting (`/anti-hall:set
 
 Everything else, with the exact behaviour of each hook: the
 [Features table](#hook-reference--plugin-features-table-detailed-per-hook).
+
+## Limits and escape hatches
+
+Guards are pattern- and rule-based. They can block or nag when they should not, and they can miss things. This section lists the switches, the known gaps and the costs.
+
+### Escape hatches
+
+| To do this | Use |
+|---|---|
+| Skip one guard for a short time | Tell the assistant to skip it. It writes `~/.anti-hall/skip.json` (per guard name, 15 minutes by default). `"all"` covers the noisy guards but never `git-guard`; name `git-guard` to skip it. See [User-override escape hatch](#user-override-escape-hatch-skip-guard). |
+| Turn a safety guard off | `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`. Changing them needs `--confirmed`. |
+| Turn another guard off or down | `guards.*`, for example `guards.apiGuard`, `guards.speculationGuard`, `guards.modelRouting` = `advisory` or `off`. |
+| Silence an advisory message | `guards.failureRootCauseNudge`, `guards.silentAgentNudge`, `guards.scanThrottle`, `codexNudge.enabled`, `autoHandover.nag`, `limitConserve.mode` = `off`. |
+| Acknowledge a confirmed false positive | `guards.stopAck` lets a session ack it for `silent-agent-nudge` and `tasklist-guard`. |
+| Get the full protocol text | `context.protocolLevel` = `full` (env `ANTIHALL_PROTOCOL_LEVEL=full`). |
+
+The full key list is in [Settings](#settings-anti-hallsettings).
+
+### Protocol text size
+
+The injected protocol text is compact by default. The session-start core keeps every load-bearing clause and points at the generated `plugins/anti-hall/PROTOCOL.md` for the full wording. `context.protocolLevel` = `full` restores the previous text byte for byte. Sizes are in the [CHANGELOG](../CHANGELOG.md) (a synthetic size measure, not a per-run saving).
+
+### Remaining limits
+
+False positives that were fixed are listed in the [CHANGELOG](../CHANGELOG.md). What is still true:
+
+- **Shell commands are parsed, not executed.** `git-guard` resolves git and shell aliases, but it reads the command text; it does not run it.
+- **Commit messages.** A message taken from an existing commit (`-C`, `--amend --no-edit`, a template) is checked before the commit. A message written in an editor, or changed by a `commit-msg` hook, does not exist yet at that point; it is audited after the commit, so the commit is not blocked.
+- **Shell writes.** Writes made through the shell (`cat >`, `tee`, `sed -i` and similar) reach `edit-guard`, `api-guard` and `ship-it-guard`. Some forms still fail open: a variable or glob as the target, `dd`, `install` and `rsync`, and scripts that write when they run.
+- **`speculation-guard` is lexical.** It catches hedge words. It does not catch a confident claim with no hedge word. Two opt-in checks target that gap; see the next subsection. Both are off by default.
+- **Prompt text alone does not reduce fabrication.** The verify-first eval found no net fabrication reduction from the prompt alone in four runs ([eval/README.md](../eval/README.md)). The guards' blocking is covered by unit tests, not by that eval.
+- **Advisory noise.** Replaying 5,828 real root-cause nudges from 30 days of transcripts, 3,438 still fire after the filter. `output-verify-guard` fires at most once per turn for the same signals. Both can still be wrong; use the switches above.
+- **Codex.** `edit-guard`, `api-guard` and `ship-it-guard` cover `apply_patch` edits and shell writes on Codex 0.134 or later. The fail-open shell forms above apply there too. See the [Codex port notes](../plugins/anti-hall/codex/README.md).
+
+### Opt-in checks for confident claims
+
+| Check | Setting | Precision, synthetic corpus | Precision, real replies | Cost | Default |
+|---|---|---|---|---|---|
+| Inference check | `guards.inferenceCheck` | 1.00 (recall 0.95) | 0.45 or lower (estimate from a 40-flag sample) | none (no model call) | off |
+| Judge, keyless backend | `jev.semanticJudge` on, `jev.judgeBackend` = `cli` | 0.78 to 0.81 (recall 1.0) | not measured | 5 to 6 s per turn end, measured | off |
+| Judge, API backend | `jev.semanticJudge` on, `jev.judgeBackend` = `api` | not measured | not measured | about 1 to 3 s and $0.0001 to $0.001 per turn end, estimated | off |
+
+The synthetic corpus is 84 labelled cases (`eval/inference-bench.js`), written by the same author as the detector, so read it as a regression floor. Both checks stay off because of these numbers: the inference check was wrong more often than right on real replies, and the judge adds a visible delay to every turn end. Details: [speculation-judge](#speculation-judge-tier-3-opt-in).
+
+### Hook latency
+
+Hooks are small per call but not free. On a quiet machine a bare `node -e 0` costs about 16 to 18 ms of CPU and most hooks cost 22 to 35 ms. Claude Code runs a matcher's hooks in parallel, so a tool call costs about its slowest hook, while CPU adds up across hooks. The DevSwarm hooks exit before loading their libraries in a session that is not a DevSwarm Primary or child, which saves about 20 ms of CPU per Stop and about 25 ms per prompt. The measured tables, method and caveats are in [HOOK-LATENCY](HOOK-LATENCY.md).
 
 ## Network and data
 
@@ -517,7 +565,9 @@ frequent in your workflow, turn the semantic judge off (`jev.semanticJudge` fals
 (env-overridable via `ANTIHALL_JUDGE_MODEL`; the one hardcoded model id in this codebase,
 since it's a direct Anthropic API call with no alias-resolution support).
 At current Haiku pricing this is roughly $0.0001-0.001 per turn; latency is roughly
-1-3 s added to each Stop. For projects where confident inference-as-fact is the primary
+1-3 s added to each Stop (an estimate: the API backend has not been timed or
+evaluated). The keyless `cli` backend is measured: precision 0.78-0.81, recall 1.0 on
+`eval/inference-bench.js`, about 5-6 s per Stop. For projects where confident inference-as-fact is the primary
 failure mode and the cost/latency is acceptable, Tier 3 closes the gap Tier 2 leaves open.
 
 ### Jev classifier (opt-in, backs Tier 2)
