@@ -1,9 +1,13 @@
 ---
 name: ship-it
-description: One lean, anti-hall-native workflow for shipping any change correctly — from a one-line fix to a multi-phase feature. Scales rigor to blast radius (S/M/L tiers). Brainstorm + plan happen IN PLAN MODE (ExitPlanMode is the approval gate); the plan is hardened with the deadly-loop BEFORE any code; on large work the disjoint build phases and the per-phase deadly-loop fan out as a Workflow swarm; each phase is verified with fresh evidence and a vacuous-test guard, then hardened until zero NEW P0s or P1s. Standalone — depends only on Claude Code built-ins (plan mode, the Workflow tool) plus anti-hall's own deadly-loop and always-on guards. Use when the user says "let's build X" / "implement Y" / "fix Z" and you want it done right the first time. Replaces feature-launch.
+description: "Ship a change right, scaled S/M/L: plan in plan mode, deadly-loop the plan, build in phases, verify each. Use for \"build X\", \"implement Y\", \"fix Z\"."
 ---
 
 # Ship It — Plan Right, Build in Slices, Prove It Works
+
+## When to use
+
+One lean, anti-hall-native workflow for shipping any change correctly — from a one-line fix to a multi-phase feature. Scales rigor to blast radius (S/M/L tiers). Brainstorm + plan happen IN PLAN MODE (ExitPlanMode is the approval gate); the plan is hardened with the deadly-loop BEFORE any code; on large work the disjoint build phases and the per-phase deadly-loop fan out as a Workflow swarm; each phase is verified with fresh evidence and a vacuous-test guard, then hardened until zero NEW P0s or P1s. Standalone — depends only on Claude Code built-ins (plan mode, the Workflow tool) plus anti-hall's own deadly-loop and always-on guards. Use when the user says "let's build X" / "implement Y" / "fix Z" and you want it done right the first time. Replaces feature-launch.
 
 One workflow, matched to blast radius. Most failures are planning failures that surface
 later as bugs, so the rigor is spent up front, then kept cheap by scaling it to risk:

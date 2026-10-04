@@ -1,9 +1,13 @@
 ---
 name: anti-hall-system-briefing
-description: The agent-facing operator guide to anti-hall for Codex — glossary of terms, the hard rules, every skill and CLI verb with when to use it, every setting with its default, and where to read more; plus a DERIVED live inventory (`scripts/briefing.js`) of what is installed. Use when the user asks "brief me on anti-hall", "what does X mean", "which command/setting does Y", "what's in this build", or when onboarding an agent to install or run anti-hall. For "is it working", use anti-hall-doctor.
+description: "anti-hall operator guide: terms, rules, skills, CLI verbs, settings. Use for \"brief me on anti-hall\", \"what does X mean\", \"which setting does Y\"."
 ---
 
 # System briefing — anti-hall operator guide for Codex (v0.108.0)
+
+## When to use
+
+The agent-facing operator guide to anti-hall for Codex — glossary of terms, the hard rules, every skill and CLI verb with when to use it, every setting with its default, and where to read more; plus a DERIVED live inventory (`scripts/briefing.js`) of what is installed. Use when the user asks "brief me on anti-hall", "what does X mean", "which command/setting does Y", "what's in this build", or when onboarding an agent to install or run anti-hall. For "is it working", use anti-hall-doctor.
 
 Resolve the plugin root from this SKILL.md's path (Codex does not expand plugin-root
 variables in skill text):

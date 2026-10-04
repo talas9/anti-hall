@@ -1,9 +1,13 @@
 ---
 name: deadly-loop-multi
-description: Run a DOUBLE / TRIPLE / QUADRUPLE deadly loop — the deadly-loop TRIO (Sonnet Reviewer + Opus Auditor + Codex Critic) multiplied N× in parallel, auditing a target (whole repo, a diff, or named files) with diversified lenses, then dedup + synthesize, optionally fix-wave and re-converge. Use when the user says "double deadly loop", "triple deadly loop", "quadruple deadly loop", "deep multi-agent review", "have multiple flagship + codex agents review everything", or wants a heavier review than the standard 1× deadly-loop. Multiplier — double=2× the trio (6 agents), triple=3× (9), quadruple=4× (12).
+description: 2x/3x/4x parallel deadly-loop review with diversified lenses. Use for "double/triple/quadruple deadly loop" or a deeper multi-agent review.
 ---
 
 # Multi Deadly Loop
+
+## When to use
+
+Run a DOUBLE / TRIPLE / QUADRUPLE deadly loop — the deadly-loop TRIO (Sonnet Reviewer + Opus Auditor + Codex Critic) multiplied N× in parallel, auditing a target (whole repo, a diff, or named files) with diversified lenses, then dedup + synthesize, optionally fix-wave and re-converge. Use when the user says "double deadly loop", "triple deadly loop", "quadruple deadly loop", "deep multi-agent review", "have multiple flagship + codex agents review everything", or wants a heavier review than the standard 1× deadly-loop. Multiplier — double=2× the trio (6 agents), triple=3× (9), quadruple=4× (12).
 
 A scaled-up [`deadly-loop`](../deadly-loop/SKILL.md): instead of 1× the
 Reviewer + Auditor + Critic TRIO, run **N× the trio in parallel** with *different

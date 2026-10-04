@@ -5,6 +5,10 @@ description: Inspect or integrate optional oh-my-claudecode/OMC state with anti-
 
 # anti-hall OMC integration for Codex
 
+## When to use
+
+Inspect or integrate optional oh-my-claudecode/OMC state with anti-hall in Codex. Use when the user asks whether OMC is installed for Codex or why anti-hall did not install OMC.
+
 ## Resolve the plugin root
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that

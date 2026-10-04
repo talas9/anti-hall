@@ -1,9 +1,13 @@
 ---
 name: flutter-debug
-description: Drive a Flutter app in debug mode and close the fix loop — run with agent-controlled hot reload, drive the UI with semantic taps + agent-visible screenshots, watch runtime errors / logs / VM service, then reproduce → read error → root-cause → fix → hot reload → visually re-verify. Use when the user says "debug my Flutter app", "drive the simulator/emulator", "reproduce this bug in the app", "fix this and verify it in the UI", "hot reload and check", or wants an end-to-end Flutter debug loop. iOS fully; Android taps/screenshots VERIFIED on emulator (FP7 2026-06-11).
+description: "Drive a Flutter app in debug mode: hot reload, taps, screenshots, runtime errors; reproduce, fix, re-verify. Use for \"debug my Flutter app\"."
 ---
 
 # flutter-debug
+
+## When to use
+
+Drive a Flutter app in debug mode and close the fix loop — run with agent-controlled hot reload, drive the UI with semantic taps + agent-visible screenshots, watch runtime errors / logs / VM service, then reproduce → read error → root-cause → fix → hot reload → visually re-verify. Use when the user says "debug my Flutter app", "drive the simulator/emulator", "reproduce this bug in the app", "fix this and verify it in the UI", "hot reload and check", or wants an end-to-end Flutter debug loop. iOS fully; Android taps/screenshots VERIFIED on emulator (FP7 2026-06-11).
 
 Set up and run an agent-driven Flutter debug loop: run the app in debug mode with
 agent-controlled hot reload, drive the UI (semantic taps + agent-visible screenshots),

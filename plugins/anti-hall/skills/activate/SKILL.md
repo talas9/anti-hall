@@ -1,9 +1,13 @@
 ---
 name: activate
-description: One-shot idempotent anti-hall setup. Checks statusline installation, reports model-routing state, writes a sentinel so it doesn't repeat. Use when the user says "activate anti-hall", "set up anti-hall", "run first-time setup", or "anti-hall activate". NOT auto-run — user-invoked only.
+description: "First-time anti-hall setup: statusline, model routing. Use for \"activate anti-hall\", \"set up anti-hall\"."
 ---
 
 # anti-hall:activate
+
+## When to use
+
+One-shot idempotent anti-hall setup. Checks statusline installation, reports model-routing state, writes a sentinel so it doesn't repeat. Use when the user says "activate anti-hall", "set up anti-hall", "run first-time setup", or "anti-hall activate". NOT auto-run — user-invoked only.
 
 One-shot, idempotent first-time setup for anti-hall. Run this once after installing the
 plugin. It is **never** auto-invoked — always user-triggered. Re-running is safe (idempotent).

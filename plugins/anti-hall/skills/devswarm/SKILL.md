@@ -1,9 +1,13 @@
 ---
 name: devswarm
-description: Explain and activate anti-hall's optional DevSwarm integration — the hivecontrol reference KB, the workspace-tier orchestration doctrine (a Primary's top fan-out tier is a child workspace, not a subagent — doctrine + guard redirects shipped, no mechanical classifier), and the shipped layered recovery model (child self-report → supervisor poke → escalate-to-parent, automatic path NEVER kills) plus the on-demand devswarm-recover CLI (the only path that ever kills). Use when the user asks "explain the anti-hall DevSwarm integration", "how do I activate the DevSwarm supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supervisor", "recover a stuck DevSwarm workspace", "here's a screenshot of my DevSwarm workspaces" / "sync my workspaces" (screenshot sync), "what does the DevSwarm app say", or anything about hivecontrol / DevSwarm workspaces from an anti-hall angle.
+description: "anti-hall DevSwarm integration: workspaces, supervisor, recovery, screenshot sync. Use for any DevSwarm/hivecontrol question or a stuck workspace."
 ---
 
 # DevSwarm integration
+
+## When to use
+
+Explain and activate anti-hall's optional DevSwarm integration — the hivecontrol reference KB, the workspace-tier orchestration doctrine (a Primary's top fan-out tier is a child workspace, not a subagent — doctrine + guard redirects shipped, no mechanical classifier), and the shipped layered recovery model (child self-report → supervisor poke → escalate-to-parent, automatic path NEVER kills) plus the on-demand devswarm-recover CLI (the only path that ever kills). Use when the user asks "explain the anti-hall DevSwarm integration", "how do I activate the DevSwarm supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supervisor", "recover a stuck DevSwarm workspace", "here's a screenshot of my DevSwarm workspaces" / "sync my workspaces" (screenshot sync), "what does the DevSwarm app say", or anything about hivecontrol / DevSwarm workspaces from an anti-hall angle.
 
 anti-hall's DevSwarm support is **entirely optional and feature-detected** — the same
 model as its OMC/OMX integration. Nothing here changes behavior unless DevSwarm is

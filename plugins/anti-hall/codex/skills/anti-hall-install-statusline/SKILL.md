@@ -5,6 +5,10 @@ description: Explain and install anti-hall statusline support where available. U
 
 # anti-hall statusline for Codex
 
+## When to use
+
+Explain and install anti-hall statusline support where available. Use when the user asks for the anti-hall statusline in Codex or wants OMC/anti-hall status visibility.
+
 ## Resolve the plugin root
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that

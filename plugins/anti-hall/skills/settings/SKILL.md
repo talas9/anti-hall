@@ -1,9 +1,13 @@
 ---
 name: settings
-description: Show or change any anti-hall setting. Use when the user says "anti-hall settings", "show anti-hall settings", "change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", "what are my anti-hall settings", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
+description: Show or change anti-hall settings. Use for "anti-hall settings", "turn off X", "set auto-handover to 80%".
 ---
 
 # Settings
+
+## When to use
+
+Show or change any anti-hall setting. Use when the user says "anti-hall settings", "show anti-hall settings", "change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", "what are my anti-hall settings", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
 
 anti-hall keeps every user-facing setting in ONE place: `~/.anti-hall/settings.json`,
 organized into sections (autoHandover, guards, safety, context, maintenance, jev,

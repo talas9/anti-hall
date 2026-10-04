@@ -5,6 +5,10 @@ description: Codex-native Flutter debugging loop. Use when debugging Flutter app
 
 # anti-hall Flutter debug for Codex
 
+## When to use
+
+Codex-native Flutter debugging loop. Use when debugging Flutter apps, simulator/emulator behavior, UI regressions, or widget/service failures.
+
 Use a verify-first debug loop:
 
 1. Reproduce the issue with the smallest command or UI path.

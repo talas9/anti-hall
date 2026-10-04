@@ -1,9 +1,13 @@
 ---
 name: anti-hall-jev
-description: Activate, configure, check, or read the tracking loop of the opt-in Jev classifier for Codex. Use when the user says activate/enable/disable/turn on/set up jev, jev status, jev report, how is jev doing, jev scorecard, label that decision, promote an integration, jev budget, or jev credit balance.
+description: Enable, configure or report on the opt-in Jev classifier. Use for "activate jev", "jev status", "jev report", "jev budget".
 ---
 
 # anti-hall jev for Codex
+
+## When to use
+
+Activate, configure, check, or read the tracking loop of the opt-in Jev classifier for Codex. Use when the user says activate/enable/disable/turn on/set up jev, jev status, jev report, how is jev doing, jev scorecard, label that decision, promote an integration, jev budget, or jev credit balance.
 
 ## Resolve the plugin root
 

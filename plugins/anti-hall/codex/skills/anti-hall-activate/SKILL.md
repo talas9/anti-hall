@@ -5,6 +5,10 @@ description: Idempotent Codex setup for anti-hall. Use when the user asks to act
 
 # anti-hall activate for Codex
 
+## When to use
+
+Idempotent Codex setup for anti-hall. Use when the user asks to activate anti-hall, set it up for Codex, or install the Codex hooks.
+
 Activation for Codex installs the supported Codex hook subset and writes an advisory sentinel. It does not touch Claude Code settings.
 
 ## Resolve the plugin root

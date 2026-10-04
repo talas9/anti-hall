@@ -1,9 +1,13 @@
 ---
 name: root-cause
-description: Evidence-driven debugging discipline. Use when investigating ANY bug, failure, crash, alert, flaky test, or unexpected behavior, before proposing or applying a fix. Enforces no-cause-no-fix - collect evidence, trace the full sequence, instrument when evidence is missing, prove the original and root cause (not the surface symptom), then fix and verify. Trigger on "why is X failing", "debug Y", "this error", "it crashes", "investigate Z", or any symptom that does not yet have a proven mechanism.
+description: "Evidence-first debugging: no proven cause, no fix. Use for any bug, failure, crash, flaky test, or \"why is X failing\"."
 ---
 
 # Root Cause
+
+## When to use
+
+Evidence-driven debugging discipline. Use when investigating ANY bug, failure, crash, alert, flaky test, or unexpected behavior, before proposing or applying a fix. Enforces no-cause-no-fix - collect evidence, trace the full sequence, instrument when evidence is missing, prove the original and root cause (not the surface symptom), then fix and verify. Trigger on "why is X failing", "debug Y", "this error", "it crashes", "investigate Z", or any symptom that does not yet have a proven mechanism.
 
 A symptom is not a cause. An alert, a stack-trace line, an error email, a failing
 build, a red test — each is *where the problem surfaced*, not *why it happened*.

@@ -5,6 +5,10 @@ description: Check or update anti-hall from the local marketplace clone. Use whe
 
 # anti-hall update for Codex
 
+## When to use
+
+Check or update anti-hall from the local marketplace clone. Use when the user asks to update anti-hall, check whether anti-hall is current, or refresh the Codex port files.
+
 > **UPGRADE NOTE (Claude Code side only):** a user who also runs the Claude Code plugin on
 > 0.107.x or earlier must run `claude plugin update anti-hall@anti-hall` once, then restart
 > Claude Code — the 0.107.x `update.js` cannot register 0.108.0 with the Claude harness.

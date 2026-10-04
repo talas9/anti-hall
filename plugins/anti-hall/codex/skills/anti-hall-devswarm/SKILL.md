@@ -1,9 +1,13 @@
 ---
 name: anti-hall-devswarm
-description: Explain anti-hall's optional DevSwarm integration from Codex — the hivecontrol reference KB, the workspace-tier orchestration doctrine (a Primary's top fan-out tier is a child workspace, not a subagent — doctrine + guard redirect shipped for both agents, no mechanical classifier), and the shipped layered recovery model (child self-report registered for both agents → Claude-only supervisor poke → Claude-only escalate-to-parent, automatic path NEVER kills, plus the on-demand devswarm-recover CLI — the only kill path). Use when the user asks about DevSwarm, hivecontrol, the anti-hall liveness supervisor, the DevSwarm app state, or sends a screenshot of their DevSwarm workspaces to sync ("sync my workspaces") while working in Codex.
+description: "anti-hall DevSwarm integration: workspaces, supervisor, recovery, screenshot sync. Use for any DevSwarm/hivecontrol question or a stuck workspace."
 ---
 
 # anti-hall DevSwarm integration (Codex view)
+
+## When to use
+
+Explain anti-hall's optional DevSwarm integration from Codex — the hivecontrol reference KB, the workspace-tier orchestration doctrine (a Primary's top fan-out tier is a child workspace, not a subagent — doctrine + guard redirect shipped for both agents, no mechanical classifier), and the shipped layered recovery model (child self-report registered for both agents → Claude-only supervisor poke → Claude-only escalate-to-parent, automatic path NEVER kills, plus the on-demand devswarm-recover CLI — the only kill path). Use when the user asks about DevSwarm, hivecontrol, the anti-hall liveness supervisor, the DevSwarm app state, or sends a screenshot of their DevSwarm workspaces to sync ("sync my workspaces") while working in Codex.
 
 anti-hall's DevSwarm support is **optional and feature-detected**, same model as the
 OMC/OMX integration: dormant, zero effect, unless DevSwarm is actually in use. anti-hall

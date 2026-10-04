@@ -1,9 +1,13 @@
 ---
 name: jev
-description: Activate, configure, check, or read the tracking loop of the opt-in Jev classifier (TypeSafe's "System One" decision model, reached via the Vercel AI Gateway or TypeSafe's direct API). Use when the user says "activate jev", "activate jev please", "enable jev", "turn on jev", "set up jev", "jev status", "disable jev", "jev report", "set jev key", "how is jev doing", "jev scorecard", "show me the jev report", "label that decision right/wrong", "was jev right", "promote <integration>", "turn <integration> on/off", "jev budget", "jev credit balance", "jev cost", or "what does <integration> do".
+description: Enable, configure or report on the opt-in Jev classifier. Use for "activate jev", "jev status", "jev report", "jev budget".
 ---
 
 # Jev
+
+## When to use
+
+Activate, configure, check, or read the tracking loop of the opt-in Jev classifier (TypeSafe's "System One" decision model, reached via the Vercel AI Gateway or TypeSafe's direct API). Use when the user says "activate jev", "activate jev please", "enable jev", "turn on jev", "set up jev", "jev status", "disable jev", "jev report", "set jev key", "how is jev doing", "jev scorecard", "show me the jev report", "label that decision right/wrong", "was jev right", "promote <integration>", "turn <integration> on/off", "jev budget", "jev credit balance", "jev cost", or "what does <integration> do".
 
 Jev is anti-hall's opt-in classifier backend (see `docs/KB-jev-classifier.md` in the anti-hall source repository for the
 full design). It is **default OFF** and, once enabled, only ever ADDS or RELAXES a

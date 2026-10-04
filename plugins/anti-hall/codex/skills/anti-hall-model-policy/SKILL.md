@@ -5,6 +5,10 @@ description: Codex model routing policy for anti-hall work. Use when selecting m
 
 # anti-hall Codex model policy
 
+## When to use
+
+Codex model routing policy for anti-hall work. Use when selecting models for planning, implementation, review, debate, or mechanical execution in Codex.
+
 **Never pin a model version.** Codex generations get renamed and retired
 without notice (verified 2026-09-23: `gpt-5.4-mini`, `gpt-5.4`,
 `gpt-5.3-codex`, and `gpt-5.3-codex-spark` are all absent from the live

@@ -1,9 +1,13 @@
 ---
 name: anti-hall-ship-it
-description: Codex-native ship-it workflow. Use to plan, implement, verify, and harden a change with rigor scaled to blast radius. Replaces anti-hall-feature-launch (retired 2026-07-05, matching the Claude-side ship-it/feature-launch consolidation from v0.27.0).
+description: "Ship a change right, scaled S/M/L: plan, build, verify, harden. Use for \"build X\", \"implement Y\", \"fix Z\"."
 ---
 
 # anti-hall ship-it for Codex
+
+## When to use
+
+Codex-native ship-it workflow. Use to plan, implement, verify, and harden a change with rigor scaled to blast radius. Replaces anti-hall-feature-launch (retired 2026-07-05, matching the Claude-side ship-it/feature-launch consolidation from v0.27.0).
 
 This is the Codex-native equivalent of the Claude `ship-it` workflow. Do not run `ship-it.workflow.js`; Codex does not expose the Claude Workflow runtime.
 

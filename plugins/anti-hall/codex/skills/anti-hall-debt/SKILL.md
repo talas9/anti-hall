@@ -5,6 +5,10 @@ description: Register or audit deliberate technical debt markers in Codex. Use w
 
 # anti-hall debt for Codex
 
+## When to use
+
+Register or audit deliberate technical debt markers in Codex. Use when the user asks to track debt, audit shortcuts, or list anti-hall debt markers.
+
 ## Resolve the plugin root
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that

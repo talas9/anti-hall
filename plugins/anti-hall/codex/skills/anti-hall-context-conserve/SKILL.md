@@ -1,9 +1,13 @@
 ---
 name: anti-hall-context-conserve
-description: Codex-native context and usage conservation mode. Use when the user asks for context conservative mode, limit conservation, cheap-model routing, or reducing context/token burn while keeping work moving.
+description: Codex context and usage conservation mode. Use for context-conservative mode, limit conservation, cheap-model routing, or cutting context/token burn.
 ---
 
 # anti-hall context-conserve for Codex
+
+## When to use
+
+Codex-native context and usage conservation mode. Use when the user asks for context conservative mode, limit conservation, cheap-model routing, or reducing context/token burn while keeping work moving.
 
 This is the Codex port of anti-hall limit/context conservation. It combines hook nudges, model routing, and output hygiene; it does not depend on Claude Workflow JS.
 

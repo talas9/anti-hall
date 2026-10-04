@@ -5,6 +5,10 @@ description: Codex-native equivalent of anti-hall deadly-loop. Use to harden ris
 
 # anti-hall deadly-loop for Codex
 
+## When to use
+
+Codex-native equivalent of anti-hall deadly-loop. Use to harden risky changes with repeated adversarial review and fix waves until no new P0/P1 blockers remain.
+
 ## Resolve the plugin root
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — resolve

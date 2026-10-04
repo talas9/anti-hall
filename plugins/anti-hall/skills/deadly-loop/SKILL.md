@@ -1,9 +1,13 @@
 ---
 name: deadly-loop
-description: Iterative TRIO-debate + fix-wave protocol for hardening non-trivial PRs and changes before merge. Spawns a parallel Reviewer + Auditor + Critic trio, dispatches fix waves, loops until convergence (zero NEW P0 or P1 blockers). Use before merging anything with cross-file risk, cross-PR coordination, security-sensitive changes (auth, signing, redaction, prompt-injection defense), schema migrations, production-data touches, shell scripts, CI/workflow YAML, cross-repo coordination, or LLM prompt work — anywhere a silent failure would be expensive. Born from a real project where 7 iteration rounds caught 30+ bugs that solo review would have missed.
+description: "Reviewer+Auditor+Critic debate and fix waves until no new P0/P1. Use before merging risky changes: security, schema/prod data, shell, CI YAML, LLM prompts, cross-file/PR."
 ---
 
 # Deadly Loop — Iterative Debate Until Clean
+
+## When to use
+
+Iterative TRIO-debate + fix-wave protocol for hardening non-trivial PRs and changes before merge. Spawns a parallel Reviewer + Auditor + Critic trio, dispatches fix waves, loops until convergence (zero NEW P0 or P1 blockers). Use before merging anything with cross-file risk, cross-PR coordination, security-sensitive changes (auth, signing, redaction, prompt-injection defense), schema migrations, production-data touches, shell scripts, CI/workflow YAML, cross-repo coordination, or LLM prompt work — anywhere a silent failure would be expensive. Born from a real project where 7 iteration rounds caught 30+ bugs that solo review would have missed.
 
 Spend 1-2 hours of agent compute to ship a clean change rather than 1-2 weeks of post-merge incident response.
 

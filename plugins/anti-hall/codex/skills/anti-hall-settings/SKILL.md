@@ -1,9 +1,13 @@
 ---
 name: anti-hall-settings
-description: Show or change any anti-hall setting for Codex. Use when the user says "anti-hall settings", "show/change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
+description: Show or change anti-hall settings. Use for "anti-hall settings", "turn off X", "set auto-handover to 80%".
 ---
 
 # anti-hall settings for Codex
+
+## When to use
+
+Show or change any anti-hall setting for Codex. Use when the user says "anti-hall settings", "show/change anti-hall settings", "turn off X", "turn on X", "set auto-handover to 80%", "turn off auto-handover", "stop nagging me to compact", "what's the auto-handover threshold", or similar for any guard, Jev, statusline, limit-conservation, or DevSwarm knob.
 
 ## Resolve the plugin root
 

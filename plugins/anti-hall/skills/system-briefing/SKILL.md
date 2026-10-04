@@ -1,9 +1,13 @@
 ---
 name: system-briefing
-description: The agent-facing operator guide to anti-hall — glossary of terms (Primary, child, mesh, partition, reader cursor/floor, archive vs close vs delete, twin, on/shadow/off, KEEP/REVIEW/REMOVE, handover, capability gate, …), the hard rules, every skill and CLI verb with when to use it, every setting with its default, and where to read more; plus a DERIVED live inventory (`scripts/briefing.js`) of the hooks and skills actually installed. Use when the user asks "brief me on anti-hall", "what does X mean", "which command/setting does Y", "what's in this build", "how does the whole system work", or when onboarding an agent to install or run anti-hall. For "is it actually working / do the guards fire", use the `doctor` skill instead.
+description: "anti-hall operator guide: terms, rules, skills, CLI verbs, settings. Use for \"brief me on anti-hall\", \"what does X mean\", \"which setting does Y\"."
 ---
 
 # System briefing — anti-hall operator guide (v0.108.0)
+
+## When to use
+
+The agent-facing operator guide to anti-hall — glossary of terms (Primary, child, mesh, partition, reader cursor/floor, archive vs close vs delete, twin, on/shadow/off, KEEP/REVIEW/REMOVE, handover, capability gate, …), the hard rules, every skill and CLI verb with when to use it, every setting with its default, and where to read more; plus a DERIVED live inventory (`scripts/briefing.js`) of the hooks and skills actually installed. Use when the user asks "brief me on anti-hall", "what does X mean", "which command/setting does Y", "what's in this build", "how does the whole system work", or when onboarding an agent to install or run anti-hall. For "is it actually working / do the guards fire", use the `doctor` skill instead.
 
 Two parts: **(1) this guide** — terms, rules, skills, verbs, settings (read it before
 operating anti-hall, or when a term or option is unclear); **(2) a live inventory** —

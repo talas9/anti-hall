@@ -5,6 +5,10 @@ description: Check anti-hall's Codex installation and runtime posture. Use when 
 
 # anti-hall doctor for Codex
 
+## When to use
+
+Check anti-hall's Codex installation and runtime posture. Use when the user asks whether anti-hall is active in Codex, whether hooks are installed, or why a guard did or did not fire.
+
 ## Resolve the plugin root
 
 Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that

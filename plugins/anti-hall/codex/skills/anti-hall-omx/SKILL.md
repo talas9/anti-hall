@@ -5,6 +5,10 @@ description: Integrate anti-hall with oh-my-codex (OMX). Use when the user asks 
 
 # anti-hall OMX integration
 
+## When to use
+
+Integrate anti-hall with oh-my-codex (OMX). Use when the user asks about OMX, omx setup/doctor, Codex workflows, cx.sh, dangerous bypass launch, or activating anti-hall workflows through OMX.
+
 OMX is the Codex workflow/orchestration companion. OMC is Claude-focused; for Codex use OMX.
 
 ## Verify OMX

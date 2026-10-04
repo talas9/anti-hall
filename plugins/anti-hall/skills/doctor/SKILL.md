@@ -1,9 +1,13 @@
 ---
 name: doctor
-description: Health-check AND repair anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), the statusline is installed, and (with --repair) apply safe fixes. Plain doctor is read-only. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
+description: Check and repair anti-hall (hooks, guards, statusline). Use for "is anti-hall working", "anti-hall doctor", "repair anti-hall".
 ---
 
 # Doctor
+
+## When to use
+
+Health-check AND repair anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), the statusline is installed, and (with --repair) apply safe fixes. Plain doctor is read-only. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
 
 Answers the only question that matters for a guardrail plugin: **is it actually running,
 and do the guards actually fire?** It checks presence AND behavior — not just that files
