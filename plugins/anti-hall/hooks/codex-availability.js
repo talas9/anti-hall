@@ -25,6 +25,23 @@ const CONTEXT = require('./lib/block-message.js').message({
   instead: "Workflow scripts have no filesystem and cannot read this fact, so pass args.codexAvailable=true into ship-it/deadly-loop Workflow invocations (same pattern as args.fableAvailable) so the Critic seat attempts agentType:'codex:codex-rescue' first. Outside a Workflow, prefer agentType:'codex:codex-rescue' for the deadly-loop/ship-it Critic seat and for everyday correctness-review plus a share of implementation load; coordinators there should read ~/.anti-hall/codex-availability.json instead of re-probing.",
 });
 
+// Codex session wording: no Claude models, no Workflow scripts, no codex:codex-rescue agent type.
+const CONTEXT_CODEX =
+  "Codex binary detected on PATH (per a SessionStart PATH probe). This is NECESSARY " +
+  "BUT NOT SUFFICIENT -- it does NOT prove Codex is authenticated or functional, only " +
+  "that a spawn is worth ATTEMPTING. If a nested Codex run fails or returns nothing, " +
+  "fall back one gpt tier down for that seat -- that check is still the real backstop " +
+  "no matter what this probe says. Coordinators should read ~/.anti-hall/codex-availability.json " +
+  "instead of re-probing.";
+
+function isCodexSession() {
+  try {
+    if (process.stdin.isTTY) return false;
+    const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+    return require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex';
+  } catch (_) { return false; }
+}
+
 // isRealExecutable(candidate, isWin) -- true only if `candidate` is a REGULAR
 // FILE (never a directory) and, on POSIX, has the execute bit set. `statSync`
 // follows symlinks, so a symlink to the real binary still counts. This is the
@@ -89,31 +106,32 @@ function writeState(available) {
 // (unexpired) recorded quota outage, else ''. 0.111 item 2: lets a session
 // that never itself hit the quota error still learn about it, instead of
 // spending its own spawn+wait to rediscover the same outage.
-function quotaNote() {
+function quotaNote(codex) {
   try {
     const q = require('./lib/codex-quota.js').readQuota({ home: require('../companion/lib/test-home-guard.js').resolveHome() });
     if (!q.exhausted) return '';
     return require('./lib/block-message.js').message({
       kind: 'warn', guard: 'codex-availability',
       what: 'Codex unavailable until ' + new Date(q.until).toISOString() + ' (' + q.reason + ').',
-      instead: 'route correctness review to Sonnet until then.',
+      instead: 'route correctness review to ' + (codex ? 'a lower gpt tier' : 'Sonnet') + ' until then.',
     }) + '\n';
   } catch (_) {
     return '';
   }
 }
 
-function emitContext(prefix) {
+function emitContext(prefix, codex) {
   const out = {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: (prefix || '') + CONTEXT,
+      additionalContext: (prefix || '') + (codex ? CONTEXT_CODEX : CONTEXT),
     },
   };
   fs.writeSync(1, JSON.stringify(out) + '\n');
 }
 
 function main() {
+  const codex = isCodexSession();
   let available = false;
   try {
     available = probeCodexOnPath();
@@ -132,12 +150,12 @@ function main() {
   try {
     if (require('./lib/settings.js').get('guards', 'codexQuotaDetect', true) !== false) require('./lib/codex-quota.js').scanJobLogs();
   } catch (_) { /* fail-open */ }
-  const prefix = quotaNote();
+  const prefix = quotaNote(codex);
   // Emit whenever the binary is reachable OR a live quota outage exists —
   // the quota case is the one place this hook must speak even though the
   // PATH probe alone would have stayed silent (available===false previously
   // meant "no context", but a session needs to be told routing changed).
-  if (available === true || prefix) emitContext(prefix);
+  if (available === true || prefix) emitContext(prefix, codex);
 }
 
 try {

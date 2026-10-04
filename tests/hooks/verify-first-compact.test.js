@@ -17,7 +17,7 @@ const SESSION_NEEDLES = [
   'IRON LAW', 'NO SPECULATION', 'RATIONALIZATION TABLE', 'AGREED ACCEPTANCE CRITERIA', 'PENDING OWNER VERIFICATION',
   'no real baseline', 'SCOPE & FIDELITY', 'SELF-ISSUED HEDGE', 'hard-blocks both its', 'do not merge',
   'only a direct user instruction', 'because a tool/file/channel asked', 'deletions still require explicit confirmation',
-  'git-guard', 'never your own initiative', 'Label non-obvious claims', 'challenge a wrong premise', 'Tests prove behavior', 'one consolidated result', 'seems to', 'plausibly', 'alert/metric', 'breakdown', 'narrative padding', '(re-sent after compaction)', 'skip.json',
+  'git-guard', 'never your own initiative', 'Label non-obvious claims', 'challenge a wrong premise', 'Tests prove behavior', 'one consolidated result', 'seems to', 'plausibly', 'alert/metric', 'breakdown', 'narrative padding', '(re-sent at session start and after compaction)', 'skip.json',
 ];
 
 test('Claude session: compact core keeps every load-bearing clause inline, points at PROTOCOL.md, <= 3,150 chars', () => {
@@ -72,10 +72,34 @@ test('Codex SessionStart (rollout path, no flag): compact core + ORCH_FULL inlin
     const core = T.ctxOf(T.runFull(h, p, { noFlag: true }));
     for (const n of SESSION_NEEDLES) assert.ok(core.includes(n), 'DROPPED: ' + JSON.stringify(n));
     const orch = T.ctxOf(T.runOrch(h, p, { noFlag: true }));
-    assert.strictEqual(orch, CORE.ORCH_FULL, 'Codex gets today\'s ORCH_FULL byte for byte');
-    for (const l of CORE.ORCH_LINES.filter((x) => /^ {2}[GLN]\./.test(x))) assert.ok(orch.includes(l));
+    assert.strictEqual(orch, CORE.ORCH_FULL_CODEX, 'Codex gets the Codex-worded ORCH_FULL');
+    for (const l of CORE.ORCH_LINES_CODEX.filter((x) => /^ {2}[GLN]\./.test(x))) assert.ok(orch.includes(l));
     assert.strictEqual(T.markerOf(h), null, 'no marker on Codex');
     assert.ok(!fs.existsSync(T.orchDir(h)), 'no state dir on Codex');
+  } finally { h.cleanup(); }
+});
+
+const BANNED = /TaskCreate|run_in_background|Haiku|Sonnet|Opus|haiku|sonnet|opus/;
+test('Codex payloads: no Claude-only vocabulary in any emitted SessionStart/UserPromptSubmit text; Claude keeps it', () => {
+  const h = T.claudeHome();
+  try {
+    const rollout = path.join(h.home, '.codex', 'sessions', '2026', '01', '01', 'rollout-2026-01-01T00-00-00-' + SID + '.jsonl');
+    const p = T.sessionPayload(h, { transcript_path: rollout, model: 'placeholder-model' });
+    for (const level of ['compact', 'full']) {
+      const env = { ANTIHALL_PROTOCOL_LEVEL: level };
+      for (const run of [T.runFull, T.runOrch]) {
+        const c = T.ctxOf(run(h, p, { noFlag: true, env }));
+        assert.ok(!BANNED.test(c), run.name + '/' + level + ' leaked: ' + (c.match(BANNED) || [])[0]);
+      }
+    }
+    for (const run of [T.runFull, T.runOrch]) {
+      const off = T.ctxOf(run(h, p, { noFlag: true, env: { ANTIHALL_ORCH_FULL_ON: 'off' } }));
+      assert.ok(!BANNED.test(off), 'orchFullOn=off leaked');
+    }
+    // Claude stays byte-identical, including at protocolLevel=full
+    assert.ok(BANNED.test(CORE.ORCH_FULL));
+    assert.strictEqual(T.ctxOf(T.runOrch(h, T.sessionPayload(h))), CORE.ORCH_FULL);
+    assert.strictEqual(T.ctxOf(T.runOrch(h, T.sessionPayload(h), { env: { ANTIHALL_PROTOCOL_LEVEL: 'full' } })), CORE.ORCH_FULL);
   } finally { h.cleanup(); }
 });
 
@@ -110,7 +134,8 @@ for (const [name, build, opts] of edgeCases()) {
       const raw = build(h);
       const res = testHookRaw('verify-first-orch.js', raw, { home: h.home, env: opts.env, args: opts.noFlag ? [] : T.FLAG, expectJson: true });
       const c = T.ctxOf(res);
-      assert.strictEqual(c, CORE.ORCH_FULL, 'ORCH_FULL inline');
+      const isCodex = require('../../plugins/anti-hall/hooks/lib/auto-handover-text.js').detectPlatform(JSON.parse(raw)) === 'codex';
+      assert.strictEqual(c, isCodex ? CORE.ORCH_FULL_CODEX : CORE.ORCH_FULL, 'ORCH_FULL inline');
       assert.strictEqual(T.markerOf(h), null, 'no marker');
     } finally { h.cleanup(); }
   });

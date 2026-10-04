@@ -56,12 +56,13 @@ const core = require('./verify-first-core');
 // Foundation payload: identical in every session (DevSwarm or not) — the DevSwarm-Primary-specific
 // rule W lives in verify-first-orch.js, so nothing here is env-gated.
 const FOUNDATION_FULL = [...core.CORE_FULL, ...core.DISCIPLINES_INDEX].join('\n');
+const FOUNDATION_FULL_CODEX = [...core.CORE_FULL, ...core.DISCIPLINES_INDEX_CODEX].join('\n');
 
 // Compact core; when the orchestration hook is switched off, today's index would still have carried the
 // model-routing and delegation summary, so the M/N line rides here instead.
-function compactText() {
+function compactText(codex) {
   let t = core.coreCompactSession();
-  try { if (!require('./lib/settings.js').enabled('context', 'verifyFirstOrchestration')) t += '\n' + core.ORCH_MN_LINE; } catch (_) { /* core only */ }
+  try { if (!require('./lib/settings.js').enabled('context', 'verifyFirstOrchestration')) t += '\n' + (codex ? core.ORCH_MN_LINE_CODEX : core.ORCH_MN_LINE); } catch (_) { /* core only */ }
   return t;
 }
 
@@ -80,8 +81,10 @@ function main() {
   // SessionStart, so SessionStart is both the expected and the safe default for
   // any unrecognized / missing value or parse failure.
   let event = 'SessionStart';
+  let codex = false;
   try {
     const payload = JSON.parse(raw);
+    try { codex = require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex'; } catch (_) { codex = false; }
     const name = payload && typeof payload.hook_event_name === 'string'
       ? payload.hook_event_name
       : '';
@@ -101,7 +104,7 @@ function main() {
   const out = {
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: core.protocolLevel() === 'full' ? FOUNDATION_FULL : compactText(),
+      additionalContext: core.protocolLevel() === 'full' ? (codex ? FOUNDATION_FULL_CODEX : FOUNDATION_FULL) : compactText(codex),
     },
   };
 

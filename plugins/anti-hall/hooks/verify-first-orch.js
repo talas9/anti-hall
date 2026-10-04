@@ -114,17 +114,20 @@ function main() {
     if (!require('./lib/settings.js').enabled('context', 'verifyFirstOrchestration')) { writeNone(); return; }
   } catch (_) { /* run */ }
 
+  let codex = false;
+  try { codex = require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex'; } catch (_) { codex = false; }
+  const orchFull = codex ? core.ORCH_FULL_CODEX : core.ORCH_FULL;
   const primary = isDevswarmPrimary(process.env, cwd);
   // protocolLevel=full: today's text, byte for byte; orchFullOn is ignored.
   if (core.protocolLevel() === 'full') {
     writeNone();
-    emit(event, primary ? core.ORCH_FULL_PRIMARY : core.ORCH_FULL);
+    emit(event, primary ? (codex ? core.ORCH_FULL_PRIMARY_CODEX : core.ORCH_FULL_PRIMARY) : orchFull);
     return;
   }
   // A DevSwarm Primary keeps ORCH_FULL + W inline (its workspace-tier rule must be at primacy).
   if (primary) {
     writeNone();
-    emit(event, core.ORCH_FULL_PRIMARY);
+    emit(event, codex ? core.ORCH_FULL_PRIMARY_CODEX : core.ORCH_FULL_PRIMARY);
     return;
   }
 
@@ -138,20 +141,20 @@ function main() {
 
   if (mode === 'off') {
     writeNone();
-    emit(event, core.orchCompact(false));
+    emit(event, core.orchCompact(false, undefined, codex));
     return;
   }
   if (mode === 'spawn') {
     // Marker first: ORCH_COMPACT promises the spawn delivery only when the marker is `pending`.
     const w = state.writeMarker(payload.session_id, 'pending');
     if (w.ok) {
-      emit(event, core.orchCompact(true));
+      emit(event, core.orchCompact(true, undefined, codex));
       return;
     }
     // Unwritable marker: nothing could deliver ORCH_FULL later, so send it inline now.
   }
   writeNone();
-  emit(event, core.ORCH_FULL);
+  emit(event, orchFull);
 }
 
 try {

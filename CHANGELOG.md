@@ -14,6 +14,7 @@ the update.
 - **DevSwarm child workspaces** no longer get the COMMS OVERRIDE / SELF_CONTINUE / REMINDER block on every turn (keepalive re-send on change, after compaction and every N turns).
 - **Coordinator drift guard** (`coordinator-work-guard`) and **Bash edit parity**: the main thread is nudged, then blocked, when it keeps doing state-changing work inline; Bash writes are judged like the Edit tool.
 - **Codex guard parity:** edit-guard, api-guard and ship-it-guard run on `apply_patch`; command-guard's heavy-command gate and its block paths work on the Codex main thread (stderr reason).
+- **Codex wording:** Codex sessions get Codex vocabulary in task-tracker, verify-first (orchestration rules and model routing: spawn_agent plus gpt-5.6 frontier/workhorse/fast tiers) and codex-availability instead of `TaskCreate`, `run_in_background` and Haiku/Sonnet/Opus; Claude text is byte-identical. The compact core now says "re-sent at session start and after compaction"; `codex/README.md` documents the `context.protocolLevel=full` rollback.
 - **Jev fixes:** `speculationFramed` is switchable, `modelRouting` records disagreements, triage no longer poisons its cache, arrival labelling.
 - **Fewer false blocks:** tasklist-guard, command-guard (read-only forms, pipe sinks), git-guard-adjacent push forms, AGENT-ROUTING and the shared-tree note.
 - **Friendlier messages:** block messages lead with the path that works and give an absolute, shell-quoted skip command.

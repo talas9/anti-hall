@@ -57,10 +57,18 @@ const FULL_TODAY = fullMessage(true);
 // work" clause, which the session core and orchestration rule B already carry every session.
 // protocolLevel=full (and any settings failure) keeps FULL_TODAY.
 const FULL_COMPACT = fullMessage(false);
-function fullText() {
+// Codex has no TaskCreate tool: same discipline, neutral task/plan-list wording. Claude text unchanged.
+const toCodex = (t) => t.replace('as a task (TaskCreate) ', 'as an item in your task/plan list ');
+const FULL_TODAY_CODEX = toCodex(FULL_TODAY);
+const FULL_COMPACT_CODEX = toCodex(FULL_COMPACT);
+function isCodexHost(payload) {
+  try { return require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex'; } catch (_) { return false; }
+}
+function fullText(codex) {
+  const today = codex ? FULL_TODAY_CODEX : FULL_TODAY;
   try {
-    return require('./verify-first-core.js').protocolLevel() === 'compact' ? FULL_COMPACT : FULL_TODAY;
-  } catch (_) { return FULL_TODAY; }
+    return require('./verify-first-core.js').protocolLevel() === 'compact' ? (codex ? FULL_COMPACT_CODEX : FULL_COMPACT) : today;
+  } catch (_) { return today; }
 }
 
 const SHORT = BM.message({
@@ -197,9 +205,9 @@ function pickMessage(payload) {
         stateDir, prefix: 'task-tracker', keepFile: stateFile,
       });
     } catch (_) {}
-    return fullText();
+    return fullText(isCodexHost(payload));
   } catch (_) {
-    return fullText(); // any unexpected error -> never weaken discipline
+    return fullText(isCodexHost(payload)); // any unexpected error -> never weaken discipline
   }
 }
 
@@ -426,9 +434,9 @@ try {
       const opts = {
         home: os.homedir(), sessionId: payload && payload.session_id,
         transcriptPath: payload && payload.transcript_path, key: 'task-tracker',
-        content: text, normalize: (t) => t.split(fullText()).join(SHORT),
+        content: text, normalize: (t) => t.split(fullText(isCodexHost(payload))).join(SHORT),
       };
-      if (text.startsWith(fullText())) dedupe.record(opts);
+      if (text.startsWith(fullText(isCodexHost(payload)))) dedupe.record(opts);
       else emit = dedupe.shouldEmit(opts);
     } catch (_) { emit = true; }
   }
