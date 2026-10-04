@@ -56,9 +56,12 @@ shared reaper stops it (a test whose daemon survives fails). Cargo commands here
 | Residency: stays up when idle by default; idle exit is a config key | `tests/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
 | Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/agent_cli.rs` |
 
-Known limits: only macOS has been run (the Linux `SO_PEERCRED` and `RLIMIT_DATA` paths are compiled out here; a Linux CI
-job is in `.github/workflows/ah-engine.yml`); macOS rejects `setrlimit(RLIMIT_DATA)`, so there the RSS self-check is the
-memory guard; the CPU budget is checked between rules, so a request overshoots by at most one rule.
+Known limits: CI runs the whole suite on ubuntu and macOS (`.github/workflows/ah-engine.yml`); the Linux CI run found a real
+bug the macOS runs could not show: Linux counts thread stacks against `RLIMIT_DATA`, so the old 64 MB ceiling left no room
+for the git check's 64 MB-stack thread and every git command was deferred to Node. The ceiling (`daemon.mem_mb`) is now
+512 MB, a test keeps it above workers x stack, and a failed check thread logs a `check_spawn_fail` event. macOS accepts
+`setrlimit(RLIMIT_DATA)` but does not enforce it, so there the RSS self-check is the memory guard; the CPU budget is checked
+between rules, so a request overshoots by at most one rule.
 
 ## Built-in checks: the git check
 
