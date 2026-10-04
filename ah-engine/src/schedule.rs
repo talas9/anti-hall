@@ -734,22 +734,24 @@ mod tests {
     fn a_skipped_window_does_not_make_a_short_job_sleep_through_the_next() {
         let d = crate::db::TempDir::new("sched-skip");
         let p = d.0.join("schedules.json");
-        std::fs::write(&p, r#"{"jobs": {"probe": {"kind": "engine", "action": "noop", "every_ms": 30, "catch_up": "skip", "persist": false}}}"#).unwrap();
+        std::fs::write(&p, r#"{"jobs": {"spool_drain": {"every_ms": 0}, "metrics_snapshot": {"every_ms": 0}, "probe": {"kind": "engine", "action": "noop", "every_ms": 200, "catch_up": "skip", "persist": false}}}"#).unwrap();
         let src = FileSource { override_path: p, test_hooks: false };
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let r = runs.clone();
-        let inproc: InProc = Box::new(move |_| {
-            r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let inproc: InProc = Box::new(move |action| {
+            if action == "noop" {
+                r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             Ok(String::new())
         });
         let s = Arc::new(Scheduler::new(&src, None, inproc, Box::new(PlannedDelivery), Box::new(|_, _, _| {}), Box::new(defaults::num)));
         // the ticker was held up for longer than a whole interval: that window is missed and, with catch_up = skip, skipped
-        lk(&s.state).get_mut("probe").unwrap().next_ms = now_ms().saturating_sub(500);
+        lk(&s.state).get_mut("probe").unwrap().next_ms = now_ms().saturating_sub(2000);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (s2, stop2) = (s.clone(), stop.clone());
         let h = std::thread::spawn(move || s2.run_ticker(&|| stop2.load(std::sync::atomic::Ordering::SeqCst)));
         let t = Instant::now();
-        while runs.load(std::sync::atomic::Ordering::SeqCst) == 0 && t.elapsed() < Duration::from_millis(600) {
+        while runs.load(std::sync::atomic::Ordering::SeqCst) == 0 && t.elapsed() < Duration::from_millis(3000) {
             std::thread::sleep(Duration::from_millis(10));
         }
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
