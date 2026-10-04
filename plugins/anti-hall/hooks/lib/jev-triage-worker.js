@@ -256,7 +256,11 @@ async function main() {
     }
     try {
       const label = await classifyOne(item.text, deadline, jevCfg, urgentThreshold, jevDecideMulti || (async () => ({ ok: false, reason: 'unavailable' })));
-      if (label) results[item.hash] = label;
+      // Attempted: a label, or an explicit null = "classified, no confident
+      // label" (cacheable verdict). An item the budget cut off, or whose call
+      // threw, stays ABSENT so the caller retries it instead of caching a
+      // permanent "no label" it never earned.
+      results[item.hash] = label || null;
     } catch (_) {
       // this item gets no label; keep going for the rest within budget
     }

@@ -397,3 +397,26 @@ test('loadTriageConfig: jevIntegrations.triage "off" disables triage (schema say
     assert.strictEqual(loadTriageConfig(home).enabled, false);
   } finally { rm(home); }
 });
+
+test('budget cut-off: items the worker never attempted are NOT cached as permanent "no label"', async () => {
+  const home = tmpHome();
+  try {
+    writeJevConfig(home, { enabled: true, confidenceThreshold: 0.85, timeoutMs: 1000, triageBudgetMs: 700 });
+    await withMockServer(async (req, res) => {
+      const body = await readJsonBody(req);
+      await new Promise((r) => setTimeout(r, 400)); // each call eats most of the budget
+      const out = { answers: {} };
+      if (body.questions.kind) out.answers.kind = { choice: 'fyi', confidence: 0.95 };
+      if (body.questions.urgency) out.answers.urgency = { noul: 0.05 };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    }, async (endpoint) => {
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' };
+      const texts = ['first note', 'second note', 'third note', 'fourth note', 'fifth note'];
+      await runTriageInSubprocess(home, env, texts.map((text, i) => ({ key: i, text })));
+      const cache = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'cache', 'jev-triage.json'), 'utf8'));
+      assert.ok(cache[hashMessage('first note')] && cache[hashMessage('first note')].kind === 'fyi', 'first item labelled');
+      assert.ok(!cache[hashMessage('fifth note')], 'a budget-skipped item must stay uncached so a later call retries it');
+    });
+  } finally { rm(home); }
+});

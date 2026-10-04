@@ -306,9 +306,13 @@ function triageMessagesSync(items, opts) {
           ...((label.transport === 'vercel' || label.transport === 'typesafe') ? { transport: label.transport } : {}),
           ...(label.fellBack === true ? { fellBack: true } : {}),
         });
-      } else {
-        // no confident label from either backend -> cache the "no label"
-        // verdict too, so this message isn't re-sent to Jev/Haiku every turn.
+      } else if (Object.prototype.hasOwnProperty.call(workerOut, it.hash)) {
+        // attempted, no confident label from either backend -> cache the "no
+        // label" verdict too, so this message isn't re-sent to Jev/Haiku every
+        // turn. An item ABSENT from workerOut was never attempted (the worker's
+        // budget ran out first, or its call threw): caching it would store a
+        // permanent no-label verdict it never earned (and, in bulk, evict every
+        // real label), so it is left uncached and retried on a later call.
         newCacheEntries[it.hash] = { _seq: seq++ };
       }
     }
