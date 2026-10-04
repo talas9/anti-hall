@@ -383,7 +383,7 @@ if (STRICT) {
 // Cost budgets (spec §5).
 // ============================================================================
 
-test('cost budget: doctor --check spawn count + wall time, recorded as the baseline', () => {
+test('cost budget: doctor --check spawn count budget (wall time logged, not asserted)', () => {
   const fixture = makeFixture(['r1'], 'cost');
   try {
     ops.opRegister(fixture, 'r1', BASE_NOW);
@@ -392,20 +392,21 @@ test('cost budget: doctor --check spawn count + wall time, recorded as the basel
     const res = cp.spawnSync(process.execPath, ['--require', SPAWN_PRELOAD, DOCTOR_JS, '--check'], {
       encoding: 'utf8',
       env: Object.assign({}, { PATH: process.env.PATH, HOME: fixture.home, ANTIHALL_SPAWN_LOG: spawnLog, ANTIHALL_INGEST_DRY_RUN: '1', ANTIHALL_TEST_ISOLATION: '1' }),
-      timeout: 30000,
+      timeout: 120000, // runaway backstop only; the budget below is spawn COUNT, not wall time
     });
     const wallMs = Number(process.hrtime.bigint() - t0) / 1e6;
     let spawnCount = 0;
     try {
       spawnCount = fs.readFileSync(spawnLog, 'utf8').split('\n').filter(Boolean).length;
     } catch (_) { spawnCount = 0; }
-    // No asserted target (spec §5: "harness records actual number as the
-    // initial baseline rather than asserting an unverified target") — the
-    // only real assertion is that the process itself succeeded and stayed
-    // inside this file's overall runtime budget.
-    assert.ok(res.status === 0 || res.status === null || Number.isInteger(res.status),
-      'doctor --check should exit cleanly; status=' + res.status + ' stderr=' + res.stderr);
-    assert.ok(wallMs < 30000, 'doctor --check wall time ' + wallMs + 'ms exceeded the harness timeout');
+    // Budget = spawn COUNT (deterministic: 127 on every one of 32 runs, idle and
+    // under 100 busy loops). Wall time is NOT asserted: it scaled 4.8s..22.9s
+    // with machine load against the old 30 s cap, so the assertion measured the
+    // machine, not the code; wallMs is only logged below.
+    assert.ok(!res.error && res.signal === null && Number.isInteger(res.status),
+      'doctor --check should exit on its own (no timeout/kill); status=' + res.status + ' signal=' + res.signal + ' error=' + (res.error && res.error.message) + ' stderr=' + res.stderr);
+    assert.ok(spawnCount > 0, 'spawn preload recorded nothing; the harness is not measuring');
+    assert.ok(spawnCount <= 254, 'doctor --check spawned ' + spawnCount + ' child processes (baseline 127; budget 2x)');
     // eslint-disable-next-line no-console
     console.log('BASELINE doctor --check: wallMs=' + wallMs.toFixed(1) + ' spawnCount=' + spawnCount);
   } finally {

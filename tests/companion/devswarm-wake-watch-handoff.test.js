@@ -283,7 +283,13 @@ async function runHandoffWith(installedVersion, idSuffix) {
       DEVSWARM_BUILDER_ID: 'handoff-word-' + idSuffix,
       ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS: '250',
     };
-    return await waitForStdoutMatch([MODULE_PATH], { env }, /\[stub-child\] alive/, 8000);
+    // Wait for BOTH the child's marker and the parent's COMPLETE handoff line.
+    // They come from two writers on one pipe (parent's async stdout write vs
+    // the child's inherited fd), so the marker can arrive first; resolving on
+    // the marker alone snapshotted stdout before the parent's line landed
+    // (flaky under load: stdout was just "[stub-child] alive\n").
+    return await waitForStdoutMatch([MODULE_PATH], { env },
+      /(?=[\s\S]*\[wake-watch\] handed off to [^\n]*\n)(?=[\s\S]*\[stub-child\] alive)/, 8000);
   } finally { rm(home); }
 }
 

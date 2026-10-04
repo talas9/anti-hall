@@ -119,12 +119,13 @@ function pruneProject(cwd, now) {
 // in this git project and is NOT ignored: per-project, at most once per 7 days
 // (state: ~/.anti-hall/gitignore-hint-state.json), switch guards.gitignoreHint.
 // Carried here (not a new hook registration) so SessionStart output stays small.
-// Fail-open; the one git probe is capped at 500 ms.
+// Fail-open; the one git probe is capped at 3 s (hook timeout
+// is 10 s; a 500 ms cap silently dropped the reminder when the machine was loaded).
 function gitignoreHint(cwd) {
   try {
     if (!require('./lib/settings.js').enabled('guards', 'gitignoreHint')) return;
     const hint = require('./lib/gitignore-hint.js');
-    const s = hint.status(cwd, { timeoutMs: 500 });
+    const s = hint.status(cwd, { timeoutMs: 3000 });
     if (s.status !== 'not-ignored') return;
     const file = path.join(require('../companion/lib/test-home-guard.js').resolveHome(), '.anti-hall', 'gitignore-hint-state.json');
     let state = {};
