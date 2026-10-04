@@ -53,7 +53,7 @@ function pathForms(p) {
 }
 
 // normalise(text, {home, cwd, root}) -> text with paths -> <HOME>/<CWD>/<ROOT>, then
-// ISO timestamps -> <TS>, ISO dates -> <DATE>, raw epoch-ms -> <EPOCH>.
+// ISO timestamps -> <TS>, ISO dates -> <DATE>, raw epoch-ms -> <EPOCH>, `cap <digits>` -> `cap <N>`.
 function normalise(text, ctx) {
   let t = String(text);
   const subs = [];
@@ -65,6 +65,8 @@ function normalise(text, ctx) {
   t = t.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, '<TS>');
   t = t.replace(/\b\d{4}-\d{2}-\d{2}\b/g, '<DATE>');
   t = t.replace(/\b1[0-9]{12}\b/g, '<EPOCH>');
+  // Dispatch cap is min(16, cores-2): machine-dependent, so freeze it as a placeholder.
+  t = t.replace(/\bcap \d+\b/g, 'cap <N>');
   return t;
 }
 function expandRoot(t) { return t.split('<ROOT>').join(REP_ROOT); }
