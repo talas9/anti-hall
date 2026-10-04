@@ -11,7 +11,7 @@
 //! | UserPromptSubmit | `{"decision":"block","reason"}`                         | `hookSpecificOutput.additionalContext`  |
 //! | Stop             | `{"decision":"block","reason"}` (never if `stop_hook_active`) | `{"systemMessage"}`               |
 //! | SessionStart / SubagentStart | n/a (treated as context)                    | `hookSpecificOutput.additionalContext`  |
-use crate::gitguard::{self, Outcome};
+use crate::checks::{self, Verdict};
 use crate::rules::{Action, Budget, RuleSet, Subject};
 use serde_json::{json, Value};
 
@@ -62,10 +62,10 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<
         }
         if let Some(o) = builtin(rule, &subject) {
             match o {
-                Outcome::Block(m) => return r(format!("{EXIT2}{m}\n")),
-                Outcome::Advisory(j) => advisory = Some(j),
-                Outcome::Fallback => return r(FALLBACK.to_string()),
-                Outcome::Allow => {}
+                Verdict::Block(m) => return r(format!("{EXIT2}{m}\n")),
+                Verdict::Advisory(j) => advisory = Some(j),
+                Verdict::Defer => return r(FALLBACK.to_string()),
+                Verdict::Allow => {}
             }
         }
     }
@@ -107,19 +107,9 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<
     r(out.to_string())
 }
 
-/// Run a built-in check; `None` when it does not apply to this payload.
-fn builtin(rule: &crate::rules::Rule, s: &Subject) -> Option<Outcome> {
-    match rule.check.as_deref()? {
-        "git" => {
-            if s.event != "PreToolUse" || s.tool != Some("Bash") {
-                return None;
-            }
-            let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
-            let root = rule.options.get("plugin_root").and_then(Value::as_str).map(|x| x.to_string()).or_else(|| std::env::var("AH_ENGINE_PLUGIN_ROOT").ok()).unwrap_or_default();
-            Some(gitguard::check_bash(cmd, s.cwd, &root))
-        }
-        _ => None,
-    }
+/// Run a built-in check by name; `None` when it is unknown or does not apply to this payload.
+fn builtin(rule: &crate::rules::Rule, s: &Subject) -> Option<Verdict> {
+    checks::get(rule.check.as_deref()?)?.run(s, &rule.options)
 }
 
 #[cfg(test)]
@@ -170,7 +160,10 @@ mod tests {
     #[test]
     fn context_events() {
         for e in ["SessionStart", "SubagentStart"] {
-            let o = v(respond(&format!(r#"{{"hook_event_name":"{e}","tool_input":{{}}}}"#), &RuleSet::parse(r#"{"version":1,"rules":[{"pattern":"","action":"context","message":"hello"}]}"#).unwrap()));
+            let o = v(respond(
+                &format!(r#"{{"hook_event_name":"{e}","tool_input":{{}}}}"#),
+                &RuleSet::parse(r#"{"version":1,"rules":[{"pattern":"","action":"context","message":"hello"}]}"#).unwrap(),
+            ));
             assert_eq!(o["hookSpecificOutput"]["hookEventName"], e);
             assert_eq!(o["hookSpecificOutput"]["additionalContext"], "hello");
         }

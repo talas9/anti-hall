@@ -1,10 +1,14 @@
 //! Writes into the stable launcher directory (`~/.anti-hall/bin`) and call-literal command extraction.
-use super::shell::*;
+use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
+use crate::checks::lit_re;
 use regex::Regex;
 use std::sync::OnceLock;
 
+/// The block message for writing into the plugin launcher directory.
+///
+/// Mirrors `git-guard.js` `LAUNCHER_BLOCK_MSG`.
 pub fn launcher_block_msg() -> String {
     msg_o(
         "a write into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.",
@@ -16,9 +20,10 @@ pub fn launcher_block_msg() -> String {
 
 fn launcher_dir_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?i)\.anti-hall[\\/]+bin(?:[\\/]|$)").unwrap())
+    R.get_or_init(|| lit_re(r"(?i)\.anti-hall[\\/]+bin(?:[\\/]|$)"))
 }
 
+/// Mirrors `git-guard.js` `COPY_VERBS`.
 const COPY_VERBS: &[&str] = &["cp", "mv", "install", "ln", "rsync", "ditto"];
 
 fn expand_tilde(p: &str, home: &str) -> String {
@@ -29,11 +34,14 @@ fn expand_tilde(p: &str, home: &str) -> String {
         if home.is_empty() {
             return p.to_string();
         }
-        return format!("{}/{}", home.trim_end_matches(|c| c == '/' || c == '\\'), rest);
+        return format!("{}/{}", home.trim_end_matches(['/', '\\']), rest);
     }
     p.to_string()
 }
 
+/// Resolve `raw` the way the shell would at this point (tilde, `$HOME`, relative to the tracked `cd` directory) and normalize it lexically.
+///
+/// Mirrors `git-guard.js` `normalizeGuardPath`.
 pub fn normalize_guard_path(ctx: &Ctx, raw: &str, cd_dir: Option<&str>) -> String {
     if raw.is_empty() {
         return String::new();
@@ -51,6 +59,7 @@ pub fn normalize_guard_path(ctx: &Ctx, raw: &str, cd_dir: Option<&str>) -> Strin
     posix_normalize(&base)
 }
 
+/// Mirrors `git-guard.js` `pathHasLauncherSegment`.
 fn path_has_launcher_segment(normalized: &str) -> bool {
     if normalized.is_empty() {
         return false;
@@ -59,6 +68,7 @@ fn path_has_launcher_segment(normalized: &str) -> bool {
     (0..segs.len()).any(|i| segs[i] == ".anti-hall" && segs.get(i + 1).map(|s| s.as_str()) == Some("bin"))
 }
 
+/// Mirrors `git-guard.js` `isLauncherDirRoot`.
 fn is_launcher_dir_root(ctx: &Ctx, normalized: &str) -> bool {
     if normalized.is_empty() {
         return false;
@@ -70,6 +80,7 @@ fn is_launcher_dir_root(ctx: &Ctx, normalized: &str) -> bool {
     normalized.trim_end_matches('/').to_lowercase() == want.trim_end_matches('/').to_lowercase()
 }
 
+/// Mirrors `git-guard.js` `hasAntiHallBinSegment`.
 fn has_anti_hall_bin_segment(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
     if p.is_empty() {
         return false;
@@ -85,6 +96,7 @@ fn is_symlink(p: &str) -> Option<bool> {
     std::fs::symlink_metadata(p).ok().map(|m| m.file_type().is_symlink())
 }
 
+/// Mirrors `git-guard.js` `resolveDanglingLinkTarget`.
 fn resolve_dangling_link_target(p: &str, hops: usize) -> Option<String> {
     if hops > 10 {
         return None;
@@ -98,6 +110,7 @@ fn resolve_dangling_link_target(p: &str, hops: usize) -> Option<String> {
     Some(target)
 }
 
+/// Mirrors `git-guard.js` `targetResolvesIntoLauncherDir`.
 fn target_resolves_into_launcher_dir(ctx: &mut Ctx, raw_path: &str, cd_dir: Option<&str>, delete_only: bool) -> bool {
     let normalized = normalize_guard_path(ctx, raw_path, cd_dir);
     if normalized.is_empty() || !normalized.starts_with('/') {
@@ -147,9 +160,9 @@ fn target_resolves_into_launcher_dir(ctx: &mut Ctx, raw_path: &str, cd_dir: Opti
     let segs: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     let mut existing = String::new();
     let mut cur = String::new();
-    for i in 0..segs.len().saturating_sub(1) {
+    for seg in segs.iter().take(segs.len().saturating_sub(1)) {
         cur.push('/');
-        cur.push_str(segs[i]);
+        cur.push_str(seg);
         let Ok(st) = std::fs::symlink_metadata(&cur) else { break };
         existing = cur.clone();
         if st.file_type().is_symlink() {
@@ -174,6 +187,9 @@ fn target_resolves_into_launcher_dir(ctx: &mut Ctx, raw_path: &str, cd_dir: Opti
     path_has_launcher_segment(&rejoined)
 }
 
+/// The target words of every `>`/`>>` redirect in `raw`, so a redirect into the launcher directory can be spotted.
+///
+/// Mirrors `git-guard.js` `redirectWords`.
 pub fn redirect_words(raw: &str) -> Vec<String> {
     let s: Vec<char> = raw.chars().collect();
     let n = s.len();
@@ -223,6 +239,7 @@ pub fn redirect_words(raw: &str) -> Vec<String> {
     out
 }
 
+/// Mirrors `git-guard.js` `globCouldHitLauncher`.
 fn glob_could_hit_launcher(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
     if !p.chars().any(|c| matches!(c, '?' | '*' | '[')) {
         return false;
@@ -234,7 +251,7 @@ fn glob_could_hit_launcher(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
     let p2 = if let Some(r) = p.strip_prefix("${HOME}") {
         format!("{home}{r}")
     } else if let Some(r) = p.strip_prefix("$HOME") {
-        if r.chars().next().map_or(true, |c| !(c.is_ascii_alphanumeric() || c == '_')) {
+        if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
             format!("{home}{r}")
         } else {
             p.to_string()
@@ -246,7 +263,8 @@ fn glob_could_hit_launcher(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
     if !norm.starts_with('/') {
         return false;
     }
-    let want: Vec<String> = format!("{}/.anti-hall/bin", home.replace('\\', "/").trim_end_matches('/')).split('/').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+    let want: Vec<String> =
+        format!("{}/.anti-hall/bin", home.replace('\\', "/").trim_end_matches('/')).split('/').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
     let segs: Vec<&str> = norm.split('/').filter(|s| !s.is_empty()).collect();
     if segs.len() <= want.len() {
         return false;
@@ -266,7 +284,8 @@ fn glob_could_hit_launcher(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
                 match end {
                     None => re.push_str("\\["),
                     Some(end) => {
-                        let mut cls: String = g[k + 1..end].iter().collect::<String>().replace('\\', "\\\\").replace('[', "\\[").replace('&', "\\&").replace('~', "\\~");
+                        let mut cls: String =
+                            g[k + 1..end].iter().collect::<String>().replace('\\', "\\\\").replace('[', "\\[").replace('&', "\\&").replace('~', "\\~");
                         if cls.starts_with('!') {
                             cls = format!("^{}", &cls[1..]);
                         }
@@ -288,18 +307,17 @@ fn glob_could_hit_launcher(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
     })
 }
 
+/// Mirrors `git-guard.js` `varTargetHitsLauncher`.
 fn var_target_hits_launcher(ctx: &mut Ctx, p: &str, cd_dir: Option<&str>, hops: usize) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"(?s)^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(.*)$").unwrap());
+    let re = RE.get_or_init(|| lit_re(r"(?s)^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(.*)$"));
     let Some(m) = re.captures(p) else { return false };
     if ctx.launcher_cmd_text.is_empty() || hops > 4 {
         return false;
     }
     let name = m.get(1).or_else(|| m.get(2)).map(|x| x.as_str().to_string()).unwrap_or_default();
     let suffix = m.get(3).map(|x| x.as_str().to_string()).unwrap_or_default();
-    let pat = format!(
-        r#"(?:^|[\s;&|(])(?:(?:export|local|declare|typeset)[ \t]+(?:-[A-Za-z0-9_]+[ \t]+)*)?{name}=("[^"\n]*"|'[^'\n]*'|[^\s;&|)]*)"#
-    );
+    let pat = format!(r#"(?:^|[\s;&|(])(?:(?:export|local|declare|typeset)[ \t]+(?:-[A-Za-z0-9_]+[ \t]+)*)?{name}=("[^"\n]*"|'[^'\n]*'|[^\s;&|)]*)"#);
     let Ok(are) = Regex::new(&pat) else { return false };
     let text = ctx.launcher_cmd_text.clone();
     for a in are.captures_iter(&text) {
@@ -317,7 +335,7 @@ fn var_target_hits_launcher(ctx: &mut Ctx, p: &str, cd_dir: Option<&str>, hops: 
         let c2 = if let Some(r) = joined.strip_prefix("${HOME}") {
             format!("{home_or}{r}")
         } else if let Some(r) = joined.strip_prefix("$HOME") {
-            if r.chars().next().map_or(true, |c| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
                 format!("{home_or}{r}")
             } else {
                 joined.clone()
@@ -338,6 +356,9 @@ fn var_target_hits_launcher(ctx: &mut Ctx, p: &str, cd_dir: Option<&str>, hops: 
     false
 }
 
+/// True when `p` is, or lies under, a launcher directory (following symlinks when the filesystem budget allows); `delete_only` restricts it to delete verbs.
+///
+/// Mirrors `git-guard.js` `launcherTargetHit`.
 pub fn launcher_target_hit(ctx: &mut Ctx, p: &str, cd_dir: Option<&str>, delete_only: bool) -> bool {
     launcher_dir_re().is_match(p)
         || has_anti_hall_bin_segment(ctx, p, cd_dir)
@@ -365,9 +386,12 @@ fn is_inplace_flag(w: &str) -> bool {
     false
 }
 
+/// True when one command (verb plus arguments) writes, copies, moves or links into a launcher directory.
+///
+/// Mirrors `git-guard.js` `writesLauncherDir`.
 pub fn writes_launcher_dir(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, cd_dir: Option<&str>) -> bool {
     static VAR_WORD: OnceLock<Regex> = OnceLock::new();
-    let var_word = VAR_WORD.get_or_init(|| Regex::new(r#"^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)(?:/[^`$(){}'"\\]*)?$"#).unwrap());
+    let var_word = VAR_WORD.get_or_init(|| lit_re(r#"^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)(?:/[^`$(){}'"\\]*)?$"#));
     let mut targets: Vec<String> = Vec::new();
     for i in 0..tokens.len() {
         let t = &tokens[i];
@@ -435,7 +459,8 @@ pub fn writes_launcher_dir(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, cd_dir: Optio
     if verb == "mv" && operands.len() >= 2 {
         targets.extend(operands[..operands.len() - 1].iter().cloned());
     }
-    let hardlink = verb == "cp" && ops.iter().any(|w| w == "--link" || (w.len() >= 2 && w.starts_with('-') && w[1..].chars().all(|c| c.is_ascii_alphabetic()) && w.contains('l')));
+    let hardlink = verb == "cp"
+        && ops.iter().any(|w| w == "--link" || (w.len() >= 2 && w.starts_with('-') && w[1..].chars().all(|c| c.is_ascii_alphabetic()) && w.contains('l')));
     if hardlink && operands.len() >= 2 {
         targets.extend(operands[..operands.len() - 1].iter().cloned());
     }
@@ -494,9 +519,12 @@ pub fn writes_launcher_dir(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, cd_dir: Optio
     false
 }
 
+/// Quote-blind last look at the raw command for a write into a launcher directory that the tokenizer path missed.
+///
+/// Mirrors `git-guard.js` `launcherBackstop`.
 pub fn launcher_backstop(ctx: &mut Ctx, raw_cmd: &str, base_cwd: Option<&str>) -> Option<String> {
     let stripped: String = raw_cmd.chars().filter(|&c| !(is_js_space(c) || matches!(c, '\'' | '"' | '\\' | '$'))).collect();
-    if !stripped.contains("anti-hall") && !base_cwd.map_or(false, |b| b.contains("/.anti-hall")) {
+    if !stripped.contains("anti-hall") && !base_cwd.is_some_and(|b| b.contains("/.anti-hall")) {
         return None;
     }
     // Drop a backslash + newline continuation only when the backslash run is odd.
@@ -541,7 +569,7 @@ pub fn launcher_backstop(ctx: &mut Ctx, raw_cmd: &str, base_cwd: Option<&str>) -
         let trimmed = raw.trim_start_matches(is_js_space).to_string();
         let mut variants = vec![trimmed.clone()];
         if trimmed.starts_with('"') || trimmed.starts_with('\'') {
-            variants.push(trimmed.trim_start_matches(|c| c == '"' || c == '\'').to_string());
+            variants.push(trimmed.trim_start_matches(['"', '\'']).to_string());
         }
         for v in variants {
             let tokens = tokenize(&v);
@@ -551,7 +579,7 @@ pub fn launcher_backstop(ctx: &mut Ctx, raw_cmd: &str, base_cwd: Option<&str>) -
             let Some(ev) = backstop_verb(&v) else { continue };
             if ev.verb == "cd" || ev.verb == "pushd" {
                 if let Some(dt) = ev.args.iter().find(|t| !t.text.starts_with('-')) {
-                    let too_long = cd_dir.as_ref().map_or(false, |c| c.chars().count() > 4096 || c.split('/').count() > 64);
+                    let too_long = cd_dir.as_ref().is_some_and(|c| c.chars().count() > 4096 || c.split('/').count() > 64);
                     cd_dir = if too_long {
                         None
                     } else {
@@ -574,9 +602,12 @@ pub fn launcher_backstop(ctx: &mut Ctx, raw_cmd: &str, base_cwd: Option<&str>) -
     None
 }
 
+/// Command strings that appear as literal arguments to `bash -c`, `eval` and similar, for the launcher backstop to rescan.
+///
+/// Mirrors `git-guard.js` `callLiteralCommands`.
 pub fn call_literal_commands(cmd: &str) -> Vec<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#"(?:\(|(?-u:\b)(?:system|exec)[ \t]+)[ \t]*['"\[]"#).unwrap());
+    let re = RE.get_or_init(|| lit_re(r#"(?:\(|(?-u:\b)(?:system|exec)[ \t]+)[ \t]*['"\[]"#));
     // src = cmd.replace(/\\(['"])/g, '$1')
     let mut src = String::with_capacity(cmd.len());
     let cs: Vec<char> = cmd.chars().collect();

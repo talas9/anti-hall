@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 const RULES: &str = r#"{"version":1,"rules":[{"id":"force","events":["PreToolUse"],"tools":["Bash"],"field":"command","pattern":"git push --force","action":"deny","message":"engine-blocked"}]}"#;
-const DENY_IN: &str = r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
+const DENY_IN: &str =
+    r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
 
 struct Env {
     dir: PathBuf,
@@ -141,7 +142,12 @@ fn bad_replies_run_the_node_fallback_never_allow() {
         ("garbage", b"{\"decision\":\"allow\"}".to_vec()),
         ("busy", encode(Kind::Busy, "")),
         ("err", encode(Kind::Err, "boom")),
-        ("corrupt", { let mut g = good.clone(); let n = g.len() - 12; g[n] ^= 0x20; g }),
+        ("corrupt", {
+            let mut g = good.clone();
+            let n = g.len() - 12;
+            g[n] ^= 0x20;
+            g
+        }),
     ];
     for (name, reply) in cases {
         let e = Env::new("bad", &[("AH_ENGINE_NOSPAWN", "1")]);
@@ -346,7 +352,8 @@ fn twenty_parallel_cold_clients_yield_exactly_one_daemon() {
     let n = String::from_utf8_lossy(&out.stdout).lines().filter(|l| l.contains(BIN) && l.trim_end().ends_with(" serve")).count();
     // ps shows no env, so count via the lock holder instead (lsof) plus the recorded pid
     let holders = Command::new("lsof").arg(e.eng().join("e.sock.lock")).output().unwrap();
-    let pids: std::collections::HashSet<_> = String::from_utf8_lossy(&holders.stdout).lines().skip(1).filter_map(|l| l.split_whitespace().nth(1).map(String::from)).collect();
+    let pids: std::collections::HashSet<_> =
+        String::from_utf8_lossy(&holders.stdout).lines().skip(1).filter_map(|l| l.split_whitespace().nth(1).map(String::from)).collect();
     assert_eq!(pids.len(), 1, "lock holders {pids:?} (engine procs overall {n}, dir {eng_dir})");
     assert_eq!(std::fs::read_to_string(e.eng().join("starts")).unwrap().trim(), "1", "exactly one daemon ever finished starting");
 }
@@ -431,7 +438,9 @@ fn cpu_budget_trips_to_fallback() {
 
 impl Env {
     fn warm_status_budget(&self) {
-        assert!(wait_for(|| self.ctl("status").map_or(false, |s| serde_json::from_str::<serde_json::Value>(&s).unwrap()["budget_trips"].as_u64().unwrap_or(0) >= 1)));
+        assert!(wait_for(|| self
+            .ctl("status")
+            .is_some_and(|s| serde_json::from_str::<serde_json::Value>(&s).unwrap()["budget_trips"].as_u64().unwrap_or(0) >= 1)));
     }
 }
 
@@ -442,7 +451,7 @@ fn rss_over_cap_restarts_cleanly_and_next_client_respawns() {
     let old = e.pid().unwrap();
     assert!(wait_for(|| !alive(old)), "daemon above its RSS cap must exit");
     assert!(std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap().contains("rss"));
-    assert!(wait_for(|| e.pid().map_or(false, |p| p != old)) || e.hook(DENY_IN, true).0.len() > 0);
+    assert!(wait_for(|| e.pid().is_some_and(|p| p != old)) || !e.hook(DENY_IN, true).0.is_empty());
 }
 
 #[test]
@@ -512,7 +521,10 @@ fn payload_text_is_never_executed() {
     let e = Env::new("noexec", &[]);
     e.warm();
     let mark = e.dir.join("pwned");
-    let evil = format!(r#"{{"session_id":"s","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","fallback":"touch {m}","command":"touch {m}","tool_input":{{"command":"touch {m}; git push --force"}}}}"#, m = mark.display());
+    let evil = format!(
+        r#"{{"session_id":"s","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","fallback":"touch {m}","command":"touch {m}","tool_input":{{"command":"touch {m}; git push --force"}}}}"#,
+        m = mark.display()
+    );
     let _ = e.hook(&evil, true);
     let _ = raw_exchange(&e, format!("CTL touch {}\n", mark.display()).as_bytes());
     assert!(!mark.exists());

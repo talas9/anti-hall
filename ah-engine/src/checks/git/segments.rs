@@ -1,13 +1,14 @@
 //! scanCommand, the git verdicts, the quote-blind backstops and the handover-commit check (git-guard.js).
-use super::alias::*;
+use super::aliases::*;
 use super::gitcmd::*;
-use super::hdmask::mask_data_heredocs;
+use super::heredoc::mask_data_heredocs;
 use super::launcher::*;
 use super::payloads::*;
 use super::runner::*;
-use super::shell::*;
+use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
+use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -72,6 +73,7 @@ fn config_line_values(text: &str) -> Vec<String> {
     out
 }
 
+/// Mirrors `git-guard.js` `scanConfigLines`.
 fn scan_config_lines(ctx: &mut Ctx, text: &str, d: usize) -> Option<String> {
     for v in config_line_values(text) {
         if let Some(h) = scan_command_value(ctx, &v, d) {
@@ -81,6 +83,7 @@ fn scan_config_lines(ctx: &mut Ctx, text: &str, d: usize) -> Option<String> {
     None
 }
 
+/// Mirrors `git-guard.js` `scanCommandValue`.
 fn scan_command_value(ctx: &mut Ctx, v: &str, d: usize) -> Option<String> {
     if d >= 3 || !v.contains("push") {
         return None;
@@ -90,7 +93,7 @@ fn scan_command_value(ctx: &mut Ctx, v: &str, d: usize) -> Option<String> {
     // /^'?[A-Za-z_][\w.-]*=([\s\S]*?)'?$/
     let body = s.strip_prefix('\'').unwrap_or(&s);
     let mut cs = body.chars();
-    if cs.next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_') {
+    if cs.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
         let name_len = 1 + body.chars().skip(1).take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.' || *c == '-').count();
         if body[name_len..].starts_with('=') {
             let mut val = &body[name_len + 1..];
@@ -112,9 +115,10 @@ fn scan_command_value(ctx: &mut Ctx, v: &str, d: usize) -> Option<String> {
     None
 }
 
+/// Mirrors `lib/handover-find.js` `isHandoverPath`.
 fn is_handover_path(p: &str) -> bool {
     static ROOT: OnceLock<Regex> = OnceLock::new();
-    let root = ROOT.get_or_init(|| Regex::new(r"^(?:HANDOVER(?:-[^/]*)?\.md|CONTINUE-HERE\.md|[^/]*\.continue-here\.md)$").unwrap());
+    let root = ROOT.get_or_init(|| lit_re(r"^(?:HANDOVER(?:-[^/]*)?\.md|CONTINUE-HERE\.md|[^/]*\.continue-here\.md)$"));
     let mut norm = p.replace('\\', "/");
     while let Some(r) = norm.strip_prefix("./") {
         norm = r.to_string();
@@ -130,6 +134,7 @@ enum Q {
     Exhausted,
 }
 
+/// Mirrors `git-guard.js` `committedHandovers`.
 fn handover_query(ctx: &mut Ctx, dir: &str, args: &[String], status_parse: bool) -> Q {
     let key = format!("{}\0{}", dir, args.join("\0"));
     if let Some(v) = ctx.handover_cache.get(&key) {
@@ -163,6 +168,7 @@ fn handover_query(ctx: &mut Ctx, dir: &str, args: &[String], status_parse: bool)
     Q::Value(parsed)
 }
 
+/// Mirrors `git-guard.js` `committedHandovers`.
 fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Option<Vec<String>> {
     let (sub, rest) = git_subcommand(&ev.args);
     if sub.as_deref() != Some("commit") {
@@ -193,7 +199,23 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
         }
         break;
     }
-    const VALUE_OPTS: &[&str] = &["-m", "-F", "-C", "-c", "-t", "--message", "--file", "--author", "--date", "--template", "--reuse-message", "--reedit-message", "--fixup", "--squash", "--cleanup"];
+    const VALUE_OPTS: &[&str] = &[
+        "-m",
+        "-F",
+        "-C",
+        "-c",
+        "-t",
+        "--message",
+        "--file",
+        "--author",
+        "--date",
+        "--template",
+        "--reuse-message",
+        "--reedit-message",
+        "--fixup",
+        "--squash",
+        "--cleanup",
+    ];
     let mut all = false;
     let mut specs: Vec<String> = Vec::new();
     let mut after_dd = false;
@@ -271,10 +293,21 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
     }
     if let Q::Value(Some(p)) = &paths {
         if specs.is_empty() && !ctx.handover_adds.is_empty() {
-            let a: Vec<String> = ["status", "--porcelain", "-z", "--untracked-files=all", "--", ":(top,glob)**/.anti-hall/handovers/**", ":(top,glob)HANDOVER.md", ":(top,glob)HANDOVER-*.md", ":(top,glob)CONTINUE-HERE.md", ":(top,glob)*.continue-here.md"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+            let a: Vec<String> = [
+                "status",
+                "--porcelain",
+                "-z",
+                "--untracked-files=all",
+                "--",
+                ":(top,glob)**/.anti-hall/handovers/**",
+                ":(top,glob)HANDOVER.md",
+                ":(top,glob)HANDOVER-*.md",
+                ":(top,glob)CONTINUE-HERE.md",
+                ":(top,glob)*.continue-here.md",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
             let st = handover_query(ctx, &dir, &a, true);
             match st {
                 Q::Exhausted => paths = Q::Exhausted,
@@ -315,6 +348,7 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
     Some(hits)
 }
 
+/// Mirrors `git-guard.js` `handoverCommitVerdict`.
 fn handover_commit_verdict(ctx: &mut Ctx, ev: &Ev, last_cd: Option<&str>) -> Option<String> {
     if !ev.args.iter().any(|t| t.text == "commit") {
         return None;
@@ -350,6 +384,9 @@ fn cd_next(ctx: &Ctx, cd: Option<&str>, dir_tok: &str) -> Option<String> {
     Some(if n.is_empty() { dir_tok.to_string() } else { n })
 }
 
+/// Scan a command text: split it into segments, resolve each segment's verb, and return the first block message (or `None` to allow). `depth` bounds nested payloads.
+///
+/// Mirrors `git-guard.js` `scanCommand`.
 pub fn scan_command(ctx: &mut Ctx, cmd: &str, depth: usize, base_cwd: Option<&str>) -> Option<String> {
     let d = depth;
     let base_cwd = base_cwd.filter(|b| !b.is_empty());
@@ -390,7 +427,7 @@ pub fn scan_command(ctx: &mut Ctx, cmd: &str, depth: usize, base_cwd: Option<&st
                 continue;
             }
             if is_assign(&t.text) {
-                let eq = t.text.find('=').unwrap();
+                let Some(eq) = t.text.find('=') else { continue }; // is_assign guarantees an '='
                 let v = &t.text[eq + 1..];
                 if !v.is_empty() {
                     if let Some(hit) = scan_command_value(ctx, v, d) {
@@ -486,7 +523,8 @@ pub fn scan_command(ctx: &mut Ctx, cmd: &str, depth: usize, base_cwd: Option<&st
         if ctx.handover_adds.len() < 50 && ev.args.iter().any(|t| t.text == "add") {
             let (add_sub, add_rest) = git_subcommand(&ev.args);
             if add_sub.as_deref() == Some("add") {
-                let specs: Vec<String> = add_rest.iter().filter(|t| !t.text.starts_with('-') || t.text == "--").map(|t| t.text.clone()).filter(|x| x != "--").collect();
+                let specs: Vec<String> =
+                    add_rest.iter().filter(|t| !t.text.starts_with('-') || t.text == "--").map(|t| t.text.clone()).filter(|x| x != "--").collect();
                 let broad = specs.is_empty() || add_rest.iter().any(|t| is_broad_add_flag(&t.text));
                 if broad {
                     ctx.handover_adds.push(".".into());
@@ -533,6 +571,9 @@ fn is_broad_add_flag(t: &str) -> bool {
     t.len() >= 2 && t.starts_with('-') && t[1..].chars().all(|c| c.is_ascii_alphabetic()) && t[1..].chars().any(|c| c == 'A' || c == 'u')
 }
 
+/// The block message for one git command, if any: force push, AI self-credit, broad add, handover commit, hook-dir writes and the other git rules.
+///
+/// Mirrors `git-guard.js` `gitVerdict`.
 pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd: Option<&str>, _use_jev: bool) -> Option<String> {
     let args = &ev.args;
     let mut j = 0;
@@ -566,7 +607,11 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
     }
     if sub == "push" {
         if is_force_push(&rest) {
-            return Some(msg("force push is blocked.", "Rewriting published history is a deliberate human action.", "do it manually with explicit owner confirmation, never from an automated push."));
+            return Some(msg(
+                "force push is blocked.",
+                "Rewriting published history is a deliberate human action.",
+                "do it manually with explicit owner confirmation, never from an automated push.",
+            ));
         }
         if is_delete_ref_push(&rest) {
             return Some(msg_o(
@@ -578,12 +623,16 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
         }
         if has_cmd_subst_arg(&rest) {
             static HD: OnceLock<Regex> = OnceLock::new();
-            let hd = HD.get_or_init(|| Regex::new(r#"<<-?[ \t]*['"\\]?[A-Za-z_]"#).unwrap());
+            let hd = HD.get_or_init(|| lit_re(r#"<<-?[ \t]*['"\\]?[A-Za-z_]"#));
             let mut instead = String::from("run the push with literal arguments (no dollar-paren or backticks). If this is message text in printf/echo written to a file, write that file with the Write tool instead.");
             if hd.is_match(&ctx.raw_cmd) {
                 instead.push_str(" Heredoc bodies are scanned as shell even when a script only reads them as text: write the script or note with the Write tool, then run or reference the file.");
             }
-            return Some(msg("`git push` with an argument produced by command substitution / backticks is blocked.", "It can smuggle a --force flag past static inspection.", &instead));
+            return Some(msg(
+                "`git push` with an argument produced by command substitution / backticks is blocked.",
+                "It can smuggle a --force flag past static inspection.",
+                &instead,
+            ));
         }
     }
     if matches!(sub.as_str(), "commit" | "merge" | "commit-tree" | "interpret-trailers" | "tag") {
@@ -597,7 +646,11 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
         for m in inline_commit_messages(&rest) {
             let n = norm_escapes(&m);
             if credit_regexes(&m) || credit_regexes(&n) {
-                return Some(msg("a commit message with an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") is blocked.", "Commits carry no AI co-author credit.", "re-run the commit without that trailer."));
+                return Some(msg(
+                    "a commit message with an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") is blocked.",
+                    "Commits carry no AI co-author credit.",
+                    "re-run the commit without that trailer.",
+                ));
             }
         }
         if _use_jev && inline_commit_messages(&rest).iter().any(|m| !m.is_empty()) {
@@ -633,14 +686,12 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
             }
         }
     }
-    if COMMIT_CREATING.contains(&sub.as_str()) {
-        if raw_has_credit(ctx) {
-            return Some(msg(
-                &format!("a command that creates a commit (git {sub}) and carries an AI/assistant self-credit trailer line is blocked."),
-                "Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).",
-                "remove the trailer line and re-run.",
-            ));
-        }
+    if COMMIT_CREATING.contains(&sub.as_str()) && raw_has_credit(ctx) {
+        return Some(msg(
+            &format!("a command that creates a commit (git {sub}) and carries an AI/assistant self-credit trailer line is blocked."),
+            "Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).",
+            "remove the trailer line and re-run.",
+        ));
     }
     None
 }
@@ -648,6 +699,7 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
 // ---------------------------------------------------------------------------------------------------
 // quote-blind backstop
 
+/// Mirrors `git-guard.js` `backstopEnv`.
 fn backstop_env(cmd: &str) -> Env {
     let mut env = Env::new();
     for seg in split_segments(cmd) {
@@ -676,6 +728,7 @@ fn word_git(line: &str) -> bool {
     false
 }
 
+/// Mirrors `git-guard.js` `gitBackstopLines`.
 fn git_backstop_lines(ctx: &mut Ctx, cmd: &str, d: usize, hb: &Hb, cwd: Option<&str>) -> Option<String> {
     let benv = backstop_env(cmd);
     // cmd.replace(/\\\r?\n/g, ' ')
@@ -731,6 +784,7 @@ fn git_backstop_lines(ctx: &mut Ctx, cmd: &str, d: usize, hb: &Hb, cwd: Option<&
     None
 }
 
+/// Mirrors `git-guard.js` `gitBackstop`.
 fn git_backstop(ctx: &mut Ctx, cmd: &str, d: usize, hb: &Hb, base_cwd: Option<&str>) -> Option<String> {
     let benv = backstop_env(cmd);
     let cwd = base_cwd.filter(|b| !b.is_empty());
@@ -746,7 +800,7 @@ fn git_backstop(ctx: &mut Ctx, cmd: &str, d: usize, hb: &Hb, base_cwd: Option<&s
         let trimmed = raw.trim_start_matches(is_js_space).to_string();
         let mut variants = vec![trimmed.clone()];
         if trimmed.starts_with('"') || trimmed.starts_with('\'') {
-            variants.push(trimmed.trim_start_matches(|c| c == '"' || c == '\'').to_string());
+            variants.push(trimmed.trim_start_matches(['"', '\'']).to_string());
         }
         for v in variants {
             if d < 3 {

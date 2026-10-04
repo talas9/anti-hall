@@ -11,8 +11,10 @@
 const MAGIC: &str = "AHR1";
 const END: &[u8] = b"\nAHEND\n";
 
+/// Reply kind carried in a frame header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Kind {
+    /// The request was served.
     Ok,
     /// Load shedding (queue full / rate limited): the client must fall back.
     Busy,
@@ -20,14 +22,20 @@ pub enum Kind {
     Err,
 }
 
+/// Why a byte string is not a valid frame.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FrameErr {
+    /// No bytes at all.
     Empty,
+    /// Fewer bytes than the header promises.
     Truncated,
+    /// The header or trailer is not in the expected shape.
     Malformed,
+    /// The body does not match its checksum.
     BadChecksum,
 }
 
+/// CRC-32 (IEEE) of `data`, bitwise so no table is needed.
 pub fn crc32(data: &[u8]) -> u32 {
     let mut crc = !0u32;
     for &b in data {
@@ -39,6 +47,7 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+/// Frame `body` with its kind, length and checksum.
 pub fn encode(kind: Kind, body: &str) -> Vec<u8> {
     let k = match kind {
         Kind::Ok => "OK",
@@ -51,6 +60,7 @@ pub fn encode(kind: Kind, body: &str) -> Vec<u8> {
     out
 }
 
+/// Validate and unpack a frame; any damage is an error, never a partial answer.
 pub fn decode(buf: &[u8]) -> Result<(Kind, String), FrameErr> {
     if buf.is_empty() {
         return Err(FrameErr::Empty);

@@ -5,49 +5,71 @@
 //! performed (Node falls back to the regex verdict when Jev has no key, which is the default); the
 //! PostToolUse `--audit` pass is not ported; plugin options stored in Claude's own settings are not read
 //! (only the `CLAUDE_PLUGIN_OPTION_*` environment variable form).
-pub mod alias;
+pub mod aliases;
 pub mod gitcmd;
-pub mod hdmask;
+pub mod heredoc;
 pub mod launcher;
 pub mod payloads;
 pub mod runner;
-pub mod scan;
-pub mod shell;
-pub mod util;
+pub mod segments;
 #[cfg(test)]
 mod tests;
+pub mod tokenize;
+pub mod util;
 
+use crate::checks::lit_re;
+use crate::checks::{Check, Verdict};
+use crate::rules::Subject;
 use regex::Regex;
-use shell::Tok;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use util::Settings;
 
 /// Per-request state (the Node guard keeps these as module-level variables; one process = one call).
 pub struct Ctx {
+    /// The whole command text as the hook received it.
     pub raw_cmd: String,
+    /// Placeholder replacements of the xargs/parallel/find runner currently being expanded.
     pub active_repls: Vec<runner::Repl>,
+    /// How many filesystem probes the launcher check may still spend on this command.
     pub launcher_fs_budget: i32,
+    /// The command text the launcher check is currently looking at.
     pub launcher_cmd_text: String,
+    /// How many `git` subprocesses the handover-commit check may still run for this command.
     pub handover_query_budget: i32,
+    /// Commits the handover check had to skip once its budgets ran out (reported as an advisory).
     pub handover_skipped: i32,
+    /// Per repo and query, the handover paths found, so repeated commits in one command ask git once.
     pub handover_cache: HashMap<String, Option<Vec<String>>>,
+    /// Handover paths staged earlier in the same command.
     pub handover_adds: Vec<String>,
+    /// How many commit evaluations the handover check may still do for this command.
     pub handover_eval_budget: i32,
     handover_guard_on: Option<bool>,
+    /// Memo of `has_self_credit` results per text.
     pub self_credit_cache: HashMap<String, bool>,
+    /// Whether the raw command text itself credits an AI tool (computed once).
     pub raw_credit: Option<bool>,
-    /// A Jev add-block consult would have run (see `Outcome::Fallback`).
+    /// A Jev add-block consult would have run (see `Verdict::Defer`).
     pub jev_wanted: bool,
     /// Runner recursion depth and whether it hit its bound (the answer is then deferred to the Node hook).
     pub rec: usize,
+    /// Set when a bounded recursion (runner expansion) hit its limit; the verdict is then deferred to the Node hook.
     pub overflow: bool,
+    /// The user home directory used for tilde expansion and settings files.
     pub home: String,
+    /// The directory relative paths are resolved against (the hook payload `cwd`).
     pub proc_cwd: String,
+    /// Memo of `git` subprocess answers keyed by repo and arguments.
     pub git_cache: HashMap<String, Option<String>>,
+    /// Memo of git alias tables read from config, keyed by repo.
     pub alias_cache: HashMap<String, HashMap<String, String>>,
-    pub shell_defs: Option<std::rc::Rc<HashMap<String, alias::ShellDef>>>,
+    /// Shell aliases and functions defined so far in this command.
+    pub shell_defs: Option<std::rc::Rc<HashMap<String, aliases::ShellDef>>>,
+    /// The plugin install directory, used to build the override command in block messages.
     pub plugin_root: String,
+    /// Environment and settings snapshot taken once per request.
     pub settings: Settings,
     hd_on: Option<bool>,
     alias_on: Option<bool>,
@@ -55,6 +77,7 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// A fresh per-request context with the Node guard's default budgets.
     pub fn new(settings: Settings, proc_cwd: &str, plugin_root: &str) -> Ctx {
         Ctx {
             raw_cmd: String::new(),
@@ -85,6 +108,9 @@ impl Ctx {
         }
     }
 
+    /// Whether the heredoc-data masking setting is on (read once per request).
+    ///
+    /// Mirrors `git-guard.js` `heredocDataEnabled`.
     pub fn heredoc_data_enabled(&mut self) -> bool {
         if self.hd_on.is_none() {
             self.hd_on = Some(self.settings.enabled("guards", "gitGuardHeredocData", "ANTIHALL_GIT_GUARD_HEREDOC_DATA", None));
@@ -92,6 +118,9 @@ impl Ctx {
         self.hd_on.unwrap()
     }
 
+    /// Whether git alias resolution is on (read once per request).
+    ///
+    /// Mirrors `lib/git-alias-scan.js` `aliasEnabled`.
     pub fn alias_enabled(&mut self) -> bool {
         if self.alias_on.is_none() {
             self.alias_on = Some(self.settings.enabled("guards", "gitAliasResolve", "ANTIHALL_GIT_ALIAS_RESOLVE", None));
@@ -99,6 +128,9 @@ impl Ctx {
         self.alias_on.unwrap()
     }
 
+    /// Whether the reused-commit-message check is on (read once per request).
+    ///
+    /// Mirrors `lib/git-alias-scan.js` `reuseEnabled`.
     pub fn reuse_enabled(&mut self) -> bool {
         if self.reuse_on.is_none() {
             self.reuse_on = Some(self.settings.enabled("guards", "gitReusedMessageCheck", "ANTIHALL_GIT_REUSED_MESSAGE_CHECK", None));
@@ -106,14 +138,18 @@ impl Ctx {
         self.reuse_on.unwrap()
     }
 
+    /// Whether the handover-commit guard is on (read once per request).
     pub fn handover_guard_enabled(&mut self) -> bool {
         if self.handover_guard_on.is_none() {
-            self.handover_guard_on = Some(self.settings.enabled("guards", "handoverCommitGuard", "ANTIHALL_HANDOVER_COMMIT_GUARD", Some("guards_handover_commit_guard")));
+            self.handover_guard_on =
+                Some(self.settings.enabled("guards", "handoverCommitGuard", "ANTIHALL_HANDOVER_COMMIT_GUARD", Some("guards_handover_commit_guard")));
         }
         self.handover_guard_on.unwrap()
     }
 
     /// lib/skip-cmd.js skipCommand(key): `node '<plugin>/scripts/devswarm.js' skip <key>`.
+    ///
+    /// Mirrors `git-guard.js` `skipCmd`.
     pub fn skip_cmd(&self, key: &str) -> String {
         let p = util::path_join(&self.plugin_root, "scripts/devswarm.js");
         format!("node '{}' skip {}", p.replace('\'', "'\\''"), key)
@@ -129,27 +165,16 @@ impl Ctx {
     }
 }
 
-/// What the check decided.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Outcome {
-    Allow,
-    /// Exit 2, reason on stderr.
-    Block(String),
-    /// Exit 0 with this stdout JSON line (no decision).
-    Advisory(String),
-    /// The Node guard may decide differently (a Jev add-block consult in mode `on` would run): defer to it.
-    Fallback,
-}
-
+/// Mirrors `git-guard.js` `looksLikeFileWriteShape`.
 fn looks_like_file_write_shape(cmd: &str) -> bool {
     static HD: OnceLock<Regex> = OnceLock::new();
     static RED: OnceLock<Regex> = OnceLock::new();
     static TEE: OnceLock<Regex> = OnceLock::new();
     static ECHO: OnceLock<Regex> = OnceLock::new();
-    let hd = HD.get_or_init(|| Regex::new(r#"<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?"#).unwrap());
-    let red = RED.get_or_init(|| Regex::new(r#"(?:^|[\s;&|(])>{1,2}\s*[^\s&;|<>()0-9][^\s&;|<>()]*"#).unwrap());
-    let tee = TEE.get_or_init(|| Regex::new(r#"(?-u:\b)tee(?-u:\b)\s+(?:-a\s+)?[^\s&;|<>()-][^\s&;|<>()]*"#).unwrap());
-    let echo = ECHO.get_or_init(|| Regex::new(r"(?-u:\b)(?:echo|printf)(?-u:\b)").unwrap());
+    let hd = HD.get_or_init(|| lit_re(r#"<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?"#));
+    let red = RED.get_or_init(|| lit_re(r#"(?:^|[\s;&|(])>{1,2}\s*[^\s&;|<>()0-9][^\s&;|<>()]*"#));
+    let tee = TEE.get_or_init(|| lit_re(r#"(?-u:\b)tee(?-u:\b)\s+(?:-a\s+)?[^\s&;|<>()-][^\s&;|<>()]*"#));
+    let echo = ECHO.get_or_init(|| lit_re(r"(?-u:\b)(?:echo|printf)(?-u:\b)"));
     let redirects = red.is_match(cmd);
     if hd.is_match(cmd) {
         return redirects || tee.is_match(cmd);
@@ -157,46 +182,51 @@ fn looks_like_file_write_shape(cmd: &str) -> bool {
     echo.is_match(cmd) && redirects
 }
 
+/// Mirrors `git-guard.js` `main`.
 const TIP: &str = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `devswarm.js send --message-file <path>`).";
 
 /// The git-guard PreToolUse decision for one Bash command. Runs on a thread with a large stack and turns a panic
-/// into `Fallback`, so a bug or a pathological command can never take a daemon worker down.
-pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Outcome {
+/// into `Defer`, so a bug or a pathological command can never take a daemon worker down.
+///
+/// Mirrors `git-guard.js` `main`.
+pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Verdict {
     let settings = Settings::from_process();
     let r = std::thread::scope(|sc| {
         std::thread::Builder::new().stack_size(64 << 20).spawn_scoped(sc, || check_with(settings, cmd, cwd, plugin_root)).map(|h| h.join())
     });
     match r {
         Ok(Ok(o)) => o,
-        _ => Outcome::Fallback,
+        _ => Verdict::Defer,
     }
 }
 
 /// `check_bash` with explicit settings (tests pass an isolated home).
-pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Outcome {
+///
+/// Mirrors `git-guard.js` `main`.
+pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Verdict {
     if !settings.enabled("safety", "gitGuard", "ANTIHALL_GIT_GUARD", Some("safety_git_guard")) {
-        return Outcome::Allow;
+        return Verdict::Allow;
     }
     if settings.is_skipped("git-guard") {
-        return Outcome::Allow;
+        return Verdict::Allow;
     }
     if cmd.is_empty() {
-        return Outcome::Allow;
+        return Verdict::Allow;
     }
     let cwd_s = cwd.unwrap_or("");
     let proc_cwd = if cwd_s.is_empty() { std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default() } else { cwd_s.to_string() };
     let mut ctx = Ctx::new(settings, &proc_cwd, plugin_root);
     ctx.raw_cmd = cmd.to_string();
     let base = if cwd_s.is_empty() { None } else { Some(cwd_s) };
-    let hit = scan::scan_command(&mut ctx, cmd, 0, base);
+    let hit = segments::scan_command(&mut ctx, cmd, 0, base);
     if ctx.overflow || (ctx.jev_wanted && ctx.settings.jev_self_credit_on()) {
-        return Outcome::Fallback;
+        return Verdict::Defer;
     }
     if let Some(m) = hit {
         if looks_like_file_write_shape(cmd) {
-            return Outcome::Block(format!("{m}{TIP}"));
+            return Verdict::Block(format!("{m}{TIP}"));
         }
-        return Outcome::Block(m);
+        return Verdict::Block(m);
     }
     if ctx.handover_skipped > 0 {
         let text = format!(
@@ -204,42 +234,30 @@ pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root:
             ctx.handover_skipped
         );
         let t = serde_json::to_string(&text).unwrap_or_default();
-        return Outcome::Advisory(format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"PreToolUse\",\"additionalContext\":{t}}}}}"));
+        return Verdict::Advisory(format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"PreToolUse\",\"additionalContext\":{t}}}}}"));
     }
-    Outcome::Allow
+    Verdict::Allow
 }
 
-#[allow(dead_code)]
-fn _unused(_: &[Tok]) {}
+/// The registered `git` check: git-guard's PreToolUse decision for Bash commands (a port of `git-guard.js`).
+pub struct GitGuard;
 
-/// `engine gitguard`: run the check in-process on a hook payload from stdin and print what the Node guard would
-/// (exit 2 + stderr for a block, a stdout JSON line for the advisory). Used by the parity harness.
-pub fn cli_main() -> i32 {
-    use std::io::{Read, Write};
-    let mut raw = String::new();
-    let _ = std::io::stdin().read_to_string(&mut raw);
-    // A payload serde_json cannot read (e.g. a lone surrogate escape, which JS accepts) is answered by the daemon
-    // with ERR, so the client runs the Node hook; report that deferral here.
-    let Ok(p) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        let _ = writeln!(std::io::stdout(), "AHFALLBACK");
-        return 0;
-    };
-    let Some(cmd) = p.pointer("/tool_input/command").and_then(|v| v.as_str()) else { return 0 };
-    let cwd = p.get("cwd").and_then(|v| v.as_str());
-    let root = std::env::var("AH_ENGINE_PLUGIN_ROOT").unwrap_or_default();
-    match check_bash(cmd, cwd, &root) {
-        Outcome::Allow => 0,
-        Outcome::Block(m) => {
-            let _ = writeln!(std::io::stderr(), "{m}");
-            2
+impl Check for GitGuard {
+    fn name(&self) -> &'static str {
+        "git"
+    }
+
+    fn summary(&self) -> &'static str {
+        "Port of the git-guard hook: blocks force pushes, AI self-credit in commits, broad adds and handover commits"
+    }
+
+    fn run(&self, s: &Subject<'_>, opts: &Value) -> Option<Verdict> {
+        if s.event != "PreToolUse" || s.tool != Some("Bash") {
+            return None;
         }
-        Outcome::Advisory(j) => {
-            let _ = writeln!(std::io::stdout(), "{j}");
-            0
-        }
-        Outcome::Fallback => {
-            let _ = writeln!(std::io::stdout(), "AHFALLBACK");
-            0
-        }
+        let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
+        let root =
+            opts.get("plugin_root").and_then(Value::as_str).map(str::to_string).or_else(|| std::env::var("AH_ENGINE_PLUGIN_ROOT").ok()).unwrap_or_default();
+        Some(check_bash(cmd, s.cwd, &root))
     }
 }

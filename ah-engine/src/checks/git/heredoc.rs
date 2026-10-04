@@ -2,14 +2,18 @@
 //! body is removed before the segment scans. All-or-nothing and fail-closed: any doubt returns the command
 //! unchanged.
 use super::gitcmd::git_subcommand;
-use super::shell::*;
+use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
+use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-const HEREDOC_SAFE_VERBS: &[&str] = &["cat", "tee", "git", "gh", "echo", "printf", "cd", "pushd", "popd", "mkdir", "wc", "head", "tail", "ls", "pwd", "true", ":", "date", "stat", "test", "["];
+/// Mirrors `git-guard.js` `HEREDOC_SAFE_VERBS`.
+const HEREDOC_SAFE_VERBS: &[&str] =
+    &["cat", "tee", "git", "gh", "echo", "printf", "cd", "pushd", "popd", "mkdir", "wc", "head", "tail", "ls", "pwd", "true", ":", "date", "stat", "test", "["];
+/// Mirrors `git-guard.js` `HEREDOC_GIT_MSG_SUBS`.
 const HEREDOC_GIT_MSG_SUBS: &[&str] = &["commit", "tag", "notes", "merge"];
 
 struct Spec {
@@ -32,8 +36,11 @@ fn spec(s: &str, v: &str, o: &str, l: &str, big_l: &str, big_o: &str, num: bool,
     Spec { s: s.into(), v: v.into(), o: o.into(), l: set(l), big_l: set(big_l), big_o: set(big_o), num, strict }
 }
 
+/// Mirrors `git-guard.js` `HD_GIT_READ_LONG`.
 const HD_GIT_READ_LONG: &str = "stat shortstat numstat name-only name-status summary patch no-patch raw cached staged no-color no-ext-diff no-textconv no-renames check exit-code quiet ignore-all-space ignore-space-change oneline graph all reverse first-parent no-merges merges abbrev-commit follow decorate no-decorate full-history source date-order topo-order";
+/// Mirrors `git-guard.js` `HD_GIT_READ_VAL`.
 const HD_GIT_READ_VAL: &str = "max-count skip since until after before author committer grep date diff-filter";
+/// Mirrors `git-guard.js` `HD_GIT_READ_OPT`.
 const HD_GIT_READ_OPT: &str = "color word-diff decorate format pretty unified abbrev find-renames find-copies relative";
 
 fn git_spec(sub: &str) -> Option<Spec> {
@@ -87,6 +94,7 @@ fn all_digits(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
 }
 
+/// Mirrors `git-guard.js` `hdFlagWords`.
 fn hd_flag_words(args: &[Tok], sp: &Spec) -> Option<Vec<String>> {
     let mut words = Vec::new();
     let mut k = 0usize;
@@ -189,6 +197,7 @@ fn safe_path_word(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "_./~+@%:,=-".contains(c))
 }
 
+/// Mirrors `git-guard.js` `hdGitOk`.
 fn hd_git_ok(args: &[Tok]) -> bool {
     let mut k = 0usize;
     while k < args.len() {
@@ -216,6 +225,7 @@ fn hd_git_ok(args: &[Tok]) -> bool {
     true
 }
 
+/// Mirrors `git-guard.js` `hdGhWords`.
 fn hd_gh_words(args: &[Tok]) -> Option<Vec<String>> {
     if args.iter().any(|a| a.text == "--") {
         return None;
@@ -230,12 +240,70 @@ fn hd_gh_words(args: &[Tok]) -> Option<Vec<String>> {
     Some(words)
 }
 
+/// Mirrors `git-guard.js` `HEREDOC_DENY_FIRST`.
 const HEREDOC_DENY_FIRST: &[&str] = &[
-    "bash", "sh", "zsh", "dash", "ksh", "ash", "fish", "csh", "tcsh", "busybox", "eval", "source", ".", "exec", "xargs", "env", "sudo", "su", "doas", "command", "builtin", "node", "nodejs", "deno", "bun",
-    "perl", "ruby", "php", "lua", "tclsh", "expect", "osascript", "pwsh", "powershell", "rscript", "ssh", "at", "batch", "crontab", "watch", "parallel", "find", "awk", "gawk", "sed", "make", "npm", "npx",
-    "pnpm", "yarn", "docker", "kubectl", "script", "nohup", "setsid", "time", "timeout", "nice", "coproc",
+    "bash",
+    "sh",
+    "zsh",
+    "dash",
+    "ksh",
+    "ash",
+    "fish",
+    "csh",
+    "tcsh",
+    "busybox",
+    "eval",
+    "source",
+    ".",
+    "exec",
+    "xargs",
+    "env",
+    "sudo",
+    "su",
+    "doas",
+    "command",
+    "builtin",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "perl",
+    "ruby",
+    "php",
+    "lua",
+    "tclsh",
+    "expect",
+    "osascript",
+    "pwsh",
+    "powershell",
+    "rscript",
+    "ssh",
+    "at",
+    "batch",
+    "crontab",
+    "watch",
+    "parallel",
+    "find",
+    "awk",
+    "gawk",
+    "sed",
+    "make",
+    "npm",
+    "npx",
+    "pnpm",
+    "yarn",
+    "docker",
+    "kubectl",
+    "script",
+    "nohup",
+    "setsid",
+    "time",
+    "timeout",
+    "nice",
+    "coproc",
 ];
 
+/// Mirrors `git-guard.js` `hdDeniedFirstWord`.
 fn hd_denied_first_word(skel: &str) -> bool {
     for piece in backstop_pieces(skel) {
         let t = piece.trim_start_matches(|c: char| is_js_space(c) || matches!(c, '{' | '}' | '!' | '"' | '\'' | '('));
@@ -263,16 +331,40 @@ fn hd_denied_first_word(skel: &str) -> bool {
 /// Nesting limit for the substitution scanners (JS overflows its stack far deeper and its caller then scans the raw text, which is what `None` means here).
 const MAX_NEST: usize = 1500;
 
+/// Mirrors `git-guard.js` `HEREDOC_BAD_DIRS`.
 const HEREDOC_BAD_DIRS: &[&str] = &[".git", ".husky", ".githooks", "hooks", ".ssh", ".config", ".claude", ".codex", ".local", ".gnupg"];
 
+/// Mirrors `git-guard.js` `hdBadPath`.
 fn hd_bad_path(p: &str) -> bool {
     let segs: Vec<String> = p.split('/').filter(|x| !x.is_empty()).map(|x| x.to_lowercase()).collect();
     segs.iter().enumerate().any(|(k, x)| HEREDOC_BAD_DIRS.contains(&x.as_str()) || (x == ".anti-hall" && segs.get(k + 1).map(|s| s.as_str()) == Some("bin")))
 }
 
+/// Mirrors `git-guard.js` `GIT_HOOK_NAMES`.
 const GIT_HOOK_NAMES: &[&str] = &[
-    "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push",
-    "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman",
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "pre-rebase",
+    "post-checkout",
+    "post-merge",
+    "pre-push",
+    "pre-receive",
+    "update",
+    "proc-receive",
+    "post-receive",
+    "post-update",
+    "reference-transaction",
+    "push-to-checkout",
+    "pre-auto-gc",
+    "post-rewrite",
+    "sendemail-validate",
+    "fsmonitor-watchman",
     "post-index-change",
 ];
 
@@ -280,6 +372,7 @@ fn at(s: &[char], i: usize) -> Option<char> {
     s.get(i).copied()
 }
 
+/// Mirrors `git-guard.js` `hdSkipQuote`.
 fn hd_skip_quote(s: &[char], i: usize, depth: usize) -> Option<usize> {
     if depth > MAX_NEST {
         return None;
@@ -312,6 +405,7 @@ fn hd_skip_quote(s: &[char], i: usize, depth: usize) -> Option<usize> {
     None
 }
 
+/// Mirrors `git-guard.js` `hdSubstEnd`.
 fn hd_subst_end(s: &[char], mut i: usize, closer: char, depth_nest: usize) -> Option<usize> {
     if depth_nest > MAX_NEST {
         return None;
@@ -374,6 +468,7 @@ fn cslice(s: &[char], a: usize, b: usize) -> String {
     }
 }
 
+/// Mirrors `git-guard.js` `hdSkeleton`.
 fn hd_skeleton(cmd: &[char]) -> Option<(String, Vec<Doc>)> {
     let n = cmd.len();
     let mut st = ArithScan::new();
@@ -520,12 +615,12 @@ fn hd_skeleton(cmd: &[char]) -> Option<(String, Vec<Doc>)> {
             }
             let body_start = line_end + 1;
             let mut term_lines: Vec<String> = cslice(cmd, body_start, p.end).split('\n').map(|x| x.to_string()).collect();
-            if term_lines.last().map_or(false, |l| l.is_empty()) {
+            if term_lines.last().is_some_and(|l| l.is_empty()) {
                 term_lines.pop();
             }
             term_lines.pop();
             for ln in &term_lines {
-                if ln.trim_start_matches(|c| c == ' ' || c == '\t').starts_with(p.word.as_str()) {
+                if ln.trim_start_matches([' ', '\t']).starts_with(p.word.as_str()) {
                     return None;
                 }
             }
@@ -554,6 +649,7 @@ struct Level {
     id: Option<usize>,
 }
 
+/// Mirrors `git-guard.js` `hdLevels`.
 fn hd_levels(text: &[char], levels: &mut Vec<Level>, next_id: &mut usize, depth: usize, own_id: Option<usize>) -> bool {
     if depth > 6 {
         return false;
@@ -638,8 +734,10 @@ fn hd_levels(text: &[char], levels: &mut Vec<Level>, next_id: &mut usize, depth:
     true
 }
 
+/// Mirrors `git-guard.js` `HEREDOC_DATA_EXT`.
 const HEREDOC_DATA_EXT: &[&str] = &["md", "markdown", "mdx", "txt", "text", "rst", "adoc", "asciidoc", "org", "log", "csv", "tsv"];
 
+/// Mirrors `git-guard.js` `hdIsDataSink`.
 fn hd_is_data_sink(t: &str) -> bool {
     if matches!(t, "/dev/null" | "/dev/stdout" | "/dev/stderr") {
         return true;
@@ -651,6 +749,7 @@ fn hd_is_data_sink(t: &str) -> bool {
     }
 }
 
+/// Mirrors `git-guard.js` `hdTargetOk`.
 fn hd_target_ok(ctx: &Ctx, t: &str, dirs: &[String]) -> bool {
     if t.is_empty() {
         return false;
@@ -736,10 +835,11 @@ fn split_redirect_prefix(s: &str) -> Option<(String, String)> {
         }
         (d, r2)
     };
-    let after = if rest.starts_with(">>") { &rest[2..] } else { &rest[1..] };
+    let after = rest.strip_prefix(">>").unwrap_or(&rest[1..]);
     Some((prefix, after.to_string()))
 }
 
+/// Mirrors `git-guard.js` `hdWriteTargets`.
 fn hd_write_targets(tokens: &[Tok], ev: &Ev) -> Option<Vec<Target>> {
     let mut out: Vec<Target> = Vec::new();
     let mut i = 0usize;
@@ -756,9 +856,8 @@ fn hd_write_targets(tokens: &[Tok], ev: &Ev) -> Option<Vec<Target>> {
             i += 1;
             continue;
         };
-        if w.starts_with('&') {
+        if let Some(r) = w.strip_prefix('&') {
             // /^&[0-9-]?$/
-            let r = &w[1..];
             if r.chars().count() <= 1 && r.chars().all(|c| c.is_ascii_digit() || c == '-') {
                 i += 1;
                 continue;
@@ -790,7 +889,7 @@ fn hd_write_targets(tokens: &[Tok], ev: &Ev) -> Option<Vec<Target>> {
                 k += 1;
                 continue;
             }
-            let is_doc = a.strip_prefix("__AHDOC").and_then(|r| r.strip_suffix("__")).map_or(false, all_digits);
+            let is_doc = a.strip_prefix("__AHDOC").and_then(|r| r.strip_suffix("__")).is_some_and(all_digits);
             if a.starts_with('-') || is_doc {
                 k += 1;
                 continue;
@@ -806,6 +905,7 @@ fn hd_write_targets(tokens: &[Tok], ev: &Ev) -> Option<Vec<Target>> {
     }
 }
 
+/// Mirrors `git-guard.js` `hdMarkers`.
 fn hd_markers(tokens: &[Tok], re: &Regex) -> Vec<usize> {
     let mut ids = Vec::new();
     for t in tokens {
@@ -818,9 +918,10 @@ fn hd_markers(tokens: &[Tok], re: &Regex) -> Vec<usize> {
     ids
 }
 
+/// Mirrors `git-guard.js` `hdMessageTaker`.
 fn hd_message_taker(ev: &Ev) -> bool {
     if ev.verb == "git" {
-        return git_subcommand(&ev.args).0.map_or(false, |s| HEREDOC_GIT_MSG_SUBS.contains(&s.as_str()));
+        return git_subcommand(&ev.args).0.is_some_and(|s| HEREDOC_GIT_MSG_SUBS.contains(&s.as_str()));
     }
     if ev.verb == "gh" {
         return hd_gh_words(&ev.args).is_some();
@@ -834,6 +935,9 @@ struct Consumer {
     level_id: Option<usize>,
 }
 
+/// Replace heredoc bodies that are plain data (not fed to a shell, not a hook or config path) with blanks so text inside them is never scanned as commands.
+///
+/// Mirrors `git-guard.js` `maskDataHeredocs`.
 pub fn mask_data_heredocs(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> String {
     mask_inner(ctx, cmd, base_cwd).unwrap_or_else(|| cmd.to_string())
 }
@@ -878,8 +982,8 @@ fn mask_inner(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> Option<String
     let mut seen_docs: HashSet<usize> = HashSet::new();
     static SUB_RE: OnceLock<Regex> = OnceLock::new();
     static DOC_RE: OnceLock<Regex> = OnceLock::new();
-    let sub_re = SUB_RE.get_or_init(|| Regex::new(r"__AHSUB([0-9]+)__").unwrap());
-    let doc_re = DOC_RE.get_or_init(|| Regex::new(r"__AHDOC([0-9]+)__").unwrap());
+    let sub_re = SUB_RE.get_or_init(|| lit_re(r"__AHSUB([0-9]+)__"));
+    let doc_re = DOC_RE.get_or_init(|| lit_re(r"__AHDOC([0-9]+)__"));
     for lvl in &levels {
         for seg in split_segments(&lvl.text) {
             let tokens = tokenize(&seg);
@@ -906,7 +1010,7 @@ fn mask_inner(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> Option<String
                     }
                     let home = ctx.home.as_str();
                     let rel = if dt.text.starts_with("~/") && !home.is_empty() { path_join(home, &dt.text[2..]) } else { dt.text.clone() };
-                    let next = resolve(dirs.last().unwrap(), &rel, &ctx.proc_cwd);
+                    let next = resolve(dirs.last()?, &rel, &ctx.proc_cwd); // dirs always holds the starting directory
                     if hd_bad_path(&next) {
                         return None;
                     }

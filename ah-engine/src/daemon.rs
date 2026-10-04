@@ -4,7 +4,7 @@
 //! (`frame.rs`):
 //!   hook:     `V <client-version>\n<raw hook JSON>`  -> OK <hook output JSON, "" = nothing to say> | ERR | BUSY
 //!   control:  `CTL ping|reload|stop|status`           -> OK
-//!   project:  `P <cwd>\n<verb> <args>`                -> OK <value> | ERR   (state partitioned by project)
+//!   project:  `P <cwd>\n<verb> <args>`                -> OK `<value>` | ERR   (state partitioned by project)
 //! A hook request from a NEWER client makes this daemon answer, drain queued connections, then exit,
 //! so the client's next call cold-starts the new build.
 //!
@@ -44,18 +44,25 @@ extern "C" fn on_term(_: libc::c_int) {
 /// What to do after replying.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum After {
+    /// Keep serving.
     Continue,
+    /// Drain the queue and exit (handoff to a newer build, or a stop request).
     Exit,
 }
 
+/// What the daemon answers: the frame kind plus its body.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Reply {
+    /// Success; the body is the answer (empty means nothing to say).
     Ok(String),
+    /// Shed under load; the client falls back to the Node hook.
     Busy,
+    /// The request could not be evaluated; the client falls back to the Node hook.
     Err(String),
 }
 
 impl Reply {
+    /// Encode as a length-framed, checksummed reply.
     pub fn frame(&self) -> Vec<u8> {
         match self {
             Reply::Ok(b) => frame::encode(Kind::Ok, b),
@@ -65,20 +72,30 @@ impl Reply {
     }
 }
 
+/// Counters surfaced by `status`.
 #[derive(Default)]
 pub struct Stats {
+    /// Requests handled.
     pub requests: AtomicU64,
+    /// Requests answered BUSY.
     pub busy: AtomicU64,
+    /// Requests answered ERR.
     pub errors: AtomicU64,
+    /// Evaluations cut off by the CPU budget.
     pub budget_trips: AtomicU64,
+    /// Handler panics contained.
     pub panics: AtomicU64,
+    /// Connections dropped because the peer uid was not ours.
     pub rejected: AtomicU64,
 }
 
 /// Everything the request handler and the threads share.
 pub struct Shared {
+    /// The limits this daemon runs with.
     pub cfg: Config,
+    /// This build's version string, compared with each client's for handoff.
     pub own: String,
+    /// The active rule set; swapped whole on reload, so a request sees one consistent set.
     pub rules: RwLock<Arc<RuleSet>>,
     rules_path: std::path::PathBuf,
     seen: Mutex<Option<(SystemTime, u64)>>,
@@ -86,18 +103,23 @@ pub struct Shared {
     projects: Mutex<Buckets>,
     store: Mutex<Store>,
     keys: Mutex<KeyCache>,
+    /// Counters.
     pub stats: Stats,
     queue: Mutex<VecDeque<UnixStream>>,
     cv: Condvar,
+    /// Connections currently queued.
     pub depth: AtomicUsize,
     started: Instant,
+    /// Result of applying the memory rlimit, for `status`.
     pub rlimit: String,
+    /// True once the daemon stopped taking new clients.
     pub draining: AtomicBool,
     /// ms since `started` at the last accept-loop iteration
     loop_beat: AtomicU64,
     /// per worker: 0 = idle, else (ms since `started`) + 1 when it picked up the current request
     busy_since: Vec<AtomicU64>,
     stall_ms: AtomicU64,
+    /// Last sampled resident set, KB.
     pub rss_kb: AtomicU64,
     starts: u64,
 }
@@ -107,6 +129,7 @@ fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Shared {
+    /// Build the shared state for a daemon with these limits, rules and rules-file path.
     pub fn new(cfg: Config, own: &str, rules: RuleSet, rules_path: std::path::PathBuf) -> Shared {
         let workers = cfg.workers;
         Shared {
@@ -259,7 +282,7 @@ fn project_op(cwd: &str, body: &str, sh: &Shared) -> Reply {
     let (verb, args) = body.trim_end_matches('\n').split_once(' ').unwrap_or((body.trim(), ""));
     match lk(&sh.store).op(&key, verb, args) {
         Ok(v) => Reply::Ok(v),
-        Err(e) => Reply::Err(e),
+        Err(e) => Reply::Err(e.to_string()),
     }
 }
 
@@ -422,6 +445,7 @@ fn io_code(e: &std::io::Error) -> String {
     format!("os{}", e.raw_os_error().unwrap_or(0))
 }
 
+/// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
 pub fn serve() {
     let cfg = Config::from_env();
     let sock = paths::socket();
@@ -429,8 +453,8 @@ pub fn serve() {
     // state dir + socket dir: private (0700), ours, not a symlink
     for d in [Some(paths::dir()), sock.parent().map(Path::to_path_buf)].into_iter().flatten() {
         if !d.as_os_str().is_empty() {
-            if let Err((code, detail)) = limits::ensure_private_dir(&d) {
-                start_fail(&code, &detail);
+            if let Err(e) = limits::ensure_private_dir(&d) {
+                start_fail(&e.code(), &e.to_string());
             }
         }
     }
@@ -446,7 +470,7 @@ pub fn serve() {
         return;
     }
     health::reap_marker();
-    let _ = (&lock).set_len(0);
+    let _ = lock.set_len(0);
     let _ = (&lock).write_all(std::process::id().to_string().as_bytes());
     // a stale socket FILE (from a dead daemon) is removed; anything else at that path is left alone
     if let Ok(m) = std::fs::symlink_metadata(&sock) {
@@ -521,30 +545,26 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         let timeout = if draining { 20 } else { 200 };
         unsafe { libc::poll(&mut pfd, 1, timeout) };
         let mut got_any = false;
-        loop {
-            match listener.accept() {
-                Ok((s, _)) => {
-                    got_any = true;
-                    if !limits::peer_allowed(&s, me) {
-                        sh.stats.rejected.fetch_add(1, SeqCst);
-                        continue; // dropped: another uid never gets a reply
-                    }
-                    let mut q = lk(&sh.queue);
-                    if q.len() >= sh.cfg.queue {
-                        drop(q);
-                        sh.stats.busy.fetch_add(1, SeqCst);
-                        let mut s = s;
-                        s.set_nonblocking(false).ok();
-                        s.set_write_timeout(Some(Duration::from_millis(100))).ok();
-                        let _ = s.write_all(&Reply::Busy.frame());
-                    } else {
-                        q.push_back(s);
-                        sh.depth.fetch_add(1, SeqCst);
-                        drop(q);
-                        sh.cv.notify_one();
-                    }
-                }
-                Err(_) => break, // WouldBlock (or a transient error): back to poll
+        // WouldBlock (or a transient error) ends the inner loop: back to poll
+        while let Ok((s, _)) = listener.accept() {
+            got_any = true;
+            if !limits::peer_allowed(&s, me) {
+                sh.stats.rejected.fetch_add(1, SeqCst);
+                continue; // dropped: another uid never gets a reply
+            }
+            let mut q = lk(&sh.queue);
+            if q.len() >= sh.cfg.queue {
+                drop(q);
+                sh.stats.busy.fetch_add(1, SeqCst);
+                let mut s = s;
+                s.set_nonblocking(false).ok();
+                s.set_write_timeout(Some(Duration::from_millis(100))).ok();
+                let _ = s.write_all(&Reply::Busy.frame());
+            } else {
+                q.push_back(s);
+                sh.depth.fetch_add(1, SeqCst);
+                drop(q);
+                sh.cv.notify_one();
             }
         }
         if draining && !got_any && lk(&sh.queue).is_empty() && sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) {

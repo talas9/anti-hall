@@ -1,6 +1,7 @@
 //! Project-partitioned state. Every operation is keyed by a project key that the DAEMON derives from the
 //! request's `cwd` (nearest ancestor holding `.git`, else the cwd itself); a request cannot name another
 //! project's key, so project A has no path to project B's mailbox or values.
+use crate::error::StoreError;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
@@ -44,6 +45,7 @@ pub fn project_key(cwd: &str) -> String {
 pub struct KeyCache(HashMap<String, String>);
 
 impl KeyCache {
+    /// Project key for `cwd`, cached.
     pub fn key(&mut self, cwd: &str) -> String {
         if let Some(k) = self.0.get(cwd) {
             return k.clone();
@@ -63,34 +65,37 @@ struct Project {
     kv: HashMap<String, String>,
 }
 
+/// Per-project mailboxes and key-value pairs, in memory.
 #[derive(Default)]
 pub struct Store {
     projects: HashMap<String, Project>,
 }
 
 impl Store {
+    /// Number of partitions currently held.
     pub fn projects(&self) -> usize {
         self.projects.len()
     }
 
     /// Run `verb` against the partition `key`. Verbs: `put <text>`, `take`, `len`, `set <k> <v>`, `get <k>`.
-    pub fn op(&mut self, key: &str, verb: &str, args: &str) -> Result<String, String> {
+    pub fn op(&mut self, key: &str, verb: &str, args: &str) -> Result<String, StoreError> {
         if !self.projects.contains_key(key) {
             if matches!(verb, "take" | "len" | "get") {
-                return Ok(if verb == "len" { "0".into() } else { String::new() }); // reads never allocate a partition
+                return Ok(if verb == "len" { "0".into() } else { String::new() });
+                // reads never allocate a partition
             }
             if self.projects.len() >= MAX_PROJECTS {
-                return Err("too many projects".into());
+                return Err(StoreError::TooManyProjects);
             }
         }
         if args.len() > VALUE_CAP {
-            return Err("value too large".into());
+            return Err(StoreError::ValueTooLarge);
         }
         let p = self.projects.entry(key.to_string()).or_default();
         match verb {
             "put" => {
                 if p.mailbox.len() >= MAILBOX_CAP {
-                    return Err("mailbox full".into());
+                    return Err(StoreError::MailboxFull);
                 }
                 p.mailbox.push_back(args.to_string());
                 Ok("ok".into())
@@ -100,13 +105,13 @@ impl Store {
             "set" => {
                 let (k, v) = args.split_once(' ').unwrap_or((args, ""));
                 if !p.kv.contains_key(k) && p.kv.len() >= KV_CAP {
-                    return Err("too many keys".into());
+                    return Err(StoreError::TooManyKeys);
                 }
                 p.kv.insert(k.to_string(), v.to_string());
                 Ok("ok".into())
             }
             "get" => Ok(p.kv.get(args.trim()).cloned().unwrap_or_default()),
-            v => Err(format!("unknown verb {v:?}")),
+            v => Err(StoreError::UnknownVerb(v.to_string())),
         }
     }
 }
@@ -130,12 +135,7 @@ mod tests {
         }
         let b = base.to_str().unwrap();
         let mut kc = KeyCache::default();
-        let (ka, ka2, kb, ke) = (
-            kc.key(&format!("{b}/A")),
-            kc.key(&format!("{b}/A/sub/deep")),
-            kc.key(&format!("{b}/A/../B")),
-            kc.key(&format!("{b}/A-evil")),
-        );
+        let (ka, ka2, kb, ke) = (kc.key(&format!("{b}/A")), kc.key(&format!("{b}/A/sub/deep")), kc.key(&format!("{b}/A/../B")), kc.key(&format!("{b}/A-evil")));
         assert_eq!(ka, ka2, "a subdirectory belongs to its repo");
         assert_ne!(ka, kb);
         assert_ne!(ka, ke, "a sibling sharing a name prefix is a different project");

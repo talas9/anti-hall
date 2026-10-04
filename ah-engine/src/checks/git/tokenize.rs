@@ -2,43 +2,59 @@
 //! verb resolution (wrappers), heredoc parsing and the quote-blind backstop cutter. Strings are scanned
 //! as `char` vectors (the JS source indexes UTF-16 units; the two agree away from astral characters).
 
+/// Placeholder token text standing for a command substitution the tokenizer could not evaluate.
 pub const CMDSUBST: &str = "\0CMDSUBST\0";
 
+/// One shell word after quote removal.
 #[derive(Clone, Debug)]
 pub struct Tok {
+    /// The word with quotes and escapes removed.
     pub text: String,
+    /// True when the whole word was quoted (it can then not be an assignment or an option).
     pub quoted_only: bool,
+    /// The word as written, when it differs from `text`.
     pub raw: Option<String>,
 }
 
 impl Tok {
+    /// A word with no quoting.
     pub fn plain(text: &str) -> Tok {
         Tok { text: text.to_string(), quoted_only: false, raw: None }
     }
 }
 
+/// A command after wrappers are stripped: the effective verb, its arguments and the environment assignments it carries.
 #[derive(Clone, Debug)]
 pub struct Ev {
+    /// The program name (basename of the first word that is not a wrapper).
     pub verb: String,
+    /// The words after the verb.
     pub args: Vec<Tok>,
+    /// Assignments that prefixed the command or were forwarded by a wrapper.
     pub env: std::collections::HashMap<String, String>,
 }
 
+/// JavaScript whitespace: Unicode white space plus the byte-order mark, which `String.prototype.trim` also strips.
 pub fn is_js_space(c: char) -> bool {
     c.is_whitespace() || c == '\u{feff}'
 }
 
+/// Trim like JavaScript `String.prototype.trim`.
 pub fn js_trim(s: &str) -> &str {
     s.trim_matches(is_js_space)
 }
 
+/// Final path component, like Node `path.basename`.
+///
+/// Mirrors `lib/shell-scan.js` `basename`.
 pub fn basename(p: &str) -> String {
     if p.is_empty() {
         return String::new();
     }
-    p.rsplit(|c| c == '/' || c == '\\').next().unwrap_or("").to_string()
+    p.rsplit(['/', '\\']).next().unwrap_or("").to_string()
 }
 
+/// True for a `NAME=value` word.
 pub fn is_assign(s: &str) -> bool {
     let mut it = s.chars();
     match it.next() {
@@ -64,6 +80,9 @@ fn slice(s: &[char], a: usize, b: usize) -> String {
     s[a..b].iter().collect()
 }
 
+/// Split one segment into words, honouring quotes, escapes, `$(...)` and backticks.
+///
+/// Mirrors `git-guard.js` `tokenize`.
 #[allow(unused_assignments)]
 pub fn tokenize(segment: &str) -> Vec<Tok> {
     let s: Vec<char> = segment.chars().collect();
@@ -172,6 +191,7 @@ pub fn tokenize(segment: &str) -> Vec<Tok> {
     tokens
 }
 
+/// Mirrors `git-guard.js` `isBraceGroupWord`.
 fn is_brace_group_word(cur: &[char], c: char, c2: Option<char>) -> bool {
     let cur_blank = cur.iter().all(|&x| is_js_space(x));
     if let Some(c2v) = c2 {
@@ -182,10 +202,13 @@ fn is_brace_group_word(cur: &[char], c: char, c2: Option<char>) -> bool {
     if c == '}' {
         cur_blank
     } else {
-        cur.is_empty() || cur.last().map_or(false, |&x| is_js_space(x))
+        cur.is_empty() || cur.last().is_some_and(|&x| is_js_space(x))
     }
 }
 
+/// Split a command text at `;`, `&&`, `||`, `|`, `&` and newlines (outside quotes, substitutions and heredocs).
+///
+/// Mirrors `git-guard.js` `splitSegments`.
 pub fn split_segments(cmd: &str) -> Vec<String> {
     let s: Vec<char> = cmd.chars().collect();
     let n = s.len();
@@ -195,6 +218,7 @@ pub fn split_segments(cmd: &str) -> Vec<String> {
     let mut in_single = false;
     let mut in_double = false;
     let sentinel: Vec<char> = format!(" {CMDSUBST} ").chars().collect();
+    /// Mirrors `git-guard.js` `flush`.
     fn flush(cur: &mut Vec<char>, segments: &mut Vec<String>) {
         if !cur.iter().all(|&x| is_js_space(x)) {
             segments.push(cur.iter().collect());
@@ -358,13 +382,21 @@ pub fn split_segments(cmd: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------------------------------
 // verb resolution
 
-const WRAPPERS: &[&str] = &["command", "builtin", "exec", "sudo", "env", "nice", "nohup", "time", "timeout", "then", "do", "else", "if", "while", "until", "elif", "coproc", "!"];
+/// Mirrors `git-guard.js` `WRAPPERS`.
+const WRAPPERS: &[&str] =
+    &["command", "builtin", "exec", "sudo", "env", "nice", "nohup", "time", "timeout", "then", "do", "else", "if", "while", "until", "elif", "coproc", "!"];
 
+/// Option grammar of a wrapper command such as `stdbuf` or `caffeinate`: which short and long options take a value and how many operands precede the wrapped command.
 pub struct OptWrapper {
+    /// Short options that take no value.
     pub s: &'static str,
+    /// Short options that take a value.
     pub v: &'static str,
+    /// Long options that take no value.
     pub l: &'static [&'static str],
+    /// Long options that take a value.
     pub big_l: &'static [&'static str],
+    /// Positional operands the wrapper consumes before the wrapped command.
     pub ops: usize,
 }
 
@@ -394,6 +426,7 @@ fn opt_wrapper(name: &str) -> Option<OptWrapper> {
     })
 }
 
+/// Mirrors `git-guard.js` `skipOptWrapper`.
 fn skip_opt_wrapper(tokens: &[Tok], mut idx: usize, g: &OptWrapper) -> usize {
     while idx < tokens.len() && !tokens[idx].quoted_only && tokens[idx].text.starts_with('-') && tokens[idx].text != "-" {
         let w: Vec<char> = tokens[idx].text.chars().collect();
@@ -402,8 +435,8 @@ fn skip_opt_wrapper(tokens: &[Tok], mut idx: usize, g: &OptWrapper) -> usize {
         if ws == "--" {
             break;
         }
-        if ws.starts_with("--") {
-            if !ws.contains('=') && g.big_l.contains(&&ws[2..]) {
+        if let Some(long) = ws.strip_prefix("--") {
+            if !ws.contains('=') && g.big_l.contains(&long) {
                 idx += 1;
             }
             continue;
@@ -420,8 +453,9 @@ fn skip_opt_wrapper(tokens: &[Tok], mut idx: usize, g: &OptWrapper) -> usize {
     idx + g.ops
 }
 
+/// Mirrors `git-guard.js` `flockCommand`.
 fn flock_command(tokens: &[Tok], mut i: usize) -> Option<Tok> {
-    let g = opt_wrapper("flock").unwrap();
+    let g = opt_wrapper("flock")?; // a fixed table entry
     let is_cmd = |n: &str| n.chars().count() >= 3 && "command".starts_with(n);
     let attached = |t: &str| Tok { text: t.to_string(), quoted_only: false, raw: None };
     let mut after_file = false;
@@ -490,6 +524,9 @@ fn flock_command(tokens: &[Tok], mut i: usize) -> Option<Tok> {
     None
 }
 
+/// Strip wrappers (`sudo`, `env`, `nice`, `command`, shell keywords, ...) and leading assignments to find what a segment really runs.
+///
+/// Mirrors `git-guard.js` `effectiveVerb`.
 pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
     let mut idx = 0usize;
     while idx < tokens.len() {
@@ -516,7 +553,25 @@ pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
         if !t.quoted_only && WRAPPERS.contains(&word) {
             idx += 1;
             if word == "sudo" {
-                const SUDO_VAL: &[&str] = &["-u", "-g", "-p", "-C", "-r", "-t", "-U", "-h", "--user", "--group", "--prompt", "--close-from", "--role", "--type", "--other-user", "--host"];
+                /// Mirrors `git-guard.js` `SUDO_VAL`.
+                const SUDO_VAL: &[&str] = &[
+                    "-u",
+                    "-g",
+                    "-p",
+                    "-C",
+                    "-r",
+                    "-t",
+                    "-U",
+                    "-h",
+                    "--user",
+                    "--group",
+                    "--prompt",
+                    "--close-from",
+                    "--role",
+                    "--type",
+                    "--other-user",
+                    "--host",
+                ];
                 while idx < tokens.len() && !tokens[idx].quoted_only && tokens[idx].text.starts_with('-') {
                     let f = tokens[idx].text.as_str();
                     idx += 1;
@@ -540,7 +595,11 @@ pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
                 while idx < tokens.len() && !tokens[idx].quoted_only && tokens[idx].text.starts_with('-') {
                     let f = tokens[idx].text.as_str();
                     idx += 1;
-                    if (f == "-s" || f == "--signal" || f == "-k" || f == "--kill-after") && idx < tokens.len() && !tokens[idx].quoted_only && !tokens[idx].text.starts_with('-') {
+                    if (f == "-s" || f == "--signal" || f == "-k" || f == "--kill-after")
+                        && idx < tokens.len()
+                        && !tokens[idx].quoted_only
+                        && !tokens[idx].text.starts_with('-')
+                    {
                         idx += 1;
                     }
                 }
@@ -574,8 +633,12 @@ pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
     Some(Ev { verb: basename(&vt.text), args: tokens[idx + 1..].to_vec(), env: Default::default() })
 }
 
+/// Shell programs whose `-c` argument is itself a script.
+///
+/// Mirrors `lib/shell-scan.js` `SHELL_VERBS`.
 pub const SHELL_VERBS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh", "ash"];
 
+/// True when `v` names a shell (case-insensitive).
 pub fn is_shell_verb(v: &str) -> bool {
     let l = v.to_lowercase();
     SHELL_VERBS.contains(&l.as_str())
@@ -584,18 +647,28 @@ pub fn is_shell_verb(v: &str) -> bool {
 // ---------------------------------------------------------------------------------------------------
 // heredoc parsing (lib/shell-scan.js)
 
+/// One parsed heredoc: where it starts and ends in the command, its delimiter word, whether the delimiter was quoted, and its body.
 #[derive(Clone, Debug)]
 pub struct Heredoc {
+    /// Index just past the heredoc (terminator line included).
     pub end: usize,
+    /// Length of the `<<WORD` opener text.
     pub opener_len: usize,
+    /// Index just past the opener.
     pub opener_end: usize,
+    /// Index of the newline that ends the opener line, if any.
     pub line_end: Option<usize>,
+    /// The delimiter word.
     pub word: String,
+    /// True when the delimiter was quoted, so the body is not expanded.
     pub quoted: bool,
+    /// The text between the opener line and the terminator.
     pub body: String,
+    /// True when the terminator line was found.
     pub terminated: bool,
 }
 
+/// Incremental state for telling whether a position is inside `$((...))` arithmetic, where `<<` is a shift, not a heredoc.
 pub struct ArithScan {
     j: usize,
     stack: Vec<char>,
@@ -606,8 +679,15 @@ pub struct ArithScan {
 }
 
 impl ArithScan {
+    /// A scan positioned at the start of the text.
     pub fn new() -> ArithScan {
         ArithScan { j: 0, stack: Vec::new(), in_single: false, in_double: false, skip_from: None, skip_to: 0 }
+    }
+}
+
+impl Default for ArithScan {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -615,6 +695,9 @@ fn is_ws_js(c: char) -> bool {
     is_js_space(c)
 }
 
+/// True when `pos` lies inside an arithmetic expansion; `st` carries the scan between calls so a left-to-right pass stays linear.
+///
+/// Mirrors `lib/shell-scan.js` `inArithmeticAt`.
 pub fn in_arithmetic_at(cmd: &[char], pos: usize, st: &mut ArithScan) -> bool {
     let n = cmd.len();
     if st.j > pos {
@@ -716,7 +799,7 @@ pub fn in_arithmetic_at(cmd: &[char], pos: usize, st: &mut ArithScan) -> bool {
         if !st.in_double && c == '<' && c2 == Some('<') && top != Some('A') && top != Some('B') {
             if let Some(h) = parse_heredoc_raw(cmd, j) {
                 let body_start = j + h.opener_len;
-                if body_start < h.end && st.skip_from.map_or(true, |sf| body_start < sf) {
+                if body_start < h.end && st.skip_from.is_none_or(|sf| body_start < sf) {
                     st.skip_from = Some(body_start);
                     st.skip_to = h.end;
                 }
@@ -730,6 +813,9 @@ pub fn in_arithmetic_at(cmd: &[char], pos: usize, st: &mut ArithScan) -> bool {
     top == Some('A') || top == Some('B')
 }
 
+/// Parse a heredoc opener at `i`, unless that position is inside arithmetic.
+///
+/// Mirrors `lib/shell-scan.js` `parseHeredocAt`.
 pub fn parse_heredoc_at(cmd: &[char], i: usize, st: &mut ArithScan) -> Option<Heredoc> {
     if in_arithmetic_at(cmd, i, st) {
         return None;
@@ -744,6 +830,9 @@ fn find_char(cmd: &[char], c: char, from: usize) -> Option<usize> {
     cmd[from..].iter().position(|&x| x == c).map(|p| p + from)
 }
 
+/// Parse a heredoc opener at `i` without the arithmetic check.
+///
+/// Mirrors `lib/shell-scan.js` `parseHeredocRaw`.
 pub fn parse_heredoc_raw(cmd: &[char], i: usize) -> Option<Heredoc> {
     let n = cmd.len();
     if cmd.get(i) != Some(&'<') || cmd.get(i + 1) != Some(&'<') {
@@ -863,12 +952,19 @@ pub fn parse_heredoc_raw(cmd: &[char], i: usize) -> Option<Heredoc> {
     Some(Heredoc { end: idx, opener_len, opener_end, line_end: Some(line_end), word, quoted, body: body_lines.join("\n"), terminated })
 }
 
+/// A heredoc body with its delimiter word and quoting, as scanned out of a whole command.
 pub struct HeredocBody {
+    /// The delimiter word.
     pub word: String,
+    /// True when the delimiter was quoted.
     pub quoted: bool,
+    /// The body text.
     pub body: String,
 }
 
+/// All heredoc bodies in `cmd`, in order.
+///
+/// Mirrors `git-guard.js` `extractHeredocBodies`.
 pub fn extract_heredoc_bodies(cmd: &str) -> Vec<HeredocBody> {
     let s: Vec<char> = cmd.chars().collect();
     let n = s.len();
@@ -925,6 +1021,9 @@ pub fn extract_heredoc_bodies(cmd: &str) -> Vec<HeredocBody> {
 // ---------------------------------------------------------------------------------------------------
 // quote-blind backstop cutter
 
+/// Quote-blind cut of `cmd` at separators, used by the backstop scan that must not trust the tokenizer.
+///
+/// Mirrors `git-guard.js` `backstopPieces`.
 pub fn backstop_pieces(cmd: &str) -> Vec<String> {
     // backslash-newline joins: /\\\r?\n/g -> ' '
     let mut joined = String::with_capacity(cmd.len());
@@ -1028,14 +1127,14 @@ pub fn backstop_pieces(cmd: &str) -> Vec<String> {
         sq_par ^= sq;
         if let Some((_, pl)) = &pending {
             if p.line != *pl {
-                let (parts, _) = pending.take().unwrap();
+                let (parts, _) = pending.take().unwrap_or_default(); // checked Some just above
                 out.extend(parts);
             }
         }
         if let Some((parts, _)) = pending.as_mut() {
             parts.push(p.text.clone());
             if dq_par == 0 && sq_par == 0 {
-                let (parts, _) = pending.take().unwrap();
+                let (parts, _) = pending.take().unwrap_or_default(); // checked Some just above
                 let joined = parts.join("|");
                 if let Some(last) = out.last_mut() {
                     last.push('|');
@@ -1050,9 +1149,10 @@ pub fn backstop_pieces(cmd: &str) -> Vec<String> {
             let parts = vec![p.text.clone()];
             if dq_par == 0 && sq_par == 0 {
                 let joined = parts.join("|");
-                let last = out.last_mut().unwrap();
-                last.push('|');
-                last.push_str(&joined);
+                if let Some(last) = out.last_mut() {
+                    last.push('|');
+                    last.push_str(&joined);
+                }
             } else {
                 pending = Some((parts, p.line));
             }
@@ -1066,6 +1166,9 @@ pub fn backstop_pieces(cmd: &str) -> Vec<String> {
     out
 }
 
+/// Effective verb of a backstop piece, found without full tokenization.
+///
+/// Mirrors `git-guard.js` `backstopVerb`.
 pub fn backstop_verb(text: &str) -> Option<Ev> {
     // text.replace(/^(?:\s*[{}!](?=\s|$))+/, '')
     let cs: Vec<char> = text.chars().collect();

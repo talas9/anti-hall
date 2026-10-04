@@ -1,20 +1,24 @@
 //! git-guard's alias and reused-message checks (lib/git-alias-scan.js).
 use super::gitcmd::*;
-use super::scan::scan_command;
-use super::shell::*;
+use super::segments::scan_command;
+use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
+use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+/// Mirrors `lib/git-alias-scan.js` `GIT_BUILTINS`.
 const GIT_BUILTINS: &str = "add am annotate apply archive bisect blame branch bundle cat-file check-attr check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick citool clean clone column commit commit-graph commit-tree config count-objects credential describe diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack filter-branch fmt-merge-msg for-each-ref for-each-repo format-patch fsck gc get-tar-commit-id grep gui hash-object help hook index-pack init instaweb interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base merge-file merge-index merge-tree mergetool mktag mktree multi-pack-index mv name-rev notes p4 pack-objects pack-redundant pack-refs prune prune-packed pull push range-diff read-tree rebase receive-pack reflog remote repack replace request-pull rerere reset restore rev-list rev-parse revert rm send-email send-pack shortlog show show-branch show-index show-ref sparse-checkout stage stash status stripspace submodule switch symbolic-ref tag unpack-file unpack-objects update-index update-ref update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag version whatchanged worktree write-tree";
 
 const MAX_CHAIN: usize = 10;
 
+/// Environment assignments (`NAME=value`) that prefix a command, keyed by name.
 pub type Env = HashMap<String, String>;
 
+/// Mirrors `lib/git-alias-scan.js` `repoArgs`.
 fn repo_args(args: &[Tok]) -> Vec<String> {
     let mut out = Vec::new();
     let mut k = 0;
@@ -69,6 +73,9 @@ fn split_assign(s: &str) -> Option<(&str, &str)> {
     Some((&s[..eq], &s[eq + 1..]))
 }
 
+/// The leading assignments of a command that a wrapper forwards to what it runs; quoted-only words are skipped because the shell would not treat them as assignments.
+///
+/// Mirrors `lib/git-alias-scan.js` `forwardable`.
 pub fn forwardable(tokens: &[Tok]) -> Env {
     let mut out = Env::new();
     for t in tokens {
@@ -88,6 +95,8 @@ pub fn forwardable(tokens: &[Tok]) -> Env {
 }
 
 /// (inline, persist) environment of one segment.
+///
+/// Mirrors `lib/git-alias-scan.js` `segmentEnv`.
 pub fn segment_env(tokens: &[Tok]) -> (Env, Env) {
     if let Some(gi) = tokens.iter().position(|t| !t.quoted_only && t.text == "git") {
         return (forwardable(&tokens[..gi]), Env::new());
@@ -100,6 +109,7 @@ pub fn segment_env(tokens: &[Tok]) -> (Env, Env) {
     (Env::new(), Env::new())
 }
 
+/// Mirrors `lib/git-alias-scan.js` `spawnCwd`.
 fn spawn_cwd(ctx: &Ctx, dir: Option<&str>) -> String {
     if let Some(d) = dir {
         if !d.is_empty() && std::fs::metadata(d).map(|m| m.is_dir()).unwrap_or(false) {
@@ -122,6 +132,7 @@ fn git_run(ctx: &mut Ctx, argv: &[String], dir: Option<&str>, env: &Env) -> Opti
     r
 }
 
+/// Mirrors `lib/git-alias-scan.js` `aliasesFor`.
 fn aliases_for(ctx: &mut Ctx, args: &[Tok], dir: Option<&str>, env: &Env) -> HashMap<String, String> {
     let ra = repo_args(args);
     let cwd = spawn_cwd(ctx, dir);
@@ -154,6 +165,7 @@ fn aliases_for(ctx: &mut Ctx, args: &[Tok], dir: Option<&str>, env: &Env) -> Has
     map
 }
 
+/// Mirrors `lib/git-alias-scan.js` `shellWords`.
 fn shell_words(tokens: &[Tok]) -> String {
     tokens
         .iter()
@@ -170,6 +182,7 @@ fn shell_words(tokens: &[Tok]) -> String {
         .join(" ")
 }
 
+/// Mirrors `lib/git-alias-scan.js` `firstWord`.
 fn first_word(v: &str) -> (String, String) {
     let t = v.trim_start_matches(is_js_space);
     if t.is_empty() {
@@ -186,9 +199,10 @@ fn first_word(v: &str) -> (String, String) {
     (t[..end].to_string(), t[end..].to_string())
 }
 
+/// Mirrors `lib/git-alias-scan.js` `aliasable`.
 fn aliasable(sub: &str) -> bool {
     let mut cs = sub.chars();
-    let ok_first = cs.next().map_or(false, |c| c.is_ascii_alphanumeric());
+    let ok_first = cs.next().is_some_and(|c| c.is_ascii_alphanumeric());
     ok_first && sub.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-') && !GIT_BUILTINS.split(' ').any(|b| b == sub)
 }
 
@@ -198,6 +212,7 @@ struct Expansion {
     command: String,
 }
 
+/// Mirrors `lib/git-alias-scan.js` `expandAlias`.
 fn expand_alias(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: &[Tok], dir: Option<&str>, env: &Env) -> Option<Expansion> {
     let sub = sub?;
     if !ctx.alias_enabled() || !aliasable(sub) {
@@ -222,9 +237,12 @@ fn expand_alias(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: &[Tok], di
         let v = map.get(&name).cloned().unwrap_or_default();
         chain.push(name.clone());
         let vt = v.trim_start_matches(is_js_space);
-        if vt.starts_with('!') {
-            let body = &vt[1..];
-            return Some(Expansion { chain, verb: "!".into(), command: format!("{}{}", body, if suffix.is_empty() { String::new() } else { format!(" {suffix}") }) });
+        if let Some(body) = vt.strip_prefix('!') {
+            return Some(Expansion {
+                chain,
+                verb: "!".into(),
+                command: format!("{}{}", body, if suffix.is_empty() { String::new() } else { format!(" {suffix}") }),
+            });
         }
         let (word, tail) = first_word(&v);
         if aliasable(&word) && map.contains_key(&word.to_lowercase()) {
@@ -235,12 +253,18 @@ fn expand_alias(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: &[Tok], di
         }
         let prefix_toks: Vec<Tok> = repo_args(args).iter().map(|w| Tok::plain(w)).collect();
         let prefix = shell_words(&prefix_toks);
-        let command = format!("git {}{}{}", if prefix.is_empty() { String::new() } else { format!("{prefix} ") }, js_trim(&v), if suffix.is_empty() { String::new() } else { format!(" {suffix}") });
+        let command = format!(
+            "git {}{}{}",
+            if prefix.is_empty() { String::new() } else { format!("{prefix} ") },
+            js_trim(&v),
+            if suffix.is_empty() { String::new() } else { format!(" {suffix}") }
+        );
         return Some(Expansion { chain, verb: word, command });
     }
     None
 }
 
+/// Mirrors `lib/git-alias-scan.js` `annotate`.
 fn annotate(m: &str, note: &str) -> String {
     const MARK: &str = " anti-hall \u{b7} git-guard: ";
     if let Some(sp) = m.find(|c: char| is_js_space(c)) {
@@ -252,6 +276,7 @@ fn annotate(m: &str, note: &str) -> String {
     m.to_string()
 }
 
+/// Mirrors `lib/git-alias-scan.js` `aliasBodyCommand`.
 fn alias_body_command(v: &str) -> Option<String> {
     let s = js_trim(v);
     if s.is_empty() {
@@ -260,6 +285,7 @@ fn alias_body_command(v: &str) -> Option<String> {
     Some(if let Some(r) = s.strip_prefix('!') { r.to_string() } else { format!("git {s}") })
 }
 
+/// Mirrors `lib/git-alias-scan.js` `scanBody`.
 fn scan_body(ctx: &mut Ctx, body: Option<String>, note: &str, d: usize, dir: Option<&str>) -> Option<String> {
     let body = body?;
     if body.is_empty() {
@@ -269,13 +295,14 @@ fn scan_body(ctx: &mut Ctx, body: Option<String>, note: &str, d: usize, dir: Opt
     Some(annotate(&hit, note))
 }
 
+/// Mirrors `lib/git-alias-scan.js` `gitDefinitionVerdict`.
 fn git_definition_verdict(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: &[Tok], d: usize, dir: Option<&str>) -> Option<String> {
     let mut k = 0;
     while k + 1 < args.len() {
         if args[k].text == "-c" {
             let v = args[k + 1].text.as_str();
             // /^alias\.([^=]+)=([\s\S]*)$/i
-            if v.get(..6).map_or(false, |x| x.eq_ignore_ascii_case("alias.")) {
+            if v.get(..6).is_some_and(|x| x.eq_ignore_ascii_case("alias.")) {
                 let rest_v = &v[6..];
                 if let Some(eq) = rest_v.find('=') {
                     if eq >= 1 {
@@ -298,7 +325,7 @@ fn git_definition_verdict(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: 
     while k + 1 < rest.len() {
         let v = rest[k].text.as_str();
         // /^alias\.(\S+)$/i
-        if v.get(..6).map_or(false, |x| x.eq_ignore_ascii_case("alias.")) {
+        if v.get(..6).is_some_and(|x| x.eq_ignore_ascii_case("alias.")) {
             let name = &v[6..];
             if !name.is_empty() && !name.chars().any(is_js_space) {
                 let note = format!("defining git alias `{name}` to run a blocked command:");
@@ -314,9 +341,27 @@ fn git_definition_verdict(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: 
 
 // ---- reused commit messages --------------------------------------------------------------------------
 
+/// Mirrors `lib/git-alias-scan.js` `COMMIT_LONG`.
 const COMMIT_LONG: &str = "ahead-behind all allow-empty allow-empty-message amend author branch cleanup date dry-run edit file fixup gpg-sign include inter-hunk-context interactive long message no-post-rewrite no-verify null only patch pathspec-file-nul pathspec-from-file porcelain post-rewrite quiet reedit-message reset-author reuse-message short signoff squash status template trailer unified untracked-files verbose verify no-edit no-status no-signoff no-gpg-sign no-allow-empty no-amend";
-const COMMIT_LONG_VALUE: &[&str] = &["author", "date", "message", "file", "reuse-message", "reedit-message", "fixup", "squash", "trailer", "cleanup", "template", "pathspec-from-file", "unified", "inter-hunk-context"];
+/// Mirrors `lib/git-alias-scan.js` `COMMIT_LONG_VALUE`.
+const COMMIT_LONG_VALUE: &[&str] = &[
+    "author",
+    "date",
+    "message",
+    "file",
+    "reuse-message",
+    "reedit-message",
+    "fixup",
+    "squash",
+    "trailer",
+    "cleanup",
+    "template",
+    "pathspec-from-file",
+    "unified",
+    "inter-hunk-context",
+];
 
+/// Mirrors `lib/git-alias-scan.js` `commitLong`.
 fn commit_long(n: &str) -> Option<String> {
     let all: Vec<&str> = COMMIT_LONG.split(' ').collect();
     if all.contains(&n) {
@@ -341,6 +386,7 @@ struct Sources {
     template: Option<String>,
 }
 
+/// Mirrors `lib/git-alias-scan.js` `commitSources`.
 fn commit_sources(rest: &[Tok]) -> Sources {
     let mut o = Sources::default();
     let mut k = 0usize;
@@ -368,7 +414,7 @@ fn commit_sources(rest: &[Tok]) -> Sources {
             let val: Option<String> = match val0 {
                 Some(v) => Some(v),
                 None => {
-                    if n.as_deref().map_or(false, |x| COMMIT_LONG_VALUE.contains(&x)) {
+                    if n.as_deref().is_some_and(|x| COMMIT_LONG_VALUE.contains(&x)) {
                         k += 1;
                         Some(if k < rest.len() { rest[k].text.clone() } else { String::new() })
                     } else {
@@ -416,7 +462,11 @@ fn commit_sources(rest: &[Tok]) -> Sources {
                 tc[j + 1..].iter().collect()
             } else {
                 k += 1;
-                if k < rest.len() { rest[k].text.clone() } else { String::new() }
+                if k < rest.len() {
+                    rest[k].text.clone()
+                } else {
+                    String::new()
+                }
             };
             match ch {
                 'm' | 'F' => o.message = true,
@@ -438,7 +488,7 @@ fn commit_sources(rest: &[Tok]) -> Sources {
 fn editor_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(r#"(?:^|[\s;&|(])(?:(?i-u:export)\s+)?(?i-u:GIT_EDITOR|EDITOR|VISUAL)=('[^']*'|"[^"]*"|\S*)|(?i-u:core\.editor)[\s=]+('[^']*'|"[^"]*"|\S*)"#).unwrap()
+        lit_re(r#"(?:^|[\s;&|(])(?:(?i-u:export)\s+)?(?i-u:GIT_EDITOR|EDITOR|VISUAL)=('[^']*'|"[^"]*"|\S*)|(?i-u:core\.editor)[\s=]+('[^']*'|"[^"]*"|\S*)"#)
     })
 }
 
@@ -452,6 +502,7 @@ fn noop_editor(v: &str) -> bool {
     matches!(base, "true" | ":" | "cat")
 }
 
+/// Mirrors `lib/git-alias-scan.js` `setsRealEditor`.
 fn sets_real_editor(raw: &str) -> bool {
     for m in editor_re().captures_iter(raw) {
         let g = m.get(1).map(|x| x.as_str()).or_else(|| m.get(2).map(|x| x.as_str())).unwrap_or("");
@@ -468,6 +519,7 @@ fn sets_real_editor(raw: &str) -> bool {
     false
 }
 
+/// Mirrors `lib/git-alias-scan.js` `readTemplate`.
 fn read_template(ctx: &mut Ctx, args: &[Tok], dir: Option<&str>, explicit: Option<&str>, env: &Env) -> Option<String> {
     let mut p: String = explicit.unwrap_or("").to_string();
     if p.is_empty() {
@@ -488,6 +540,7 @@ fn read_template(ctx: &mut Ctx, args: &[Tok], dir: Option<&str>, explicit: Optio
     read_file_lossy(&abs)
 }
 
+/// Mirrors `lib/git-alias-scan.js` `reusedMessageVerdict`.
 fn reused_message_verdict(ctx: &mut Ctx, args: &[Tok], rest: &[Tok], dir: Option<&str>, env: &Env) -> Option<String> {
     if !ctx.reuse_enabled() {
         return None;
@@ -539,6 +592,8 @@ fn reused_message_verdict(ctx: &mut Ctx, args: &[Tok], rest: &[Tok], dir: Option
 }
 
 /// gitVerdict hook: alias definitions, alias use, reused commit messages.
+///
+/// Mirrors `lib/git-alias-scan.js` `gitVerdict`.
 pub fn alias_git_verdict(ctx: &mut Ctx, args: &[Tok], sub: &str, rest: &[Tok], dir: Option<&str>, depth: usize, env: &Env) -> Option<String> {
     if ctx.alias_enabled() {
         if let Some(def) = git_definition_verdict(ctx, args, Some(sub), rest, depth, dir) {
@@ -561,21 +616,23 @@ pub fn alias_git_verdict(ctx: &mut Ctx, args: &[Tok], sub: &str, rest: &[Tok], d
 
 // ---- shell aliases / functions defined in the same command ---------------------------------------------
 
+/// A shell alias or function defined earlier in the same command text, kept so a later use of it is scanned as the command it expands to.
 #[derive(Clone)]
 pub struct ShellDef {
     is_alias: bool,
     body: String,
 }
 
+/// Mirrors `lib/git-alias-scan.js` `matchingClose`.
 fn matching_close(text: &str, open: usize) -> Option<usize> {
     let b = text.as_bytes();
     let openc = b[open];
     let want = if openc == b'{' { b'}' } else { b')' };
     let mut depth = 0i32;
-    for k in open..b.len() {
-        if b[k] == openc {
+    for (k, &c) in b.iter().enumerate().skip(open) {
+        if c == openc {
             depth += 1;
-        } else if b[k] == want {
+        } else if c == want {
             depth -= 1;
             if depth == 0 {
                 return Some(k);
@@ -585,6 +642,7 @@ fn matching_close(text: &str, open: usize) -> Option<usize> {
     None
 }
 
+/// Mirrors `lib/git-alias-scan.js` `unquote`.
 fn unquote(v: &str) -> String {
     let mut s = v.to_string();
     if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
@@ -596,6 +654,7 @@ fn unquote(v: &str) -> String {
     s
 }
 
+/// Mirrors `lib/git-alias-scan.js` `shellDefs`.
 fn shell_defs(ctx: &mut Ctx) -> std::rc::Rc<HashMap<String, ShellDef>> {
     if let Some(d) = &ctx.shell_defs {
         return d.clone();
@@ -606,16 +665,16 @@ fn shell_defs(ctx: &mut Ctx) -> std::rc::Rc<HashMap<String, ShellDef>> {
     static FN_RE: OnceLock<Regex> = OnceLock::new();
     static FN_PAREN: OnceLock<Regex> = OnceLock::new();
     static FN_KW: OnceLock<Regex> = OnceLock::new();
-    let alias_re = ALIAS_RE.get_or_init(|| Regex::new(r#"(?:^|[\s;&|(])alias[ \t]+([A-Za-z_][A-Za-z0-9_.-]*)=('[^']*'|"(?:[^"\\]|\\.)*"|[^\s;&|]*)"#).unwrap());
-    let fn_re = FN_RE.get_or_init(|| Regex::new(r#"(?:^|[\s;&|('"`]|(?-u:\b)function[ \t]+)[ \t]*([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*(?:\([ \t]*\))?[ \t\n]*([{(])"#).unwrap());
-    let fn_paren = FN_PAREN.get_or_init(|| Regex::new(r"\(\s*\)\s*[{(]$").unwrap());
-    let fn_kw = FN_KW.get_or_init(|| Regex::new(r"(?-u:\b)function[ \t]").unwrap());
+    let alias_re = ALIAS_RE.get_or_init(|| lit_re(r#"(?:^|[\s;&|(])alias[ \t]+([A-Za-z_][A-Za-z0-9_.-]*)=('[^']*'|"(?:[^"\\]|\\.)*"|[^\s;&|]*)"#));
+    let fn_re = FN_RE.get_or_init(|| lit_re(r#"(?:^|[\s;&|('"`]|(?-u:\b)function[ \t]+)[ \t]*([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*(?:\([ \t]*\))?[ \t\n]*([{(])"#));
+    let fn_paren = FN_PAREN.get_or_init(|| lit_re(r"\(\s*\)\s*[{(]$"));
+    let fn_kw = FN_KW.get_or_init(|| lit_re(r"(?-u:\b)function[ \t]"));
     let mut defs: HashMap<String, ShellDef> = HashMap::new();
     for m in alias_re.captures_iter(raw) {
         defs.insert(m[1].to_string(), ShellDef { is_alias: true, body: unquote(&m[2]) });
     }
     for m in fn_re.captures_iter(raw) {
-        let whole = m.get(0).unwrap();
+        let whole = m.get(0).expect("group 0 is the whole match");
         let open = whole.end() - 1;
         if !fn_paren.is_match(whole.as_str()) && !fn_kw.is_match(whole.as_str()) {
             continue;
@@ -631,27 +690,29 @@ fn shell_defs(ctx: &mut Ctx) -> std::rc::Rc<HashMap<String, ShellDef>> {
     rc
 }
 
+/// Mirrors `lib/git-alias-scan.js` `varRef`.
 fn var_ref(n: &str) -> Regex {
-    Regex::new(&format!(r"\$(?:\{{{n}(?-u:\b)|{n}(?-u:\b))")).unwrap()
+    lit_re(&format!(r"\$(?:\{{{n}(?-u:\b)|{n}(?-u:\b))"))
 }
 
+/// Mirrors `lib/git-alias-scan.js` `varIsExecuted`.
 fn var_is_executed(body: &str, name: &str, names: &mut HashSet<String>) -> bool {
     static PIPE_SH: OnceLock<Regex> = OnceLock::new();
     static SHELL_WORD: OnceLock<Regex> = OnceLock::new();
     static DERIVED: OnceLock<Regex> = OnceLock::new();
-    let pipe_sh = PIPE_SH.get_or_init(|| Regex::new(r"\|[ \t]*(?:\S*/)?(?:(?:ba|z|da|k|c)?sh)(?-u:\b)").unwrap());
-    let shell_word = SHELL_WORD.get_or_init(|| Regex::new(r"(?:^|[\s(])(?:eval|exec|source|\.|(?:ba|z|da|k|c)?sh|xargs|env|command|builtin|nohup|sudo|time)(?:\s|$)").unwrap());
-    let derived = DERIVED.get_or_init(|| Regex::new(r"(?:^|[\s;&|({])(?:local[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=([^;\n]*)").unwrap());
+    let pipe_sh = PIPE_SH.get_or_init(|| lit_re(r"\|[ \t]*(?:\S*/)?(?:(?:ba|z|da|k|c)?sh)(?-u:\b)"));
+    let shell_word =
+        SHELL_WORD.get_or_init(|| lit_re(r"(?:^|[\s(])(?:eval|exec|source|\.|(?:ba|z|da|k|c)?sh|xargs|env|command|builtin|nohup|sudo|time)(?:\s|$)"));
+    let derived = DERIVED.get_or_init(|| lit_re(r"(?:^|[\s;&|({])(?:local[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=([^;\n]*)"));
     let pipe_to_shell = pipe_sh.is_match(body);
-    let cmd_pos = Regex::new(&format!(
+    let cmd_pos = lit_re(&format!(
         r#"(?:^|[;&|(\n{{]|(?-u:\b)(?:then|do|else)(?-u:\b))[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*"?\$(?:\{{{name}\}}(?:[^A-Za-z0-9_]|$)|{name}(?-u:\b))"#
-    ))
-    .unwrap();
+    ));
     if cmd_pos.is_match(body) || pipe_to_shell {
         return true;
     }
     let rf = var_ref(name);
-    for seg in body.split(|c| matches!(c, ';' | '&' | '|' | '\n')) {
+    for seg in body.split([';', '&', '|', '\n']) {
         if rf.is_match(seg) && shell_word.is_match(seg) {
             return true;
         }
@@ -669,33 +730,34 @@ fn var_is_executed(body: &str, name: &str, names: &mut HashSet<String>) -> bool 
     false
 }
 
+/// Mirrors `lib/git-alias-scan.js` `neutraliseDataArgAssignments`.
 fn neutralise_data_arg_assignments(body: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        Regex::new(r#"(^|[\s;&|({])((?:(?:local|declare|typeset|readonly|export)[ \t]+(?:-[A-Za-z]+[ \t]+)?)?([A-Za-z_][A-Za-z0-9_]*)=)("\$(?:[1-9]|\{[1-9]\})"|\$(?:[1-9]|\{[1-9]\}))"#).unwrap()
+        lit_re(r#"(^|[\s;&|({])((?:(?:local|declare|typeset|readonly|export)[ \t]+(?:-[A-Za-z]+[ \t]+)?)?([A-Za-z_][A-Za-z0-9_]*)=)("\$(?:[1-9]|\{[1-9]\})"|\$(?:[1-9]|\{[1-9]\}))"#)
     });
     let mut out = String::new();
     let mut last = 0usize;
     let mut pos = 0usize;
     while pos <= body.len() {
         let Some(c) = re.captures_at(body, pos) else { break };
-        let whole = c.get(0).unwrap();
+        let whole = c.get(0).expect("group 0 is the whole match");
         let next = body[whole.end()..].chars().next();
-        let ok = next.map_or(true, |ch| is_js_space(ch) || matches!(ch, ';' | '&' | '|' | ')' | '}'));
+        let ok = next.is_none_or(|ch| is_js_space(ch) || matches!(ch, ';' | '&' | '|' | ')' | '}'));
         if !ok {
             // lookahead failed: JS keeps scanning from the next start position
             pos = whole.start() + body[whole.start()..].chars().next().map_or(1, |ch| ch.len_utf8());
             continue;
         }
-        let name = c.get(3).unwrap().as_str().to_string();
+        let name = c.get(3).expect("group 3 is mandatory in the pattern").as_str().to_string();
         out.push_str(&body[last..whole.start()]);
         let mut names = HashSet::new();
         names.insert(name.clone());
         if var_is_executed(body, &name, &mut names) {
             out.push_str(whole.as_str());
         } else {
-            out.push_str(c.get(1).unwrap().as_str());
-            out.push_str(c.get(2).unwrap().as_str());
+            out.push_str(c.get(1).map_or("", |g| g.as_str()));
+            out.push_str(c.get(2).expect("group 2 is mandatory in the pattern").as_str());
             out.push_str("\"\"");
         }
         last = whole.end();
@@ -708,6 +770,7 @@ fn neutralise_data_arg_assignments(body: &str) -> String {
     out
 }
 
+/// Mirrors `lib/git-alias-scan.js` `wrapperExpansion`.
 fn wrapper_expansion(def: &ShellDef, args: &[Tok]) -> String {
     let words = shell_words(args);
     if def.is_alias {
@@ -715,8 +778,8 @@ fn wrapper_expansion(def: &ShellDef, args: &[Tok]) -> String {
     }
     static ALL: OnceLock<Regex> = OnceLock::new();
     static NTH: OnceLock<Regex> = OnceLock::new();
-    let all = ALL.get_or_init(|| Regex::new(r#""\$[@*]"|\$[@*]|"\$\{[@*]\}"|\$\{[@*]\}"#).unwrap());
-    let nth = NTH.get_or_init(|| Regex::new(r#""?\$\{?([1-9])\}?"?"#).unwrap());
+    let all = ALL.get_or_init(|| lit_re(r#""\$[@*]"|\$[@*]|"\$\{[@*]\}"|\$\{[@*]\}"#));
+    let nth = NTH.get_or_init(|| lit_re(r#""?\$\{?([1-9])\}?"?"#));
     let b = neutralise_data_arg_assignments(&def.body);
     let r1 = all.replace_all(&b, |_: &regex::Captures| words.clone()).to_string();
     nth.replace_all(&r1, |c: &regex::Captures| {
@@ -728,7 +791,9 @@ fn wrapper_expansion(def: &ShellDef, args: &[Tok]) -> String {
     .to_string()
 }
 
-/// Segment hook: shell `alias name='<body>'`, GIT_CONFIG_VALUE_<n>=<body>, and calls to a wrapper defined earlier.
+/// Segment hook: shell `alias name='<body>'`, `GIT_CONFIG_VALUE_<n>=<body>`, and calls to a wrapper defined earlier.
+///
+/// Mirrors `lib/git-alias-scan.js` `shellDefinitionVerdict`.
 pub fn shell_definition_verdict(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, depth: usize, last_cd: Option<&str>) -> Option<String> {
     if !ctx.alias_enabled() {
         return None;
@@ -756,7 +821,7 @@ pub fn shell_definition_verdict(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, depth: u
         let Some(eq) = t.text.find('=') else { continue };
         let name = &t.text[..eq];
         let val = &t.text[eq + 1..];
-        let ok_name = name.strip_prefix("GIT_CONFIG_VALUE_").map_or(false, |d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
+        let ok_name = name.strip_prefix("GIT_CONFIG_VALUE_").is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
         if !ok_name || val.is_empty() {
             continue;
         }
@@ -779,6 +844,8 @@ pub fn shell_definition_verdict(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, depth: u
 }
 
 /// PostToolUse audit: does `git <sub>` resolve (through aliases) to a commit-creating verb, or to a `!shell` alias?
+///
+/// Mirrors `lib/git-alias-scan.js` `aliasCreatesCommit`.
 pub fn alias_creates_commit(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: &[Tok], dir: Option<&str>) -> bool {
     let env = Env::new();
     match expand_alias(ctx, args, sub, rest, dir, &env) {

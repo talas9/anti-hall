@@ -65,7 +65,7 @@ fn wait_for(mut f: impl FnMut() -> bool) -> bool {
 }
 
 fn alive(pid: u32) -> bool {
-    Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+    Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 #[test]
@@ -73,7 +73,12 @@ fn cold_start_denies_and_stays_resident() {
     let e = Env::new("cold");
     let (out, code) = e.hook("0.1.0", DENY_IN);
     // first call may race the cold start; a retry must be served by the daemon
-    let out = if out.is_empty() { assert!(wait_for(|| e.pid().is_some())); e.hook("0.1.0", DENY_IN).0 } else { out };
+    let out = if out.is_empty() {
+        assert!(wait_for(|| e.pid().is_some()));
+        e.hook("0.1.0", DENY_IN).0
+    } else {
+        out
+    };
     assert_eq!(code, 0);
     assert!(out.contains(r#""permissionDecision":"deny""#), "{out}");
     assert!(e.pid().is_some());
@@ -101,7 +106,8 @@ fn concurrent_cold_starts_spawn_one_daemon() {
     // pgrep matches every daemon of every parallel test, so count only this env's lock holder instead
     let lock = e.dir.join("eng").join("e.sock.lock");
     let holders = Command::new("lsof").arg(&lock).output().unwrap();
-    let pids: std::collections::HashSet<_> = String::from_utf8_lossy(&holders.stdout).lines().skip(1).filter_map(|l| l.split_whitespace().nth(1).map(String::from)).collect();
+    let pids: std::collections::HashSet<_> =
+        String::from_utf8_lossy(&holders.stdout).lines().skip(1).filter_map(|l| l.split_whitespace().nth(1).map(String::from)).collect();
     assert_eq!(pids.len(), 1, "lock holders: {pids:?} (all engine daemons: {mine:?})");
 }
 

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 const MAX_SOCK: usize = 100; // headroom under 104 (sun_path incl. NUL)
 
+/// Real uid of this process.
 pub fn uid() -> u32 {
     crate::limits::uid()
 }
@@ -18,6 +19,7 @@ pub fn dir() -> PathBuf {
     home.join(".anti-hall").join("ah-engine")
 }
 
+/// The daemon socket path: inside the state dir when it fits, else a private per-user directory under the temp dir.
 pub fn socket() -> PathBuf {
     let d = dir();
     let primary = d.join("e.sock");
@@ -43,6 +45,7 @@ pub fn lock_for(sock: &std::path::Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// The rules file: `AH_ENGINE_RULES` or `rules.json` in the state dir.
 pub fn rules_file() -> PathBuf {
     std::env::var_os("AH_ENGINE_RULES").map(PathBuf::from).unwrap_or_else(|| dir().join("rules.json"))
 }

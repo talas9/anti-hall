@@ -1,4 +1,4 @@
-# anti-hall engine — decision record
+# ah-engine decision record
 
 **Version: 1.25** (2026-10-04). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
 

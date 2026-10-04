@@ -9,11 +9,13 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// File name of the event log inside the state directory.
 pub const LOG: &str = "ah-engine.log";
 const LOG_CAP: u64 = 64 * 1024;
 /// Event kinds that count toward the crash-loop threshold.
 const CRASHY: &[&str] = &["crash", "panic", "start_fail", "watchdog", "rss"];
 
+/// Milliseconds since the Unix epoch (0 if the clock is before it).
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -28,11 +30,16 @@ fn clean(s: &str) -> String {
 
 // ---- event log ---------------------------------------------------------------------------------
 
+/// One line of the event log.
 #[derive(Debug, Clone)]
 pub struct Event {
+    /// When it happened (ms since the epoch).
     pub ts: u64,
+    /// Event kind, e.g. `start`, `watchdog`.
     pub kind: String,
+    /// Stable error code, `-` when not applicable.
     pub code: String,
+    /// Free text, newlines removed.
     pub detail: String,
 }
 
@@ -50,6 +57,7 @@ pub fn log_event(kind: &str, code: &str, detail: &str) {
     }
 }
 
+/// Every line of the event log, oldest first.
 pub fn events() -> Vec<Event> {
     let Ok(t) = std::fs::read_to_string(file(LOG)) else { return vec![] };
     t.lines()
@@ -67,6 +75,7 @@ fn count_recent(kinds: &[&str], window: Duration) -> usize {
 
 // ---- classification ----------------------------------------------------------------------------
 
+/// Who can fix a failure.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Class {
     /// Caused by the machine (disk, permissions, path length, OS kill): the user can fix it.
@@ -107,6 +116,7 @@ pub fn clear_env_failure() {
 
 // ---- pids and the run marker ---------------------------------------------------------------------
 
+/// True when a process with this pid exists (signal 0).
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -126,10 +136,12 @@ pub fn pid_is_engine(pid: u32) -> bool {
     !exe.is_empty() && cmd.contains(&exe) && cmd.contains(" serve")
 }
 
+/// Record that a daemon is running, so a later start can tell a crash from a clean exit.
 pub fn write_marker() {
     let _ = std::fs::write(file("daemon.run"), std::process::id().to_string());
 }
 
+/// Remove the run marker on a clean exit.
 pub fn clear_marker() {
     let _ = std::fs::remove_file(file("daemon.run"));
 }
@@ -181,13 +193,9 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
     }
     halt("crashloop.until", cfg.crash_cooldown);
     // a crash loop caused by the environment keeps that cause; otherwise it is a permanent failure
-    let last_env = events().iter().rev().find(|e| CRASHY.contains(&e.kind.as_str())).map(|e| classify(&e.code).0 == Class::Env).unwrap_or(false);
-    let (kind, code, reason) = if last_env {
-        let e = events().into_iter().rev().find(|e| CRASHY.contains(&e.kind.as_str())).unwrap();
-        ("crashloop".to_string(), e.code, format!("daemon died {n} times in {} s", cfg.crash_window.as_secs()))
-    } else {
-        ("crashloop".to_string(), "crashloop".to_string(), format!("daemon died {n} times in {} s", cfg.crash_window.as_secs()))
-    };
+    let env_code = events().into_iter().rev().find(|e| CRASHY.contains(&e.kind.as_str())).filter(|e| classify(&e.code).0 == Class::Env).map(|e| e.code);
+    let reason = format!("daemon died {n} times in {} s", cfg.crash_window.as_secs());
+    let (kind, code) = ("crashloop".to_string(), env_code.unwrap_or_else(|| "crashloop".to_string()));
     log_event("crashloop", &code, &reason);
     record_failure(&kind, &code, &reason);
     true
@@ -195,6 +203,7 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
 
 // ---- client circuit breaker ----------------------------------------------------------------------
 
+/// Time left until the client circuit breaker closes, if it is open.
 pub fn breaker_remaining() -> Option<Duration> {
     halted("breaker.until")
 }
@@ -298,7 +307,7 @@ fn prune_advised(dir: &std::path::Path) {
         return;
     }
     for e in all {
-        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(false, |d| d > Duration::from_secs(2 * 86400));
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > Duration::from_secs(2 * 86400));
         if old {
             let _ = std::fs::remove_file(e.path());
         }
@@ -354,7 +363,12 @@ mod tests {
     fn merge_into_each_output_shape() {
         let m = merge_advisory("PreToolUse", "", "ADV").unwrap();
         assert!(m.contains(r#""additionalContext":"ADV""#) && m.contains(r#""hookEventName":"PreToolUse""#));
-        let m = merge_advisory("PreToolUse", r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"r"}}"#, "ADV").unwrap();
+        let m = merge_advisory(
+            "PreToolUse",
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"r"}}"#,
+            "ADV",
+        )
+        .unwrap();
         assert!(m.contains("permissionDecision") && m.contains("ADV"));
         let m = merge_advisory("Stop", r#"{"systemMessage":"old"}"#, "ADV").unwrap();
         assert!(m.contains("old\\nADV"));

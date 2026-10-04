@@ -4,7 +4,7 @@
 //   node run-git.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks --corpus c.jsonl
 //        [--mode oneshot|daemon|both] [--limit N] [--conc 8] [--show 15] [--out mismatches.json]
 // Corpus lines: {"command": "...", "cwd": "/optional/dir", "source": "..."}.
-// Node side runs `git-guard.js`; engine side runs `engine gitguard` (oneshot: the logic in-process) and/or
+// Node side runs `git-guard.js`; engine side runs `ah-engine check git` (oneshot: the logic in-process) and/or
 // `engine hook` against a daemon whose rules file enables `check = "git"` (daemon: the whole path incl. the
 // framed reply and exit code). Everything runs under a temp HOME; nothing touches the real home.
 const fs = require('fs'), os = require('os'), path = require('path'), cp = require('child_process');
@@ -54,7 +54,7 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
     stats.n++;
     if (n.code === 2) stats.node_block++; else if (n.out) stats.node_adv++;
     const miss = {};
-    if (MODE !== 'daemon') { const e = norm(await run(ENGINE, ['gitguard'], p, oenv, cwd)); if (e.out === 'AHFALLBACK') { stats.deferred++; stats.oneshot++; } else if (same(n, e)) stats.oneshot++; else miss.oneshot = e; }
+    if (MODE !== 'daemon') { const e = norm(await run(ENGINE, ['check', 'git'], p, oenv, cwd)); if (e.out === 'AHFALLBACK') { stats.deferred++; stats.oneshot++; } else if (same(n, e)) stats.oneshot++; else miss.oneshot = e; }
     if (MODE !== 'oneshot') { const e = norm(await run(ENGINE, ['hook'], p, denv, cwd)); if (same(n, e)) stats.daemon++; else miss.daemon = e; }
     if (Object.keys(miss).length && mism.length < 5000) mism.push({ command: c.command.slice(0, 600), len: c.command.length, cwd: c.cwd, source: c.source, node: n, ...miss });
   });

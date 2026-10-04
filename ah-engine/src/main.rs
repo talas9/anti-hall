@@ -17,11 +17,15 @@ fn main() {
         },
         Some("status") => println!("{}", client::status()),
         Some("reset") => health::reset(),
-        Some("proj") => match client::proj(args.get(2).map(String::as_str).unwrap_or(""), args.get(3).map(String::as_str).unwrap_or(""), &args[4.min(args.len())..].join(" ")) {
+        Some("proj") => match client::proj(
+            args.get(2).map(String::as_str).unwrap_or(""),
+            args.get(3).map(String::as_str).unwrap_or(""),
+            &args[4.min(args.len())..].join(" "),
+        ) {
             Some(r) => println!("{r}"),
             None => std::process::exit(1),
         },
-        Some("gitguard") => std::process::exit(ah_engine::gitguard::cli_main()),
+        Some("check") => std::process::exit(ah_engine::checks::cli_main(args.get(2).map(String::as_str).unwrap_or(""))),
         Some("version") => println!("{}", ah_engine::version()),
         _ => eprintln!("usage: engine serve|hook [--fallback <hook.js>]|ctl <ping|reload|stop|status>|status|reset|proj <cwd> <verb> [args]|version"),
     }

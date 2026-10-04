@@ -1,5 +1,6 @@
 //! Resource limits and process-level safety: token buckets, rlimit/nice, RSS and CPU readings,
 //! peer-uid check, private-directory check.
+use crate::error::DirError;
 use std::collections::HashMap;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
@@ -7,6 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Instant;
 
+/// Real uid of this process.
 pub fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
@@ -20,6 +22,7 @@ pub struct Buckets {
 }
 
 impl Buckets {
+    /// A bucket map allowing `rps` per second with bursts up to `burst`.
     pub fn new(rps: f64, burst: f64) -> Buckets {
         Buckets { map: HashMap::new(), rps, burst: burst.max(1.0), cap: 4096 }
     }
@@ -27,6 +30,7 @@ impl Buckets {
     pub fn allow(&mut self, key: &str) -> bool {
         self.allow_at(key, Instant::now())
     }
+    /// `allow` at an explicit time (tests drive the clock).
     pub fn allow_at(&mut self, key: &str, now: Instant) -> bool {
         if self.rps <= 0.0 {
             return true; // 0 = unlimited
@@ -85,7 +89,7 @@ pub fn rss_kb() -> u64 {
     out.ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(0)
 }
 
-/// Cap the data segment. Returns a status word for `status`: "ok:<mb>", "off", or "err:<errno>".
+/// Cap the data segment. Returns a status word for `status`: `ok:<mb>`, `off`, or `err:<errno>`.
 /// NOTE: macOS accepts RLIMIT_DATA but the kernel may not enforce it, so the periodic RSS check is the
 /// real guard there; the status string tells the truth about whether the call succeeded, not enforcement.
 pub fn apply_mem_limit(mb: u64) -> String {
@@ -104,6 +108,7 @@ pub fn apply_mem_limit(mb: u64) -> String {
     format!("ok:{mb}")
 }
 
+/// Lower this process's priority by `n`.
 pub fn apply_nice(n: i32) {
     if n > 0 {
         unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, n) };
@@ -133,16 +138,16 @@ pub fn peer_allowed(s: &UnixStream, expect: u32) -> bool {
 }
 
 /// Make `dir` a private directory owned by us: create 0700, or verify an existing one is a real
-/// directory (not a symlink) owned by our uid, and tighten it to 0700. Err = (error code, detail).
-pub fn ensure_private_dir(dir: &Path) -> Result<(), (String, String)> {
-    let os = |e: std::io::Error| (format!("os{}", e.raw_os_error().unwrap_or(0)), format!("{}: {e}", dir.display()));
+/// directory (not a symlink) owned by our uid, and tighten it to 0700.
+pub fn ensure_private_dir(dir: &Path) -> Result<(), DirError> {
+    let os = |source: std::io::Error| DirError::Io { path: dir.to_path_buf(), source };
     match std::fs::symlink_metadata(dir) {
         Ok(m) => {
             if !m.file_type().is_dir() {
-                return Err(("unsafe_dir".into(), format!("{} is not a plain directory", dir.display())));
+                return Err(DirError::NotADirectory(dir.to_path_buf()));
             }
             if m.uid() != uid() {
-                return Err(("unsafe_dir".into(), format!("{} is owned by uid {}, not {}", dir.display(), m.uid(), uid())));
+                return Err(DirError::WrongOwner { path: dir.to_path_buf(), found: m.uid(), expected: uid() });
             }
             if m.mode() & 0o777 != 0o700 {
                 std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(os)?;
@@ -203,9 +208,9 @@ mod tests {
         ensure_private_dir(&d).unwrap();
         assert_eq!(std::fs::metadata(&d).unwrap().mode() & 0o777, 0o700);
         std::os::unix::fs::symlink(&d, base.join("link")).unwrap();
-        assert_eq!(ensure_private_dir(&base.join("link")).unwrap_err().0, "unsafe_dir");
+        assert_eq!(ensure_private_dir(&base.join("link")).unwrap_err().code(), "unsafe_dir");
         std::fs::write(base.join("f"), "x").unwrap();
-        assert_eq!(ensure_private_dir(&base.join("f")).unwrap_err().0, "unsafe_dir");
+        assert_eq!(ensure_private_dir(&base.join("f")).unwrap_err().code(), "unsafe_dir");
         let _ = std::fs::remove_dir_all(&base);
     }
 

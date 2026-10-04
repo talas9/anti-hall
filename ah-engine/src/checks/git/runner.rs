@@ -1,23 +1,35 @@
 //! xargs / find -exec / parallel / stdin-script handling (placeholders, appended input words).
 use super::gitcmd::*;
 use super::payloads::*;
-use super::scan::{git_verdict, scan_command};
-use super::shell::*;
+use super::segments::{git_verdict, scan_command};
+use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
+use crate::checks::lit_re;
 use regex::Regex;
 
+/// A placeholder replacement of a runner: a literal string (`{}`) or a regular expression (`-I`/`--replace` forms).
 #[derive(Clone)]
 pub enum Repl {
+    /// A literal placeholder.
     S(String),
+    /// A pattern placeholder.
     R(Regex),
 }
 
+/// Mirrors `git-guard.js` `XARGS_SHORT_REQ`.
 const XARGS_SHORT_REQ: &str = "adEILnPsJRS";
+/// Mirrors `git-guard.js` `XARGS_SHORT_OPT`.
 const XARGS_SHORT_OPT: &str = "eil";
+/// Mirrors `git-guard.js` `XARGS_LONG_REQ`.
 const XARGS_LONG_REQ: &[&str] = &["arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var"];
-const XARGS_LONG_OTHER: &[&str] = &["null", "eof", "replace", "max-lines", "interactive", "no-run-if-empty", "verbose", "exit", "open-tty", "show-limits", "help", "version"];
+/// Mirrors `git-guard.js` `XARGS_LONG_OTHER`.
+const XARGS_LONG_OTHER: &[&str] =
+    &["null", "eof", "replace", "max-lines", "interactive", "no-run-if-empty", "verbose", "exit", "open-tty", "show-limits", "help", "version"];
 
+/// The command `xargs` will run (its tokens after its own options) and the placeholders it defines.
+///
+/// Mirrors `git-guard.js` `xargsCommandTokens`.
 pub fn xargs_command_tokens(args: &[Tok]) -> (Vec<Tok>, Vec<Repl>) {
     let mut i = 0usize;
     let mut repls: Vec<Repl> = Vec::new();
@@ -74,11 +86,17 @@ pub fn xargs_command_tokens(args: &[Tok]) -> (Vec<Tok>, Vec<Repl>) {
     (args[i.min(args.len())..].to_vec(), repls)
 }
 
+/// Verdict for `xargs git ...`: the tokens it runs are scanned as a git command, with appended input words treated as unknown arguments.
+///
+/// Mirrors `git-guard.js` `xargsGitVerdict`.
 pub fn xargs_git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, cwd: Option<&str>, use_jev: bool) -> Option<String> {
     let (tokens, repls) = xargs_command_tokens(&ev.args);
     runner_verdict(ctx, &tokens, "xargs", d, cmd, hb, cwd, use_jev, &repls)
 }
 
+/// Verdict for `find ... -exec git ... {} \;`.
+///
+/// Mirrors `git-guard.js` `findExecVerdict`.
 pub fn find_exec_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, cwd: Option<&str>, use_jev: bool) -> Option<String> {
     let args = &ev.args;
     let mut i = 0usize;
@@ -104,6 +122,9 @@ fn is_parallel_sep(s: &str) -> bool {
     matches!(s, ":::" | "::::" | ":::+" | "::::+")
 }
 
+/// Verdict for GNU `parallel git ... ::: args`.
+///
+/// Mirrors `git-guard.js` `parallelVerdict`.
 pub fn parallel_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, cwd: Option<&str>, use_jev: bool) -> Option<String> {
     let args = &ev.args;
     let s = args.iter().position(|t| is_parallel_sep(&t.text));
@@ -115,7 +136,7 @@ pub fn parallel_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, cw
         None => Vec::new(),
         Some(p) => args[p..].iter().filter(|t| !is_parallel_sep(&t.text)).cloned().collect(),
     };
-    let mut repls: Vec<Repl> = vec![Repl::R(Regex::new(r"\{[^\s{}]*\}").unwrap()), Repl::S("{=".into())];
+    let mut repls: Vec<Repl> = vec![Repl::R(lit_re(r"\{[^\s{}]*\}")), Repl::S("{=".into())];
     for k in 0..head.len() {
         let w = head[k].text.as_str();
         if w == "-I" && k + 1 < head.len() {
@@ -167,6 +188,7 @@ pub fn parallel_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, cw
     None
 }
 
+/// Mirrors `git-guard.js` `hasRepl`.
 fn has_repl(w: &str, repls: &[Repl]) -> bool {
     repls.iter().any(|r| match r {
         Repl::S(s) => w.contains(s.as_str()),
@@ -174,6 +196,9 @@ fn has_repl(w: &str, repls: &[Repl]) -> bool {
     })
 }
 
+/// Block when a runner placeholder stands where the git subcommand or a dangerous option would be, since its value cannot be checked.
+///
+/// Mirrors `git-guard.js` `placeholderVerdict`.
 pub fn placeholder_verdict(ev: &Ev, repls: &[Repl]) -> Option<String> {
     if repls.is_empty() {
         return None;
@@ -183,9 +208,14 @@ pub fn placeholder_verdict(ev: &Ev, repls: &[Repl]) -> Option<String> {
         let (sub, rest) = git_subcommand(&ev.args);
         let n = ev.args.len() as isize - rest.len() as isize;
         // JS: `n >= 0 && (!rest.length || rest[0] === ev.args[n])` (object identity)
-        let same_first = n >= 0 && (rest.is_empty() || ((n as usize) < ev.args.len() && rest[0].text == ev.args[n as usize].text && rest[0].raw == ev.args[n as usize].raw && rest[0].quoted_only == ev.args[n as usize].quoted_only));
+        let same_first = n >= 0
+            && (rest.is_empty()
+                || ((n as usize) < ev.args.len()
+                    && rest[0].text == ev.args[n as usize].text
+                    && rest[0].raw == ev.args[n as usize].raw
+                    && rest[0].quoted_only == ev.args[n as usize].quoted_only));
         let pre: &[Tok] = if same_first { &ev.args[..n as usize] } else { &ev.args[..] };
-        unknown = sub.as_deref().map_or(false, |s| has_repl(s, repls)) || pre.iter().any(|t| has_repl(&t.text, repls));
+        unknown = sub.as_deref().is_some_and(|s| has_repl(s, repls)) || pre.iter().any(|t| has_repl(&t.text, repls));
     }
     if !unknown || !(is_force_push(&ev.args) || is_delete_ref_push(&ev.args)) {
         return None;
@@ -197,6 +227,7 @@ pub fn placeholder_verdict(ev: &Ev, repls: &[Repl]) -> Option<String> {
     ))
 }
 
+/// Mirrors `git-guard.js` `forceishAnywhere`.
 fn forceish_anywhere(cmd: &str) -> bool {
     let sep = |c: char| is_js_space(c) || "'\"`;|&()<>\\".contains(c);
     let mut texts: Vec<String> = cmd.split(sep).map(|s| s.to_string()).collect();
@@ -220,6 +251,7 @@ fn is_bare_redirect(w: &str) -> bool {
     matches!(t, "<" | "<<" | "<<<" | ">" | ">>" | "&>" | "&>>" | ">&" | "<&" | "<>" | ">|")
 }
 
+/// Mirrors `git-guard.js` `dropRedirects`.
 fn drop_redirects(args: &[Tok]) -> Vec<Tok> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -238,12 +270,15 @@ fn drop_redirects(args: &[Tok]) -> Vec<Tok> {
     out
 }
 
+/// Verdict for a runner whose script arrives on stdin (`xargs sh -c`, `... | bash`).
+///
+/// Mirrors `git-guard.js` `stdinScriptVerdict`.
 pub fn stdin_script_verdict(ctx: &mut Ctx, cmd: &str, d: usize, cwd: Option<&str>) -> Option<String> {
     if d >= 3 {
         return None;
     }
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#"'([^']*)'|"((?:[^"\\]|\\(?s:.))*)""#).unwrap());
+    let re = RE.get_or_init(|| lit_re(r#"'([^']*)'|"((?:[^"\\]|\\(?s:.))*)""#));
     let mut texts: Vec<String> = Vec::new();
     for m in re.captures_iter(cmd) {
         texts.push(m.get(1).or_else(|| m.get(2)).map(|x| x.as_str().to_string()).unwrap_or_default());
@@ -264,6 +299,7 @@ pub fn stdin_script_verdict(ctx: &mut Ctx, cmd: &str, d: usize, cwd: Option<&str
     None
 }
 
+/// Mirrors `git-guard.js` `shellScriptIsInput`.
 fn shell_script_is_input(sh_tokens: &[Tok], repls: &[Repl]) -> bool {
     let Some(ev) = effective_verb(sh_tokens) else { return false };
     if !is_shell_verb(&ev.verb) {
@@ -289,16 +325,30 @@ fn shell_script_is_input(sh_tokens: &[Tok], repls: &[Repl]) -> bool {
         };
     }
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#"\$\{?[0-9@*]\}?|(?-u:\b)(?:eval|exec)(?-u:\b)|["'\s;]"#).unwrap());
+    let re = RE.get_or_init(|| lit_re(r#"\$\{?[0-9@*]\}?|(?-u:\b)(?:eval|exec)(?-u:\b)|["'\s;]"#));
     re.replace_all(&script, "").is_empty()
 }
 
+/// True when the script a shell runs is made of runner input rather than a fixed string.
 pub fn shell_script_is_input_pub(sh: &[Tok], repls: &[Repl]) -> bool {
     shell_script_is_input(sh, repls)
 }
 
+/// Dispatch a runner command (`xargs`, `find`, `parallel`) to its verdict function.
+///
+/// Mirrors `git-guard.js` `runnerVerdict`.
 #[allow(clippy::too_many_arguments)]
-pub fn runner_verdict(ctx: &mut Ctx, cmd_tokens: &[Tok], runner: &str, d: usize, cmd: &str, hb: &Hb, cwd: Option<&str>, use_jev: bool, repls: &[Repl]) -> Option<String> {
+pub fn runner_verdict(
+    ctx: &mut Ctx,
+    cmd_tokens: &[Tok],
+    runner: &str,
+    d: usize,
+    cmd: &str,
+    hb: &Hb,
+    cwd: Option<&str>,
+    use_jev: bool,
+    repls: &[Repl],
+) -> Option<String> {
     // `xargs xargs xargs ...` recurses once per word; JS overflows its stack (and then allows). Bound it and defer to Node.
     if ctx.rec > 1500 {
         ctx.overflow = true;
@@ -315,6 +365,9 @@ pub fn runner_verdict(ctx: &mut Ctx, cmd_tokens: &[Tok], runner: &str, d: usize,
     r
 }
 
+// Eight parameters because the Node `runnerVerdict` takes the same eight; keeping the shapes identical keeps the port auditable.
+/// Mirrors `git-guard.js` `runnerVerdictIn`.
+#[allow(clippy::too_many_arguments)]
 fn runner_verdict_in(ctx: &mut Ctx, cmd_tokens: &[Tok], runner: &str, d: usize, cmd: &str, hb: &Hb, cwd: Option<&str>, use_jev: bool) -> Option<String> {
     if cmd_tokens.is_empty() {
         return None;

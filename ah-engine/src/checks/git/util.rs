@@ -1,6 +1,6 @@
 //! Small helpers: message builder, ASCII case-insensitive matching, Node-compatible path functions,
 //! bounded child processes, and the settings / skip.json reads the Node guard performs.
-use super::shell::js_trim;
+use super::tokenize::js_trim;
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -8,17 +8,26 @@ use std::time::{Duration, Instant};
 
 /// lib/block-message.js `blockMessage({guard:'git-guard', ...})`.
 pub struct Msg<'a> {
+    /// What was blocked.
     pub what: &'a str,
+    /// Why it is blocked.
     pub why: &'a str,
+    /// What to do instead.
     pub instead: &'a str,
+    /// What is allowed here, if any.
     pub allowed: &'a str,
+    /// The override command, if the guard has one.
     pub override_: &'a str,
 }
 
+/// Mirrors `lib/block-message.js` `clean`.
 fn clean(s: &str) -> String {
-    s.split(super::shell::is_js_space).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
+    s.split(super::tokenize::is_js_space).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
+/// Render a block message in the guard's fixed layout (what, why, do instead, allowed, override).
+///
+/// Mirrors `git-guard.js` `gm`.
 pub fn gm(m: Msg) -> String {
     let mut lines = vec![format!("\u{26d4} anti-hall \u{b7} git-guard: {}", clean(m.what))];
     if !m.why.is_empty() {
@@ -36,10 +45,12 @@ pub fn gm(m: Msg) -> String {
     lines.join("\n")
 }
 
+/// A block message with no override line.
 pub fn msg(what: &str, why: &str, instead: &str) -> String {
     gm(Msg { what, why, instead, allowed: "", override_: "" })
 }
 
+/// A block message with an override line.
 pub fn msg_o(what: &str, why: &str, instead: &str, override_: &str) -> String {
     gm(Msg { what, why, instead, allowed: "", override_ })
 }
@@ -49,17 +60,19 @@ pub fn ci_contains(hay: &str, needle: &str) -> bool {
     hay.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
 }
 
+/// ASCII case-insensitive prefix test on a char slice at an offset.
 pub fn ci_starts_with(hay: &[char], at: usize, needle: &str) -> bool {
     let nd: Vec<char> = needle.chars().collect();
     if at + nd.len() > hay.len() {
         return false;
     }
-    nd.iter().enumerate().all(|(k, &c)| hay[at + k].to_ascii_lowercase() == c.to_ascii_lowercase())
+    nd.iter().enumerate().all(|(k, &c)| hay[at + k].eq_ignore_ascii_case(&c))
 }
 
 // ---------------------------------------------------------------------------------------------------
 // Node `path` (posix) functions
 
+/// Lexical normalization like Node `path.posix.normalize`.
 pub fn posix_normalize(p: &str) -> String {
     if p.is_empty() {
         return ".".into();
@@ -71,7 +84,7 @@ pub fn posix_normalize(p: &str) -> String {
         match seg {
             "" | "." => {}
             ".." => {
-                if !out.is_empty() && *out.last().unwrap() != ".." {
+                if out.last().is_some_and(|l| *l != "..") {
                     out.pop();
                 } else if !is_abs {
                     out.push("..");
@@ -97,6 +110,7 @@ pub fn posix_normalize(p: &str) -> String {
     }
 }
 
+/// Like Node `path.posix.dirname`.
 pub fn posix_dirname(p: &str) -> String {
     if p.is_empty() {
         return ".".into();
@@ -126,6 +140,7 @@ pub fn posix_dirname(p: &str) -> String {
     bytes[..end as usize].iter().collect()
 }
 
+/// Like Node `path.posix.basename`.
 pub fn posix_basename(p: &str) -> String {
     let t = p.trim_end_matches('/');
     t.rsplit('/').next().unwrap_or("").to_string()
@@ -157,11 +172,18 @@ pub fn resolve(base: &str, rel: &str, cwd: &str) -> String {
     }
 }
 
+/// Like Node `path.posix.join`.
 pub fn path_join(a: &str, b: &str) -> String {
     if a.is_empty() && b.is_empty() {
         return ".".into();
     }
-    let j = if a.is_empty() { b.to_string() } else if b.is_empty() { a.to_string() } else { format!("{a}/{b}") };
+    let j = if a.is_empty() {
+        b.to_string()
+    } else if b.is_empty() {
+        a.to_string()
+    } else {
+        format!("{a}/{b}")
+    };
     posix_normalize(&j)
 }
 
@@ -208,8 +230,11 @@ pub fn run_capture(prog: &str, args: &[String], cwd: Option<&str>, env: &HashMap
 // ---------------------------------------------------------------------------------------------------
 // settings + skip.json (read per call; tiny files)
 
+/// Process environment plus home, read once per request; every switch the Node guard consults resolves through it.
 pub struct Settings {
+    /// The home directory (`HOME`, else `USERPROFILE`).
     pub home: String,
+    /// Snapshot of the environment.
     pub env: HashMap<String, String>,
 }
 
@@ -222,6 +247,7 @@ fn bool_token(s: &str) -> Option<bool> {
 }
 
 impl Settings {
+    /// Snapshot the current process environment.
     pub fn from_process() -> Settings {
         let env: HashMap<String, String> = std::env::vars().collect();
         let home = env.get("HOME").cloned().or_else(|| env.get("USERPROFILE").cloned()).unwrap_or_default();
@@ -229,7 +255,7 @@ impl Settings {
     }
 
     /// `settings.enabled(section, key)`: false only when the switch resolves to exactly `false`.
-    /// Chain: env var, settings.json, CLAUDE_PLUGIN_OPTION_<name> env, default (on).
+    /// Chain: env var, settings.json, `CLAUDE_PLUGIN_OPTION_<name>` env, default (on).
     pub fn enabled(&self, section: &str, key: &str, env_name: &str, plugin_option: Option<&str>) -> bool {
         if let Some(v) = self.env.get(env_name) {
             if let Some(b) = bool_token(v) {
@@ -274,8 +300,10 @@ impl Settings {
         };
         let settings = read("settings.json");
         let jevjson = read("jev.json");
-        let on = |v: Option<&serde_json::Value>| matches!(v, Some(serde_json::Value::Bool(true))) || v.and_then(|x| x.as_str()).map_or(false, |x| bool_token(x) == Some(true));
-        let mut enabled = on(jevjson.as_ref().and_then(|j| j.get("enabled"))) || self.env.get("ANTIHALL_JEV").map_or(false, |v| v == "1");
+        let on = |v: Option<&serde_json::Value>| {
+            matches!(v, Some(serde_json::Value::Bool(true))) || v.and_then(|x| x.as_str()).is_some_and(|x| bool_token(x) == Some(true))
+        };
+        let mut enabled = on(jevjson.as_ref().and_then(|j| j.get("enabled"))) || self.env.get("ANTIHALL_JEV").is_some_and(|v| v == "1");
         if let Some(v) = settings.as_ref().and_then(|j| j.get("jev")).and_then(|j| j.get("enabled")) {
             enabled = on(Some(v));
         }
@@ -287,7 +315,7 @@ impl Settings {
         if !enabled {
             return false;
         }
-        if self.env.get("ANTIHALL_JEV_GIT_GUARD_SELF_CREDIT").map_or(false, |v| v == "0") {
+        if self.env.get("ANTIHALL_JEV_GIT_GUARD_SELF_CREDIT").is_some_and(|v| v == "0") {
             return false;
         }
         let mode = settings
@@ -297,7 +325,9 @@ impl Settings {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| self.env.get("ANTIHALL_JEV_GIT_GUARD_SELF_CREDIT").cloned())
-            .or_else(|| jevjson.as_ref().and_then(|j| j.get("integrations")).and_then(|j| j.get("gitGuardSelfCredit")).and_then(|v| v.as_str()).map(|s| s.to_string()));
+            .or_else(|| {
+                jevjson.as_ref().and_then(|j| j.get("integrations")).and_then(|j| j.get("gitGuardSelfCredit")).and_then(|v| v.as_str()).map(|s| s.to_string())
+            });
         mode.as_deref() == Some("on")
     }
 

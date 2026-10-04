@@ -1,10 +1,11 @@
 //! git argument analysis ported from git-guard.js: subcommand resolution (with inline aliases), push force /
 //! delete detection, command-substitution args, self-credit matching and commit-message extraction.
-use super::shell::*;
+use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
 use std::collections::HashMap;
 
+/// Mirrors `git-guard.js` `GIT_OPTS_WITH_VALUE`.
 const GIT_OPTS_WITH_VALUE: &[&str] = &["-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"];
 
 fn is_sep_char(c: char) -> bool {
@@ -31,6 +32,9 @@ fn js_split_seps(val: &str) -> Vec<String> {
     pieces
 }
 
+/// Split `git [global options] <sub> ...` into the subcommand name and the tokens after it, skipping global options (and their values) such as `-C <dir>`.
+///
+/// Mirrors `git-guard.js` `gitSubcommand`.
 pub fn git_subcommand(args: &[Tok]) -> (Option<String>, Vec<Tok>) {
     for j in 0..args.len() {
         let a = args[j].text.as_str();
@@ -40,7 +44,7 @@ pub fn git_subcommand(args: &[Tok]) -> (Option<String>, Vec<Tok>) {
             a.strip_prefix("--config-env=").map(|s| s.to_string())
         };
         if let Some(v) = cfg_val {
-            if v.get(..6).map_or(false, |x| x.eq_ignore_ascii_case("alias.")) {
+            if v.get(..6).is_some_and(|x| x.eq_ignore_ascii_case("alias.")) {
                 return (Some("push".into()), vec![Tok::plain("--force")]);
             }
         }
@@ -95,11 +99,38 @@ pub fn git_subcommand(args: &[Tok]) -> (Option<String>, Vec<Tok>) {
     (None, Vec::new())
 }
 
+/// Mirrors `git-guard.js` `PUSH_LONG_OPTS`.
 const PUSH_LONG_OPTS: &[&str] = &[
-    "all", "branches", "mirror", "tags", "follow-tags", "delete", "prune", "force", "force-with-lease", "force-if-includes", "atomic", "dry-run", "porcelain", "verbose", "quiet", "progress", "verify",
-    "set-upstream", "signed", "push-option", "repo", "receive-pack", "exec", "thin", "recurse-submodules", "ipv4", "ipv6",
+    "all",
+    "branches",
+    "mirror",
+    "tags",
+    "follow-tags",
+    "delete",
+    "prune",
+    "force",
+    "force-with-lease",
+    "force-if-includes",
+    "atomic",
+    "dry-run",
+    "porcelain",
+    "verbose",
+    "quiet",
+    "progress",
+    "verify",
+    "set-upstream",
+    "signed",
+    "push-option",
+    "repo",
+    "receive-pack",
+    "exec",
+    "thin",
+    "recurse-submodules",
+    "ipv4",
+    "ipv6",
 ];
 
+/// Mirrors `git-guard.js` `expandPushOptions`.
 fn expand_push_options(rest: &[Tok]) -> Vec<Tok> {
     let mut out = Vec::new();
     let mut end_of_options = false;
@@ -138,6 +169,9 @@ fn is_short_cluster(w: &str) -> bool {
     w.len() >= 2 && w.starts_with('-') && w[1..].chars().all(|c| c.is_ascii_alphanumeric())
 }
 
+/// True when the tokens after `push` ask for a force push (`--force`, `-f`, a `+refspec`, but not `--force-with-lease` forms the guard allows).
+///
+/// Mirrors `git-guard.js` `isForcePush`.
 pub fn is_force_push(rest: &[Tok]) -> bool {
     let rest = expand_push_options(rest);
     let mut end_of_options = false;
@@ -172,6 +206,9 @@ pub fn is_force_push(rest: &[Tok]) -> bool {
     false
 }
 
+/// True when a push deletes a remote ref (`--delete`, `-d` or a `:ref` refspec).
+///
+/// Mirrors `git-guard.js` `isDeleteRefPush`.
 pub fn is_delete_ref_push(rest: &[Tok]) -> bool {
     let rest = expand_push_options(rest);
     let mut end_of_options = false;
@@ -196,6 +233,9 @@ pub fn is_delete_ref_push(rest: &[Tok]) -> bool {
     false
 }
 
+/// True when any argument still contains a command substitution, whose value cannot be known statically.
+///
+/// Mirrors `git-guard.js` `hasCmdSubstArg`.
 pub fn has_cmd_subst_arg(rest: &[Tok]) -> bool {
     rest.iter().any(|t| t.text.contains(CMDSUBST))
 }
@@ -238,7 +278,7 @@ fn coauthor_at(t: &[char], s: usize) -> bool {
                 return true;
             }
         }
-        if ci_starts_with(t, q, "gpt-") && q + 4 < t.len() && (t[q + 4] == '4' || t[q + 4] == '5') && t.get(q + 5).map_or(true, |c| !c.is_ascii_alphanumeric()) {
+        if ci_starts_with(t, q, "gpt-") && q + 4 < t.len() && (t[q + 4] == '4' || t[q + 4] == '5') && t.get(q + 5).is_none_or(|c| !c.is_ascii_alphanumeric()) {
             return true;
         }
     }
@@ -271,7 +311,7 @@ fn generated_at(t: &[char], s: usize) -> bool {
         if ci_starts_with(t, p, alt) {
             let e = p + alt.len();
             let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-            if t.get(e).map_or(true, |&c| !word(c)) {
+            if t.get(e).is_none_or(|&c| !word(c)) {
                 return true;
             }
         }
@@ -289,6 +329,7 @@ fn gh_body_marker(text: &str) -> bool {
     ci_contains(text, "claude.com/claude-code") || ci_contains(text, "chatgpt.com/codex") || ci_contains(text, "<noreply@anthropic.com>")
 }
 
+/// Undo the shell escapes a commit message can carry (`\n`, `\t`, `\\`, ...) so credit lines hidden behind them are still seen.
 pub fn norm_escapes(s: &str) -> String {
     s.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
 }
@@ -305,6 +346,9 @@ pub fn raw_has_credit(ctx: &mut Ctx) -> bool {
     v
 }
 
+/// True when `text` credits an AI tool (a `Co-Authored-By` trailer, a "Generated with" line or a tool link); results are cached per text on the context.
+///
+/// Mirrors `git-guard.js` `hasSelfCredit`.
 pub fn has_self_credit(ctx: &mut Ctx, text: &str) -> bool {
     if text.is_empty() {
         return false;
@@ -318,8 +362,14 @@ pub fn has_self_credit(ctx: &mut Ctx, text: &str) -> bool {
     result
 }
 
+/// Git subcommands that create a commit, which is where self-credit and handover checks apply.
+///
+/// Mirrors `git-guard.js` `COMMIT_CREATING`.
 pub const COMMIT_CREATING: &[&str] = &["commit", "merge", "rebase", "cherry-pick", "revert", "am", "pull", "commit-tree", "tag"];
 
+/// True when `-c trailer.<key>.key=...` style config remaps a trailer key so a credit trailer would be written under another name.
+///
+/// Mirrors `git-guard.js` `hasSelfCreditTrailerKeyRemap`.
 pub fn has_self_credit_trailer_key_remap(args: &[Tok]) -> bool {
     let key_ok = |v: &str| {
         let l = js_trim(v).to_lowercase();
@@ -378,7 +428,7 @@ fn short_cluster_flag(w: &str, flag: char) -> (bool, Option<String>) {
     let mut inline = None;
     while k < run_end {
         if c[k] == flag && k + 1 < c.len() && !is_line_term(c[k + 1]) {
-            let first = c[1..].iter().position(|&x| x == flag).map(|p| p + 1).unwrap();
+            let first = c[1..].iter().position(|&x| x == flag).map_or(k, |p| p + 1); // always found: c[k] == flag with k >= 1
             inline = Some(c[first + 1..].iter().collect());
             break;
         }
@@ -387,6 +437,9 @@ fn short_cluster_flag(w: &str, flag: char) -> (bool, Option<String>) {
     (exact, inline)
 }
 
+/// The messages given inline to a commit-like command (`-m`, `--message`, `-m<text>` and cluster forms).
+///
+/// Mirrors `git-guard.js` `inlineCommitMessages`.
 pub fn inline_commit_messages(rest: &[Tok]) -> Vec<String> {
     let mut msgs = Vec::new();
     let mut i = 0;
@@ -422,6 +475,9 @@ pub fn inline_commit_messages(rest: &[Tok]) -> Vec<String> {
     msgs
 }
 
+/// The messages a commit-like command reads from files (`-F`, `--file`, `--template`-style options), read from disk.
+///
+/// Mirrors `git-guard.js` `fileCommitMessages`.
 pub fn file_commit_messages(rest: &[Tok]) -> Vec<String> {
     let mut specs = Vec::new();
     let mut i = 0;
@@ -450,10 +506,14 @@ pub fn file_commit_messages(rest: &[Tok]) -> Vec<String> {
     specs
 }
 
+/// Read a file the way Node `readFileSync(path, "utf8")` does (invalid UTF-8 becomes U+FFFD); `None` when it cannot be read.
 pub fn read_file_lossy(path: &str) -> Option<String> {
     std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).to_string())
 }
 
+/// For `gh pr|issue|release ... --body/--title`, the message text that credits an AI tool, if any.
+///
+/// Mirrors `git-guard.js` `ghSelfCreditMessage`.
 pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
     let words: Vec<&str> = args.iter().map(|a| a.text.as_str()).collect();
     let guarded_sub = words.iter().any(|w| matches!(*w, "pr" | "issue" | "release"));
@@ -535,17 +595,25 @@ pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
 /// Heredoc bodies of one command text, plus a cache of the `-F -` stdin candidate text per command string
 /// (the Node guard memoizes it on the (cmd, bodies) pair; without it a command made of N `-F -` segments is
 /// quadratic). Cache keys are the address and length of a string that outlives the Hb (the scan frame owns both).
+/// One memoized `-F -` stdin candidate: (address, length) of the command string, the text, and its flag.
+type StdinCacheEntry = (usize, usize, Option<String>, bool);
+
+/// Heredoc bodies of one command text, plus a memo of the `-F -` stdin candidate text per command string.
 pub struct Hb {
+    /// The heredoc bodies found in the command, in order of appearance.
     pub bodies: Vec<HeredocBody>,
-    cache: std::cell::RefCell<Vec<(usize, usize, Option<String>, bool)>>,
+    cache: std::cell::RefCell<Vec<StdinCacheEntry>>,
 }
 
 impl Hb {
+    /// Wrap the extracted bodies with an empty memo.
     pub fn new(bodies: Vec<HeredocBody>) -> Hb {
         Hb { bodies, cache: Default::default() }
     }
 
     /// (joined heredoc bodies + quoted literals of `cmd` or None when there are no candidates, credit verdict).
+    ///
+    /// Mirrors `git-guard.js` `stdinCandidateTextCached`.
     pub fn stdin_candidate(&self, cmd: &str) -> (Option<String>, bool) {
         let key = (cmd.as_ptr() as usize, cmd.len());
         if let Some(e) = self.cache.borrow().iter().find(|e| (e.0, e.1) == key) {
@@ -554,12 +622,15 @@ impl Hb {
         let mut cands: Vec<String> = self.bodies.iter().map(|h| h.body.clone()).collect();
         cands.extend(extract_quoted_literals(cmd));
         let text = if cands.is_empty() { None } else { Some(cands.join("\n")) };
-        let cred = text.as_deref().map_or(false, credit_regexes);
+        let cred = text.as_deref().is_some_and(credit_regexes);
         self.cache.borrow_mut().push((key.0, key.1, text.clone(), cred));
         (text, cred)
     }
 }
 
+/// Every single- or double-quoted literal in `cmd`, used to look for a credit line anywhere in a command.
+///
+/// Mirrors `git-guard.js` `extractQuotedLiterals`.
 pub fn extract_quoted_literals(cmd: &str) -> Vec<String> {
     let cs: Vec<char> = cmd.chars().collect();
     let mut out = Vec::new();

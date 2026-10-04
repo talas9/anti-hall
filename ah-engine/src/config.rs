@@ -24,23 +24,30 @@ pub struct Config {
     pub mem_mb: u64,
     /// Resident-set cap in KB; above it the daemon drains and exits cleanly (0 = none).
     pub rss_cap_kb: u64,
+    /// How often the watchdog samples resident memory.
     pub rss_check: Duration,
     /// Watchdog: a worker busy longer than this, or an accept loop silent longer than `stall`, trips a drain+exit.
     pub stuck: Duration,
+    /// An accept loop silent for longer than this trips a drain and exit.
     pub stall: Duration,
+    /// How often the watchdog thread wakes to look at heartbeats.
     pub watchdog_tick: Duration,
     /// `nice` increment for the daemon process.
     pub nice: i32,
     /// Token buckets: requests/second and burst, per session and per project.
     pub session_rps: f64,
+    /// Token-bucket burst per session.
     pub session_burst: f64,
+    /// Sustained requests per second allowed per project.
     pub project_rps: f64,
+    /// Token-bucket burst per project.
     pub project_burst: f64,
     /// Test-only control verbs (`CTL sleep`, `CTL stall`); never on unless this env is set.
     pub test_hooks: bool,
 }
 
 impl Config {
+    /// Read the limits, applying any `AH_ENGINE_*` overrides.
     pub fn from_env() -> Config {
         Config {
             workers: num("AH_ENGINE_WORKERS", 4).clamp(1, 32) as usize,
@@ -75,17 +82,22 @@ pub struct ClientConfig {
     pub deadline: Duration,
     /// Breaker: `n` engine failures within `window` skip the engine for `cooldown`.
     pub breaker_n: usize,
+    /// Window in which failures are counted toward the breaker.
     pub breaker_window: Duration,
+    /// How long the breaker stays open once tripped.
     pub breaker_cooldown: Duration,
     /// Crash-loop: `n` daemon deaths within `window` stop respawning for `cooldown`.
     pub crash_n: usize,
+    /// Window in which daemon deaths are counted.
     pub crash_window: Duration,
+    /// How long respawning stays stopped after a crash loop.
     pub crash_cooldown: Duration,
     /// Node fallback hook is killed after this long (then plain allow: it is unavailable).
     pub fallback_timeout: Duration,
 }
 
 impl ClientConfig {
+    /// Read the client limits, applying any `AH_ENGINE_*` overrides.
     pub fn from_env() -> ClientConfig {
         let s = |n: &str, d: u64| Duration::from_secs(num(n, d));
         ClientConfig {

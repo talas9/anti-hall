@@ -12,6 +12,7 @@
 //!   "paths":["/Users/me/proj"]          // optional; rule applies only when payload cwd is at/under one of these
 //! }]}
 //! ```
+use crate::error::RulesError;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
@@ -45,30 +46,41 @@ struct RawRule {
     paths: Vec<String>,
 }
 
+/// What a matching rule does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    /// Block the call.
     Deny,
+    /// Let it through with a warning for the agent.
     Warn,
+    /// Let it through and add the message as context.
     Context,
 }
 
+/// One compiled rule.
 #[derive(Debug)]
 pub struct Rule {
+    /// Stable id for logs and tests.
     pub id: String,
     events: Vec<String>,
     tools: Vec<String>,
     field: Option<String>,
     re: Regex,
+    /// What happens on a match.
     pub action: Action,
+    /// Text shown to the agent.
     pub message: String,
     paths: Vec<String>,
     /// Built-in check (`"git"`): real logic instead of a regex; `pattern`/`message` are ignored.
     pub check: Option<String>,
+    /// Free-form options handed to a built-in check.
     pub options: Value,
 }
 
+/// An ordered, validated list of rules.
 #[derive(Debug, Default)]
 pub struct RuleSet {
+    /// The rules in file order.
     pub rules: Vec<Rule>,
     /// The file's `version` field.
     pub version: u32,
@@ -80,18 +92,24 @@ pub struct Budget;
 
 /// What a rule is matched against; built from the hook payload by `hookio`.
 pub struct Subject<'a> {
+    /// Hook event name, e.g. `PreToolUse`.
     pub event: &'a str,
+    /// Tool name for tool events.
     pub tool: Option<&'a str>,
+    /// Working directory of the session.
     pub cwd: Option<&'a str>,
+    /// The tool's input object.
     pub tool_input: &'a Value,
+    /// The user prompt, for prompt events.
     pub prompt: Option<&'a str>,
 }
 
 impl RuleSet {
-    pub fn parse(json: &str) -> Result<RuleSet, String> {
-        let f: RawFile = serde_json::from_str(json).map_err(|e| format!("rules json: {e}"))?;
+    /// Parse and validate a rules file; the first problem is returned and nothing is half-loaded.
+    pub fn parse(json: &str) -> Result<RuleSet, RulesError> {
+        let f: RawFile = serde_json::from_str(json).map_err(RulesError::Json)?;
         if f.version != 1 {
-            return Err(format!("unsupported rules version {}", f.version));
+            return Err(RulesError::Version(f.version));
         }
         let mut rules = Vec::new();
         for (i, r) in f.rules.into_iter().enumerate() {
@@ -99,21 +117,33 @@ impl RuleSet {
                 "deny" => Action::Deny,
                 "warn" => Action::Warn,
                 "context" => Action::Context,
-                a => return Err(format!("rule {i}: unknown action {a:?}")),
+                a => return Err(RulesError::Action { index: i, action: a.to_string() }),
             };
             if let Some(c) = &r.check {
-                if c != "git" {
-                    return Err(format!("rule {i}: unknown check {c:?}"));
+                if crate::checks::get(c).is_none() {
+                    return Err(RulesError::Check { index: i, name: c.clone() });
                 }
             }
-            let re = Regex::new(&r.pattern).map_err(|e| format!("rule {i} ({}): {e}", r.id))?;
-            rules.push(Rule { id: r.id, events: r.events, tools: r.tools, field: r.field, re, action, message: r.message, paths: r.paths, check: r.check, options: r.options });
+            let re = Regex::new(&r.pattern).map_err(|source| RulesError::Pattern { index: i, id: r.id.clone(), source })?;
+            rules.push(Rule {
+                id: r.id,
+                events: r.events,
+                tools: r.tools,
+                field: r.field,
+                re,
+                action,
+                message: r.message,
+                paths: r.paths,
+                check: r.check,
+                options: r.options,
+            });
         }
         Ok(RuleSet { rules, version: f.version })
     }
 
-    pub fn load(path: &std::path::Path) -> Result<RuleSet, String> {
-        let txt = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    /// Read and parse a rules file.
+    pub fn load(path: &std::path::Path) -> Result<RuleSet, RulesError> {
+        let txt = std::fs::read_to_string(path).map_err(|source| RulesError::Io { path: path.to_path_buf(), source })?;
         RuleSet::parse(&txt)
     }
 
@@ -148,12 +178,12 @@ impl RuleSet {
 }
 
 fn listed(list: &[String], v: Option<&str>) -> bool {
-    list.is_empty() || list.iter().any(|x| x == "*") || v.map_or(false, |v| list.iter().any(|x| x == v))
+    list.is_empty() || list.iter().any(|x| x == "*") || v.is_some_and(|v| list.iter().any(|x| x == v))
 }
 
 fn under(cwd: &str, root: &str) -> bool {
     let root = root.trim_end_matches('/');
-    cwd == root || cwd.strip_prefix(root).map_or(false, |r| r.starts_with('/'))
+    cwd == root || cwd.strip_prefix(root).is_some_and(|r| r.starts_with('/'))
 }
 
 fn lookup<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
@@ -174,7 +204,11 @@ fn natural(ti: &Value) -> String {
             return s.clone();
         }
     }
-    if ti.is_null() { String::new() } else { ti.to_string() }
+    if ti.is_null() {
+        String::new()
+    } else {
+        ti.to_string()
+    }
 }
 
 impl Rule {
@@ -183,7 +217,7 @@ impl Rule {
         if !listed(&self.events, Some(s.event)) || !listed(&self.tools, s.tool) {
             return false;
         }
-        !(!self.paths.is_empty() && !s.cwd.map_or(false, |c| self.paths.iter().any(|p| under(c, p))))
+        !(!self.paths.is_empty() && !s.cwd.is_some_and(|c| self.paths.iter().any(|p| under(c, p))))
     }
 
     fn matches(&self, s: &Subject) -> bool {

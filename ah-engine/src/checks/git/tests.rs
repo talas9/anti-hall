@@ -12,7 +12,7 @@ fn home() -> std::path::PathBuf {
     d
 }
 
-fn run(cmd: &str) -> Outcome {
+fn run(cmd: &str) -> Verdict {
     let h = home();
     let s = Settings { home: h.to_string_lossy().to_string(), env: HashMap::new() };
     check_with(s, cmd, Some("/tmp"), "/plugin")
@@ -20,13 +20,13 @@ fn run(cmd: &str) -> Outcome {
 
 fn blocked(cmd: &str) -> String {
     match run(cmd) {
-        Outcome::Block(m) => m,
+        Verdict::Block(m) => m,
         o => panic!("expected a block for {cmd:?}, got {o:?}"),
     }
 }
 
 fn allowed(cmd: &str) {
-    assert_eq!(run(cmd), Outcome::Allow, "{cmd:?}");
+    assert_eq!(run(cmd), Verdict::Allow, "{cmd:?}");
 }
 
 const P: &str = "pu\x73h";
@@ -59,7 +59,10 @@ fn force_and_delete_pushes_block_with_the_node_message() {
         assert!(m.contains("force push") || m.contains("xargs") || m.contains("find"), "{c}: {m}");
     }
     let m = blocked(&format!("git {P} --delete origin b"));
-    assert!(m.contains("remote ref deletion") && m.contains("Override (only if the user explicitly asked): node '/plugin/scripts/devswarm.js' skip git-guard"), "{m}");
+    assert!(
+        m.contains("remote ref deletion") && m.contains("Override (only if the user explicitly asked): node '/plugin/scripts/devswarm.js' skip git-guard"),
+        "{m}"
+    );
     assert_eq!(
         blocked(&format!("git {P} -f")),
         "\u{26d4} anti-hall \u{b7} git-guard: force push is blocked.\nWhy: Rewriting published history is a deliberate human action.\nDo instead: do it manually with explicit owner confirmation, never from an automated push."
@@ -114,7 +117,13 @@ fn heredoc_data_is_not_scanned_but_executed_bodies_are() {
 
 #[test]
 fn launcher_directory_writes_block() {
-    for c in ["cp x ~/.anti-hall/bin/devswarm.js", "echo x > ~/.anti-hall/bin/y", "tee ~/.anti-hall/bin/z", "sed -i s/a/b/ ~/.anti-hall/bin/devswarm.js", "rm -rf ~/.anti-hall/bin"] {
+    for c in [
+        "cp x ~/.anti-hall/bin/devswarm.js",
+        "echo x > ~/.anti-hall/bin/y",
+        "tee ~/.anti-hall/bin/z",
+        "sed -i s/a/b/ ~/.anti-hall/bin/devswarm.js",
+        "rm -rf ~/.anti-hall/bin",
+    ] {
         let m = blocked(c);
         assert!(m.contains("~/.anti-hall/bin/"), "{c}: {m}");
     }
@@ -135,7 +144,7 @@ fn cmdsubst_arg_on_push_blocks_and_skip_file_is_honoured() {
 
 #[test]
 fn tokenizer_and_splitter_basics() {
-    use super::shell::*;
+    use super::tokenize::*;
     let t = tokenize("git commit -m 'a b' \"c d\" e\\ f # tail");
     let texts: Vec<&str> = t.iter().map(|x| x.text.as_str()).collect();
     assert_eq!(texts, ["git", "commit", "-m", "a b", "c d", "e f"]);

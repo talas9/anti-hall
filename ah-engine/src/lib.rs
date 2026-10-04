@@ -1,9 +1,11 @@
 //! anti-hall engine: a tiny hook daemon + client. See README.md.
+#![deny(missing_docs)]
+pub mod checks;
 pub mod client;
 pub mod config;
 pub mod daemon;
+pub mod error;
 pub mod frame;
-pub mod gitguard;
 pub mod health;
 pub mod hookio;
 pub mod limits;

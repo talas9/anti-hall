@@ -7,6 +7,7 @@
 //!     stop) runs the Node hook given by `--fallback` / `AH_ENGINE_FALLBACK`, whose stdout and exit
 //!     code are passed through;
 //!  4. only when there is no usable fallback does the client print nothing and exit 0.
+//!
 //! The fallback command is chosen by the caller (argument or env), never by anything in the payload.
 use crate::config::{ClientConfig, MAX_REQUEST};
 use crate::frame::{self, Kind};
@@ -24,8 +25,10 @@ use std::time::{Duration, Instant};
 const COLD_START_WAIT: Duration = Duration::from_millis(40);
 const MAX_REPLY: u64 = 2 * 1024 * 1024;
 
+/// Result of one exchange with the daemon.
 #[derive(Debug)]
 pub enum Exch {
+    /// A complete, checksum-valid reply frame.
     Reply(Kind, String),
     /// Nothing is listening (no socket, or connection refused).
     Absent,
@@ -114,20 +117,15 @@ fn spawn_daemon() -> Option<std::process::Child> {
     if std::env::var_os("AH_ENGINE_NOSPAWN").is_some() {
         return None;
     }
-    Command::new(std::env::current_exe().ok()?)
-        .arg("serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .ok()
+    Command::new(std::env::current_exe().ok()?).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().ok()
 }
 
 /// What `hook` prints and exits with.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Outcome {
+    /// What to print on stdout.
     pub out: String,
+    /// The process exit code.
     pub code: i32,
     /// Text for stderr (a built-in check that blocks the way the Node guards do: exit 2 + reason on stderr).
     pub err: String,
@@ -163,9 +161,7 @@ fn engine_attempt(raw: &str, cfg: &ClientConfig, have_fallback: bool) -> Option<
                         health::log_event("start_fail", &format!("sig{sig}"), "daemon killed while starting");
                         health::record_failure("start_fail", &format!("sig{sig}"), "daemon killed while starting");
                     }
-                    if ping(&sock).is_none() {
-                        return None;
-                    }
+                    ping(&sock)?;
                 }
                 if let Exch::Reply(Kind::Ok, body) = exchange(&sock, payload.as_bytes(), cfg.deadline) {
                     return Some(body);
@@ -240,7 +236,11 @@ pub fn run(raw: &str, fallback: Option<&Path>) -> Outcome {
 }
 
 fn fallback_arg(args: &[String]) -> Option<PathBuf> {
-    args.iter().position(|a| a == "--fallback").and_then(|i| args.get(i + 1)).map(PathBuf::from).or_else(|| std::env::var_os("AH_ENGINE_FALLBACK").map(PathBuf::from))
+    args.iter()
+        .position(|a| a == "--fallback")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("AH_ENGINE_FALLBACK").map(PathBuf::from))
 }
 
 /// `engine hook`: read stdin, print the result, exit with the Node hook's code (0 when the engine answered).

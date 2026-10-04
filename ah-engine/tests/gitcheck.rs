@@ -34,13 +34,16 @@ impl Env {
 
     /// (stdout, stderr, exit code) of one `engine hook` call; retried once so a cold start cannot hide the answer.
     fn hook(&self, command: &str) -> (String, String, i32) {
-        let payload = serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/tmp", "session_id": "s", "tool_input": {"command": command}}).to_string();
+        let payload =
+            serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/tmp", "session_id": "s", "tool_input": {"command": command}})
+                .to_string();
         let mut last = (String::new(), String::new(), 0);
         for _ in 0..2 {
             let mut ch = self.cmd().arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
             ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
             let o = ch.wait_with_output().unwrap();
-            last = (String::from_utf8_lossy(&o.stdout).trim().to_string(), String::from_utf8_lossy(&o.stderr).trim().to_string(), o.status.code().unwrap_or(-1));
+            last =
+                (String::from_utf8_lossy(&o.stdout).trim().to_string(), String::from_utf8_lossy(&o.stderr).trim().to_string(), o.status.code().unwrap_or(-1));
             if last.2 == 2 || self.up() {
                 break;
             }
@@ -53,7 +56,7 @@ impl Env {
     }
 
     fn up(&self) -> bool {
-        self.cmd().args(["ctl", "ping"]).output().map_or(false, |o| o.status.success())
+        self.cmd().args(["ctl", "ping"]).output().is_ok_and(|o| o.status.success())
     }
 }
 

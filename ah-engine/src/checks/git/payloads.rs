@@ -1,8 +1,12 @@
 //! Wrapper payload extraction: eval, `sh -c`, `env -S`, piped `echo ... | sh`, positional forwarding.
-use super::shell::*;
+use super::tokenize::*;
+use crate::checks::lit_re;
 use regex::Regex;
 use std::sync::OnceLock;
 
+/// The script text `eval` receives from a segment (its arguments joined the way the shell does).
+///
+/// Mirrors `git-guard.js` `extractEvalPayload`.
 pub fn extract_eval_payload(segment: &str) -> String {
     let tokens = tokenize(segment);
     let Some(ev) = effective_verb(&tokens) else { return String::new() };
@@ -20,10 +24,14 @@ fn is_c_flag(t: &str) -> bool {
     t.len() >= 2 && t.starts_with('-') && t.ends_with('c') && t[1..].chars().all(|c| c.is_ascii_lowercase())
 }
 
+/// True for a shell flag cluster that contains `c` (`-c`, `-lc`, `-ec`, ...).
 pub fn is_c_flag_pub(t: &str) -> bool {
     is_c_flag(t)
 }
 
+/// The script a shell receives through `-c` in a segment, with positional parameters substituted.
+///
+/// Mirrors `git-guard.js` `extractShellCPayload`.
 pub fn extract_shell_c_payload(segment: &str) -> String {
     let tokens = tokenize(segment);
     let Some(ev) = effective_verb(&tokens) else { return String::new() };
@@ -56,9 +64,12 @@ fn shq(w: &str) -> String {
 
 fn fp_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r#""\$(?:\{([0-9]+|[@*])\}|([0-9@*]))"|\$(?:\{([0-9]+|[@*])\}|([0-9@*]))"#).unwrap())
+    R.get_or_init(|| lit_re(r#""\$(?:\{([0-9]+|[@*])\}|([0-9@*]))"|\$(?:\{([0-9]+|[@*])\}|([0-9@*]))"#))
 }
 
+/// Substitute `$1`, `$@` and friends in `script` with the positional arguments after the script.
+///
+/// Mirrors `git-guard.js` `forwardPositional`.
 pub fn forward_positional(script: &str, pos: &[Tok]) -> String {
     if pos.is_empty() || !script.contains('$') {
         return script.to_string();
@@ -92,6 +103,9 @@ pub fn forward_positional(script: &str, pos: &[Tok]) -> String {
         .to_string()
 }
 
+/// The script `env -S` splits out of its argument string.
+///
+/// Mirrors `git-guard.js` `extractEnvSPayload`.
 pub fn extract_env_s_payload(segment: &str) -> String {
     let tokens = tokenize(segment);
     let mut idx = 0;
@@ -121,6 +135,8 @@ pub fn extract_env_s_payload(segment: &str) -> String {
 }
 
 /// PIPED_ECHO_SHELL_RE, hand-matched (it needs a backreference): `echo|printf 'TEXT' | <shell>` at a command start.
+///
+/// Mirrors `git-guard.js` `pipedEchoShellPayloads`.
 pub fn piped_echo_shell_payloads(cmd: &str) -> Vec<String> {
     let s: Vec<char> = cmd.chars().collect();
     let n = s.len();
