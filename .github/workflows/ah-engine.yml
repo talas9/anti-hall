@@ -7,6 +7,9 @@ on:
     paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
     paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
+  schedule:
+    - cron: '17 4 * * 1' # weekly: the full doc-check, with the long test suites
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,7 +37,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # Runs every shell command in docs/DEVELOPMENT.md in a fresh clone (D83), so the guide cannot drift from the repo.
+  # Runs the shell commands in docs/DEVELOPMENT.md in a fresh clone (D83), so the guide cannot drift from the repo. A push
+  # or pull request runs it with --fast (the blocks marked `long`, the full test suites, are skipped: the rust job above
+  # already runs them); the weekly schedule and a manual dispatch run every block.
   doc-check:
     name: doc-check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -49,4 +54,4 @@ jobs:
         with:
           node-version: 24.x
       - uses: dtolnay/rust-toolchain@stable
-      - run: ah-engine/scripts/doc-check.sh
+      - run: ah-engine/scripts/doc-check.sh ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '' || '--fast' }}
