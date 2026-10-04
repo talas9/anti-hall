@@ -29,6 +29,8 @@ git init -q -b main .
 git config user.name "Sam Rivera"
 git config user.email "sam@example.com"
 git config commit.gpgsign false
+git config maintenance.auto false
+git config gc.auto 0
 mkremote() {
   git init -q --bare -b main remote.git
   echo "remote.git/" >> .git/info/exclude

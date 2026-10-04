@@ -5,9 +5,9 @@
 //
 // runner(cmd, args, opts) -> { status, stdout, stderr }; stdout is stream-json (one event
 // per line) with a final {type:'result', session_id, total_cost_usd, result}.
-// ASSUMPTION [unverified -> probe]: each step's total_cost_usd covers that step only, so
-// run cost = sum of steps. If a resumed result reports a cumulative total, the sum
-// overcounts; the per-step values are kept in steps[] so the first real smoke can settle it.
+// VERIFIED (B0 probe): total_cost_usd on a resumed result is CUMULATIVE for the session, so
+// a step's own cost is the delta from the previous step's value; run cost = the last value.
+// A value below the previous one (counter reset) is treated as a fresh step's own cost.
 const { parseTrace } = require('./trace.js');
 
 function buildStepArgs({ model, pluginDir, sessionId, text, ceilingUsd, extra = [] }) {
@@ -24,14 +24,16 @@ function runConversation({ runner, prompt, followUps = [], model = 'claude-sonne
   const texts = [prompt, ...followUps.map((f) => (typeof f === 'string' ? f : f.text))];
   const steps = [];
   const events = [];
-  let sessionId = null, total = 0, stopped = null;
+  let sessionId = null, total = 0, prevCum = 0, stopped = null;
   for (let i = 0; i < texts.length; i++) {
     const ceiling = cap ? cap.nextCeiling(perStepUsd) : perStepUsd;
     if (cap && ceiling == null) { stopped = `spend cap reached before step ${i + 1}`; break; }
     const r = runner('claude', buildStepArgs({ model, pluginDir, sessionId, text: texts[i], ceilingUsd: ceiling, extra }), { cwd, env });
     const ev = parseTrace(r.stdout);
     const res = ev.filter((e) => e.type === 'result').pop() || {};
-    const cost = typeof res.total_cost_usd === 'number' ? res.total_cost_usd : 0;
+    const cum = typeof res.total_cost_usd === 'number' ? res.total_cost_usd : 0;
+    const cost = cum >= prevCum ? cum - prevCum : cum;
+    prevCum = cum;
     if (cap) cap.record(cost);
     total += cost;
     sessionId = res.session_id || sessionId;

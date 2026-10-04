@@ -419,17 +419,18 @@ test('forceCompaction: tries /compact, then autocompact, then tmux; fails loudly
   assert.strictEqual(hasCompactBoundary(tp), false);
 });
 
-test('runConversation: follow-up turns resume the session, sum cost, honor the cap', () => {
+test('runConversation: follow-up turns resume the session, count cost once (cumulative totals), honor the cap', () => {
   const calls = [];
   const runner = (cmd, args) => {
     calls.push(args);
     const n = calls.length;
-    return { status: 0, stdout: JSON.stringify({ type: 'result', session_id: 'S1', total_cost_usd: 0.5, result: `r${n}` }) + '\n' };
+    return { status: 0, stdout: JSON.stringify({ type: 'result', session_id: 'S1', total_cost_usd: 0.5 * n, result: `r${n}` }) + '\n' };
   };
   const r = runConversation({ runner, prompt: 'do ten things', followUps: [{ text: 'oh, and also X' }, 'and Y'], cwd: '/w' });
   assert.strictEqual(r.complete, true);
   assert.strictEqual(r.steps.length, 3);
   close(r.totalCostUsd, 1.5);
+  assert.deepStrictEqual(r.steps.map((x) => x.costUsd), [0.5, 0.5, 0.5]);
   assert.ok(!calls[0].includes('--resume'));
   assert.deepStrictEqual(calls[1].slice(calls[1].indexOf('--resume'), calls[1].indexOf('--resume') + 2), ['--resume', 'S1']);
   assert.strictEqual(calls[1][calls[1].length - 1], 'oh, and also X');
@@ -440,6 +441,21 @@ test('runConversation: follow-up turns resume the session, sum cost, honor the c
   assert.strictEqual(capped.steps.length, 2);
   assert.match(capped.stopped, /spend cap/);
   assert.strictEqual(runConversation({ runner: () => ({ status: 3, stdout: '', stderr: 'boom' }), prompt: 'a', followUps: ['b'] }).steps.length, 1);
+});
+
+test('runConversation: cumulative session totals are not re-summed (B0 probe: 0.0152 -> 0.0255 -> 0.0393)', () => {
+  const cums = [0.0152, 0.0255, 0.0393];
+  let i = 0;
+  const runner = () => ({ status: 0, stdout: JSON.stringify({ type: 'result', session_id: 'S', total_cost_usd: cums[i++], result: 'x' }) + '\n' });
+  const cap = new SpendCap(10);
+  const r = runConversation({ runner, prompt: 'a', followUps: ['b', 'c'], cap });
+  close(r.totalCostUsd, 0.0393);
+  close(cap.spent, 0.0393);
+  // a counter reset (value below the previous one) counts as that step's own cost
+  const vals = [0.3, 0.1];
+  let j = 0;
+  const r2 = runConversation({ runner: () => ({ status: 0, stdout: JSON.stringify({ type: 'result', session_id: 'S', total_cost_usd: vals[j++], result: 'x' }) + '\n' }), prompt: 'a', followUps: ['b'] });
+  close(r2.totalCostUsd, 0.4);
 });
 
 // ── seed builder ──
