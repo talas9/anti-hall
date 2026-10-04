@@ -462,6 +462,22 @@ function refreshLocked(handle, F, fields) {
   }
 }
 
+// adopt(lockPath, token, opts) -> handle | null. Hand-off: a lock acquired by
+// one process (token published to a successor, e.g. via env) is taken over by
+// a DETACHED successor. Returns a handle only while the on-disk token is still
+// the given one (otherwise null: the lock was reclaimed or released); the
+// handle's release()/refresh() work exactly as the acquirer's. The adopter
+// should refresh({pid: process.pid}) so liveness is judged on the new owner.
+function adopt(lockPath, token, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  if (typeof token !== 'string' || !token) return null;
+  let cur;
+  try { cur = parseRecord(F.readFileSync(lockPath, 'utf8')); } catch (_) { return null; }
+  if (!cur || cur.token !== token) return null;
+  return makeHandle(F, lockPath, token, cur, o.now || Date.now);
+}
+
 const BUSY = Object.freeze({ ok: false, lockBusy: true });
 
 // withLock(path, opts, fn) — run fn(handle) under the lock, releasing in
@@ -492,7 +508,7 @@ async function withLockAsync(lockPath, opts, fn) {
 }
 
 module.exports = {
-  acquire, release, refresh, inspect, reclaimStale, withLock, withLockAsync,
+  acquire, adopt, release, refresh, inspect, reclaimStale, withLock, withLockAsync,
   defaultIsAlive, sleepSync, DEFAULT_STALE_MS, RECLAIM_STALE_MS,
   _shouldSteal: shouldSteal, _localMachine: localMachine,
 };
