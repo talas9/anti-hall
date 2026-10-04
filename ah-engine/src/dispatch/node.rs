@@ -121,7 +121,9 @@ pub fn start(entry: &Entry, payload: &[u8]) -> Running {
         child,
         out,
         err,
-        timeout: Duration::from_secs(if entry.timeout_s == 0 { defaults::num("dispatch.default_timeout_s") } else { entry.timeout_s }),
+        timeout: Duration::from_secs(
+            if entry.timeout_s == 0 { defaults::num("dispatch.default_timeout_s") } else { entry.timeout_s }.min(defaults::num("dispatch.max_timeout_s")),
+        ),
         started: Instant::now(),
     }
 }

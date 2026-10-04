@@ -68,6 +68,8 @@ enum Want {
     Closed,
     /// Exit 2 and stderr contains this (a real block stays a block).
     Blocks(&'static str),
+    /// Exit 2 with the hook's own block (this marker on stderr) or with the engine's fail-closed message; never an allow.
+    BlocksOrClosed(&'static str),
     /// Exit 0 and stdout is ONE JSON object containing this.
     OneJson(&'static str),
     /// The engine had nothing to run, or no entry applies: exit 0 is right.
@@ -76,6 +78,21 @@ enum Want {
     ClosedOrAllow,
     /// Exit 0 with the engine's "could not run the guards" note on stderr: a Stop that must not loop (D74).
     Open,
+    /// Exit 0 and every hook ran: the host's own reading of a hook that said nothing, timed out or only printed text.
+    Allow,
+}
+
+/// How the built-in checks are answered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Daemon {
+    /// Inside the client (`dispatch.in_process` 1): no daemon.
+    InProcess,
+    /// Through the daemon path with no daemon and none to start: every check runs as its Node hook.
+    Down,
+    /// A daemon that answers with a frame whose body is not a reply.
+    Garbage,
+    /// A daemon that answers every check with a block, `DAEMONBLOCK` on stderr.
+    Blocks,
 }
 
 #[derive(Clone, Copy)]
@@ -89,6 +106,7 @@ struct Row {
     runnable: bool,
     host_arg: Option<&'static str>,
     event_arg: Option<&'static str>,
+    daemon: Daemon,
     /// Only these events (empty: every guard event).
     events: &'static [&'static str],
 }
@@ -104,10 +122,12 @@ const BASE: Row = Row {
     runnable: true,
     host_arg: None,
     event_arg: None,
+    daemon: Daemon::InProcess,
     events: &[],
 };
 
 const MARK: &str = r#"touch "$AH_TEST_MARK""#;
+const MARK2: &str = r#"touch "$AH_TEST_MARK2""#;
 const BLOCK: &str = r#"touch "$AH_TEST_MARK"; echo BLOCKME >&2; exit 2"#;
 const PRE: &[&str] = &["PreToolUse"];
 
@@ -117,9 +137,9 @@ const CTX_DEFER: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":
 const CTX_DENY: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"DENYME","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' a)""#;
 const CTX_BLOCK_EXIT2: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' a)"; echo BLOCKME >&2; exit 2"#;
 const CTX_PLAIN: &str = r#"touch "$AH_TEST_MARK"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' a)""#;
-const CTX_OTHER: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' b)""#;
+const CTX_OTHER: &str = r#"touch "$AH_TEST_MARK2"; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}\n' "$(head -c 6000 /dev/zero | tr '\0' b)""#;
 const JSON_X1: &str = r#"touch "$AH_TEST_MARK"; printf '{"systemMessage":"one","x":1}\n'"#;
-const JSON_X2_ASK: &str = r#"printf '{"x":2,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"r"}}\n'"#;
+const JSON_X2_ASK: &str = r#"touch "$AH_TEST_MARK2"; printf '{"x":2,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"r"}}\n'"#;
 
 /// One line per failure mode.
 fn rows() -> Vec<Row> {
@@ -136,8 +156,8 @@ fn rows() -> Vec<Row> {
         Row { name: "no --tool, valid payload", tool: Tool::Omitted, ..BASE },
         Row { name: "no --tool, payload without tool_name", stdin: Stdin::NoToolName, tool: Tool::Omitted, ..BASE },
         // ---- unknown tool / event: nothing applies, so a quiet exit 0 is right ----
-        Row { name: "unknown tool", tool: Tool::Unknown, hook: Hook::Cmd { first: MARK, second: MARK }, want: Want::Quiet, events: PRE, ..BASE },
-        Row { name: "unknown event", event_arg: Some("NoSuchEvent"), hook: Hook::Cmd { first: MARK, second: MARK }, want: Want::Quiet, ..BASE },
+        Row { name: "unknown tool", tool: Tool::Unknown, hook: Hook::Cmd { first: MARK, second: MARK2 }, want: Want::Quiet, events: PRE, ..BASE },
+        Row { name: "unknown event", event_arg: Some("NoSuchEvent"), hook: Hook::Cmd { first: MARK, second: MARK2 }, want: Want::Quiet, ..BASE },
         // ---- wiring ----
         Row { name: "bad host", host_arg: Some("nope"), want: Want::Closed, ..BASE },
         Row { name: "unset plugin root", runnable: false, want: Want::Closed, ..BASE },
@@ -146,7 +166,7 @@ fn rows() -> Vec<Row> {
             name: "unset plugin root, stop_hook_active",
             stdin: Stdin::StopActive,
             runnable: false,
-            hook: Hook::Cmd { first: MARK, second: MARK },
+            hook: Hook::Cmd { first: MARK, second: MARK2 },
             want: Want::Open,
             events: STOPS,
             ..BASE
@@ -162,7 +182,7 @@ fn rows() -> Vec<Row> {
         Row {
             name: "stop_hook_active with a blocking hook is still the hook's block",
             stdin: Stdin::StopActive,
-            hook: Hook::Cmd { first: BLOCK, second: MARK },
+            hook: Hook::Cmd { first: BLOCK, second: MARK2 },
             want: Want::Blocks("BLOCKME"),
             events: STOPS,
             ..BASE
@@ -196,6 +216,50 @@ fn rows() -> Vec<Row> {
             name: "two hooks print JSON that cannot be merged field by field",
             hook: Hook::Cmd { first: JSON_X1, second: JSON_X2_ASK },
             want: Want::OneJson("\"ask\""),
+            events: PRE,
+            ..BASE
+        },
+        // ---- odd hook behavior: what the host does with each is what the dispatcher must do ----
+        Row {
+            // the host discards a hook past its timeout (the matrix lowers every timeout to 1 s); the other hooks still count
+            name: "hook that never exits",
+            hook: Hook::Cmd { first: r#"touch "$AH_TEST_MARK"; exec sleep 60"#, second: MARK2 },
+            want: Want::Allow,
+            ..BASE
+        },
+        Row {
+            // the payload write meets a closed pipe (EPIPE): no crash, no hang, no fail-closed
+            name: "hook that closes stdin at once",
+            hook: Hook::Cmd { first: r#"exec <&-; touch "$AH_TEST_MARK""#, second: MARK2 },
+            want: Want::Allow,
+            ..BASE
+        },
+        Row {
+            name: "hook with huge stdout",
+            hook: Hook::Cmd { first: r#"touch "$AH_TEST_MARK"; head -c 5000000 /dev/zero | tr '\0' a"#, second: MARK2 },
+            want: Want::Allow,
+            ..BASE
+        },
+        Row {
+            name: "hook that prints only whitespace and exits 0",
+            hook: Hook::Cmd { first: r#"touch "$AH_TEST_MARK"; printf '  \n'"#, second: MARK2 },
+            want: Want::Allow,
+            ..BASE
+        },
+        Row {
+            name: "exit 0 with a JSON block that has an empty reason",
+            hook: Hook::Cmd { first: r#"touch "$AH_TEST_MARK"; printf '{"decision":"block","reason":""}\n'"#, second: MARK2 },
+            want: Want::OneJson("\"block\""),
+            ..BASE
+        },
+        // ---- the daemon path (the rows above run the checks in the client) ----
+        Row { name: "daemon down", daemon: Daemon::Down, ..BASE },
+        Row { name: "daemon answers garbage", daemon: Daemon::Garbage, ..BASE },
+        Row {
+            name: "daemon decides a block",
+            daemon: Daemon::Blocks,
+            hook: Hook::Cmd { first: MARK, second: MARK2 },
+            want: Want::Blocks("DAEMONBLOCK"),
             events: PRE,
             ..BASE
         },
@@ -242,7 +306,12 @@ struct Run {
     code: i32,
     out: String,
     err: String,
+    /// The first injected hook ran.
     marked: bool,
+    /// The second injected hook ran.
+    marked2: bool,
+    /// A second injected hook that touches its own marker was wired in, so it must have run unless the call fail-closed.
+    second_expected: bool,
 }
 
 struct Case {
@@ -300,10 +369,12 @@ fn run(case: &Case, row: &Row, first: &str, second: &str) -> Run {
 fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     std::fs::create_dir_all(case.dir.join("home")).unwrap();
     let mark = case.dir.join("mark");
+    let mark2 = case.dir.join("mark2");
     let valid = payload(&case.event, &case.dir);
     let selected = table::select(case.host, &case.event, &valid, Some("Bash"));
     let mut node_only = selected.iter().filter(|e| e.check.is_none()).map(|e| e.id.clone());
     let (id1, id2) = (node_only.next(), node_only.next());
+    let second_expected = id2.is_some() && second.contains("AH_TEST_MARK2");
     let events: serde_json::Map<String, Value> = table::entries(case.host, &case.event)
         .into_iter()
         .map(|e| {
@@ -337,8 +408,11 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
         .env("HOME", case.dir.join("home"))
         .env("AH_ENGINE_DIR", case.dir.join("state"))
         .env("AH_ENGINE_VERSION", "fail-closed-matrix")
-        .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+        .env("AH_ENGINE_DISPATCH_IN_PROCESS", if row.daemon == Daemon::InProcess { "1" } else { "0" })
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_DISPATCH_MAX_TIMEOUT_S", "1")
         .env("AH_TEST_MARK", &mark)
+        .env("AH_TEST_MARK2", &mark2)
         .current_dir(&case.dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -356,6 +430,7 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
             Some(stdin_bytes(s, &case.event, &case.dir))
         }
     };
+    let fake = fake_daemon(case, row.daemon);
     let mut ch = c.spawn().unwrap();
     let feeder = writer.map(|bytes| {
         let mut si = ch.stdin.take().unwrap();
@@ -367,12 +442,74 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     if let Some(f) = feeder {
         let _ = f.join();
     }
+    if let Some(f) = fake {
+        f.stop();
+    }
     Run {
+        marked2: mark2.exists(),
+        second_expected,
         code: o.status.code().unwrap_or(-1),
         out: String::from_utf8_lossy(&o.stdout).to_string(),
         err: String::from_utf8_lossy(&o.stderr).to_string(),
         marked: mark.exists(),
     }
+}
+
+/// A daemon stand-in on the engine socket, answering every connection as `mode` says.
+struct FakeDaemon {
+    sock: PathBuf,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl FakeDaemon {
+    /// Stop the listener thread (a connection wakes its accept) and remove the socket file.
+    fn stop(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::os::unix::net::UnixStream::connect(&self.sock);
+        let _ = self.thread.join();
+        let _ = std::fs::remove_file(&self.sock);
+    }
+}
+
+fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
+    use ah_engine::dispatch::native::{encode, Answer};
+    use ah_engine::frame::{encode as frame, Kind};
+    use std::io::Read;
+    let body = match mode {
+        Daemon::InProcess | Daemon::Down => return None,
+        Daemon::Garbage => "this is not a dispatch reply".to_string(),
+        Daemon::Blocks => {
+            let valid = payload(&case.event, &case.dir);
+            let answers: Vec<(String, Answer)> = table::select(case.host, &case.event, &valid, Some("Bash"))
+                .into_iter()
+                .filter(|e| e.check.is_some())
+                .map(|e| {
+                    let r = ah_engine::dispatch::combine::HookResult { id: e.id.clone(), code: Some(2), out: String::new(), err: "DAEMONBLOCK\n".into() };
+                    (e.id, Answer::Decided(r))
+                })
+                .collect();
+            encode(&answers)
+        }
+    };
+    let sock = ah_engine::paths::socket_in(&case.dir.join("state"));
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&sock);
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let reply = frame(Kind::Ok, &body);
+    let thread = std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let mut b = Vec::new();
+            let _ = s.read_to_end(&mut b);
+            let _ = s.write_all(&reply);
+        }
+    });
+    Some(FakeDaemon { sock, stop, thread })
 }
 
 fn check(what: &str, row: &Row, want: Want, r: &Run) {
@@ -385,15 +522,21 @@ fn check(what: &str, row: &Row, want: Want, r: &Run) {
         assert!(!r.err.is_empty(), "exit 2 without a message: {ctx}");
     }
     let closed = r.code == 2 && r.err.contains("could not run the guards");
+    // every hook the dispatcher starts runs, whatever another one says: a skipped second guard is not an allow
+    if !closed && !matches!(want, Want::Quiet | Want::Open | Want::Closed) && r.second_expected {
+        assert!(r.marked2, "the second hook never ran: {ctx}");
+    }
     match want {
         Want::Closed => assert!(closed, "expected fail-closed: {ctx}"),
         Want::Blocks(s) => assert!(r.code == 2 && r.err.contains(s), "expected the hook's block {s:?}: {ctx}"),
+        Want::BlocksOrClosed(s) => assert!(r.code == 2 && (closed || r.err.contains(s)), "expected the hook's block {s:?} or fail-closed: {ctx}"),
         Want::OneJson(s) => {
             let v: Result<Value, _> = serde_json::from_str(r.out.trim());
             assert!(r.code == 0 && v.as_ref().is_ok_and(Value::is_object) && r.out.contains(s), "expected one JSON object with {s:?}: {ctx}");
         }
         Want::Quiet => assert_eq!(r.code, 0, "{ctx}"),
         Want::ClosedOrAllow => assert!(closed || (r.code == 0 && r.marked), "expected closed or a real allow: {ctx}"),
+        Want::Allow => assert!(r.code == 0 && r.marked && !closed, "expected an allow from hooks that ran: {ctx}"),
         Want::Open => assert!(r.code == 0 && r.out.is_empty() && r.err.contains("could not run the guards"), "expected a fail-open note: {ctx}"),
     }
     let _ = row;
@@ -410,7 +553,22 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
             }
         }
     }
-    assert!(cases.iter().any(|c| c.event == "PreToolUse") && cases.iter().any(|c| c.event == "Stop"), "the matrix must cover PreToolUse and Stop");
+    // Every guard event is either asserted here or known to have no hook registered on it; a table that grows an entry on
+    // one of the latter fails until the matrix covers it. PermissionRequest stays a guard event although Claude ignores
+    // its exit 2 (docs/KB-claude-code-hooks.md): a fail-closed block there is harmless, and a hook added later is guarded.
+    const ASSERTED: &[&str] = &["PreToolUse", "Stop"];
+    const UNREGISTERED: &[&str] = &["PermissionRequest", "SubagentStop"];
+    for event in ah_engine::defaults::list("dispatch.guard_events") {
+        assert!(ASSERTED.contains(&event) || UNREGISTERED.contains(&event), "guard event {event} is neither asserted nor listed as unregistered");
+    }
+    for event in ASSERTED {
+        assert!(cases.iter().any(|c| c.event == *event), "the matrix has no case for {event}");
+    }
+    for event in UNREGISTERED {
+        for host in table::hosts() {
+            assert!(table::entries(host, event).is_empty(), "{host} registers {event} now: move it to ASSERTED and cover it");
+        }
+    }
     let mut failures = Vec::new();
     for case in &cases {
         for row in rows() {
@@ -420,12 +578,12 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
             let label = |v: &str| format!("[{}/{}] {} ({v})", case.host, case.event, row.name);
             let attempts: Vec<(String, Run, Want)> = match row.hook {
                 Hook::Crossed if matches!(row.want, Want::Closed) => vec![
-                    (label("allowing hook"), run(case, &row, MARK, MARK), Want::Closed),
-                    (label("blocking hook"), run(case, &row, BLOCK, MARK), Want::Closed),
+                    (label("allowing hook"), run(case, &row, MARK, MARK2), Want::Closed),
+                    (label("blocking hook"), run(case, &row, BLOCK, MARK2), Want::Closed),
                 ],
                 Hook::Crossed => vec![
-                    (label("allowing hook"), run(case, &row, MARK, MARK), Want::ClosedOrAllow),
-                    (label("blocking hook"), run(case, &row, BLOCK, MARK), Want::Blocks("")),
+                    (label("allowing hook"), run(case, &row, MARK, MARK2), Want::ClosedOrAllow),
+                    (label("blocking hook"), run(case, &row, BLOCK, MARK2), Want::BlocksOrClosed("BLOCKME")),
                 ],
                 Hook::Cmd { first, second } => vec![(label("injected"), run(case, &row, first, second), row.want)],
             };

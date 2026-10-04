@@ -40,6 +40,14 @@ unit = "s"
 min = 1
 max = 86400
 
+[dispatch.max_timeout_s]
+doc = "An upper bound on any Node hook's timeout, whatever its hooks.json entry says (the default is above every real timeout, so it changes nothing; tests lower it to exercise a hook that never exits)."
+value = 86400
+unit = "s"
+env = "AH_ENGINE_DISPATCH_MAX_TIMEOUT_S"
+min = 1
+max = 86400
+
 [dispatch.poll_ms]
 doc = "How often the dispatcher checks whether its Node hooks have finished."
 value = 2
@@ -103,7 +111,7 @@ doc = "Event-log detail when the joined additionalContext of an event is over th
 value = "joined context is {len} characters, over the {cap} the host delivers inline"
 
 [dispatch.guard_events]
-doc = "Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call, Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74)."
+doc = "Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call (Claude ignores exit 2 on PermissionRequest, so a fail-closed exit 2 there is harmless, and the event stays listed so a hook registered on it later is guarded from the start), Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74)."
 value = ["PreToolUse", "PermissionRequest", "Stop", "SubagentStop"]
 
 [dispatch.stop_events]
