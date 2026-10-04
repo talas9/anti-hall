@@ -125,6 +125,12 @@ function spawnCwd(dir) {
 // One process handles one hook call, and git-guard runs gitVerdict from two
 // passes (quote-aware + backstop): memoize so each query spawns git once.
 const gitCache = new Map();
+// The env git runs under (a guard's evaluate() env); default process.env.
+let baseEnv = process.env;
+function setBaseEnv(e) {
+  const n = e || process.env;
+  if (n !== baseEnv) { baseEnv = n; gitCache.clear(); }
+}
 function git(argv, dir, env) {
   const key = JSON.stringify([argv, spawnCwd(dir) || '', env || null]);
   if (!gitCache.has(key)) gitCache.set(key, gitUncached(argv, dir, env));
@@ -134,7 +140,7 @@ function gitUncached(argv, dir, env) {
   try {
     return execFileSync('git', argv, {
       cwd: spawnCwd(dir), encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS,
-      env: env && Object.keys(env).length ? Object.assign({}, process.env, env) : process.env,
+      env: env && Object.keys(env).length ? Object.assign({}, baseEnv, env) : baseEnv,
       stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 4 * 1024 * 1024,
     });
   } catch (_) {
@@ -501,7 +507,7 @@ function aliasCreatesCommit(args, sub, rest, dir, commitVerbs, env) {
 }
 
 module.exports = {
-  gitVerdict, shellDefinitionVerdict, aliasCreatesCommit, segmentEnv, forwardable,
+  gitVerdict, shellDefinitionVerdict, aliasCreatesCommit, segmentEnv, forwardable, setBaseEnv,
   // exported for tests
   expandAlias, commitSources, GIT_BUILTINS,
 };

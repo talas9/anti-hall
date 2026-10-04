@@ -48,8 +48,11 @@ const {
 } = require('./lib/shell-scan.js');
 // v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
 // fail-open to `undefined` (never the value that would arm/allow a guard).
+// The env of the current evaluate() call: every env-dependent decision reads this, never process.env.
+let guardEnv = process.env;
+function settingsOpts() { return require('./lib/settings.js').envOpts(guardEnv); }
 function settingsGet(section, key) {
-  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+  try { return require('./lib/settings.js').get(section, key, undefined, settingsOpts()); } catch (_) { return undefined; }
 }
 
 // Commands whose FIRST WORD (verb) are always heavy in coordinator context.
@@ -2655,8 +2658,7 @@ function isBoundedVerificationCommand(command, ctx) {
 // doctor.js reports each case.
 function loadProjectCommandAllowPatterns(cwd) {
   const lib = require('./lib/command-allow.js');
-  const testHomeGuard = require('../companion/lib/test-home-guard.js');
-  return lib.loadTrustedPatterns(cwd, testHomeGuard.resolveHome(undefined, process.env));
+  return lib.loadTrustedPatterns(cwd, io.homeOf(guardEnv));
 }
 
 // hasUnquotedRedirectChar(segment) -> true if a bare (unquoted) '>' or '<'
@@ -2750,8 +2752,7 @@ function redactAuditCommand(command) {
 function appendProjectCommandAllowAudit(entry) {
   let fd = null;
   try {
-    const testHomeGuard = require('../companion/lib/test-home-guard.js');
-    const home = testHomeGuard.resolveHome(undefined, process.env);
+    const home = io.homeOf(guardEnv);
     const ahDir = path.join(home, '.anti-hall');
     const logDir = path.join(ahDir, 'logs');
     fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
@@ -3870,7 +3871,7 @@ function scriptRunToken(segment) {
 
 // hookHomeRaw() -> the hook's HOME (resolveHome), '' when unavailable; hookHome() realpath'd.
 function hookHomeRaw() {
-  try { return require('../companion/lib/test-home-guard.js').resolveHome() || ''; } catch (_) { return ''; }
+  try { return io.homeOf(guardEnv) || ''; } catch (_) { return ''; }
 }
 function hookHome() {
   const h = hookHomeRaw();
@@ -3891,7 +3892,7 @@ function resolveScriptPath(token, ctx) {
   let unset = false;
   t = t.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (m, a, b) => {
     const name = a || b;
-    const v = name === 'PWD' ? ctx.cwd : process.env[name];
+    const v = name === 'PWD' ? ctx.cwd : guardEnv[name];
     if (typeof v !== 'string' || !v) { unset = true; return ''; }
     return v;
   });
@@ -3932,7 +3933,7 @@ function gitCleanTracked(root, abs, cache) {
   let clean = false;
   try {
     const out = require('child_process').execFileSync('git', ['status', '--porcelain=v1', '--ignored', '--', path.relative(root, abs)],
-      { cwd: root, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: '0' }) });
+      { cwd: root, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: Object.assign({}, guardEnv, { GIT_OPTIONAL_LOCKS: '0' }) });
     clean = String(out).trim() === '';
   } catch (_) { clean = false; }
   if (cache) cache.set(key, clean);
@@ -4175,7 +4176,15 @@ function forEachShellSegment(command, payload, fn, depth = 0) {
   for (const sub of extractSubstitutions(masked.text).concat(masked.inners)) forEachShellSegment(sub, payload, fn, depth + 1);
 }
 
+// opts.env: score under that env (the caller's evaluate() env), restored on return.
 function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null) {
+  if (depth !== 0 || !opts || !opts.env) return classifyBashWorkImpl(command, payload, opts, depth, shared);
+  const prev = guardEnv;
+  guardEnv = opts.env;
+  try { return classifyBashWorkImpl(command, payload, opts, depth, shared); } finally { guardEnv = prev; }
+}
+
+function classifyBashWorkImpl(command, payload, opts = {}, depth = 0, shared = null) {
   const res = { work: false, blockable: false, labels: new Set(), editBlocks: [] };
   if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return res;
   const o = Object.assign({ sessionStartTs: Date.now() - 21600000 }, opts || {});
@@ -4261,7 +4270,8 @@ function main(payload, env) {
   // markers (the only reliable signal under cmux).
   if (payload === undefined) return io.decision(0);
 
-  const { isSkipped } = require('./skip-guard.js');
+  const skipGuard = require('./skip-guard.js');
+  const isSkipped = (name) => skipGuard.isSkipped(name, env);
 
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
 
@@ -4291,7 +4301,7 @@ function main(payload, env) {
         return io.blockDecision(reason);
       }
       const cwd = (payload && payload.cwd) || '';
-      const fileKind = detectProtectedFileRead(command, os.homedir(), cwd);
+      const fileKind = detectProtectedFileRead(command, io.homeOf(env), cwd);
       if (fileKind) {
         const reason = buildRawFileReadReason(fileKind);
         return io.blockDecision(reason);
@@ -4395,11 +4405,11 @@ function main(payload, env) {
   // Off -> the core heavy-command gate below no-ops; the data-safety
   // sub-guards above (DevSwarm read/send/mailbox, armed stash) already ran.
   // Fail-open: any error runs the gate.
-  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard')) return io.decision(0); } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard', settingsOpts())) return io.decision(0); } catch (_) { /* run */ }
   const { isCoordinator } = require('./coordinator-detect.js');
 
   // Only block heavy commands in coordinator context (subagents pass through).
-  if (!isCoordinator(payload)) {
+  if (!isCoordinator(payload, env)) {
     return io.decision(0);
   }
 
@@ -4411,7 +4421,7 @@ function main(payload, env) {
   // passes. Both hosts (a Codex main thread is detected). Fail-open.
   try {
     if (settingsGet('guards', 'bashEditParity') !== false
-      && require('./lib/settings.js').enabled('safety', 'editGuard')
+      && require('./lib/settings.js').enabled('safety', 'editGuard', settingsOpts())
       && !isSkipped('edit-guard')
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
       // Over the classify cap: scan the heredoc header / first 16 KB (and the text after the heredoc), see lib/shell-writes.js.
@@ -4590,10 +4600,14 @@ function main(payload, env) {
 }
 
 function evaluate(payload, env) {
+  const prev = guardEnv;
+  guardEnv = env || process.env;
   try {
-    return main(payload, env || process.env) || io.decision(0);
+    return main(payload, guardEnv) || io.decision(0);
   } catch (_) {
     return io.decision(0); // Fail-open: never block a turn due to a hook bug.
+  } finally {
+    guardEnv = prev;
   }
 }
 

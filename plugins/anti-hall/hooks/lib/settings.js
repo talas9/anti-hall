@@ -70,11 +70,15 @@ function homeFromEnv(env) {
 // fixture that never needs the file tier) is never forced through
 // homeFromEnv()'s real-home refusal under `node --test`. Only a lookup that
 // actually falls through to settings.json evaluates `opts.home`.
-function getWithEnv(section, key, dflt, env) {
+function envOpts(env) {
   const e = env || process.env;
   const opts = { env: e };
   Object.defineProperty(opts, 'home', { get: () => homeFromEnv(e), enumerable: true });
-  return get(section, key, dflt, opts);
+  return opts;
+}
+
+function getWithEnv(section, key, dflt, env) {
+  return get(section, key, dflt, envOpts(env));
 }
 
 // path(opts?) -> ~/.anti-hall/settings.json (home-injectable for tests).
@@ -657,4 +661,4 @@ function source(section, key, opts) {
   return 'default';
 }
 
-module.exports = { load, get, readStoredPluginOptions, getWithEnv, enabled, set, reset, source, path: settingsPath, validate, lookup, safetyWarning };
+module.exports = { load, get, readStoredPluginOptions, getWithEnv, envOpts, enabled, set, reset, source, path: settingsPath, validate, lookup, safetyWarning };

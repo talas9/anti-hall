@@ -27,21 +27,21 @@ function main(payload, env, argv, out) {
   if (!payload || typeof payload !== 'object' || payload.tool_name !== 'Bash') return 0;
   const sid = typeof payload.session_id === 'string' ? payload.session_id.trim() : '';
   if (!sid) return 0;
-  if (!require('./coordinator-detect.js').isCoordinator(payload)) return 0;
-  if (require('./skip-guard.js').isSkipped('command-guard')) return 0;
-  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard')) return 0; } catch (_) { /* run */ }
+  if (!require('./coordinator-detect.js').isCoordinator(payload, env)) return 0;
+  if (require('./skip-guard.js').isSkipped('command-guard', env)) return 0;
+  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard', require('./lib/settings.js').envOpts(env))) return 0; } catch (_) { /* run */ }
   const lib = require('./lib/coordinator-work.js');
-  const cfg = lib.config();
+  const cfg = lib.config(env);
   if (!cfg.tMs) return 0;
   const command = payload.tool_input && typeof payload.tool_input.command === 'string' ? payload.tool_input.command : '';
-  const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, env);
+  const home = io.homeOf(env);
   const now = Date.now();
   const st = lib.readState(home, sid);
   const id = typeof payload.tool_use_id === 'string' && payload.tool_use_id && command.trim() ? payload.tool_use_id : '';
   const classify = () => (lib.provablyNotWork(command)
     ? { work: false, blockable: false }
-    : require('./command-guard.js').classifyBashWork(command, payload, { sessionStartTs: lib.sessionStart(st, now) }));
-  const skipped = () => require('./skip-guard.js').isSkipped(GUARD);
+    : require('./command-guard.js').classifyBashWork(command, payload, { sessionStartTs: lib.sessionStart(st, now), env }));
+  const skipped = () => require('./skip-guard.js').isSkipped(GUARD, env);
 
   if (!argv.includes('--post')) {
     const r = classify();

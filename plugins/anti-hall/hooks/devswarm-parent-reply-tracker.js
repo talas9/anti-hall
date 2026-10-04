@@ -77,7 +77,6 @@
 
 const fs = require('fs');
 const io = require('./lib/guard-io.js');
-const os = require('os');
 const path = require('path');
 
 const { isDevswarmActive, hasOnDiskDevswarmState } = require('./lib/devswarm-detect.js');
@@ -407,7 +406,7 @@ function parseSendResponse(text) {
 
 function main(payload, env) {
   // Settings switch devswarm.parentReplyTracker (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('devswarm', 'parentReplyTracker')) return; } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'parentReplyTracker', require('./lib/settings.js').envOpts(env))) return; } catch (_) { /* run */ }
   // Child guard runs FIRST, unconditionally, and is NEVER weakened by the
   // on-disk-evidence fallback added below: a child workspace must never
   // write the PARENT's reply state no matter how activation is decided.
@@ -436,7 +435,7 @@ function main(payload, env) {
   const command = (payload.tool_input && payload.tool_input.command) || '';
   if (!looksLikeDevswarmSend(command)) return;
 
-  const home = os.homedir();
+  const home = io.homeOf(env);
   const text = extractResponseText(payload.tool_response);
   // NOTE: the empty-stdout early return that used to live here has moved BELOW
   // the receipt sweep. A send whose stdout is empty (redirected/swallowed) is

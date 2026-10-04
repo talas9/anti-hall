@@ -66,13 +66,13 @@ function evaluate(payload, env, opts) {
 
 function decide(payload, env) {
   const settings = require('./lib/settings.js');
-  if (!settings.enabled('guards', 'compactDeclarationGuard', { home: require('../companion/lib/test-home-guard.js').resolveHome(), env })) return io.decision(0);
+  if (!settings.enabled('guards', 'compactDeclarationGuard', settings.envOpts(env))) return io.decision(0);
 
   if (!payload || typeof payload !== 'object') return io.decision(0);
 
   const { isSubagentByPayload } = require('./coordinator-detect.js');
   const { isSkipped } = require('./skip-guard.js');
-  if (isSubagentByPayload(payload) || isSkipped('compact-declaration-guard')) return io.decision(0);
+  if (isSubagentByPayload(payload) || isSkipped('compact-declaration-guard', env)) return io.decision(0);
   if (!isNewWork(payload)) return io.decision(0);
 
   const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : null;

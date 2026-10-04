@@ -58,22 +58,25 @@ const MAX_MODULES = 8;          // bound interpreter spawns (one per module grou
 // TOTAL_DEADLINE_MS (30000, leaves 15000ms headroom) and the hooks.json 45000ms
 // hook ceiling (leaves 15000ms headroom there too). Overridable (test-only: lets
 // tests force a fast, deterministic timeout without sleeping the real budget).
-const SPAWN_TIMEOUT_MS = (() => {
-  const v = parseInt(process.env.ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS || '', 10);
+// The env of the current evaluate() call: every env-dependent decision reads this, never process.env.
+let guardEnv = process.env;
+function settingsOpts() { return require('./lib/settings.js').envOpts(guardEnv); }
+function spawnTimeoutMs() {
+  const v = parseInt(guardEnv.ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS || '', 10);
   return Number.isFinite(v) && v > 0 ? v : 15000;
-})();
+}
 const TOTAL_DEADLINE_MS = 30000; // global wall-clock budget (< hooks.json 45s timeout, with headroom)
 const MAX_CODE_BYTES = 600000;  // skip absurdly large chunks
 
 // Sanitized env: full parent env MINUS interpreter-injection vectors, so a
 // poisoned env (NODE_OPTIONS=--require evil, PYTHONSTARTUP, PYTHONPATH) can't
 // influence the check — while keeping what Windows needs to spawn at all.
-const SAFE_ENV = (() => {
-  const e = { ...process.env };
+function safeEnv() {
+  const e = { ...guardEnv };
   const DANGER = /^(NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PYTHONINSPECT|PYTHONEXECUTABLE|PYTHONUSERBASE|PYTHONSAFEPATH)$/i;
   for (const k of Object.keys(e)) { if (DANGER.test(k)) delete e[k]; }
   return e;
-})();
+}
 
 // JS global builtins whose static / prototype members we can verify (always safe
 // — no import side effects).
@@ -88,9 +91,9 @@ const JS_GLOBALS = new Set([
 // edit time (a confirmed RCE vector). So 3rd-party checking is OPT-IN only:
 //   ANTIHALL_API_GUARD_THIRDPARTY=1  -> also check installed 3rd-party packages.
 // v0.108.0 unified settings: env > ~/.anti-hall/settings.json > default false.
-const THIRDPARTY = (() => {
-  try { return require('./lib/settings.js').get('guards', 'apiGuardThirdparty') === true; } catch (_) { return false; }
-})();
+function thirdparty() {
+  try { return require('./lib/settings.js').get('guards', 'apiGuardThirdparty', undefined, settingsOpts()) === true; } catch (_) { return false; }
+}
 
 const PY_STDLIB = new Set([
   'os', 'sys', 'math', 'cmath', 'random', 'json', 're', 'collections', 'itertools',
@@ -105,8 +108,8 @@ const NODE_BUILTINS = new Set([
   'querystring', 'http', 'https', 'net', 'dns', 'zlib', 'readline', 'child_process',
   'assert', 'timers', 'string_decoder', 'tls', 'dgram', 'process',
 ]);
-function pyAllowed(baseMod) { return THIRDPARTY || PY_STDLIB.has(baseMod); }
-function jsModAllowed(mod) { return THIRDPARTY || NODE_BUILTINS.has(mod); }
+function pyAllowed(baseMod) { return thirdparty() || PY_STDLIB.has(baseMod); }
+function jsModAllowed(mod) { return thirdparty() || NODE_BUILTINS.has(mod); }
 
 // A module specifier that resolves to a FILE ON DISK (relative/absolute) — never
 // probe these: importing them executes project-local code at edit time.
@@ -118,7 +121,7 @@ function isPathSpec(mod) {
 
 // guards.shellWriteChecks (default on): run on Bash writes too. Fail-open to on.
 function shellWriteChecksOn() {
-  try { return require('./lib/settings.js').get('guards', 'shellWriteChecks') !== false; } catch (_) { return true; }
+  try { return require('./lib/settings.js').get('guards', 'shellWriteChecks', undefined, settingsOpts()) !== false; } catch (_) { return true; }
 }
 // A Bash command naming no file langFor() checks has nothing to verify: skip
 // parsing it (most Bash calls end here).
@@ -334,14 +337,14 @@ let timeoutNotice = null; // { bin, budgetMs } | null
 function noteSpawnOutcome(bin, res) {
   if (timeoutNotice) return; // report only the first occurrence per run
   if (res && (res.signal || (res.error && res.error.code === 'ETIMEDOUT'))) {
-    timeoutNotice = { bin, budgetMs: SPAWN_TIMEOUT_MS };
+    timeoutNotice = { bin, budgetMs: spawnTimeoutMs() };
   }
 }
 
 function spawnJSON(bin, argv, cwd) {
   let res;
   try {
-    res = spawnSync(bin, argv, { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 262144, cwd: cwd || undefined });
+    res = spawnSync(bin, argv, { timeout: spawnTimeoutMs(), encoding: 'utf8', env: safeEnv(), maxBuffer: 262144, cwd: cwd || undefined });
   } catch (_) { return null; }
   noteSpawnOutcome(bin, res);
   if (!res || res.error || res.signal || res.status !== 0) return null;
@@ -448,7 +451,7 @@ function emitTimeoutNotice(out) {
 
 function runtimeVersion(bin) {
   try {
-    const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
+    const r = spawnSync(bin, ['--version'], { timeout: spawnTimeoutMs(), encoding: 'utf8', env: safeEnv(), maxBuffer: 65536 });
     return ((r && (r.stdout || r.stderr)) || '').trim().split('\n')[0] || bin;
   } catch (_) { return bin; }
 }
@@ -459,7 +462,7 @@ function pyBin() {
   _pyBin = null;
   for (const bin of ['python3', 'python']) {
     try {
-      const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
+      const r = spawnSync(bin, ['--version'], { timeout: spawnTimeoutMs(), encoding: 'utf8', env: safeEnv(), maxBuffer: 65536 });
       noteSpawnOutcome(bin, r);
       if (r && !r.error && r.status === 0 && /Python 3\./.test((r.stdout || '') + (r.stderr || ''))) { _pyBin = bin; break; }
     } catch (_) { /* try next */ }
@@ -469,13 +472,13 @@ function pyBin() {
 
 function main(payload, out) {
   // Settings switch guards.apiGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('guards', 'apiGuard')) return; } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('guards', 'apiGuard', settingsOpts())) return; } catch (_) { /* run */ }
   const deadline = Date.now() + TOTAL_DEADLINE_MS;
   if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
 
   let isSkipped;
   try { ({ isSkipped } = require('./skip-guard.js')); } catch (_) { isSkipped = () => false; }
-  if (isSkipped('api-guard')) return io.decision(0);
+  if (isSkipped('api-guard', guardEnv)) return io.decision(0);
 
   const chunks = newCodeChunks(payload);
   if (!chunks.length) return io.decision(0);
@@ -520,8 +523,9 @@ function main(payload, out) {
   return io.decision(2, JSON.stringify({ decision: 'block', reason }) + '\n', toStderr ? reason + '\n' : '');
 }
 
-function evaluate(payload) {
+function evaluate(payload, env) {
   const out = io.recorder();
+  guardEnv = env || process.env;
   timeoutNotice = null;
   _pyBin = undefined;
   try { return main(payload, out) || io.decision(0, out.stdout, out.stderr); } catch (_) { return io.decision(0); } // FAIL-OPEN on any internal error

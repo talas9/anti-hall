@@ -42,9 +42,9 @@ const SCAN_WINDOW = 128 * 1024;
 // ON only when explicitly enabled — env var (highest precedence) or
 // ~/.anti-hall/settings.json guards.mergeGate (v0.108.0 unified settings; see
 // hooks/lib/settings.js). Fail-open to disabled on any error.
-function gateEnabled() {
+function gateEnabled(env) {
   try {
-    return require('./lib/settings.js').get('guards', 'mergeGate') === true;
+    return require('./lib/settings.js').get('guards', 'mergeGate', undefined, require('./lib/settings.js').envOpts(env)) === true;
   } catch (_) {
     return false;
   }
@@ -301,17 +301,17 @@ function isAutoMerge(cmd) {
   return false;
 }
 
-function decide(payload) {
+function decide(payload, env) {
   // 1. Unreadable / unparseable stdin (payload undefined) fails open.
   if (payload === undefined) return io.decision(0);
 
   // 2. Skip-hatch: an explicit user opt-out disables this guard (TTL'd).
   let isSkipped;
   try { ({ isSkipped } = require('./skip-guard.js')); } catch (_) { isSkipped = () => false; }
-  try { if (isSkipped('merge-gate')) return io.decision(0); } catch (_) { /* fail-open */ }
+  try { if (isSkipped('merge-gate', env)) return io.decision(0); } catch (_) { /* fail-open */ }
 
   // 3. DEFAULT OFF — no-op unless explicitly enabled.
-  if (!gateEnabled()) return io.decision(0);
+  if (!gateEnabled(env)) return io.decision(0);
 
   const ti = payload && payload.tool_input;
   const cmd = ti && typeof ti.command === 'string' ? ti.command : '';
@@ -346,6 +346,7 @@ function decide(payload) {
     const jevAssist = require('./lib/jev-assist.js');
     jevAssist.askDetached({
       id: 'mergeGateHedge',
+      env,
       question: {
         type: 'noul',
         instructions: 'Does the recent reply text below contain an UNRESOLVED ' +
@@ -377,8 +378,8 @@ function decide(payload) {
   return io.decision(2, '', reason + '\n');
 }
 
-function evaluate(payload) {
-  try { return decide(payload); } catch (_) { return io.decision(0); } // fail-open on anything unexpected
+function evaluate(payload, env) {
+  try { return decide(payload, env || process.env); } catch (_) { return io.decision(0); } // fail-open on anything unexpected
 }
 
 module.exports = { evaluate };

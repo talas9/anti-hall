@@ -40,13 +40,37 @@ function blockDecision(reason, jsonObj) {
   return decision(2, JSON.stringify(jsonObj || { decision: 'block', reason: text }) + '\n', text + '\n');
 }
 
+// A full non-blocking pipe makes writeSync throw EAGAIN with part of the buffer unwritten; give up
+// silently only after this long (same ceiling as jev-client's MAX_TIMEOUT_MS, well under every hook timeout).
+const WRITE_RETRY_CAP_MS = 3000;
+const WRITE_RETRY_SLEEP_MS = 5;
+
+function sleepMs(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (_) { /* no wait available: spin on */ }
+}
+
 function writeAll(fd, s) {
   if (!s) return;
+  const buf = Buffer.from(s, 'utf8');
+  let off = 0;
+  let waited = 0;
   try {
-    const buf = Buffer.from(s, 'utf8');
-    let off = 0;
-    while (off < buf.length) off += fs.writeSync(fd, buf, off, buf.length - off);
+    while (off < buf.length) {
+      try {
+        off += fs.writeSync(fd, buf, off, buf.length - off);
+      } catch (e) {
+        if (!e || e.code !== 'EAGAIN' || waited >= WRITE_RETRY_CAP_MS) throw e;
+        sleepMs(WRITE_RETRY_SLEEP_MS);
+        waited += WRITE_RETRY_SLEEP_MS;
+      }
+    }
   } catch (_) { /* still exit with the decision's code */ }
+}
+
+// The home dir an evaluate() env implies (HOME, else USERPROFILE), never a bare os.homedir().
+function homeOf(env) {
+  const e = env || process.env;
+  return require('../../companion/lib/test-home-guard.js').resolveHome(e.HOME || e.USERPROFILE || undefined, e);
 }
 
 function readStdinPayload() {
@@ -66,4 +90,4 @@ function runCli(evaluate, opts) {
   process.exit(d && d.exitCode === 2 ? 2 : 0);
 }
 
-module.exports = { decision, recorder, blockDecision, runCli };
+module.exports = { decision, recorder, blockDecision, runCli, writeAll, homeOf, WRITE_RETRY_CAP_MS };

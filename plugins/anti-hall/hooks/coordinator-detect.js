@@ -19,9 +19,10 @@
 
 // A Task-tool subagent is identified by agent markers in the hook payload
 // (reliable everywhere, incl. cmux) OR by the agent_tool entrypoint (vanilla CLI).
-function isSubagent(payload) {
+function isSubagent(payload, env) {
+  const e = env || process.env;
   if (payload && (payload.agent_id || payload.agent_type)) return true;
-  if (process.env.CLAUDE_CODE_ENTRYPOINT === 'agent_tool') return true;
+  if (e.CLAUDE_CODE_ENTRYPOINT === 'agent_tool') return true;
   return false;
 }
 
@@ -79,7 +80,8 @@ function isCodexPayload(payload) {
 
 // Coordinator = NOT a subagent, running under a recognized interactive entrypoint.
 // Takes the parsed hook payload so it can use the payload's agent markers.
-function isCoordinator(payload) {
+function isCoordinator(payload, env) {
+  const e = env || process.env;
   // CODEX (any tool/event): Codex stamps agent_id/agent_type on a hook payload
   // ONLY inside a spawned subagent (captured from codex-cli 0.160.0: the
   // main-thread payload has neither key, a spawn_agent child's has both;
@@ -91,15 +93,15 @@ function isCoordinator(payload) {
   // and is that session's delegated worker, not a coordinator -> allow.
   if (isCodexPayload(payload)) {
     if (isSubagentByPayload(payload)) return false;
-    if (process.env.CLAUDE_CODE_ENTRYPOINT) return false;
+    if (e.CLAUDE_CODE_ENTRYPOINT) return false;
     return true;
   }
 
   // Subagents are never the coordinator — allow them (the whole point of the guard
   // is to keep the MAIN thread clean by pushing heavy work down to subagents).
-  if (isSubagent(payload)) return false;
+  if (isSubagent(payload, e)) return false;
 
-  const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
+  const entrypoint = e.CLAUDE_CODE_ENTRYPOINT;
   // Fail-open: if absent or unknown, allow (treat as subagent)
   if (!entrypoint || typeof entrypoint !== 'string') return false;
   // cli, vscode, jetbrains, vim, emacs, terminal_ide_* = coordinator

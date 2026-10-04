@@ -124,6 +124,11 @@ const LEGACY_ON_DEFAULT = new Set(['speculation', 'triage']);
 function homeDir(home) {
   return testHomeGuard.resolveHome(typeof home === 'string' && home ? home : null);
 }
+// homeOf(home, env) -> an explicit home, else the HOME the caller's env implies, else undefined
+// (-> the process home). Lets a guard's evaluate(payload, env) steer every Jev lookup by its env.
+function homeOf(home, env) {
+  return home || (env && (env.HOME || env.USERPROFILE)) || undefined;
+}
 function jevConfigPath(home) {
   return path.join(homeDir(home), '.anti-hall', 'jev.json');
 }
@@ -198,11 +203,11 @@ function envNameFor(id) {
 // > default). A future id with no schema entry falls through to undefined
 // here, and getMode() below falls back to reading fileCfg.integrations[id]
 // directly (the pre-schema behavior).
-function schemaIntegrationMode(id, home) {
+function schemaIntegrationMode(id, home, env) {
   try {
     const schema = require('./settings-schema.js');
     if (!schema.findSetting('jevIntegrations', id)) return undefined;
-    return require('./settings.js').get('jevIntegrations', id, undefined, { home: homeDir(home) });
+    return require('./settings.js').get('jevIntegrations', id, undefined, { home: homeDir(home), env });
   } catch (_) { return undefined; }
 }
 
@@ -210,11 +215,11 @@ function schemaIntegrationMode(id, home) {
 // schemaIntegrationMode(id, home) ('env'|'file'|'plugin-option'|'legacy'|
 // 'default'), or undefined when the id has no schema entry. Used only for
 // the pre-integrations-map triage:false legacy check below. Never throws.
-function schemaIntegrationSource(id, home) {
+function schemaIntegrationSource(id, home, env) {
   try {
     const schema = require('./settings-schema.js');
     if (!schema.findSetting('jevIntegrations', id)) return undefined;
-    return require('./settings.js').source('jevIntegrations', id, { home: homeDir(home) });
+    return require('./settings.js').source('jevIntegrations', id, { home: homeDir(home), env });
   } catch (_) { return undefined; }
 }
 
@@ -223,22 +228,23 @@ function schemaIntegrationSource(id, home) {
 // configured modes even while Jev is off).
 function getMode(id, fileCfg, home, opts) {
   const cfg = fileCfg || {};
-  let jevEnabled = cfg.enabled === true || process.env.ANTIHALL_JEV === '1';
+  const env = (opts && opts.env) || process.env;
+  let jevEnabled = cfg.enabled === true || env.ANTIHALL_JEV === '1';
   // `enabled` resolves through the unified settings store (env > settings.json
   // > /config > legacy jev.json > the caller's value), the same chain
   // jev-client.js uses; the raw jev.json alone would ignore a settings.json
   // value and the hooks would disagree with the client.
   try {
-    jevEnabled = require('./settings.js').get('jev', 'enabled', cfg.enabled === true, { home: homeDir(home) }) === true;
+    jevEnabled = require('./settings.js').get('jev', 'enabled', cfg.enabled === true, { home: homeDir(home), env }) === true;
   } catch (_) { /* keep the raw value */ }
-  if (process.env.ANTIHALL_JEV === '0') jevEnabled = false;
+  if (env.ANTIHALL_JEV === '0') jevEnabled = false;
   if (!jevEnabled && !(opts && opts.assumeEnabled)) return 'off';
 
-  if (process.env[envNameFor(id)] === '0') return 'off';
+  if (env[envNameFor(id)] === '0') return 'off';
 
   const integrations = (cfg.integrations && typeof cfg.integrations === 'object' &&
     !Array.isArray(cfg.integrations)) ? cfg.integrations : {};
-  const schemaValue = schemaIntegrationMode(id, home);
+  const schemaValue = schemaIntegrationMode(id, home, env);
   const value = schemaValue !== undefined ? schemaValue : integrations[id];
 
   // Legacy PRE-integrations-map switch: a bare {"triage": false} in jev.json
@@ -247,7 +253,7 @@ function getMode(id, fileCfg, home, opts) {
   // applies when nothing more specific (env/settings.json/plugin-option/the
   // nested "integrations.triage" legacy key) resolved a value, i.e.
   // schemaIntegrationMode fell all the way through to its own schema default.
-  if (id === 'triage' && cfg.triage === false && schemaIntegrationSource(id, home) === 'default') {
+  if (id === 'triage' && cfg.triage === false && schemaIntegrationSource(id, home, env) === 'default') {
     return 'off';
   }
 
@@ -784,11 +790,11 @@ function directionFor(trust, changed) {
 // than raw text/state so a caller using `cacheKey` still memoizes correctly.
 const askSyncResultMemo = new Map();
 
-function jevDecideSync({ question, state, timeoutMs, home }) {
+function jevDecideSync({ question, state, timeoutMs, home, env: baseEnv }) {
   const budget = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : DEFAULT_SYNC_TIMEOUT_MS;
   try {
     const input = JSON.stringify({ question, state, timeoutMs: budget }); // jev-client scrubs outbound text
-    const env = Object.assign({}, process.env);
+    const env = Object.assign({}, baseEnv || process.env);
     if (home) env.HOME = home; // propagate a test fixture HOME to the worker
     const raw = cp.execFileSync(process.execPath, [WORKER_PATH], {
       input,
@@ -929,10 +935,10 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
 // Returns null via the `skip` field when there is nothing to do (off, or
 // relax-block with a non-blocking baseline) — callers still get a full
 // baseline-only result in that case, without ever touching the network.
-function prepare({ id, home, trust, baseline, cacheKey, state }) {
-  const h = homeDir(home);
+function prepare({ id, home, env, trust, baseline, cacheKey, state }) {
+  const h = homeDir(homeOf(home, env));
   const fileCfg = readJevJson(h);
-  const mode = getMode(id, fileCfg, h);
+  const mode = getMode(id, fileCfg, h, { env });
   const hash = contentHash([id, QUESTION_VERSION, cacheKey != null ? String(cacheKey) : String(state)]);
 
   const cfg = loadJevConfig();
@@ -986,8 +992,8 @@ async function ask(opts = {}) {
 // uses. For callers (e.g. model-routing-guard) whose main() is synchronous
 // and cannot await.
 function askSync(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef, recordDisagreement } = opts;
-  const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, env, compare, project, sessionId, turnRef, recordDisagreement } = opts;
+  const { h, mode, hash, threshold, skip } = prepare({ id, home, env, trust, baseline, cacheKey, state });
 
   if (skip) {
     return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef, recordDisagreement });
@@ -1009,7 +1015,7 @@ function askSync(opts = {}) {
       r = { ok: true, answer: cached.answer, confidence: cached.confidence, ms: 0 };
       cachedFlag = true;
     } else {
-      r = jevDecideSync({ question, state, timeoutMs: budgetMs, home: h });
+      r = jevDecideSync({ question, state, timeoutMs: budgetMs, home: h, env });
       if (r.ok) {
         writeCache(h, Object.assign({}, cache, {
           [hash]: { answer: r.answer, confidence: r.confidence, _seq: nextCacheSeq(cache) },
@@ -1041,7 +1047,7 @@ function askSync(opts = {}) {
 // other I/O path in this file).
 function askDetached(opts = {}) {
   try {
-    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
+    const { id, question, state, trust, baseline, cacheKey, budgetMs, home, env, compare, project, sessionId, turnRef } = opts;
     // Check the integration mode BEFORE spawning — an 'off' integration (or
     // Jev disabled entirely, or a relax-block guard on a non-blocking
     // baseline) must cost this caller a single sync config read, never a
@@ -1050,7 +1056,7 @@ function askDetached(opts = {}) {
     // always logs, matching finalize()'s contract for call-volume/failure-
     // rate tracking) — written synchronously here since there's no network
     // call to wait on either way, so a spawn would only add overhead.
-    const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
+    const { h, mode, hash, threshold, skip } = prepare({ id, home, env, trust, baseline, cacheKey, state });
     if (skip) {
       finalize({ id, home: h, hash, mode, trust, baseline, judge: null, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
       return;
@@ -1061,11 +1067,11 @@ function askDetached(opts = {}) {
       const cfgTimeout = loadJevConfig().timeoutMs;
       if (cfgTimeout !== DEFAULT_TIMEOUT_MS) detachedBudgetMs = cfgTimeout;
     }
-    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs: detachedBudgetMs, home, compare, project, sessionId, turnRef });
+    const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs: detachedBudgetMs, home: homeOf(home, env), compare, project, sessionId, turnRef });
     const child = cp.spawn(process.execPath, [DETACHED_WORKER_PATH], {
       detached: true,
       stdio: ['pipe', 'ignore', 'ignore'],
-      env: process.env,
+      env: env || process.env,
     });
     // A spawn failure surfaces as an 'error' event, not a throw — swallow it
     // so a broken/missing node binary can never crash the caller's hook.
@@ -1090,8 +1096,8 @@ const RELAX_SYNC_CAP_MS = 1500;
 function consultRelax(opts) {
   const o = opts || {};
   try {
-    const h = homeDir(o.home);
-    if (getMode(o.id, readJevJson(h), h) !== 'on') { askDetached(o); return null; }
+    const h = homeDir(homeOf(o.home, o.env));
+    if (getMode(o.id, readJevJson(h), h, { env: o.env }) !== 'on') { askDetached(o); return null; }
     const budgetMs = Math.min(Number.isFinite(o.budgetMs) ? o.budgetMs : RELAX_SYNC_CAP_MS, RELAX_SYNC_CAP_MS);
     return askSync(Object.assign({}, o, { budgetMs }));
   } catch (_) { return null; }

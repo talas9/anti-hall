@@ -76,9 +76,9 @@ const path = require('path');
 // ON only when explicitly enabled — env var (highest precedence) or
 // ~/.anti-hall/settings.json guards.shipitGate (v0.108.0 unified settings; see
 // hooks/lib/settings.js). Fail-open to disabled on any error.
-function gateEnabled() {
+function gateEnabled(env) {
   try {
-    return require('./lib/settings.js').get('guards', 'shipitGate') === true;
+    return require('./lib/settings.js').get('guards', 'shipitGate', undefined, require('./lib/settings.js').envOpts(env)) === true;
   } catch (_) {
     return false;
   }
@@ -248,17 +248,17 @@ function advise(additionalContext) {
   return io.decision(0, JSON.stringify(out) + '\n');
 }
 
-function main(payload) {
+function main(payload, env) {
   // 1. Read stdin first; on any read failure fail-open.
   if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
 
   // 2. Skip-hatch: an explicit user opt-out disables this guard (TTL'd).
   let isSkipped;
   try { ({ isSkipped } = require('./skip-guard.js')); } catch (_) { isSkipped = () => false; }
-  try { if (isSkipped('ship-it-guard')) return io.decision(0); } catch (_) { /* fail-open */ }
+  try { if (isSkipped('ship-it-guard', env)) return io.decision(0); } catch (_) { /* fail-open */ }
 
   // 3. DEFAULT OFF — no-op unless explicitly enabled.
-  if (!gateEnabled()) return io.decision(0);
+  if (!gateEnabled(env)) return io.decision(0);
 
   const cwd = (payload && typeof payload.cwd === 'string') ? payload.cwd : process.cwd();
   // Codex apply_patch: every Add/Update/Delete path + Move-to destination. A
@@ -269,7 +269,7 @@ function main(payload) {
   if (shellWrite) {
     // Existence gate only, over the shell write's targets (header limit 2).
     let on = true;
-    try { on = require('./lib/settings.js').get('guards', 'shellWriteChecks') !== false; } catch (_) { on = true; }
+    try { on = require('./lib/settings.js').get('guards', 'shellWriteChecks', undefined, require('./lib/settings.js').envOpts(env)) !== false; } catch (_) { on = true; }
     if (!on) return io.decision(0);
     const command = payload.tool_input && payload.tool_input.command;
     const realCwd = require('./lib/scratchpad.js').realpathOrSelf(cwd);
@@ -340,8 +340,8 @@ function main(payload) {
   return io.decision(0);
 }
 
-function evaluate(payload) {
-  try { return main(payload); } catch (_) { return io.decision(0); } // fail-open on anything unexpected
+function evaluate(payload, env) {
+  try { return main(payload, env || process.env); } catch (_) { return io.decision(0); } // fail-open on anything unexpected
 }
 
 module.exports = { evaluate };

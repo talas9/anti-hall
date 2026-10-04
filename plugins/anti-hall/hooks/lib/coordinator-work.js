@@ -38,10 +38,10 @@ function int(v, dflt, min) {
   return Number.isFinite(n) && n >= min ? Math.floor(n) : dflt;
 }
 
-function config() {
+function config(env) {
   try {
     const s = require('./settings.js');
-    const g = (k) => s.get('guards', k);
+    const g = (k) => s.get('guards', k, undefined, s.envOpts(env));
     return {
       tMs: int(g('coordinatorWorkWindowMinutes'), 10, 0) * 60000,
       nudgeAt: int(g('coordinatorWorkNudgeAt'), DEFAULTS.nudgeAt, 0),

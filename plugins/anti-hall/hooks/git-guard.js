@@ -1102,6 +1102,7 @@ function consultGitGuardSelfCreditJev(text) {
       trust: 'add-block',
       baseline: false,
       budgetMs: CONSULT_BUDGET_MS,
+      env: guardEnv,
       sessionId: currentSessionId || undefined,
     });
     const verdict = result.final === true;
@@ -1821,7 +1822,7 @@ const GIT_HOOK_NAMES = new Set([
 let heredocDataOn = null; // guards.gitGuardHeredocData, read once per invocation
 function heredocDataEnabled() {
   if (heredocDataOn === null) {
-    try { heredocDataOn = require('./lib/settings.js').enabled('guards', 'gitGuardHeredocData') !== false; } catch (_) { heredocDataOn = true; }
+    try { heredocDataOn = require('./lib/settings.js').enabled('guards', 'gitGuardHeredocData', settingsOpts()) !== false; } catch (_) { heredocDataOn = true; }
   }
   return heredocDataOn;
 }
@@ -2285,7 +2286,7 @@ function computeSafeHomedir() {
     // directory fallback every shared helper uses - byte-identical in
     // production, but refuses under `node --test` if it would resolve to the
     // REAL developer home instead of an isolated fixture.
-    return require('../companion/lib/test-home-guard.js').resolveHome() || '';
+    return require('../companion/lib/test-home-guard.js').resolveHome(guardEnv.HOME || guardEnv.USERPROFILE, guardEnv) || '';
   } catch (_) {
     return '';
   }
@@ -2900,7 +2901,7 @@ function committedHandovers(ev, lastCdDir) {
     if (handoverQueryCache.has(key)) return handoverQueryCache.get(key);
     if (handoverQueryBudget <= 0) return undefined;
     handoverQueryBudget--;
-    const r = spawnSync('git', ['-C', dir, '-c', 'diff.relative=false', ...args], { encoding: 'utf8', timeout: 3000 });
+    const r = spawnSync('git', ['-C', dir, '-c', 'diff.relative=false', ...args], { encoding: 'utf8', timeout: 3000, env: guardEnv });
     const out = r.status === 0 && typeof r.stdout === 'string' ? parse(r.stdout) : null;
     handoverQueryCache.set(key, out);
     return out;
@@ -2939,7 +2940,7 @@ function committedHandovers(ev, lastCdDir) {
   if (!hits.length) return null;
   // Mid merge / cherry-pick / revert / rebase: the incoming history may already
   // carry a handover and concluding the operation must work. Fail open on error.
-  const gd = spawnSync('git', ['-C', dir, 'rev-parse', '--git-dir'], { encoding: 'utf8', timeout: 3000 });
+  const gd = spawnSync('git', ['-C', dir, 'rev-parse', '--git-dir'], { encoding: 'utf8', timeout: 3000, env: guardEnv });
   if (gd.status !== 0 || !gd.stdout.trim()) return null;
   const gitDir = path.resolve(dir, gd.stdout.trim());
   for (const m of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']) {
@@ -2952,7 +2953,7 @@ function handoverCommitVerdict(ev, lastCdDir) {
   if (!ev.args.some((t) => t.text === 'commit')) return null; // cheap pre-filter (aliases are not resolved: fail open)
   if (handoverEvalBudget-- <= 0) { handoverSkipped++; return null; }
   try {
-    if (handoverGuardOn === null) handoverGuardOn = require('./lib/settings.js').enabled('guards', 'handoverCommitGuard');
+    if (handoverGuardOn === null) handoverGuardOn = require('./lib/settings.js').enabled('guards', 'handoverCommitGuard', settingsOpts());
     if (!handoverGuardOn) return null;
     const hits = committedHandovers(ev, lastCdDir);
     if (!hits) return null;
@@ -3692,7 +3693,7 @@ function auditRecentCommits(cmd, cwd) {
   const hits = [];
   for (const dir of dirs) {
     const r = spawnSync('git', ['-C', dir, 'log', '-n', '20', '--format=%h%x1f%ct%x1f%B%x1e', 'HEAD'],
-      { encoding: 'utf8', timeout: 4000 });
+      { encoding: 'utf8', timeout: 4000, env: guardEnv });
     if (r.status !== 0 || !r.stdout) continue;
     for (const rec of r.stdout.split('\x1e')) {
       const [sha, ct, body] = rec.replace(/^\n/, '').split('\x1f');
@@ -3705,6 +3706,11 @@ function auditRecentCommits(cmd, cwd) {
 
 // Per-invocation state: one CLI process handled exactly one call, so these were
 // module-level; an in-process evaluate() must start every call from the same state.
+// The env of the current evaluate() call: every env-dependent decision reads this, never process.env.
+let guardEnv = process.env;
+let aliasEnvTouched = false; // git-alias-scan was handed a non-process env by an earlier call
+function settingsOpts() { return require('./lib/settings.js').envOpts(guardEnv); }
+
 function resetInvocationState() {
   currentSessionId = null;
   currentRawCommand = '';
@@ -3728,12 +3734,12 @@ function resetInvocationState() {
 
 function main(payload, argv, out) {
   // Settings switch safety.gitGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('safety', 'gitGuard')) return io.decision(0); } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('safety', 'gitGuard', settingsOpts())) return io.decision(0); } catch (_) { /* run */ }
   if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('git-guard')) return io.decision(0);
+  if (isSkipped('git-guard', guardEnv)) return io.decision(0);
 
   let cmd = '';
   let cwd = '';
@@ -3790,6 +3796,8 @@ function main(payload, argv, out) {
 
 function evaluate(payload, env, opts) {
   const out = io.recorder();
+  guardEnv = env || process.env;
+  if (guardEnv !== process.env || aliasEnvTouched) { aliasScan().setBaseEnv(guardEnv); aliasEnvTouched = guardEnv !== process.env; }
   resetInvocationState();
   try { return main(payload, (opts && opts.argv) || [], out) || io.decision(0); } catch (_) { return io.decision(0); } // fail-open
 }

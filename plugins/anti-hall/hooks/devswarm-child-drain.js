@@ -51,7 +51,6 @@ require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'childD
 
 const fs = require('fs');
 const io = require('./lib/guard-io.js');
-const os = require('os');
 const path = require('path');
 
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
@@ -71,15 +70,15 @@ const RAW_CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 let CLI = RAW_CLI;
 // Resolved at the start of every evaluate() (the CLI ran it once at load), so an
 // in-process caller with a different HOME gets that home's launcher path.
-function resolveCli() {
+function resolveCli(env) {
   CLI = RAW_CLI;
   try {
-    if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher') !== false) {
+    if (require('./lib/settings.js').enabled('devswarm', 'stableLauncher', require('./lib/settings.js').envOpts(env)) !== false) {
       // installLauncher (not installLaunchers) — this hook only ever embeds
       // CLI, never WATCHER; calling the plural form with no watcherFallback
       // would also (re)write the wake-watch launcher with a null fallback,
       // racing the correct fallback the other three DevSwarm hooks install.
-      CLI = require('./lib/stable-launcher.js').installLauncher('devswarm', RAW_CLI) || RAW_CLI;
+      CLI = require('./lib/stable-launcher.js').installLauncher('devswarm', RAW_CLI, io.homeOf(env)) || RAW_CLI;
     }
   } catch (_) {
     // fail-open: keep RAW_CLI
@@ -136,7 +135,7 @@ function buildMessage(count, id, oldestMs) {
 
 function main(payload, env, out) {
   // Settings switch devswarm.childDrain (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('devswarm', 'childDrain')) return; } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('devswarm', 'childDrain', require('./lib/settings.js').envOpts(env))) return; } catch (_) { /* run */ }
   payload = payload || {}; // unreadable / unparseable / null stdin -> {}
 
   if (!isDevswarmActive(env)) return; // no-op for non-DevSwarm sessions
@@ -195,7 +194,7 @@ function main(payload, env, out) {
   const id = env.DEVSWARM_BUILDER_ID;
   if (typeof id !== 'string' || !isSafeId(id)) return;
 
-  const home = os.homedir();
+  const home = io.homeOf(env);
   let desc = null;
   try { desc = JSON.parse(fs.readFileSync(path.join(devswarmRoot(home), 'workspaces', id + '.json'), 'utf8')); } catch (_) { desc = null; }
   if (!desc || typeof desc !== 'object' || !desc.inboxPath) return;
@@ -243,8 +242,9 @@ function main(payload, env, out) {
 
 function evaluate(payload, env) {
   const out = io.recorder();
-  resolveCli();
-  try { main(payload, env || process.env, out); } catch (_) { /* Fail-open: any error -> no output, no crash. */ }
+  env = env || process.env;
+  resolveCli(env);
+  try { main(payload, env, out); } catch (_) { /* Fail-open: any error -> no output, no crash. */ }
   return out.done(0);
 }
 

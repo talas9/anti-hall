@@ -267,7 +267,7 @@ function emit(out, hookSpecificOutputExtra) {
 function main(payload, env, out) {
   // Setting guards.scanThrottle (env ANTIHALL_SCAN_THROTTLE=0 (deprecated alias ANTI_HALL_SCAN_THROTTLE) still wins).
   // Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('guards', 'scanThrottle')) return; } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('guards', 'scanThrottle', require('./lib/settings.js').envOpts(env))) return; } catch (_) { /* run */ }
 
   if (payload === undefined) return; // unreadable / unparseable stdin
 

@@ -107,8 +107,8 @@ const PASS_PATTERNS = [
 const { basename } = require('./lib/shell-scan.js');
 // v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
 // fail-open to `undefined` (never the value that would disable a guard).
-function settingsGet(section, key) {
-  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+function settingsGet(section, key, env) {
+  try { return require('./lib/settings.js').get(section, key, undefined, require('./lib/settings.js').envOpts(env)); } catch (_) { return undefined; }
 }
 
 const RUNNER_VERBS = new Set(['pytest', 'jest', 'vitest', 'cargo']);
@@ -213,15 +213,15 @@ function extractExitCode(payload, blob) {
   return null;
 }
 
-function main(payload) {
-  if (settingsGet('guards', 'outputVerifyGuard') === false) {
+function main(payload, env) {
+  if (settingsGet('guards', 'outputVerifyGuard', env) === false) {
     return io.decision(0);
   }
 
   // Escape hatch: shared user-consented skip. Outer main() try/catch fails
   // OPEN on any skip-guard error, matching codex-nudge/speculation-guard.
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('output-verify-guard')) return io.decision(0);
+  if (isSkipped('output-verify-guard', env)) return io.decision(0);
 
   if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
   if (!payload || payload.tool_name !== 'Bash') return io.decision(0);
@@ -253,6 +253,7 @@ function main(payload) {
   try {
     require('./lib/jev-assist.js').askDetached({
       id: 'outputVerifyGuard',
+      env,
       question: {
         type: 'noul',
         instructions: 'Does this test-runner output show a GENUINELY mixed ' +
@@ -277,9 +278,10 @@ function main(payload) {
   // Once per turn per distinct signal set (guards.outputVerifyOncePerTurn, default
   // on): re-running the same suite in one turn yields the identical advisory
   // each time; the first copy already told the model to verify the counts.
-  if (settingsGet('guards', 'outputVerifyOncePerTurn') !== false) {
+  if (settingsGet('guards', 'outputVerifyOncePerTurn', env) !== false) {
     try {
       if (!require('./lib/turn-gate.js').firstThisTurn({
+        home: env.HOME || env.USERPROFILE || undefined,
         sessionId: payload.session_id,
         agentId: typeof payload.agent_id === 'string' ? payload.agent_id : '',
         transcriptPath: payload.transcript_path,
@@ -307,8 +309,8 @@ function main(payload) {
   return io.decision(0, JSON.stringify(out) + '\n');
 }
 
-function evaluate(payload) {
-  try { return main(payload) || io.decision(0); } catch (_) { return io.decision(0); } // fail-open: never block or wedge a PostToolUse turn
+function evaluate(payload, env) {
+  try { return main(payload, env || process.env) || io.decision(0); } catch (_) { return io.decision(0); } // fail-open: never block or wedge a PostToolUse turn
 }
 
 module.exports = { evaluate };

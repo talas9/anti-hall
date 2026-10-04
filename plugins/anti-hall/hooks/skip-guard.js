@@ -39,9 +39,14 @@ const DESTRUCTIVE = new Set(['git-guard', 'devswarm-read-guard', 'git-stash-guar
 // isSkipped(name): true when an unexpired, applicable skip is recorded.
 //   - data[name]  > now            -> skip this guard (covers destructive when named)
 //   - data.all    > now            -> skip, UNLESS name is destructive
-function isSkipped(name) {
+//   env (optional): the environment a guard's evaluate() was given; the marker is
+//   read from THAT env's HOME. Omitted -> the process home (SKIP_FILE), as before.
+function isSkipped(name, env) {
   try {
-    const raw = fs.readFileSync(SKIP_FILE, 'utf8').trim();
+    const file = env
+      ? path.join(require('../companion/lib/test-home-guard.js').resolveHome(env.HOME || env.USERPROFILE, env), '.anti-hall', 'skip.json')
+      : SKIP_FILE;
+    const raw = fs.readFileSync(file, 'utf8').trim();
     if (!raw) return false;
     const data = JSON.parse(raw);
     if (!data || typeof data !== 'object') return false;

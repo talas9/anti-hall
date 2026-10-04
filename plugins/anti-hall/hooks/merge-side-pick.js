@@ -16,10 +16,10 @@ function main(payload, env, argv, out) {
   const cmd = payload.tool_input && typeof payload.tool_input.command === 'string' ? payload.tool_input.command : '';
   const sid = typeof payload.session_id === 'string' ? payload.session_id.trim() : '';
   if (!cmd || !sid) return;
-  try { if (require('./lib/settings.js').get('guards', 'mergeSidePickAdvisory') === false) return; } catch (_) { /* default on */ }
-  try { if (require('./skip-guard.js').isSkipped('merge-side-pick')) return; } catch (_) { /* fail open */ }
+  try { if (require('./lib/settings.js').get('guards', 'mergeSidePickAdvisory', undefined, require('./lib/settings.js').envOpts(env)) === false) return; } catch (_) { /* default on */ }
+  try { if (require('./skip-guard.js').isSkipped('merge-side-pick', env)) return; } catch (_) { /* fail open */ }
   const lib = require('./lib/merge-side-pick.js');
-  const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, env);
+  const home = io.homeOf(env);
   if (payload.hook_event_name === 'PostToolUse' || argv.includes('--post')) {
     lib.record(home, sid, cmd);
     return;
