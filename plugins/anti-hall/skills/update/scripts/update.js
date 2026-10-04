@@ -3585,7 +3585,9 @@ function main() {
 /** renderHuman(status, changelog) → readable summary block. */
 function renderHuman(status, changelog) {
   const lines = [];
-  lines.push('anti-hall update');
+  const failed = /\bSTOP\b|dirty|diverged|failed|error/i.test(String(status.action || ''));
+  lines.push((failed ? '\u274C' : status.updated ? '\u2B06\uFE0F' : '\u2705') + ' anti-hall \u00B7 update: ' +
+    (failed ? 'not updated' : status.updated ? 'updated to v' + (status.latest || '?') : 'already up to date'));
   lines.push('  installed: ' + (status.installed || '(unknown)'));
   lines.push('  latest:    ' + (status.latest || '(unknown)'));
   lines.push('  updated:   ' + status.updated + (status.cacheSynced ? ' (cache synced)' : ''));

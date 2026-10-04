@@ -286,13 +286,13 @@ function main() {
   //    all. Unchanged from the prior behavior.
   if (risky.length && !planPath) {
     const shown = risky[0];
-    const reason =
-      'ship-it gate: L-risk file ' + shown + ' edited with no PLAN.md — plan first ' +
-      '(ANTIHALL_SHIPIT_GATE).\n' +
-      'This path is a hard-risk trigger (migration / auth / CI-workflow / security). ' +
-      'Per the ship-it skill, L-tier changes go through plan mode and a PLAN.md before code. ' +
-      'Create PLAN.md (repo root), or — if this is genuinely a smaller ' +
-      'change — disable the gate (unset ANTIHALL_SHIPIT_GATE) or use the documented skip-hatch.';
+    const reason = require('./lib/block-message.js').blockMessage({
+      guard: 'ship-it-guard',
+      what: 'L-risk file ' + shown + ' edited with no PLAN.md.',
+      why: 'This path is a hard-risk trigger (migration / auth / CI-workflow / security); per the ship-it skill, L-tier changes go through plan mode and a PLAN.md before code.',
+      instead: 'create PLAN.md (repo root) first.',
+      override: 'if this is genuinely a smaller change, unset ANTIHALL_SHIPIT_GATE or use the documented skip hatch',
+    });
 
     process.stderr.write(reason + '\n');
     process.exit(2);
@@ -313,14 +313,13 @@ function main() {
       const outOfScope = codeFiles.filter((f) => !fileMatchesDeclared(f, declared, cwd));
       if (outOfScope.length) {
         const shown = outOfScope[0];
-        advise(
-          'SHIP-IT PLAN-CONFORMANCE (advisory, not a block): ' + shown + ' does not ' +
-          'appear in any phase\'s declared "files:" list in ' + planPath + '.\n' +
-          'This may be a legitimate shared-file touch (`files:` is free text — false ' +
-          'positives on genuinely shared files are expected) or scope drift from the ' +
-          'plan. If intentional, proceed; if not, update PLAN.md\'s Blast radius / phase ' +
-          '`files:` list, or re-plan this phase.'
-        );
+        advise(require('./lib/block-message.js').message({
+          kind: 'warn',
+          guard: 'ship-it-guard',
+          what: shown + ' does not appear in any phase\'s declared "files:" list in ' + planPath + ' (advisory, not a block).',
+          why: 'It may be a legitimate shared-file touch (`files:` is free text, so false positives are expected) or scope drift.',
+          instead: 'if intentional, proceed; if not, update the PLAN.md Blast radius / phase `files:` list, or re-plan this phase.',
+        }));
       }
     }
   }

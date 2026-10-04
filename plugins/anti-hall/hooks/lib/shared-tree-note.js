@@ -74,11 +74,13 @@ function sharedTreeNote(payload, opts) {
     if (!agents.some((a) => a && a.spawnInput && writeCapable(a.spawnInput) && !isolated(a.spawnInput) && !inScratch(a.spawnInput))) return '';
     const home = opts && opts.home;
     const noWt = require('./dispatch-tier.js').repoDocsMatch(String(payload.cwd || process.cwd()), home, NO_WORKTREES_RE);
-    return 'SHARED-TREE (advisory): another write-capable agent is still running in this working tree, and this spawn is write-capable too. '
-      + 'Two such agents can stage and commit each other\'s uncommitted changes. '
-      + (noWt
-        ? 'Serialize them or give each its own scratch clone.'
-        : 'Pass isolation:"worktree", serialize them, or give each its own scratch clone.');
+    return require('./block-message.js').message({
+      kind: 'warn',
+      guard: 'shared-tree',
+      what: 'another write-capable agent is still running in this working tree, and this spawn is write-capable too.',
+      why: 'Two such agents can stage and commit each other\'s uncommitted changes.',
+      instead: noWt ? 'serialize them or give each its own scratch clone.' : 'pass isolation:"worktree", serialize them, or give each its own scratch clone.',
+    });
   } catch (_) { return ''; }
 }
 

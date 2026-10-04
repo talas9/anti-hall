@@ -327,7 +327,7 @@ test('INJECTOR: active cache (weekly 90%) -> additionalContext contains "LIMIT C
     const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0, 'exit 0');
     const ctx = additionalContext(r);
-    assert.ok(ctx.includes('LIMIT CONSERVATION ACTIVE'), `directive missing; got: ${ctx}`);
+    assert.ok(ctx.includes('limit conservation is active'), `directive missing; got: ${ctx}`);
     assert.ok(/weekly/i.test(ctx), 'reason (weekly) in directive');
   } finally { h.cleanup(); }
 });
@@ -352,7 +352,7 @@ test('INJECTOR: env=on (no cache) -> directive emitted with reason=manual-on', (
     });
     assert.strictEqual(r.status, 0);
     const ctx = additionalContext(r);
-    assert.ok(ctx.includes('LIMIT CONSERVATION ACTIVE'), `directive missing; got: ${ctx}`);
+    assert.ok(ctx.includes('limit conservation is active'), `directive missing; got: ${ctx}`);
     assert.ok(ctx.includes('manual-on'), 'manual-on reason in directive');
   } finally { h.cleanup(); }
 });
@@ -397,7 +397,7 @@ test('INJECTOR emit-dedupe: identical directive repeated immediately -> suppress
     const r1 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r1.status, 0);
     const ctx1 = additionalContext(r1);
-    assert.ok(ctx1.includes('LIMIT CONSERVATION ACTIVE'), `first call must emit; got: ${ctx1}`);
+    assert.ok(ctx1.includes('limit conservation is active'), `first call must emit; got: ${ctx1}`);
 
     const r2 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r2.status, 0);
@@ -407,7 +407,7 @@ test('INJECTOR emit-dedupe: identical directive repeated immediately -> suppress
     const r3 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r3.status, 0);
     const ctx3 = additionalContext(r3);
-    assert.ok(ctx3.includes('LIMIT CONSERVATION ACTIVE'), `changed reason must still emit; got: ${ctx3}`);
+    assert.ok(ctx3.includes('limit conservation is active'), `changed reason must still emit; got: ${ctx3}`);
     assert.ok(/5h|five.?hour/i.test(ctx3), `expected the changed (5h) reason; got: ${ctx3}`);
   } finally { h.cleanup(); }
 });
@@ -417,10 +417,10 @@ test('INJECTOR emit-dedupe: different session_id is not suppressed by another se
   try {
     writeCacheFile(h.home, makeCache({ weekly: 90 }));
     const r1 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
-    assert.ok(additionalContext(r1).includes('LIMIT CONSERVATION ACTIVE'));
+    assert.ok(additionalContext(r1).includes('limit conservation is active'));
 
     const r2 = testHook(INJECT_HOOK, { ...promptPayload(), session_id: 'other' }, { home: h.home, expectJson: true });
-    assert.ok(additionalContext(r2).includes('LIMIT CONSERVATION ACTIVE'), 'a different session must still see the directive');
+    assert.ok(additionalContext(r2).includes('limit conservation is active'), 'a different session must still see the directive');
   } finally { h.cleanup(); }
 });
 

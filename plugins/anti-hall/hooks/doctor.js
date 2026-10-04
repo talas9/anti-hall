@@ -100,9 +100,9 @@ const C = process.stdout.isTTY
 
 let pass = 0, fail = 0, warn = 0;
 const lines = [];
-function ok(msg)   { pass++; lines.push(`  ${C.g}✓${C.x} ${msg}`); }
-function bad(msg)  { fail++; lines.push(`  ${C.r}✗${C.x} ${msg}`); }
-function warnl(msg){ warn++; lines.push(`  ${C.y}!${C.x} ${msg}`); }
+function ok(msg)   { pass++; lines.push(`  ✅ ${msg}`); }
+function bad(msg)  { fail++; lines.push(`  ❌ ${msg}`); }
+function warnl(msg){ warn++; lines.push(`  ⚠️ ${msg}`); }
 // infol: a neutral "not detected — skipped" note. Deliberately does NOT touch
 // pass/fail/warn — an absent optional integration is not a warning, it's the
 // expected state for most users, and must not make a healthy machine look
@@ -126,8 +126,8 @@ function head(t)   { lines.push(`\n${C.b}${t}${C.x}`); }
 // whatever sections actually ran before the exit.
 function emitVerdictAndExit() {
   const verdict = fail === 0
-    ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
-    : `${C.r}${C.b}anti-hall has ${fail} FAILURE(S)${C.x} — ${pass} passed, ${warn} warning(s)`;
+    ? `✅ anti-hall · doctor: active, ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
+    : `❌ anti-hall · doctor: ${fail} failure(s), ${pass} passed, ${warn} warning(s)`;
   if (!QUIET) {
     process.stdout.write(`${C.c}${C.b}anti-hall doctor${C.x} ${C.d}v${version}${C.x}\n`);
     process.stdout.write(lines.join('\n') + '\n\n');

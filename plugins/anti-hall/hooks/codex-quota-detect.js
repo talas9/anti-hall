@@ -79,9 +79,13 @@ function main() {
     const out = {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: 'CODEX QUOTA: codex:codex-rescue reported quota exhaustion (' +
-          hit.reason + '). Recorded to ~/.anti-hall/codex-availability.json, until ' + until +
-          '. Codex unavailable until then; route correctness review to Sonnet.',
+        additionalContext: require('./lib/block-message.js').message({
+          kind: 'warn',
+          guard: 'codex-quota',
+          what: 'codex:codex-rescue reported quota exhaustion (' + hit.reason + ').',
+          why: 'Recorded to ~/.anti-hall/codex-availability.json until ' + until + '; Codex is unavailable until then.',
+          instead: 'route correctness review to Sonnet.',
+        }),
       },
     };
     fs.writeSync(1, JSON.stringify(out) + '\n');

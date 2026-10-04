@@ -287,15 +287,15 @@ function main() {
 
   const names = Array.from(scan.codeFiles).slice(0, 3).join(', ');
   const more = scan.codeFiles.size > 3 ? ', …' : '';
-  const reason =
-    'anti-hall codex-nudge (advisory): this session made ' + scan.codeEdits +
-    ' substantial code edit(s) across ' + scan.codeFiles.size + ' file(s) (' + names + more +
-    ') with no Codex second opinion. Per the everyday-routing policy, get an independent ' +
-    'OpenAI-Codex review of the diff for CORRECTNESS (off-by-one, races, subtle low-level ' +
-    'bugs — what Codex catches best) before calling it done: spawn a `codex:codex-rescue` ' +
-    'agent (or run /codex:rescue) on the change. Keep planning/architecture review on Opus. ' +
-    'Advisory only — if this is trivial, already reviewed, or Codex is unavailable, just ' +
-    'continue (set ANTIHALL_CODEX_NUDGE=off to silence).';
+  const reason = require('./lib/block-message.js').message({
+    kind: 'tip',
+    guard: 'codex-nudge',
+    what: 'this session made ' + scan.codeEdits + ' substantial code edit(s) across ' + scan.codeFiles.size + ' file(s) (' + names + more + ') with no Codex second opinion (advisory).',
+    why: 'An independent Codex review catches correctness bugs (off-by-one, races, subtle low-level bugs).',
+    instead: 'before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:rescue) on the diff; keep planning/architecture review on Opus.',
+    allowed: 'skip it if the change is trivial, already reviewed, or Codex is unavailable.',
+    override: 'set ANTIHALL_CODEX_NUDGE=off to silence',
+  });
 
   fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(0);

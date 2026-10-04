@@ -74,10 +74,12 @@ function main() {
   const shown = truncateCommand(cmd);
   const cmdPart = shown ? ' (`' + shown + '`)' : '';
 
-  const reason =
-    'anti-hall root-cause nudge: this command failed' + cmdPart + '. Before retrying ' +
-    'or patching, trace WHY it failed — see /anti-hall:root-cause — rather than ' +
-    'guessing a fix from the symptom.';
+  const reason = require('./lib/block-message.js').message({
+    kind: 'tip',
+    guard: 'root-cause',
+    what: 'this command failed' + cmdPart + '.',
+    instead: 'before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) rather than guessing a fix from the symptom.',
+  });
 
   const out = {
     hookSpecificOutput: {

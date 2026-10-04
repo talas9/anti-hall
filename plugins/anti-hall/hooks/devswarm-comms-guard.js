@@ -200,10 +200,11 @@ function main() {
   // "main": this session's own background-subagent-to-coordinator address, not
   // a cross-session peer at all.
   if (to.toLowerCase() === 'main') {
-    allow(
-      'DEVSWARM-COMMS (in-process): SendMessage target "main" is this session\'s own ' +
-      'coordinator address, not a cross-session peer.'
-    );
+    allow(require('./lib/block-message.js').message({
+      kind: 'tip',
+      guard: 'devswarm-comms',
+      what: 'SendMessage target "main" is this session\'s own coordinator address, not a cross-session peer.',
+    }));
   }
 
   const bareName = stripRef(to);
@@ -214,15 +215,12 @@ function main() {
   const session = findSessionByName(bareName);
 
   if (session && isDevswarmWorkspacePath(session.cwd)) {
-    block(
-      'anti-hall devswarm-comms-guard: SendMessage target "' + to + '" resolves to a ' +
-      'DevSwarm WORKSPACE-BACKED PEER SESSION (cwd: ' + session.cwd + '). Direct ' +
-      'Claude remote-agent messaging (SendMessage) between a DevSwarm Primary/child ' +
-      'and a workspace is prohibited (owner rule 2026-09-04, defect 1c74863863e5) — ' +
-      'channel this through the DevSwarm mesh instead: ' +
-      'node plugins/anti-hall/scripts/devswarm.js send --to <meshId> --message "..." ' +
-      '(resolve <meshId> from the DevSwarm workspace registry, not this session name).'
-    );
+    block(require('./lib/block-message.js').blockMessage({
+      guard: 'devswarm-comms-guard',
+      what: 'SendMessage target "' + to + '" resolves to a DevSwarm workspace-backed peer session (cwd: ' + session.cwd + ').',
+      why: 'Direct Claude remote-agent messaging between a DevSwarm Primary/child and a workspace is prohibited (owner rule 2026-09-04, defect 1c74863863e5).',
+      instead: 'use the DevSwarm mesh: `node plugins/anti-hall/scripts/devswarm.js send --to <meshId> --message "..."` (resolve <meshId> from the DevSwarm workspace registry, not this session name).',
+    }));
   }
 
   // Immediate in-process-subagent signal: the raw agentId form. defect N11
@@ -250,10 +248,11 @@ function main() {
   // Matched a live session, but its cwd is NOT a DevSwarm workspace path — an
   // ordinary cross-session peer (e.g. another project's Claude session), not
   // the thing this rule targets.
-  allow(
-    'DEVSWARM-COMMS (peer session, non-workspace): target "' + to + '" resolves to a ' +
-    'live session (cwd: ' + session.cwd + ') that is not a DevSwarm workspace path — allowed.'
-  );
+  allow(require('./lib/block-message.js').message({
+    kind: 'ok',
+    guard: 'devswarm-comms',
+    what: 'target "' + to + '" resolves to a live session (cwd: ' + session.cwd + ') that is not a DevSwarm workspace path; allowed.',
+  }));
 }
 
 try {

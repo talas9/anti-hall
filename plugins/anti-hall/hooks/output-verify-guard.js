@@ -286,11 +286,13 @@ function main() {
   if (failHit) bits.push('a failure signal (' + JSON.stringify(failHit) + ')');
   if (nonZeroExit) bits.push('a non-zero exit code (' + exitCode + ')');
 
-  const reason =
-    'anti-hall output-verify-guard (advisory, not a block): this Bash command\'s ' +
-    'output contains ' + bits.join(' AND ') + ' in the same run. Before reporting ' +
-    '"tests pass" / "build succeeded", re-read the full output and confirm the ' +
-    'actual pass/fail counts and exit code — a mixed summary is not a clean pass.';
+  const reason = require('./lib/block-message.js').message({
+    kind: 'warn',
+    guard: 'output-verify-guard',
+    what: 'this Bash command\'s output contains ' + bits.join(' AND ') + ' in the same run (advisory, not a block).',
+    why: 'A mixed summary is not a clean pass.',
+    instead: 'before reporting "tests pass" / "build succeeded", re-read the full output and confirm the actual pass/fail counts and exit code.',
+  });
 
   const out = {
     hookSpecificOutput: {

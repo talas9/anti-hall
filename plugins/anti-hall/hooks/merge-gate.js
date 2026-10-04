@@ -369,11 +369,13 @@ function main() {
   // 6. Unresolved hedge + auto-merge -> BLOCK.
   // Report the LAST hedge that actually triggered the block (order-sensitive).
   const blockingHedge = lastHedgePhrase(text) || hedge;
-  const reason =
-    'merge-gate: your recent output flagged a deliverable as pending/unverified ("' +
-    blockingHedge + '") — a self-issued hedge blocks auto-merge (false-done backstop). ' +
-    'Verify it against its agreed criterion or get owner sign-off, then merge; or ' +
-    'skip via ANTIHALL_MERGE_GATE off / isSkipped(\'merge-gate\').';
+  const reason = require('./lib/block-message.js').blockMessage({
+    guard: 'merge-gate',
+    what: 'auto-merge blocked: your recent output flagged a deliverable as pending/unverified ("' + blockingHedge + '").',
+    why: 'A self-issued hedge blocks auto-merge (false-done backstop).',
+    instead: 'verify it against its agreed criterion or get owner sign-off, then merge.',
+    override: 'set ANTIHALL_MERGE_GATE=off, or skip merge-gate',
+  });
 
   process.stderr.write(reason + '\n');
   process.exit(2);

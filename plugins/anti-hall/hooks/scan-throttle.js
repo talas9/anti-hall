@@ -330,11 +330,12 @@ function main() {
     // A scan command exists, but the prefix position is not unambiguous
     // (mid-compound match, or wrapped in a subshell/brace group): generic note.
     emit({
-      additionalContext:
-        'SCAN-THROTTLE: a repo-wide scan command was detected in a compound or ' +
-        'grouped command (not the first simple command). The command was NOT ' +
-        'modified. Consider running the scan background-throttled, e.g. ' +
-        '`' + prefix.trim() + ' <that command>`.',
+      additionalContext: require('./lib/block-message.js').message({
+        kind: 'tip',
+        guard: 'scan-throttle',
+        what: 'a repo-wide scan command was detected in a compound or grouped command (not the first simple command); it was NOT modified.',
+        instead: 'consider running the scan background-throttled, e.g. `' + prefix.trim() + ' <that command>`.',
+      }),
     });
     return;
   }
@@ -344,10 +345,13 @@ function main() {
   // try to exec the literal `NAME=value`). Advisory only; input is untouched.
   const throttled = leadingText + prefix + rest;
   emit({
-    additionalContext:
-      'SCAN-THROTTLE: this is a heavy repo-wide scan. The command was NOT ' +
-      'modified. To keep the machine responsive, consider re-running it ' +
-      'background-throttled: `' + throttled + '`.',
+    additionalContext: require('./lib/block-message.js').message({
+      kind: 'tip',
+      guard: 'scan-throttle',
+      what: 'this is a heavy repo-wide scan; the command was NOT modified.',
+      why: 'To keep the machine responsive.',
+      instead: 're-run it background-throttled: `' + throttled + '`.',
+    }),
   });
 }
 

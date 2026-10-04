@@ -23,7 +23,7 @@ const { isConserving } = require('./limit-conserve.js');
 const { isSkipped } = require('./skip-guard.js');
 
 const DOWNSHIFT_DIRECTIVE =
-  'MAIN-MODEL DOWNSHIFT: if the main agent is on the flagship model ' +
+  'Main-model downshift: if the main agent is on the flagship model ' +
   '(Claude Opus or Codex frontier category), switch it to the cheaper 1M-context variant ' +
   'to preserve the flagship weekly bucket — ' +
   'Claude → Sonnet (1M context), Codex → the workhorse category\'s 1M-context model ' +
@@ -39,16 +39,13 @@ function buildDirective(state) {
   const resetsClause = state.resetsAt
     ? ' Defer non-urgent heavy work until reset at ' + state.resetsAt + '.'
     : ' Defer non-urgent heavy work until the next reset.';
-  return (
-    'LIMIT CONSERVATION ACTIVE (' + state.reason + '): ' +
-    'route execution to Codex (codex:codex-rescue — separate limit) and cheap Claude ' +
-    '(Sonnet draws on a SEPARATE weekly bucket; Haiku for trivial). ' +
-    'Keep the MAIN agent on Claude; send hard reasoning to subagents. ' +
-    'Codex has its OWN limit — if it’s unavailable/rate-limited degrade to Sonnet, ' +
-    'never retry-loop (backoff).' +
-    resetsClause +
-    ' ' + DOWNSHIFT_DIRECTIVE
-  );
+  return require('./lib/block-message.js').message({
+    kind: 'warn',
+    guard: 'limit-conserve',
+    what: 'limit conservation is active (' + state.reason + ').',
+    why: 'Usage is near a plan limit.',
+    instead: 'route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet draws on a SEPARATE weekly bucket; Haiku for trivial); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff).' + resetsClause + ' ' + DOWNSHIFT_DIRECTIVE,
+  });
 }
 
 function main() {

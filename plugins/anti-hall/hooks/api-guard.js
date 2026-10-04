@@ -492,14 +492,14 @@ function main() {
 
   const vers = (Date.now() > deadline ? [...binsUsed] : [...binsUsed].map((b) => runtimeVersion(b))).join(', ');
   const list = uniq.map((f) => '  • ' + f.label).join('\n');
-  const reason =
-    'anti-hall api-guard: this code references API(s) that DO NOT EXIST in your ' +
-    'installed runtime (' + vers + '):\n' + list + '\n\n' +
-    'These attributes are absent from the real (installed) module/object — they ' +
-    'look like fabrications. Verify the correct name (check the docs / run a quick ' +
-    '`hasattr` / `typeof` probe) and fix the reference before writing.\n' +
-    'If you are intentionally targeting a NEWER version where this exists, ' +
-    'override once: write ~/.anti-hall/skip.json {"api-guard": <unix-ms-expiry>}.';
+  const reason = require('./lib/block-message.js').blockMessage({
+    guard: 'api-guard',
+    what: 'this code references API(s) that do not exist in your installed runtime (' + vers + '):',
+    why: 'These attributes are absent from the real module/object; they look like fabrications.',
+    instead: 'verify the correct name (check the docs or run a quick `hasattr` / `typeof` probe) and fix the reference before writing.',
+    override: 'only if you target a NEWER version where it exists: write ~/.anti-hall/skip.json {"api-guard": <unix-ms-expiry>}',
+    extra: list.split('\n'),
+  });
 
   fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   // Codex honors exit 2 only with the reason on stderr (it reads stdout JSON on

@@ -256,12 +256,12 @@ function main() {
     // guard can never recover. Only an ALLOWED spawn is recorded (below).
     if (recent.length >= SPAWN_CAP) {
       tripCount = recent.length;
-      blockReason =
-        'anti-hall swarm-guard: agent spawn-rate ceiling reached (' + recent.length +
-        ' spawns in the last 60s, cap is ' + SPAWN_CAP + '). Pause new agents to avoid ' +
-        'a runaway swarm that can make the OS unusable. Let running agents finish, ' +
-        'then continue. Respect the concurrency cap (~min(16, cores-2)): never spawn ' +
-        'unbounded agents; let in-flight agents finish before launching more waves.';
+      blockReason = require('./lib/block-message.js').blockMessage({
+        guard: 'swarm-guard',
+        what: 'agent spawn-rate ceiling reached (' + recent.length + ' spawns in the last 60s, cap is ' + SPAWN_CAP + ').',
+        why: 'A runaway swarm can make the OS unusable.',
+        instead: 'pause new agents and let running ones finish, then launch the next wave; respect the concurrency cap (~min(16, cores-2)).',
+      });
     } else {
       // Spawn is allowed: record its timestamp INSIDE the lock so concurrent
       // spawns observe it. A persist failure is fail-open (allow without recording).
