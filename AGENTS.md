@@ -276,6 +276,7 @@ feature/KB touches this area:
 - PreToolUse(Write|Edit|MultiEdit|NotebookEdit) — edit-guard [C]
 - PreToolUse(Read) — inbox-read-guard
 - PreToolUse(Agent)+PreToolUse(Task) — model-routing-guard, swarm-guard, phase-tracker
+- PreToolUse(Agent|Task|Workflow) — orch-on-spawn
 - PreToolUse(SendMessage) — devswarm-comms-guard
 - PreToolUse(AskUserQuestion) — ask-guard
 - PreToolUse(TaskStop) — stale-agent-stop-note
@@ -299,7 +300,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - autoHandover: enabled, pct=85, maxTokens=0, nag, nagStepPct=5, nagQuietMin=15, gateNewWork, gateBudgetPct=5, decisivePrompt | gateHousekeepingMarkers
 - guards: mergeGate=false, shipitGate=false, outputVerifyGuard, failureRootCauseNudge, repoSelfDrift, stashGuard=false, handoverCommitGuard, gitignoreHint, emitDedupe, codexQuotaDetect, allowReadOnlyVerify, allowReadOnlyVerifyScripts, projectCommandAllow, projectEditAllow, allowPlainPush, allowGcloudReads, allowBackgroundScratchScripts, modelRouting=strict, updateInSession, modelRoutingDeployFloor=sonnet, apiGuard, speculationGuard, claimLedger, taskGuard, tasklistGuard, scanThrottle, silentAgentNudge, compactAdviceGuard, compactAdviceRecentTurns=10, compactDeclarationGuard | allowAnthropicEnvKey, injectionRepeatEvery, editGuardAllow, allowSubagentMailbox, coordinatorWorkWindowMinutes, coordinatorWorkNudgeAt, coordinatorWorkBlockAt, coordinatorWorkMaxEntries, bashEditParity, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, pruneCompletedTasksAfter, progressFreshMs, apiGuardThirdparty, noBlockingQuestions, questionAgentsNote, sharedTreeAgentNote, taskGuardOwnerBlockedMarker, dispatchDemand, idleNeglectMinPriority, maxParallelDispatch, silentAgentNudgeMin, staleAgentStopNote, compactAdviceMarginPct, stopHookVersionDowngrade, stopAck
 - safety: gitGuard, commandGuard, editGuard, swarmGuard
-- context: verifyFirstSession, verifyFirstOrchestration, verifyFirstTurn, verifyFirstSubagent, taskTracker, handoverResume, defectNudge | dedupeWindowMin
+- context: verifyFirstSession, verifyFirstOrchestration, protocolLevel=compact, orchFullOn=auto, verifyFirstTurn, verifyFirstSubagent, taskTracker, handoverResume, defectNudge | dedupeWindowMin
 - maintenance: repairOnReload, progressPrune, precompactSnapshot, taskLifecycleLog, sessionEndReaper
 - versionAlerts: antiHall, claudeCli, devswarm
 - updates: quiet=false, allowCachePrune | reconcileBudgetMs, postpullBudgetMs, sweepBudgetMs
@@ -311,7 +312,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - codexNudge: enabled | min
 - defects: defaultProj=—
 
-**State** (`~/.anti-hall/`): settings.json; skip.json; jev.json; update-sweep-state.json; version-check.json, version-alert-reload.json; auto-handover/<session>.json, context-pct/<session>.json; codex-availability.json, phase-state.json, agents/; claim-ledger/, approvals/, defects/; logs/; coordinator-work-session-<session>.json; coordinator-work-metrics.json; coordinator-work-trips.log; .coordinator-work-fold-stamp.json; devswarm/. Per project: `.anti-hall/progress/`, `history/`, `handovers/`.
+**State** (`~/.anti-hall/`): settings.json; skip.json; jev.json; update-sweep-state.json; version-check.json, version-alert-reload.json; orch-full/; auto-handover/<session>.json, context-pct/<session>.json; codex-availability.json, phase-state.json, agents/; claim-ledger/, approvals/, defects/; logs/; coordinator-work-session-<session>.json; coordinator-work-metrics.json; coordinator-work-trips.log; .coordinator-work-fold-stamp.json; devswarm/. Per project: `.anti-hall/progress/`, `history/`, `handovers/`.
 
 **Hard rules**: verify before claiming; no AI self-credit, no force-push; no data deletion without explicit user confirmation, never automated; DevSwarm via the mesh only; change settings via `/anti-hall:settings`; skips only on explicit user request.
 

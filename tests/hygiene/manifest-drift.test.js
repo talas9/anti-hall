@@ -49,8 +49,10 @@ function hookFilesByEvent(hooksObj) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
         const command = (h && h.command) || '';
-        const m = command.match(/([A-Za-z0-9_.-]+\.js)"?\s*$/);
-        if (m) files.add(m[1]);
+        // First unanchored script token (as hooks/doctor.js): trailing args such as `--host=claude` are allowed.
+        const m = command.match(/([\w.-]+\.js)/);
+        assert.ok(m, 'hooks.json command names no .js script: ' + command);
+        files.add(m[1]);
       }
     }
     out[event] = files;
@@ -102,6 +104,8 @@ const CLAUDE_ONLY_ALLOWLIST = [
   // PostToolUse Agent: reads the result of a Claude-side codex:codex-rescue
   // Agent dispatch to record a Codex quota outage for later Claude sessions.
   { event: 'PostToolUse', file: 'codex-quota-detect.js', reason: 'Agent-tool matcher — inspects a Claude Code codex:codex-rescue subagent result; no Codex equivalent tool matcher' },
+  // PreToolUse Agent|Task|Workflow: delivers the full orchestration rules on the coordinator's first spawn.
+  { event: 'PreToolUse', file: 'orch-on-spawn.js', reason: 'Agent/Task/Workflow-tool matcher — Claude Code subagent dispatch; Codex gets the full orchestration text at SessionStart instead (no Codex equivalent tool matcher)' },
   // PreToolUse SendMessage: DevSwarm mesh tool name specific to the Claude
   // Task-tool ecosystem.
   { event: 'PreToolUse', file: 'devswarm-comms-guard.js', reason: 'SendMessage-tool matcher — Claude-side DevSwarm mesh tool; no Codex equivalent tool matcher' },
@@ -177,8 +181,8 @@ test('manifest-drift: every file referenced by either hooks.json exists on disk'
       for (const g of Array.isArray(groups) ? groups : []) {
         for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
           const command = (h && h.command) || '';
-          const m = command.match(/([A-Za-z0-9_.-]+\.js)"?\s*$/);
-          if (!m) continue;
+          const m = command.match(/([\w.-]+\.js)/);
+          assert.ok(m, 'hooks.json command names no .js script: ' + command);
           const file = m[1];
           const abs = path.join(hooksDir, file);
           if (!fs.existsSync(abs)) missing.push(`${path.relative(REPO, hooksJsonPath)} -> ${file}`);
@@ -199,8 +203,8 @@ test('manifest-drift: install-codex.js ANTI_HALL_HOOKS references only files tha
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
         const command = (h && h.command) || '';
-        const m = command.match(/([A-Za-z0-9_.-]+\.js)"?\s*$/);
-        if (!m) continue;
+        const m = command.match(/([\w.-]+\.js)/);
+        assert.ok(m, 'install-codex command names no .js script: ' + command);
         // install-codex.js's HOOK_ROOT is always plugins/anti-hall/hooks (the
         // shared Claude hook files) — see this file's CODEX_HOOKS_DIR comment.
         const abs = path.join(CLAUDE_HOOKS_DIR, m[1]);

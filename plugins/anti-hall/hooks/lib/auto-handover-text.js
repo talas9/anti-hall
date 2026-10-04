@@ -32,6 +32,51 @@ function detectPlatform(payload) {
   return 'claude';
 }
 
+// isClaudeConfident(payload, argv, opts) -> bool. POSITIVE evidence that this hook runs under
+// Claude Code (cost-trim D3): argv carries `--host=claude` (the flag exists only in the Claude
+// hooks.json command, never on Codex) AND the payload is an object with a non-empty string
+// session_id AND detectPlatform() is not 'codex' AND transcript_path is CANONICALLY inside
+// <CLAUDE_CONFIG_DIR or ~/.claude>/projects/. Canonical = realpath of the projects dir vs the
+// realpath of the deepest existing ancestor of transcript_path plus its remaining segments (any
+// '.', '..' or empty segment rejects; a symlink anywhere on the existing part is resolved first).
+// Every failure, including any throw, is "not confident": the caller then sends the full text.
+// `opts.env` / `opts.home` are injectable for tests.
+function isClaudeConfident(payload, argv, opts) {
+  try {
+    const fs = require('fs');
+    const os = require('os');
+    if (!Array.isArray(argv) || !argv.includes('--host=claude')) return false;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+    if (typeof payload.session_id !== 'string' || !payload.session_id) return false;
+    if (detectPlatform(payload) === 'codex') return false;
+    const tp = payload.transcript_path;
+    if (typeof tp !== 'string' || !tp || !path.isAbsolute(tp)) return false;
+    const env = (opts && opts.env) || process.env;
+    let cfg = env.CLAUDE_CONFIG_DIR;
+    if (!cfg) {
+      const home = (opts && opts.home) || require('../../companion/lib/test-home-guard.js').resolveHome(undefined, env);
+      cfg = path.join(home, '.claude');
+    }
+    const base = fs.realpathSync.native(path.join(path.resolve(cfg), 'projects'));
+    const parsed = path.parse(tp);
+    const segs = tp.slice(parsed.root.length).split(path.sep);
+    if (segs.some((x) => x === '' || x === '.' || x === '..')) return false;
+    // Deepest existing ancestor (lstat so a dangling symlink counts as existing and is rejected below).
+    let existing = parsed.root;
+    let i = 0;
+    for (; i < segs.length; i++) {
+      const next = path.join(existing, segs[i]);
+      try { fs.lstatSync(next); } catch (_) { break; }
+      existing = next;
+    }
+    const real = fs.realpathSync.native(existing); // throws on a dangling link -> not confident
+    const candidate = path.join(real, ...segs.slice(i));
+    return candidate.startsWith(base + path.sep);
+  } catch (_) {
+    return false;
+  }
+}
+
 // Per-platform wording. Claude Code: /anti-hall:handover skill, /compact
 // (free-text focus documented) or /clear. Codex CLI slash commands
 // (https://learn.chatgpt.com/docs/developer-commands?surface=cli): /compact
@@ -262,6 +307,7 @@ module.exports = {
   buildGateDirective,
   buildGateBackstop,
   detectPlatform,
+  isClaudeConfident,
   buildFireDirective,
   expectedHandoverPath,
   compactCommand,

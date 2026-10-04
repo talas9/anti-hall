@@ -28,45 +28,9 @@
 const fs = require('fs');
 const { CORE_LINES } = require('./verify-first-core');
 
-// Subagent-specific disciplines footer: the always-apply trio (root-cause,
-// anti-sycophancy, scope-fidelity) WITHOUT the orchestration delegation rules.
-// Includes a clear note that the worker should do the work itself.
-const SUBAGENT_DISCIPLINES = [
-  'DISCIPLINES (SUBAGENT — orchestration-delegation rules omitted; you are a worker, not an orchestrator):',
-  'ALWAYS APPLY:',
-  "  - root-cause: the IRON LAW + RATIONALIZATION TABLE + POSITIVE RULES above. No claim without evidence; no fix without a proven root cause; instrument, don't guess.",
-  '  - anti-sycophancy: do not agree just to agree. If the user or a premise is wrong, challenge it with evidence. User agreement is not correctness (Positive Rule 9).',
-  '  - scope-fidelity: the SCOPE & FIDELITY block above. Simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish asked work and drop nothing.',
-  '  - autonomous-execution: your assigned task IS your authorization - execute the WHOLE assigned scope to done without pausing to re-confirm steps it already covers, and never bounce back naming/wording or a choice between roughly-equivalent options (take the better one, note it in your summary). Stop and report ONLY for a genuine blocker: a credential/secret you cannot supply, a destructive/irreversible action (deletions still require explicit confirmation), or real ambiguity that changes the outcome. This lowers NO bar: DONE still means VERIFIED (Positive Rule 6), and EXPANDING scope past your assignment still needs confirmation (SCOPE & FIDELITY).',
-  '  - subagent role: DO the work yourself; do NOT re-delegate unless your task explicitly says to orchestrate. Shallow and direct beats deep chains. Return a TIGHT summary — findings only, no transcript, no re-pasted file bodies.',
-  "  - PRESENT FINDINGS SCANNABLY: tables/**bold**/`code` where they organize; at most a leading status glyph as SIGNAL (✅/❌/⚠️), never decoration. This is the DEFAULT shape for every report you return, not an occasional flourish - sliding back to bare plain text is DRIFT, correct it; still don't overdo it (rule K).",
-  'INVOKE WHEN IT MATCHES (conditional skills, not every turn):',
-  '  - /anti-hall:root-cause - full debugging playbook when investigating a specific bug/failure.',
-  '  - /anti-hall:deadly-loop - HARDEN risky changes BEFORE merge: cross-file/cross-PR coordination, security-sensitive changes, schema/production-data touches, shell scripts, CI/workflow YAML, LLM-prompt work.',
-].join('\n');
-
-// TEAMMATE_REPORTING_NOTE (v0.75.0): field evidence showed background/team
-// agents losing their final report — a bare turn-end never reaches the
-// coordinator, and a background task's completion notification routes to the
-// MAIN session, not to the agent that started it, so waiting on one inside a
-// spawned agent's own turn silently stalls forever. Stated plainly so a
-// worker never assumes either channel "just works" the way it does for the
-// top-level session.
-const TEAMMATE_REPORTING_NOTE =
-  'If you are a teammate/background agent: SendMessage your final report to the coordinator BEFORE finishing — ' +
-  'a bare turn-end silently loses it. NEVER end a turn waiting on a background task — its completion ' +
-  'notification routes to the main session, not to you; run long commands foreground or poll the output file.';
-
-// CHILD_WORKSPACE_MAILBOX_NOTE (defect f0958b13fe2b): a DevSwarm child
-// workspace's own env (DEVSWARM_SOURCE_BRANCH) is inherited by every subagent
-// it spawns, so isChildWorkspace(env) is true for this subagent's process
-// exactly when its parent session is a child workspace. One line, appended
-// only in that case — the Stop text this mirrors (devswarm-child-gate.js) is
-// already long, and this hook's own text is long too.
-const CHILD_WORKSPACE_MAILBOX_NOTE =
-  'You are a subagent inside a DevSwarm child workspace: do NOT run devswarm.js inbox ' +
-  'pull/ack/ack-primary/read/read-primary/tick or heartbeat — the workspace main thread owns the ' +
-  'mailbox; anything you learn goes back to your parent in your report.';
+// Subagent disciplines footer, teammate note and child-workspace note live in verify-first-core.js
+// (moved verbatim; the output is byte-identical).
+const { SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE, CHILD_WORKSPACE_MAILBOX_NOTE } = require('./verify-first-core');
 
 const SUBAGENT_TEXT_BASE = [...CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE].join('\n');
 

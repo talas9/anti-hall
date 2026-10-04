@@ -45,7 +45,8 @@ Mapping to hooks:
 | `task-guard`           | Stop               | open tasks block; all-complete / none allows; skip hatch |
 | `task-tracker`         | UserPromptSubmit   | first turn FULL directive, then SHORT; future/garbage timestamp self-heals to FULL |
 | `verify-first`         | UserPromptSubmit   | `additionalContext` starts `VERIFY-FIRST:`; deterministic for a given envelope |
-| `verify-first-full`    | SessionStart       | full protocol contains the IRON LAW, the scannability rule, and USER OVERRIDE |
+| `verify-first-full`    | SessionStart       | `protocolLevel=full`: full protocol contains the IRON LAW, the scannability rule, and USER OVERRIDE; default `compact`: the compact core keeps the load-bearing clauses and points at PROTOCOL.md (`tests/hooks/verify-first-compact.test.js`) |
+| `orch-on-spawn`        | PreToolUse (Agent) | one ORCH_FULL per epoch (O_EXCL claim), silent for subagents and for a missing/`none` marker; fail-open on bad stdin |
 | `swarm-guard`          | PreToolUse (Task)  | a normal spawn is allowed; fail-open on bad stdin |
 
 Every hook additionally has **fail-open** tests: empty stdin (`''`) and malformed

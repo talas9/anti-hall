@@ -112,7 +112,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js\" --host=claude",
             "timeout": 10
           }
         ]
@@ -477,6 +477,16 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/orch-on-spawn.js\"",
             "timeout": 10
           }
         ]

@@ -82,8 +82,9 @@ test('all five hooks in this file are registered in codex/hooks/hooks.json under
   const stopFiles = new Set();
   for (const group of codexHooksJson.hooks.Stop || []) {
     for (const h of group.hooks || []) {
-      const m = (h.command || '').match(/([A-Za-z0-9_.-]+\.js)"?\s*$/);
-      if (m) stopFiles.add(m[1]);
+      const m = (h.command || '').match(/([\w.-]+\.js)/);
+      assert.ok(m, 'codex hooks.json command names no .js script: ' + h.command);
+      stopFiles.add(m[1]);
     }
   }
   for (const hook of HOOKS) {

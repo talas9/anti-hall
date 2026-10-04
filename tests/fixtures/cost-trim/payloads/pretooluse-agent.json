@@ -1,0 +1,1 @@
+{"session_id":"00000000-0000-0000-0000-000000000000","transcript_path":"{{HOME}}/.claude/projects/-tmp-p/00000000-0000-0000-0000-000000000000.jsonl","cwd":"{{CWD}}","hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"description":"placeholder","prompt":"placeholder","subagent_type":"general-purpose"}}

@@ -47,6 +47,9 @@ const ALLOWLIST = {
     'excl-create': { count: 2, reason: 'TEMPORARY (jev arrival work): per-hash triage claim + arrival drain lock, both short-TTL O_EXCL markers; the drain lock is handed from the spawning hook to the detached worker, which lock.js ownership records do not model — migrate or keep deliberately' },
     'unlink-lock': { count: 1, reason: 'stale-claim/arrival-lock reclaim for the two markers above (same follow-up)' },
   },
+  'hooks/lib/orch-full-state.js': {
+    'excl-create': { count: 1, reason: 'one-shot per-epoch ORCH_FULL claim slot: O_EXCL decides exactly one sender; no holder, staleness, reclaim or release (a retry is a second slot file, never a reclaim)' },
+  },
   'hooks/lib/defect-store.js': {
     'excl-create': { count: 1, reason: 'defect report files are created once (O_EXCL refuses to clobber an existing report) then appended' },
   },

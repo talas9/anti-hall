@@ -911,3 +911,15 @@ measured smoke mean before that approval.
 design), the classifier integration and the multi-workspace mesh (`-p` with a
 sealed HOME cannot host them). There is no Codex analogue of B1 (no routing
 guard is registered there); a Codex B3/B4 mirror needs a Codex eval runner.
+
+## Amendment: the injected protocol is now compact by default
+
+From the cost-trim release, anti-hall's default SessionStart/SubagentStart text is a compact core
+(`context.protocolLevel=compact`) that points at `PROTOCOL.md`; `context.protocolLevel=full` (env
+`ANTIHALL_PROTOCOL_LEVEL=full`) restores the previous complete text byte for byte. A with-arm run of
+`evals/anti-hall` at default settings therefore measures the compact text. To benchmark the old text,
+set `ANTIHALL_PROTOCOL_LEVEL=full` for the run and label it as such; never compare a compact run
+against numbers recorded under the full text without saying so. Size is measured separately and
+deterministically by `evals/anti-hall/injection-profile.js` (synthetic payloads, fixed event frequencies;
+it measures what is sent, not how the model behaves). Behaviour under the compact text is weakly
+measured: report violation rates with their intervals, never as non-inferiority.

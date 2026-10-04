@@ -165,6 +165,7 @@ output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
 | `verify-first-subagent` | SubagentStart | context | `context.verifyFirstSubagent` | `verify-first-subagent` | no |
 | `verify-first-full` | SessionStart | context | `context.verifyFirstSession` | — | yes |
 | `verify-first-orch` | SessionStart | context | `context.verifyFirstOrchestration` | — | yes |
+| `orch-on-spawn` | PreToolUse (Agent\|Task\|Workflow) | context | `context.verifyFirstOrchestration` | `orch-on-spawn` | no |
 | `devswarm-child-role` | SessionStart | context | `devswarm.childRole` | — | yes |
 | `version-alert` | SessionStart | context | `versionAlerts.antiHall` | `version-alert` | yes |
 | `fable-availability` | SessionStart | context | none (not toggleable) | — | no |
@@ -242,7 +243,7 @@ Hooks marked "none (not toggleable)" are listed in `NOT_TOGGLEABLE`
   `systemMessage`, Stop `reason`) at 10,000 characters; past that it spills to a file and
   only a preview (the first 2,000 characters) plus the file path arrives inline, and Claude is not asked to read the file (https://code.claude.com/docs/en/hooks, "Output limits"). anti-hall keeps every injecting hook at or under 10,000
   characters (`tests/hooks/injection-cap.test.js`), and an over-cap payload is split across
-  hooks, never silently shortened.
+  hooks, never silently shortened. One deliberate exception (cost-trim Phase 3): the default `context.protocolLevel=compact` sends a shorter core that keeps every load-bearing clause inline and points at the generated `PROTOCOL.md` for the rest; `context.protocolLevel=full` restores the complete text byte for byte on every channel (`tests/hygiene/cost-trim-goldens.test.js`).
 - **Loop-safe Stop gates.** A blocking Stop hook never wedges a session: each dedupes
   or caps its repeats (for example `speculation-guard` blocks once per message hash,
   `codex-nudge` at most twice per session). The four on `hooks/lib/stop-policy.js`

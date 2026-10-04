@@ -18,6 +18,9 @@ const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'verify-first-full.js';
+// These tests pin TODAY's text, i.e. context.protocolLevel=full (the compact default has its own suite:
+// verify-first-compact.test.js; PROTOCOL.md coverage: protocol-md.test.js).
+const FULL = { ANTIHALL_PROTOCOL_LEVEL: 'full' };
 const CAP = 10000; // per code.claude.com/docs/en/hooks; over this -> spill-to-file
 
 function ctx(r) {
@@ -134,7 +137,7 @@ test('SessionStart startup -> foundation protocol present, EVERY core section/ru
     const r = testHook(
       HOOK,
       { hook_event_name: 'SessionStart', source: 'startup', session_id: 't', cwd: process.cwd() },
-      { home: h.home, expectJson: true },
+      { home: h.home, env: FULL, expectJson: true },
     );
     assert.strictEqual(r.status, 0, 'hook must exit 0');
     assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SessionStart', 'echoes SessionStart event');
@@ -163,7 +166,7 @@ test('foundation hook stays under the ~10k cap with headroom (does not spill)', 
     const c = ctx(testHook(
       HOOK,
       { hook_event_name: 'SessionStart', source: 'startup', session_id: 't', cwd: process.cwd() },
-      { home: h.home, expectJson: true },
+      { home: h.home, env: FULL, expectJson: true },
     ));
     assert.ok(c.length <= CAP, `foundation additionalContext ${c.length} > ${CAP} — would spill to file`);
     assert.ok(c.length <= 9000, `foundation additionalContext ${c.length} > 9000 — target headroom breached`);
@@ -180,7 +183,7 @@ test('SEAM: the orchestration RULESET (A-N + rule W) lives in the companion hook
       const c = ctx(testHook(
         HOOK,
         { hook_event_name: 'SessionStart', source: 'startup', session_id: 't', cwd: process.cwd() },
-        { home: h.home, env, expectJson: true },
+        { home: h.home, env: { ...FULL, ...env }, expectJson: true },
       ));
       assert.ok(!c.includes('  A. COMMAND DELEGATION'), 'rule A must NOT be in the foundation hook (moved to verify-first-orch)');
       assert.ok(!c.includes('  N. DISTRIBUTE MODELS'), 'rule N must NOT be in the foundation hook (moved to verify-first-orch)');
@@ -200,7 +203,7 @@ for (const source of ['compact', 'resume']) {
       const r = testHook(
         HOOK,
         { hook_event_name: 'SessionStart', source, session_id: 't', cwd: process.cwd() },
-        { home: h.home, expectJson: true },
+        { home: h.home, env: FULL, expectJson: true },
       );
       assert.strictEqual(r.status, 0, `source=${source} must exit 0`);
       assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SessionStart');
@@ -216,7 +219,7 @@ for (const source of ['compact', 'resume']) {
 test('FAIL-OPEN: empty stdin -> exit 0 (defaults to SessionStart)', () => {
   const h = makeHome();
   try {
-    const r = testHookRaw(HOOK, '', { home: h.home, expectJson: true });
+    const r = testHookRaw(HOOK, '', { home: h.home, env: FULL, expectJson: true });
     assert.strictEqual(r.status, 0);
     assert.ok(ctx(r).includes('IRON LAW'));
   } finally {

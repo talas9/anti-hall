@@ -43,8 +43,9 @@ test('goldens are normalised (placeholders, no temp paths)', () => {
   }
 });
 
-test('current outputs byte-equal the goldens (this is the "before" the rollback must reproduce)', () => {
-  const cur = P.profileCheckout(PLUGIN, {});
+test('protocolLevel=full byte-equals every golden (the rollback reproduces the "before")', () => {
+  // The default level is now `compact`; the goldens are today's text, i.e. protocolLevel=full (the rollback, D4).
+  const cur = P.profileCheckout(PLUGIN, { env: { ANTIHALL_PROTOCOL_LEVEL: 'full' } });
   for (const id of REQUIRED) {
     const g = JSON.parse(fs.readFileSync(path.join(GOLDENS, id + '.json'), 'utf8'));
     const sc = cur.scenarios[id];

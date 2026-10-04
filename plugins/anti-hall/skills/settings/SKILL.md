@@ -151,6 +151,7 @@ visibility and the model (`jev.judgeModel`). Relay that output; do not add claim
 "Turn off the task-list nudge", "stop the per-turn verify-first line", "disable the
 parent gate" and the like are one `set <section.key> false`. The switch keys:
 `context.*` (verify-first injections, task tracker, handover resume, defect nudge;
+`context.protocolLevel` (`compact` default / `full` = today's complete text everywhere, the one-key rollback) and `context.orchFullOn` (`auto` default / `spawn` / `session` / `off`: when the full orchestration rules arrive under compact);
 `context.dedupeWindowMin` — fallback per-session suppression window (minutes) for
 repeated UserPromptSubmit blocks (LIMIT CONSERVATION, TASK-LIST, DEVSWARM COMMS
 OVERRIDE, DEVSWARM WORKSPACES) when a burst of queued prompts lands in one turn,

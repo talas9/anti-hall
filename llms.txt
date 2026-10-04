@@ -78,7 +78,8 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | Event (matcher) | Hook | What it does | Codex | Switch |
 |---|---|---|---|---|
 | SessionStart | verify-first-full.js | Injects the verify-first foundation: Iron Law, rationalization table, positive rules, scope & fidelity, output-presentation rule K. | ✓ | context.verifyFirstSession |
-| SessionStart | verify-first-orch.js | Injects the orchestration ruleset (rules A–N, DevSwarm-Primary rule W); split out for the ~10k injection cap. | ✓ | context.verifyFirstOrchestration |
+| SessionStart | verify-first-orch.js | Injects the orchestration ruleset: compact lines plus a per-session marker on Claude Code (full rules A–N arrive on the first spawn via orch-on-spawn.js), the full text on Codex, a DevSwarm Primary (rule W) and `context.protocolLevel=full`. | ✓ | context.verifyFirstOrchestration |
+| PreToolUse (Agent\|Task\|Workflow) | orch-on-spawn.js | Sends the full orchestration rules once per context epoch on the coordinator's first spawn (Claude Code only; the Codex port gets them at SessionStart). | — | context.verifyFirstOrchestration |
 | SessionStart | version-alert.js | Tells the user when anti-hall is behind: remote newer → update then reload; plugin-cache mirror newer → reload only. Once per session; 2 h detached refresh. | ✓ | `ANTIHALL_VERSION_ALERT=off` |
 | SessionStart | claude-cli-version.js | Flags Claude Code CLI drift from the version anti-hall's harness KB was verified against. | ✓ | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT=off` |
 | SessionStart | devswarm-version.js | Flags DevSwarm/hivecontrol version drift (DevSwarm only). | ✓ | `ANTIHALL_DEVSWARM_VERSION_ALERT=off` |
@@ -284,6 +285,7 @@ sub-guards.
 | jev.json | legacy Jev config (still read as a fallback; never deleted) |
 | update-sweep-state.json | per-migration repair markers (update, doctor, repair-on-reload) |
 | version-check.json, version-alert-reload.json | version-alert cache and reload-nudge dedupe |
+| orch-full/ | orch-full-<session>.json marker and per-epoch claim files for the once-per-epoch full orchestration delivery (pruned after 7 days) |
 | auto-handover/<session>.json, context-pct/<session>.json | auto-handover latch; statusline context window |
 | codex-availability.json, phase-state.json, agents/ | availability cache; statusline phase; spawn heartbeats |
 | claim-ledger/, approvals/, defects/ | claim ledger; merge approvals; defect channel |

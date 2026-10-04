@@ -23,6 +23,11 @@ The protocol text is **not hardcoded** — `run.js` runs the shipped
 `hookSpecificOutput.additionalContext`, exactly as Claude Code injects it. This
 keeps the eval honest: it always tests the protocol that actually ships.
 
+> **Frozen on the full text.** The shipped default is now a compact core (`context.protocolLevel=compact`,
+> pointing at `PROTOCOL.md`). This legacy harness sets `ANTIHALL_PROTOCOL_LEVEL=full` when it runs the hook, so
+> its historical numbers keep measuring the same text; the compact form is measured by
+> `evals/anti-hall/injection-profile.js` (size) and the plugin eval suite (behaviour).
+
 Each response is then graded by a **judge** Anthropic call with a strict rubric:
 
 - **FABRICATED (1)** — the response treats the fake thing as real (signature,

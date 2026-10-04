@@ -195,11 +195,27 @@ const SCENARIOS = [
   // Steps for scripts absent in the checkout (orch-on-spawn on a before leg) are skipped.
   { id: 'seq-claude-confident', channel: 'sequence', steps: [
     { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-claude.json', label: 'start', hostArg: true },
-    { event: 'PostToolUse', script: 'orch-on-spawn.js', payload: 'posttooluse-agent.json', label: 'spawn-1', optional: true },
-    { event: 'PostToolUse', script: 'orch-on-spawn.js', payload: 'posttooluse-agent.json', label: 'spawn-2', optional: true },
+    { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-1', optional: true },
+    { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-2', optional: true },
     { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-claude-compact.json', label: 'compact', hostArg: true },
-    { event: 'PostToolUse', script: 'orch-on-spawn.js', payload: 'posttooluse-agent.json', label: 'spawn-after-compact', optional: true } ] },
+    { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-after-compact', optional: true } ] },
+  // Unconfident Claude-shaped session (the --host=claude flag stripped): ORCH_FULL at SessionStart, no marker, nothing on spawn.
+  { id: 'seq-unconfident', channel: 'sequence', steps: [
+    { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-claude.json', label: 'start', stripHost: true },
+    { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-1', optional: true } ] },
+  // Codex-shaped: ORCH_FULL at SessionStart, no marker, nothing on a spawn (orch-on-spawn is not registered on Codex).
+  { id: 'seq-codex', channel: 'sequence', flavour: 'codex', steps: [
+    { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-codex.json', label: 'start' } ] },
 ];
+
+// The orch-full marker's decision in a scenario HOME ('pending' | 'none' | null when absent).
+function readMarkerDecision(home) {
+  try {
+    const d = path.join(home, '.anti-hall', 'orch-full');
+    const f = fs.readdirSync(d).find((n) => /^orch-full-[A-Za-z0-9_-]+\.json$/.test(n) && !/-claim2?\.json$/.test(n));
+    return f ? JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')).decision : null;
+  } catch (_) { return null; }
+}
 
 function runScenario(dir, sc, opts) {
   const base = process.env.TMPDIR || os.tmpdir();
@@ -215,7 +231,7 @@ function runScenario(dir, sc, opts) {
     } else {
       writeTranscript(home, []);
     }
-    const env = scenarioEnv(dir, home, Object.assign({}, sc.env, opts && opts.nowMs ? { ANTIHALL_TEST_NOW_MS: String(opts.nowMs) } : {}));
+    const env = scenarioEnv(dir, home, Object.assign({}, sc.env, opts && opts.env, opts && opts.nowMs ? { ANTIHALL_TEST_NOW_MS: String(opts.nowMs) } : {}));
     let prevRaw = '';
     for (const st of sc.steps) {
       const label = st.label || st.script;
@@ -227,15 +243,14 @@ function runScenario(dir, sc, opts) {
       }
       let command = hooks ? findCommand(hooks, st.event, st.script) : null;
       if (!command) { outputs.push({ label, skipped: true, reason: 'no ' + st.event + ' ' + st.script + ' in hooks.json' }); continue; }
-      if (st.hostArg && !/--host=/.test(command) && (sc.flavour || 'claude') === 'claude') {
-        // Phase 3 adds --host=claude to the Claude command; today's commands carry no flag.
-        // Use the command exactly as registered; do not inject it.
-      }
+      // hostArg steps use the command exactly as registered (Phase 3 registers --host=claude in the
+      // Claude hooks.json only); stripHost removes it to model an unconfident session.
+      if (st.stripHost) command = command.replace(/\s--host=\S+/g, '');
       const r = runCommand(command, dir, readPayload(st.payload, ctx), env, cwd);
       const raw = extractText(r.stdout);
       prevRaw = raw;
       const text = normalise(raw, ctx);
-      outputs.push({ label, status: r.status, text, chars: charsOf(text), command: normalise(command, ctx) });
+      outputs.push({ label, status: r.status, text, chars: charsOf(text), command: normalise(command, ctx), marker: readMarkerDecision(home) });
     }
   } finally {
     for (const d of [home, cwd]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) { /* best effort */ } }
@@ -343,16 +358,25 @@ function checkD3(p) {
   const has = (o, re) => !!o && !o.skipped && re.test(o.text);
   const ORCH_FULL_RE = /ORCHESTRATION DISCIPLINE/;
   add('claude-confident: ORCH_COMPACT at SessionStart (not full)', has(get('start'), /ORCHESTRATION \(main thread/) && !has(get('start'), ORCH_FULL_RE));
+  add('claude-confident: marker pending after SessionStart', get('start') && get('start').marker === 'pending');
+  add('claude-confident: compact names the spawn delivery', has(get('start'), /sent in full on your first spawn/));
   add('claude-confident: ORCH_FULL exactly once on first spawn', has(spawn1, ORCH_FULL_RE));
   add('claude-confident: none on second spawn', !get('spawn-2') || get('spawn-2').skipped || get('spawn-2').text === '');
   add('claude-confident: epoch reset on compact, ORCH_FULL once more', has(get('spawn-after-compact'), ORCH_FULL_RE));
+  const uc = p.scenarios['seq-unconfident'];
+  const ucs = uc && uc.outputs.find((x) => x.label === 'start');
+  const ucp = uc && uc.outputs.find((x) => x.label === 'spawn-1');
+  add('unconfident: ORCH_FULL at SessionStart, no marker, nothing on spawn', has(ucs, ORCH_FULL_RE) && ucs.marker === null && (!ucp || ucp.skipped || ucp.text === ''));
+  const cx = p.scenarios['seq-codex'];
+  const cxs = cx && cx.outputs.find((x) => x.label === 'start');
+  add('codex-shaped sequence: ORCH_FULL at SessionStart, no marker', has(cxs, ORCH_FULL_RE) && cxs.marker === null);
   const oc = p.scenarios['orch-codex'].outputs[0];
   add('codex-shaped: ORCH_FULL at SessionStart', oc && !oc.skipped && ORCH_FULL_RE.test(oc.text));
   const op = p.scenarios['orch-primary'].outputs[0];
   add('devswarm-primary: ORCH_FULL + W at SessionStart', op && !op.skipped && ORCH_FULL_RE.test(op.text) && /DEVSWARM PRIMARY/.test(op.text));
   const NOW = 7615; // today's verify-first-orch additionalContext chars (plan Evidence)
   add('spawn-delivered ORCH_FULL <= today 7,615 chars + header', spawn1.chars <= NOW + 400, 'chars=' + spawn1.chars);
-  return { applicable: true, results };
+  return { applicable: true, results: res };
 }
 
 function pct(x) { return Math.round(x * 100) + '%'; }
@@ -464,6 +488,7 @@ function main(argv) {
   lines.push('  before: SessionStart ' + g.mb.sessionStartChars + ' + listing ' + g.mb.listingChars + '; subagent ' + g.mb.subagentNormal + ' / child ' + g.mb.subagentChild + '; codex hooks ' + g.mb.codexHooks);
   lines.push('  after : SessionStart ' + g.ma.sessionStartChars + ' + listing ' + g.ma.listingChars + '; subagent ' + g.ma.subagentNormal + ' / child ' + g.ma.subagentChild + '; codex hooks ' + g.ma.codexHooks);
   lines.push('  ratios: main ' + (g.ratios.main * 100).toFixed(1) + '%, subagent ' + (g.ratios.subagentNormal * 100).toFixed(1) + '%, child ' + (g.ratios.subagentChild * 100).toFixed(1) + '%, codex ' + (g.ratios.codexHooks * 100).toFixed(1) + '%, whole session ' + (g.ratios.wholeSession * 100).toFixed(1) + '%');
+  lines.push('  per session type, chars per context epoch (hooks + skill listing): before ' + g.mb.mainPerEpochNoSpawn + ' (spawn or not); after, no spawn ' + g.ma.mainPerEpochNoSpawn + ' (' + pct(g.ma.mainPerEpochNoSpawn / g.mb.mainPerEpochNoSpawn) + '), with a first spawn ' + g.ma.mainPerEpochWithSpawn + ' (' + pct(g.ma.mainPerEpochWithSpawn / g.mb.mainPerEpochNoSpawn) + ')');
   for (const c of g.checks) lines.push('  [' + (c.ok ? 'PASS' : 'FAIL') + '] ' + c.name + ' (' + c.detail + ')');
   if (!g.d3Applicable) lines.push('  [n/a ] D3 assertions: checkout has no orch-on-spawn');
   for (const side of ['before', 'after']) for (const c of report.selfChecks[side]) lines.push('  [' + (c.ok ? 'PASS' : 'FAIL') + '] self-check(' + side + '): ' + c.name + (c.detail ? ' (' + c.detail + ')' : ''));

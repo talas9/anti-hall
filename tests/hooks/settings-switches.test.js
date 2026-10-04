@@ -43,6 +43,7 @@ const SWITCHES = {
   'verify-first.js': 'context.verifyFirstTurn',
   'verify-first-full.js': 'context.verifyFirstSession',
   'verify-first-orch.js': 'context.verifyFirstOrchestration',
+  'orch-on-spawn.js': 'context.verifyFirstOrchestration',
   'verify-first-subagent.js': 'context.verifyFirstSubagent',
   'task-tracker.js': 'context.taskTracker',
   'handover-resume.js': 'context.handoverResume',

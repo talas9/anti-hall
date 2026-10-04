@@ -75,7 +75,8 @@ const TOOLS_ENABLED = !!(TOOLS && TOOLS.toLowerCase() !== 'none');
 // ---------------------------------------------------------------------------
 function getProtocolSystemPrompt() {
   const payload = JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'eval' });
-  const out = execFileSync('node', [PROTOCOL_HOOK], { input: payload, encoding: 'utf8' });
+  // Frozen on today's full text: the shipped default is now the compact core (context.protocolLevel).
+  const out = execFileSync('node', [PROTOCOL_HOOK], { input: payload, encoding: 'utf8', env: Object.assign({}, process.env, { ANTIHALL_PROTOCOL_LEVEL: 'full' }) });
   const parsed = JSON.parse(out);
   const ctx = parsed
     && parsed.hookSpecificOutput
