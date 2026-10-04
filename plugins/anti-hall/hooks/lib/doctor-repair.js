@@ -1371,6 +1371,16 @@ function runRepairs(opts) {
     }
   }
 
+  // Drop poisoned no-label jev-triage cache entries (pre-0.200.0 budget-skipped
+  // messages cached as a permanent verdict). Disposable cache, idempotent,
+  // honours --dry-run itself.
+  try {
+    const r = require(MIGRATIONS_LIB).migrateJevTriageCache(home, { dryRun });
+    push(r.id, r.action, r.status, r.msg);
+  } catch (e) {
+    push('repair-jev-triage-cache', 'repair-jev-triage-cache', 'failed', 'jev-triage cache repair raised: ' + errMsg(e));
+  }
+
   // P1-8: backfill the new `ownerKey` descriptor field on every descriptor
   // (active AND archived) + heal prior hash-bucket split-brain via re-home. A
   // pure descriptor/store forward-migration (idempotent, fail-open, NO-DELETE) —

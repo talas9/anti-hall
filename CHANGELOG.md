@@ -20,6 +20,10 @@ the update.
 - **Settings:** the plugin options screen is down to 14 options; everything else lives in `/anti-hall:settings`, existing values migrate.
 - **Benchmark tooling:** injection profile with goldens, strength-study harness, `scripts/hook-latency.js`.
 
+### Fixed
+
+- **Jev triage cache repair + prune.** Entries cached before this release as a permanent no-label verdict (bare `{_seq}`, no label) are dropped by `update` and `doctor --repair` (`repair-jev-triage-cache`; real no-label verdicts now carry `nl:true` and are kept) so those messages are re-triaged. Stale triage claim files, a dead arrival worker's lock and an abandoned arrival queue are pruned (throttled, nothing else touched).
+
 ### Added
 
 - **Coordinator work window (`coordinator-work-guard`).** The main thread keeps doing state-changing work inline instead of delegating it. A new hook counts successful state-changing Bash calls (WORK) over a 10-minute window. It adds one advisory note when the count reaches 4, and blocks the 7th WORK call in the window. Nudge delivery: PostToolUse `additionalContext` was live-observed delivering on Claude Code CLI 2.1.238 and is not doc-confirmed (`docs/KB-claude-codex.md` §1.4); re-verify after a CLI upgrade; blocks are the enforcement.

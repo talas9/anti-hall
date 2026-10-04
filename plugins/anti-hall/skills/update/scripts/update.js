@@ -2297,8 +2297,11 @@ function settingsMigratePostUpdate(opts) {
     // appended so an ENABLED notice is printed on the settings-migrate line.
     let keyRow = null;
     try { keyRow = typeof lib.runLegacyKeyOptInMigration === 'function' ? lib.runLegacyKeyOptInMigration(home, {}) : null; } catch (_) { keyRow = null; }
+    let triageRow = null;
+    try { triageRow = typeof lib.migrateJevTriageCache === 'function' ? lib.migrateJevTriageCache(home, {}) : null; } catch (_) { triageRow = null; }
+    const triageNote = triageRow && triageRow.status !== 'skipped' ? ' | ' + triageRow.id + ' ' + triageRow.status + ': ' + triageRow.msg : '';
     const keyNote = keyRow && keyRow.status !== 'skipped' ? ' | legacy-key-opt-in ' + keyRow.status + ': ' + keyRow.msg : '';
-    return { attempted: true, status: r.status, detail: r.msg + keyNote };
+    return { attempted: true, status: r.status, detail: r.msg + keyNote + triageNote };
   } catch (e) {
     return { attempted: false, error: (e && e.message) || String(e), detail: 'settings migrate raised: ' + ((e && e.message) || String(e)) };
   }

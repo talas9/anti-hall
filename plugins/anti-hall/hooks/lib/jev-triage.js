@@ -277,6 +277,8 @@ function triageMessagesSync(items, opts) {
   }
   if (!cfg.enabled) return results; // BYTE-IDENTICAL fast path: the default.
 
+  try { require('./state-prune.js').pruneJevTriage(home); } catch (_) { /* best-effort */ }
+
   let cache;
   try {
     cache = readCache(home);
@@ -383,7 +385,10 @@ function runWorkerAndCache(home, cfg, cache, uncached, results) {
         // budget ran out first, or its call threw): caching it would store a
         // permanent no-label verdict it never earned (and, in bulk, evict every
         // real label), so it is left uncached and retried on a later call.
-        newCacheEntries[it.hash] = { _seq: seq++ };
+        // `nl` marks it a REAL verdict: before 0.200.0 budget-skipped items were
+        // cached as a bare {_seq}, and migrateJevTriageCache removes those
+        // (no label, no `nl`) so they are re-triaged.
+        newCacheEntries[it.hash] = { _seq: seq++, nl: true };
       }
     }
     if (Object.keys(newCacheEntries).length) {

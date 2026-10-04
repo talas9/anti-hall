@@ -668,6 +668,43 @@ function runLegacyKeyOptInMigration(home, opts) {
   return Object.assign(base, { status: r.status, msg: r.msg });
 }
 
+// ---- jev-triage cache: drop poisoned no-label entries ---------------------
+// Before 0.200.0 the triage worker's budget-skipped messages were cached as a
+// bare {_seq} (no urgency/kind) -- a permanent "no label" verdict they never
+// earned, which also evicted real labels from the 500-entry ring. A REAL
+// no-label verdict is now written {_seq, nl:true}. So any entry with neither a
+// label nor `nl` is a poisoned old-shape entry: remove it (the cache is
+// disposable and re-derivable) so the message is re-triaged. Idempotent,
+// fail-open, never touches labelled or `nl` entries or any other file.
+// -> { id, action, status: 'fixed'|'skipped'|'failed', msg }
+function migrateJevTriageCache(home, opts) {
+  const base = { id: 'repair-jev-triage-cache', action: 'repair-jev-triage-cache' };
+  try {
+    const file = require('../../hooks/lib/jev-triage.js').cachePath(home);
+    let cache;
+    try { cache = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
+      return Object.assign(base, { status: 'skipped', msg: 'no readable jev-triage cache — nothing to repair' });
+    }
+    if (!cache || typeof cache !== 'object' || Array.isArray(cache)) {
+      return Object.assign(base, { status: 'skipped', msg: 'jev-triage cache is not an object — left alone' });
+    }
+    const keep = {};
+    let poisoned = 0;
+    for (const [k, v] of Object.entries(cache)) {
+      const ok = v && typeof v === 'object' && (v.urgency || v.kind || v.nl === true);
+      if (ok) keep[k] = v; else poisoned++;
+    }
+    if (!poisoned) return Object.assign(base, { status: 'skipped', msg: 'nothing to repair' });
+    if (opts && opts.dryRun) return Object.assign(base, { status: 'skipped', msg: '[dry-run] would drop ' + poisoned + ' poisoned no-label cache entries' });
+    const tmp = file + '.tmp.' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(keep), 'utf8');
+    fs.renameSync(tmp, file);
+    return Object.assign(base, { status: 'fixed', msg: 'dropped ' + poisoned + ' poisoned no-label jev-triage cache entries (re-triaged on next read); kept ' + Object.keys(keep).length });
+  } catch (e) {
+    return Object.assign(base, { status: 'failed', msg: 'raised: ' + ((e && e.message) || String(e)) });
+  }
+}
+
 // runMigrations({ home, cwd, env, version, dryRun, devswarm, deadline, now }) -> [{id, action, status, msg}]
 // BUDGET: one run is bounded by runBudgetMs(env) (or an explicit `deadline`).
 // An entry that would START past the deadline is deferred whole (reported,
@@ -751,5 +788,5 @@ module.exports = {
   isRunComplete, incompleteReasons, recordRun, TERMINAL_LEFT_REASONS, runBudgetMs, DEFAULT_RUN_BUDGET_MS,
   markerPath, readMarkers, writeMarkers, isApplied, markApplied, pluginVersion,
   migrateSettingsFromLegacy, runSettingsMigration, migrateJevIntegrationsSection, migrateLegacyPluginOptions,
-  migrateLegacyKeyOptIn, runLegacyKeyOptInMigration,
+  migrateLegacyKeyOptIn, runLegacyKeyOptInMigration, migrateJevTriageCache,
 };
