@@ -24,7 +24,7 @@ const NEEDLES = [
   'do not re-delegate', '/anti-hall:root-cause (bugs), /anti-hall:deadly-loop (risky merges)', 'findings only', 'no transcript or pasted file bodies', 'run long commands in the foreground or poll the output file',
 ];
 
-test('compact subagent: core + WORKER, every needle present, no orchestration block, <= 3,500 chars', () => {
+test('compact subagent: core + WORKER, every needle present, no orchestration block, <= 2,800 chars', () => {
   const c = run();
   for (const n of NEEDLES) assert.ok(c.includes(n), 'DROPPED: ' + JSON.stringify(n));
   assert.ok(c.includes(T.CORE.PROTOCOL_PATH), 'PROTOCOL.md pointer');
@@ -32,14 +32,14 @@ test('compact subagent: core + WORKER, every needle present, no orchestration bl
   assert.ok(!/ORCHESTRATION DISCIPLINE/.test(c) && !c.includes('ORCHESTRATION ('), 'orchestration absent');
   assert.ok(!c.includes('DISCIPLINES (SUBAGENT'), 'discipline index dropped');
   assert.ok(!c.includes('DevSwarm child workspace'), 'no child note in a normal spawn');
-  assert.ok(T.normRoot(c).length <= 3500, 'size cap, got ' + T.normRoot(c).length);
+  assert.ok(T.normRoot(c).length <= 2800, 'size cap, got ' + T.normRoot(c).length);
 });
 
-test('compact subagent in a DevSwarm child workspace: mailbox note kept exactly, <= 3,800 chars', () => {
+test('compact subagent in a DevSwarm child workspace: mailbox note kept exactly, <= 3,100 chars', () => {
   const c = run({ DEVSWARM_SOURCE_BRANCH: 'main' });
   assert.ok(c.endsWith(T.CORE.CHILD_WORKSPACE_MAILBOX_NOTE), 'child note appended verbatim');
   assert.ok(c.includes(T.CORE.WORKER));
-  assert.ok(T.normRoot(c).length <= 3800, 'size cap, got ' + T.normRoot(c).length);
+  assert.ok(T.normRoot(c).length <= 3100, 'size cap, got ' + T.normRoot(c).length);
 });
 
 test('protocolLevel=full: today\'s text (core + DISCIPLINES + teammate note), no WORKER', () => {
