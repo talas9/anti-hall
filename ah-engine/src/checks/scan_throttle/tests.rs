@@ -39,11 +39,7 @@ fn advice(v: Option<Verdict>) -> String {
 }
 
 fn prefix() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "taskpolicy -c utility nice -n 19 "
-    } else {
-        "nice -n 19 "
-    }
+    if cfg!(target_os = "macos") { "taskpolicy -c utility nice -n 19 " } else { "nice -n 19 " }
 }
 
 #[test]

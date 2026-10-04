@@ -29,12 +29,12 @@ use super::error::Reason;
 use super::log::{DecisionLog, FileLog, Row};
 use super::question::Question;
 use super::settings::{Env, Files, JevSettings, Mode, Sources, Vendor};
-use super::transport::{endpoint_for, HttpTransport, Transport};
+use super::transport::{HttpTransport, Transport, endpoint_for};
 use crate::defaults;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -378,11 +378,7 @@ fn compute_final(trust: Trust, baseline: &Value, jev: &Value, confident: bool) -
         }
         Trust::RelaxBlock => {
             // What Node would do; the engine only reports it as a would-change (see the module docs).
-            if *baseline != t {
-                baseline.clone()
-            } else {
-                Value::Bool(!(confident && *jev == Value::Bool(false)))
-            }
+            if *baseline != t { baseline.clone() } else { Value::Bool(!(confident && *jev == Value::Bool(false))) }
         }
         Trust::Advisory => {
             if *baseline == t {
@@ -654,11 +650,7 @@ impl Jev {
             let verdict = if answered.is_none() {
                 "no-answer"
             } else if changed {
-                if req.trust == Trust::AddBlock {
-                    "added"
-                } else {
-                    "changed"
-                }
+                if req.trust == Trust::AddBlock { "added" } else { "changed" }
             } else if mode != Mode::On && would_change != Value::Null {
                 "would-change"
             } else {
@@ -798,7 +790,7 @@ impl Jev {
 mod tests {
     use super::*;
     use crate::jev::breaker::ManualClock;
-    use crate::jev::testkit::{ok, Fake};
+    use crate::jev::testkit::{Fake, ok};
 
     struct MemLog(Mutex<Vec<Row>>);
     impl DecisionLog for MemLog {

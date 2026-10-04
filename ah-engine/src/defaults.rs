@@ -10,7 +10,7 @@
 //! allocates nothing. (Parsing the TOML at every hook-client start was measured: `ah-engine version` took 3.7 to
 //! 3.8 ms with the parse and 1.9 to 2.1 ms without. The build fails on a malformed or undocumented entry, so the
 //! runtime never meets one.)
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 
 /// A default's value: the TOML types the defaults use, as static data.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -252,11 +252,14 @@ mod tests {
     #[test]
     fn numeric_clamps_hold_and_env_overrides_apply() {
         assert_eq!(num("daemon.workers"), 4);
-        std::env::set_var("AH_ENGINE_QUEUE", "999999");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AH_ENGINE_QUEUE", "999999") };
         assert_eq!(num("daemon.queue"), 1024, "clamped to max");
-        std::env::set_var("AH_ENGINE_QUEUE", "junk");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AH_ENGINE_QUEUE", "junk") };
         assert_eq!(num("daemon.queue"), 16, "unparseable falls back to the default");
-        std::env::remove_var("AH_ENGINE_QUEUE");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AH_ENGINE_QUEUE") };
     }
 
     #[test]

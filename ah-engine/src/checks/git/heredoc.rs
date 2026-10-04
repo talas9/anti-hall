@@ -1,11 +1,11 @@
 //! Data-heredoc masking (guards.gitGuardHeredocData): a heredoc whose consumer is not a shell is data, so its
 //! body is removed before the segment scans. All-or-nothing and fail-closed: any doubt returns the command
 //! unchanged.
+use super::Ctx;
 use super::gitcmd::git_subcommand;
-use super::tables::{tables, Spec};
+use super::tables::{Spec, tables};
 use super::tokenize::*;
 use super::util::*;
-use super::Ctx;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -285,11 +285,7 @@ struct Doc {
 
 fn cslice(s: &[char], a: usize, b: usize) -> String {
     let b = b.min(s.len());
-    if a >= b {
-        String::new()
-    } else {
-        s[a..b].iter().collect()
-    }
+    if a >= b { String::new() } else { s[a..b].iter().collect() }
 }
 
 /// Mirrors `git-guard.js` `hdSkeleton`.
@@ -482,7 +478,7 @@ fn hd_levels(text: &[char], levels: &mut Vec<Level>, next_id: &mut usize, depth:
     let mut i = 0usize;
     let mut inner: Vec<(Vec<char>, usize)> = Vec::new();
     macro_rules! lift {
-        ($a:expr, $b:expr) => {{
+        ($a:expr_2021, $b:expr_2021) => {{
             let id = *next_id;
             *next_id += 1;
             inner.push((text[$a..$b].to_vec(), id));
@@ -719,11 +715,7 @@ fn hd_write_targets(tokens: &[Tok], ev: &Ev) -> Option<Vec<Target>> {
             k += 1;
         }
     }
-    if out.iter().any(|w| w.t.contains("__AH")) {
-        None
-    } else {
-        Some(out)
-    }
+    if out.iter().any(|w| w.t.contains("__AH")) { None } else { Some(out) }
 }
 
 /// Mirrors `git-guard.js` `hdMarkers`.

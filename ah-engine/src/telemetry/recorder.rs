@@ -11,7 +11,7 @@
 //! [`Recorder::commit`]; the flusher stores it (`persist`), and only then moves the cursors forward, so a failed
 //! store is retried with nothing lost. Everything recorded after the last flush is lost on `kill -9`: that window is
 //! `telemetry.flush_ms`.
-use super::event::{sanitize_name, Event, Kind, Outcome};
+use super::event::{Event, Kind, Outcome, sanitize_name};
 use crate::defaults;
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -181,11 +181,7 @@ fn fingerprint(kind: Kind, h: &str, e: &str, o: Outcome, cap: usize) -> u64 {
     }
     eat(kind as u8);
     eat(o as u8);
-    if x == 0 {
-        1
-    } else {
-        x
-    }
+    if x == 0 { 1 } else { x }
 }
 
 impl Recorder {

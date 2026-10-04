@@ -60,10 +60,12 @@ mod tests {
     #[test]
     fn long_dir_falls_back_under_limit_in_a_private_dir() {
         // single-threaded env mutation is fine: only this test touches AH_ENGINE_DIR in-process
-        std::env::set_var("AH_ENGINE_DIR", format!("/tmp/{}", "x".repeat(120)));
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AH_ENGINE_DIR", format!("/tmp/{}", "x".repeat(120))) };
         let s = socket();
         let s2 = socket();
-        std::env::remove_var("AH_ENGINE_DIR");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AH_ENGINE_DIR") };
         assert!(s.as_os_str().len() <= defaults::num("paths.socket_max_len") as usize, "{:?}", s);
         assert_eq!(s, s2, "deterministic");
         assert!(s.to_string_lossy().contains(&format!("anti-hall-{}/", uid())), "{s:?}");

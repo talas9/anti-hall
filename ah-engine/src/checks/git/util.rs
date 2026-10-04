@@ -1,6 +1,6 @@
 //! Small helpers: message builder, ASCII case-insensitive matching, Node-compatible path functions,
 //! bounded child processes, and the settings / skip.json reads the Node guard performs.
-use super::tables::{tables, Switch};
+use super::tables::{Switch, tables};
 use super::tokenize::js_trim;
 use crate::defaults;
 use std::collections::HashMap;
@@ -106,11 +106,7 @@ pub fn posix_normalize(p: &str) -> String {
     if trailing {
         path.push('/');
     }
-    if is_abs {
-        format!("/{path}")
-    } else {
-        path
-    }
+    if is_abs { format!("/{path}") } else { path }
 }
 
 /// Like Node `path.posix.dirname`.
@@ -168,11 +164,7 @@ pub fn resolve(base: &str, rel: &str, cwd: &str) -> String {
         resolved = if resolved.is_empty() { cwd.to_string() } else { format!("{cwd}/{resolved}") };
     }
     let n = posix_normalize(&resolved);
-    if n.len() > 1 && n.ends_with('/') {
-        n[..n.len() - 1].to_string()
-    } else {
-        n
-    }
+    if n.len() > 1 && n.ends_with('/') { n[..n.len() - 1].to_string() } else { n }
 }
 
 /// Like Node `path.posix.join`.

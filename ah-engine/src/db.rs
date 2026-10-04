@@ -16,7 +16,7 @@ use crate::error::StoreError;
 use crate::sql;
 use crate::storage::ImpactEvent;
 use crate::tier::{Bus, Tiered};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};

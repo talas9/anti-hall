@@ -19,8 +19,8 @@ use crate::db::open_file;
 use crate::defaults;
 use crate::error::DbError;
 use crate::sql;
-use rusqlite::{params, Connection, Row};
-use serde_json::{json, Value};
+use rusqlite::{Connection, Row, params};
+use serde_json::{Value, json};
 use std::path::Path;
 
 fn ms(key: &str) -> i64 {

@@ -163,11 +163,7 @@ fn parse_plan_declared_files(plan: &str) -> Option<HashSet<String>> {
         let value = &rest[..p.files_end.find(rest).map_or(rest.len(), |m| m.start())];
         declared.extend(extract_path_tokens(value));
     }
-    if phase_count == 0 || declared.is_empty() {
-        None
-    } else {
-        Some(declared)
-    }
+    if phase_count == 0 || declared.is_empty() { None } else { Some(declared) }
 }
 
 /// True when `file` matches a declared token exactly or by path suffix, in either direction.

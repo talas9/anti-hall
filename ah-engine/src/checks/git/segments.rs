@@ -1,4 +1,5 @@
 //! scanCommand, the git verdicts, the quote-blind backstops and the handover-commit check (git-guard.js).
+use super::Ctx;
 use super::aliases::*;
 use super::gitcmd::*;
 use super::heredoc::mask_data_heredocs;
@@ -8,7 +9,6 @@ use super::runner::*;
 use super::tables::{argv_template, block, plain, tables};
 use super::tokenize::*;
 use super::util::*;
-use super::Ctx;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::HashMap;

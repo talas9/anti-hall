@@ -25,10 +25,10 @@ use crate::defaults;
 use crate::metrics::Metrics;
 use crate::rules::Action;
 use crate::storage::{ImpactEvent, ImpactFilter, MemStore, Store};
-use event::{day_of, Event, Kind, Outcome};
+use event::{Event, Kind, Outcome, day_of};
 use persist::{Flushed, TelDb};
 use recorder::Recorder;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Mutex;
 
 /// Metrics plus the impact ledger.

@@ -11,12 +11,12 @@
 //! silently using the backup would hide it. Breakers are per vendor: an open primary is skipped, an open backup is not
 //! tried, and when both are open no call is made.
 use super::breaker::{Breakers, Clock};
-use super::credentials::{resolve_key, Key};
+use super::credentials::{Key, resolve_key};
 use super::error::Reason;
-use super::question::{js_key_order, json_str, Kind, Question};
+use super::question::{Kind, Question, js_key_order, json_str};
 use super::scrub::scrub_secrets;
 use super::settings::{JevSettings, Vendor};
-use super::transport::{endpoint_for, post_systemone, Posted, Transport};
+use super::transport::{Posted, Transport, endpoint_for, post_systemone};
 use crate::defaults;
 use serde_json::Value;
 use std::sync::Arc;
@@ -410,7 +410,7 @@ mod tests {
     use super::*;
     use crate::jev::breaker::ManualClock;
     use crate::jev::settings::{Env, Sources};
-    use crate::jev::testkit::{ok, Fake};
+    use crate::jev::testkit::{Fake, ok};
     use serde_json::json;
 
     fn settings(env: &[(&str, &str)], jev: Value) -> JevSettings {

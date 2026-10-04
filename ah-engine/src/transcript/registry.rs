@@ -9,8 +9,8 @@
 //! Locking: the map lock is held only to find or create a slot, never across I/O (D9). Each index has its own lock,
 //! held while that one transcript is refreshed (a bounded read, `transcript.max_update_bytes`) so two requests for the
 //! same session never read the same bytes twice.
-use super::index::{Index, Limits};
 use super::TranscriptError;
+use super::index::{Index, Limits};
 use crate::defaults;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

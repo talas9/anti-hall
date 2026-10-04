@@ -14,7 +14,7 @@
 use crate::checks::{self, Verdict};
 use crate::defaults;
 use crate::rules::{Action, Budget, RuleSet, Subject};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Reply-body prefix for a built-in check that blocks the way the Node guards do (exit 2, reason on stderr);
 /// the rest of the body is the stderr text. JSON bodies start with `{`, so the two cannot be confused.

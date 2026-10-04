@@ -5,7 +5,7 @@ use crate::config::ClientConfig;
 use crate::defaults;
 use crate::paths;
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -358,8 +358,11 @@ mod tests {
 
     #[test]
     fn scrub_removes_secrets_emails_and_home() {
-        std::env::set_var("HOME", "/Users/someone");
-        let s = scrub("key sk-abcdef0123456789ABCDEF token=hunter2 Authorization: Bearer abcdefgh12345678 ghp_0123456789abcdefghijABCDEF me@example.com /Users/someone/x AKIAABCDEFGHIJKLMNOP");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("HOME", "/Users/someone") };
+        let s = scrub(
+            "key sk-abcdef0123456789ABCDEF token=hunter2 Authorization: Bearer abcdefgh12345678 ghp_0123456789abcdefghijABCDEF me@example.com /Users/someone/x AKIAABCDEFGHIJKLMNOP",
+        );
         for leak in ["sk-abcdef", "hunter2", "abcdefgh12345678", "ghp_0123", "me@example.com", "/Users/someone", "AKIAABCD"] {
             assert!(!s.contains(leak), "{leak} leaked: {s}");
         }

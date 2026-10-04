@@ -3,7 +3,7 @@
 //! only itself.
 #![allow(dead_code)] // each test binary uses a subset
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
@@ -66,7 +66,9 @@ pub fn tool_result(id: &str, text: &str) -> Value {
 }
 
 pub fn notification_text(task_id: &str, status: &str) -> String {
-    format!("<task-notification>\n<task-id>{task_id}</task-id>\n<tool-use-id>toolu_01ABCDEF</tool-use-id>\n<output-file>/tmp/x/tasks/{task_id}.output</output-file>\n<status>{status}</status>\n<summary>Agent \"x\" finished</summary>\n</task-notification>")
+    format!(
+        "<task-notification>\n<task-id>{task_id}</task-id>\n<tool-use-id>toolu_01ABCDEF</tool-use-id>\n<output-file>/tmp/x/tasks/{task_id}.output</output-file>\n<status>{status}</status>\n<summary>Agent \"x\" finished</summary>\n</task-notification>"
+    )
 }
 
 /// The three shapes a completion notice reaches the main transcript in.

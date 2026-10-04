@@ -8,7 +8,7 @@ use super::recorder::Delta;
 use crate::db::{Db, Op};
 use crate::error::DbError;
 use crate::sql;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::sync::Arc;
 

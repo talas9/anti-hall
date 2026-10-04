@@ -13,7 +13,7 @@
 //! check says nothing, as Node does, without looking at the command.
 //!
 //! Mirrors `hooks/scan-throttle.js`.
-use crate::checks::git::tokenize::{parse_heredoc_at, ArithScan};
+use crate::checks::git::tokenize::{ArithScan, parse_heredoc_at};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};

@@ -10,9 +10,9 @@
 //! subscriber that falls behind loses notifications (counted), never data, because the data itself is in SQLite.
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::Mutex;
 
 struct Slot<V> {
     value: V,

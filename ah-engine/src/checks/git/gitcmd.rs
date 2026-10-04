@@ -1,9 +1,9 @@
 //! git argument analysis ported from git-guard.js: subcommand resolution (with inline aliases), push force /
 //! delete detection, command-substitution args, self-credit matching and commit-message extraction.
+use super::Ctx;
 use super::tables::{block, tables};
 use super::tokenize::*;
 use super::util::*;
-use super::Ctx;
 use std::collections::HashMap;
 
 fn is_sep_char(c: char) -> bool {

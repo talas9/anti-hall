@@ -204,11 +204,7 @@ fn natural(ti: &Value) -> String {
             return s.clone();
         }
     }
-    if ti.is_null() {
-        String::new()
-    } else {
-        ti.to_string()
-    }
+    if ti.is_null() { String::new() } else { ti.to_string() }
 }
 
 impl Rule {

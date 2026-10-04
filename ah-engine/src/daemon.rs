@@ -24,7 +24,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -398,11 +398,7 @@ fn reply_outcome(r: &Reply) -> (crate::telemetry::event::Outcome, u64) {
             let v: serde_json::Value = serde_json::from_str(out).unwrap_or_default();
             let denied = v.pointer("/hookSpecificOutput/permissionDecision").and_then(|d| d.as_str()) == Some("deny")
                 || v.get("decision").and_then(|d| d.as_str()) == Some("block");
-            if denied {
-                (Outcome::Block, 0)
-            } else {
-                (Outcome::Advise, out.len() as u64)
-            }
+            if denied { (Outcome::Block, 0) } else { (Outcome::Advise, out.len() as u64) }
         }
     }
 }

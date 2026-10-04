@@ -22,11 +22,7 @@ impl Transport for Fake {
         self.seen.lock().unwrap().push((req.url.to_string(), req.bearer.to_string(), req.body.map(str::to_string)));
         self.timeouts.lock().unwrap().push(req.timeout);
         let mut s = self.script.lock().unwrap();
-        if s.is_empty() {
-            Err(NetError::Network)
-        } else {
-            s.remove(0)
-        }
+        if s.is_empty() { Err(NetError::Network) } else { s.remove(0) }
     }
 }
 

@@ -12,11 +12,11 @@ use super::assist::{AskRequest, Decision, Jev, Trust};
 use super::credentials::resolve_key;
 use super::error::JevError;
 use super::question::Question;
-use super::settings::{known_integrations, Env, Vendor};
+use super::settings::{Env, Vendor, known_integrations};
 use crate::cli::Parsed;
 use crate::defaults;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Read;
 use std::path::PathBuf;
 

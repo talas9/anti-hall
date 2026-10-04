@@ -6,7 +6,7 @@
 //! provenance; none is registered yet, so the list is empty rather than invented.
 use crate::defaults;
 use crate::storage::{ImpactFilter, Store};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Registered impact kinds, from `impact.*` in the defaults (excluding the price table and method entries).
 pub fn kinds() -> Vec<String> {

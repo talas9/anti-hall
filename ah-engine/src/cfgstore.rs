@@ -38,7 +38,7 @@
 use crate::config::Config;
 use crate::defaults::{self, Entry, V};
 use crate::{health, paths};
-use serde_json::{json, Map, Value as Json};
+use serde_json::{Map, Value as Json, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Deref;

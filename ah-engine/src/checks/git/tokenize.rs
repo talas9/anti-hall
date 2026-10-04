@@ -2,7 +2,7 @@
 //! verb resolution (wrappers), heredoc parsing and the quote-blind backstop cutter. Strings are scanned
 //! as `char` vectors (the JS source indexes UTF-16 units; the two agree away from astral characters).
 
-use super::tables::{tables, OptWrapper};
+use super::tables::{OptWrapper, tables};
 
 /// Placeholder token text standing for a command substitution the tokenizer could not evaluate.
 pub const CMDSUBST: &str = "\0CMDSUBST\0";
@@ -200,11 +200,7 @@ fn is_brace_group_word(cur: &[char], c: char, c2: Option<char>) -> bool {
             return c == '}' && cur_blank && ";&|<>)".contains(c2v);
         }
     }
-    if c == '}' {
-        cur_blank
-    } else {
-        cur.is_empty() || cur.last().is_some_and(|&x| is_js_space(x))
-    }
+    if c == '}' { cur_blank } else { cur.is_empty() || cur.last().is_some_and(|&x| is_js_space(x)) }
 }
 
 /// Split a command text at `;`, `&&`, `||`, `|`, `&` and newlines (outside quotes, substitutions and heredocs).

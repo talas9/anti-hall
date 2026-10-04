@@ -245,11 +245,7 @@ pub fn parse_ts_ms(s: &str) -> Option<i64> {
             let oh = num(i + 1, i + 3)?;
             let om = num(i + 4, i + 6)?;
             let v = oh * 60 + om;
-            if *sign == b'-' {
-                -v
-            } else {
-                v
-            }
+            if *sign == b'-' { -v } else { v }
         }
         _ => return None,
     };

@@ -95,11 +95,7 @@ pub fn translate(src: &str, ci: bool) -> String {
 }
 
 fn swap_case(c: char) -> char {
-    if c.is_ascii_lowercase() {
-        c.to_ascii_uppercase()
-    } else {
-        c.to_ascii_lowercase()
-    }
+    if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }
 }
 
 /// Compile a JavaScript regex source (no flags beyond `i`).

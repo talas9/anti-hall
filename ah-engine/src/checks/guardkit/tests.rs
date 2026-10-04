@@ -1,7 +1,7 @@
 //! Unit tests of the shared guard helpers.
 use super::jsre;
 use super::settings::{get_bool, is_skipped};
-use super::state::{session_key, MemoryState, SessionState};
+use super::state::{MemoryState, SessionState, session_key};
 use super::text::{collapse_ws, is_js_space, js_trim, slice_utf16};
 use crate::checks::git::util::Settings;
 use crate::defaults;

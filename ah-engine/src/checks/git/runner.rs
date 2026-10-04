@@ -1,10 +1,10 @@
 //! xargs / find -exec / parallel / stdin-script handling (placeholders, appended input words).
+use super::Ctx;
 use super::gitcmd::*;
 use super::payloads::*;
 use super::segments::{git_verdict, scan_command};
 use super::tables::{block, tables};
 use super::tokenize::*;
-use super::Ctx;
 use crate::checks::lit_re;
 use regex::Regex;
 

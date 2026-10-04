@@ -1,10 +1,10 @@
 //! git-guard's alias and reused-message checks (lib/git-alias-scan.js).
+use super::Ctx;
 use super::gitcmd::*;
 use super::segments::scan_command;
 use super::tables::{argv_template, block, note, plain, tables};
 use super::tokenize::*;
 use super::util::*;
-use super::Ctx;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -344,11 +344,7 @@ fn commit_long(n: &str) -> Option<String> {
         return Some(n.to_string());
     }
     let c: Vec<&&str> = all.iter().filter(|k| k.starts_with(n)).collect();
-    if c.len() == 1 {
-        Some(c[0].to_string())
-    } else {
-        None
-    }
+    if c.len() == 1 { Some(c[0].to_string()) } else { None }
 }
 
 #[derive(Default)]
@@ -379,11 +375,7 @@ fn commit_sources(rest: &[Tok]) -> Sources {
             }
             let name = &r[..name_len];
             let tail = &r[name_len..];
-            if tail.is_empty() {
-                Some((name.to_string(), None))
-            } else {
-                tail.strip_prefix('=').map(|v| (name.to_string(), Some(v.to_string())))
-            }
+            if tail.is_empty() { Some((name.to_string(), None)) } else { tail.strip_prefix('=').map(|v| (name.to_string(), Some(v.to_string()))) }
         });
         if let Some((raw_name, val0)) = long {
             let n = commit_long(&raw_name);
@@ -438,11 +430,7 @@ fn commit_sources(rest: &[Tok]) -> Sources {
                 tc[j + 1..].iter().collect()
             } else {
                 k += 1;
-                if k < rest.len() {
-                    rest[k].text.clone()
-                } else {
-                    String::new()
-                }
+                if k < rest.len() { rest[k].text.clone() } else { String::new() }
             };
             match ch {
                 'm' | 'F' => o.message = true,

@@ -1,8 +1,8 @@
 //! Writes into the stable launcher directory (`~/.anti-hall/bin`) and call-literal command extraction.
+use super::Ctx;
 use super::tables::{block, tables};
 use super::tokenize::*;
 use super::util::*;
-use super::Ctx;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::sync::OnceLock;
@@ -244,11 +244,7 @@ fn glob_could_hit_launcher(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
     let p2 = if let Some(r) = p.strip_prefix("${HOME}") {
         format!("{home}{r}")
     } else if let Some(r) = p.strip_prefix("$HOME") {
-        if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
-            format!("{home}{r}")
-        } else {
-            p.to_string()
-        }
+        if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) { format!("{home}{r}") } else { p.to_string() }
     } else {
         p.to_string()
     };
@@ -328,11 +324,7 @@ fn var_target_hits_launcher(ctx: &mut Ctx, p: &str, cd_dir: Option<&str>, hops: 
         let c2 = if let Some(r) = joined.strip_prefix("${HOME}") {
             format!("{home_or}{r}")
         } else if let Some(r) = joined.strip_prefix("$HOME") {
-            if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
-                format!("{home_or}{r}")
-            } else {
-                joined.clone()
-            }
+            if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) { format!("{home_or}{r}") } else { joined.clone() }
         } else {
             joined.clone()
         };
