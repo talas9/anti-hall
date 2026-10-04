@@ -13,7 +13,9 @@ const ROOT = path.join(__dirname, '..', '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const GUIDE = read('docs/GUIDE.md');
 const CHANGELOG = read('CHANGELOG.md');
-const unreleased = CHANGELOG.slice(0, CHANGELOG.indexOf('\n## ', CHANGELOG.indexOf('## Unreleased') + 5));
+// The newest section (## Unreleased while unreleased, ## <version> once released), up to the next heading.
+const top = CHANGELOG.indexOf('\n## ');
+const unreleased = CHANGELOG.slice(top, CHANGELOG.indexOf('\n## ', top + 5));
 const REPORT = read('plugins/anti-hall/scripts/dispatch-report.js');
 
 const PARITY = 'Bash writes are judged like the Edit tool: a repo file the Edit tool may not write (including gitignored outputs like build/ or .env) is blocked; write under .anti-hall/ or the scratchpad, or delegate.';

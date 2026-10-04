@@ -4,7 +4,7 @@ What semantic versioning freezes at 1.0. Anything listed here is a public surfac
 1.0, breaking it needs a MAJOR release. Anything not listed is internal and may change in
 any release.
 
-Status: **draft**, written against the `dev` branch at plugin version 0.122.2. Every item
+Status: **draft**, written against the `dev` branch at plugin version 0.200.0. Every item
 names the file it comes from; when this document and the code disagree, the code is
 right and this document gets a fix.
 

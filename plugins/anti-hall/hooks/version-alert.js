@@ -12,7 +12,7 @@
 //   MOMENT) through v0.107.0 (16:56 UTC) all shipped inside one 24h window;
 //   the alert never fired for ANY of them because the cache "wasn't stale
 //   yet" per the old TTL, even though six releases had happened since the
-//   last check. See CHANGELOG "## Unreleased" for the full writeup.
+//   last check. See the CHANGELOG for the full writeup.
 //
 // DESIGN (non-blocking, cached, two independent cases):
 //   CASE 2 (reload only) — checked FIRST, no network, immune to TTL/cache
