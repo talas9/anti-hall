@@ -490,19 +490,29 @@ output is not the plain exit-2 block, for example the JSON block `io.blockDecisi
 
 **What one process cannot say.** The host shows each hook's `additionalContext` as its own reminder, with its own size
 cap (10,000 characters on Claude, about 2,500 tokens on Codex); the dispatcher joins them into one value, which the
-host caps as a whole. A join of several hooks' contexts over the cap is therefore not delivered: the dispatcher logs
-`dispatch_context_over_cap`, prints a message on stderr and exits `dispatch.defer_exit` (75), asking its wrapper to run
-the Node hooks one by one as the host does (the host shows that non-blocking error, so it is never silent). When one
-entry blocks, the advisories of the others are not shown. Results that cannot be combined (plain text next to another
-answer, a non-zero exit other than 2 next to another answer, two different values for one field) are delivered one
-after another (stdout of every hook that exited 0, stderr of all, exit 0) and logged as `dispatch_conflict`; nothing
-is dropped.
+host caps as a whole. A join of several hooks' contexts over the cap is therefore not delivered as separate values: the
+dispatcher logs `dispatch_context_over_cap`. On an event that cannot block it also prints a message on stderr and exits
+`dispatch.defer_exit` (75), asking its wrapper to run the Node hooks one by one as the host does (the host shows that
+non-blocking error, so it is never silent); only a plain answer (exit 0, no JSON block) is handed back, so a block or a
+decision is never lost to it. On a guard event it never exits 75: it delivers the merged answer, and the host spills the
+over-cap context itself. When one entry blocks, the advisories of the others are not shown. Results that cannot be
+combined exactly (plain text next to another answer, a non-zero exit other than 2 next to another answer, two different
+values for one field) are delivered as one answer and logged as `dispatch_conflict`: the JSON objects among the stdouts of
+the hooks that exited 0 are merged into one line (the host reads a whole stdout as one object or as text, so two JSON lines
+would lose every decision), a field set differently keeps the first hook's value, plain text next to JSON moves to
+stderr, and the stderr of all hooks is kept.
 
-**Guards fail closed (D74).** For a guard event (`dispatch.guard_events`: `PreToolUse`, `PermissionRequest`) a Node
-hook that cannot run (no runnable command, an unreadable `--fallback-map`, a usage error such as an unknown host, a
-panic) answers exit 2 with `dispatch.msg_fail_closed` on stderr, never a silent allow; the log has `dispatch_defer`.
-Any other event runs the hooks it can and logs `dispatch_defer` for the ones it cannot. The plugin is not wired to the
-dispatcher yet; that is planned (D75).
+**Guards fail closed (D74).** The guard events (`dispatch.guard_events`: `PreToolUse`, `PermissionRequest`, `Stop`,
+`SubagentStop`) never turn a failure into a silent allow. The call answers exit 2 with `dispatch.msg_fail_closed` on stderr
+(the log has `dispatch_defer`) when a Node hook cannot run (no runnable command, an unreadable `--fallback-map`, a usage
+error such as an unknown host, a panic), cannot be started, is killed by a signal, or finishes with incomplete output, and
+when the payload is longer than `client.max_stdin` or cannot be read. A hook that exits 2 (or prints a JSON block) keeps its
+block even if a leftover process holds its pipes open. A payload the dispatcher cannot parse, or that names no tool,
+selects every entry of the event instead of none. A hook that runs past its timeout stays the host's own discard (no
+decision), and is logged (`dispatch_hook_timeout`). `tests/fail_closed_matrix.rs` crosses every guard event with every
+injected failure and asserts one invariant: exit 2 with a message, or the result Node's hooks would give, never exit 0 with
+nothing printed unless a hook that ran allowed. Any other event runs the hooks it can and logs `dispatch_defer` for the
+ones it cannot. The plugin is not wired to the dispatcher yet; that is planned (D75).
 
 **Parity.** `parity/run-dispatch.js` runs every matching Node hook of an event as its own process (as the host does),
 combines them with an independent model of the host (`parity/dispatch-lib.js`), and compares exit code, stdout and
