@@ -26,8 +26,8 @@ const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
 
 function payload() { return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: REPO_CWD }; }
 function ctx(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
-function segment(c, banner) { return c.split('\n\n').find((s) => s.startsWith(banner)) || ''; }
-function tableSeg(c) { return segment(c, 'DEVSWARM WORKSPACES'); }
+function segment(c, banner) { return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || ''; }
+function tableSeg(c) { return segment(c, 'devswarm-workspaces'); }
 function tableRow(c, id) { return tableSeg(c).split('\n').find((l) => l.startsWith('| ' + id + ' ')) || ''; }
 
 function swarmDir(home) {

@@ -1021,7 +1021,7 @@ function main() {
   if (dropDiag.nonceFailClosed && !state.nonceFailClosedLogged) {
     state.nonceFailClosedLogged = true;
     try {
-      process.stderr.write('[anti-hall] devswarm-child-gate: instance nonce could not be derived for session '
+      process.stderr.write('⚠️ anti-hall · devswarm-child-gate: instance nonce could not be derived for session '
         + JSON.stringify(sessionId) + ' — findRecentDropAttempt fails CLOSED (any existing drop-attempt '
         + 'record is not accepted as authenticated; this Stop re-blocks as if no attempt was made).\n');
     } catch (_) { /* best-effort diagnostic only */ }
@@ -1045,7 +1045,7 @@ function main() {
   if (dropDiag.mismatch && !state.mismatchLogged) {
     state.mismatchLogged = true;
     try {
-      process.stderr.write('[anti-hall] devswarm-child-gate: an attempt record for this workspace\'s own id '
+      process.stderr.write('⚠️ anti-hall · devswarm-child-gate: an attempt record for this workspace\'s own id '
         + 'exists for session ' + JSON.stringify(sessionId) + ' but authenticated against NEITHER this '
         + 'process\'s nonce nor its session (row nonce prefix ' + JSON.stringify(dropDiag.mismatch.rowNoncePrefix)
         + ' vs own nonce prefix ' + JSON.stringify(dropDiag.mismatch.ownNoncePrefix) + ') — treated as '
@@ -1131,7 +1131,7 @@ function main() {
     if (decision.persisted && !state.lifetimeCapLogged) {
       writeState(stateFile, Object.assign({}, state, { lifetimeCapLogged: true }));
       try {
-        process.stderr.write('[anti-hall] devswarm-child-gate: forced-ack cap (' + MAX_BLOCKS
+        process.stderr.write('⚠️ anti-hall · devswarm-child-gate: forced-ack cap (' + MAX_BLOCKS
           + ' per kind) reached for session ' + JSON.stringify(sessionId)
           + ' — block cap reached for this reason; not blocking again until you send a report.'
           + ' After that the limit starts over, so send a fresh heartbeat before each stop.\n');

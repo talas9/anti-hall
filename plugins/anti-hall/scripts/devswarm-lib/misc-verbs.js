@@ -677,7 +677,7 @@ function emitKnownWarning(argv, result) {
   const label = argv[0] === 'inbox'
     ? 'inbox ' + String(argv[1] || result.action || '') + ' ' + JSON.stringify(String(result.id != null ? result.id : ''))
     : String(argv[0]);
-  const line = '[devswarm] WARNING: ' + label
+  const line = '⚠️ anti-hall · devswarm: ' + label
     + ' reported known:false (' + reasons.join('; ') + ') — totals may be incomplete or stale';
   try { process.stderr.write(line + '\n'); } catch (_) {}
   return line;

@@ -2,7 +2,7 @@
 // APP-SIDE archive detection — the OTHER two readers (the parent Stop gate has
 // its own file, tests/hooks/devswarm-parent-gate-app-archived.test.js):
 //
-//   * hooks/devswarm-parent-inbox.js — the per-turn DEVSWARM WORKSPACES table.
+//   * hooks/devswarm-parent-inbox.js — the per-turn devswarm-workspaces table.
 //   * scripts/devswarm.js cmdRoster  — the `archived` row hint.
 //
 // FIELD ROOT CAUSE: the owner archived children in the DevSwarm app, which
@@ -92,7 +92,7 @@ function writeCache(home, absentIds, ageMs) {
 }
 function tableRow(r, id) {
   const c = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
-  const seg = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+  const seg = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
   return seg.split('\n').find((l) => l.startsWith('| ' + id + ' ')) || '';
 }
 function runInbox(home, envOverride) {
@@ -142,7 +142,7 @@ test('TABLE D1 DEFAULT: an app-archived row is HIDDEN by default and named in a 
     writeCache(h.home, ['wsA'], 60_000);
     const r = runInbox(h.home);
     const c = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
-    const t = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+    const t = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
     assert.ok(!t.includes('wsA'), `an archived row must be hidden by default; t=${t}`);
     assert.ok(t.includes('+1 archived (done; set ANTIHALL_ROSTER_HIDE_ARCHIVED=0 to show)'), t);
   } finally { h.cleanup(); }
@@ -210,7 +210,7 @@ test('TABLE: an APP-archived row with a stored notDraining verdict is HIDDEN by 
     writeCache(h.home, ['wsA'], 60_000);
     const r = runInbox(h.home);
     const c = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
-    const t = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+    const t = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
     assert.ok(!t.includes('wsA'), `an app-archived row (even with notDraining) must be hidden by default; t=${t}`);
     assert.ok(t.includes('+1 archived (done; set ANTIHALL_ROSTER_HIDE_ARCHIVED=0 to show)'), t);
   } finally { h.cleanup(); }

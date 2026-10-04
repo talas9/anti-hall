@@ -228,7 +228,7 @@ function parseArgs(argv) {
 }
 
 function fail(msg) {
-  console.error(msg);
+  console.error('❌ anti-hall · jev-setup: ' + msg);
   process.exitCode = 1;
 }
 
@@ -472,7 +472,7 @@ function cmdMode(opts) {
     const schema = require('../hooks/lib/settings-schema.js');
     if (schema.findSetting('jevIntegrations', integration)) {
       const r = require('../hooks/lib/settings.js').set('jevIntegrations', integration, value);
-      if (!r.ok) console.error('warning: settings.json not updated: ' + r.error);
+      if (!r.ok) console.error('⚠️ anti-hall · jev-setup: settings.json not updated: ' + r.error);
     }
   } catch (_) { /* jev.json write above still applies */ }
   console.log(`${integration} mode set to ${value}`);
@@ -544,7 +544,7 @@ async function main() {
     case 'reviewed': return cmdReviewed(opts);
     case 'snooze': return cmdSnooze(opts);
     default:
-      console.error('usage: jev-setup.js status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|bind-generic-key --vendor V|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N');
+      console.error('💡 anti-hall · jev-setup: usage: jev-setup.js status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|bind-generic-key --vendor V|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N');
       process.exitCode = 1;
   }
 }

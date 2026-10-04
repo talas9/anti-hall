@@ -169,13 +169,13 @@ test('R2 Reviewer P2: emitKnownWarning covers roster and diagnose', () => {
   const rosterResult = { ok: true, action: 'roster', known: false, storeUnavailable: true, storeUnavailableReason: 'EACCES', storeUnavailableScope: 'registry' };
   const rosterLine = cli.emitKnownWarning(['roster'], rosterResult);
   assert.equal(typeof rosterLine, 'string', 'roster known:false must emit a WARNING line');
-  assert.match(rosterLine, /^\[devswarm\] WARNING: roster reported known:false/);
+  assert.match(rosterLine, /^\u26A0\uFE0F anti-hall \u00B7 devswarm: roster reported known:false/);
   assert.match(rosterLine, /EACCES/);
 
   const diagnoseResult = { ok: true, action: 'diagnose', known: false, storeUnavailable: true, storeUnavailableReason: 'ENOTDIR', storeUnavailableScope: 'store' };
   const diagnoseLine = cli.emitKnownWarning(['diagnose'], diagnoseResult);
   assert.equal(typeof diagnoseLine, 'string', 'diagnose known:false must emit a WARNING line');
-  assert.match(diagnoseLine, /^\[devswarm\] WARNING: diagnose reported known:false/);
+  assert.match(diagnoseLine, /^\u26A0\uFE0F anti-hall \u00B7 devswarm: diagnose reported known:false/);
   assert.match(diagnoseLine, /ENOTDIR/);
 
   // known:true (the healthy case) must never emit a line for either verb.

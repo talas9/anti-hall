@@ -236,7 +236,7 @@ for (const B of backends) {
 
       const line = cli.healthcheckHumanLine(h.result);
       assert.match(line, /deadSplits=1/, 'human line carries the deadSplits count');
-      assert.match(line, /WARNING/, 'human line surfaces the dangerous kind distinctly (not blended into splits=)');
+      assert.match(line, /warning/, 'human line surfaces the dangerous kind distinctly (not blended into splits=)');
     } finally {
       rm(main); rm(home);
     }

@@ -18,18 +18,12 @@ const path = require('path');
 const os = require('os');
 
 const STATE_FILE = path.join(os.homedir(), '.anti-hall', 'codex-availability.json');
-const CONTEXT =
-  "Codex binary detected on PATH (per a SessionStart PATH probe). This is NECESSARY " +
-  "BUT NOT SUFFICIENT -- it does NOT prove Codex is authenticated or functional, only " +
-  "that a spawn is worth ATTEMPTING. If a Codex spawn returns null at runtime, take " +
-  "the documented Opus/Sonnet fallback -- that null-check is still the real backstop " +
-  "no matter what this probe says. Workflow scripts have no filesystem and cannot read " +
-  "this fact themselves -- pass args.codexAvailable=true into ship-it/deadly-loop " +
-  "Workflow invocations (same pattern as args.fableAvailable) so the Critic seat " +
-  "attempts agentType:'codex:codex-rescue' first. Outside a Workflow, prefer " +
-  "agentType:'codex:codex-rescue' for the deadly-loop/ship-it Critic seat, and for " +
-  "everyday correctness-review plus a share of implementation load; coordinators there " +
-  "should read ~/.anti-hall/codex-availability.json instead of re-probing.";
+const CONTEXT = require('./lib/block-message.js').message({
+  kind: 'tip', guard: 'codex-availability',
+  what: 'Codex binary detected on PATH (per a SessionStart PATH probe).',
+  why: 'Necessary but not sufficient: it does not prove Codex is authenticated or functional, only that a spawn is worth attempting. If a Codex spawn returns null at runtime, take the documented Opus/Sonnet fallback; that null-check is still the real backstop.',
+  instead: "Workflow scripts have no filesystem and cannot read this fact, so pass args.codexAvailable=true into ship-it/deadly-loop Workflow invocations (same pattern as args.fableAvailable) so the Critic seat attempts agentType:'codex:codex-rescue' first. Outside a Workflow, prefer agentType:'codex:codex-rescue' for the deadly-loop/ship-it Critic seat and for everyday correctness-review plus a share of implementation load; coordinators there should read ~/.anti-hall/codex-availability.json instead of re-probing.",
+});
 
 // isRealExecutable(candidate, isWin) -- true only if `candidate` is a REGULAR
 // FILE (never a directory) and, on POSIX, has the execute bit set. `statSync`
@@ -99,8 +93,11 @@ function quotaNote() {
   try {
     const q = require('./lib/codex-quota.js').readQuota({ home: require('../companion/lib/test-home-guard.js').resolveHome() });
     if (!q.exhausted) return '';
-    return 'Codex unavailable until ' + new Date(q.until).toISOString() +
-      ' (' + q.reason + '); route correctness review to Sonnet until then. ';
+    return require('./lib/block-message.js').message({
+      kind: 'warn', guard: 'codex-availability',
+      what: 'Codex unavailable until ' + new Date(q.until).toISOString() + ' (' + q.reason + ').',
+      instead: 'route correctness review to Sonnet until then.',
+    }) + '\n';
   } catch (_) {
     return '';
   }

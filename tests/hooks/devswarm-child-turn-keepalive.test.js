@@ -13,7 +13,7 @@ const path = require('node:path');
 const { testHook } = require('../helpers/spawn-hook.js');
 
 const HOOK = 'devswarm-child-turn.js';
-const MARK = 'DEVSWARM COMMS OVERRIDE';
+const MARK = 'devswarm-comms';
 function tmpHome() { return fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-childka-')); }
 function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
 function attLine(ts, text) {

@@ -119,7 +119,7 @@ function ageMinutes(ms) {
 function buildMessage(count, id, oldestMs) {
   const age = ageMinutes(oldestMs);
   return (
-    'DEVSWARM INBOX: ' + count + ' unread message(s) addressed to YOU (oldest ' + age
+    '⚠️ anti-hall · devswarm-inbox: ' + count + ' unread message(s) addressed to YOU (oldest ' + age
     + '). Drain NOW via `node ' + CLI + ' inbox pull ' + id + ' && node ' + CLI
     + ' inbox ack ' + id + '` before continuing; a parent ruling may change what you are building.'
   );

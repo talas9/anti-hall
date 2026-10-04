@@ -492,7 +492,7 @@ test('hivecontrolUnresolvedWarningLines: names the env var and is non-empty (the
   const lines = installer.hivecontrolUnresolvedWarningLines();
   assert.ok(lines.length >= 3, 'a genuinely prominent, multi-line warning');
   assert.ok(lines.some((l) => l.includes('ANTIHALL_DEVSWARM_HIVECONTROL')), 'names the actionable fix');
-  assert.ok(lines.some((l) => l.includes('!')), 'visually loud, not a quiet log line');
+  assert.match(lines[0], /^\u26A0\uFE0F anti-hall \u00B7 install-devswarm-ingest: /, 'shaped warning headline, not a quiet log line');
 });
 
 test('unitEnvFor prepends the resolved bin dir to the scheduler PATH and pins the absolute binary', () => {

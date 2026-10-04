@@ -35,7 +35,7 @@ const {
 } = require(path.join(__dirname, '..', 'hooks', 'lib', 'auto-handover-config.js'));
 
 function fail(msg) {
-  console.error(msg);
+  console.error('❌ anti-hall · auto-handover-config: ' + msg);
   process.exitCode = 1;
 }
 
@@ -153,7 +153,7 @@ function main() {
     case 'nag-quiet': return cmdNagQuiet(argv[1]);
     case 'max-tokens': return cmdMaxTokens(argv[1]);
     default:
-      console.error('usage: auto-handover-config.js get [--json] | set <1-99> | off | on | nag on|off | nag-step <n> | nag-quiet <n> | max-tokens <n>');
+      console.error('💡 anti-hall · auto-handover-config: usage: auto-handover-config.js get [--json] | set <1-99> | off | on | nag on|off | nag-step <n> | nag-quiet <n> | max-tokens <n>');
       process.exitCode = 1;
   }
 }

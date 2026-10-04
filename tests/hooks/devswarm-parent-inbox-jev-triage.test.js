@@ -1,5 +1,5 @@
 'use strict';
-// devswarm-parent-inbox.js — mesh message triage on the DEVSWARM BROADCAST
+// devswarm-parent-inbox.js — mesh message triage on the devswarm-broadcast
 // (roster/FYI) feed (Jev part 2, buildBroadcastSegment). ADVISORY ONLY: a
 // tag is prefixed to a row's rendered line; nothing about which rows show,
 // their order, or the Stop-gate's own unread computation ever changes.
@@ -106,7 +106,7 @@ test('DISABLED (no jev.json, the default): broadcast rows render with no kind ta
     writeSharedSummary(h.home, [{ from: 'peer-1', summary: 'can you review this PR?', ts: Date.now(), urgency: 'normal' }]);
     const r = testHook(HOOK, payload('sess-disabled'), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(c.includes('DEVSWARM BROADCAST'), c);
+    assert.ok(c.includes('devswarm-broadcast'), c);
     assert.ok(c.includes('- peer-1: can you review this PR?'), `row must render exactly as before triage existed; ctx=${c}`);
     assert.ok(!/\[question-needs-answer\]|\[blocker\]|\[status-report\]|\[done-report\]|\[fyi\]/.test(c), c);
   } finally { h.cleanup(); }
@@ -135,7 +135,7 @@ test('ENABLED + confident mock Jev: the row gains an advisory [kind] tag; row se
         }),
       });
       const c = ctx(r);
-      assert.ok(c.includes('DEVSWARM BROADCAST'), `stdout=${r.stdout} stderr=${r.stderr}`);
+      assert.ok(c.includes('devswarm-broadcast'), `stdout=${r.stdout} stderr=${r.stderr}`);
       assert.ok(c.includes('[question-needs-answer]'), c);
       assert.ok(!c.includes('[URGENT]'), 'a confidently non-urgent row must not gain the [URGENT] tag');
       // The row's core rendering (who + body) is untouched — only a tag is prefixed.

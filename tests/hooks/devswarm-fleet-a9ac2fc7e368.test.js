@@ -67,7 +67,7 @@ function isolatedEnv(home, extra) {
   }, extra || {});
 }
 
-test('an app-archived stale-registry row is suppressed from the STALE WORKSPACE(S) segment', () => {
+test('an app-archived stale-registry row is suppressed from the devswarm-stale-workspaces segment', () => {
   const home = tmpHome();
   const repo = makeGitRepo('a9ac2');
   try {
@@ -113,7 +113,7 @@ test('an app-archived stale-registry row is suppressed from the STALE WORKSPACE(
     let json = null;
     try { json = JSON.parse(res.stdout); } catch (_) { json = null; }
     const ctxText = (json && json.hookSpecificOutput && json.hookSpecificOutput.additionalContext) || '';
-    assert.ok(!/STALE WORKSPACE/.test(ctxText),
+    assert.ok(!/devswarm-stale-workspaces/.test(ctxText),
       'an app-archived row must never be named as a stale workspace; additionalContext=' + ctxText);
   } finally { rm(home); rm(repo); }
 });
@@ -153,7 +153,7 @@ test('a stale-registry row with NO app-archive evidence is still surfaced (no fa
     let json = null;
     try { json = JSON.parse(res.stdout); } catch (_) { json = null; }
     const ctxText = (json && json.hookSpecificOutput && json.hookSpecificOutput.additionalContext) || '';
-    assert.ok(/STALE WORKSPACE/.test(ctxText),
+    assert.ok(/devswarm-stale-workspaces/.test(ctxText),
       'without any app-archive evidence the row must still be surfaced; additionalContext=' + ctxText);
   } finally { rm(home); rm(repo); }
 });

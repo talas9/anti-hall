@@ -206,7 +206,7 @@ function seatVerdict(opts) {
 function iso(ms) { try { return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z'); } catch (_) { return String(ms); } }
 
 function conflictText(v, cli) {
-  return '⚠ DEVSWARM PRIMARY SEAT CONFLICT: Another live Primary session ' + v.holder + ' owns this worktree'
+  return '⚠️ anti-hall · devswarm-primary-seat-conflict: Another live Primary session ' + v.holder + ' owns this worktree'
     + ' — continue here (it will be demoted) or switch to it? (Primary id ' + v.id + '.) To continue here run `node ' + cli
     + ' primary takeover`; to switch, close this session and use ' + v.holder + '. Until you choose, mesh '
     + 'send/ack/spawn from this session are refused. Never two sessions sending as the same Primary.';
@@ -221,23 +221,23 @@ function seatNotices(v, o) {
     // First-ever registration (adoptPrimarySeat's 'none' handling): no prior
     // holder to adopt FROM — distinct wording from the 'adopt' branch below so
     // this never misleadingly claims a closed session this seat never had.
-    out.push('DEVSWARM PRIMARY SEAT: registered Primary ' + v.id + ' for this worktree (first run — no prior anchor found).');
+    out.push('💡 anti-hall · devswarm-primary-seat: registered Primary ' + v.id + ' for this worktree (first run — no prior anchor found).');
   } else if (o && o.adopted) {
-    out.push('DEVSWARM PRIMARY SEAT: adopted Primary ' + v.id + ' from ' + (v.holder || 'an unclaimed anchor')
+    out.push('💡 anti-hall · devswarm-primary-seat: adopted Primary ' + v.id + ' from ' + (v.holder || 'an unclaimed anchor')
       + ' (closed) — same identity, partitions and cursors; handover ' + (v.handover ? v.handover.path : '(none found for this worktree)')
       + (v.handover ? ' — read it first.' : '.'));
   } else if (v.state === 'conflict') {
     out.push(conflictText(v, cli));
   } else if (v.state === 'unknown' && v.reason === 'corrupt-descriptor') {
-    out.push('⚠ DEVSWARM PRIMARY SEAT: the anchor descriptor for Primary ' + v.id + ' is corrupt/unparseable ('
+    out.push('⚠️ anti-hall · devswarm-primary-seat: the anchor descriptor for Primary ' + v.id + ' is corrupt/unparseable ('
       + (v.descriptorPath || 'workspaces/' + v.id + '.json') + ') — NOT re-registering over it. Inspect or repair that file, '
       + 'then run `node ' + cli + ' primary takeover`.');
   } else if (v.state === 'unknown') {
-    out.push('⚠ DEVSWARM PRIMARY SEAT: could not verify whether session ' + (v.holder || '?') + ' (the recorded Primary) '
+    out.push('⚠️ anti-hall · devswarm-primary-seat: could not verify whether session ' + (v.holder || '?') + ' (the recorded Primary) '
       + 'is still running — NOT adopting. If it is closed, run `node ' + cli + ' primary takeover`.');
   }
   if (v.stale) {
-    out.push('DEVSWARM PRIMARY SEAT: you resumed ' + (o && o.currentSessionId ? o.currentSessionId : 'this session') + ' but '
+    out.push('💡 anti-hall · devswarm-primary-seat: you resumed ' + (o && o.currentSessionId ? o.currentSessionId : 'this session') + ' but '
       + v.stale.sessionId + ' was active until ' + iso(v.stale.activeUntilMs)
       + (v.handover ? '; newest handover for this worktree: ' + v.handover.path : '')
       + '. A `primary-<hash>` sender label is a worktree id, not proof of another Primary — never stand down on a label alone.');

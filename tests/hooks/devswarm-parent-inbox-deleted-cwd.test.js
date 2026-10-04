@@ -41,10 +41,10 @@ function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 function segment(c, banner) {
-  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+  return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || '';
 }
 function ownSegment(c) {
-  return segment(c, 'DEVSWARM OWN INBOX') || segment(c, 'QUESTIONS AWAITING YOUR REPLY');
+  return segment(c, 'devswarm-own-inbox') || segment(c, 'QUESTIONS AWAITING YOUR REPLY');
 }
 
 function writeSharedSummary(home, repoKey, ownId, unread) {

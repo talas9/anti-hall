@@ -836,7 +836,7 @@ function devswarmHookSelfTests() {
     (function () {
       const home = path.join(base, 'child-turn'); fs.mkdirSync(home, { recursive: true });
       const r = runHook('devswarm-child-turn.js', { hook_event_name: 'UserPromptSubmit', session_id: 'ct', prompt: 'hi' }, CHILD_ENV(home));
-      const said = /CHILD WORKSPACE/.test(r.out);
+      const said = /devswarm-child-workspace/.test(r.out);
       let beat = false;
       try { beat = fs.readdirSync(path.join(home, '.anti-hall', 'devswarm', 'heartbeats')).some((f) => /\.json$/.test(f)); } catch (_) {}
       results.push({ ok: said && beat, msg: (said && beat)
@@ -887,7 +887,7 @@ function devswarmHookSelfTests() {
         results.push({ ok: true, skip: true, msg: 'devswarm-parent-inbox self-test SKIPPED: repoKey unresolvable for ' + process.cwd() + ' (not a git worktree?)' });
       } else {
         const r = runHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'pi', prompt: 'hi', cwd: process.cwd() }, PRIMARY_ENV(home));
-        const said = /DEVSWARM PARENT INBOX/.test(r.out) && /3 unread/.test(r.out);
+        const said = /devswarm-parent-inbox/.test(r.out) && /3 unread/.test(r.out);
         results.push({ ok: said, msg: said
           ? 'devswarm-parent-inbox surfaces a workspace unread backlog to the Primary'
           : 'devswarm-parent-inbox did NOT surface unread backlog to the Primary' });

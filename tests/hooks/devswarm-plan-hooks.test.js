@@ -24,7 +24,7 @@ const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', 
 
 function ctxOf(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
 function tableRow(c, id) {
-  const seg = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+  const seg = c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
   return seg.split('\n').find((l) => l.startsWith('| ' + id + ' ')) || '';
 }
 function writeSummary(home, workspaces) {
@@ -80,17 +80,17 @@ test('child-turn: plan segment names the current step and the heartbeat --step c
   try {
     const payload = { hook_event_name: 'UserPromptSubmit', session_id: 's1', prompt: 'go', cwd: '/tmp' };
     const bare = testHook('devswarm-child-turn.js', payload, { home: h.home, env: CHILD_ENV, expectJson: true });
-    assert.ok(!ctxOf(bare).includes('DEVSWARM PLAN'), 'no plan -> no plan text (byte-identical to before)');
+    assert.ok(!ctxOf(bare).includes('devswarm-plan'), 'no plan -> no plan text (byte-identical to before)');
 
     const req = testHook('devswarm-child-turn.js', Object.assign({}, payload, { session_id: 's2' }),
       { home: h.home, env: Object.assign({ ANTIHALL_DEVSWARM_PLAN_REQUIRED: '1' }, CHILD_ENV), expectJson: true });
-    assert.ok(ctxOf(req).includes('DEVSWARM PLAN: you have no step plan yet'), ctxOf(req));
+    assert.ok(ctxOf(req).includes('💡 anti-hall · devswarm-plan: you have no step plan yet'), ctxOf(req));
     assert.ok(ctxOf(req).includes('plan set child-p'));
 
     seedPlan(h.home, 'child-p', ['read', 'fix'], (p, now) => planLib.applyStep(p, 1, 'doing', now));
     const withPlan = testHook('devswarm-child-turn.js', Object.assign({}, payload, { session_id: 's3' }), { home: h.home, env: CHILD_ENV, expectJson: true });
     const c = ctxOf(withPlan);
-    assert.ok(c.includes('DEVSWARM PLAN: 0/2 steps done; latest touched step 1 — "read".'), c);
+    assert.ok(c.includes('💡 anti-hall · devswarm-plan: 0/2 steps done; latest touched step 1 — "read".'), c);
     assert.ok(c.includes('heartbeat child-p --step N --status doing|done|blocked'), c);
   } finally { h.cleanup(); }
 });

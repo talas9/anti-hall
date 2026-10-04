@@ -1176,7 +1176,7 @@ function diagnoseHumanLine(r) {
   ];
   const scope = r.repoKey ? ' (scope: ' + r.repoKey + ')' : '';
   const status = r.degraded ? 'degraded' : 'ok';
-  const warning = r.warning ? ' — WARNING: ' + r.warning : '';
+  const warning = r.warning ? ' — warning: ' + r.warning : '';
   return 'diagnose: ' + status + scope + ' [' + parts.join(' ') + ']' + warning;
 }
 
@@ -1415,13 +1415,13 @@ function healthcheckHumanLine(r) {
     // registry.ndjson (see pickStoreReadErrorScope) — the generic "store"
     // otherwise.
     const noun = r.storeUnavailableScope === 'registry' ? 'registry' : 'store';
-    warning = ' — WARNING: ' + noun + ' unreadable (' + (r.storeUnavailableReason || 'EUNKNOWN') + ') — counts above are unknown, not verified-zero';
+    warning = ' — warning: ' + noun + ' unreadable (' + (r.storeUnavailableReason || 'EUNKNOWN') + ') — counts above are unknown, not verified-zero';
   }
   if (deadSplits > 0) {
-    warning += ' — WARNING: ' + deadSplits + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)';
+    warning += ' — warning: ' + deadSplits + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)';
   }
   if (mixedSplits > 0) {
-    warning += ' — WARNING: ' + mixedSplits + ' mixed split(s) (2+ registry rows, exactly 1 live — a send can still resolve to the dead row)';
+    warning += ' — warning: ' + mixedSplits + ' mixed split(s) (2+ registry rows, exactly 1 live — a send can still resolve to the dead row)';
   }
   return 'healthcheck: ' + (r.status || (r.ok ? 'ok' : 'degraded')) + scope + ' [' + parts.join(' ') + ']' + warning;
 }

@@ -94,7 +94,7 @@ for (const kind of Object.keys(BAD)) {
       const env = envOf(BAD[kind], 'bad-c');
       const c = inboxText(h.home, env);
       assert.match(c, /1 remain UNANSWERED — from live-c\b/, c);
-      assert.ok(!/bad-c/.test(c.split('DEVSWARM OWN INBOX')[1] || ''), 'archived/held/ignored asker not named in the nag');
+      assert.ok(!/bad-c/.test(c.split('devswarm-own-inbox')[1] || ''), 'archived/held/ignored asker not named in the nag');
       const r = gate(h.home, env);
       assert.ok(blocked(r), JSON.stringify(r.json));
       assert.match(r.json.reason, /live-c/);

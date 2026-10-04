@@ -69,20 +69,20 @@ test('task-tracker as DevSwarm PRIMARY: 4 queued prompts -> 1 TASK-LIST and 1 DI
 
 test('devswarm-parent-inbox: 4 queued prompts -> 1 COMMS OVERRIDE; again after delivery', () => {
   const r = burst('devswarm-parent-inbox.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x' } },
-    [(c) => c.includes('DEVSWARM COMMS OVERRIDE')]);
+    [(c) => c.includes('devswarm-comms')]);
   assert.deepStrictEqual(r.counts, [1]);
   assert.deepStrictEqual(r.after, [0]);
 });
 
 test('devswarm-parent-inbox: injectionRepeatEvery=0 -> burst collapse only, COMMS OVERRIDE re-emitted after delivery', () => {
   const r = burst('devswarm-parent-inbox.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_INJECTION_REPEAT_EVERY: '0' } },
-    [(c) => c.includes('DEVSWARM COMMS OVERRIDE')]);
+    [(c) => c.includes('devswarm-comms')]);
   assert.deepStrictEqual(r.counts, [1]);
   assert.deepStrictEqual(r.after, [1]);
 });
 
 test('vacuity: emit-dedupe off -> every queued prompt repeats the COMMS OVERRIDE', () => {
   const r = burst('devswarm-parent-inbox.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_EMIT_DEDUPE: '0' } },
-    [(c) => c.includes('DEVSWARM COMMS OVERRIDE')]);
+    [(c) => c.includes('devswarm-comms')]);
   assert.deepStrictEqual(r.counts, [4]);
 });

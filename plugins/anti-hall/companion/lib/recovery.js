@@ -630,7 +630,7 @@ function parkedEscalationSegment(home, parentId, cliPath, F) {
   const mine = listEscalationIntents(home, F).filter((i) => !i.delivered && String(i.parentId) === String(parentId));
   if (!mine.length) return null;
   const kids = mine.map((i) => i.childId).sort();
-  return 'DEVSWARM ESCALATIONS NOT DELIVERED (' + mine.length + '): the supervisor escalated '
+  return '⚠️ anti-hall · devswarm-escalations: not delivered (' + mine.length + '): the supervisor escalated '
     + kids.map((k) => JSON.stringify(k)).join(', ')
     + ' (idle — reassign or archive), but this Primary (' + parentId + ') is not registered in the mesh store'
     + ' (or its lock was busy), so the notice is PARKED. Run `node ' + (cliPath || 'scripts/devswarm.js')

@@ -126,7 +126,7 @@ const CLI = require('./lib/stable-launcher.js').preferStableLauncher('devswarm',
 // substitute — so a child that direct-messages only does not mistakenly believe
 // it has satisfied the Stop-gate and then get blocked anyway.
 const REMINDER =
-  'DEVSWARM CHILD WORKSPACE (per turn): keep the parent orchestrator updated — ' +
+  '💡 anti-hall · devswarm-child-workspace: (per turn) keep the parent orchestrator updated — ' +
   'run `node ' + CLI + ' heartbeat <DEVSWARM_BUILDER_ID> --summary ' +
   '"<status>"` to report progress/blockers as you make them — this is what satisfies ' +
   'your Stop-gate report (`send --to-primary --message-file <path>` is a SEPARATE direct ' +
@@ -147,7 +147,7 @@ const REMINDER =
 // every child spawn (PLAN.md "Locked design") — per-turn UserPromptSubmit
 // injection is the only lever left to keep this in front of the child.
 const SELF_CONTINUE =
-  'DEVSWARM AUTONOMY ACROSS ROUNDS: if you are running a multi-round autonomous ' +
+  '💡 anti-hall · devswarm-autonomy: if you are running a multi-round autonomous ' +
   'task (deadly-loop, iterative fix waves, a long staged build), do NOT end your ' +
   'turn to wait between rounds — keep issuing tool calls and proceed to the next ' +
   'round within the SAME turn. End your turn (Stop) ONLY at: (a) a genuine BLOCK ' +
@@ -165,7 +165,7 @@ const SELF_CONTINUE =
 // `message-*` wildcard form) so it never re-introduces the blocked native verbs
 // into emitted hook text.
 const OVERRIDE_REASSERT =
-  'DEVSWARM COMMS OVERRIDE: mesh only — native hivecontrol messaging blocked. ' +
+  '💡 anti-hall · devswarm-comms: mesh only — native hivecontrol messaging blocked. ' +
   'Report: `heartbeat <id> --summary`. Direct: `send --to-primary`.';
 
 // RECEPTION nudge (advisory, static — NO spawn in the hook). Tells the child the
@@ -191,7 +191,7 @@ const OVERRIDE_REASSERT =
 // paired with an explicit follow-up `inbox ack`), this nudge has no such
 // pairing, so it must ack itself.
 const RECEIVE_NUDGE =
-  'DEVSWARM CHILD RECEPTION: to RECEIVE parent messages, run ' +
+  '💡 anti-hall · devswarm-child-reception: to RECEIVE parent messages, run ' +
   '`node ' + CLI + ' inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm ' +
   'CLI) — a SAFE, bounded drain that folds the native parent->child queue into your ' +
   'durable inbox (non-destructive count gate, one bounded read, never `monitor`). ' +
@@ -212,14 +212,14 @@ function buildPlanSegment(id, home, worktree, env) {
     const found = planLib.findPlan(home, { id, worktreePath: worktree });
     if (!found || !found.plan.steps.length) {
       if (!planLib.planRequired(opts)) return null;
-      return 'DEVSWARM PLAN: you have no step plan yet. Write your brief as numbered steps once: `node ' + CLI
+      return '💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `node ' + CLI
         + ' plan set ' + id + ' --steps "1. …\\n2. …"` — then report each step with `heartbeat ' + id + ' --step N --status doing|done|blocked`.';
     }
     const plan = found.plan;
     const cur = planLib.currentStep(plan);
     const head = cur
-      ? 'DEVSWARM PLAN: ' + planLib.stepsDone(plan) + '/' + plan.steps.length + ' steps done; latest touched step ' + cur.n + (cur.status === 'blocked' ? ' (blocked)' : '') + ' — "' + cur.text + '".'
-      : 'DEVSWARM PLAN: all ' + plan.steps.length + ' steps are done — report it with `node ' + CLI + ' done`.';
+      ? '💡 anti-hall · devswarm-plan: ' + planLib.stepsDone(plan) + '/' + plan.steps.length + ' steps done; latest touched step ' + cur.n + (cur.status === 'blocked' ? ' (blocked)' : '') + ' — "' + cur.text + '".'
+      : '💡 anti-hall · devswarm-plan: all ' + plan.steps.length + ' steps are done — report it with `node ' + CLI + ' done`.';
     return head + ' Report step progress as it happens: `node ' + CLI + ' heartbeat ' + id
       + ' --step N --status doing|done|blocked` (it is what the Primary\'s roster shows).'
       + ' If a user prompt asks you for work outside this plan, record it first: `node ' + CLI + ' scope add ' + id
@@ -356,7 +356,7 @@ function unreadInfo(env, home) {
 // never the native queue, so it keeps that safety property.
 function buildUnreadSegment(info) {
   return (
-    'DEVSWARM CHILD INBOX — PRIORITY: you have ' + info.count + ' unread parent '
+    '⚠️ anti-hall · devswarm-child-inbox: priority — you have ' + info.count + ' unread parent '
     + 'message(s). STOP and address these parent message(s) FIRST before '
     + 'continuing. Read them the SAFE way via the durable inbox '
     + 'cursor — `node ' + CLI + ' inbox read-primary ' + info.id + '` (anti-hall devswarm CLI) (read-only; after handling, run the `ackCommand` it returns). '
@@ -395,13 +395,13 @@ function buildMeshDirectSegment(count, id, urgencyMax, oldestTs) {
   const urgent = urgencyMax === 'urgent' || urgencyMax === 'high';
   if (urgent) {
     return (
-      'DEVSWARM MESH DIRECT — URGENT: you have ' + count + ' unread mesh direct '
+      '⚠️ anti-hall · devswarm-mesh-direct: urgent — you have ' + count + ' unread mesh direct '
       + 'message(s)' + age + ' addressed to you. STOP and read them FIRST via `node ' + CLI + ' '
       + 'inbox read-primary ' + id + '` (read-only; after handling, run the `ackCommand` it returns), before continuing.'
     );
   }
   return (
-    'DEVSWARM MESH DIRECT: you have ' + count + ' unread mesh direct message(s)'
+    '⚠️ anti-hall · devswarm-mesh-direct: you have ' + count + ' unread mesh direct message(s)'
     + age + ' addressed to you. Read them via `node ' + CLI + ' inbox read-primary ' + id + '` (read-only; after handling, run the `ackCommand` it returns).'
   );
 }
@@ -419,7 +419,7 @@ function buildMeshDirectSegment(count, id, urgencyMax, oldestTs) {
 // confirmation before running the archive command.
 function buildArchiveRequestSegment(id) {
   return (
-    'DEVSWARM ARCHIVE REQUEST: your parent asks you to archive this workspace. '
+    '💡 anti-hall · devswarm-archive-request: your parent asks you to archive this workspace. '
     + 'Confirm with YOUR user, then run `node ' + CLI + ' archive ' + id + '`. NEVER '
     + 'auto-archive.'
   );
@@ -431,7 +431,7 @@ function buildArchiveRequestSegment(id) {
 // DevSwarm app DB verdict). Never a directive to kill/delete anything — this
 // only injects a message and refuses the descriptor rewrite below.
 const ARCHIVED_BANNER =
-  'DEVSWARM CHILD ARCHIVED: this workspace was archived. Finish or abandon the '
+  '💡 anti-hall · devswarm-child-archived: this workspace was archived. Finish or abandon the '
   + 'current step, write a handover (`/anti-hall:handover`) in .anti-hall/handovers/<date>/<session_id>/HANDOVER.md, never a flat file, then stop — take no '
   + 'new work. Delete your own `inbox tick` cron (CronList, CronDelete); the mailbox watcher is already silent.';
 
@@ -568,7 +568,7 @@ function registerChildDescriptor(env, sessionId, cwd, home) {
   if (TRUNCATED_UUID_RE.test(id) && !FULL_UUID_RE.test(id)) {
     if (FULL_UUID_RE.test(sessionId) && sessionId !== id && sessionId.indexOf(id) === 0) {
       try {
-        process.stderr.write('[devswarm-child-turn] DEVSWARM_BUILDER_ID ' + JSON.stringify(id)
+        process.stderr.write('⚠️ anti-hall · devswarm-child-turn: DEVSWARM_BUILDER_ID ' + JSON.stringify(id)
           + ' looks truncated (UUID-shaped, short last group) — recovered the full id '
           + JSON.stringify(sessionId) + ' from this turn\'s own sessionId; registering under '
           + 'the recovered id instead of writing a phantom.\n');
@@ -576,7 +576,7 @@ function registerChildDescriptor(env, sessionId, cwd, home) {
       id = sessionId;
     } else {
       try {
-        process.stderr.write('[devswarm-child-turn] DEVSWARM_BUILDER_ID ' + JSON.stringify(id)
+        process.stderr.write('⚠️ anti-hall · devswarm-child-turn: DEVSWARM_BUILDER_ID ' + JSON.stringify(id)
           + ' looks truncated (UUID-shaped, short last group) and no full id could be safely '
           + 'recovered from this turn\'s sessionId — skipping descriptor registration this turn '
           + 'rather than writing a phantom.\n');
@@ -878,7 +878,7 @@ function registerStoreDescriptor(desc, home) {
       // the turn: surfaced to stderr, and this hook runs every turn — the next
       // turn's call retries. Idempotent (upsertRegistry is a plain field write).
       try {
-        process.stderr.write('[devswarm-child-turn] registerStoreDescriptor: id '
+        process.stderr.write('⚠️ anti-hall · devswarm-child-turn: registerStoreDescriptor: id '
           + JSON.stringify(desc.id) + ' is locked by another operation in progress'
           + ' — skipped this turn (retried next turn)\n');
       } catch (_) {}

@@ -6,7 +6,7 @@
 // WHY THIS FILE EXISTS (field defect, 12 partitions, permanent false positive):
 // computeSummary's A2 pass (devswarm-store.js) surfaced `orphans[]` = every
 // partition with real unread and no live registry row, and parent-inbox rendered
-// that as "⚠ DEVSWARM ORPHANED MESH: N partition(s) with unread but no live
+// that as "⚠️ anti-hall · devswarm-orphaned-mesh: N partition(s) with unread but no live
 // workspace to read them" on EVERY turn. For an ARCHIVED workspace with no live
 // family, that warning is unactionable by construction: healOrphanPartitions
 // (scripts/devswarm.js) classifies exactly that shape as

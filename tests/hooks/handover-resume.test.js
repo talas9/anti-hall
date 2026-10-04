@@ -144,7 +144,7 @@ test("(b) handover present (minimal shape, no checklist/detail files) + source '
 
     const ctx = r.json.hookSpecificOutput.additionalContext;
     assert.ok(ctx.includes(filePath), 'context must include the full HANDOVER.md path');
-    assert.match(ctx, /SUPERSEDES/, 'must carry the override clause');
+    assert.match(ctx, /supersedes/, 'must carry the override clause');
     // ADAPTIVE (peer ask 3, 0.112 lane): this handover has NO
     // "## Resume-verification checklist" section and none of the detail
     // files (state.md/decisions.md/trials.md/knowledge.md) — the guided
@@ -411,8 +411,8 @@ test('(h) snapshot NEWER than the handover -> pointer names it as newer (work ha
     writeHandover(cwd, '2026-09-24', 'sess-h', 1, { ageMs: 60 * 60 * 1000 });
     const snap = writeSnapshot(cwd, '2026-09-24', 'sess-h', 1, 1000);
     const c = resumeCtx(h, cwd, 'sess-h', 'compact');
-    assert.match(c, /GUIDED RESUME PATH/);
-    assert.ok(c.includes('PRE-COMPACTION SNAPSHOT (newer than the handover): ' + snap), c);
+    assert.match(c, /guided resume path/);
+    assert.ok(c.includes('Pre-compaction snapshot (newer than the handover): ' + snap), c);
   } finally {
     h.cleanup();
     fs.rmSync(cwd, { recursive: true, force: true });
@@ -439,7 +439,7 @@ test('(j) no handover but a same-session snapshot -> snapshot pointer instead of
   try {
     const snap = writeSnapshot(cwd, '2026-09-24', 'sess-j', 2, 1000);
     const c = resumeCtx(h, cwd, 'sess-j', 'compact');
-    assert.ok(c.includes('PRE-COMPACTION SNAPSHOT: ' + snap), c);
+    assert.ok(c.includes('pre-compaction snapshot exists: ' + snap), c);
     assert.doesNotMatch(c, /No session handover found/);
     assert.ok(!fs.existsSync(path.join(h.home, '.anti-hall', 'handover-resume-state-sess-j.json')),
       'no resume-verified rail for a snapshot-only resume (there is no handover to mark)');
@@ -477,7 +477,7 @@ test('(l) freshness: HEAD, commits since the handover mtime, dirty-file count', 
     g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'b');
     fs.writeFileSync(path.join(cwd, 'dirty.txt'), 'x');
     const c = resumeCtx(h, cwd, 'sess-l', 'compact');
-    assert.match(c, /FRESHNESS \(measured now\): HEAD [0-9a-f]+; 2 commit\(s\) since this handover was written/);
+    assert.match(c, /Freshness \(measured now\): HEAD [0-9a-f]+; 2 commit\(s\) since this handover was written/);
     // .anti-hall/ (the handover itself) is untracked too, so dirty counts it + dirty.txt.
     assert.match(c, /; 2 dirty file\(s\) in the working tree/);
     assert.ok(c.includes(hp));
@@ -493,7 +493,7 @@ test('(m) freshness line omitted outside a git repo', () => {
   try {
     writeHandover(cwd, '2026-09-24', 'sess-m', 1);
     const c = resumeCtx(h, cwd, 'sess-m', 'compact');
-    assert.doesNotMatch(c, /FRESHNESS/);
+    assert.doesNotMatch(c, /Freshness/);
     assert.match(c, /CLAUDE\.md re-read/);
   } finally {
     h.cleanup();
@@ -561,7 +561,7 @@ test('(p) precompact-snapshot writes from a weird cwd, then handover-resume (nor
     }, { home: h.home });
     assert.strictEqual(pr.status, 0);
     const c = resumeCtx(h, cwd, 'sess-p', 'compact');
-    assert.match(c, /PRE-COMPACTION SNAPSHOT/, c);
+    assert.match(c, /pre-compaction snapshot/i, c);
   } finally {
     h.cleanup();
     fs.rmSync(cwd, { recursive: true, force: true });
@@ -579,7 +579,7 @@ function writerTranscript(home, root, sid, mtime) {
   fs.utimesSync(p, mtime, mtime);
 }
 
-test('(q) writer kept running 3.5h after its handover (no commits) -> WRITER KEPT RUNNING line with the minutes', () => {
+test('(q) writer kept running 3.5h after its handover (no commits) -> Writer kept running line with the minutes', () => {
   const h = makeHome();
   const cwd = fs.realpathSync(makeProjectCwd());
   try {
@@ -590,8 +590,8 @@ test('(q) writer kept running 3.5h after its handover (no commits) -> WRITER KEP
     writeHandover(cwd, '2026-09-30', 'sess-w', 1, { ageMs: 4 * 60 * 60 * 1000 });
     writerTranscript(h.home, cwd, 'sess-w', new Date(Date.now() - 30 * 60 * 1000)); // 210 min after the handover
     const c = resumeCtx(h, cwd, 'sess-new', 'startup');
-    assert.match(c, /FRESHNESS \(measured now\): HEAD [0-9a-f]+; 0 commit\(s\)/, 'commit count is still 0');
-    assert.match(c, /WRITER KEPT RUNNING: session sess-w kept running 210 min after this handover was written/, c);
+    assert.match(c, /Freshness \(measured now\): HEAD [0-9a-f]+; 0 commit\(s\)/, 'commit count is still 0');
+    assert.match(c, /Writer kept running: session sess-w kept running 210 min after this handover was written/, c);
   } finally {
     h.cleanup();
     fs.rmSync(cwd, { recursive: true, force: true });
@@ -603,11 +603,11 @@ test('(r) writer transcript within the grace window, or absent -> no WRITER line
   const cwd = fs.realpathSync(makeProjectCwd());
   try {
     writeHandover(cwd, '2026-09-30', 'sess-w', 1, { ageMs: 60 * 60 * 1000 });
-    assert.doesNotMatch(resumeCtx(h, cwd, 'sess-new', 'startup'), /WRITER KEPT RUNNING/, 'no transcript at all');
+    assert.doesNotMatch(resumeCtx(h, cwd, 'sess-new', 'startup'), /Writer kept running/, 'no transcript at all');
     writerTranscript(h.home, cwd, 'sess-w', new Date(Date.now() - 58 * 60 * 1000)); // 2 min after
     const c = resumeCtx(h, cwd, 'sess-new', 'startup');
     assert.match(c, /A previous session left a handover/, 'the injection itself still happens');
-    assert.doesNotMatch(c, /WRITER KEPT RUNNING/);
+    assert.doesNotMatch(c, /Writer kept running/);
   } finally {
     h.cleanup();
     fs.rmSync(cwd, { recursive: true, force: true });

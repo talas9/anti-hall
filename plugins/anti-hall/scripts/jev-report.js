@@ -270,12 +270,12 @@ function readAuditSnippet(home, hash) {
 // ahead of a report run is harmless).
 function cmdLabel(hash, label, home) {
   if (!hash) {
-    console.error('label: usage is `jev-report label <hash> [tp|fp]`');
+    console.error('❌ anti-hall · jev-report: label: usage is `jev-report label <hash> [tp|fp]`');
     process.exitCode = 1;
     return;
   }
   if (label !== undefined && label !== 'tp' && label !== 'fp') {
-    console.error('label: usage is `jev-report label <hash> tp|fp`');
+    console.error('❌ anti-hall · jev-report: label: usage is `jev-report label <hash> tp|fp`');
     process.exitCode = 1;
     return;
   }
@@ -290,7 +290,7 @@ function cmdLabel(hash, label, home) {
       fs.appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), h: hash, label, source: 'human' }) + '\n', 'utf8');
       console.log(`labeled ${hash} as ${label}`);
     } catch (err) {
-      console.error(`label: failed to write ${p}: ${err && err.message}`);
+      console.error(`❌ anti-hall · jev-report: label: failed to write ${p}: ${err && err.message}`);
       process.exitCode = 1;
       return;
     }
@@ -306,7 +306,7 @@ function cmdLabel(hash, label, home) {
 // command.
 function cmdPruneAudit(days, home) {
   if (!Number.isFinite(days) || days <= 0) {
-    console.error('prune-audit: usage is `jev-report prune-audit --days N` (N > 0)');
+    console.error('❌ anti-hall · jev-report: prune-audit: usage is `jev-report prune-audit --days N` (N > 0)');
     process.exitCode = 1;
     return;
   }
@@ -342,7 +342,7 @@ function cmdPruneAudit(days, home) {
     }
     fs.rmSync(p + '.1', { force: true });
   } catch (err) {
-    console.error(`prune-audit: failed: ${err && err.message}`);
+    console.error(`❌ anti-hall · jev-report: prune-audit: failed: ${err && err.message}`);
     process.exitCode = 1;
     return;
   }

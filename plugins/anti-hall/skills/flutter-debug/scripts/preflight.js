@@ -648,10 +648,10 @@ function pickTier(results) {
   const byId = {};
   for (const r of results) byId[r.id] = r;
   if (byId.project && byId.project.status === FAIL) {
-    return { tier: 'blocked', summary: 'BLOCKED — not a Flutter project (no pubspec.yaml)' };
+    return { tier: 'blocked', summary: '⛔ anti-hall · flutter-debug: not a Flutter project (no pubspec.yaml)' };
   }
   if (byId.dart && byId.dart.status === FAIL) {
-    return { tier: 'blocked', summary: 'BLOCKED — Dart MCP prerequisite missing; cannot claim the debug loop' };
+    return { tier: 'blocked', summary: '⛔ anti-hall · flutter-debug: Dart MCP prerequisite missing; cannot claim the debug loop' };
   }
   const marHostOk = byId['marionette-host'] && byId['marionette-host'].status === FULL;
   const marAppOk = byId['marionette-app'] && byId['marionette-app'].integrated === true;

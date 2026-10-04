@@ -48,7 +48,7 @@ function ctxOf(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 function segOf(c, banner) {
-  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+  return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || '';
 }
 const cliCtx = (home, over) => Object.assign({ home, backend: 'journal', env: {} }, over || {});
 
@@ -121,8 +121,8 @@ test('1 REGISTRATION: a child-turn hook run mechanically registers the descripto
       { hook_event_name: 'UserPromptSubmit', session_id: 'primary', prompt: 'hi', cwd: H.REPO_ROOT },
       { home, env: { DEVSWARM_REPO_ID: 'repo-1', PATH: gitOnlyPath() }, expectJson: true });
     const c = ctxOf(pr);
-    assert.match(c, /DEVSWARM WORKSPACES/);
-    assert.match(segOf(c, 'DEVSWARM WORKSPACES'), new RegExp(childId), `child must be listed in the live table; ctx=${c}`);
+    assert.match(c, /devswarm-workspaces/);
+    assert.match(segOf(c, 'devswarm-workspaces'), new RegExp(childId), `child must be listed in the live table; ctx=${c}`);
   } finally { H.rm(home); }
 });
 
@@ -218,7 +218,7 @@ test('2 ARCHIVE-REQUEST: parent posts a STORE mesh row (zero hivecontrol calls) 
     const tr = testHook('devswarm-child-turn.js', turnPayload, { home, env: turnEnv, expectJson: true });
     assert.strictEqual(tr.status, 0, `child-turn must exit 0; stderr=${tr.stderr}`);
     const c = ctxOf(tr);
-    assert.match(c, /DEVSWARM ARCHIVE REQUEST/);
+    assert.match(c, /devswarm-archive-request/);
     assert.match(c, new RegExp('devswarm\\.js archive ' + childId));
     assert.match(c, /Confirm with YOUR user/);
     assert.match(c, /NEVER\s+auto-archive/i);

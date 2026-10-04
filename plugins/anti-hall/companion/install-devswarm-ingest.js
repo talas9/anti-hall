@@ -220,11 +220,13 @@ function noteTmpWorktreeGuardTripped(p) {
   _tmpWorktreeGuardNoted = true;
   try {
     process.stderr.write(
-      'anti-hall: install-devswarm-ingest.js resolved a WorkingDirectory (' + p + ') under the system'
-      + ' temp directory — forcing dry-run to prevent registering a REAL launchd/systemd daemon whose'
+      '⚠️ anti-hall · install-devswarm-ingest: resolved a WorkingDirectory (' + p + ') under the system'
+      + ' temp directory; forcing dry-run.\n'
+      + 'Why: a real install would register a REAL launchd/systemd daemon whose'
       + ' WorkingDirectory is a scratch/tmp worktree (the same defect class as TMP_HOME_GUARD: a review'
       + ' agent or test fixture clone under a session scratchpad, which crash-loops launchd at exit 78'
-      + ' EX_CONFIG once the fixture is cleaned up). Set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if'
+      + ' EX_CONFIG once the fixture is cleaned up).\n'
+      + 'Override (only if the user explicitly asked): set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 if'
       + ' this run genuinely needs the real, unmocked spawn path from a temp worktree.\n'
     );
   } catch (_) {}
@@ -243,9 +245,10 @@ function noteNodeTestContextGuardTripped() {
   _nodeTestContextGuardNoted = true;
   try {
     process.stderr.write(
-      'anti-hall: install-devswarm-ingest.js detected NODE_TEST_CONTEXT (running under `node --test`'
-      + ' or a child process spawned from it) — forcing dry-run to prevent a real launchd/systemd'
-      + ' registration leak (defect ec33954162ef). Set ANTIHALL_INGEST_DRY_RUN=1 explicitly if this'
+      '⚠️ anti-hall · install-devswarm-ingest: detected NODE_TEST_CONTEXT (running under `node --test`'
+      + ' or a child process spawned from it); forcing dry-run.\n'
+      + 'Why: prevents a real launchd/systemd registration leak (defect ec33954162ef).\n'
+      + 'Override (only if the user explicitly asked): set ANTIHALL_INGEST_DRY_RUN=1 explicitly if this'
       + ' run genuinely needs the real, unmocked spawn path.\n'
     );
   } catch (_) {}
@@ -260,11 +263,13 @@ function noteTmpHomeGuardTripped() {
   _tmpHomeGuardNoted = true;
   try {
     process.stderr.write(
-      'anti-hall: install-devswarm-ingest.js resolved HOME (' + HOME + ') under the system temp'
-      + ' directory — forcing dry-run to prevent registering a REAL launchd/systemd daemon whose'
+      '⚠️ anti-hall · install-devswarm-ingest: resolved HOME (' + HOME + ') under the system temp'
+      + ' directory; forcing dry-run.\n'
+      + 'Why: a real install would register a REAL launchd/systemd daemon whose'
       + ' live process would then write into your operator ~/.anti-hall store instead of this'
       + ' scratch one (defect d1c57e67998f: a review agent temp-HOME experiment did exactly this'
-      + ' live). Set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if this run genuinely needs the'
+      + ' live).\n'
+      + 'Override (only if the user explicitly asked): set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if this run genuinely needs the'
       + ' real, unmocked spawn path under a temp HOME.\n'
     );
   } catch (_) {}
@@ -302,7 +307,7 @@ function validateArgs(argv) {
   }
   for (const a of list) {
     if (typeof a === 'string' && a.startsWith('-') && !KNOWN_FLAGS.includes(a)) {
-      process.stderr.write(`unknown option: ${a}\n`);
+      process.stderr.write(`❌ anti-hall · install-devswarm-ingest: unknown option: ${a}\n`);
       process.stderr.write(usageText() + '\n');
       process.exit(1);
     }
@@ -610,18 +615,15 @@ function resolveHivecontrolPath(opts) {
 // is fixed. Extracted as a pure function so the wording is locked down by test
 // without spawning a real installer subprocess.
 function hivecontrolUnresolvedWarningLines() {
-  const bar = '!'.repeat(70);
   return [
-    bar,
-    `WARNING: could not resolve the ${HIVECONTROL_BIN_NAME} CLI (env var, cache, login shell,`,
+    `⚠️ anti-hall · install-devswarm-ingest: could not resolve the ${HIVECONTROL_BIN_NAME} CLI (env var, cache, login shell,`,
     '  and known install locations all missed).',
     `  A scheduler-launched daemon gets a MINIMAL PATH (${MINIMAL_UNIT_PATH}), so without a`,
     `  baked path every \`${HIVECONTROL_BIN_NAME} workspace monitor\` call will fail ENOENT and`,
-    '  NOTHING will be ingested until this is fixed.',
-    '  FIX: install/expose the DevSwarm CLI on your login shell\'s PATH, or export',
+    '  Nothing will be ingested until this is fixed.',
+    '  Do instead: install/expose the DevSwarm CLI on your login shell\'s PATH, or export',
     `  ${HIVECONTROL_ENV_VAR}=/absolute/path/to/${HIVECONTROL_BIN_NAME} and re-run this installer.`,
     '  Installing anyway (the daemon runs in degraded mode and doctor will report it).',
-    bar,
   ];
 }
 
@@ -1943,7 +1945,7 @@ function orphanReapPlan(opts) {
     if (e.eligible && (e.plistPresent || e.pathExists)) {
       try {
         process.stderr.write(
-          'anti-hall: orphanReapPlan invariant violated — eligible entry ' + (e.label || e.unit || '(unknown)')
+          '❌ anti-hall · devswarm-ingest: orphanReapPlan invariant violated; eligible entry ' + (e.label || e.unit || '(unknown)')
           + ' has plistPresent=' + e.plistPresent + ' pathExists=' + e.pathExists
           + ' (must both be false). Returning an EMPTY plan (fail-closed).\n'
         );

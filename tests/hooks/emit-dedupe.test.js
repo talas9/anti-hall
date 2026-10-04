@@ -3,7 +3,7 @@
 // Primary rule: a copy is suppressed while the previous identical copy is still
 // UNDELIVERED per the transcript (Claude Code writes a UserPromptSubmit hook's
 // additionalContext as a `hook_additional_context` attachment only when the
-// queued prompt is delivered). On-change keys (WORKSPACES table, ORPHANED MESH
+// queued prompt is delivered). On-change keys (WORKSPACES table, devswarm-orphaned-mesh
 // banner) additionally stay quiet while unchanged, with a keepalive counted in
 // DELIVERED turns. The 15s window survives only as the fallback when the
 // transcript is unusable. Every state write goes to a mkdtemp HOME.
@@ -275,7 +275,7 @@ test('WORKSPACES table: age-only change -> suppressed; unread change -> emitted'
     const t2 = inbox.buildWorkspaceTable([row(2)], T0 + 5 * MIN, false, 0, [], 0);
     const t3 = inbox.buildWorkspaceTable([row(3)], T0 + 10 * MIN, false, 0, [], 0);
     assert.notStrictEqual(t1, t2, 'precondition: the raw tables differ (age column)');
-    assert.ok(t1.startsWith('DEVSWARM WORKSPACES (re-sent on change'), 'header no longer claims every turn');
+    assert.ok(t1.startsWith('💡 anti-hall · devswarm-workspaces: (re-sent on change'), 'header no longer claims every turn');
     const b = { home, sessionId: 's1', key: 'parent-inbox-table', keepaliveTurns: 10,
       normalize: inbox.normalizeTableAges, transcriptPath: tp, env: ON };
     assert.strictEqual(emit({ ...b, content: t1, now: T0 }), true);
@@ -291,9 +291,9 @@ test('PARENT INBOX nudge: trend/age flip in a pending burst -> suppressed; unrea
   try {
     const tp = mkTranscript(home);
     const b = { home, sessionId: 's1', key: 'parent-inbox-nudge', normalize: inbox.normalizeInboxVolatile, transcriptPath: tp, env: ON };
-    const a = 'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — X (3 unread, oldest 5m, rising). tail';
-    const aFlat = 'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — X (3 unread, oldest 6m, flat). tail';
-    const c = 'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — X (4 unread, oldest 5m, rising). tail';
+    const a = '⚠️ anti-hall · devswarm-parent-inbox: 1 active workspace(s) need attention — X (3 unread, oldest 5m, rising). tail';
+    const aFlat = '⚠️ anti-hall · devswarm-parent-inbox: 1 active workspace(s) need attention — X (3 unread, oldest 6m, flat). tail';
+    const c = '⚠️ anti-hall · devswarm-parent-inbox: 1 active workspace(s) need attention — X (4 unread, oldest 5m, rising). tail';
     assert.strictEqual(emit({ ...b, content: a, now: T0 }), true);
     assert.strictEqual(emit({ ...b, content: aFlat, now: T0 + 40000 }), false);
     assert.strictEqual(emit({ ...b, content: c, now: T0 + 50000 }), true);
@@ -313,8 +313,8 @@ test('PARENT INBOX nudge (item 5, keepaliveTurns:2): an unchanged not-draining s
       home, sessionId: 's1', key: 'parent-inbox-nudge', keepaliveTurns: 2,
       normalize: inbox.normalizeInboxVolatile, transcriptPath: tp, env: ON,
     };
-    const same = 'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — X (NOT DRAINING >20m). tail';
-    const changed = 'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — X (5 unread, NOT DRAINING >20m). tail';
+    const same = '⚠️ anti-hall · devswarm-parent-inbox: 1 active workspace(s) need attention — X (NOT DRAINING >20m). tail';
+    const changed = '⚠️ anti-hall · devswarm-parent-inbox: 1 active workspace(s) need attention — X (5 unread, NOT DRAINING >20m). tail';
 
     // Turn 1: first emit.
     assert.strictEqual(emit({ ...b, content: same, now: T0 }), true);
@@ -334,7 +334,7 @@ test('PARENT INBOX nudge (item 5, keepaliveTurns:2): an unchanged not-draining s
   } finally { rm(home); }
 });
 
-test('ORPHANED MESH banner: unchanged next delivered turn -> suppressed; changed unread -> emitted', () => {
+test('devswarm-orphaned-mesh banner: unchanged next delivered turn -> suppressed; changed unread -> emitted', () => {
   const home = tmpHome();
   try {
     const tp = mkTranscript(home);
@@ -374,7 +374,7 @@ test('URGENT INBOX segment: unchanged next delivered turn -> suppressed; changed
 // cooldown (see tests/e2e/devswarm-substrate.e2e.test.js, test 9 "PERSISTS
 // once the cooldown elapses").
 
-test('STALE WORKSPACE(S) segment: unchanged next delivered turn -> suppressed; changed unread -> emitted', () => {
+test('devswarm-stale-workspaces segment: unchanged next delivered turn -> suppressed; changed unread -> emitted', () => {
   const home = tmpHome();
   try {
     const tp = mkTranscript(home);
@@ -579,7 +579,7 @@ test('task-tracker hook: 5 queued prompts -> 1 TASK-LIST block, emits again afte
 test('devswarm-child-turn hook: COMMS OVERRIDE block once per burst, quiet after delivery (keepalive); repeat=0 -> again; vacuity off -> 5', () => {
   const env = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y', DEVSWARM_BUILDER_ID: 'b-1' };
   const p = () => ({ hook_event_name: 'UserPromptSubmit', session_id: 'burst', prompt: 'tick', cwd: '/tmp/x' });
-  const m = (c) => c.includes('DEVSWARM COMMS OVERRIDE');
+  const m = (c) => c.includes('devswarm-comms');
   assert.deepStrictEqual(burst('devswarm-child-turn.js', 5, { ...env, ...ON }, p, m), [1, 0]);
   assert.deepStrictEqual(burst('devswarm-child-turn.js', 5, { ...env, ...ON, ANTIHALL_INJECTION_REPEAT_EVERY: '0' }, p, m), [1, 1]);
   assert.deepStrictEqual(burst('devswarm-child-turn.js', 5, { ...env, ...OFF }, p, m), [5, 1]);

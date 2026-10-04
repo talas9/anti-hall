@@ -78,7 +78,7 @@ try {
       process.exit(0);
       break;
     default:
-      process.stderr.write('phase.js: unknown command "' + cmd + '"\n');
+      process.stderr.write('❌ anti-hall · phase: unknown command "' + cmd + '"\n');
       process.exit(0);
   }
 

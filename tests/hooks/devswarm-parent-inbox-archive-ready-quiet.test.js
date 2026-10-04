@@ -4,11 +4,11 @@
 // DEFECT (field report, v0.106.0): an archive-ready workspace from a PREVIOUS
 // session, whose only unread is the Primary's own archive-request send (see
 // companion/lib/devswarm-store.js computeSummary's archive_request_only_unread),
-// nagged in the LOUD "DEVSWARM URGENT INBOX" segment every single turn even
+// nagged in the LOUD "devswarm-urgent-inbox" segment every single turn even
 // though the child it addresses can never read/drain it — nobody is left to.
 //
 // FIX (a): such a row is excluded from the urgent/attention nag entirely (it
-// still gets the existing, cooldown'd DEVSWARM ARCHIVE-READY nudge, and still
+// still gets the existing, cooldown'd devswarm-archive-ready nudge, and still
 // shows in the live table, just not as `not-draining`).
 // FIX (b): a user-editable ~/.anti-hall/devswarm/ignore.json {"ids":[...]}
 // list (companion/lib/devswarm-ignore.js) additionally suppresses the same
@@ -37,8 +37,8 @@ const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
 function payload() { return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi' }; }
 function withCwd(payloadFn) { return { ...payloadFn(), cwd: REPO_CWD }; }
 function ctx(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
-function segment(c, banner) { return c.split('\n\n').find((s) => s.startsWith(banner)) || ''; }
-function tableSeg(c) { return segment(c, 'DEVSWARM WORKSPACES'); }
+function segment(c, banner) { return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith(banner)) || ''; }
+function tableSeg(c) { return segment(c, 'devswarm-workspaces'); }
 function tableRow(c, id) { return tableSeg(c).split('\n').find((l) => l.startsWith('| ' + id + ' ')) || ''; }
 
 function swarmDir(home) {
@@ -94,13 +94,13 @@ test('ARCHIVE-READY-QUIET: archive-ready + unread is ONLY the archive-request + 
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    assert.strictEqual(segment(c, 'DEVSWARM URGENT INBOX'), '', `no urgent nag expected; ctx=${c}`);
-    assert.strictEqual(segment(c, 'DEVSWARM PARENT INBOX'), '', `no standard nag expected either; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-urgent-inbox'), '', `no urgent nag expected; ctx=${c}`);
+    assert.strictEqual(segment(c, 'devswarm-parent-inbox'), '', `no standard nag expected either; ctx=${c}`);
     const row = tableRow(c, 'wsDone');
     assert.ok(row, `wsDone must still have a table row; ctx=${c}`);
     assert.ok(/archive-ready/.test(row), `table row must show archive-ready, not not-draining; row=${row}`);
     assert.ok(!/not-draining/.test(row), `table row must NOT show not-draining; row=${row}`);
-    assert.ok(segment(c, 'DEVSWARM ARCHIVE-READY').includes('wsDone'),
+    assert.ok(segment(c, 'devswarm-archive-ready').includes('wsDone'),
       `the existing cooldown'd archive-ready nudge must still fire; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -117,7 +117,7 @@ test('ARCHIVE-READY-QUIET REGRESSION GUARD: a REAL (non-self-sent) unread alongs
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM URGENT INBOX').includes('wsReal'),
+    assert.ok(segment(c, 'devswarm-urgent-inbox').includes('wsReal'),
       `a genuinely mixed unread backlog must still nag urgently; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -144,7 +144,7 @@ test('ARCHIVE-REQUEST-PENDING: a LIVE session whose only unread is a pending arc
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(!segment(c, 'DEVSWARM URGENT INBOX').includes('wsLive'),
+    assert.ok(!segment(c, 'devswarm-urgent-inbox').includes('wsLive'),
       `a pending archive-request must suppress the re-instruct-to-poke nag even while the session is live; ctx=${c}`);
   } finally { h.cleanup(); }
 });
@@ -161,7 +161,7 @@ test('IGNORE LIST: a listed id never nags urgently, but stays visible in the ros
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    const urgentSeg = segment(c, 'DEVSWARM URGENT INBOX');
+    const urgentSeg = segment(c, 'devswarm-urgent-inbox');
     assert.ok(!urgentSeg.includes('wsIgnored'), `ignored id must never appear in the urgent segment; seg=${urgentSeg}`);
     assert.ok(urgentSeg.includes('wsOther'), `a non-ignored urgent workspace must still nag; seg=${urgentSeg}`);
     assert.ok(tableRow(c, 'wsIgnored'), `ignored id must STILL have a roster table row; ctx=${c}`);
@@ -176,6 +176,6 @@ test('IGNORE LIST: absent/empty ignore.json changes nothing (fail-open, back-com
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(segment(c, 'DEVSWARM URGENT INBOX').includes('wsA'), `no ignore file -> normal urgent nag; ctx=${c}`);
+    assert.ok(segment(c, 'devswarm-urgent-inbox').includes('wsA'), `no ignore file -> normal urgent nag; ctx=${c}`);
   } finally { h.cleanup(); }
 });

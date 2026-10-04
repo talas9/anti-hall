@@ -273,7 +273,7 @@ test('buildMonitorFaultBanner: timeout (no spawn code) says the daemon is health
   const now = Date.now();
   const timeout = { consecutive: 5, code: null, okStale: true, lastOkMs: now - 31 * 60000, heartbeatTs: now, error: 'monitor hivecontrol ETIMEDOUT after 40000ms' };
   const t = health.buildMonitorFaultBanner(timeout, now);
-  assert.ok(t.startsWith('⚠ DEVSWARM INGEST FAILING'), t);
+  assert.ok(t.startsWith('⚠️ anti-hall · devswarm-ingest-failing'), t);
   assert.ok(/daemon is healthy/.test(t) && /not answering/.test(t) && /paused/.test(t) && /mesh messages/.test(t) && /cannot repair/.test(t) && /restart the DevSwarm app/.test(t), t);
   assert.ok(!/Run \/anti-hall:doctor/.test(t), t);
   const c = health.buildMonitorFaultBanner(Object.assign({}, timeout, { code: 'ENOENT' }), now);

@@ -493,7 +493,7 @@ test('metrics: rollup counts each measure; the report verb prints text and JSON'
 test('strayingLine is capped and names the correct verb', () => {
   const e = (i) => ({ id: 'w' + i, step: 2, reason: 'no step progress 40m' });
   const line = sup.strayingLine([e(1), e(2), e(3), e(4), e(5)], (id) => (id === 'w1' ? 'Fix the parser' : null));
-  assert.ok(line.startsWith('DEVSWARM STRAYING: Fix the parser: step 2 no step progress 40m; w2: '), line);
+  assert.ok(line.startsWith('⚠️ anti-hall · devswarm-straying: Fix the parser: step 2 no step progress 40m; w2: '), line);
   assert.ok(line.includes('(+2 more)'));
   assert.ok(line.includes('`devswarm.js correct <id>`'));
 });

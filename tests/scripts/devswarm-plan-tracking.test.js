@@ -169,7 +169,7 @@ test('spawn: a numbered -p writes the plan keyed by the new worktree; a brief wi
 
 test('no-plan rows are byte-identical: table normalizer and doneStateLabel unchanged, plan label ages normalized', () => {
   const noPlan = [
-    'DEVSWARM WORKSPACES (re-sent on change, else every 10 turns):',
+    '💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):',
     '| workspace | status | finish | unread | last |',
     '|---|---|---|---|---|',
     '| wsA | active | working (40%) | 0 | 3m |',

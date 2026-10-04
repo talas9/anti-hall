@@ -15,7 +15,7 @@ const { makeHome } = require('../helpers/fixtures.js');
 const HOOK = 'edit-guard.js';
 const PRIMARY = { CLAUDE_CODE_ENTRYPOINT: 'cli', DEVSWARM_REPO_ID: 'repo-x' };
 const CHILD = Object.assign({}, PRIMARY, { DEVSWARM_SOURCE_BRANCH: 'feature/y' });
-const NOTE_RE = /^DEVSWARM PRIMARY: you have made several direct file edits/;
+const NOTE_RE = /^\S+ anti-hall \u00B7 devswarm-primary: you have made several direct file edits/;
 const ALLOWED = '.anti-hall/plans/p.md'; // allowlisted: edit-guard lets the coordinator write it
 
 function cwdDir(doctrine) {

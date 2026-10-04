@@ -116,7 +116,7 @@ test('P1b the Primary\'s per-turn injection names a parked escalation and the re
     });
     assert.strictEqual(r.status, 0, r.stderr);
     const ctx = String(r.stdout);
-    assert.match(ctx, /ESCALATIONS NOT DELIVERED/, 'stdout=' + ctx.slice(0, 400));
+    assert.match(ctx, /devswarm-escalations: not delivered/, 'stdout=' + ctx.slice(0, 400));
     assert.match(ctx, /child-parked-inbox/);
     assert.match(ctx, /register-primary/);
   } finally { rm(home); }

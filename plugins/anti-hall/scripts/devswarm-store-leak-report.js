@@ -302,7 +302,7 @@ function run(argv, opts) {
         : '  report file:     not written (read-only; pass --out <path>.json to save the JSON)',
     ];
     if (report.storeEnumerationError) {
-      lines.push('  WARNING: store-root enumeration FAILED (' + report.storeEnumerationError + ') — total/bucket counts above are NOT a confident zero-leak result.');
+      lines.push('  warning: store-root enumeration FAILED (' + report.storeEnumerationError + ') — total/bucket counts above are NOT a confident zero-leak result.');
     }
     for (const l of lines) process.stdout.write(l + '\n');
   }

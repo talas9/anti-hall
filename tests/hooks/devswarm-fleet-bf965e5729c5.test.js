@@ -66,7 +66,7 @@ function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 function tableSeg(c) {
-  return c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+  return c.split('\n\n').find((s) => s.replace(/^\S+ anti-hall \u00B7 /, '').startsWith('devswarm-workspaces')) || '';
 }
 function tableRow(c, id) {
   return tableSeg(c).split('\n').find((l) => l.startsWith('| ' + id + ' ')) || '';

@@ -208,7 +208,7 @@ function warnIdMismatch(id, ctx) {
     if (!isSafeId(envId)) return false;
     if (!isSafeId(id)) return false;
     if (String(id) === String(envId)) return false;
-    process.stderr.write('[devswarm] WARNING: addressing id ' + JSON.stringify(String(id))
+    process.stderr.write('⚠️ anti-hall · devswarm: addressing id ' + JSON.stringify(String(id))
       + ' but this workspace\'s real DEVSWARM_BUILDER_ID is ' + JSON.stringify(String(envId))
       + ' — addressing the meshId row counts the wrong partition; use ' + JSON.stringify(String(envId))
       + ' unless you deliberately mean a different workspace\n');

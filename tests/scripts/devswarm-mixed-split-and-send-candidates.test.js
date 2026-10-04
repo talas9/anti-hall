@@ -132,7 +132,7 @@ for (const B of backends) {
       assert.strictEqual(h.result.counts.deadSplits, 0);
       const line = cli.healthcheckHumanLine(h.result);
       assert.match(line, /mixedSplits=1/, 'human line carries the mixedSplits count');
-      assert.match(line, /WARNING/, 'human line warns on the mixed shape');
+      assert.match(line, /warning/, 'human line warns on the mixed shape');
     } finally { rm(main); rm(home); }
   });
 

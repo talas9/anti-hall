@@ -143,7 +143,7 @@ function driftNotice(drift, currentSessionId) {
   if (!drift) return '';
   const cur = currentSessionId ? String(currentSessionId) : '';
   if (cur && cur === drift.newestSessionId) return ''; // this IS the newest session: the anchor refresh fixes it
-  return 'DEVSWARM PRIMARY SESSION NOTICE: you are this project\'s only Primary; a newer session exists: '
+  return '💡 anti-hall · devswarm-primary-session: you are this project\'s only Primary; a newer session exists: '
     + drift.newestSessionId + ' — /resume it if it owns the live lanes. (The Primary anchor records session '
     + drift.anchorSessionId + '. A `primary-<hash>` sender label is a worktree id, NOT proof of another '
     + 'Primary — never stand down on a label alone; check `devswarm.js roster`.)';
