@@ -43,6 +43,31 @@ Tests never touch the real home: each starts its own daemon in a temporary state
 shared reaper stops it (a test whose daemon survives fails). Cargo commands here are meant to run niced
 (`nice -n 19`, `CARGO_BUILD_JOBS=2`), one test runner at a time.
 
+## Building from source
+
+The toolchain is pinned by `ah-engine/rust-toolchain.toml` (added by the release-CI change). From `ah-engine/`:
+
+```
+cargo build --release --locked      # binary: target/release/ah-engine
+```
+
+An offline build from the vendored source tarball published with each release (planned (D67)) uses
+`cargo build --release --offline --frozen`. Release steps are in `ah-engine/RELEASING.md` (added by the release-CI change).
+
+## Using a locally built binary
+
+A configuration key and environment variable that point the plugin at a locally built binary are planned (D71); they will
+be defined in `defaults/*.toml` like every other setting. Until then the plugin does not start the engine at all.
+
+## Verifying release artifacts
+
+Planned (D67), once the release workflow exists:
+
+```
+shasum -a 256 -c SHA256SUMS --ignore-missing
+gh attestation verify <asset> --repo talas9/anti-hall
+```
+
 ## Reliability, in tests
 
 | Item | Where it is tested |

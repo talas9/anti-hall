@@ -159,6 +159,31 @@ crash-loop markers, the run marker, the start counter and the per-session adviso
 - **A new host.** Hosts share the hook payload field names today; a host with a different shape needs an adapter
   (D30). The planned dispatcher (D58) will make that explicit.
 
+## Building from source
+
+The toolchain is pinned by `ah-engine/rust-toolchain.toml` (added by the release-CI change). From `ah-engine/`:
+
+```
+cargo build --release --locked      # binary: target/release/ah-engine
+```
+
+An offline build from the vendored source tarball published with each release (planned (D67)) uses
+`cargo build --release --offline --frozen`. Release steps are in `ah-engine/RELEASING.md` (added by the release-CI change).
+
+## Using a locally built binary
+
+A configuration key and environment variable that point the plugin at a locally built binary are planned (D71); they will
+be defined in `defaults/*.toml` like every other setting. Until then the plugin does not start the engine at all.
+
+## Verifying release artifacts
+
+Planned (D67), once the release workflow exists:
+
+```
+shasum -a 256 -c SHA256SUMS --ignore-missing
+gh attestation verify <asset> --repo talas9/anti-hall
+```
+
 ## Troubleshooting
 
 | Symptom | What to do |
