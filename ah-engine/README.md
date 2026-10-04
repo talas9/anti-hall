@@ -238,6 +238,9 @@ node fuzz-dispatch.js --out <dir> --n 3000 && node run-dispatch.js --plugin ... 
 | review round 1 re-run (guards fail closed, conflicts in order): git corpus, claude and codex | claude, codex | 526 each | **100%** | **100%** |
 | review round 1 re-run: real recorded commands, spread sample | claude | 1500 | **100%** | **100%** |
 | review round 1 re-run: combination fuzz (seed 11, 141 conflicts delivered in order) | claude | 1000 | **100%** | **100%** |
+| review round 2 re-run (fail-closed matrix, merged conflicts): git corpus | claude, codex | 526 each | **100%** | **100%** |
+| review round 2 re-run: real recorded commands, spread sample (2 blocked) | claude | 1500 | **100%** | **100%** |
+| review round 2 re-run: combination fuzz (seed 11; 221 blocks, 283 single, 454 merged, 141 conflicts delivered as one merged answer) | claude | 1000 | **100%** | **100%** |
 | adversarial | codex | 61 | **100%** | **100%** |
 | real recorded commands, first 1250 of the sample | codex | 1250 | **100%** | **100%** |
 
