@@ -11,11 +11,9 @@
 //! * [`persist`]: flushes to hot.db through the Store's writer, and the reads the reports use;
 //! * [`rollup`]: daily rollups into archive.db;
 //! * [`route`]: routing events joined to spawn results, and the NET savings estimate (D77);
-//! * [`import`]: ingest of the Node plugin's telemetry files;
 //! * [`report`]: the `telemetry` and `impact` report bodies.
 pub mod cli;
 pub mod event;
-pub mod import;
 pub mod persist;
 pub mod recorder;
 pub mod report;

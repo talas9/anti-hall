@@ -4,8 +4,7 @@
 //! the archive row, so running it again (or twice, or after a crash half way) leaves the same rows: it is idempotent. A
 //! hot row is removed only after it is archived, only once its day is older than `telemetry.retention_days`, and only if
 //! it has not changed since it was copied, so nothing recorded in between is lost. A flush is always tagged with the day
-//! it happens in and `import` skips lines older than the retention, so nothing is ever added to a day after its hot row
-//! was pruned. Old events are pruned by the same retention. The scheduler runs it once a day (job `telemetry_rollup`, D33), and `ah-engine telemetry rollup` runs it by hand.
+//! it happens in, so nothing is ever added to a day after its hot row was pruned. Old events are pruned by the same retention. The scheduler runs it once a day (job `telemetry_rollup`, D33), and `ah-engine telemetry rollup` runs it by hand.
 use super::event::{day_of, DAY_MS};
 use super::persist::{DayRow, TelDb, TelOp};
 use crate::db::Op;

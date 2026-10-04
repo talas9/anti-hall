@@ -6,9 +6,8 @@
 //! built only from a short identifier (letters, digits and `._:/[]@+-`), so a sentence, a path with spaces or a prompt
 //! cannot be stored. The JSON reader ([`Event::from_json`]) rejects unknown fields for the same reason.
 //!
-//! The same short field names are written by the Node plugin's route-event log, which `ah-engine telemetry import`
-//! reads, so Node and the engine feed one set of reports (mirrors the kinds of `hooks/lib/telemetry.js`: `h`, `e`, `o`,
-//! `ms`, `ib`).
+//! The short field names mirror the kinds of the Node `hooks/lib/telemetry.js` (`h`, `e`, `o`, `ms`, `ib`); there is no
+//! Node writer (D80), the engine records everything.
 use crate::defaults;
 use serde_json::{json, Map, Value};
 use std::fmt;

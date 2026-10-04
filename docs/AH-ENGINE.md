@@ -75,7 +75,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Impact ledger and `ah-engine impact`, savings only as labelled estimates | implemented, stored in hot.db | D52 |
 | Status headline summary | implemented | D50-D52 |
 | Telemetry recorder: every hook, check and rule run counted by kind, hook or check, event and outcome with latency buckets and injected bytes; lock-free hot path; flushed to hot.db; daily rollups in archive.db; `ah-engine telemetry` | implemented | D78 |
-| Routing telemetry: route events joined to spawn results by `spawn_key`, NET savings in `ah-engine impact` | implemented (the check that writes route events is not ported yet; Node events are imported) | D77 |
+| Routing telemetry: route events joined to spawn results by `spawn_key`, NET savings in `ah-engine impact` | implemented (the check that writes route events is not ported yet; pre-engine data comes from transcripts, B5) | D77 |
 | The telemetry rollup as a scheduled daily job (`telemetry_rollup`) | implemented | D33, D78 |
 | Embedded SQLite storage: `hot.db` and `archive.db`, WAL, configured durability, versioned migrations, the `Store` trait over SQLite | implemented | D19, D21, D73 |
 | Tiered lifecycle: write-through to SQLite then memory, active items only, byte budget, key-value with TTL, pub/sub channels | implemented | D20, D22, D25 |
@@ -112,7 +112,7 @@ arguments, is in the generated reference.
 | `ah-engine status` | yes | State, uptime, memory, counters, breaker, rules and a headline summary. |
 | `ah-engine metrics` | yes | Metric series; `--check <name>` narrows to one check; `--rollup minute\|hour [--since <s>]` shows stored rollups. |
 | `ah-engine impact` | yes | What the engine affected; `--kind`, `--project` filter, `--window <7d>` for the NET section. |
-| `ah-engine telemetry` | no | `summary`, `events`, `rollup`, `import`: see Telemetry below. `summary` and `events` only read; `rollup` and `import` write, idempotently. |
+| `ah-engine telemetry` | no | `summary`, `events`, `rollup`: see Telemetry below. `summary` and `events` only read; `rollup` writes, idempotently. |
 | `ah-engine docs` | yes | The generated reference (`--format md`, or `--json`). |
 | `ah-engine check <name>` | yes | Run one check on a payload from stdin (parity harness). |
 | `ah-engine version` | yes | The version this build reports. |
@@ -195,11 +195,6 @@ retention). The scheduler runs it daily (job `telemetry_rollup`, `schedule.telem
 **Reading it.** `ah-engine telemetry summary [--window 7d]` (per hook and check: invocations, outcomes, p50/p95/p99 latency
 upper bounds, injected bytes), `ah-engine telemetry events [--kind route] [--window 7d] [--limit n]`. With a daemon they
 include data not yet flushed; without, they read the database and say so.
-
-**Node data.** The Node plugin writes route events to `<base>/telemetry/<date>.ndjson` with the same short fields.
-`ah-engine telemetry import [--dir <path>]` ingests them idempotently (each line is stored under its file, line number and
-hash, and counted once), so pre-engine data shows up in the same reports. Lines older than the retention are skipped, and a
-line with free text or an unknown field is rejected and counted by reason without keeping its content.
 
 **NET savings.** `ah-engine impact --json [--window 7d]` joins route events to spawn results (a re-spawn after a steer is
 compared against what the agent first asked for) and reports, in both directions, what steering saved (the tokens the agent
@@ -427,7 +422,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
-| `telemetry.toml` | the metric and impact-kind registries, the savings method and the telemetry settings (`telemetry.enabled`, `telemetry.flush_ms`, `telemetry.retention_days`, table sizes, import and window defaults) |
+| `telemetry.toml` | the metric and impact-kind registries, the savings method and the telemetry settings (`telemetry.enabled`, `telemetry.flush_ms`, `telemetry.retention_days`, table sizes and window defaults) |
 | `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention, backups |
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |

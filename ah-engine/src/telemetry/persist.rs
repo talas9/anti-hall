@@ -3,7 +3,7 @@
 //! Writes go through the group-committing writer ([`crate::db::Op::Telemetry`]), reads through the same connections the
 //! rest of the Store uses, so telemetry adds no database handle of its own. Counters are kept per UTC day and
 //! (k, h, e, o), merged additively; events keep their typed fields and the JSON form of the whole event.
-use super::event::{day_of, Event};
+use super::event::Event;
 use super::recorder::Delta;
 use crate::db::{Db, Op};
 use crate::error::DbError;
@@ -23,11 +23,6 @@ pub enum TelOp {
         deltas: Vec<Delta>,
         /// Events since the previous flush.
         events: Vec<Event>,
-    },
-    /// Imported lines, each with its dedupe key; a line already stored is ignored and not counted again.
-    Import {
-        /// `(dedupe key, event)`.
-        rows: Vec<(String, Event)>,
     },
     /// Remove these counter rows (day, k, h, e, o, count as read) after they were copied to archive.db, then apply the
     /// event retention.
@@ -58,12 +53,6 @@ pub enum Flushed {
     Unknown,
     /// Not queued or refused: safe to retry.
     Failed,
-}
-
-/// The latency bucket of `us` for the shipped bounds (for imported events, which carry milliseconds).
-fn bucket_of(us: u64) -> usize {
-    let bounds = defaults_bounds();
-    bounds.iter().position(|b| us <= *b).unwrap_or(bounds.len())
 }
 
 /// The shipped latency bucket bounds in microseconds.
@@ -106,7 +95,7 @@ fn add_count(c: &Connection, day: i64, d: &Delta) -> Result<(), DbError> {
     Ok(())
 }
 
-fn insert_event(c: &Connection, e: &Event, dedupe: Option<&str>) -> Result<usize, DbError> {
+fn insert_event(c: &Connection, e: &Event) -> Result<usize, DbError> {
     Ok(c.prepare_cached(sql::TEL_EVENT_INSERT)?.execute(params![
         e.ts_ms as i64,
         e.kind.name(),
@@ -116,13 +105,12 @@ fn insert_event(c: &Connection, e: &Event, dedupe: Option<&str>) -> Result<usize
         e.ms as i64,
         e.ib as i64,
         e.spawn_key().unwrap_or(""),
-        e.to_json().to_string(),
-        dedupe
+        e.to_json().to_string()
     ])?)
 }
 
 /// Apply one telemetry write inside the writer's transaction (called from `db.rs`). The answer is the number of rows
-/// the write stored (events inserted for a flush or import).
+/// the write stored (events inserted for a flush).
 pub fn apply(c: &Connection, op: &TelOp) -> Result<String, DbError> {
     match op {
         TelOp::Flush { day, deltas, events } => {
@@ -130,36 +118,9 @@ pub fn apply(c: &Connection, op: &TelOp) -> Result<String, DbError> {
                 add_count(c, *day, d)?;
             }
             for e in events {
-                insert_event(c, e, None)?;
+                insert_event(c, e)?;
             }
             Ok(events.len().to_string())
-        }
-        TelOp::Import { rows } => {
-            let mut stored = 0;
-            for (key, e) in rows {
-                // a line stored before is ignored AND not counted again: the count moves only with the insert
-                if insert_event(c, e, Some(key))? == 1 {
-                    let us = e.ms as u64 * 1000;
-                    let mut hist = vec![0; defaults_bounds().len() + 1];
-                    hist[bucket_of(us)] = 1;
-                    add_count(
-                        c,
-                        day_of(e.ts_ms),
-                        &Delta {
-                            k: e.kind.name().into(),
-                            h: e.h.as_str().into(),
-                            e: e.e.as_str().into(),
-                            o: e.o.name().into(),
-                            n: 1,
-                            us_sum: us,
-                            ib_sum: e.ib,
-                            hist,
-                        },
-                    )?;
-                    stored += 1;
-                }
-            }
-            Ok(stored.to_string())
         }
         TelOp::Prune { rows, events_before_ms } => {
             for (day, k, h, e, o, n) in rows {
@@ -213,11 +174,6 @@ impl TelDb {
             Err(DbError::Timeout) => Flushed::Unknown,
             Err(_) => Flushed::Failed,
         }
-    }
-
-    /// Store imported lines; the number actually stored (not already there).
-    pub fn import(&self, rows: Vec<(String, Event)>) -> Result<u64, DbError> {
-        self.db.write(Op::Telemetry(TelOp::Import { rows })).map(|s| s.parse().unwrap_or(0))
     }
 
     /// Counter rows for days `from..=to` (hot.db).
@@ -298,17 +254,5 @@ mod tests {
         assert_eq!(rows.iter().filter(|r| r.day == 11).count(), 1);
         assert_eq!(t.events("", 0, 10).len(), 1);
         assert_eq!(t.held_events(), 1);
-    }
-
-    #[test]
-    fn an_import_counts_a_line_only_when_it_is_new() {
-        let d = TempDir::new("tel-import");
-        let t = TelDb::new(Db::open(&d.0).unwrap());
-        let rows = vec![("f:1:aa".to_string(), event(1000)), ("f:2:bb".to_string(), event(2000))];
-        assert_eq!(t.import(rows.clone()).unwrap(), 2);
-        assert_eq!(t.import(rows).unwrap(), 0, "the same lines again store nothing");
-        let n: u64 = t.counts(0, 10).iter().map(|r| r.delta.n).sum();
-        assert_eq!(n, 2, "and count nothing");
-        assert_eq!(t.held_events(), 2);
     }
 }

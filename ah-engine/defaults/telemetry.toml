@@ -94,7 +94,7 @@ value = 2048
 min = 16
 
 [telemetry.token_max_len]
-doc = "Longest identifier a telemetry event may hold in any text field (hook, event, model, task class, spawn key); longer ones are cut, or refused on import. Event text fields hold identifiers only, never prose."
+doc = "Longest identifier a telemetry event may hold in any text field (hook, event, model, task class, spawn key); longer ones are cut. Event text fields hold identifiers only, never prose."
 value = 64
 min = 8
 unit = "bytes"
@@ -121,24 +121,6 @@ unit = "s"
 doc = "Most events kept in hot.db; the oldest beyond this are removed when `telemetry rollup` runs."
 value = 200000
 min = 100
-
-[telemetry.import_dir]
-doc = "Directory, inside the base directory, where the Node plugin writes its telemetry files (`<date>.ndjson`) that `telemetry import` reads."
-value = "telemetry"
-
-[telemetry.import_ext]
-doc = "File extension of the Node plugin's telemetry files."
-value = "ndjson"
-
-[telemetry.import_batch]
-doc = "Imported lines stored per write."
-value = 500
-min = 1
-
-[telemetry.import_max_line]
-doc = "Longest line `telemetry import` reads; a longer one is rejected."
-value = 4096
-unit = "bytes"
 
 [telemetry.inherit_prefix]
 doc = "Prefix the Node routing log puts on a model name that was inherited from the parent rather than named; ignored when pricing."

@@ -39,7 +39,7 @@ pub enum Op {
         /// The exported counters and histograms.
         body: String,
     },
-    /// A telemetry write (D78): a flush of counters and events, an import, or a prune.
+    /// A telemetry write (D78): a flush of counters and events, or a prune.
     Telemetry(crate::telemetry::persist::TelOp),
     /// A project-partition write (D21 pending mailbox and key-value state). A non-empty `write_id` makes it idempotent:
     /// a repeat with the same id returns the first result and changes nothing (D24).

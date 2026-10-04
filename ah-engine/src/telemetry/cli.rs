@@ -1,10 +1,9 @@
-//! `ah-engine telemetry [summary|events|rollup|import]` (D78).
+//! `ah-engine telemetry [summary|events|rollup]` (D78).
 //!
 //! `summary` and `events` ask the running daemon (so they include what it has recorded but not flushed yet) and fall back to
-//! reading the databases. `rollup` and `import` work on the database files directly, like `maintain`: both are idempotent,
-//! and SQLite's locks keep them apart from the daemon's own writes.
+//! reading the databases. `rollup` works on the database files directly, like `maintain`: it is idempotent, and SQLite's locks keep them apart from the daemon's own writes.
 use super::persist::TelDb;
-use super::{import, report};
+use super::report;
 use crate::{client, defaults, paths};
 use serde_json::{json, Value};
 
@@ -68,19 +67,6 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             Ok(v) => (v, 0),
             Err(e) => (json!({"error": e}), 1),
         },
-        "import" => {
-            let dir = Some(flag(rest, "dir")).filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(default_import_dir);
-            let cutoff = now_ms().saturating_sub(defaults::num("telemetry.retention_days") * super::event::DAY_MS);
-            match open_for_write().and_then(|t| import::import_dir(&t, &dir, cutoff).map_err(|e| e.to_string())) {
-                Ok(v) => (v, 0),
-                Err(e) => (json!({"error": e}), 1),
-            }
-        }
         other => (json!({"error": defaults::render("msg.cli_unknown", &[("command", &format!("telemetry {other}"))])}), 64),
     }
-}
-
-/// Where the Node plugin writes its telemetry files: `<base dir>/telemetry`, next to the engine's state directory.
-pub fn default_import_dir() -> std::path::PathBuf {
-    paths::dir().parent().map(std::path::Path::to_path_buf).unwrap_or_default().join(defaults::text("telemetry.import_dir"))
 }

@@ -1,5 +1,5 @@
 //! D78: telemetry's hot path is fast, its flushed data survives a kill, the loss window is exactly what was not flushed,
-//! and the CLI imports and rolls up idempotently.
+//! and the CLI rolls up idempotently.
 //!
 //! Every daemon a test starts is its own child process and is reaped before the test ends; every test uses its own HOME
 //! and engine directory, never the real ones.
@@ -8,7 +8,7 @@ mod common;
 
 use ah_engine::telemetry::event::{Kind, Outcome};
 use ah_engine::telemetry::recorder::Recorder;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -161,35 +161,20 @@ fn a_killed_daemon_keeps_what_was_flushed_and_loses_only_the_window() {
     assert_eq!(after["invocations"], 0, "documented: a kill -9 loses what was recorded since the last flush: {after}");
 }
 
-fn write_lines(dir: &Path, n: usize) {
-    std::fs::create_dir_all(dir).unwrap();
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    let lines: Vec<String> = (0..n)
-        .map(|i| {
-            serde_json::json!({"ts": now - i as u64, "k": "route", "h": "model-routing", "e": "PreToolUse", "o": "advise", "ms": 1, "ib": 100,
-                "requested_model": "opus", "parent_model": "opus", "task_class": "mechanical", "recommended_tier": "haiku", "outcome": "down", "spawn_key": format!("key{i}")})
-            .to_string()
-        })
-        .collect();
-    std::fs::write(dir.join("2026-10-05.ndjson"), lines.join("\n") + "\n").unwrap();
-}
-
 #[test]
-fn import_and_rollup_through_the_cli_are_idempotent() {
-    let run = Run::new("cli");
-    write_lines(&run.dir.join("telemetry"), 3);
-    let a = run.json(&["telemetry", "import"]);
-    assert_eq!((a["stored"].as_u64(), a["rejected"].as_u64()), (Some(3), Some(0)), "{a}");
-    let b = run.json(&["telemetry", "import"]);
-    assert_eq!((b["stored"].as_u64(), b["already_stored"].as_u64()), (Some(0), Some(3)), "{b}");
+fn rollup_through_the_cli_is_idempotent() {
+    let mut run = Run::new("cli");
+    run.start("100");
+    run.hooks(3);
+    std::thread::sleep(Duration::from_millis(600)); // several flush intervals
+    run.kill9();
     let s = run.json(&["telemetry", "summary", "--window", "1d"]);
-    assert_eq!(s["by_kind"]["route"], 3, "pre-engine data shows up in the same report, counted once: {s}");
-    let ev = run.json(&["telemetry", "events", "--kind", "route", "--window", "1d"]);
-    assert_eq!(ev["count"], 3);
+    assert_eq!(s["invocations"], 3, "{s}");
     let r1 = run.json(&["telemetry", "rollup"]);
     let r2 = run.json(&["telemetry", "rollup"]);
     assert_eq!(r1["rows_archived"], r2["rows_archived"], "a rollup run twice archives the same rows");
-    assert_eq!(r2["events_held"], 3);
+    let after = run.json(&["telemetry", "summary", "--window", "1d"]);
+    assert_eq!(after["invocations"], 3, "a rollup loses nothing: {after}");
     let bad = run.cmd("10000").args(["telemetry", "nonsense", "--json"]).output().unwrap();
     assert_eq!(bad.status.code(), Some(64));
 }
