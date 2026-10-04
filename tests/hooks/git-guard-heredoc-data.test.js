@@ -157,3 +157,40 @@ allow('xargs -n1 git add', 'echo a | xargs -n1 git add');
 allow('find -exec ... {} literal', 'find . -name "*.md" -exec wc -l {} +');
 block('a real { ...; } group still splits', `{ ${FP}; }`);
 block('adjacent {} then a force push', `echo {} ; ${FP}`);
+
+// ---- 6. git / gh beside a data heredoc: listed subcommands + flags only ----
+// A masked body can sit in a file the same line hands to a command-running
+// option, so a git/gh with any flag outside the per-subcommand allowlist
+// (abbreviations included) keeps every body scanned.
+const ADOC = `cat <<'EOF' > a.md\n${FP}\nEOF\n`;
+block('fetch --upload-pack after the terminator runs the body file', ADOC + "git fetch --upload-pack='sh a.md' .");
+block('fetch --upload-p (abbreviation)', ADOC + "git fetch --upload-p='sh a.md' .");
+block('fetch --up (abbreviation)', ADOC + "git fetch --up='sh a.md' .");
+block('fetch -u', ADOC + "git fetch -u 'sh a.md' .");
+block('fetch --upload-pack on the opener line', `cat <<'EOF' > a.md && git fetch --upload-pack='sh a.md' .\n${FP}\nEOF`);
+block('git -C . fetch --upload-pack', ADOC + "git -C . fetch --upload-pack='sh a.md' .");
+block('gh repo clone -- --upload-pack', ADOC + "gh repo clone o/r -- --upload-pack='sh a.md'");
+block('gh pr create -- passthrough', `gh pr create --body-file - -- --upload-pack=x <<'EOF'\n${FP}\nEOF`);
+block('git commit -F - --upload-pack (unknown flag)', `git commit -F - --upload-pack='sh a.md' <<'EOF'\n${FP}\nEOF`);
+block('git commit abbreviated long flag', `git commit --temp=x -F - <<'EOF'\n${FP}\nEOF`);
+block('push beside a data heredoc', ADOC + PUSH + " --receive-pack='sh a.md' origin");
+block('plain push beside a data heredoc', ADOC + PUSH + ' origin main');
+block('pull beside a data heredoc', ADOC + "git pull --upload-pack='sh a.md' .");
+block('clone beside a data heredoc', ADOC + "git clone --upload-pack='sh a.md' . x");
+block('submodule foreach beside a data heredoc', ADOC + "git submodule foreach 'sh a.md'");
+block('git --git-dir beside a data heredoc', ADOC + 'git --git-dir=x commit -m y');
+block('git merge -s beside a data heredoc', ADOC + 'git merge -s ours x');
+block('git log --ext-diff beside a data heredoc', ADOC + 'git log --ext-diff');
+block('git diff --output beside a data heredoc', ADOC + 'git diff --output=x.md');
+block('git notes edit beside a data heredoc', ADOC + 'git notes edit');
+block('gh pr view beside a data heredoc', ADOC + 'gh pr view --web');
+block('gh api beside a data heredoc', ADOC + 'gh api repos/o/r');
+block('gh pr merge --body-file -', `gh pr merge 5 --body-file - <<'EOF'\n${FP}\nEOF`);
+allow('gh issue comment -F -', `gh issue comment 5 -F - <<'EOF'\n${NOTE}EOF`);
+allow('gh pr edit --body-file -', `gh pr edit 5 --body-file - <<'EOF'\n${NOTE}EOF`);
+allow('gh release create --notes-file -', `gh release create v1 --title t --notes-file - <<'EOF'\n${NOTE}EOF`);
+allow('git -C sub commit -q -F -', `git -C sub commit -q -F - <<'EOF'\nfix: x\n\n${NOTE}EOF`);
+allow('git tag -a -F - then log -1 --format', `git tag -a v1 -F - <<'EOF'\n${NOTE}EOF\ngit log -1 --format=%H`);
+allow('git notes add -F - HEAD', `git notes add -F - HEAD <<'EOF'\n${NOTE}EOF`);
+allow('cat, then status/diff/log read-only flags', `cat <<'EOF' > n.md\n${NOTE}EOF\ngit status --short && git diff --stat && git log --oneline -5`);
+allow('cat, then add -A and commit --amend --no-edit', `cat > n.md <<'EOF'\n${NOTE}EOF\ngit add -A && git commit --amend --no-edit`);

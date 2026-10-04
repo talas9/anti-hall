@@ -304,7 +304,12 @@ rule is all-or-nothing and fails closed: it applies only when every heredoc in
 the command ends in a prose/data file (`.md`, `.txt`, `.rst`, `.log`, ...)
 through cat/tee or in a git commit/tag/notes/merge or gh pr/issue/release
 message; every other command in the line is on a short allowlist (cat, tee,
-git, gh, echo, printf, cd, mkdir, wc, head, tail, ls, ...); no write target is a
+git, gh, echo, printf, cd, mkdir, wc, head, tail, ls, ...); a git there is
+limited to commit/tag/notes/merge, status/log/diff/show/add and rev-parse, each
+with its own flag allowlist (no fetch, push, pull, clone, remote, submodule or
+config, no `-c`/`--git-dir`; any other flag, an abbreviation like
+`--upload-p` included, keeps the bodies scanned), and a gh to pr/issue/release
+create/edit/comment with listed flags and no `--` passthrough; no write target is a
 script, an extensionless file, a dotfile, a git hook name or a `.git`,
 `.husky`, `.githooks`, `hooks`, `.ssh`, `.config`, `.claude`, `.codex` or
 `.anti-hall/bin` path; an unquoted-delimiter body has no `$(` or backtick; and
@@ -339,7 +344,16 @@ is not seen through (see **Aliases** below). `xargs` is covered:
 xargs-run `git push` is blocked, since stdin can append `--force`), with
 xargs' GNU and BSD options parsed the way getopt does (`-I {}`, `-I{}`,
 `-i`/`-l`/`-e` with attached values only, `-n1`, `-0n1`, `-d '\n'`, `-J %`,
-`--max-args 1`), and an xargs-run `sh -c`/`eval`/nested `xargs` is re-scanned. These are
+`--max-args 1`), and an xargs-run `sh -c`/`eval`/nested `xargs` is re-scanned
+(its `"$@"` is scanned with a `--force` standing in for the stdin words).
+`find ... -exec|-execdir|-ok|-okdir CMD ... \;` (or `+`) gets the same checks
+for CMD, and a `find -exec git push ... {}` is blocked (a file name can be a
+`+ref` force refspec). Wrapper commands are unwrapped with their own option
+grammars, directly and under xargs/find: env, command, exec, sudo, doas, nice,
+nohup, time, timeout, stdbuf, caffeinate, ionice, flock (`flock FILE -c 'cmd'`
+is scanned as `sh -c`), setsid, chrt and taskset. A `sh -c` / `bash -c` script
+that forwards its positional args (`sh -c '$0 "$@"' git ...`, `bash -c '"$@"' _
+git ...`) is scanned with those args spliced in. These are
 documented boundaries, not silent gaps.
 
 **Aliases** (`guards.gitAliasResolve`, safety, default on). `git <name>` where
@@ -1262,7 +1276,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
 | `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
 | `guards.handoverCommitGuard` | `true` | `ANTIHALL_HANDOVER_COMMIT_GUARD` | git-guard: block a `git commit` whose paths include a session handover (`.anti-hall/handovers/**` at any depth, or `HANDOVER*.md`, `CONTINUE-HERE.md`, `*.continue-here.md` at the repo root). Handovers are local session state and are never committed; `git add` is never blocked, but `git add ... && git commit` in one command is checked (an ignored `.anti-hall/` is not a hit); removing a tracked handover and concluding a merge/cherry-pick/rebase are allowed; fails open if git cannot be queried, and says so when a command has too many commits to check. |
-| `guards.gitGuardHeredocData` adv | `true` | `ANTIHALL_GIT_GUARD_HEREDOC_DATA` | git-guard: a heredoc whose consumer is not a shell is data, so its body is not scanned as commands - `cat <<EOF > notes.md`, `tee notes.txt <<EOF`, `git commit -F - <<EOF`, `git commit -m "$(cat <<EOF ...)"`, `gh pr create --body-file - <<EOF`. Applies only when every heredoc ends in a prose/data file (`.md`, `.txt`, `.rst`, `.log`, ...) or a git/gh message, every other command in the line is on a short allowlist (cat, tee, git, gh, echo, printf, cd, mkdir, wc, ...), and no write target is a script, extensionless file, dotfile, git hook or `.git`/`.husky`/`.ssh`/`.config` path. A body fed to bash/sh/eval/source/xargs/python/..., piped into a shell, or written to a file the same line runs stays scanned. Credit trailers are checked either way. `false` = scan every body as shell. |
+| `guards.gitGuardHeredocData` adv | `true` | `ANTIHALL_GIT_GUARD_HEREDOC_DATA` | git-guard: a heredoc whose consumer is not a shell is data, so its body is not scanned as commands - `cat <<EOF > notes.md`, `tee notes.txt <<EOF`, `git commit -F - <<EOF`, `git commit -m "$(cat <<EOF ...)"`, `gh pr create --body-file - <<EOF`. Applies only when every heredoc ends in a prose/data file (`.md`, `.txt`, `.rst`, `.log`, ...) or a git/gh message, every other command in the line is on a short allowlist (cat, tee, git, gh, echo, printf, cd, mkdir, wc, ...), and no write target is a script, extensionless file, dotfile, git hook or `.git`/`.husky`/`.ssh`/`.config` path. A body fed to bash/sh/eval/source/xargs/python/..., piped into a shell, or written to a file the same line runs stays scanned. A git beside it may use only commit/tag/notes/merge, status/log/diff/show/add or rev-parse with listed flags (no fetch/push/pull/clone/remote/submodule/config), and a gh only pr/issue/release create/edit/comment with listed flags and no `--`; any other flag keeps the bodies scanned. Credit trailers are checked either way. `false` = scan every body as shell. |
 | `guards.gitignoreHint` | `true` | `ANTIHALL_GITIGNORE_HINT` | One-time (per project, every 7 days) SessionStart reminder to git-ignore `.anti-hall/` when it exists in a git repo and is not ignored; doctor always reports it. |
 | `guards.allowAnthropicEnvKey` adv safety | `false` | — | SAFETY, home-settings only (no env or project override). Opt-in: let the speculation judge and Jev triage read `ANTHROPIC_API_KEY` from the environment. Default off: only the `anthropic_api_key` plugin option is used. |
 | `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |

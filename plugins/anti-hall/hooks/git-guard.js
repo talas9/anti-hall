@@ -409,7 +409,9 @@ function splitSegments(cmd) {
 
 // Given the tokens of one segment, find the effective command verb + its args,
 // skipping leading `VAR=value` assignment prefixes and wrapper words
-// (command/builtin/exec/sudo/env/nice/nohup/time/timeout). Returns { verb, args }
+// (command/builtin/exec/sudo/env/nice/nohup/time/timeout, and the
+// OPT_WRAPPERS below: stdbuf/caffeinate/ionice/flock/setsid/chrt/taskset/doas).
+// Returns { verb, args }
 // where args are the tokens AFTER the verb, or null if no verb. Some wrappers are
 // special: `env` may carry `VAR=value` operands and `-flags`; `timeout` requires
 // a duration operand (and may take leading `-flags`/`-flag value`); `nice` may
@@ -432,6 +434,40 @@ function splitSegments(cmd) {
 // resolved past the `coproc` word. Also reserved-word-shaped (no argument-
 // position ambiguity), so adding it carries no false-block risk.
 const WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout', 'then', 'do', 'else', 'if', 'while', 'until', 'elif', 'coproc', '!']);
+// Run-a-command wrappers with getopt-style options, each mapped to its
+// grammar: s = short flags, v = short flags taking a value (rest of the
+// cluster or the next word), l / L = long flags without / with a value,
+// ops = operands before the command (`flock FILE`, `taskset MASK`, `chrt
+// PRIO`). `stdbuf -o0 git ...`, `caffeinate -t 60 git ...`, `flock f git
+// ...` all run git.
+const OPT_WRAPPERS = new Map([
+  ['stdbuf', { s: '', v: 'ioe', l: [], L: ['input', 'output', 'error'], ops: 0 }],
+  ['caffeinate', { s: 'dimsu', v: 'tw', l: [], L: [], ops: 0 }],
+  ['ionice', { s: 't', v: 'cnpPu', l: ['ignore'], L: ['class', 'classdata', 'pid', 'pgid', 'uid'], ops: 0 }],
+  ['flock', { s: 'sexnouFv', v: 'wE', l: ['shared', 'exclusive', 'unlock', 'nonblock', 'nb', 'close', 'no-fork', 'verbose'],
+    L: ['wait', 'timeout', 'conflict-exit-code'], ops: 1 }],
+  ['setsid', { s: 'cfw', v: '', l: ['ctty', 'fork', 'wait'], L: [], ops: 0 }],
+  ['chrt', { s: 'abdefiomrRpv', v: 'TPD', l: ['all-tasks', 'batch', 'deadline', 'ext', 'fifo', 'idle', 'other', 'rr',
+    'reset-on-fork', 'max', 'pid', 'verbose'], L: ['sched-runtime', 'sched-period', 'sched-deadline'], ops: 1 }],
+  ['taskset', { s: 'apc', v: '', l: ['all-tasks', 'pid', 'cpu-list'], L: [], ops: 1 }],
+  ['doas', { s: 'nsL', v: 'uC', l: [], L: [], ops: 0 }],
+]);
+// Index of the command word after an OPT_WRAPPERS wrapper's options and
+// operands (`--` ends the options).
+function skipOptWrapper(tokens, idx, g) {
+  while (idx < tokens.length && !tokens[idx].quotedOnly && tokens[idx].text.startsWith('-') && tokens[idx].text !== '-') {
+    const w = tokens[idx++].text;
+    if (w === '--') break;
+    if (w.startsWith('--')) {
+      if (w.indexOf('=') < 0 && g.L.includes(w.slice(2))) idx++;
+      continue;
+    }
+    for (let k = 1; k < w.length; k++) {
+      if (g.v.includes(w[k])) { if (k === w.length - 1) idx++; break; }
+    }
+  }
+  return idx + g.ops;
+}
 
 function effectiveVerb(tokens) {
   let idx = 0;
@@ -449,6 +485,16 @@ function effectiveVerb(tokens) {
   while (idx < tokens.length) {
     const t = tokens[idx];
     const word = t.text;
+    if (!t.quotedOnly && OPT_WRAPPERS.has(word)) {
+      idx = skipOptWrapper(tokens, idx + 1, OPT_WRAPPERS.get(word));
+      // `flock FILE -c 'cmd'` hands cmd to `sh -c`: report it as that, so
+      // the shell -c payload scan picks it up.
+      if (word === 'flock' && idx < tokens.length && !tokens[idx].quotedOnly &&
+          (tokens[idx].text === '-c' || tokens[idx].text === '--command')) {
+        return { verb: 'sh', args: [{ text: '-c', quotedOnly: false }].concat(tokens.slice(idx + 1, idx + 2)) };
+      }
+      continue;
+    }
     if (!t.quotedOnly && WRAPPERS.has(word)) {
       idx++;
       if (word === 'sudo') {
@@ -1064,7 +1110,8 @@ function extractShellCPayload(segment) {
     // The `-c` flag (or `--command`, or a bundled short cluster ending in `c`
     // such as `-lc` / `-xc`) carries the payload in the NEXT token.
     if (t === '-c' || t === '--command' || /^-[a-z]*c$/.test(t)) {
-      return i + 1 < args.length ? args[i + 1].text : '';
+      if (i + 1 >= args.length) return '';
+      return forwardPositional(args[i + 1].text, args.slice(i + 2));
     }
     // A1-5 (0.117.2 follow-up): a here-string (`bash <<< "payload"`) feeds
     // payload to the shell's stdin as its script - the SAME total bypass
@@ -1076,6 +1123,25 @@ function extractShellCPayload(segment) {
     }
   }
   return '';
+}
+
+// `sh -c '$0 "$@"' git ...` / `bash -c '"$@"' _ git ...`: the words after
+// the -c script are its $0, $1, ...; a script that forwards them runs them as
+// a command. Splice them into the script ($0..$9, ${N}, $@, $*, quoted or
+// not) so the payload scan sees the command they form. A plain word goes in
+// bare (so `git` stays a verb), anything else single-quoted; an unquoted
+// reference is word-split first, as the shell does.
+function forwardPositional(script, pos) {
+  if (!pos.length || script.indexOf('$') < 0) return script;
+  const q = (w) => (/^[A-Za-z0-9_.\/:=@%+,{}-]+$/.test(w) ? w : "'" + w.replace(/'/g, "'\\''") + "'");
+  const word = (t, quoted) => (quoted ? q(t.text) : t.text.split(/\s+/).filter(Boolean).map(q).join(' '));
+  const val = (ref, quoted) => {
+    if (ref === '@' || ref === '*') return pos.slice(1).map((t) => word(t, quoted)).join(' ');
+    const n = Number(ref);
+    return n < pos.length ? word(pos[n], quoted) : '';
+  };
+  return script.replace(/"\$(?:\{([0-9]+|[@*])\}|([0-9@*]))"|\$(?:\{([0-9]+|[@*])\}|([0-9@*]))/g,
+    (m, a, b, c, e) => (a || b ? val(a || b, true) : val(c || e, false)));
 }
 
 // A1-5 (0.117.2 follow-up): `env -S STRING` (or `--split-string[=STRING]`)
@@ -1152,29 +1218,62 @@ function xargsCommandTokens(args) {
 // xargs appends words it reads from STDIN as trailing arguments to the
 // command it runs (unless -I/-i places them elsewhere) - a hidden -f/--force
 // can ride in on stdin that the static tokenizer can never see. So ANY
-// xargs-run push is treated conservatively as a force push. Every other
-// command xargs runs gets the checks it would get run directly: git verdicts
-// for git, and a nested `xargs`, `sh -c '...'` or `eval ...` is re-scanned as
-// a command line (depth-bounded like the eval / `bash -c` unwrapping).
+// xargs-run push is treated conservatively as a force push, and an xargs-run
+// `sh -c` script is scanned with a `--force` standing in for the stdin words
+// its "$@" receives. Every other command xargs runs gets the checks it would
+// get run directly: git verdicts for git, and a nested `xargs`, `find -exec`,
+// `sh -c '...'` or `eval ...` is re-scanned as a command line (depth-bounded
+// like the eval / `bash -c` unwrapping).
 function xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
-  const cmdTokens = xargsCommandTokens(ev.args);
+  return runnerVerdict(xargsCommandTokens(ev.args), 'xargs', d, cmd, heredocBodies, cwd, useJev);
+}
+
+// `find ... -exec CMD ... ;` (also `+`, -execdir, -ok, -okdir) runs CMD once
+// per match: each CMD gets the checks a direct run gets. A push whose argv
+// carries the `{}` file names is treated as a force push (a file name such as
+// `+main` is a force refspec).
+const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir']);
+function findExecVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
+  const args = ev.args;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].quotedOnly || !FIND_EXEC.has(args[i].text)) continue;
+    let j = i + 1;
+    while (j < args.length && args[j].text !== ';' && args[j].text !== '\\;' &&
+      !(args[j].text === '+' && j > i + 1 && args[j - 1].text === '{}')) j++;
+    const hit = runnerVerdict(args.slice(i + 1, j), 'find', d, cmd, heredocBodies, cwd, useJev);
+    if (hit) return hit;
+    i = j;
+  }
+  return null;
+}
+
+function runnerVerdict(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev) {
   if (!cmdTokens.length) return null;
   const innerEv = effectiveVerb(cmdTokens);
   if (!innerEv) return null;
   if (innerEv.verb === 'git') {
     const { sub } = gitSubcommand(innerEv.args);
-    if (sub === 'push') {
+    if (sub === 'push' && runner === 'xargs') {
       return gm({
         what: 'force push via `xargs git push` is blocked.',
         why: 'xargs appends words from stdin, so the full argv (and any hidden --force/-f) cannot be verified statically.',
         instead: 'run `git push` directly with explicit arguments.',
       });
     }
+    if (sub === 'push' && innerEv.args.some((t) => t.text.indexOf('{}') >= 0)) {
+      return gm({
+        what: 'push via `find -exec git push ... {}` is blocked.',
+        why: 'find puts file names where {} stands, so the refspecs (a `+ref` is a force push) cannot be verified statically.',
+        instead: 'run `git push` directly with explicit arguments.',
+      });
+    }
     return gitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   }
   if (innerEv.verb === 'xargs') return xargsGitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
+  if (innerEv.verb === 'find') return findExecVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (d < 3 && (innerEv.verb === 'eval' || SHELL_VERBS.has(innerEv.verb.toLowerCase()))) {
-    const text = cmdTokens.map((t) => (typeof t.raw === 'string' ? t.raw : t.text)).join(' ');
+    let text = cmdTokens.map((t) => (typeof t.raw === 'string' ? t.raw : t.text)).join(' ');
+    if (runner === 'xargs') text += ' --force';
     return scanCommand(text, d + 1, cwd);
   }
   return null;
@@ -1327,16 +1426,122 @@ const HEREDOC_SAFE_VERBS = new Set([
   'wc', 'head', 'tail', 'ls', 'pwd', 'true', ':', 'date', 'stat', 'test', '[',
 ]);
 const HEREDOC_GIT_MSG_SUBS = new Set(['commit', 'tag', 'notes', 'merge']);
-// git subcommands allowed anywhere beside a data heredoc. Anything that can
-// run a configured or given command (config, rebase -x, bisect run, hook,
-// submodule foreach, difftool, filter-branch, ...) is left out, and so are
-// the global -c / --config-env / --exec-path options.
-const HEREDOC_GIT_SUBS = new Set([
-  'add', 'commit', 'tag', 'notes', 'merge', 'status', 'log', 'diff', 'show', 'rev-parse',
-  'branch', 'push', 'fetch', 'switch', 'checkout', 'restore', 'ls-files', 'describe', 'reset', 'rm', 'mv',
+// A git or gh command beside a data heredoc may use ONLY the flags listed
+// here for its subcommand; any other flag (an abbreviation like
+// `--upload-p` included) keeps every body scanned. A masked body can sit in a
+// file the same line hands to a command-running option (`git fetch
+// --upload-pack='sh notes.md'`, `gh repo clone o/r -- --upload-pack=...`), so
+// git subcommands that talk to a remote or run configured commands (fetch,
+// push, pull, clone, remote, submodule, config, ...) are not listed at all.
+// Spec: s = short flags, v = short flags taking a value (rest of the cluster
+// or the next word), o = short flags taking only an attached value, l = long
+// flags, L = long flags taking a value (`=v` or the next word), O = long
+// flags taking only an `=value`, num = `-<n>` count allowed.
+function hdSpec(o) {
+  const set = (x) => new Set((x || '').split(' ').filter(Boolean));
+  return { s: o.s || '', v: o.v || '', o: o.o || '', l: set(o.l), L: set(o.L), O: set(o.O), num: !!o.num };
+}
+const HD_GIT_READ_LONG = 'stat shortstat numstat name-only name-status summary patch no-patch raw cached staged ' +
+  'no-color no-ext-diff no-textconv no-renames check exit-code quiet ignore-all-space ignore-space-change ' +
+  'oneline graph all reverse first-parent no-merges merges abbrev-commit follow decorate no-decorate ' +
+  'full-history source date-order topo-order';
+const HD_GIT_READ_VAL = 'max-count skip since until after before author committer grep format pretty date ' +
+  'unified diff-filter abbrev';
+const HD_GIT_READ_OPT = 'color word-diff decorate pretty find-renames find-copies relative';
+const HD_GIT_FLAGS = new Map([
+  ['commit', hdSpec({ s: 'aqvsnei', v: 'mFCct', o: 'uS',
+    l: 'all amend no-edit edit no-verify verify signoff no-signoff quiet verbose dry-run allow-empty ' +
+      'allow-empty-message only include short porcelain no-gpg-sign reset-author status no-status',
+    L: 'message file author date cleanup trailer fixup squash reuse-message reedit-message',
+    O: 'untracked-files gpg-sign' })],
+  ['tag', hdSpec({ s: 'asfdlv', v: 'mFu', o: 'n',
+    l: 'annotate sign no-sign force delete list no-edit edit',
+    L: 'message file local-user cleanup', O: 'contains points-at sort format' })],
+  ['notes', hdSpec({ s: 'f', v: 'mFCc',
+    l: 'force allow-empty', L: 'message file reuse-message reedit-message ref' })],
+  ['merge', hdSpec({ s: 'nqv', v: 'mF',
+    l: 'no-ff ff ff-only squash no-squash no-commit commit no-edit stat no-stat log no-log quiet verbose ' +
+      'abort continue quit signoff no-signoff no-verify allow-unrelated-histories no-gpg-sign',
+    L: 'message file cleanup', O: 'log' })],
+  ['status', hdSpec({ s: 'sbvz', o: 'u',
+    l: 'short branch long verbose show-stash ahead-behind no-ahead-behind null no-renames',
+    O: 'porcelain untracked-files ignored column' })],
+  ['log', hdSpec({ s: 'pqw', v: 'n', o: 'MC', num: true, l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['diff', hdSpec({ s: 'pqwb', v: 'U', o: 'MC', l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['show', hdSpec({ s: 'pqws', v: 'nU', o: 'MC', num: true, l: HD_GIT_READ_LONG + ' no-patch', L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['add', hdSpec({ s: 'Aunvf', l: 'all update dry-run verbose force no-all intent-to-add ignore-removal' })],
+  ['rev-parse', hdSpec({ s: 'q', l: 'show-toplevel abbrev-ref verify quiet git-dir is-inside-work-tree show-prefix symbolic-full-name',
+    O: 'short' })],
 ]);
-const HEREDOC_GH_GROUPS = new Set(['pr', 'issue', 'release', 'gist', 'label', 'repo', 'api', 'run', 'workflow', 'search', 'status']);
-const HEREDOC_GH_MSG_ACTS = new Set(['create', 'edit', 'comment', 'review', 'merge', 'close', 'reopen']);
+const HD_GIT_NOTES_SUBS = new Set(['add', 'append', 'show', 'list']);
+// gh beside a data heredoc: only pr/issue/release create/edit/comment, these
+// flags, and no `--` passthrough.
+const HD_GH_ACTS = new Set(['create', 'edit', 'comment']);
+const HD_GH_FLAGS = hdSpec({ s: 'dfp', v: 'tbFBHlarmRnT',
+  l: 'draft fill fill-first fill-verbose prerelease generate-notes no-maintainer-edit edit-last verify-tag',
+  L: 'title body body-file base head label add-label remove-label assignee add-assignee remove-assignee ' +
+    'reviewer add-reviewer remove-reviewer milestone repo project add-project remove-project notes ' +
+    'notes-file target notes-start-tag', O: 'latest' });
+
+// Walk `args` against an hdSpec: the positional words, or null on any flag
+// the spec does not list.
+function hdFlagWords(args, spec) {
+  const words = [];
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k].text;
+    if (w === '--') { for (k++; k < args.length; k++) words.push(args[k].text); break; }
+    if (!w.startsWith('-') || w === '-') { words.push(w); continue; }
+    if (w.startsWith('--')) {
+      const eq = w.indexOf('=');
+      const name = eq < 0 ? w.slice(2) : w.slice(2, eq);
+      if (spec.L.has(name)) { if (eq < 0) k++; continue; }
+      if (eq < 0 && spec.l.has(name)) continue;
+      if (spec.O.has(name)) continue;
+      return null;
+    }
+    if (spec.num && /^-[0-9]+$/.test(w)) continue;
+    for (let c = 1; c < w.length; c++) {
+      const ch = w[c];
+      if (spec.v.includes(ch)) { if (c === w.length - 1) k++; break; }
+      if (spec.o.includes(ch)) break;
+      if (!spec.s.includes(ch)) return null;
+    }
+  }
+  return words;
+}
+
+// A git command allowed beside a data heredoc: optional --no-pager / -P /
+// `-C <literal dir>`, then a listed subcommand with listed flags only.
+function hdGitOk(args) {
+  let k = 0;
+  while (k < args.length) {
+    const w = args[k].text;
+    if (w === '--no-pager' || w === '-P') { k++; continue; }
+    if (w === '-C') {
+      const dir = args[k + 1] ? args[k + 1].text : '';
+      if (!/^[A-Za-z0-9_.\/~+@%:,=-]+$/.test(dir) || dir.indexOf('__AH') >= 0) return false;
+      k += 2;
+      continue;
+    }
+    break;
+  }
+  const sub = k < args.length ? args[k].text : '';
+  const spec = HD_GIT_FLAGS.get(sub);
+  if (!spec) return false;
+  const words = hdFlagWords(args.slice(k + 1), spec);
+  if (!words) return false;
+  if (sub === 'notes' && words.length && !HD_GIT_NOTES_SUBS.has(words[0])) return false;
+  return true;
+}
+
+// The positional words of an allowed gh command, or null.
+function hdGhWords(args) {
+  if (args.some((a) => a.text === '--')) return null;
+  const words = hdFlagWords(args, HD_GH_FLAGS);
+  if (!words || words.length < 2) return null;
+  if (!(words[0] === 'pr' || words[0] === 'issue' || words[0] === 'release') || !HD_GH_ACTS.has(words[1])) return null;
+  return words;
+}
 // Quote-blind backstop over the text outside the bodies: the first word of
 // every piece cut at ; & | ( ) newline $( backtick (backstopPieces) must not
 // be a shell, interpreter or runner, or a path / variable used as a command.
@@ -1654,10 +1859,7 @@ function hdMarkers(tokens, re) {
 // commit / tag / PR / issue message.
 function hdMessageTaker(ev) {
   if (ev.verb === 'git') return HEREDOC_GIT_MSG_SUBS.has(gitSubcommand(ev.args).sub);
-  if (ev.verb === 'gh') {
-    const words = ev.args.filter((a) => !a.text.startsWith('-')).map((a) => a.text);
-    return words.length > 1 && (words[0] === 'pr' || words[0] === 'issue' || words[0] === 'release') && HEREDOC_GH_MSG_ACTS.has(words[1]);
-  }
+  if (ev.verb === 'gh') return !!hdGhWords(ev.args);
   return false;
 }
 
@@ -1686,14 +1888,8 @@ function maskDataHeredocs(cmd, baseCwd) {
         const ev = effectiveVerb(tokens);
         // The verb is the bare first word: no wrapper, path or quoting.
         if (!ev || !HEREDOC_SAFE_VERBS.has(ev.verb) || tokens[0].quotedOnly || tokens[0].text !== ev.verb) return cmd;
-        if (ev.verb === 'gh') {
-          const words = ev.args.filter((a) => !a.text.startsWith('-')).map((a) => a.text);
-          if (!words.length || !HEREDOC_GH_GROUPS.has(words[0])) return cmd;
-        }
-        if (ev.verb === 'git') {
-          if (ev.args.some((a) => a.text === '-c' || /^--(?:config-env|exec-path)/.test(a.text))) return cmd;
-          if (!HEREDOC_GIT_SUBS.has(gitSubcommand(ev.args).sub)) return cmd;
-        }
+        if (ev.verb === 'gh' && !hdGhWords(ev.args)) return cmd;
+        if (ev.verb === 'git' && !hdGitOk(ev.args)) return cmd;
         if (ev.verb === 'cd' || ev.verb === 'pushd') {
           const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
           if (dirTok) {
@@ -2683,6 +2879,11 @@ function scanCommand(cmd, depth, baseCwd) {
       if (xv) return xv;
       continue;
     }
+    if (ev.verb === 'find') {
+      const fv = findExecVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
+      if (fv) return fv;
+      continue;
+    }
 
     if (ev.verb !== 'git') continue;
 
@@ -3101,6 +3302,11 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
       if (ev.verb === 'xargs') {
         const xv = xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, false);
         if (xv) return xv;
+        continue;
+      }
+      if (ev.verb === 'find') {
+        const fv = findExecVerdict(ev, d, cmd, heredocBodies, cwd, false);
+        if (fv) return fv;
         continue;
       }
       if (ev.verb !== 'git') continue;
