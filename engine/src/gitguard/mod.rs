@@ -14,6 +14,8 @@ pub mod runner;
 pub mod scan;
 pub mod shell;
 pub mod util;
+#[cfg(test)]
+mod tests;
 
 use regex::Regex;
 use shell::Tok;
@@ -154,7 +156,11 @@ const TIP: &str = "\nTip: this file's content was scanned as shell. Write the fi
 
 /// The git-guard PreToolUse decision for one Bash command.
 pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Outcome {
-    let settings = Settings::from_process();
+    check_with(Settings::from_process(), cmd, cwd, plugin_root)
+}
+
+/// `check_bash` with explicit settings (tests pass an isolated home).
+pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Outcome {
     if !settings.enabled("safety", "gitGuard", "ANTIHALL_GIT_GUARD", Some("safety_git_guard")) {
         return Outcome::Allow;
     }
@@ -199,7 +205,12 @@ pub fn cli_main() -> i32 {
     use std::io::{Read, Write};
     let mut raw = String::new();
     let _ = std::io::stdin().read_to_string(&mut raw);
-    let Ok(p) = serde_json::from_str::<serde_json::Value>(&raw) else { return 0 };
+    // A payload serde_json cannot read (e.g. a lone surrogate escape, which JS accepts) is answered by the daemon
+    // with ERR, so the client runs the Node hook; report that deferral here.
+    let Ok(p) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        let _ = writeln!(std::io::stdout(), "AHFALLBACK");
+        return 0;
+    };
     let Some(cmd) = p.pointer("/tool_input/command").and_then(|v| v.as_str()) else { return 0 };
     let cwd = p.get("cwd").and_then(|v| v.as_str());
     let root = std::env::var("ANTIHALL_ENGINE_PLUGIN_ROOT").unwrap_or_default();

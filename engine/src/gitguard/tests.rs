@@ -1,0 +1,155 @@
+//! Decision tests for the git check. Each case is a command string and whether the Node guard blocks it
+//! (verified against the Node hook by `parity/run-git.js`; these pin the behaviour without Node).
+use super::util::Settings;
+use super::*;
+use std::collections::HashMap;
+
+/// One private home per test thread, so the skip-file test cannot leak into the others.
+fn home() -> std::path::PathBuf {
+    let t = format!("{:?}", std::thread::current().id()).replace(|c: char| !c.is_ascii_alphanumeric(), "");
+    let d = std::path::PathBuf::from("/tmp").join(format!("ah-gg-unit-{}-{}", std::process::id(), t));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn run(cmd: &str) -> Outcome {
+    let h = home();
+    let s = Settings { home: h.to_string_lossy().to_string(), env: HashMap::new() };
+    check_with(s, cmd, Some("/tmp"), "/plugin")
+}
+
+fn blocked(cmd: &str) -> String {
+    match run(cmd) {
+        Outcome::Block(m) => m,
+        o => panic!("expected a block for {cmd:?}, got {o:?}"),
+    }
+}
+
+fn allowed(cmd: &str) {
+    assert_eq!(run(cmd), Outcome::Allow, "{cmd:?}");
+}
+
+const P: &str = "pu\x73h";
+const F: &str = "--for\x63e";
+const CO: &str = "Co-Authored\x2dBy";
+
+#[test]
+fn force_and_delete_pushes_block_with_the_node_message() {
+    for c in [
+        format!("git {P} {F} origin main"),
+        format!("git {P} -f"),
+        format!("git {P} origin +main"),
+        format!("git {P} --force-with-lease"),
+        format!("git {P} --mirror"),
+        format!("git {P} -- origin +main"),
+        format!("git {P} --for origin main"),
+        format!("sudo -u deploy git {P} -f"),
+        format!("env A=1 git {P} -f"),
+        format!("timeout 5 git {P} -f"),
+        format!("nice -n 5 git {P} -f"),
+        format!("flock f git {P} -f"),
+        format!("bash -c 'git {P} -f'"),
+        format!("eval \"git {P} -f\""),
+        format!("echo x | xargs git {P}"),
+        format!("find . -exec git {P} {{}} \\;"),
+        format!("git -c alias.p={P} p {F}"),
+        format!("git \"{P}\" '-f'"),
+    ] {
+        let m = blocked(&c);
+        assert!(m.contains("force push") || m.contains("xargs") || m.contains("find"), "{c}: {m}");
+    }
+    let m = blocked(&format!("git {P} --delete origin b"));
+    assert!(m.contains("remote ref deletion") && m.contains("Override (only if the user explicitly asked): node '/plugin/scripts/devswarm.js' skip git-guard"), "{m}");
+    assert_eq!(
+        blocked(&format!("git {P} -f")),
+        "\u{26d4} anti-hall \u{b7} git-guard: force push is blocked.\nWhy: Rewriting published history is a deliberate human action.\nDo instead: do it manually with explicit owner confirmation, never from an automated push."
+    );
+}
+
+#[test]
+fn benign_commands_pass() {
+    for c in [
+        "git status",
+        "git log --oneline -5",
+        &format!("git {P} origin main"),
+        &format!("git {P} -u origin feat"),
+        "echo force",
+        "git commit -m 'fix: thing'",
+        &format!("git commit -m \"never git {P} {F}\""),
+        &format!("echo 'git {P} {F}' > notes.md"),
+        "ls -la && pwd",
+    ] {
+        allowed(c);
+    }
+}
+
+#[test]
+fn self_credit_in_every_message_route_blocks() {
+    for c in [
+        format!("git commit -m \"x\\n\\n{CO}: Claude <noreply@anthropic.com>\""),
+        format!("git commit -m 'x' --trailer '{CO}: Claude <n@a.com>'"),
+        format!("git commit -F - <<'EOF'\n{CO}: Claude <n@a.com>\nEOF"),
+        format!("printf '%s' \"{CO}: Claude <n@a.com>\" | git commit -F -"),
+        format!("git -c trailer.ai.key={CO} commit --trailer 'ai: x'"),
+        format!("M=\"x\n{CO}: Claude <n@a.com>\"; bash -c 'git commit -m \"$M\"'"),
+        "git commit -m \"\u{1f916} Generated with [Claude Code](https://claude.com/claude-code)\"".to_string(),
+        format!("gh pr create --title t --body \"{CO}: Claude <n@a.com>\""),
+    ] {
+        let m = blocked(&c);
+        assert!(m.contains("self-credit") || m.contains("-c trailer") || m.contains("creates a commit") || m.contains("body or title"), "{c}: {m}");
+    }
+    allowed("git commit -m \"docs: explain output generated with claude code\"");
+}
+
+#[test]
+fn heredoc_data_is_not_scanned_but_executed_bodies_are() {
+    let body = format!("git {P} {F} origin main");
+    allowed(&format!("cat > notes.md <<'EOF'\n{body}\nEOF"));
+    allowed(&format!("git commit -F - <<'EOF'\nnote: {body}\nEOF"));
+    blocked(&format!("bash <<'EOF'\n{body}\nEOF"));
+    blocked(&format!("cat > x.sh <<'EOF'\n{body}\nEOF"));
+    blocked(&format!("cat <<'EOF' | bash\n{body}\nEOF"));
+    blocked(&format!("cat > x.md <<'EOF'\n{body}\nEOF\nbash x.md"));
+}
+
+#[test]
+fn launcher_directory_writes_block() {
+    for c in ["cp x ~/.anti-hall/bin/devswarm.js", "echo x > ~/.anti-hall/bin/y", "tee ~/.anti-hall/bin/z", "sed -i s/a/b/ ~/.anti-hall/bin/devswarm.js", "rm -rf ~/.anti-hall/bin"] {
+        let m = blocked(c);
+        assert!(m.contains("~/.anti-hall/bin/"), "{c}: {m}");
+    }
+    allowed("node ~/.anti-hall/bin/devswarm.js status");
+}
+
+#[test]
+fn cmdsubst_arg_on_push_blocks_and_skip_file_is_honoured() {
+    let m = blocked(&format!("git {P} origin \"$(echo x)\""));
+    assert!(m.contains("command substitution"), "{m}");
+    let h = home();
+    std::fs::create_dir_all(h.join(".anti-hall")).unwrap();
+    std::fs::write(h.join(".anti-hall/skip.json"), format!("{{\"git-guard\": {}}}", 32503680000000u64)).unwrap();
+    allowed(&format!("git {P} -f"));
+    std::fs::remove_file(h.join(".anti-hall/skip.json")).unwrap();
+    blocked(&format!("git {P} -f"));
+}
+
+#[test]
+fn tokenizer_and_splitter_basics() {
+    use super::shell::*;
+    let t = tokenize("git commit -m 'a b' \"c d\" e\\ f # tail");
+    let texts: Vec<&str> = t.iter().map(|x| x.text.as_str()).collect();
+    assert_eq!(texts, ["git", "commit", "-m", "a b", "c d", "e f"]);
+    assert!(t[3].quoted_only && !t[0].quoted_only);
+    assert_eq!(tokenize("$'a\\nb'")[0].text, "a\nb");
+    assert_eq!(split_segments("a && b | c; d\ne"), ["a ", " b ", " c", " d", "e"].map(String::from));
+    assert_eq!(split_segments("echo 'a;b' \"c|d\"").len(), 1);
+    assert_eq!(effective_verb(&tokenize("sudo -u x env A=1 nice -n 3 /usr/bin/git push")).unwrap().verb, "git");
+    assert_eq!(basename("\\git"), "git");
+}
+
+#[test]
+fn escaped_literal_newline_and_comment_edge_cases() {
+    allowed("echo 'a' # git push --force");
+    blocked(&format!("git {P} \\\n  {F}"));
+    blocked(&format!("echo \\>| git {P} {F}"));
+}
