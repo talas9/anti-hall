@@ -310,6 +310,10 @@ value = "the engine is unavailable and the spool could not be written: {err}"
 doc = "Quarantine reason for spool bytes that are not a valid record."
 value = "damaged spool record"
 
+[msg.log_pruned]
+doc = "Event-log detail when maintenance forgets old applied write ids. Placeholder: {n}."
+value = "forgot {n} applied write ids past retention"
+
 [msg.err_unknown_check]
 doc = "`check` was asked for a check that is not registered. Placeholder: {name}."
 value = "unknown check {name}"

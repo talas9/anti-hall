@@ -6,10 +6,10 @@
 //! parameters at run time and come from the defaults; nothing tunable is written into a statement.
 
 /// hot.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2];
+pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3];
 
 /// archive.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1];
+pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2];
 
 /// hot.db v1: the impact ledger (one row per event) and its exact per-combination totals (D52).
 const HOT_V1: &str = "
@@ -24,6 +24,18 @@ CREATE TABLE IF NOT EXISTS kv (project TEXT NOT NULL, key TEXT NOT NULL, value T
 CREATE TABLE IF NOT EXISTS mailbox (id INTEGER PRIMARY KEY, project TEXT NOT NULL, body TEXT NOT NULL, created_ms INTEGER NOT NULL, consumed_ms INTEGER);
 CREATE INDEX IF NOT EXISTS mailbox_pending ON mailbox (project, consumed_ms, id);
 CREATE TABLE IF NOT EXISTS applied (write_id TEXT PRIMARY KEY, ts_ms INTEGER NOT NULL, result TEXT NOT NULL) WITHOUT ROWID;
+";
+
+/// hot.db v3: one row per maintenance run with its report (D26), so the runs are visible in metrics and status.
+const HOT_V3: &str = "
+CREATE TABLE IF NOT EXISTS maintenance (id INTEGER PRIMARY KEY, ts_ms INTEGER NOT NULL, report TEXT NOT NULL);
+";
+
+/// archive.db v2: consumed messages and expired key values moved out of hot.db (D26). A message keeps its id and a
+/// value keys on (project, key, updated_ms), so a repeated move is a no-op.
+const ARCHIVE_V2: &str = "
+CREATE TABLE IF NOT EXISTS mailbox (id INTEGER PRIMARY KEY, project TEXT NOT NULL, body TEXT NOT NULL, created_ms INTEGER NOT NULL, consumed_ms INTEGER, archived_ms INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS kv (project TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires_ms INTEGER, updated_ms INTEGER NOT NULL, archived_ms INTEGER NOT NULL, PRIMARY KEY (project, key, updated_ms)) WITHOUT ROWID;
 ";
 
 /// archive.db v1: impact events moved out of hot.db keep their id, so a repeated move is a no-op.
@@ -83,3 +95,54 @@ pub const KV_SET: &str = "INSERT INTO kv (project, key, value, expires_ms, updat
 
 /// A key's value and expiry.
 pub const KV_GET: &str = "SELECT value, expires_ms FROM kv WHERE project = ?1 AND key = ?2";
+
+/// Consumed messages at or before ?1, oldest first, at most ?2.
+pub const MAIL_ARCHIVABLE: &str =
+    "SELECT id, project, body, created_ms, consumed_ms FROM mailbox WHERE consumed_ms IS NOT NULL AND consumed_ms <= ?1 ORDER BY id LIMIT ?2";
+
+/// Copy a message into archive.db.
+pub const ARCH_MAIL_INSERT: &str = "INSERT OR IGNORE INTO mailbox (id, project, body, created_ms, consumed_ms, archived_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+
+/// Remove an archived message from hot.db (only if it is still consumed).
+pub const MAIL_DELETE_ARCHIVED: &str = "DELETE FROM mailbox WHERE id = ?1 AND consumed_ms IS NOT NULL";
+
+/// Key values that expired at or before ?1, oldest first, at most ?2.
+pub const KV_ARCHIVABLE: &str =
+    "SELECT project, key, value, expires_ms, updated_ms FROM kv WHERE expires_ms IS NOT NULL AND expires_ms <= ?1 ORDER BY updated_ms LIMIT ?2";
+
+/// Copy a key value into archive.db.
+pub const ARCH_KV_INSERT: &str = "INSERT OR IGNORE INTO kv (project, key, value, expires_ms, updated_ms, archived_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+
+/// Remove an archived key value from hot.db, only if nobody set the key again since it was copied.
+pub const KV_DELETE_ARCHIVED: &str = "DELETE FROM kv WHERE project = ?1 AND key = ?2 AND updated_ms = ?3 AND expires_ms IS NOT NULL AND expires_ms <= ?4";
+
+/// The id at the hot.db impact cap: events with this id or older are beyond the cap (no row when under it).
+pub const IMPACT_CAP_ID: &str = "SELECT id FROM impact ORDER BY id DESC LIMIT 1 OFFSET ?1";
+
+/// Impact events at or before ?1 or with an id at or below ?2, oldest first, at most ?3.
+pub const IMPACT_ARCHIVABLE: &str = "SELECT id, ts_ms, kind, check_name, reason, project FROM impact WHERE ts_ms <= ?1 OR id <= ?2 ORDER BY id LIMIT ?3";
+
+/// Copy an impact event into archive.db.
+pub const ARCH_IMPACT_INSERT: &str =
+    "INSERT OR IGNORE INTO impact (id, ts_ms, kind, check_name, reason, project, archived_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+
+/// Remove an archived impact event from hot.db (its totals stay in impact_totals).
+pub const IMPACT_DELETE_ARCHIVED: &str = "DELETE FROM impact WHERE id = ?1";
+
+/// Forget applied write ids recorded at or before ?1 (derived bookkeeping, D59).
+pub const APPLIED_PRUNE: &str = "DELETE FROM applied WHERE ts_ms <= ?1";
+
+/// Archived user data older than ?1, removed only when `retention.archive_delete_after_s` is set (D26).
+pub const ARCH_DELETE_MAIL: &str = "DELETE FROM mailbox WHERE archived_ms <= ?1";
+
+/// See `ARCH_DELETE_MAIL`.
+pub const ARCH_DELETE_KV: &str = "DELETE FROM kv WHERE archived_ms <= ?1";
+
+/// See `ARCH_DELETE_MAIL`.
+pub const ARCH_DELETE_IMPACT: &str = "DELETE FROM impact WHERE archived_ms <= ?1";
+
+/// Record a maintenance run.
+pub const MAINT_LOG: &str = "INSERT INTO maintenance (ts_ms, report) VALUES (?1, ?2)";
+
+/// Maintenance runs so far and when the last one ran.
+pub const MAINT_STATS: &str = "SELECT COUNT(*), COALESCE(MAX(ts_ms), 0) FROM maintenance";

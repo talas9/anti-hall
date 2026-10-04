@@ -15,6 +15,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `hook` | `[--fallback <hook.js>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. |
 | `impact` | `[--kind <kind>] [--project <hash>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates. |
+| `maintain` | `` | no | implemented | Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report. |
 | `metrics` | `[--check <name>]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check. |
 | `proj` | `<cwd> <put\|take\|len\|set\|setex\|get> [args]` | no | implemented | Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a TTL in seconds, get); the partition is derived from the cwd. |
 | `reset` | `` | no | implemented | Clear the client breaker, the crash-loop stop and the failure record. |
@@ -321,6 +322,19 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `telemetry.project_key_len` | `12` |  |  | Hex digits of the hashed project key shown in impact events (the project path itself is never stored). |
 | `telemetry.recent_default` | `20` |  |  | How many of the most recent impact events `impact` shows unless asked for more. |
 
+### storage.toml / retention
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `retention.applied_s` | `2592000` |  | s | Applied write ids older than this are forgotten (derived bookkeeping, D59); a spooled write older than this would be applied again, so it is far longer than any spool wait. |
+| `retention.archive_delete_after_s` | `0` |  | s | Archived user data (messages, key values, impact events) older than this is deleted; 0 means never, the default (D26: hard delete only with an explicit value). |
+| `retention.batch_rows` | `1000` |  |  | Rows moved per archive transaction (archive.db commits in batches). |
+| `retention.impact_hot_rows` | `100000` |  | rows | Most impact events kept in hot.db; the oldest beyond this move to archive.db. |
+| `retention.impact_hot_s` | `2592000` |  | s | An impact event moves from hot.db to archive.db once it is this old (its totals stay in hot.db). |
+| `retention.kv_expired_s` | `86400` |  | s | A key value moves from hot.db to archive.db this long after its TTL ended. |
+| `retention.mailbox_consumed_s` | `604800` |  | s | A consumed mailbox message moves from hot.db to archive.db this long after it was consumed. |
+| `retention.max_batches` | `10000` |  |  | Most batches one maintenance run moves per table, so a run stays bounded. |
+
 ### storage.toml / spool
 
 | Key | Default | Env override | Unit | What it is |
@@ -349,6 +363,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `storage.journal_mode` | `WAL` |  |  | SQLite journal mode for both databases; WAL lets readers run while the writer commits (D73). |
 | `storage.mmap_kb` | `0` |  | KB | SQLite memory-mapped I/O per connection; 0 turns it off so file pages are not counted in the daemon's resident set (D25). |
 | `storage.wal_autocheckpoint` | `1000` |  | pages | WAL pages after which SQLite checkpoints on its own (between explicit checkpoints by `ah-engine maintain`). |
+| `storage.wal_suffix` | `-wal` |  |  | Suffix SQLite gives a database's write-ahead log file; used to report WAL sizes. |
 | `storage.write_queue` | `1024` | `AH_ENGINE_WRITE_QUEUE` |  | Writes that may wait for the writer thread; beyond this a write is refused as busy (the client retries, then spools). |
 
 ### storage.toml / tier
@@ -427,6 +442,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_not_socket` | Start-failure detail when something other than a socket sits at the socket path. Placeholder: {path}. |
 | `msg.log_operator_reset` | Log detail for `reset`. |
 | `msg.log_panic` | Log and failure detail when a request handler panicked. |
+| `msg.log_pruned` | Event-log detail when maintenance forgets old applied write ids. Placeholder: {n}. |
 | `msg.log_rss` | Log detail when the daemon is over its memory cap. Placeholders: {rss}, {cap}. |
 | `msg.log_stall` | Log detail when the accept loop stalled. |
 | `msg.log_start` | Log detail for a daemon start. Placeholders: {version}, {pid}, {rlimit}. |
@@ -480,11 +496,17 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `check_calls` | counter | runs | check | Built-in check runs, by check. |
 | `check_decisions` | counter | runs | check, decision | Built-in check outcomes, by check and decision (allow, block, advisory, defer). |
 | `check_latency_us` | histogram | us | check | Wall time of a built-in check run, by check. |
+| `db_archive_bytes` | gauge | bytes |  | Size of archive.db (0 until it is first used). |
+| `db_archive_wal_bytes` | gauge | bytes |  | Size of archive.db's write-ahead log. |
 | `db_commits` | gauge | commits |  | hot.db transactions the writer committed since the daemon started; fewer than db_writes means group commit is sharing syncs. |
+| `db_hot_bytes` | gauge | bytes |  | Size of hot.db. |
+| `db_hot_wal_bytes` | gauge | bytes |  | Size of hot.db's write-ahead log. |
 | `db_writes` | gauge | writes |  | Writes carried by those transactions since the daemon started. |
 | `errors` | counter | requests |  | Requests answered ERR. |
 | `hook_calls` | counter | requests | event | Hook requests served, by hook event. |
 | `hook_latency_us` | histogram | us | event | Wall time to serve a hook request inside the daemon, by hook event. |
+| `maintain_last_ms` | gauge | ms |  | When the last maintenance run happened, in ms since the epoch (0: never). |
+| `maintain_runs` | gauge | runs |  | Maintenance runs recorded in hot.db (D26). |
 | `panics` | counter | panics |  | Request-handler panics that were contained. |
 | `queue_depth` | gauge | connections |  | Connections waiting for a worker when status or metrics is read. |
 | `rejected_peers` | counter | connections |  | Connections dropped because the peer uid was not ours. |

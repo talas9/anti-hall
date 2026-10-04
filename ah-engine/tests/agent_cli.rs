@@ -185,3 +185,19 @@ fn idle_exit_is_a_config_key_and_is_reset_by_activity() {
     }
     assert!(!common::alive(pid), "the daemon must exit once idle for idle_exit_s");
 }
+
+#[test]
+fn maintain_runs_beside_a_live_daemon_and_is_reported_in_metrics() {
+    let e = Env::new("maint", &[]);
+    e.warm();
+    assert_eq!(e.run(&["proj", "/nonexistent/maint", "put", "hello"]).0, "ok");
+    let r = e.json(&["maintain", "--json"]);
+    assert_eq!(r["vacuumed"], true, "{r}");
+    assert!(r["after"]["hot_bytes"].as_u64().unwrap() > 0, "{r}");
+    assert_eq!(r["moved_to_archive"]["mailbox"], 0, "a pending message is active and stays in hot.db: {r}");
+    assert_eq!(e.run(&["proj", "/nonexistent/maint", "take"]).0, "hello", "the daemon keeps working after a maintenance run");
+    let m = e.json(&["metrics", "--json"]);
+    let gauge = |n: &str| m["metrics"]["gauges"].as_array().unwrap().iter().find(|g| g["name"] == n).map(|g| g["value"].as_f64().unwrap());
+    assert_eq!(gauge("maintain_runs"), Some(1.0), "{m}");
+    assert!(gauge("db_hot_bytes").unwrap() > 0.0);
+}

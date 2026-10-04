@@ -50,6 +50,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("stop", cmd_stop),
         ("reset", cmd_reset),
         ("proj", cmd_proj),
+        ("maintain", cmd_maintain),
     ]
 }
 
@@ -252,6 +253,25 @@ fn cmd_reset(p: &Parsed) -> i32 {
     0
 }
 
+fn cmd_maintain(p: &Parsed) -> i32 {
+    let dir = crate::paths::dir();
+    let res = crate::limits::ensure_private_dir(&dir).map_err(|e| e.to_string()).and_then(|_| crate::maintain::run(&dir).map_err(|e| e.to_string()));
+    match res {
+        Ok(v) => {
+            emit(p, human(&v), v);
+            0
+        }
+        Err(e) => {
+            if p.json {
+                println!("{}", json!({"error": e}));
+            } else {
+                eprintln!("{e}");
+            }
+            1
+        }
+    }
+}
+
 fn cmd_proj(p: &Parsed) -> i32 {
     let arg = |i: usize| p.rest.get(i).map(String::as_str).unwrap_or("");
     let session = defaults::env_var("session").unwrap_or_else(|| "-".to_string());
@@ -313,7 +333,7 @@ mod tests {
         for n in ["status", "metrics", "impact", "docs", "check", "version"] {
             assert!(ro.contains(&n.to_string()), "{n} must be read-only");
         }
-        for n in ["serve", "hook", "stop", "reset", "proj", "ctl"] {
+        for n in ["serve", "hook", "stop", "reset", "proj", "ctl", "maintain"] {
             assert!(!ro.contains(&n.to_string()), "{n} changes state");
         }
     }

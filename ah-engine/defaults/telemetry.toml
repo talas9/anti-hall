@@ -148,6 +148,30 @@ value = { kind = "counter", unit = "writes", labels = [] }
 doc = "Spool records moved to quarantine: damaged, or refused for good by the store (D24)."
 value = { kind = "counter", unit = "records", labels = [] }
 
+[metric.db_hot_bytes]
+doc = "Size of hot.db."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.db_hot_wal_bytes]
+doc = "Size of hot.db's write-ahead log."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.db_archive_bytes]
+doc = "Size of archive.db (0 until it is first used)."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.db_archive_wal_bytes]
+doc = "Size of archive.db's write-ahead log."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.maintain_runs]
+doc = "Maintenance runs recorded in hot.db (D26)."
+value = { kind = "gauge", unit = "runs", labels = [] }
+
+[metric.maintain_last_ms]
+doc = "When the last maintenance run happened, in ms since the epoch (0: never)."
+value = { kind = "gauge", unit = "ms", labels = [] }
+
 # ---- impact kinds ---------------------------------------------------------------------------------------
 
 [impact.block]

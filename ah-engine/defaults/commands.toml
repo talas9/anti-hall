@@ -53,6 +53,10 @@ value = { args = "", read_only = false, status = "implemented" }
 doc = "Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a TTL in seconds, get); the partition is derived from the cwd."
 value = { args = "<cwd> <put|take|len|set|setex|get> [args]", read_only = false, status = "implemented" }
 
+[cmd.maintain]
+doc = "Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report."
+value = { args = "", read_only = false, status = "implemented" }
+
 [cmd.schedule]
 doc = "List, add and remove scheduled jobs."
 value = { args = "<list|add|remove>", read_only = false, status = "planned (D33)" }

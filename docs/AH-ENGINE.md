@@ -66,7 +66,9 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Embedded SQLite storage: `hot.db` and `archive.db`, WAL, configured durability, versioned migrations, the `Store` trait over SQLite | implemented | D19, D21, D73 |
 | Tiered lifecycle: write-through to SQLite then memory, active items only, byte budget, key-value with TTL, pub/sub channels | implemented | D20, D22, D25 |
 | Pushing channel notifications to sessions (Monitor) | planned (D45) | D45 |
-| Retention, archive mover, checkpoints and VACUUM | planned (D26) | D26 |
+| Size control: retention, the hot-to-archive mover, WAL checkpoints and VACUUM, `ah-engine maintain` | implemented | D26 |
+| Running maintenance on a schedule | planned (D33) | D33 |
+| Compressed export of old chat | planned (D26, D45) | D26, D45 |
 | Config loaded into versioned storage with reload and rollback | planned (D18) | D18 |
 | Durable write spool when the engine is down or busy: retry with backoff, fsync'd spool, drained exactly once in order | implemented | D24 |
 | Scheduler and ticker, `ah-engine schedule` | planned (D33) | D33 |
@@ -97,6 +99,7 @@ arguments, is in the generated reference.
 | `ah-engine ctl <verb>` | no | `ping`, `reload`, `stop`, `status`. |
 | `ah-engine stop` | no | Drain and exit. |
 | `ah-engine reset` | no | Clear the breaker, crash-loop stop and failure record. |
+| `ah-engine maintain` | no | Size control: move inactive rows to `archive.db`, prune derived bookkeeping, checkpoint and VACUUM; prints a report. |
 | `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. A write the engine cannot take is spooled. |
 | `ah-engine schedule`, `config`, `backup`, `restore` | no | planned (D33, D18, D27); they say so and exit 64. |
 
@@ -108,7 +111,8 @@ the upper bound of the histogram bucket that holds that rank, so they are upper 
 `check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth`, `uptime_s`, and for the
 memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evictions`, `tier_expired`, `bus_published`
 and `bus_dropped`, for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is sharing syncs), and for
-the spool `spool_applied` and `spool_quarantined`.
+the spool `spool_applied` and `spool_quarantined`, and for size control `db_hot_bytes`, `db_hot_wal_bytes`,
+`db_archive_bytes`, `db_archive_wal_bytes`, `maintain_runs` and `maintain_last_ms`.
 
 **Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. They
 are stored in `hot.db` with exact per-combination totals, so counts survive a restart; the project is only ever a short
@@ -131,7 +135,7 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
 | File | Holds | Durability |
 |---|---|---|
 | `hot.db` | frequent small writes: impact events and their totals, per-project mailboxes and key-value pairs, applied write ids | WAL, `synchronous=FULL`: a write is on disk before it is acknowledged |
-| `archive.db` | append-mostly history; opened on first use | WAL, `synchronous=NORMAL`, batched commits |
+| `archive.db` | append-mostly history: consumed messages, expired key values and old impact events moved out of `hot.db`; opened on first use | WAL, `synchronous=NORMAL`, batched commits (synced like `hot.db` while maintenance moves rows) |
 
 - **One writer, group commit (D23).** A single writer thread owns the `hot.db` write connection. Requests hand it their
   writes over a bounded queue (`storage.write_queue`; when it is full the write is refused as busy). The writer takes a
@@ -171,6 +175,15 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
   record that is damaged, or that the store refuses for good (a full mailbox), goes to `spool.quarantine` with its
   reason; nothing is dropped. The spool is capped (`spool.max_bytes`): past the cap the write is refused, so the caller
   knows it was not kept. Hooks do not write project state today; they will use the same path when they do.
+- **Size control (D26).** `ah-engine maintain` moves what has left its active life from `hot.db` to `archive.db`:
+  consumed messages after `retention.mailbox_consumed_s`, key values expired longer than `retention.kv_expired_s`,
+  impact events older than `retention.impact_hot_s` or beyond `retention.impact_hot_rows` (their totals stay). Each
+  batch is committed to `archive.db` before it leaves `hot.db`, and a repeated copy is a no-op, so a crash in between
+  loses and duplicates nothing. It then forgets applied write ids older than `retention.applied_s` (derived
+  bookkeeping, D59), checkpoints both WALs and VACUUMs both databases, and records the run. Archived user data is never
+  deleted unless `retention.archive_delete_after_s` is set (default 0, D26). It runs in its own process against the
+  files, beside a live daemon or without one; SQLite's locks keep the two apart, and a daemon write that meets the lock
+  is retried and, if need be, spooled. Running it on a schedule is the scheduler's job, planned (D33).
 - **Versioned schema.** Each database records how many migrations it has run (`PRAGMA user_version`); opening applies
   the missing ones, each in its own transaction, and re-running them changes nothing. A database written by a newer build
   is refused rather than rewritten.
@@ -200,7 +213,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `commands.toml` | the command registry data |
 | `telemetry.toml` | the metric and impact-kind registries and the savings method |
-| `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool |
+| `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
@@ -257,6 +270,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | "state directory is not writable" | Fix ownership and mode 700 of `~/.anti-hall/ah-engine`, or point `AH_ENGINE_DIR` at a directory you own. |
 | "socket path is too long" | Set `AH_ENGINE_DIR` to a shorter path. |
 | Stop it | `ah-engine stop`. It starts again on the next hook call unless the engine is turned off. |
+| `hot.db` keeps growing | Run `ah-engine maintain` (it reports what it moved and the sizes before and after); see the `retention.*` settings. |
 | `proj` printed `spooled <id>` | The engine was down or busy; the write is safe in `spool.log` and is applied when the engine runs. |
 | `spool.quarantine` has entries | Records that were damaged or refused for good (for example a full mailbox), each with its reason; nothing was dropped. |
 | A check misbehaves | Run `ah-engine check git` with the payload on stdin to see its verdict without a daemon. |

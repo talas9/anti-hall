@@ -177,7 +177,7 @@ pub fn migrate(c: &mut Connection, name: &str, migrations: &[&str]) -> Result<()
 }
 
 /// Open one database file with the shipped settings and its migrations applied.
-fn open_file(path: &Path, sync_key: &str, migrations: &[&str]) -> Result<Connection, DbError> {
+pub(crate) fn open_file(path: &Path, sync_key: &str, migrations: &[&str]) -> Result<Connection, DbError> {
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let mut c = Connection::open_with_flags(path, flags)?;
     configure(&c, sync_key)?;

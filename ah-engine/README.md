@@ -24,6 +24,7 @@ never a submodule (D69).
 | `src/rules.rs`, `src/hookio.rs` | the rules format (JSON) and hook payload to output translation |
 | `src/telemetry.rs`, `src/metrics.rs`, `src/impact.rs`, `src/storage.rs` | metrics, the impact ledger and the `Store` trait with its SQLite and in-memory stores |
 | `src/tier.rs` | the in-memory layer: the byte-budgeted, TTL-aware `Tiered` cache of active items and the pub/sub bus |
+| `src/maintain.rs` | size control: the hot-to-archive mover, retention, checkpoints and VACUUM (`ah-engine maintain`) |
 | `src/spool.rs` | the write spool: retry with backoff, framed fsync'd records, ordered idempotent drain, quarantine |
 | `src/db.rs`, `src/sql.rs` | the SQLite pair (`hot.db`, `archive.db`): settings, versioned migrations, the group-committing writer; the schema and statements |
 | `src/defaults.rs`, `build.rs`, `defaults/*.toml` | shipped defaults, compiled into the binary from the TOML files |
@@ -84,6 +85,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | Residency: stays up when idle by default; idle exit is a config key | `tests/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
 | Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/agent_cli.rs` |
 | Tiered lifecycle: write-through after commit, LRU budget loses nothing, TTL ends the lifecycle but keeps the row, a restart rebuilds only active items, idempotent write ids, pub/sub never blocks | `tier::tests`, `store::tests` |
+| Size control: inactive rows move to the archive and active ones stay, totals stay exact, a crash between copy and remove loses and duplicates nothing, the impact cap moves the oldest, no hard delete unless configured, maintain beside a live daemon | `maintain::tests`, `tests/agent_cli.rs` (`maintain_runs_beside_a_live_daemon_and_is_reported_in_metrics`) |
 | Spool: 100 writes with the engine down are applied exactly once and in order per session, a replay changes nothing, a busy engine makes the client spool, damage is quarantined, a take is never spooled | `tests/spool.rs`, `spool::tests` |
 | Durability: SIGKILL mid-burst, 50 loops: every acknowledged write present, nothing torn, invented or duplicated, write ids match rows; group commit shares syncs within its window | `tests/durability.rs`, `db::tests::concurrent_writes_share_commits_within_the_window` |
 | Storage: WAL and configured durability, versioned idempotent migrations, a newer schema refused, acknowledged only after commit, queued writes committed on close; both `Store` backends behave the same | `db::tests`, `storage::tests` |
@@ -178,5 +180,6 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Tiered lifecycle and the in-memory layer: key-value with TTL, pub/sub, byte budget (D20, D22, D25)
 - [x] Durability and group commit, with the kill -9 crash test (D23)
 - [x] Spool (D24)
-- [ ] Storage: size control, backup, persisted metrics (D26, D27, D51): this phase
+- [x] Size control and retention, `ah-engine maintain` (D26)
+- [ ] Storage: backup, persisted metrics (D27, D51): this phase
 - [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases

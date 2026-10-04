@@ -203,6 +203,18 @@ impl Shared {
                 ("db_commits", db.mem.commits.load(SeqCst) as f64),
                 ("db_writes", db.mem.writes.load(SeqCst) as f64),
             ]);
+            drop(t);
+            let sizes = crate::maintain::sizes(db.dir());
+            let size = |k: &str| sizes[k].as_u64().unwrap_or(0) as f64;
+            let (runs, last) = db.read(|c| Ok(crate::maintain::stats(c))).unwrap_or((0, 0));
+            gauges.extend([
+                ("db_hot_bytes", size("hot_bytes")),
+                ("db_hot_wal_bytes", size("hot_wal_bytes")),
+                ("db_archive_bytes", size("archive_bytes")),
+                ("db_archive_wal_bytes", size("archive_wal_bytes")),
+                ("maintain_runs", runs as f64),
+                ("maintain_last_ms", last as f64),
+            ]);
         }
         self.telemetry.metrics_json(&check, &gauges)
     }

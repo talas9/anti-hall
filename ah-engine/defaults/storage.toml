@@ -15,6 +15,10 @@ value = "hot.db"
 doc = "The database for append-mostly history, inside the state directory; opened on first use (D21)."
 value = "archive.db"
 
+[storage.wal_suffix]
+doc = "Suffix SQLite gives a database's write-ahead log file; used to report WAL sizes."
+value = "-wal"
+
 # ---- SQLite settings ------------------------------------------------------------------------------------
 
 [storage.journal_mode]
@@ -146,3 +150,48 @@ value = 1000
 env = "AH_ENGINE_SPOOL_DRAIN_MS"
 unit = "ms"
 min = 10
+
+# ---- size control and retention (D26, D59) --------------------------------------------------------------
+# Applied by `ah-engine maintain`. Moving to archive.db never loses anything; only derived bookkeeping is pruned, and
+# archived user data is deleted only when archive_delete_after_s is set.
+
+[retention.mailbox_consumed_s]
+doc = "A consumed mailbox message moves from hot.db to archive.db this long after it was consumed."
+value = 604800
+unit = "s"
+
+[retention.kv_expired_s]
+doc = "A key value moves from hot.db to archive.db this long after its TTL ended."
+value = 86400
+unit = "s"
+
+[retention.impact_hot_s]
+doc = "An impact event moves from hot.db to archive.db once it is this old (its totals stay in hot.db)."
+value = 2592000
+unit = "s"
+
+[retention.impact_hot_rows]
+doc = "Most impact events kept in hot.db; the oldest beyond this move to archive.db."
+value = 100000
+unit = "rows"
+min = 1
+
+[retention.applied_s]
+doc = "Applied write ids older than this are forgotten (derived bookkeeping, D59); a spooled write older than this would be applied again, so it is far longer than any spool wait."
+value = 2592000
+unit = "s"
+
+[retention.archive_delete_after_s]
+doc = "Archived user data (messages, key values, impact events) older than this is deleted; 0 means never, the default (D26: hard delete only with an explicit value)."
+value = 0
+unit = "s"
+
+[retention.batch_rows]
+doc = "Rows moved per archive transaction (archive.db commits in batches)."
+value = 1000
+min = 1
+
+[retention.max_batches]
+doc = "Most batches one maintenance run moves per table, so a run stays bounded."
+value = 10000
+min = 1
