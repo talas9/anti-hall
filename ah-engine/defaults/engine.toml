@@ -133,6 +133,10 @@ value = "spool.log"
 doc = "Spool records that could not be parsed or that the store refused for good, kept with their reason, never dropped (D24)."
 value = "spool.quarantine"
 
+[files.backups_dir]
+doc = "Directory inside the state directory that holds backups and pre-restore snapshots (D27); nothing in it is ever deleted by the engine."
+value = "backups"
+
 [files.advised_dir]
 doc = "Directory with one empty file per session that has already seen the failure advisory."
 value = "advised"

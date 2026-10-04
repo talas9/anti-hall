@@ -195,3 +195,37 @@ min = 1
 doc = "Most batches one maintenance run moves per table, so a run stays bounded."
 value = 10000
 min = 1
+
+# ---- backup and restore (D27) ---------------------------------------------------------------------------
+
+[backup.pages_per_step]
+doc = "Pages the online backup copies per step; between steps the daemon's writer can commit."
+value = 256
+min = 1
+max = 1000000
+
+[backup.pause_ms]
+doc = "Pause between backup steps (and after a step finds the source busy)."
+value = 0
+unit = "ms"
+
+[backup.journal_mode]
+doc = "Journal mode a snapshot file is left in: DELETE makes it one self-contained file with no WAL beside it."
+value = "DELETE"
+
+[backup.manifest_file]
+doc = "File in each snapshot directory that lists its databases, their sizes, schema versions and integrity checks."
+value = "manifest.json"
+
+[backup.scrub_columns]
+doc = "Text columns (`table.column`) a backup scrubs of secrets and the home path, in both databases where the table exists; project keys are kept so a restore can find each project's data."
+value = ["mailbox.body", "kv.value", "applied.result"]
+
+[backup.pre_restore_prefix]
+doc = "Name prefix of the snapshot a restore takes of the current state before it swaps (the time in ms follows)."
+value = "pre-restore-"
+
+[backup.stop_wait_ms]
+doc = "How long a restore waits for the daemon to stop and release its lock before it gives up without changing anything."
+value = 5000
+unit = "ms"

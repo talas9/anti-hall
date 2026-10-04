@@ -51,6 +51,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("reset", cmd_reset),
         ("proj", cmd_proj),
         ("maintain", cmd_maintain),
+        ("backup", cmd_backup),
+        ("restore", cmd_restore),
     ]
 }
 
@@ -256,6 +258,24 @@ fn cmd_reset(p: &Parsed) -> i32 {
 fn cmd_maintain(p: &Parsed) -> i32 {
     let dir = crate::paths::dir();
     let res = crate::limits::ensure_private_dir(&dir).map_err(|e| e.to_string()).and_then(|_| crate::maintain::run(&dir).map_err(|e| e.to_string()));
+    report_result(p, res)
+}
+
+fn cmd_backup(p: &Parsed) -> i32 {
+    let to = flag(p, "to");
+    let to = (!to.is_empty()).then(|| std::path::PathBuf::from(to));
+    report_result(p, crate::backup::backup(&crate::paths::dir(), to.as_deref()).map_err(|e| e.to_string()))
+}
+
+fn cmd_restore(p: &Parsed) -> i32 {
+    let Some(from) = p.rest.first() else {
+        return report_result(p, Err(defaults::render("msg.cli_usage", &[("commands", &"restore <snapshot-dir>")])));
+    };
+    report_result(p, crate::backup::restore(&crate::paths::dir(), std::path::Path::new(from)).map_err(|e| e.to_string()))
+}
+
+/// Print a command's JSON report (or human text), or its error; exit 0 or 1.
+fn report_result(p: &Parsed, res: Result<Value, String>) -> i32 {
     match res {
         Ok(v) => {
             emit(p, human(&v), v);
@@ -333,7 +353,7 @@ mod tests {
         for n in ["status", "metrics", "impact", "docs", "check", "version"] {
             assert!(ro.contains(&n.to_string()), "{n} must be read-only");
         }
-        for n in ["serve", "hook", "stop", "reset", "proj", "ctl", "maintain"] {
+        for n in ["serve", "hook", "stop", "reset", "proj", "ctl", "maintain", "backup", "restore"] {
             assert!(!ro.contains(&n.to_string()), "{n} changes state");
         }
     }

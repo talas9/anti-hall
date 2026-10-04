@@ -146,3 +146,12 @@ pub const MAINT_LOG: &str = "INSERT INTO maintenance (ts_ms, report) VALUES (?1,
 
 /// Maintenance runs so far and when the last one ran.
 pub const MAINT_STATS: &str = "SELECT COUNT(*), COALESCE(MAX(ts_ms), 0) FROM maintenance";
+
+/// True when a table exists.
+pub const TABLE_EXISTS: &str = "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)";
+
+/// The distinct values of one text column; `{table}` and `{col}` come from `backup.scrub_columns`.
+pub const SCRUB_SELECT: &str = "SELECT DISTINCT {col} FROM {table}";
+
+/// Replace one value of a column everywhere it occurs; placeholders as in `SCRUB_SELECT`.
+pub const SCRUB_UPDATE: &str = "UPDATE {table} SET {col} = ?2 WHERE {col} = ?1";

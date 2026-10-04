@@ -8,7 +8,7 @@ Every command accepts `--json`. Read-only commands never change state.
 
 | Command | Arguments | Read-only | Status | What it does |
 |---|---|---|---|---|
-| `backup` | `` | no | planned (D27) | Make a consistent online snapshot of the state databases, scrubbed. |
+| `backup` | `[--to <dir>]` | no | implemented | Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given directory; prints its manifest. |
 | `check` | `<name>` | yes | implemented | Run one built-in check in-process on a hook payload from stdin (used by the parity harness). |
 | `config` | `<versions\|rollback\|export>` | no | planned (D18) | Show config versions, roll back, export. |
 | `ctl` | `<ping\|reload\|stop\|status>` | no | implemented | Send a control verb to the daemon: ping, reload, stop or status. |
@@ -19,7 +19,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `metrics` | `[--check <name>]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check. |
 | `proj` | `<cwd> <put\|take\|len\|set\|setex\|get> [args]` | no | implemented | Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a TTL in seconds, get); the partition is derived from the cwd. |
 | `reset` | `` | no | implemented | Clear the client breaker, the crash-loop stop and the failure record. |
-| `restore` | `<snapshot>` | no | planned (D27) | Restore a snapshot, keeping the current state first. |
+| `restore` | `<snapshot-dir>` | no | implemented | Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases. |
 | `schedule` | `<list\|add\|remove>` | no | planned (D33) | List, add and remove scheduled jobs. |
 | `serve` | `` | no | implemented | Run the resident daemon in the foreground (the client starts it detached when needed). |
 | `status` | `` | yes | implemented | Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did. |
@@ -133,6 +133,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `files.advised_dir` | `advised` |  |  | Directory with one empty file per session that has already seen the failure advisory. |
+| `files.backups_dir` | `backups` |  |  | Directory inside the state directory that holds backups and pre-restore snapshots (D27); nothing in it is ever deleted by the engine. |
 | `files.breaker_until` | `breaker.until` |  |  | Marker holding the time (ms since the epoch) until which the client breaker stays open. |
 | `files.crashloop_until` | `crashloop.until` |  |  | Marker holding the time until which respawning is stopped after a crash loop. |
 | `files.failure` | `failure.json` |  |  | Last recorded failure, for the once-per-session advisory. |
@@ -322,6 +323,18 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `telemetry.project_key_len` | `12` |  |  | Hex digits of the hashed project key shown in impact events (the project path itself is never stored). |
 | `telemetry.recent_default` | `20` |  |  | How many of the most recent impact events `impact` shows unless asked for more. |
 
+### storage.toml / backup
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `backup.journal_mode` | `DELETE` |  |  | Journal mode a snapshot file is left in: DELETE makes it one self-contained file with no WAL beside it. |
+| `backup.manifest_file` | `manifest.json` |  |  | File in each snapshot directory that lists its databases, their sizes, schema versions and integrity checks. |
+| `backup.pages_per_step` | `256` |  |  | Pages the online backup copies per step; between steps the daemon's writer can commit. |
+| `backup.pause_ms` | `0` |  | ms | Pause between backup steps (and after a step finds the source busy). |
+| `backup.pre_restore_prefix` | `pre-restore-` |  |  | Name prefix of the snapshot a restore takes of the current state before it swaps (the time in ms follows). |
+| `backup.scrub_columns` | `mailbox.body, kv.value, applied.result` |  |  | Text columns (`table.column`) a backup scrubs of secrets and the home path, in both databases where the table exists; project keys are kept so a restore can find each project's data. |
+| `backup.stop_wait_ms` | `5000` |  | ms | How long a restore waits for the daemon to stop and release its lock before it gives up without changing anything. |
+
 ### storage.toml / retention
 
 | Key | Default | Env override | Unit | What it is |
@@ -384,6 +397,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 |---|---|
 | `msg.advisory_env` | Once-per-session advisory for an environment-class failure. Placeholder: {hint}. |
 | `msg.advisory_permanent` | Once-per-session advisory for a permanent failure; nothing is ever filed automatically. Placeholders: {reason}, {diagnostics}. |
+| `msg.backup_exists` | A backup destination already holds a snapshot. Placeholder: {path}. |
 | `msg.cli_no_daemon` | Printed to stderr when a control command finds no daemon. |
 | `msg.cli_not_running` | Printed in place of a report when no daemon is running (`--json` output carries running=false). |
 | `msg.cli_planned` | Printed when a planned command is run. Placeholders: {command}, {decision}. |
@@ -443,6 +457,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_operator_reset` | Log detail for `reset`. |
 | `msg.log_panic` | Log and failure detail when a request handler panicked. |
 | `msg.log_pruned` | Event-log detail when maintenance forgets old applied write ids. Placeholder: {n}. |
+| `msg.log_restored` | Event-log detail of a restore. Placeholders: {from}, {kept}. |
 | `msg.log_rss` | Log detail when the daemon is over its memory cap. Placeholders: {rss}, {cap}. |
 | `msg.log_stall` | Log detail when the accept loop stalled. |
 | `msg.log_start` | Log detail for a daemon start. Placeholders: {version}, {pid}, {rlimit}. |
@@ -461,6 +476,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.reply_test_panic` | Panic text of the test-only `panic` verb. |
 | `msg.reply_too_large` | ERR body for an oversize request. |
 | `msg.reply_unknown_request` | ERR body for a request the daemon does not understand. |
+| `msg.restore_daemon_busy` | A restore could not stop the daemon or take its lock in time. |
+| `msg.restore_damaged` | A snapshot database failed its integrity check. Placeholders: {path}, {check}. |
+| `msg.restore_no_hot` | A snapshot directory has no hot.db. Placeholder: {path}. |
 | `msg.spool_damaged` | Quarantine reason for spool bytes that are not a valid record. |
 | `msg.spool_full` | Printed by `proj` when the spool is full, so the write was not kept. |
 | `msg.spool_io` | Printed by `proj` when the spool could not be written. Placeholder: {err}. |

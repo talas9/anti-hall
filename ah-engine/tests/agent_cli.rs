@@ -142,7 +142,7 @@ fn every_implemented_read_only_command_prints_json_and_planned_ones_say_so() {
     assert!(docs["commands"].as_array().unwrap().len() >= 12 && docs["checks"].as_array().unwrap().iter().any(|c| c["name"] == "git"));
     let md = e.run(&["docs", "--format", "md"]).0;
     assert!(md.starts_with("# ah-engine reference"));
-    for planned in ["schedule", "config", "backup", "restore"] {
+    for planned in ["schedule", "config"] {
         let (out, code) = e.run(&[planned, "--json"]);
         assert_eq!(code, 64, "{planned}");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -200,4 +200,26 @@ fn maintain_runs_beside_a_live_daemon_and_is_reported_in_metrics() {
     let gauge = |n: &str| m["metrics"]["gauges"].as_array().unwrap().iter().find(|g| g["name"] == n).map(|g| g["value"].as_f64().unwrap());
     assert_eq!(gauge("maintain_runs"), Some(1.0), "{m}");
     assert!(gauge("db_hot_bytes").unwrap() > 0.0);
+}
+
+#[test]
+fn backup_then_restore_through_the_cli_with_a_live_daemon() {
+    let e = Env::new("bkp", &[]);
+    e.warm();
+    let cwd = "/nonexistent/backup";
+    assert_eq!(e.run(&["proj", cwd, "put", "kept"]).0, "ok");
+    let m = e.json(&["backup", "--json"]);
+    assert_eq!(m["scrubbed"], true, "{m}");
+    let snap = m["path"].as_str().unwrap().to_string();
+    assert!(snap.starts_with(&e.dir.join("eng").join("backups").to_string_lossy().to_string()), "{snap}");
+    assert_eq!(e.run(&["proj", cwd, "put", "after the backup"]).0, "ok");
+    let r = e.json(&["restore", &snap, "--json"]);
+    assert!(r["pre_restore_snapshot"]["path"].is_string(), "{r}");
+    let kept = r["pre_restore_snapshot"]["path"].as_str().unwrap().to_string();
+    assert!(std::path::Path::new(&kept).join("hot.db").exists(), "the state before the restore is kept");
+    // the restore stopped the daemon; the next write or read starts a new one on the restored state
+    assert_eq!(e.run(&["proj", cwd, "take"]).0, "kept");
+    assert_eq!(e.run(&["proj", cwd, "take"]).0, "", "the write made after the backup is not in the restored state");
+    let (out, code) = e.run(&["restore", "/nonexistent/no-snapshot", "--json"]);
+    assert_eq!(code, 1, "{out}");
 }

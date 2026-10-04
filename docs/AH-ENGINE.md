@@ -74,7 +74,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Scheduler and ticker, `ah-engine schedule` | planned (D33) | D33 |
 | Mesh messaging, Monitor push, chat database | planned (D45) | D45 |
 | Jev decision lane inside the engine | planned (D34-D38) | D34-D38 |
-| Backups and restore, `ah-engine backup` and `restore` | planned (D27) | D27 |
+| Backups and restore: online snapshot of both databases, scrubbed; restore keeps the current state first | implemented | D27 |
+| Backups on a schedule | planned (D33) | D33 |
 | Issue log and opt-in upload | planned (D28) | D28 |
 | Update checks as a scheduled job | planned (D44) | D44 |
 | One dispatcher call per hook event | planned (D58) | D58 |
@@ -101,7 +102,9 @@ arguments, is in the generated reference.
 | `ah-engine reset` | no | Clear the breaker, crash-loop stop and failure record. |
 | `ah-engine maintain` | no | Size control: move inactive rows to `archive.db`, prune derived bookkeeping, checkpoint and VACUUM; prints a report. |
 | `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. A write the engine cannot take is spooled. |
-| `ah-engine schedule`, `config`, `backup`, `restore` | no | planned (D33, D18, D27); they say so and exit 64. |
+| `ah-engine backup [--to <dir>]` | no | A consistent, scrubbed snapshot of `hot.db` and `archive.db`; prints its manifest. |
+| `ah-engine restore <snapshot-dir>` | no | Keep the current state as a pre-restore snapshot, stop the daemon, swap in the snapshot. |
+| `ah-engine schedule`, `config` | no | planned (D33, D18); they say so and exit 64. |
 
 ## Metrics and the impact ledger
 
@@ -184,6 +187,15 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
   deleted unless `retention.archive_delete_after_s` is set (default 0, D26). It runs in its own process against the
   files, beside a live daemon or without one; SQLite's locks keep the two apart, and a daemon write that meets the lock
   is retried and, if need be, spooled. Running it on a schedule is the scheduler's job, planned (D33).
+- **Backup and restore (D27).** `ah-engine backup` copies both databases with SQLite's online backup API, so the
+  snapshot is consistent while the daemon writes, into `backups/<ms>/` in the state directory (or `--to <dir>`, never
+  over an existing snapshot). The copy is scrubbed: message bodies, values and recorded results
+  (`backup.scrub_columns`) lose anything that looks like a secret and the home path, the file is VACUUMed so no
+  unscrubbed page remains, and each file is integrity-checked and listed in `manifest.json`. Project keys stay as they
+  are, because a restore needs them. `ah-engine restore <dir>` checks the snapshot first (integrity, schema version),
+  then keeps the current state as an unscrubbed `backups/pre-restore-<ms>/` snapshot that it never deletes, stops the
+  daemon and holds its lock so none starts, and copies each database into place with the same API. The next hook call
+  starts a daemon on the restored state.
 - **Versioned schema.** Each database records how many migrations it has run (`PRAGMA user_version`); opening applies
   the missing ones, each in its own transaction, and re-running them changes nothing. A database written by a newer build
   is refused rather than rewritten.
@@ -213,7 +225,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `commands.toml` | the command registry data |
 | `telemetry.toml` | the metric and impact-kind registries and the savings method |
-| `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention |
+| `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention, backups |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
@@ -221,7 +233,7 @@ message is written in Rust instead (`no_hardcoded_tunables`), and another if cod
 overrides loaded from files and versioned storage are planned (D18).
 
 State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.db` and `archive.db`, the write spool
-`spool.log` and its `spool.quarantine`, the event log,
+`spool.log` and its `spool.quarantine`, the `backups/` directory, the event log,
 `failure.json`, the breaker and crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The rules file is
 `rules.json` there, or the path in `AH_ENGINE_RULES`.
 
@@ -270,6 +282,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | "state directory is not writable" | Fix ownership and mode 700 of `~/.anti-hall/ah-engine`, or point `AH_ENGINE_DIR` at a directory you own. |
 | "socket path is too long" | Set `AH_ENGINE_DIR` to a shorter path. |
 | Stop it | `ah-engine stop`. It starts again on the next hook call unless the engine is turned off. |
+| Undo a bad restore | Every restore keeps the state before it in `backups/pre-restore-<ms>/`; restore that directory. |
 | `hot.db` keeps growing | Run `ah-engine maintain` (it reports what it moved and the sizes before and after); see the `retention.*` settings. |
 | `proj` printed `spooled <id>` | The engine was down or busy; the write is safe in `spool.log` and is applied when the engine runs. |
 | `spool.quarantine` has entries | Records that were damaged or refused for good (for example a full mailbox), each with its reason; nothing was dropped. |

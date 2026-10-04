@@ -66,9 +66,9 @@ doc = "Show config versions, roll back, export."
 value = { args = "<versions|rollback|export>", read_only = false, status = "planned (D18)" }
 
 [cmd.backup]
-doc = "Make a consistent online snapshot of the state databases, scrubbed."
-value = { args = "", read_only = false, status = "planned (D27)" }
+doc = "Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given directory; prints its manifest."
+value = { args = "[--to <dir>]", read_only = false, status = "implemented" }
 
 [cmd.restore]
-doc = "Restore a snapshot, keeping the current state first."
-value = { args = "<snapshot>", read_only = false, status = "planned (D27)" }
+doc = "Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases."
+value = { args = "<snapshot-dir>", read_only = false, status = "implemented" }

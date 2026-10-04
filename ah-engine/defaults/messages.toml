@@ -314,6 +314,26 @@ value = "damaged spool record"
 doc = "Event-log detail when maintenance forgets old applied write ids. Placeholder: {n}."
 value = "forgot {n} applied write ids past retention"
 
+[msg.backup_exists]
+doc = "A backup destination already holds a snapshot. Placeholder: {path}."
+value = "{path} already holds a snapshot; choose another directory"
+
+[msg.restore_daemon_busy]
+doc = "A restore could not stop the daemon or take its lock in time."
+value = "the daemon did not stop in time; nothing was changed"
+
+[msg.restore_damaged]
+doc = "A snapshot database failed its integrity check. Placeholders: {path}, {check}."
+value = "{path} failed its integrity check ({check}); nothing was changed"
+
+[msg.restore_no_hot]
+doc = "A snapshot directory has no hot.db. Placeholder: {path}."
+value = "{path} holds no hot.db snapshot; nothing was changed"
+
+[msg.log_restored]
+doc = "Event-log detail of a restore. Placeholders: {from}, {kept}."
+value = "restored from {from}; the state before it is kept in {kept}"
+
 [msg.err_unknown_check]
 doc = "`check` was asked for a check that is not registered. Placeholder: {name}."
 value = "unknown check {name}"

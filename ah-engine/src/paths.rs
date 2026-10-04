@@ -20,8 +20,12 @@ pub fn dir() -> PathBuf {
 
 /// The daemon socket path: inside the state dir when it fits, else a private per-user directory under the temp dir.
 pub fn socket() -> PathBuf {
+    socket_in(&dir())
+}
+
+/// The socket path of the daemon whose state directory is `d` (see [`socket`]).
+pub fn socket_in(d: &std::path::Path) -> PathBuf {
     let max = defaults::num("paths.socket_max_len") as usize;
-    let d = dir();
     let primary = d.join(defaults::text("paths.socket_file"));
     if primary.as_os_str().len() <= max {
         return primary;
