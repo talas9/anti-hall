@@ -1,15 +1,12 @@
 //! Socket / lock / rules locations. Unix sockets are capped at 104 bytes on macOS (108 on Linux), so
-//! the default `~/.anti-hall/engine/e.sock` falls back to `$TMPDIR/ah-<uid>.sock` when too long.
+//! the default `~/.anti-hall/engine/e.sock` falls back to `<TMPDIR|/tmp>/anti-hall-<uid>/<hash>.sock`
+//! (a private 0700 directory the daemon creates and owner-checks) when too long.
 use std::path::PathBuf;
 
 const MAX_SOCK: usize = 100; // headroom under 104 (sun_path incl. NUL)
 
-extern "C" {
-    fn getuid() -> u32;
-}
-
 pub fn uid() -> u32 {
-    unsafe { getuid() }
+    crate::limits::uid()
 }
 
 /// State dir: `$ANTIHALL_ENGINE_DIR` or `~/.anti-hall/engine`.
@@ -22,18 +19,21 @@ pub fn dir() -> PathBuf {
 }
 
 pub fn socket() -> PathBuf {
-    let primary = dir().join("e.sock");
+    let d = dir();
+    let primary = d.join("e.sock");
     if primary.as_os_str().len() <= MAX_SOCK {
         return primary;
     }
-    let name = format!("ah-{}.sock", uid());
+    // stable hash (not DefaultHasher): two builds must agree on the path or a handoff would double-spawn
+    let name = format!("{:012x}.sock", crate::health::fnv(&d.to_string_lossy()) & 0xffff_ffff_ffff);
+    let private = format!("anti-hall-{}", uid());
     if let Some(t) = std::env::var_os("TMPDIR") {
-        let p = PathBuf::from(t).join(&name);
+        let p = PathBuf::from(t).join(&private).join(&name);
         if p.as_os_str().len() <= MAX_SOCK {
             return p;
         }
     }
-    PathBuf::from("/tmp").join(name)
+    PathBuf::from("/tmp").join(private).join(name)
 }
 
 /// Lock file lives next to the socket so one lock guards exactly one socket.
@@ -51,13 +51,16 @@ pub fn rules_file() -> PathBuf {
 mod tests {
     use super::*;
     #[test]
-    fn long_dir_falls_back_under_limit() {
+    fn long_dir_falls_back_under_limit_in_a_private_dir() {
         // single-threaded env mutation is fine: only this test touches ANTIHALL_ENGINE_DIR in-process
         std::env::set_var("ANTIHALL_ENGINE_DIR", format!("/tmp/{}", "x".repeat(120)));
         let s = socket();
+        let s2 = socket();
         std::env::remove_var("ANTIHALL_ENGINE_DIR");
         assert!(s.as_os_str().len() <= MAX_SOCK, "{:?}", s);
-        assert!(s.to_string_lossy().contains(&format!("ah-{}.sock", uid())));
+        assert_eq!(s, s2, "deterministic");
+        assert!(s.to_string_lossy().contains(&format!("anti-hall-{}/", uid())), "{s:?}");
+        assert!(s.to_string_lossy().ends_with(".sock"));
     }
     #[test]
     fn lock_next_to_socket() {

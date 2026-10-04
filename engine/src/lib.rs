@@ -1,9 +1,14 @@
 //! anti-hall engine: a tiny hook daemon + client. See README.md.
 pub mod client;
+pub mod config;
 pub mod daemon;
+pub mod frame;
+pub mod health;
 pub mod hookio;
+pub mod limits;
 pub mod paths;
 pub mod rules;
+pub mod store;
 
 /// Version this build reports and compares for handoff. `ANTIHALL_ENGINE_VERSION` overrides it (plugin
 /// version in production, arbitrary in tests).

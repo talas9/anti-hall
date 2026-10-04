@@ -11,7 +11,7 @@
 //! | UserPromptSubmit | `{"decision":"block","reason"}`                         | `hookSpecificOutput.additionalContext`  |
 //! | Stop             | `{"decision":"block","reason"}` (never if `stop_hook_active`) | `{"systemMessage"}`               |
 //! | SessionStart / SubagentStart | n/a (treated as context)                    | `hookSpecificOutput.additionalContext`  |
-use crate::rules::{Action, RuleSet, Subject};
+use crate::rules::{Action, Budget, RuleSet, Subject};
 use serde_json::{json, Value};
 
 /// Event name from the payload; `None` when absent.
@@ -22,8 +22,21 @@ fn event_of(p: &Value) -> Option<&str> {
 /// Evaluate `raw` (the stdin payload) against `rules`. Returns the JSON to print, or "" for "say nothing".
 /// Never panics on malformed input: anything unparseable yields "".
 pub fn respond(raw: &str, rules: &RuleSet) -> String {
-    let Ok(p) = serde_json::from_str::<Value>(raw) else { return String::new() };
-    let Some(event) = event_of(&p) else { return String::new() };
+    match serde_json::from_str::<Value>(raw) {
+        Ok(p) => respond_value(&p, rules, &|| false).unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+/// `respond` on an already-parsed payload, abandoning the evaluation when `over()` turns true.
+pub fn respond_value(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<String, Budget> {
+    Ok(respond_inner(p, rules, over)?.unwrap_or_default())
+}
+
+fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<Option<String>, Budget> {
+    let r = |s: String| Ok(Some(s));
+    let none = Ok(None);
+    let Some(event) = event_of(p) else { return none };
     let null = Value::Null;
     let subject = Subject {
         event,
@@ -32,9 +45,9 @@ pub fn respond(raw: &str, rules: &RuleSet) -> String {
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),
     };
-    let hits = rules.matching(&subject);
+    let hits = rules.matching_budget(&subject, over)?;
     if hits.is_empty() {
-        return String::new();
+        return none;
     }
     let denies: Vec<&str> = hits.iter().filter(|r| r.action == Action::Deny).map(|r| r.message.as_str()).collect();
     let notes: Vec<String> = hits
@@ -53,21 +66,21 @@ pub fn respond(raw: &str, rules: &RuleSet) -> String {
         "PostToolUse" | "UserPromptSubmit" if !denies.is_empty() => json!({"decision":"block","reason":deny_text}),
         "Stop" if !denies.is_empty() => {
             if stop_active {
-                return String::new(); // a continuing turn is never re-blocked (matches stop-policy.js)
+                return none; // a continuing turn is never re-blocked (matches stop-policy.js)
             }
             json!({"decision":"block","reason":deny_text})
         }
         "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "SessionStart" | "SubagentStart" => {
             let text = if denies.is_empty() { note_text } else { format!("{deny_text}\n{note_text}") };
             if text.trim().is_empty() {
-                return String::new();
+                return none;
             }
             json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":text}})
         }
         "Stop" if !note_text.is_empty() => json!({"systemMessage":note_text}),
-        _ => return String::new(),
+        _ => return none,
     };
-    out.to_string()
+    r(out.to_string())
 }
 
 #[cfg(test)]

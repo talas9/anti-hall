@@ -62,7 +62,13 @@ pub struct Rule {
 #[derive(Debug, Default)]
 pub struct RuleSet {
     pub rules: Vec<Rule>,
+    /// The file's `version` field.
+    pub version: u32,
 }
+
+/// Evaluation was abandoned because the request's budget ran out.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Budget;
 
 /// What a rule is matched against; built from the hook payload by `hookio`.
 pub struct Subject<'a> {
@@ -90,7 +96,7 @@ impl RuleSet {
             let re = Regex::new(&r.pattern).map_err(|e| format!("rule {i} ({}): {e}", r.id))?;
             rules.push(Rule { id: r.id, events: r.events, tools: r.tools, field: r.field, re, action, message: r.message, paths: r.paths });
         }
-        Ok(RuleSet { rules })
+        Ok(RuleSet { rules, version: f.version })
     }
 
     pub fn load(path: &std::path::Path) -> Result<RuleSet, String> {
@@ -101,6 +107,30 @@ impl RuleSet {
     /// All rules that match, in file order.
     pub fn matching<'a>(&'a self, s: &Subject) -> Vec<&'a Rule> {
         self.rules.iter().filter(|r| r.matches(s)).collect()
+    }
+
+    /// Like `matching`, but `over()` is consulted before each rule; when it returns true the evaluation is
+    /// abandoned (`Err(Budget)`), so one request can never run past its CPU/time budget by more than one rule.
+    pub fn matching_budget<'a>(&'a self, s: &Subject, over: &dyn Fn() -> bool) -> Result<Vec<&'a Rule>, Budget> {
+        let mut hits = Vec::new();
+        for r in &self.rules {
+            if over() {
+                return Err(Budget);
+            }
+            if r.matches(s) {
+                hits.push(r);
+            }
+        }
+        Ok(hits)
+    }
+
+    /// Stable fingerprint of the loaded rules (FNV over id+pattern+action+message), for `status`.
+    pub fn fingerprint(&self) -> u64 {
+        let mut all = String::new();
+        for r in &self.rules {
+            all.push_str(&format!("{}|{}|{:?}|{}\n", r.id, r.re.as_str(), r.action, r.message));
+        }
+        crate::health::fnv(&all)
     }
 }
 
