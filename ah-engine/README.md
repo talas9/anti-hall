@@ -122,6 +122,25 @@ Deliberate differences from the Node guard:
 - The PostToolUse `--audit` pass is not ported. Plugin options stored in Claude's own settings are not read, only the
   environment form.
 
+## Built-in checks: the small guards (`src/checks/guardkit`, one module per guard)
+
+`merge-side-pick` (PreToolUse and PostToolUse on Bash; advisory only) is a port of `hooks/merge-side-pick.js`. PostToolUse
+records a one-sided conflict resolution (`--ours`, `--theirs`, `-X ours`, `-s ours`) and test runs per session; a push while
+a side-pick has no test run after it adds one advisory line. The shared helpers in `checks/guardkit` mirror
+`hooks/lib/settings.js` (a switch resolves env, then `settings.json`, then the plugin option, then the default),
+`hooks/skip-guard.js`, `hooks/lib/block-message.js`, and translate JavaScript regex sources kept in
+`defaults/small_guards.toml` so `\s`, `\b`, `.` and the `i` flag keep their JavaScript meaning.
+
+Deliberate differences from the Node guard:
+- State is in memory (`SessionState`, bounded), not `~/.anti-hall/merge-side-pick-<session>.json`; a restart forgets it and
+  it is not shared with a Node-run guard. Storage replaces it later (planned, D22).
+- The PostToolUse pass is selected by `hook_event_name`, not `--post` (the wiring passes `--post` only to the PostToolUse
+  entry).
+- The switch environment is the engine process's, not the hook client's (same limit as the git check); the switch files
+  work. A cut of the stored command inside a surrogate pair defers to Node.
+- A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
+  `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
+
 ## Parity harness (`parity/`)
 
 `parity/run-git.js` runs each command through the Node git-guard (the authority) and the engine and compares exit code,

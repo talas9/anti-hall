@@ -1,0 +1,156 @@
+# ah-engine shipped defaults for the small Bash guards ported from Node (merge-side-pick, ship-it-guard,
+# scan-throttle, coordinator-work-guard, compact-declaration-guard) and the helpers they share (D17, D30).
+#
+# Every pattern, message, setting name and limit of these checks lives here. Regex sources use JavaScript syntax
+# (the Node guards are the authority) and are translated by `checks::guardkit::jsre`; they are written as TOML
+# literal strings so no backslash is doubled. Format: see the header of engine.toml.
+
+# ---- shared helpers (checks::guardkit) --------------------------------------------------------------------
+
+[guardkit.js_space]
+doc = "Characters JavaScript treats as white space, written as the body of a regex character class; used to translate the JS escapes for white space exactly (Rust's own class differs: it has U+0085 and lacks U+FEFF)."
+value = '\t\n\x0b\x0c\r    -     　﻿'
+
+[guardkit.line_terminators]
+doc = "Characters JavaScript's dot excludes, as the body of a regex character class."
+value = '\n\r  '
+
+[guardkit.settings_file]
+doc = "Settings file, relative to the home directory."
+value = ".anti-hall/settings.json"
+
+[guardkit.skip_file]
+doc = "Skip file, relative to the home directory (a skipped guard is allowed until its expiry time)."
+value = ".anti-hall/skip.json"
+
+[guardkit.claude_settings_file]
+doc = "The host's own settings file, relative to the home directory, where plugin options are stored."
+value = ".claude/settings.json"
+
+[guardkit.plugin_config_keys]
+doc = "Keys of the host settings file's pluginConfigs map under which this plugin's options may be stored, lowest priority first."
+value = ["anti-hall", "anti-hall@anti-hall"]
+
+[guardkit.plugin_option_prefix]
+doc = "Prefix of the environment variables the host sets from plugin options."
+value = "CLAUDE_PLUGIN_OPTION_"
+
+[guardkit.true_tokens]
+doc = "Environment or settings strings that mean on (compared after trimming and lower-casing)."
+value = ["1", "on", "true", "yes"]
+
+[guardkit.false_tokens]
+doc = "Environment or settings strings that mean off (compared after trimming and lower-casing)."
+value = ["0", "off", "false", "no"]
+
+[guardkit.destructive_guards]
+doc = "Guards that a broad skip of everything does not cover; they must be named in the skip file."
+value = ["git-guard", "devswarm-read-guard", "git-stash-guard"]
+
+[guardkit.skip_all_key]
+doc = "Key of the skip file that skips every guard not listed in destructive_guards."
+value = "all"
+
+[guardkit.state_cap]
+doc = "How many per-session state entries the in-memory guard state keeps before it evicts the least recently written one."
+value = 4096
+min = 16
+max = 1000000
+
+[guardkit.session_key_max]
+doc = "Longest session key, in UTF-16 units, after the characters outside letters, digits, dot, underscore and hyphen are replaced (the Node state file name limit)."
+value = 120
+
+[guardkit.icons]
+doc = "Leading icon of a block or advisory message, by kind."
+value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "✅", update = "⬆️", error = "❌" }
+
+[guardkit.msg_head]
+doc = "Text between the icon and the guard name in every block or advisory message."
+value = " anti-hall · "
+
+[guardkit.msg_labels]
+doc = "Labels of the optional lines of a block or advisory message."
+value = { why = "Why: ", instead = "Do instead: ", allowed = "Allowed here: ", override = "Override (only if the user explicitly asked): " }
+
+# ---- merge-side-pick (hooks/merge-side-pick.js, hooks/lib/merge-side-pick.js) ----------------------------
+
+[merge_side_pick.summary]
+doc = "One-line description of the merge-side-pick check in the generated reference."
+value = "Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since (port of merge-side-pick.js)."
+
+[merge_side_pick.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "merge-side-pick"
+
+[merge_side_pick.setting]
+doc = "Where the on/off switch is read from (guards.mergeSidePickAdvisory, default on)."
+value = { section = "guards", key = "mergeSidePickAdvisory", env = "ANTIHALL_MERGE_SIDE_PICK_ADVISORY", aliases = [], option = "", default = true }
+
+[merge_side_pick.state_ns]
+doc = "Namespace of this check's per-session state in the guard state store."
+value = "merge-side-pick"
+
+[merge_side_pick.quote_masks]
+doc = "Regexes whose matches (quoted spans) are blanked before a command is split into segments, so quoted text is never mistaken for a command (maskShellQuotes)."
+value = ['\x27[^\x27\n]*\x27', '"(?:[^"\\\n]|\\.)*"']
+
+[merge_side_pick.segment_split]
+doc = "Regex that splits a masked command into segments (semicolon, ampersand, pipe, newline)."
+value = '[;&|\n]+'
+
+[merge_side_pick.git_prefix]
+doc = "Regex source that every git pattern starts with: the git word with optional -C, -c and --no-pager options."
+value = '(?:^|\s)git(?:\s+-C\s+\S+|\s+-c\s+\S+|\s+--no-pager)*\s+'
+
+[merge_side_pick.pick_tails]
+doc = "Regex sources, each appended to git_prefix, that recognise taking one side of a conflict wholesale (checkout or restore --ours, -X ours, -s ours)."
+value = [
+  '(?:checkout|restore)\b[^\n]*?\s--(?:ours|theirs)\b',
+  '(?:merge|pull|rebase|cherry-pick|revert)\b[^\n]*?\s(?:-X\s*|--strategy-option[= ])(?:ours|theirs)\b',
+  '(?:merge|pull)\b[^\n]*?\s(?:-s\s*|--strategy[= ])ours\b',
+]
+
+[merge_side_pick.push_tail]
+doc = "Regex source appended to git_prefix that recognises a push."
+value = 'push\b'
+
+[merge_side_pick.dry_run]
+doc = "Regex that marks a push segment as a dry run, which is not a push."
+value = '\s(?:--dry-run|-n)\b'
+
+[merge_side_pick.test_patterns]
+doc = "Regex sources that recognise a test run in a command segment."
+value = [
+  '(?:^|\s)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)\b',
+  '(?:^|\s)(?:npx|bunx|pnpm\s+exec)\s+(?:jest|vitest|mocha|ava)\b',
+  '(?:^|\s)(?:jest|vitest|mocha|pytest|py\.test|tox|nox|rspec|phpunit|ctest)\b',
+  '(?:^|\s)node\s+(?:\S+\s+)*--test\b',
+  '(?:^|\s)python3?\s+-m\s+(?:pytest|unittest)\b',
+  '(?:^|\s)(?:go|cargo|flutter|dart|deno)\s+test\b',
+  '(?:^|\s)cargo\s+nextest\b',
+  '(?:^|\s)(?:\./)?(?:mvn|mvnw|gradle|gradlew)\s+(?:\S+\s+)*(?:test|verify|check)\b',
+  '(?:^|\s)(?:make|just)\s+(?:test|tests|check)\b',
+  '(?:^|\s)(?:bundle\s+exec\s+)?rake\s+test\b',
+  '(?:^|\s)dotnet\s+test\b',
+]
+
+[merge_side_pick.cmd_keep]
+doc = "How many UTF-16 units of the side-pick command are kept for the advisory."
+value = 120
+
+[merge_side_pick.msg_what]
+doc = "Advisory headline; {pick} is the recorded side-pick command."
+value = "pushing after a conflict was resolved by taking one side wholesale ({pick}) with no test run since"
+
+[merge_side_pick.msg_why]
+doc = "Advisory reason."
+value = "taking --ours/--theirs (or -X ours/theirs) silently drops the other side's changes, and nothing has verified the result."
+
+[merge_side_pick.msg_instead]
+doc = "Advisory advice."
+value = "run the tests first, review the discarded side in `git diff`, then push."
+
+[merge_side_pick.fallback_cmd]
+doc = "Text used for the side-pick command when none was recorded."
+value = "a side-pick"

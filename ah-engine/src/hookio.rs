@@ -84,7 +84,7 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn 
             continue;
         }
         let started = std::time::Instant::now();
-        if let Some(o) = builtin(rule, &subject) {
+        if let Some(o) = builtin(rule, &subject, p) {
             obs.check(rule.check.as_deref().unwrap_or(""), &rule.id, &o, started.elapsed().as_micros() as u64);
             match o {
                 Verdict::Block(m) => return r(format!("{EXIT2}{m}\n")),
@@ -136,8 +136,8 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn 
 }
 
 /// Run a built-in check by name; `None` when it is unknown or does not apply to this payload.
-fn builtin(rule: &crate::rules::Rule, s: &Subject) -> Option<Verdict> {
-    checks::get(rule.check.as_deref()?)?.run(s, &rule.options)
+fn builtin(rule: &crate::rules::Rule, s: &Subject, payload: &Value) -> Option<Verdict> {
+    checks::get(rule.check.as_deref()?)?.run_payload(s, payload, &rule.options)
 }
 
 #[cfg(test)]

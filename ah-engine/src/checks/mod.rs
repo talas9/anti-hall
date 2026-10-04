@@ -7,6 +7,8 @@
 //! Why a trait plus a registry instead of a `match` on names: rules refer to checks by name from data
 //! files, so the set of valid names must be discoverable at runtime (rule validation, `docs`, `status`).
 pub mod git;
+pub mod guardkit;
+pub mod merge_side_pick;
 
 use crate::rules::Subject;
 use serde_json::Value;
@@ -34,6 +36,12 @@ pub trait Check: Send + Sync {
     /// Run on a payload. `None` means the check does not apply to this event or tool; `opts` is the rule's
     /// free-form `options` object.
     fn run(&self, subject: &Subject<'_>, opts: &Value) -> Option<Verdict>;
+    /// Like [`Check::run`] but also given the whole hook payload, for checks that need fields a [`Subject`] does not
+    /// carry (`session_id`, `transcript_path`, `agent_id`, `tool_use_id`, the exact event name). The dispatcher calls
+    /// this one; a check that needs only the subject keeps this default.
+    fn run_payload(&self, subject: &Subject<'_>, _payload: &Value, opts: &Value) -> Option<Verdict> {
+        self.run(subject, opts)
+    }
 }
 
 /// Compile a regular expression that is a literal in this source.
@@ -47,7 +55,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 1] = [&git::GitGuard];
+    static ALL: [&dyn Check; 2] = [&git::GitGuard, &merge_side_pick::MergeSidePick];
     &ALL
 }
 
@@ -81,7 +89,7 @@ pub fn cli_main(name: &str) -> i32 {
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),
     };
-    match check.run(&subject, &Value::Null) {
+    match check.run_payload(&subject, &p, &Value::Null) {
         None | Some(Verdict::Allow) => 0,
         Some(Verdict::Block(m)) => {
             let _ = writeln!(std::io::stderr(), "{m}");
