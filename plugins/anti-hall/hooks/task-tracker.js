@@ -40,7 +40,7 @@ const crypto = require('crypto');
 const DD = require('./lib/dispatch-demand.js');
 const { reconstructTasks, classifyOpen, openOf, unknownNote } = require('./lib/task-state.js');
 
-const FULL =
+const FULL_TODAY =
   'TASK-LIST DISCIPLINE: capture EVERY user request as a task (TaskCreate) ' +
   'before starting work, so no request is lost. Assign each task a priority ' +
   '(metadata.priority: P0/P1/P2) and maintain the list sorted ' +
@@ -50,6 +50,17 @@ const FULL =
   'thread non-blocking - delegate heavy/long work to background subagents and ' +
   'continue. Report progress to the user. Do not finish a turn with ' +
   'silently-dropped requests.';
+
+// Compact level (default): drops only the "keep the MAIN thread non-blocking - delegate
+// heavy/long work" sentence, which the session core and orchestration rule B already carry
+// every session. protocolLevel=full (and any settings failure) keeps FULL_TODAY byte for byte.
+const FULL_COMPACT = FULL_TODAY.replace(
+  'Keep the MAIN thread non-blocking - delegate heavy/long work to background subagents and continue. ', '');
+function fullText() {
+  try {
+    return require('./verify-first-core.js').protocolLevel() === 'compact' ? FULL_COMPACT : FULL_TODAY;
+  } catch (_) { return FULL_TODAY; }
+}
 
 const SHORT =
   'TASK-LIST: capture every request as a priority-sorted task; keep statuses ' +
@@ -184,9 +195,9 @@ function pickMessage(payload) {
         stateDir, prefix: 'task-tracker', keepFile: stateFile,
       });
     } catch (_) {}
-    return FULL;
+    return fullText();
   } catch (_) {
-    return FULL; // any unexpected error -> never weaken discipline
+    return fullText(); // any unexpected error -> never weaken discipline
   }
 }
 
@@ -413,9 +424,9 @@ try {
       const opts = {
         home: os.homedir(), sessionId: payload && payload.session_id,
         transcriptPath: payload && payload.transcript_path, key: 'task-tracker',
-        content: text, normalize: (t) => t.split(FULL).join(SHORT),
+        content: text, normalize: (t) => t.split(fullText()).join(SHORT),
       };
-      if (text.startsWith(FULL)) dedupe.record(opts);
+      if (text.startsWith(fullText())) dedupe.record(opts);
       else emit = dedupe.shouldEmit(opts);
     } catch (_) { emit = true; }
   }
