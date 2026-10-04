@@ -439,9 +439,10 @@ Each value is `"on"` (Jev may change the outcome per its trust rule), `"shadow"`
 still called and logged, but the outcome is always the baseline — use this to observe a
 new integration before trusting it), or `"off"`. An **existing** `{"enabled":true}`
 config with no `integrations` map keeps its CURRENT behavior with zero migration:
-`speculation` and `triage` (the two pre-existing integrations, §3-§9) default to `"on"`;
-every OTHER integration (e.g. `modelRouting`) defaults to `"shadow"` until an owner
-explicitly promotes it. The legacy `{"triage": false}` switch (§9) still works when
+Nine integrations default to `"on"` (speculation, triage, findingDedup, dispatchTier,
+and the five devswarm-supervision modes: devswarmOnBrief, devswarmExtraSanctioned,
+devswarmWaitKind, devswarmLoop, devswarmStepMap); the remaining 11 default to `"shadow"`;
+one (postHandoverGate) defaults to `"off"`. The legacy `{"triage": false}` switch (§9) still works when
 `integrations.triage` is absent. `ANTIHALL_JEV=0` still force-disables everything;
 `ANTIHALL_JEV_<ID>=0` (e.g. `ANTIHALL_JEV_MODEL_ROUTING=0`) force-disables one
 integration only.
