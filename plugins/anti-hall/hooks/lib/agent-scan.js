@@ -626,12 +626,21 @@ function rowsOf(scan) {
     const row = { id, description: rec.description || '', launchedAtMs: rec.launchedAtMs };
     if (rec.spawnInput) row.spawnInput = rec.spawnInput; // the Agent/Task input that launched it (absent when its spawn is outside the window)
     if (rec.pendingMessage) row.pendingMessage = true; // teammate sent a message it has not yet reported on
+    // Newest sign of life: launch, SendMessage resume, a pending teammate message,
+    // or a write to the agent's output file. NaN when none is known.
+    row.resumedAtMs = rec.resumedAtMs;
+    let act = NaN;
+    for (const v of [rec.launchedAtMs, rec.resumedAtMs, rec.lastSeenMs]) if (Number.isFinite(v) && !(v <= act)) act = v;
+    if (rec.outputFile) {
+      try { const m = require('fs').statSync(rec.outputFile).mtimeMs; if (Number.isFinite(m) && !(m <= act)) act = m; } catch (_) { /* absent -> no signal */ }
+    }
+    row.lastActivityMs = act;
     out.push(row);
   }
   return out;
 }
 
-// runningAgents(transcriptPath) -> [{ id, description, launchedAtMs, pendingMessage? }] —
+// runningAgents(transcriptPath) -> [{ id, description, launchedAtMs, resumedAtMs, lastActivityMs, pendingMessage? }] —
 // launched in this transcript and not yet terminal. null when unreadable.
 function runningAgents(transcriptPath, preLines, opts) {
   const scan = scanTranscript(transcriptPath, preLines, opts);

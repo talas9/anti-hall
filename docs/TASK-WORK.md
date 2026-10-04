@@ -81,7 +81,9 @@ and `TaskGet` read back. Designed for long, multi-session, multi-subagent work.
   `#<id>` covers that task; an agent naming none is assumed to be on an in_progress
   task first, else on one pending task. The Stop block itself needs proof: it fires
   only when dispatchable tasks outnumber the running agents that name no task
-  (`guards.idleNeglectProvenOnly`, default on). The machine-global `~/.anti-hall/agents`
+  (`guards.idleNeglectProvenOnly`, default on). In that proof an unmapped agent does not
+  count as cover once it has shown no sign of life for `guards.idleNeglectAgentMaxAgeMin`
+  (default 30) minutes, or when it was launched before the uncovered task existed. The machine-global `~/.anti-hall/agents`
   heartbeat no longer suppresses it (any session's spawn refreshed it). Toggle:
   `guards.dispatchDemand` (default on). Metrics (`demandsShown`, `demandsFollowed`,
   `demandsIgnored`, compliance rate, `idleNeglectBlocks`):

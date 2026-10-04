@@ -58,6 +58,16 @@ function provenOnly() {
   try { return require('./settings.js').get('guards', 'idleNeglectProvenOnly', true) !== false; } catch (_) { return true; }
 }
 
+// agentMaxAgeMs() — guards.idleNeglectAgentMaxAgeMin (default 30; 0 = never age
+// an agent out) in ms. Used by the proven count only.
+function agentMaxAgeMs() {
+  try {
+    const n = Number(require('./settings.js').get('guards', 'idleNeglectAgentMaxAgeMin', 30));
+    if (Number.isFinite(n) && n >= 0) return n * 60 * 1000;
+  } catch (_) { /* fall through */ }
+  return 30 * 60 * 1000;
+}
+
 function enabled() {
   try { return require('./settings.js').get('guards', 'dispatchDemand', true) !== false; } catch (_) { return true; }
 }
@@ -103,7 +113,28 @@ function evaluate(opts) {
   // but not for a Stop BLOCK that says "no in-flight agent on them". Field
   // replay (2026-10): 34 of 58 IDLE NEGLECT blocks with a live agent had
   // dispatch <= unmapped; most sessions said they were waiting on those agents.
-  const proven = fire && dispatch.length > unmapped;
+  //
+  // The proof also refuses two kinds of false cover. An unmapped agent does not
+  // cover a task when (a) it is STALE: its newest sign of life (row.lastActivityMs)
+  // is older than the max age, so a hung agent cannot hide a task for hours; or
+  // (b) it was launched (or last resumed) BEFORE the earliest uncovered task was
+  // created / last set pending or in_progress, so it cannot be working on it
+  // (an unrelated reviewer). Unknown age or unknown task time = it still counts.
+  // Stale agents also stop counting against the cap.
+  const nowMs = opts && Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+  const maxAge = opts && Number.isFinite(opts.agentMaxAgeMs) ? opts.agentMaxAgeMs : agentMaxAgeMs();
+  const sinces = dispatch.map((t) => t && t.sinceMs);
+  const earliest = sinces.length > 0 && sinces.every(Number.isFinite) ? Math.min(...sinces) : NaN;
+  let provenUnmapped = 0;
+  let uncounted = 0;
+  for (const a of running) {
+    if ([...taskRefs(a && a.description)].some((id) => known.has(id))) continue;
+    const stale = maxAge > 0 && a && Number.isFinite(a.lastActivityMs) && nowMs - a.lastActivityMs > maxAge;
+    const startedMs = Math.max(Number.isFinite(a && a.launchedAtMs) ? a.launchedAtMs : -Infinity, Number.isFinite(a && a.resumedAtMs) ? a.resumedAtMs : -Infinity);
+    const before = Number.isFinite(earliest) && Number.isFinite(startedMs) && startedMs < earliest;
+    if (stale || before) uncounted++; else provenUnmapped++;
+  }
+  const proven = dispatch.length > 0 && dispatch.length > provenUnmapped && running.length - uncounted < cap;
   return { fire, proven, dispatch, covered: [...covered], unmapped, running: running.length, cap };
 }
 
@@ -248,6 +279,7 @@ function summary(home) {
 }
 
 module.exports = {
+  agentMaxAgeMs,
   evaluate, demandLine, label, taskRefs, defaultCap, configuredCap, enabled, provenOnly,
   resolvePending, recordDemand, recordIdleNeglect, summary, readMetrics, metricsPath, spawnedSince,
 };
