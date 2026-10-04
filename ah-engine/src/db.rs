@@ -6,13 +6,17 @@
 //! one sync (group commit). Each write runs inside its own savepoint, so a refused write never undoes its neighbours.
 //!
 //! Reads use a second connection (WAL lets them run while the writer commits). archive.db is opened on first use.
+//! After a commit the writer also updates the in-memory layer ([`Mem`]: active key-value items and pub/sub, D20, D22),
+//! so memory always follows the commit order and never holds anything SQLite does not.
 //! Every SQLite setting (journal mode, synchronous level, fullfsync, cache, mmap, timeouts) comes from
 //! `defaults/storage.toml`; the schema lives in `sql.rs` and is migrated by version on open.
 use crate::defaults;
 use crate::error::DbError;
+use crate::error::StoreError;
 use crate::sql;
 use crate::storage::ImpactEvent;
-use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
+use crate::tier::{Bus, Tiered};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -25,6 +29,91 @@ pub enum Op {
     Impact(ImpactEvent),
     /// No change: answered once everything queued before it has committed (read-your-writes for a following read).
     Barrier,
+    /// A project-partition write (D21 pending mailbox and key-value state). A non-empty `write_id` makes it idempotent:
+    /// a repeat with the same id returns the first result and changes nothing (D24).
+    Proj {
+        /// The project key (derived by the daemon from the request's cwd).
+        project: String,
+        /// Idempotency key, or empty.
+        write_id: String,
+        /// What to do.
+        verb: ProjVerb,
+    },
+}
+
+/// A state-changing project operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjVerb {
+    /// Append a message to the project's mailbox.
+    Put(String),
+    /// Consume the oldest pending message (it is marked consumed, never deleted, D26).
+    Take,
+    /// Set a key, optionally expiring at a time (ms since the epoch).
+    Set {
+        /// The key.
+        key: String,
+        /// The value.
+        value: String,
+        /// When the value stops being active, if ever.
+        expires_ms: Option<u64>,
+    },
+}
+
+/// The in-memory layer: active key-value items (budgeted, D25) and the pub/sub channels (D20).
+pub struct Mem {
+    /// Active key-value items, keyed by (project, key).
+    pub kv: Mutex<Tiered<(String, String), String>>,
+    /// Pub/sub channels; a committed mailbox put or key set is announced on `project:<hash>`.
+    pub bus: Bus,
+    /// Bumped by every write that touches `kv`, so a read that raced a write does not promote a stale value.
+    seq: std::sync::atomic::AtomicU64,
+}
+
+impl Mem {
+    fn new() -> Mem {
+        Mem {
+            kv: Mutex::new(Tiered::new(defaults::num("tier.budget_kb") as usize * 1024)),
+            bus: Bus::new(defaults::num("tier.bus_queue") as usize, defaults::num("tier.bus_channels") as usize),
+            seq: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// The write sequence now; pass it to [`Mem::promote`] after reading SQLite.
+    pub fn seq(&self) -> u64 {
+        self.seq.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Make a value read from SQLite active, unless a write happened since `seq` was taken (then the next read
+    /// promotes the newer value instead).
+    pub fn promote(&self, seq: u64, k: (String, String), v: String, expires_ms: Option<u64>) {
+        let mut kv = lk(&self.kv);
+        if self.seq() == seq && !kv.contains(&k) {
+            let size = item_size(&k, &v);
+            kv.insert(k, v, size, expires_ms);
+        }
+    }
+
+    /// After a commit: make written items active and announce them.
+    fn committed(&self, op: &Op) {
+        let Op::Proj { project, verb, .. } = op else { return };
+        let channel = format!("{}{}", defaults::text("tier.project_channel_prefix"), crate::telemetry::project_hash(project));
+        match verb {
+            ProjVerb::Set { key, value, expires_ms } => {
+                self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let k = (project.clone(), key.clone());
+                let size = item_size(&k, value);
+                lk(&self.kv).insert(k, value.clone(), size, *expires_ms);
+                self.bus.publish(&channel, &serde_json::json!({"kind": "kv", "key": key}).to_string());
+            }
+            ProjVerb::Put(_) => self.bus.publish(&channel, &serde_json::json!({"kind": "mail"}).to_string()),
+            ProjVerb::Take => {}
+        }
+    }
+}
+
+/// Bytes an item is charged against the budget: its text plus a fixed per-item overhead.
+fn item_size(k: &(String, String), v: &str) -> usize {
+    k.0.len() + k.1.len() + v.len() + defaults::num("tier.item_overhead") as usize
 }
 
 struct Job {
@@ -43,6 +132,8 @@ pub struct Db {
     archive: Mutex<Option<Connection>>,
     dir: PathBuf,
     writer: Mutex<Option<JoinHandle<()>>>,
+    /// The in-memory layer over hot.db.
+    pub mem: Arc<Mem>,
 }
 
 /// Apply the shipped SQLite settings to a connection; `sync_key` names its synchronous level.
@@ -95,13 +186,16 @@ impl Db {
         let write = open_file(&hot, "storage.hot_synchronous", sql::HOT_MIGRATIONS)?;
         let read = open_file(&hot, "storage.hot_synchronous", sql::HOT_MIGRATIONS)?;
         let (tx, rx) = mpsc::sync_channel(defaults::num("storage.write_queue") as usize);
-        let handle = std::thread::spawn(move || writer(write, rx));
+        let mem = Arc::new(Mem::new());
+        let m = mem.clone();
+        let handle = std::thread::spawn(move || writer(write, rx, &m));
         Ok(Arc::new(Db {
             tx: Mutex::new(Some(tx)),
             read: Mutex::new(read),
             archive: Mutex::new(None),
             dir: dir.to_path_buf(),
             writer: Mutex::new(Some(handle)),
+            mem,
         }))
     }
 
@@ -170,7 +264,7 @@ impl Drop for Db {
 
 /// The writer thread: take one job, add whatever else is already queued (up to `storage.batch_max`), commit them as
 /// one transaction, then answer each. Ends when every sender is gone and the queue is empty.
-fn writer(mut conn: Connection, rx: Receiver<Job>) {
+fn writer(mut conn: Connection, rx: Receiver<Job>, mem: &Mem) {
     let max = defaults::num("storage.batch_max") as usize;
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
@@ -180,12 +274,12 @@ fn writer(mut conn: Connection, rx: Receiver<Job>) {
                 Err(_) => break,
             }
         }
-        commit_batch(&mut conn, batch);
+        commit_batch(&mut conn, batch, mem);
     }
 }
 
 /// Apply a batch in one transaction, each job in its own savepoint; a failed commit fails every job in it.
-fn commit_batch(conn: &mut Connection, batch: Vec<Job>) {
+fn commit_batch(conn: &mut Connection, batch: Vec<Job>, mem: &Mem) {
     let mut results: Vec<Result<String, DbError>> = Vec::with_capacity(batch.len());
     let outcome = if batch.iter().all(|j| matches!(j.op, Op::Barrier)) {
         batch.iter().for_each(|_| results.push(Ok(String::new())));
@@ -195,6 +289,11 @@ fn commit_batch(conn: &mut Connection, batch: Vec<Job>) {
     };
     if let Err(e) = outcome {
         results = batch.iter().map(|_| Err(e.clone())).collect();
+    }
+    for (j, r) in batch.iter().zip(&results) {
+        if r.is_ok() {
+            mem.committed(&j.op);
+        }
     }
     for (j, r) in batch.into_iter().zip(results) {
         if let Some(tx) = j.reply {
@@ -230,6 +329,64 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
             c.prepare_cached(sql::IMPACT_INSERT)?.execute(params![e.ts_ms as i64, e.kind, e.check, e.reason, e.project])?;
             c.prepare_cached(sql::IMPACT_COUNT)?.execute(params![e.kind, e.check, e.reason, e.project])?;
             Ok(String::new())
+        }
+        Op::Proj { project, write_id, verb } => {
+            if !write_id.is_empty() {
+                if let Some(r) = c.prepare_cached(sql::APPLIED_GET)?.query_row(params![write_id], |r| r.get::<_, String>(0)).optional()? {
+                    return Ok(r); // already applied: same answer, no change
+                }
+            }
+            let now = crate::health::now_ms() as i64;
+            let r = proj_apply(c, project, verb, now)?;
+            if !write_id.is_empty() {
+                c.prepare_cached(sql::APPLIED_PUT)?.execute(params![write_id, now, r])?;
+            }
+            Ok(r)
+        }
+    }
+}
+
+fn cap(name: &str) -> i64 {
+    defaults::num(&format!("store.{name}")) as i64
+}
+
+/// Refuse a write that would start a new project partition past `store.max_projects`.
+fn check_project(c: &Connection, project: &str) -> Result<(), DbError> {
+    let known: bool = c.prepare_cached(sql::PROJECT_KNOWN)?.query_row(params![project], |r| r.get(0))?;
+    if !known && c.prepare_cached(sql::PROJECT_COUNT)?.query_row([], |r| r.get::<_, i64>(0))? >= cap("max_projects") {
+        return Err(DbError::Rejected(StoreError::TooManyProjects));
+    }
+    Ok(())
+}
+
+fn proj_apply(c: &Connection, project: &str, verb: &ProjVerb, now: i64) -> Result<String, DbError> {
+    match verb {
+        ProjVerb::Put(body) => {
+            check_project(c, project)?;
+            if c.prepare_cached(sql::MAIL_PENDING)?.query_row(params![project], |r| r.get::<_, i64>(0))? >= cap("mailbox_cap") {
+                return Err(DbError::Rejected(StoreError::MailboxFull));
+            }
+            c.prepare_cached(sql::MAIL_PUT)?.execute(params![project, body, now])?;
+            Ok("ok".to_string())
+        }
+        ProjVerb::Take => {
+            let next = c.prepare_cached(sql::MAIL_NEXT)?.query_row(params![project], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).optional()?;
+            match next {
+                Some((id, body)) => {
+                    c.prepare_cached(sql::MAIL_CONSUME)?.execute(params![id, now])?;
+                    Ok(body)
+                }
+                None => Ok(String::new()),
+            }
+        }
+        ProjVerb::Set { key, value, expires_ms } => {
+            check_project(c, project)?;
+            let active: bool = c.prepare_cached(sql::KV_ACTIVE)?.query_row(params![project, key, now], |r| r.get(0))?;
+            if !active && c.prepare_cached(sql::KV_COUNT)?.query_row(params![project, now], |r| r.get::<_, i64>(0))? >= cap("kv_cap") {
+                return Err(DbError::Rejected(StoreError::TooManyKeys));
+            }
+            c.prepare_cached(sql::KV_SET)?.execute(params![project, key, value, expires_ms.map(|e| e as i64), now])?;
+            Ok("ok".to_string())
         }
     }
 }

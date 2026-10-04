@@ -77,3 +77,28 @@ value = 1000
 env = "AH_ENGINE_ACK_TIMEOUT_MS"
 unit = "ms"
 min = 1
+
+# ---- in-memory layer (D20, D22, D25) ---------------------------------------------------------------------
+
+[tier.budget_kb]
+doc = "Memory budget of the active key-value items; past it the least recently used item is dropped from memory (SQLite keeps it)."
+value = 2048
+env = "AH_ENGINE_TIER_BUDGET_KB"
+unit = "KB"
+
+[tier.item_overhead]
+doc = "Bytes charged per item on top of its text, for the map and ordering entries that hold it."
+value = 96
+unit = "bytes"
+
+[tier.bus_queue]
+doc = "Notifications each pub/sub subscriber can hold; a full queue loses notifications (counted), never data."
+value = 256
+
+[tier.bus_channels]
+doc = "Most pub/sub channels with subscribers at once."
+value = 1024
+
+[tier.project_channel_prefix]
+doc = "Channel name prefix for a project's notifications; the hashed project key follows it."
+value = "project:"

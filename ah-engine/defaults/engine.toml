@@ -389,15 +389,15 @@ unit = "ms"
 # ---- project store --------------------------------------------------------------------------------------
 
 [store.max_projects]
-doc = "Most project partitions held in memory."
+doc = "Most project partitions holding a key or a pending message; a write that would start one more is refused."
 value = 256
 
 [store.mailbox_cap]
-doc = "Most mailbox entries per project."
+doc = "Most pending (unconsumed) mailbox entries per project."
 value = 64
 
 [store.kv_cap]
-doc = "Most key-value pairs per project."
+doc = "Most active (unexpired) key-value pairs per project."
 value = 64
 
 [store.value_cap]
@@ -526,5 +526,5 @@ doc = "The impact ledger report as JSON."
 value = { request = "CTL impact [kind=<kind>] [project=<hash>] [recent=<n>]", reply = "OK <impact JSON>" }
 
 [protocol.project]
-doc = "A per-project in-memory operation; the daemon derives the partition from the cwd, so a request cannot name another project's key."
-value = { request = "P <cwd>\n<put|take|len|set|get> [args]", reply = "OK <value> | ERR <reason> | BUSY" }
+doc = "A per-project operation on hot.db; the daemon derives the partition from the cwd, so a request cannot name another project's key. A write is answered only after it commits; the optional write id makes it idempotent."
+value = { request = "P <cwd>\n[W <write-id>\n]<put|take|len|set|setex|get> [args]", reply = "OK <value> | ERR <reason> | BUSY" }

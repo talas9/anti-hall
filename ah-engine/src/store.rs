@@ -1,9 +1,13 @@
 //! Project-partitioned state. Every operation is keyed by a project key that the DAEMON derives from the
 //! request's `cwd` (nearest ancestor holding `.git`, else the cwd itself); a request cannot name another
 //! project's key, so project A has no path to project B's mailbox or values.
-use crate::error::StoreError;
-use std::collections::{HashMap, VecDeque};
+use crate::db::{Db, Op, ProjVerb};
+use crate::error::{DbError, StoreError};
+use crate::sql;
+use rusqlite::{params, OptionalExtension};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// A numeric store cap from the defaults (`store.<name>`).
 fn cap(name: &str) -> usize {
@@ -59,59 +63,70 @@ impl KeyCache {
     }
 }
 
-#[derive(Default)]
-struct Project {
-    mailbox: VecDeque<String>,
-    kv: HashMap<String, String>,
+/// Per-project mailboxes and key-value pairs, stored in hot.db with the active key-value items in memory (D20-D22).
+///
+/// Writes (`put`, `take`, `set`, `setex`) go through the writer and are answered only after they commit (D23). Reads
+/// (`get`, `len`) never write: `get` is served from the in-memory layer when the item is active there and from SQLite
+/// otherwise (then promoted), `len` counts pending messages in SQLite. Without a database every operation is refused,
+/// so the client retries and then spools (D24); nothing is kept in memory alone.
+pub struct Store {
+    db: Option<Arc<Db>>,
 }
 
-/// Per-project mailboxes and key-value pairs, in memory.
-#[derive(Default)]
-pub struct Store {
-    projects: HashMap<String, Project>,
+/// How long a `setex` value stays active, from its argument.
+fn ttl_ms(arg: &str) -> Option<u64> {
+    arg.trim().parse::<u64>().ok().map(|s| s.saturating_mul(1000))
 }
 
 impl Store {
-    /// Number of partitions currently held.
-    pub fn projects(&self) -> usize {
-        self.projects.len()
+    /// A store over `db` (`None`: storage did not open, every operation is refused).
+    pub fn new(db: Option<Arc<Db>>) -> Store {
+        Store { db }
     }
 
-    /// Run `verb` against the partition `key`. Verbs: `put <text>`, `take`, `len`, `set <k> <v>`, `get <k>`.
-    pub fn op(&mut self, key: &str, verb: &str, args: &str) -> Result<String, StoreError> {
-        if !self.projects.contains_key(key) {
-            if matches!(verb, "take" | "len" | "get") {
-                return Ok(if verb == "len" { "0".into() } else { String::new() });
-                // reads never allocate a partition
-            }
-            if self.projects.len() >= cap("max_projects") {
-                return Err(StoreError::TooManyProjects);
-            }
-        }
+    /// Run `verb` against the partition `key`. Verbs: `put <text>`, `take`, `len`, `set <k> <v>`, `setex <k> <ttl_s> <v>`,
+    /// `get <k>`. A non-empty `write_id` makes a write idempotent (a repeat returns the first answer).
+    pub fn op(&self, key: &str, write_id: &str, verb: &str, args: &str) -> Result<String, DbError> {
+        let db = self.db.as_ref().ok_or(DbError::Unavailable)?;
         if args.len() > cap("value_cap") {
-            return Err(StoreError::ValueTooLarge);
+            return Err(DbError::Rejected(StoreError::ValueTooLarge));
         }
-        let p = self.projects.entry(key.to_string()).or_default();
+        let write = |verb: ProjVerb| db.write(Op::Proj { project: key.to_string(), write_id: write_id.to_string(), verb });
         match verb {
-            "put" => {
-                if p.mailbox.len() >= cap("mailbox_cap") {
-                    return Err(StoreError::MailboxFull);
-                }
-                p.mailbox.push_back(args.to_string());
-                Ok("ok".into())
-            }
-            "take" => Ok(p.mailbox.pop_front().unwrap_or_default()),
-            "len" => Ok(p.mailbox.len().to_string()),
+            "put" => write(ProjVerb::Put(args.to_string())),
+            "take" => write(ProjVerb::Take),
             "set" => {
                 let (k, v) = args.split_once(' ').unwrap_or((args, ""));
-                if !p.kv.contains_key(k) && p.kv.len() >= cap("kv_cap") {
-                    return Err(StoreError::TooManyKeys);
-                }
-                p.kv.insert(k.to_string(), v.to_string());
-                Ok("ok".into())
+                write(ProjVerb::Set { key: k.to_string(), value: v.to_string(), expires_ms: None })
             }
-            "get" => Ok(p.kv.get(args.trim()).cloned().unwrap_or_default()),
-            v => Err(StoreError::UnknownVerb(v.to_string())),
+            "setex" => {
+                let mut it = args.splitn(3, ' ');
+                let (k, ttl, v) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+                let Some(ttl) = ttl_ms(ttl) else { return Err(DbError::Rejected(StoreError::UnknownVerb(format!("{verb} {k} {ttl}")))) };
+                write(ProjVerb::Set { key: k.to_string(), value: v.to_string(), expires_ms: Some(crate::health::now_ms().saturating_add(ttl)) })
+            }
+            "len" => db.read(|c| c.prepare_cached(sql::MAIL_PENDING)?.query_row(params![key], |r| r.get::<_, i64>(0))).map(|n| n.to_string()),
+            "get" => self.get(db, key, args.trim()),
+            v => Err(DbError::Rejected(StoreError::UnknownVerb(v.to_string()))),
+        }
+    }
+
+    fn get(&self, db: &Db, project: &str, k: &str) -> Result<String, DbError> {
+        let now = crate::health::now_ms();
+        let item = (project.to_string(), k.to_string());
+        if let Some(v) = db.mem.kv.lock().unwrap_or_else(|e| e.into_inner()).get(&item, now) {
+            return Ok(v);
+        }
+        let seq = db.mem.seq();
+        let row = db.read(|c| {
+            c.prepare_cached(sql::KV_GET)?.query_row(params![project, k], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))).optional()
+        })?;
+        match row {
+            Some((v, exp)) if exp.is_none_or(|e| e > now as i64) => {
+                db.mem.promote(seq, item, v.clone(), exp.map(|e| e.max(0) as u64));
+                Ok(v)
+            }
+            _ => Ok(String::new()), // absent, or its lifecycle ended (the row stays in SQLite)
         }
     }
 }
@@ -119,11 +134,19 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::TempDir;
+    use crate::defaults;
 
     #[test]
     fn normalize_is_lexical() {
         assert_eq!(normalize("/a/b/../c/./d//e"), "/a/c/d/e");
         assert_eq!(normalize("/../.."), "/");
+    }
+
+    fn store(tag: &str) -> (TempDir, Arc<Db>, Store) {
+        let d = TempDir::new(tag);
+        let db = Db::open(&d.0).unwrap();
+        (d, db.clone(), Store::new(Some(db)))
     }
 
     #[test]
@@ -139,29 +162,123 @@ mod tests {
         assert_eq!(ka, ka2, "a subdirectory belongs to its repo");
         assert_ne!(ka, kb);
         assert_ne!(ka, ke, "a sibling sharing a name prefix is a different project");
-        let mut s = Store::default();
-        s.op(&ka, "put", "secret for A").unwrap();
-        s.op(&ka, "set", "token a-only").unwrap();
-        assert_eq!(s.op(&kb, "take", "").unwrap(), "");
-        assert_eq!(s.op(&kb, "get", "token").unwrap(), "");
-        assert_eq!(s.op(&ke, "take", "").unwrap(), "");
-        assert_eq!(s.op(&kb, "len", "").unwrap(), "0");
-        assert_eq!(s.projects(), 1, "reading another project does not create a partition");
-        assert_eq!(s.op(&ka2, "get", "token").unwrap(), "a-only");
-        assert_eq!(s.op(&ka2, "take", "").unwrap(), "secret for A");
+        let (_d, _db, s) = store("iso");
+        s.op(&ka, "", "put", "secret for A").unwrap();
+        s.op(&ka, "", "set", "token a-only").unwrap();
+        assert_eq!(s.op(&kb, "", "take", "").unwrap(), "");
+        assert_eq!(s.op(&kb, "", "get", "token").unwrap(), "");
+        assert_eq!(s.op(&ke, "", "take", "").unwrap(), "");
+        assert_eq!(s.op(&kb, "", "len", "").unwrap(), "0");
+        assert_eq!(s.op(&ka2, "", "get", "token").unwrap(), "a-only");
+        assert_eq!(s.op(&ka2, "", "take", "").unwrap(), "secret for A");
         let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn caps_hold() {
-        let mut s = Store::default();
+        let (_d, _db, s) = store("caps");
         for i in 0..cap("mailbox_cap") {
-            s.op("/p", "put", &i.to_string()).unwrap();
+            s.op("/p", "", "put", &i.to_string()).unwrap();
         }
-        assert!(s.op("/p", "put", "x").is_err());
+        assert_eq!(s.op("/p", "", "put", "x"), Err(DbError::Rejected(StoreError::MailboxFull)));
+        assert_eq!(s.op("/p", "", "take", "").unwrap(), "0", "oldest first");
+        s.op("/p", "", "put", "x").unwrap();
         for i in 0..cap("max_projects") {
-            s.op(&format!("/q{i}"), "put", "x").ok();
+            let _ = s.op(&format!("/q{i}"), "", "put", "x");
         }
-        assert!(s.projects() <= cap("max_projects"));
+        assert_eq!(s.op("/one-too-many", "", "put", "x"), Err(DbError::Rejected(StoreError::TooManyProjects)));
+        assert!(s.op("/p", "", "set", &format!("k {}", "v".repeat(cap("value_cap")))).is_err(), "value cap");
+    }
+
+    #[test]
+    fn writes_are_durable_and_reads_survive_a_restart() {
+        let d = TempDir::new("restart");
+        {
+            let db = Db::open(&d.0).unwrap();
+            let s = Store::new(Some(db.clone()));
+            s.op("/p", "", "put", "first").unwrap();
+            s.op("/p", "", "put", "second").unwrap();
+            s.op("/p", "", "set", "k v1").unwrap();
+            s.op("/p", "", "take", "").unwrap();
+            db.close();
+        }
+        let db = Db::open(&d.0).unwrap();
+        let s = Store::new(Some(db.clone()));
+        assert!(db.mem.kv.lock().unwrap().is_empty(), "a restart starts with no active items in memory");
+        assert_eq!(s.op("/p", "", "len", "").unwrap(), "1");
+        assert_eq!(s.op("/p", "", "get", "k").unwrap(), "v1", "read from SQLite");
+        assert_eq!(db.mem.kv.lock().unwrap().len(), 1, "and promoted, because it is active");
+        assert_eq!(s.op("/p", "", "take", "").unwrap(), "second", "a consumed message stays consumed");
+    }
+
+    #[test]
+    fn write_through_makes_an_item_active_only_after_its_commit() {
+        let (_d, db, s) = store("through");
+        s.op("/p", "", "set", "k v").unwrap();
+        let other = rusqlite::Connection::open(db.dir().join("hot.db")).unwrap();
+        let v: String = other.query_row("SELECT value FROM kv WHERE key = 'k'", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "v", "committed");
+        assert!(db.mem.kv.lock().unwrap().contains(&("/p".to_string(), "k".to_string())), "and active");
+        let hits = db.mem.kv.lock().unwrap().hits;
+        assert_eq!(s.op("/p", "", "get", "k").unwrap(), "v");
+        assert_eq!(db.mem.kv.lock().unwrap().hits, hits + 1, "served from memory");
+    }
+
+    #[test]
+    fn eviction_loses_nothing() {
+        let (_d, db, s) = store("evict");
+        let n = 200;
+        let big = "x".repeat(defaults::num("tier.budget_kb") as usize * 1024 / 50);
+        for i in 0..n {
+            s.op(&format!("/p{}", i % 50), "", "set", &format!("k{i} {big}{i}")).unwrap();
+        }
+        let t = db.mem.kv.lock().unwrap();
+        assert!(t.bytes() <= defaults::num("tier.budget_kb") as usize * 1024 && t.evictions > 0, "the budget holds");
+        drop(t);
+        for i in 0..n {
+            assert_eq!(s.op(&format!("/p{}", i % 50), "", "get", &format!("k{i}")).unwrap(), format!("{big}{i}"), "every value is still there");
+        }
+    }
+
+    #[test]
+    fn a_ttl_ends_the_items_lifecycle_but_keeps_the_row() {
+        let (_d, db, s) = store("ttl");
+        s.op("/p", "", "setex", "k 0 gone").unwrap();
+        s.op("/p", "", "setex", "keep 3600 here").unwrap();
+        assert_eq!(s.op("/p", "", "get", "k").unwrap(), "", "expired at once");
+        assert_eq!(s.op("/p", "", "get", "keep").unwrap(), "here");
+        let n: i64 = db.read(|c| c.query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))).unwrap();
+        assert_eq!(n, 2, "the expired row is kept in SQLite (D22, D26)");
+        assert!(s.op("/p", "", "setex", "k notanumber v").is_err());
+    }
+
+    #[test]
+    fn a_repeated_write_id_is_applied_once() {
+        let (_d, _db, s) = store("idem");
+        assert_eq!(s.op("/p", "w1", "put", "once").unwrap(), "ok");
+        assert_eq!(s.op("/p", "w1", "put", "once").unwrap(), "ok");
+        assert_eq!(s.op("/p", "", "len", "").unwrap(), "1");
+        assert_eq!(s.op("/p", "t1", "take", "").unwrap(), "once");
+        assert_eq!(s.op("/p", "t1", "take", "").unwrap(), "once", "a retried take returns the same message, not the next");
+    }
+
+    #[test]
+    fn committed_writes_are_announced_on_the_project_channel() {
+        let (_d, db, s) = store("bus");
+        let ch = format!("{}{}", defaults::text("tier.project_channel_prefix"), crate::telemetry::project_hash("/p"));
+        let rx = db.mem.bus.subscribe(&ch).unwrap();
+        s.op("/p", "", "put", "hello").unwrap();
+        s.op("/p", "", "set", "k v").unwrap();
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].contains("mail") && got[1].contains("kv"));
+        assert!(!got.iter().any(|m| m.contains("hello")), "a notification carries no content; the data is in SQLite");
+    }
+
+    #[test]
+    fn without_storage_every_operation_is_refused() {
+        let s = Store::new(None);
+        assert_eq!(s.op("/p", "", "put", "x"), Err(DbError::Unavailable));
+        assert_eq!(s.op("/p", "", "get", "k"), Err(DbError::Unavailable));
     }
 }

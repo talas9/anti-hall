@@ -99,7 +99,7 @@ pub struct Shared {
     seen: Mutex<Option<(SystemTime, u64)>>,
     sessions: Mutex<Buckets>,
     projects: Mutex<Buckets>,
-    store: Mutex<Store>,
+    store: Store,
     keys: Mutex<KeyCache>,
     /// Counters.
     pub stats: Stats,
@@ -151,7 +151,7 @@ impl Shared {
             rules: RwLock::new(Arc::new(rules)),
             seen: Mutex::new(mtime(&rules_path)),
             rules_path,
-            store: Mutex::new(Store::default()),
+            store: Store::new(None),
             keys: Mutex::new(KeyCache::default()),
             stats: Stats::default(),
             queue: Mutex::new(VecDeque::new()),
@@ -176,6 +176,7 @@ impl Shared {
     pub fn attach_db(&mut self, db: Arc<crate::db::Db>) {
         self.telemetry = Telemetry::with_store(Box::new(crate::storage::SqliteStore::new(db.clone())));
         self.storage = defaults::text("msg.storage_ok").to_string();
+        self.store = Store::new(Some(db.clone()));
         self.db = Some(db);
     }
 
@@ -186,8 +187,21 @@ impl Shared {
     /// The `metrics` control verb: `check=<name>` narrows to one check's series. Live gauges are refreshed first.
     fn metrics_json(&self, args: &str) -> serde_json::Value {
         let check = kv(args, "check");
-        let gauges =
-            [("rss_kb", limits::rss_kb() as f64), ("queue_depth", self.depth.load(SeqCst) as f64), ("uptime_s", self.started.elapsed().as_secs() as f64)];
+        let mut gauges =
+            vec![("rss_kb", limits::rss_kb() as f64), ("queue_depth", self.depth.load(SeqCst) as f64), ("uptime_s", self.started.elapsed().as_secs() as f64)];
+        if let Some(db) = &self.db {
+            let t = lk(&db.mem.kv);
+            gauges.extend([
+                ("tier_items", t.len() as f64),
+                ("tier_bytes", t.bytes() as f64),
+                ("tier_hits", t.hits as f64),
+                ("tier_misses", t.misses as f64),
+                ("tier_evictions", t.evictions as f64),
+                ("tier_expired", t.expired as f64),
+                ("bus_published", db.mem.bus.published.load(SeqCst) as f64),
+                ("bus_dropped", db.mem.bus.dropped.load(SeqCst) as f64),
+            ]);
+        }
         self.telemetry.metrics_json(&check, &gauges)
     }
 
@@ -341,7 +355,8 @@ fn hook(body: &str, sh: &Shared) -> Reply {
     reply
 }
 
-/// `P <cwd>\n<verb> <args>`: the partition is derived here from `cwd`; the request cannot name a key.
+/// `P <cwd>\n[W <write-id>\n]<verb> <args>`: the partition is derived here from `cwd`; the request cannot name a key. The
+/// optional write id makes a write idempotent, so a client may retry it or spool it (D24).
 fn project_op(cwd: &str, body: &str, sh: &Shared) -> Reply {
     if cwd.is_empty() {
         return Reply::Err(defaults::text("msg.reply_missing_cwd").into());
@@ -352,9 +367,18 @@ fn project_op(cwd: &str, body: &str, sh: &Shared) -> Reply {
         sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
         return Reply::Busy;
     }
+    let (write_id, body) = match body.strip_prefix("W ").and_then(|r| r.split_once('\n')) {
+        Some((id, rest)) => (id.trim(), rest),
+        None => ("", body),
+    };
     let (verb, args) = body.trim_end_matches('\n').split_once(' ').unwrap_or((body.trim(), ""));
-    match lk(&sh.store).op(&key, verb, args) {
+    match sh.store.op(&key, write_id, verb, args) {
         Ok(v) => Reply::Ok(v),
+        Err(crate::error::DbError::Busy) => {
+            sh.stats.busy.fetch_add(1, SeqCst);
+            sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
+            Reply::Busy
+        }
         Err(e) => Reply::Err(e.to_string()),
     }
 }
@@ -751,10 +775,16 @@ mod tests {
 
     #[test]
     fn project_ops_are_partitioned_by_cwd() {
-        let sh = shared();
+        let d = crate::db::TempDir::new("daemon-proj");
+        let mut sh = shared();
+        assert!(matches!(handle_request(b"P /nonexistent-a\nput x", &sh).0, Reply::Err(_)), "no storage: refused, never kept in memory alone");
+        sh.attach_db(crate::db::Db::open(&d.0).unwrap());
         let p = |cwd: &str, body: &str| handle_request(format!("P {cwd}\n{body}").as_bytes(), &sh).0;
         assert_eq!(p("/nonexistent-a", "put hello"), Reply::Ok("ok".into()));
         assert_eq!(p("/nonexistent-b", "take"), Reply::Ok(String::new()));
         assert_eq!(p("/nonexistent-a", "take"), Reply::Ok("hello".into()));
+        assert_eq!(p("/nonexistent-a", "W id-1\nput again"), Reply::Ok("ok".into()));
+        assert_eq!(p("/nonexistent-a", "W id-1\nput again"), Reply::Ok("ok".into()));
+        assert_eq!(p("/nonexistent-a", "len"), Reply::Ok("1".into()), "the write id made the repeat a no-op");
     }
 }

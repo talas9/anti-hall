@@ -16,7 +16,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `hook` | `[--fallback <hook.js>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. |
 | `impact` | `[--kind <kind>] [--project <hash>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates. |
 | `metrics` | `[--check <name>]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check. |
-| `proj` | `<cwd> <put\|take\|len\|set\|get> [args]` | no | implemented | Per-project in-memory state: put, take, len, set, get (the partition is derived from the cwd). |
+| `proj` | `<cwd> <put\|take\|len\|set\|setex\|get> [args]` | no | implemented | Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a TTL in seconds, get); the partition is derived from the cwd. |
 | `reset` | `` | no | implemented | Clear the client breaker, the crash-loop stop and the failure record. |
 | `restore` | `<snapshot>` | no | planned (D27) | Restore a snapshot, keeping the current state first. |
 | `schedule` | `<list\|add\|remove>` | no | planned (D33) | List, add and remove scheduled jobs. |
@@ -33,7 +33,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `impact` | `CTL impact [kind=<kind>] [project=<hash>] [recent=<n>]` | `OK <impact JSON>` | The impact ledger report as JSON. |
 | `metrics` | `CTL metrics [check=<name>]` | `OK <metrics JSON>` | All metric series as JSON, optionally for one check. |
 | `ping` | `CTL ping` | `OK pong <version> <pid>` | Liveness probe; also how a starting daemon checks that a live one already owns the socket. |
-| `project` | `P <cwd> <put\|take\|len\|set\|get> [args]` | `OK <value> \| ERR <reason> \| BUSY` | A per-project in-memory operation; the daemon derives the partition from the cwd, so a request cannot name another project's key. |
+| `project` | `P <cwd> [W <write-id> ]<put\|take\|len\|set\|setex\|get> [args]` | `OK <value> \| ERR <reason> \| BUSY` | A per-project operation on hot.db; the daemon derives the partition from the cwd, so a request cannot name another project's key. A write is answered only after it commits; the optional write id makes it idempotent. |
 | `reload` | `CTL reload` | `OK ok` | Re-read the rules file now (it is also re-read on SIGHUP and on change). |
 | `status` | `CTL status` | `OK <status JSON>` | The daemon's state as JSON, including a headline summary. |
 | `stop` | `CTL stop` | `OK ok` | Drain and exit. |
@@ -184,9 +184,9 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `store.key_cache_cap` | `1024` |  |  | Most cwd-to-project-key mappings cached (cleared when full) so the hot path does not stat per request. |
-| `store.kv_cap` | `64` |  |  | Most key-value pairs per project. |
-| `store.mailbox_cap` | `64` |  |  | Most mailbox entries per project. |
-| `store.max_projects` | `256` |  |  | Most project partitions held in memory. |
+| `store.kv_cap` | `64` |  |  | Most active (unexpired) key-value pairs per project. |
+| `store.mailbox_cap` | `64` |  |  | Most pending (unconsumed) mailbox entries per project. |
+| `store.max_projects` | `256` |  |  | Most project partitions holding a key or a pending message; a write that would start one more is refused. |
 | `store.value_cap` | `65536` |  | bytes | Largest stored value. |
 
 ### git.toml / git
@@ -336,6 +336,16 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `storage.wal_autocheckpoint` | `1000` |  | pages | WAL pages after which SQLite checkpoints on its own (between explicit checkpoints by `ah-engine maintain`). |
 | `storage.write_queue` | `1024` | `AH_ENGINE_WRITE_QUEUE` |  | Writes that may wait for the writer thread; beyond this a write is refused as busy (the client retries, then spools). |
 
+### storage.toml / tier
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `tier.budget_kb` | `2048` | `AH_ENGINE_TIER_BUDGET_KB` | KB | Memory budget of the active key-value items; past it the least recently used item is dropped from memory (SQLite keeps it). |
+| `tier.bus_channels` | `1024` |  |  | Most pub/sub channels with subscribers at once. |
+| `tier.bus_queue` | `256` |  |  | Notifications each pub/sub subscriber can hold; a full queue loses notifications (counted), never data. |
+| `tier.item_overhead` | `96` |  | bytes | Bytes charged per item on top of its text, for the map and ordering entries that hold it. |
+| `tier.project_channel_prefix` | `project:` |  |  | Channel name prefix for a project's notifications; the hashed project key follows it. |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -445,6 +455,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | Name | Kind | Unit | Labels | What it counts |
 |---|---|---|---|---|
 | `budget_trips` | counter | evaluations |  | Evaluations cut off by the per-request CPU budget. |
+| `bus_dropped` | gauge | notifications |  | Pub/sub notifications a full subscriber queue could not take since the daemon started (the data stays in SQLite). |
+| `bus_published` | gauge | notifications |  | Pub/sub notifications delivered to subscriber queues since the daemon started. |
 | `busy_replies` | counter | requests |  | Requests answered BUSY (queue full or rate limited), which made the client fall back. |
 | `check_calls` | counter | runs | check | Built-in check runs, by check. |
 | `check_decisions` | counter | runs | check, decision | Built-in check outcomes, by check and decision (allow, block, advisory, defer). |
@@ -458,6 +470,12 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `requests` | counter | requests |  | Requests the daemon handled, any type. |
 | `rss_kb` | gauge | KB |  | Resident set of the daemon, sampled when status or metrics is read. |
 | `rule_hits` | counter | matches | action | Regex rule matches, by action (deny, warn, context). |
+| `tier_bytes` | gauge | bytes |  | Bytes charged to the in-memory layer's budget (D25). |
+| `tier_evictions` | gauge | items |  | Items dropped from memory to stay within the budget since the daemon started (SQLite keeps them). |
+| `tier_expired` | gauge | items |  | Items dropped from memory because their TTL ended since the daemon started (SQLite keeps them). |
+| `tier_hits` | gauge | reads |  | Key-value reads answered from memory since the daemon started. |
+| `tier_items` | gauge | items |  | Active key-value items held in memory (D22). |
+| `tier_misses` | gauge | reads |  | Key-value reads that went to SQLite since the daemon started. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 
 ## Impact kinds

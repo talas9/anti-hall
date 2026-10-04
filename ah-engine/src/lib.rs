@@ -21,6 +21,7 @@ pub mod sql;
 pub mod storage;
 pub mod store;
 pub mod telemetry;
+pub mod tier;
 
 /// Version this build reports and compares for handoff. The `version` env override (plugin
 /// version in production, arbitrary in tests).

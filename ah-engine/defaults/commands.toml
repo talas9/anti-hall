@@ -50,8 +50,8 @@ doc = "Clear the client breaker, the crash-loop stop and the failure record."
 value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.proj]
-doc = "Per-project in-memory state: put, take, len, set, get (the partition is derived from the cwd)."
-value = { args = "<cwd> <put|take|len|set|get> [args]", read_only = false, status = "implemented" }
+doc = "Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a TTL in seconds, get); the partition is derived from the cwd."
+value = { args = "<cwd> <put|take|len|set|setex|get> [args]", read_only = false, status = "implemented" }
 
 [cmd.schedule]
 doc = "List, add and remove scheduled jobs."

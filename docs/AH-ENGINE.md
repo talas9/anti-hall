@@ -31,7 +31,8 @@ labelled with how it was measured in the README of `ah-engine/`.
    |-- rules (JSON file)        regex rules: deny / warn / context
    |-- checks (compiled in)     real logic a regex cannot express: the git check
    |-- telemetry                metrics in memory; impact ledger in hot.db
-   |-- project state            per-project mailbox and key-value pairs, in memory
+   |-- project state            per-project mailbox and key-value pairs, in hot.db
+   |-- memory layer             active key-value items (budgeted, TTL) + pub/sub channels
    `-- storage                  hot.db + archive.db (SQLite, bundled), one writer thread
 ```
 
@@ -63,7 +64,9 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Impact ledger and `ah-engine impact`, savings only as labelled estimates | implemented, stored in hot.db | D52 |
 | Status headline summary | implemented | D50-D52 |
 | Embedded SQLite storage: `hot.db` and `archive.db`, WAL, configured durability, versioned migrations, the `Store` trait over SQLite | implemented | D19, D21, D73 |
-| Tiered lifecycle, in-memory layer, retention | planned (D20, D22, D25, D26) | D20, D22, D25, D26 |
+| Tiered lifecycle: write-through to SQLite then memory, active items only, byte budget, key-value with TTL, pub/sub channels | implemented | D20, D22, D25 |
+| Pushing channel notifications to sessions (Monitor) | planned (D45) | D45 |
+| Retention, archive mover, checkpoints and VACUUM | planned (D26) | D26 |
 | Config loaded into versioned storage with reload and rollback | planned (D18) | D18 |
 | Durable write spool when the engine is down | planned (D24) | D24 |
 | Scheduler and ticker, `ah-engine schedule` | planned (D33) | D33 |
@@ -94,7 +97,7 @@ arguments, is in the generated reference.
 | `ah-engine ctl <verb>` | no | `ping`, `reload`, `stop`, `status`. |
 | `ah-engine stop` | no | Drain and exit. |
 | `ah-engine reset` | no | Clear the breaker, crash-loop stop and failure record. |
-| `ah-engine proj <cwd> <verb>` | no | Per-project in-memory state. |
+| `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. |
 | `ah-engine schedule`, `config`, `backup`, `restore` | no | planned (D33, D18, D27); they say so and exit 64. |
 
 ## Metrics and the impact ledger
@@ -102,7 +105,9 @@ arguments, is in the generated reference.
 **Metrics** are counters, gauges and latency histograms kept in memory and bounded. Latency percentiles are reported as
 the upper bound of the histogram bucket that holds that rank, so they are upper estimates. The registered names are:
 `requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `hook_calls`, `hook_latency_us`,
-`check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth` and `uptime_s`.
+`check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth`, `uptime_s`, and for the
+memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evictions`, `tier_expired`, `bus_published`
+and `bus_dropped`.
 
 **Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. They
 are stored in `hot.db` with exact per-combination totals, so counts survive a restart; the project is only ever a short
@@ -124,7 +129,7 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
 
 | File | Holds | Durability |
 |---|---|---|
-| `hot.db` | frequent small writes: impact events and their totals | WAL, `synchronous=FULL`: a write is on disk before it is acknowledged |
+| `hot.db` | frequent small writes: impact events and their totals, per-project mailboxes and key-value pairs, applied write ids | WAL, `synchronous=FULL`: a write is on disk before it is acknowledged |
 | `archive.db` | append-mostly history; opened on first use | WAL, `synchronous=NORMAL`, batched commits |
 
 - **One writer.** A single writer thread owns the `hot.db` write connection. Requests hand it their writes over a bounded
@@ -137,6 +142,18 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
 - **Settings are keys.** Journal mode, synchronous level, `storage.fullfsync` (macOS power-loss safety, off by default:
   it cost about 99 percent of the commit rate when measured, D73), page cache, mmap, timeouts and the writer queue are all
   in `storage.toml`.
+- **Tiered lifecycle (D20, D22, D25).** A write commits to SQLite first; only then does the writer make it active in
+  memory, so memory follows the commit order and never holds anything SQLite does not. Memory holds only active items:
+  a key set with `setex` stops being active when its TTL passes (it is dropped from memory and its row stays in SQLite),
+  and past the byte budget (`tier.budget_kb`) the least recently used item is dropped, which loses nothing. A restart
+  starts with an empty memory layer and promotes items again as they are read. A read that races a write never promotes
+  the older value.
+- **Pub/sub.** Each committed mailbox `put` or key `set` is announced on the channel `project:<hashed project>`. A
+  subscriber has a bounded queue; publishing never blocks, and a slow subscriber loses notifications (counted as
+  `bus_dropped`), never data. Delivering these to sessions is the Monitor push, planned (D45).
+- **Idempotent writes.** A project write may carry a write id (`W <id>` in the request). The writer records the id with
+  the result in the same transaction, so a repeat returns the first answer and changes nothing.
+- **Nothing in memory alone.** Without storage every project operation is refused, so the client can retry and spool it.
 - **Versioned schema.** Each database records how many migrations it has run (`PRAGMA user_version`); opening applies
   the missing ones, each in its own transaction, and re-running them changes nothing. A database written by a newer build
   is refused rather than rewritten.

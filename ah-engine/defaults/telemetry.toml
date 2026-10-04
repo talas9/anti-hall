@@ -100,6 +100,38 @@ value = { kind = "gauge", unit = "connections", labels = [] }
 doc = "Seconds since the daemon started."
 value = { kind = "gauge", unit = "s", labels = [] }
 
+[metric.tier_items]
+doc = "Active key-value items held in memory (D22)."
+value = { kind = "gauge", unit = "items", labels = [] }
+
+[metric.tier_bytes]
+doc = "Bytes charged to the in-memory layer's budget (D25)."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.tier_hits]
+doc = "Key-value reads answered from memory since the daemon started."
+value = { kind = "gauge", unit = "reads", labels = [] }
+
+[metric.tier_misses]
+doc = "Key-value reads that went to SQLite since the daemon started."
+value = { kind = "gauge", unit = "reads", labels = [] }
+
+[metric.tier_evictions]
+doc = "Items dropped from memory to stay within the budget since the daemon started (SQLite keeps them)."
+value = { kind = "gauge", unit = "items", labels = [] }
+
+[metric.tier_expired]
+doc = "Items dropped from memory because their TTL ended since the daemon started (SQLite keeps them)."
+value = { kind = "gauge", unit = "items", labels = [] }
+
+[metric.bus_published]
+doc = "Pub/sub notifications delivered to subscriber queues since the daemon started."
+value = { kind = "gauge", unit = "notifications", labels = [] }
+
+[metric.bus_dropped]
+doc = "Pub/sub notifications a full subscriber queue could not take since the daemon started (the data stays in SQLite)."
+value = { kind = "gauge", unit = "notifications", labels = [] }
+
 # ---- impact kinds ---------------------------------------------------------------------------------------
 
 [impact.block]

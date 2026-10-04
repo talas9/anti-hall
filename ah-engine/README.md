@@ -23,6 +23,7 @@ never a submodule (D69).
 | `src/checks/` | the `Check` trait and registry; `checks/git/` is the git-guard port (tokenizer, segments, aliases, heredoc, runners, launcher) |
 | `src/rules.rs`, `src/hookio.rs` | the rules format (JSON) and hook payload to output translation |
 | `src/telemetry.rs`, `src/metrics.rs`, `src/impact.rs`, `src/storage.rs` | metrics, the impact ledger and the `Store` trait with its SQLite and in-memory stores |
+| `src/tier.rs` | the in-memory layer: the byte-budgeted, TTL-aware `Tiered` cache of active items and the pub/sub bus |
 | `src/db.rs`, `src/sql.rs` | the SQLite pair (`hot.db`, `archive.db`): settings, versioned migrations, the group-committing writer; the schema and statements |
 | `src/defaults.rs`, `build.rs`, `defaults/*.toml` | shipped defaults, compiled into the binary from the TOML files |
 | `src/docs.rs` | the reference generator |
@@ -81,6 +82,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | Safety: socket mode, private directory, symlinks, peer uid, payload never executed, project isolation | `socket_is_0600_and_state_dir_0700`, `long_path_socket_dir_is_private_and_owner_checked`, `symlinked_state_dir_is_refused`, `payload_text_is_never_executed`, `projects_are_isolated_through_the_daemon` |
 | Residency: stays up when idle by default; idle exit is a config key | `tests/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
 | Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/agent_cli.rs` |
+| Tiered lifecycle: write-through after commit, LRU budget loses nothing, TTL ends the lifecycle but keeps the row, a restart rebuilds only active items, idempotent write ids, pub/sub never blocks | `tier::tests`, `store::tests` |
 | Storage: WAL and configured durability, versioned idempotent migrations, a newer schema refused, acknowledged only after commit, queued writes committed on close; both `Store` backends behave the same | `db::tests`, `storage::tests` |
 
 Known limits: CI runs the whole suite on ubuntu and macOS (`.github/workflows/ah-engine.yml`); the Linux CI run found a real
@@ -170,5 +172,6 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Leak fix and residency (D7)
 - [x] README and `docs/AH-ENGINE.md` (D54)
 - [x] Storage backend: SQLite pair, WAL, configured durability, versioned migrations, `Store` over SQLite (D19, D21, D73)
-- [ ] Storage: tiered lifecycle, durability tests, spool, size control, backup, persisted metrics (D20, D22-D27, D51, D52): this phase
+- [x] Tiered lifecycle and the in-memory layer: key-value with TTL, pub/sub, byte budget (D20, D22, D25)
+- [ ] Storage: durability tests, spool, size control, backup, persisted metrics (D20, D22-D27, D51, D52): this phase
 - [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases
