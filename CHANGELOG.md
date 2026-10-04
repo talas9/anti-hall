@@ -12,6 +12,7 @@ the update.
 - Removed the Flutter-specific `flutter-debug` skill and agent; anti-hall is language-agnostic. The removed code remains in git history.
 - The DevSwarm workspace table (parent inbox) is no longer re-sent when only a row's unread count changes; unread already arrives per turn in the inbox segments. Status/finish/risk changes still re-send it, and the keepalive now follows `guards.injectionRepeatEvery` instead of a fixed 10. Measured on a 3-workspace fixture over 16 delivered turns: 286 -> 198 injected chars per turn on average (the COMMS OVERRIDE line was already once-per-session plus keepalive).
 - SubagentStart (`verify-first-subagent.js`, default `context.protocolLevel=compact`) now emits a worker-only short core: iron law, stop-and-verify triggers, done/scope/autonomy/skip rules, the PROTOCOL.md pointer and WORKER. Measured per spawn: 3,564 -> 2,518 chars compact (7,701 under `protocolLevel=full`, unchanged). Main sessions keep the existing session core. The subagent size caps in `verify-first-subagent-compact.test.js` dropped to 2,800/3,100 to pin it.
+- The task-tracker SHORT reminder line is no longer injected on every prompt: it follows `guards.injectionRepeatEvery` (first turn after the FULL primer or a compaction, then every N delivered turns; 0 = every turn). The per-turn open-tasks / DISPATCH NOW note is unchanged, and the hook no longer emits an empty context block when nothing applies. Measured over 12 delivered turns with no open tasks: 1,896 -> 546 chars (158 -> 45 per prompt).
 
 ## 0.202.0 (2026-10-04)
 
