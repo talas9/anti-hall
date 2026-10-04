@@ -502,6 +502,12 @@ the hooks that exited 0 are merged into one line (the host reads a whole stdout 
 would lose every decision), a field set differently keeps the first hook's value, plain text next to JSON moves to
 stderr, and the stderr of all hooks is kept.
 
+**Stop never blocks forever (D74).** Exit 2 on `Stop` or `SubagentStop` keeps the agent running, so a fail-closed block there
+that can never clear would stop it finishing. On those events (`dispatch.stop_events`) a payload with `stop_hook_active` true
+fails open (exit 0, a note on stderr, `dispatch_stop_open` in the log), and so does every fail-closed block after
+`dispatch.stop_block_cap` (2) consecutive ones in a session (counter files under `stop-blocks/` in the state dir, reset
+when the guards run fine again). A hook's own block is never affected.
+
 **Guards fail closed (D74).** The guard events (`dispatch.guard_events`: `PreToolUse`, `PermissionRequest`, `Stop`,
 `SubagentStop`) never turn a failure into a silent allow. The call answers exit 2 with `dispatch.msg_fail_closed` on stderr
 (the log has `dispatch_defer`) when a Node hook cannot run (no runnable command, an unreadable `--fallback-map`, a usage

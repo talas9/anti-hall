@@ -782,6 +782,9 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.msg_skipped_entry` | `entry {id} skipped: no runnable Node command` |  |  | Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}. |
 | `dispatch.msg_stdin_read` | `the hook payload could not be read: {err}` |  |  | Reason in dispatch.msg_fail_closed when reading the payload from stdin failed. Placeholder: {err}. |
 | `dispatch.msg_stdin_truncated` | `the hook payload is larger than the {max} bytes the engine reads` |  |  | Reason in dispatch.msg_fail_closed when the payload on stdin is longer than client.max_stdin, so the dispatcher holds only part of it. Placeholder: {max}. |
+| `dispatch.msg_stop_active` | `anti-hall: the engine could not run the guards for {event} ({why}), and a Sto...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the host says a Stop hook already blocked this turn (stop_hook_active). Placeholders: {event}, {why}. |
+| `dispatch.msg_stop_capped` | `anti-hall: the engine could not run the guards for {event} ({why}) {cap} time...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed once more than dispatch.stop_block_cap times in a row. Placeholders: {event}, {cap}, {why}. |
+| `dispatch.msg_stop_uncounted` | `anti-hall: the engine could not run the guards for {event} ({why}) and cannot...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the consecutive-block count cannot be recorded, so the loop could not be bounded. Placeholders: {event}, {why}. |
 | `dispatch.msg_unknown_host` | `unknown host {host}: the dispatch table has {hosts}` |  |  | Error printed when `--host` names a host the dispatch table does not have. |
 | `dispatch.msg_why_died` | `hook {id} was killed before it could answer` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook was killed by a signal. Placeholder: {id}. |
 | `dispatch.msg_why_incomplete` | `hook {id} finished with incomplete output` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook finished but a process it left behind kept its output open, so the output is incomplete. Placeholder: {id}. |
@@ -790,6 +793,10 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.read_ms` | `2000` |  | ms | How long the dispatcher waits for a finished Node hook's output pipes to drain. |
 | `dispatch.root_vars` | `2 entries` |  |  | Per host, the environment variables that hold the plugin root, first set one wins; the host exports them to hook commands, a command naming an unset one cannot run, and a built-in check gets the root as its plugin_root. |
 | `dispatch.shell` | `/bin/sh, -c` |  |  | The shell a Node hook command runs under, with its command flag (hooks.json commands are shell-form strings). |
+| `dispatch.stop_block_cap` | `2` |  |  | How many consecutive fail-closed blocks a Stop or SubagentStop may answer in one session before every later one fails open with a log (the count resets when the guards run fine again). |
+| `dispatch.stop_events` | `Stop, SubagentStop` |  |  | Guard events whose exit 2 keeps the agent running instead of denying one call (Stop, SubagentStop). A fail-closed block there must be bounded, or an agent whose hooks cannot run could never finish: the payload's stop_hook_active true fails open, and so do more than dispatch.stop_block_cap consecutive fail-closed blocks in one session (the Node Stop hooks make the same stop_hook_active check). |
+| `dispatch.stop_state_dir` | `stop-blocks` |  |  | The directory under the state dir holding one consecutive-block counter file per event and session. |
+| `dispatch.stop_unknown_session` | `unknown` |  |  | Counter key for a Stop whose payload names no session (unreadable or cut off). |
 | `dispatch.tool_aliases` | `2 entries` |  |  | Per host, extra names a tool also answers to when matching (Codex: matcher values Edit and Write also match apply_patch). |
 
 ## Messages

@@ -18,6 +18,7 @@
 pub mod combine;
 pub mod native;
 pub mod node;
+pub mod stoploop;
 pub mod table;
 
 use crate::client::Outcome;
@@ -81,9 +82,23 @@ fn log_defer(event: &str, why: &str) {
     health::log_event("dispatch_defer", event, &defaults::render("dispatch.msg_defer", &[("why", &why)]));
 }
 
-/// The answer for a guard event whose Node hooks cannot run: block (exit 2), never a silent allow.
+/// The answer for a guard event whose Node hooks cannot run: block (exit 2), never a silent allow. See [`closed`] for the
+/// Stop events, which must not block forever.
 pub fn fail_closed(event: &str, why: &str) -> Outcome {
+    closed(event, None, why)
+}
+
+/// [`fail_closed`] with the payload at hand. On Stop and SubagentStop the block is bounded ([`stoploop`]): `stop_hook_active`
+/// true, or too many consecutive blocks in the session, fails OPEN with a log and a note, because a block there that can
+/// never clear keeps the agent from finishing.
+pub fn closed(event: &str, payload: Option<&Value>, why: &str) -> Outcome {
     log_defer(event, why);
+    if stoploop::is_stop_event(event) {
+        if let stoploop::Verdict::Open(note) = stoploop::judge(event, payload, why) {
+            health::log_event("dispatch_stop_open", event, &note);
+            return Outcome { out: String::new(), code: 0, err: format!("{note}\n") };
+        }
+    }
     Outcome { out: String::new(), code: 2, err: format!("{}\n", defaults::render("dispatch.msg_fail_closed", &[("event", &event), ("why", &why)])) }
 }
 
@@ -110,19 +125,20 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
         table::select(&args.host, &args.event, &p, args.tool.as_deref())
     };
     if entries.is_empty() {
+        stoploop::reset(&args.event, parsed.as_ref());
         return Outcome { out: String::new(), code: 0, err: String::new() };
     }
     if let Some(path) = &args.map {
         match table::FallbackMap::load(path) {
             Ok(m) => m.apply(&args.event, &mut entries),
-            Err(e) if guard => return fail_closed(&args.event, &e.to_string()),
+            Err(e) if guard => return closed(&args.event, parsed.as_ref(), &e.to_string()),
             Err(e) => log_defer(&args.event, &e.to_string()),
         }
     }
     let no_command = |id: &str| defaults::render("dispatch.msg_no_fallback", &[("id", &id)]);
     if guard {
         if let Some(e) = entries.iter().find(|e| e.check.is_none() && !table::runnable(&e.command)) {
-            return fail_closed(&args.event, &no_command(&e.id));
+            return closed(&args.event, parsed.as_ref(), &no_command(&e.id));
         }
     } else {
         entries.retain(|e| {
@@ -157,7 +173,7 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
             _ if !table::runnable(&e.command) => {
                 if guard {
                     let _ = node::finish(started.into_iter().map(|(_, r)| r).collect());
-                    return fail_closed(&args.event, &no_command(&e.id));
+                    return closed(&args.event, parsed.as_ref(), &no_command(&e.id));
                 }
                 health::log_event("dispatch_defer", &args.event, &defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]));
             }
@@ -175,13 +191,14 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
                 node::Fate::Died => "dispatch.msg_why_died",
                 _ => "dispatch.msg_why_incomplete",
             };
-            return fail_closed(&args.event, &defaults::render(key, &[("id", &f.result.id)]));
+            return closed(&args.event, parsed.as_ref(), &defaults::render(key, &[("id", &f.result.id)]));
         }
     }
     for (i, f) in slots.into_iter().zip(finished) {
         results[i] = Some(f.result);
     }
     let results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     match combine::combine(&results) {
         combine::Combined::Answer(o) => {
             // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper

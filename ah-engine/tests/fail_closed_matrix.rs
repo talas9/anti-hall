@@ -37,6 +37,8 @@ enum Stdin {
     NoToolName,
     /// A stdin whose read fails (a directory).
     ReadError,
+    /// A valid payload with `stop_hook_active` true (the host says a Stop hook already blocked this turn).
+    StopActive,
 }
 
 /// Whether the wiring passes `--tool`.
@@ -72,6 +74,8 @@ enum Want {
     Quiet,
     /// Exit 2 (closed) or a real allow from a hook that ran.
     ClosedOrAllow,
+    /// Exit 0 with the engine's "could not run the guards" note on stderr: a Stop that must not loop (D74).
+    Open,
 }
 
 #[derive(Clone, Copy)]
@@ -88,6 +92,8 @@ struct Row {
     /// Only these events (empty: every guard event).
     events: &'static [&'static str],
 }
+
+const STOPS: &[&str] = &["Stop", "SubagentStop"];
 
 const BASE: Row = Row {
     name: "",
@@ -135,6 +141,32 @@ fn rows() -> Vec<Row> {
         // ---- wiring ----
         Row { name: "bad host", host_arg: Some("nope"), want: Want::Closed, ..BASE },
         Row { name: "unset plugin root", runnable: false, want: Want::Closed, ..BASE },
+        // a Stop that exits 2 keeps the agent running, so on a state it cannot repair the flag fails it open
+        Row {
+            name: "unset plugin root, stop_hook_active",
+            stdin: Stdin::StopActive,
+            runnable: false,
+            hook: Hook::Cmd { first: MARK, second: MARK },
+            want: Want::Open,
+            events: STOPS,
+            ..BASE
+        },
+        Row {
+            name: "hook cannot spawn, stop_hook_active",
+            stdin: Stdin::StopActive,
+            hook: Hook::Cmd { first: "a\0b", second: "true" },
+            want: Want::Open,
+            events: STOPS,
+            ..BASE
+        },
+        Row {
+            name: "stop_hook_active with a blocking hook is still the hook's block",
+            stdin: Stdin::StopActive,
+            hook: Hook::Cmd { first: BLOCK, second: MARK },
+            want: Want::Blocks("BLOCKME"),
+            events: STOPS,
+            ..BASE
+        },
         // ---- hook side ----
         Row { name: "hook cannot spawn", hook: Hook::Cmd { first: "a\0b", second: "true" }, want: Want::Closed, ..BASE },
         Row { name: "hook killed by a signal", hook: Hook::Cmd { first: "touch \"$AH_TEST_MARK\"; kill -9 $$", second: "true" }, want: Want::Closed, ..BASE },
@@ -250,12 +282,22 @@ fn stdin_bytes(s: Stdin, event: &str, dir: &std::path::Path) -> Vec<u8> {
         }
         Stdin::NoToolName => br#"{"session_id":"fc"}"#.to_vec(),
         Stdin::ReadError => Vec::new(),
+        Stdin::StopActive => {
+            let mut v = payload(event, dir);
+            v["stop_hook_active"] = true.into();
+            v.to_string().into_bytes()
+        }
     }
 }
 
 /// Run the real binary for one row with one hook pair; the fallback map replaces every Node hook of the event.
 fn run(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     let _ = std::fs::remove_dir_all(&case.dir);
+    run_kept(case, row, first, second)
+}
+
+/// [`run`] without wiping the case directory first: the state dir (the Stop block counters) carries over.
+fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     std::fs::create_dir_all(case.dir.join("home")).unwrap();
     let mark = case.dir.join("mark");
     let valid = payload(&case.event, &case.dir);
@@ -352,6 +394,7 @@ fn check(what: &str, row: &Row, want: Want, r: &Run) {
         }
         Want::Quiet => assert_eq!(r.code, 0, "{ctx}"),
         Want::ClosedOrAllow => assert!(closed || (r.code == 0 && r.marked), "expected closed or a real allow: {ctx}"),
+        Want::Open => assert!(r.code == 0 && r.out.is_empty() && r.err.contains("could not run the guards"), "expected a fail-open note: {ctx}"),
     }
     let _ = row;
 }
@@ -394,4 +437,30 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
         }
     }
     assert!(failures.is_empty(), "{} fail-closed violations:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// A Stop whose hooks can never run (plugin root unset) must not block forever: the flag-free payload is blocked up to
+/// `dispatch.stop_block_cap` times in a row, then the next Stop is let through (D74). A Stop that follows a healthy run
+/// starts the count again.
+#[test]
+fn consecutive_stops_with_a_broken_install_end_in_an_exit_0_within_the_cap() {
+    let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
+    for host in table::hosts() {
+        for event in ah_engine::defaults::list("dispatch.stop_events") {
+            if table::entries(host, event).is_empty() {
+                continue;
+            }
+            let host: &'static str = Box::leak(host.to_string().into_boxed_str());
+            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-fl-{host}-{event}-{}", std::process::id())) };
+            let broken = Row { name: "broken install", runnable: false, ..BASE };
+            let _ = std::fs::remove_dir_all(&case.dir);
+            let codes: Vec<i32> = (0..cap + 2).map(|_| run_kept(&case, &broken, MARK, MARK).code).collect();
+            let expect: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
+            assert_eq!(codes, expect, "[{host}/{event}] consecutive Stops, broken install");
+            // a healthy run in between resets the count
+            let healthy = Row { name: "healthy", ..BASE };
+            assert_eq!(run_kept(&case, &healthy, MARK, MARK).code, 0, "[{host}/{event}] healthy Stop");
+            assert_eq!(run_kept(&case, &broken, MARK, MARK).code, 2, "[{host}/{event}] the count restarted after a healthy Stop");
+        }
+    }
 }
