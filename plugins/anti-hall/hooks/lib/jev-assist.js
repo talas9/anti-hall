@@ -1108,8 +1108,12 @@ function speculationBackend(home) {
   let apiJudgeFlag = false;
   try { jevMode = getMode('speculation', readJevJson(home), home); } catch (_) { /* off */ }
   try { apiJudgeFlag = require('./settings.js').get('jev', 'semanticJudge', false, { home: homeDir(home) }) === true; } catch (_) { /* off */ }
+  // judgeBackend: how the semantic judge reaches the model (jev.judgeBackend:
+  // api | cli | auto); meaningful only when backend === 'api' (judge on).
+  let judgeBackend = 'api';
+  try { judgeBackend = require('./settings.js').get('jev', 'judgeBackend', 'api', { home: homeDir(home) }) || 'api'; } catch (_) { /* api */ }
   const backend = jevMode === 'on' ? 'jev' : (apiJudgeFlag ? 'api' : 'lexical');
-  return { backend, apiJudgeFlag, jevMode };
+  return { backend, apiJudgeFlag, jevMode, judgeBackend };
 }
 
 module.exports = {

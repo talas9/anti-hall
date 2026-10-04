@@ -411,11 +411,39 @@ Iron Law at the output boundary — after the model has already produced a reply
 5. **Fail-open:** any parse/read/write error exits 0 without blocking or writing to
    stderr. A bug here never wedges a session.
 
-**Known limit — confident inference without hedge words.** The guard is lexical: it
-catches hedged speculation (`probably`, `likely`, `I suspect`, etc.) but cannot catch a
-confidently-stated inference-as-fact that uses no hedge word at all ("the cause is the
-old build" with zero hedging). That class requires semantic judgment — covered by the
-opt-in **Tier 3 semantic judge** described below.
+**Unsupported confident inferences (opt-in).** The hedge-word scan cannot see a
+confidently-stated inference that uses no hedge word ("The crash is caused by the cache
+race."). Two opt-in components cover it, both off by default because neither reached 0.9
+precision when measured:
+
+- `guards.inferenceCheck` (deterministic, free, ~ms): finds causal or attributive sentences
+  ("caused by", "the root cause is", "because", "is due to", "stems from", "this means",
+  "the culprit is", "that's why", "comes down to", "Root cause: X", "X is what crashes Y",
+  "the <symptom> is the ...") and blocks once when nothing in
+  the transcript window mentions the stated cause. Evidence is tool results, the inputs of
+  observation tools (a command, a path, a search pattern), fenced blocks the user pasted and
+  task notifications, across the last 1 MB of the transcript (not only this turn). The
+  assistant's own prose and anything it authored (Write/Edit/apply_patch input) never count.
+  Skipped: questions, conditionals, modal hedges, first-person rationale ("I used X because
+  Y"), plan/next-step lines, quoted or code text, and replies that say the claim is
+  unverified. Works on Claude transcripts and Codex rollouts. Not covered: a claim with no
+  causal wording ("The cache race crashes the worker."), "since" (too often temporal), and a
+  tool call that merely echoes the claim's words (it counts as evidence).
+- The semantic judge (Tier 3 below), which now also sees the user's request and the tool
+  evidence, and can run on the local `claude` CLI without an API key.
+
+Measured (`node eval/inference-bench.js`, 84 synthetic labelled cases, 42 positive / 42
+negative, written before the detector):
+
+| Component | Precision | Recall | Notes |
+|---|---|---|---|
+| `guards.inferenceCheck` | 1.00 | 0.95 | Synthetic corpus, same for Claude and Codex transcript shapes and end to end through the hook (`--hook`). First untuned run: 0.975 / 0.929. |
+| `guards.inferenceCheck`, real replies | ≤ 0.45 (estimate) | not measured | Replay over 3,276 real final replies from local sessions: 3.8% flagged (125). In a random sample of 40 of the 76 unique flagged sentences, at most 18 were causal claims about project state at all; the rest were design rationale ("X because Y"), scheduling notes, test-result reports, hedged lines or general knowledge. |
+| Semantic judge, `cli`, Haiku | 0.78–0.81 | 1.00 | Two runs; different false positives each run. The judge demands proof of the causal link that the corpus labels accept. |
+| Semantic judge, `cli`, Sonnet | 0.81 | 1.00 | One run; several of its "false positives" are defensible (the claim goes beyond the evidence). |
+
+The corpus is synthetic and written by the same author as the detector, so treat the
+synthetic numbers as a regression floor, not a field estimate.
 
 ### Three tiers of anti-speculation enforcement
 
@@ -423,7 +451,8 @@ opt-in **Tier 3 semantic judge** described below.
 |---|---|---|---|---|
 | 1 | `verify-first-full.js` + `verify-first-orch.js` + `verify-first.js` | Always-on | Protocol injection (SessionStart + per-turn nudge): names every rationalization bypass including confident inference-as-fact and hedge-word speculation. | Zero (no API call; text injection only). |
 | 2 | `speculation-guard.js` | On by default | Lexical Stop hook: scans for 15 hedge-word markers, suppresses when acknowledgment present. Catches hedged speculation. Cannot catch confident inference-as-fact with no hedge word. | Zero (pure Node, no API call). |
-| 3 | `speculation-judge.js` | OPT-IN (off by default) | Semantic Stop hook: calls an LLM judge via the Anthropic API to assess whether the last message asserts an unverified fact with no hedge word and no acknowledgment. Catches the gap Tier 2 misses. | ~$0.0001-0.001 per turn + ~1-3 s latency. Requires `ANTHROPIC_API_KEY`. |
+| 2b | `speculation-guard.js` with `guards.inferenceCheck` | OPT-IN (off by default) | Deterministic: a causal claim whose stated cause no tool evidence in the transcript window mentions. | Zero (pure Node, no API call). |
+| 3 | `speculation-judge.js` | OPT-IN (off by default) | Semantic Stop hook: an LLM judge, given the reply, the user's request and the session's tool evidence, decides whether the reply asserts an unverified fact with no hedge word and no acknowledgment. Catches the gap Tier 2 misses. | `api` backend: ~$0.0001-0.001 per turn + ~1-3 s (estimate), needs `anthropic_api_key`. `cli` backend: no key, your Claude login's usage, ~5-6 s (measured). |
 
 ### speculation-judge (Tier 3, OPT-IN)
 
@@ -432,7 +461,7 @@ enabled: off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL
 (the env var wins when set to an on/off value). When off, it has zero cost, zero latency, and
 zero network activity — it is as if it were not registered at all.
 
-**Quick switch:** `node scripts/settings.js judge on|off|status` (or ask `/anti-hall:settings`) sets `jev.semanticJudge`, reports whether a key is visible to that process (never the key), and prints the cost estimate (about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; no precision eval yet). It also names the active backend: when `jev.enabled` is on and the `speculation` integration is `on`, speculation-guard already asks Jev (a remote classifier, not a local one) and this API judge exits early. `doctor` prints an info line with the backend, or this command while the judge is off.
+**Quick switch:** `node scripts/settings.js judge on|off|status` (or ask `/anti-hall:settings`) sets `jev.semanticJudge`, reports whether a key is visible to that process (never the key), and prints the cost (api backend: about $0.0001–0.001 and 1–3 s per turn end, estimated; cli backend: no API bill, about 5–6 s, measured) and the measured precision (0.78–0.81, recall 1.0, on `eval/inference-bench.js`). It also names the active backend: when `jev.enabled` is on and the `speculation` integration is `on`, speculation-guard already asks Jev (a remote classifier, not a local one) and this API judge exits early. `doctor` prints an info line with the backend, or this command while the judge is off.
 
 **To enable:** either set `jev.semanticJudge` to `true` (`/anti-hall:settings`), or:
 
@@ -442,7 +471,14 @@ export ANTIHALL_SEMANTIC_JUDGE=1
 ```
 
 Then store the key in the plugin's options screen (anti-hall -> `anthropic_api_key`, kept in the OS
-credential store; the judge is fail-open if it is absent). anti-hall no longer reads
+credential store; the judge is fail-open if it is absent), **or** use your own Claude login
+instead of a key: `node scripts/settings.js set jev.judgeBackend cli` (`auto` = the key when one
+is visible, else the CLI). The `cli` backend runs `claude -p` with no tools, no MCP servers, no
+settings files and every hook disabled (`--settings '{"disableAllHooks":true}'`), so the judge call
+cannot run anti-hall's hooks or recurse; it also sets `ANTIHALL_JUDGE_CHILD=1`, which makes the
+judge exit at once if it ever runs inside that child. Measured about 5–6 s per turn end
+(claude 2.1.288, Haiku). If `claude` is not on the hook's `PATH`, or is not logged in, the judge
+does nothing. anti-hall no longer reads
 `ANTHROPIC_API_KEY` from your environment unless you enable `guards.allowAnthropicEnvKey` in
 `~/.anti-hall/settings.json` (the Codex port, which has no plugin options, needs that setting).
 
@@ -450,7 +486,9 @@ credential store; the judge is fail-open if it is absent). anti-hall no longer r
 
 **What it catches:** confidently-stated inference-as-fact with no hedge word — e.g.,
 "The cause is the old build artifact." with no tool verification and no uncertainty
-acknowledgment. The judge prompt instructs the model to ALLOW honest hedging, quoted
+acknowledgment. The judge sees the latest user request and up to ~6 KB of the newest tool
+evidence from the transcript (secret-scrubbed), so a claim the session's tool output shows is
+allowed. The judge prompt instructs the model to ALLOW honest hedging, quoted
 text, hypotheticals, plans, and general software knowledge; it only blocks definitive
 unverified factual claims.
 
@@ -1199,6 +1237,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.modelRoutingDeployFloor` | `sonnet` (sonnet/opus/off) | `ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR` | model-routing-guard floor for deploy/migration/rollback/production/secret/credential-shaped spawns: at or above the floor the spawn is never blocked; below it (or with no explicit model) it gets an advisory to use at least the floor. off restores the plain routing table. |
 | `guards.apiGuard` | `true` | — | api-guard (PreToolUse Write/Edit): block fabricated stdlib/builtin APIs in written code. |
 | `guards.speculationGuard` | `true` | — | speculation-guard (Stop): block a turn that ends on unverified hedged claims. |
+| `guards.inferenceCheck` adv | `false` | `ANTIHALL_INFERENCE_CHECK` | speculation-guard (Stop): also block, once per reply, a confident causal claim with no hedge word ("caused by", "the root cause is", "because", "is due to", "stems from", "this means", "the culprit is", "that's why") when no tool output, observation-tool input (a command, a path, a search pattern), pasted fenced block or task notification in the last 1 MB of the transcript mentions the stated cause. Default off: 100% precision / 95% recall on the 84-case synthetic corpus (`eval/inference-bench.js`), but on 3,276 real final replies it flagged 3.8%, mostly design rationale ("X because Y"), so field precision is far below 0.9. See "Unsupported confident inferences" below. |
 | `guards.claimLedger` | `true` | — | claim-ledger (Stop, never blocks): record claims in the last reply that nothing in the session backs. |
 | `guards.taskGuard` | `true` | — | task-guard (Stop): block stopping while tracked tasks are still open. |
 | `guards.tasklistGuard` | `true` | — | tasklist-guard (Stop): require a task list / progress file for multi-step work. |
@@ -1268,6 +1307,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.transport` | `vercel` (vercel/typesafe) | — | Vercel AI Gateway passthrough (default) or a direct TypeSafe API call. |
 | `jev.fallbackTransport` | `none` (none/vercel/typesafe) | — | Automatic backup vendor: when the primary transport times out, has a network error, returns 5xx (incl. 529), 402 or 429 (or a 400/403 naming insufficient balance), ONE retry goes to this transport inside the same time budget; 401/403 and other 4xx never fall back (a bad primary key must surface). Equal to `jev.transport` = off. Needs its OWN vendor-bound key (plugin option `jev_vercel_api_key` / `jev_typesafe_api_key`, or that vendor's key file with `jev.allowLegacyKeyRead`; keys are never sent to another vendor) and a per-vendor circuit breaker skips a vendor for 5 min after 3 consecutive eligible failures (both open = Jev skipped, no double timeouts). NOT full redundancy: both routes very likely reach the same TypeSafe model (inferred from the model ids and identical answers on a 40-item test, unconfirmed), so it covers the direct account's balance/quota or an endpoint outage, probably not a model outage; the guards then use their built-in rules as when Jev is off. With a fallback on, decision text can reach the second vendor. Decision rows record `transport` and `fellBack`. Set with `jev-setup.js enable --fallback <vercel\|typesafe\|none>` or `settings.js set jev.fallbackTransport <value>`. |
 | `jev.judgeModel` | `claude-haiku-4-5` | `ANTIHALL_JUDGE_MODEL` | Model used for speculation-judge / jev-triage LLM calls. |
+| `jev.judgeBackend` adv | `api` (api/cli/auto) | `ANTIHALL_JUDGE_BACKEND` | How speculation-judge reaches the model. `api` = Anthropic API with the `anthropic_api_key` plugin option; `cli` = the local `claude -p` CLI on your own Claude login, no API key (no tools, no MCP servers, no settings files, all hooks disabled; about 5–6 s per turn end, measured); `auto` = `api` when a key is visible, else `cli`. Fail-open in every mode. |
 | `jev.semanticJudge` | `false` | `ANTIHALL_SEMANTIC_JUDGE` | Enable the semantic speculation-judge hook (off = hook no-ops). |
 | `jev.allowLegacyKeyRead` adv safety | `false` | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env or project override). Opt-in: read the Jev key from `AI_GATEWAY_API_KEY` / `TYPESAFE_API_KEY` env vars and the key file. Default off: only the `jev_api_key` plugin option is used. Needed for background tools and Codex (see "Where a stored key is visible"). |
 | `jev.genericKeyVendor` adv safety | `vercel` (vercel/typesafe) | — | SAFETY, home-settings only (`~/.anti-hall/settings.json`; no env, `/config` or legacy-file route). The ONE vendor the legacy generic `jev_api_key` plugin option and `jev.keyFile` are bound to: they carry no vendor name, so they are never sent to any other vendor, whatever `jev.transport` / `jev.fallbackTransport` say (`jev.transport` does NOT decide this, because `enable --transport` rewrites it). Vendor-named keys (`jev_vercel_api_key`, `jev_typesafe_api_key`) need no binding. Change only with `jev-setup.js bind-generic-key --vendor <v>` (a deliberate human command). An existing install with a typesafe transport and a generic key is never auto-bound: it stays on `vercel`, so the generic key is refused for typesafe, and a one-time notice says how to bind or to enter a typesafe key. |

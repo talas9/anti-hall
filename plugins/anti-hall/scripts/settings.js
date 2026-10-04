@@ -341,7 +341,8 @@ function cmdTrustAllow(kind, args, opts) {
   }
 }
 
-const JUDGE_COST = 'about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated, not measured; no precision eval yet';
+const JUDGE_COST = 'about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated, not measured; precision 0.78\u20130.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)';
+const JUDGE_COST_CLI = 'no API bill (your Claude login\'s usage) and about 5\u20136 s per turn end, measured; precision 0.78\u20130.81 and recall 1.0 measured on eval/inference-bench.js (84 synthetic cases)';
 
 // judge on|off|status — the opt-in semantic speculation-judge (jev.semanticJudge).
 // The key is only RESOLVED here (never printed). A key stored as a Claude Code
@@ -369,19 +370,21 @@ function cmdJudge(args, opts) {
   const model = settings.get('jev', 'judgeModel', 'claude-haiku-4-5', opts);
   const out = [];
   out.push('judge: ' + (on ? 'on' : 'off') + (verb === 'off' && on ? ' (still on via env ANTIHALL_SEMANTIC_JUDGE)' : ''));
-  out.push('backend: ' + be + (be === 'jev' ? ' (speculation-guard asks Jev; the paid API judge exits early' + (on ? ', API judge skipped)' : ')') : be === 'api' ? ' (speculation-judge calls the Anthropic API)' : ' (lexical speculation-guard only)'));
+  const jb = settings.get('jev', 'judgeBackend', 'api', opts);
+  const viaCli = jb === 'cli' || (jb === 'auto' && !hasKey);
+  out.push('backend: ' + be + (be === 'jev' ? ' (speculation-guard asks Jev; the paid API judge exits early' + (on ? ', API judge skipped)' : ')') : be === 'api' ? (viaCli ? ' (speculation-judge calls the local claude CLI, jev.judgeBackend=' + jb + ')' : ' (speculation-judge calls the Anthropic API)') : ' (lexical speculation-guard only)'));
   if (verb === 'on' || verb === 'status') {
     out.push('key: ' + (hasKey ? 'found (value not shown)' : 'not visible to this process'));
     if (verb === 'status') out.push('model: ' + model);
   }
   if (verb === 'on') {
-    if (!hasKey) {
+    if (!hasKey && !viaCli) {
       out.push('No key visible here. Add one so the judge can call the Anthropic API:');
       out.push('  Claude Code: plugin options screen, anti-hall -> anthropic_api_key (visible to hooks only, so this CLI cannot confirm it).');
       out.push('  Codex: set guards.allowAnthropicEnvKey to true in ~/.anti-hall/settings.json and export ANTHROPIC_API_KEY.');
-      out.push('Without a key the judge is fail-open (does nothing).');
+      out.push('Without a key the judge is fail-open (does nothing). Or use your Claude login instead of a key: settings.js set jev.judgeBackend cli');
     }
-    out.push('Cost: ' + JUDGE_COST + '.');
+    out.push('Cost: ' + (viaCli ? JUDGE_COST_CLI : JUDGE_COST) + '.');
   }
   process.stdout.write(out.join('\n') + '\n');
 }

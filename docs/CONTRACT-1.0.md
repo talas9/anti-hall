@@ -34,7 +34,7 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `versionAlerts` | Version Alerts | 3 | |
 | `updates` | Updates / Maintenance | 5 | |
 | `limitConserve` | Limit Conservation | 3 | `mode` |
-| `jev` | Jev (semantic decision engine) | 31 | `enabled` |
+| `jev` | Jev (semantic decision engine) | 32 | `enabled` |
 | `jevIntegrations` | Jev integration | 21 | |
 | `devswarm` | DevSwarm | 92 | `supervisorMode` |
 | `statusline` | Statusline | 2 | |

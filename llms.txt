@@ -127,9 +127,9 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | PostToolUseFailure (Bash) | failure-root-cause-nudge.js | One-line pointer to `/anti-hall:root-cause` after a failed command. | — | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE=off` |
 | Stop | task-guard.js | Blocks once when ending with genuinely open tasks. | ✓ | guards.taskGuard |
 | Stop | tasklist-guard.js | Requires a live task list + fresh progress file for non-trivial work. | ✓ | guards.tasklistGuard; `ANTIHALL_TASKLIST_WORK_THRESHOLD` |
-| Stop | speculation-guard.js | Tier 2: flags hedge-word speculation (optionally Jev-backed). | ✓ | guards.speculationGuard |
+| Stop | speculation-guard.js | Tier 2: flags hedge-word speculation (optionally Jev-backed); opt-in `guards.inferenceCheck` also flags a confident causal claim no tool evidence mentions. | ✓ | guards.speculationGuard |
 | Stop | claim-ledger.js | Tier 2.5, ledger-only (never blocks): records confident claims with no supporting evidence in the turn. | ✓ | guards.claimLedger |
-| Stop | speculation-judge.js | Tier 3, opt-in: LLM judge for confident unverified assertions. | ✓ | `jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1` |
+| Stop | speculation-judge.js | Tier 3, opt-in: LLM judge for confident unverified assertions; sees the user request and tool evidence; Anthropic API or local `claude -p` (`jev.judgeBackend`). | ✓ | `jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1` |
 | Stop | codex-nudge.js | Once per session: suggests an independent Codex review of substantial code. | — | `ANTIHALL_CODEX_NUDGE=off` |
 | Stop | silent-agent-nudge.js | Scans the transcript for a background Agent launch with no terminal notification and a stale/missing `output_file` (plus the `~/.anti-hall/agents` heartbeat as an extra signal); nudges once per stale snapshot past the threshold (default 20 min); never kills anything. | ✓ | guards.silentAgentNudge; guards.silentAgentNudgeMin (`ANTIHALL_SILENT_AGENT_NUDGE=off`) |
 | Stop | compact-advice-guard.js | Blocks once when the final reply recommends /compact ("SAFE TO COMPACT", "good point to /compact") while context is below the auto-handover threshold minus a margin, or within N turns of a compact boundary; the threshold-fired handover path stays allowed. | ✓ | guards.compactAdviceGuard; guards.compactAdviceRecentTurns; guards.compactAdviceMarginPct |

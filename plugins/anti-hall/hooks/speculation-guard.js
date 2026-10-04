@@ -582,6 +582,33 @@ function findSpeculationMarker(text) {
   return hit ? hit.marker : null;
 }
 
+// findUnsupportedInference(markerText, rawText, transcriptPath) -> { sentence, cause } | null.
+// guards.inferenceCheck (default off): a causal claim whose stated cause no tool
+// evidence in the last 1 MB of the transcript mentions (lib/inference-check.js).
+// Any error -> null (allow).
+function findUnsupportedInference(text, rawText, transcriptPath) {
+  try {
+    if (!require('./lib/settings.js').enabled('guards', 'inferenceCheck')) return null;
+    const ic = require('./lib/inference-check.js');
+    if (!ic.ANY_CONNECTIVE_RE.test(text)) return null;
+    const tail = readTranscriptTail(transcriptPath, 1024 * 1024);
+    if (!tail) return null;
+    const lines = tail.data.split(/\r?\n/);
+    if (tail.truncated) lines.shift();
+    return ic.findUnsupportedClaim(text, lines, rawText);
+  } catch (_) {
+    return null;
+  }
+}
+
+// oneLine(s, max) -> s with control/bidi characters removed, whitespace
+// collapsed, truncated: the reply's own sentence is quoted back into the reason.
+function oneLine(s, max) {
+  let o = String(s).replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').replace(/[\u202A-\u202E\u2066-\u2069]/g, '').replace(/\s+/g, ' ').trim();
+  if (o.length > max) o = o.slice(0, max).trimEnd() + '\u2026';
+  return o;
+}
+
 function hasAcknowledgment(text) {
   for (const pat of ACKNOWLEDGMENT_PATTERNS) {
     if (pat.test(text)) return true;
@@ -829,15 +856,20 @@ async function main() {
 
   let marker = null;
   let hitIndex = null;
+  let inference = null;
   if (!jevBlock) {
     // Check for speculation markers.
     const hit = findSpeculationHit(markerText);
-    if (!hit) finish('allow');
-    marker = hit.marker;
-    hitIndex = hit.index;
-
-    // Check for acknowledgment — if present, hedging is honest; allow.
-    if (hasAcknowledgment(lastText)) finish('allow');
+    // No hedge, or an acknowledged one (honest hedging): the reply may still
+    // state a cause as fact with no hedge word at all. guards.inferenceCheck
+    // (default off) looks for that; otherwise allow, as before.
+    if (!hit || hasAcknowledgment(lastText)) {
+      if (!loopSafe) inference = findUnsupportedInference(markerText, lastText, transcriptPath);
+      if (!inference) finish('allow');
+    } else {
+      marker = hit.marker;
+      hitIndex = hit.index;
+    }
   }
 
   if (loopSafe) finish('allow');
@@ -888,7 +920,7 @@ async function main() {
     fs.mkdirSync(stateDir, { recursive: true });
     const pendingRecord = jevBlock
       ? { h: jevResultHash || msgHash, source: 'jev' }
-      : { h: msgHash, source: 'regex' };
+      : { h: msgHash, source: inference ? 'inference' : 'regex' };
     fs.writeFileSync(stateFile, JSON.stringify({ hash: msgHash, blocks: blocks + 1, pending: pendingRecord }), 'utf8');
   } catch (_) {
     // Can't persist -> fail-open to avoid loops.
@@ -906,7 +938,9 @@ async function main() {
     guard: 'speculation-guard',
     what: jevBlock
       ? 'your reply asserts a cause or outcome without citing evidence (command output, a test result, or a file:line reference).'
-      : 'your reply states something speculative (\'' + marker + '\') without verifying it or flagging it as unverified.',
+      : inference
+        ? 'your reply states a cause as fact (\'' + oneLine(inference.sentence, 120) + '\') but no tool output in this session mentions it.'
+        : 'your reply states something speculative (\'' + marker + '\') without verifying it or flagging it as unverified.',
     why: 'Unverified claims read as facts.',
     instead: 'verify it with a tool, or say what is unverified (\'I don\'t know, here is what I would check\'), then continue.',
   });
