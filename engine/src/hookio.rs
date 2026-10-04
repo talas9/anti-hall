@@ -1,0 +1,153 @@
+//! Hook payload in -> hook output JSON out, for the events anti-hall uses.
+//!
+//! Claude Code and Codex send the same field names (`hook_event_name`, `session_id`, `cwd`,
+//! `tool_name`, `tool_input`, `prompt`, `stop_hook_active`, ...), so one parser serves both; unknown
+//! fields are ignored. Output shapes follow what `plugins/anti-hall/hooks/*.js` emit today:
+//!
+//! | event            | deny                                                    | warn / context                          |
+//! |------------------|---------------------------------------------------------|-----------------------------------------|
+//! | PreToolUse       | `hookSpecificOutput.permissionDecision:"deny"` + reason | `hookSpecificOutput.additionalContext`  |
+//! | PostToolUse      | `{"decision":"block","reason"}`                         | `hookSpecificOutput.additionalContext`  |
+//! | UserPromptSubmit | `{"decision":"block","reason"}`                         | `hookSpecificOutput.additionalContext`  |
+//! | Stop             | `{"decision":"block","reason"}` (never if `stop_hook_active`) | `{"systemMessage"}`               |
+//! | SessionStart / SubagentStart | n/a (treated as context)                    | `hookSpecificOutput.additionalContext`  |
+use crate::rules::{Action, RuleSet, Subject};
+use serde_json::{json, Value};
+
+/// Event name from the payload; `None` when absent.
+fn event_of(p: &Value) -> Option<&str> {
+    ["hook_event_name", "hookEventName", "event"].iter().find_map(|k| p.get(*k).and_then(Value::as_str))
+}
+
+/// Evaluate `raw` (the stdin payload) against `rules`. Returns the JSON to print, or "" for "say nothing".
+/// Never panics on malformed input: anything unparseable yields "".
+pub fn respond(raw: &str, rules: &RuleSet) -> String {
+    let Ok(p) = serde_json::from_str::<Value>(raw) else { return String::new() };
+    let Some(event) = event_of(&p) else { return String::new() };
+    let null = Value::Null;
+    let subject = Subject {
+        event,
+        tool: p.get("tool_name").and_then(Value::as_str),
+        cwd: p.get("cwd").and_then(Value::as_str),
+        tool_input: p.get("tool_input").unwrap_or(&null),
+        prompt: p.get("prompt").and_then(Value::as_str),
+    };
+    let hits = rules.matching(&subject);
+    if hits.is_empty() {
+        return String::new();
+    }
+    let denies: Vec<&str> = hits.iter().filter(|r| r.action == Action::Deny).map(|r| r.message.as_str()).collect();
+    let notes: Vec<String> = hits
+        .iter()
+        .filter(|r| r.action != Action::Deny)
+        .map(|r| if r.action == Action::Warn { format!("anti-hall warning: {}", r.message) } else { r.message.clone() })
+        .collect();
+    let deny_text = denies.join("\n");
+    let note_text = notes.join("\n");
+    let stop_active = p.get("stop_hook_active").and_then(Value::as_bool).unwrap_or(false);
+
+    let out = match event {
+        "PreToolUse" if !denies.is_empty() => {
+            json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":deny_text}})
+        }
+        "PostToolUse" | "UserPromptSubmit" if !denies.is_empty() => json!({"decision":"block","reason":deny_text}),
+        "Stop" if !denies.is_empty() => {
+            if stop_active {
+                return String::new(); // a continuing turn is never re-blocked (matches stop-policy.js)
+            }
+            json!({"decision":"block","reason":deny_text})
+        }
+        "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "SessionStart" | "SubagentStart" => {
+            let text = if denies.is_empty() { note_text } else { format!("{deny_text}\n{note_text}") };
+            if text.trim().is_empty() {
+                return String::new();
+            }
+            json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":text}})
+        }
+        "Stop" if !note_text.is_empty() => json!({"systemMessage":note_text}),
+        _ => return String::new(),
+    };
+    out.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rs() -> RuleSet {
+        RuleSet::parse(
+            r#"{"version":1,"rules":[
+              {"id":"d","events":["PreToolUse","PostToolUse","Stop","UserPromptSubmit"],"pattern":"BAD","action":"deny","message":"nope"},
+              {"id":"c","pattern":"CTX","action":"context","message":"fyi"},
+              {"id":"w","pattern":"WARN","action":"warn","message":"careful"}]}"#,
+        )
+        .unwrap()
+    }
+    fn v(s: String) -> Value {
+        serde_json::from_str(&s).unwrap()
+    }
+
+    #[test]
+    fn pre_tool_use_deny_shape() {
+        let o = v(respond(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"x BAD"}}"#, &rs()));
+        assert_eq!(o["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert_eq!(o["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(o["hookSpecificOutput"]["permissionDecisionReason"], "nope");
+    }
+
+    #[test]
+    fn block_shapes_for_post_and_prompt() {
+        for payload in [
+            r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"BAD"}}"#,
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"BAD"}"#,
+        ] {
+            let o = v(respond(payload, &rs()));
+            assert_eq!(o["decision"], "block", "{payload}");
+            assert_eq!(o["reason"], "nope");
+        }
+    }
+
+    #[test]
+    fn stop_blocks_once_and_respects_stop_hook_active() {
+        let r = RuleSet::parse(r#"{"version":1,"rules":[{"events":["Stop"],"pattern":"","action":"deny","message":"finish"}]}"#).unwrap();
+        let o = v(respond(r#"{"hook_event_name":"Stop"}"#, &r));
+        assert_eq!(o["decision"], "block");
+        assert_eq!(respond(r#"{"hook_event_name":"Stop","stop_hook_active":true}"#, &r), "");
+    }
+
+    #[test]
+    fn context_events() {
+        for e in ["SessionStart", "SubagentStart"] {
+            let o = v(respond(&format!(r#"{{"hook_event_name":"{e}","tool_input":{{}}}}"#), &RuleSet::parse(r#"{"version":1,"rules":[{"pattern":"","action":"context","message":"hello"}]}"#).unwrap()));
+            assert_eq!(o["hookSpecificOutput"]["hookEventName"], e);
+            assert_eq!(o["hookSpecificOutput"]["additionalContext"], "hello");
+        }
+        let o = v(respond(r#"{"hook_event_name":"UserPromptSubmit","prompt":"CTX WARN"}"#, &rs()));
+        assert_eq!(o["hookSpecificOutput"]["additionalContext"], "fyi\nanti-hall warning: careful");
+    }
+
+    #[test]
+    fn stop_context_uses_system_message() {
+        let r = RuleSet::parse(r#"{"version":1,"rules":[{"events":["Stop"],"pattern":"","action":"warn","message":"hm"}]}"#).unwrap();
+        let o = v(respond(r#"{"hook_event_name":"Stop"}"#, &r));
+        assert_eq!(o["systemMessage"], "anti-hall warning: hm");
+    }
+
+    #[test]
+    fn codex_payload_shape_is_accepted() {
+        // Codex adds turn_id/model and sends apply_patch with the patch text in tool_input.command
+        let r = RuleSet::parse(r#"{"version":1,"rules":[{"tools":["apply_patch"],"pattern":"secret","action":"deny","message":"no secrets"}]}"#).unwrap();
+        let o = v(respond(
+            r#"{"session_id":"s","turn_id":"t","cwd":"/x","hook_event_name":"PreToolUse","model":"gpt-5","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n+secret=1"},"tool_use_id":"u"}"#,
+            &r,
+        ));
+        assert_eq!(o["hookSpecificOutput"]["permissionDecision"], "deny");
+    }
+
+    #[test]
+    fn malformed_or_unknown_yields_nothing() {
+        for bad in ["", "not json", "[]", "{}", r#"{"hook_event_name":"PreCompact"}"#, r#"{"hook_event_name":"PreToolUse"}"#] {
+            assert_eq!(respond(bad, &rs()), "", "{bad:?}");
+        }
+    }
+}

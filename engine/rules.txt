@@ -1,2 +1,0 @@
-Bash	deny	git push --force	Force-push blocked by anti-hall
-Bash	warn	rm -rf*/	dangerous rm

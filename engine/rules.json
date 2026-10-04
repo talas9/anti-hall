@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "git-no-force-push",
+      "events": ["PreToolUse"],
+      "tools": ["Bash"],
+      "field": "command",
+      "pattern": "\\bgit\\s+(?:-\\S+\\s+)*push\\b[^|;&\\n]*(?:\\s--force(?:-with-lease)?\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s\\+\\S)",
+      "action": "deny",
+      "message": "anti-hall git-guard: BLOCKED. Force push detected. Rewriting published history is a deliberate human action - do it manually with explicit owner confirmation, never from an automated push."
+    },
+    {
+      "id": "git-no-ai-self-credit",
+      "events": ["PreToolUse"],
+      "tools": ["Bash"],
+      "field": "command",
+      "pattern": "(?is)\\bgit\\b[^\\n]*\\bcommit\\b.*(?:co-authored-by\\s*[:=]\\s*(?:claude|codex|gpt|openai|anthropic|copilot)|generated with\\s*\\[?\\s*(?:claude|codex|chatgpt))",
+      "action": "deny",
+      "message": "anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\"). Remove it - commits carry no AI co-author credit. Re-run the commit without that trailer."
+    },
+    {
+      "id": "rm-rf-root-or-home",
+      "events": ["PreToolUse"],
+      "tools": ["Bash"],
+      "field": "command",
+      "pattern": "\\brm\\s+(?:-[a-zA-Z]*\\s+)*-[a-zA-Z]*(?:rf|fr)[a-zA-Z]*\\s+(?:--\\s+)?(?:/|~|\\$HOME)/?(?:\\s|$)",
+      "action": "warn",
+      "message": "`rm -rf` on / or the home directory. Confirm with the owner before deleting data."
+    }
+  ]
+}

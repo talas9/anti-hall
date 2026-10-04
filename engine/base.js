@@ -1,6 +1,13 @@
-const fs=require('fs');const inp=fs.readFileSync(0,'utf8');
-const j=JSON.parse(inp);const cmd=j.tool_input.command,tool=j.tool_name;
-for(const l of fs.readFileSync(process.env.HOME+'/.anti-hall-proto/rules.txt','utf8').split('\n')){
- const p=l.split('\t');if(p.length<4)continue;
- if((p[0]===tool||p[0]==='*')&&cmd.includes(p[2])&&p[1]==='deny'){
-  console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:p[3]}}));break;}}
+// Node baseline doing the same job as `engine hook` (parse payload, regex-match rules.json, emit deny).
+const fs = require('fs');
+const j = JSON.parse(fs.readFileSync(0, 'utf8'));
+const rules = JSON.parse(fs.readFileSync(process.env.ANTIHALL_ENGINE_RULES, 'utf8')).rules;
+const subject = (j.tool_input && (j.tool_input.command || j.tool_input.file_path)) || '';
+for (const r of rules) {
+  if (r.events && !r.events.includes(j.hook_event_name)) continue;
+  if (r.tools && !r.tools.includes(j.tool_name)) continue;
+  if (new RegExp(r.pattern.replace(/^\(\?[is]+\)/, ''), /^\(\?i/.test(r.pattern) ? 'is' : '').test(subject) && r.action === 'deny') {
+    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: r.message } }));
+    break;
+  }
+}
