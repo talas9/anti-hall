@@ -23,6 +23,8 @@ the update.
 ### Fixed
 
 - **Jev triage cache repair + prune.** Entries cached before this release as a permanent no-label verdict (bare `{_seq}`, no label) are dropped by `update` and `doctor --repair` (`repair-jev-triage-cache`; real no-label verdicts now carry `nl:true` and are kept) so those messages are re-triaged. Stale triage claim files, a dead arrival worker's lock and an abandoned arrival queue are pruned (throttled, nothing else touched).
+- Codex: command-guard and edit-guard block text no longer tells the model Claude-only things (a scratchpad script, `run_in_background`, a Haiku subagent). A Codex payload now gets `spawn_agent` / `gpt-5.6-luna` wording and no scratchpad advice; Claude text is byte-identical (golden test). Exit 2 + stderr is unchanged (#94).
+- DevSwarm child workspaces no longer get the COMMS OVERRIDE / SELF_CONTINUE / REMINDER block on every delivered turn: `devswarm-child-turn.js` now uses the `guards.injectionRepeatEvery` keepalive (re-sent on change, after compaction, and every N turns), matching the parent hook. The Codex port runs the same hook.
 
 ### Added
 
@@ -89,7 +91,6 @@ the update.
 
 - Jev: `speculationFramed` is now registered in `jev-setup.js` `KNOWN_INTEGRATIONS`, so `jev status` / `jev mode` can see and switch it (a registry test derives every call-site id and asserts it is in `KNOWN_INTEGRATIONS` and the settings schema). `modelRouting` decisions now record `wouldChange` plus an audit snippet whenever Jev's tier differs from the rule-based verdict (also in `on` mode, regardless of confidence), so `jev report` can count and label them.
 - command-guard: a pipe sink that decides an allow (the gcloud read carve-out and the bounded verification pipeline) now has to match the closed stdin-only grammar. `... | head /etc/passwd` and `... | tail -n +1 --pid=123` no longer pass as bounded sinks; `head|tail -c N` and `grep -m N -E PAT` stay accepted.
-- DevSwarm child workspaces no longer get the COMMS OVERRIDE / SELF_CONTINUE / REMINDER block on every delivered turn: `devswarm-child-turn.js` now uses the `guards.injectionRepeatEvery` keepalive (re-sent on change, after compaction, and every N turns), matching the parent hook. The Codex port runs the same hook.
 
 - **A read-only `gh api graphql` call is no longer treated as a mutation.** A graphql call is heavy unless it is proven to be a read: one `query=` field with no `$`, backtick, leading `@` or `mutation`, and only read flags. The attached forms (`-fquery=...`, `--raw-field=query=...`, `-F<x>`, `--field=`) and `--input` now count as body flags on every endpoint; before, `-fquery=...`, `--raw-field=query=...` and `--input b.json` were not blocked.
 - **Block messages give an absolute, shell-quoted skip command.** The skip hint in edit-guard and the new guard is built from the plugin path, single-quoted, so a path with a space or `$` works. A relative path broke when the cwd was not the plugin root.

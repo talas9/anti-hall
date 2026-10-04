@@ -774,7 +774,9 @@ function isNotesTarget(filePath, cwd, payload) {
 }
 
 // The coordinator delegation block text for `toolLabel` (e.g. 'Edit', 'Write').
-function delegationReason(toolLabel, cwd) {
+function delegationReason(toolLabel, cwd, payload) {
+  const codexHost = require('./lib/host-text.js').isCodex(payload);
+  const SUB = codexHost ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent';
   // DevSwarm-aware wording switch (lazy-require, mirrors this file's pattern).
   let devswarmActive = false;
   try {
@@ -796,7 +798,10 @@ function delegationReason(toolLabel, cwd) {
 
   // Points at the exempt locations so a coordinator's own notes/reports need no
   // delegation; repo docs still need a subagent or a trusted edit-allow.json.
-  const NOTES_HINT = ' Session notes/reports can go in .anti-hall/history/** or the ' +
+  const NOTES_HINT = codexHost
+    ? ' Session notes/reports can go in .anti-hall/history/** (exempt); repo docs need ' + SUB +
+      ' or a trusted .anti-hall/edit-allow.json.'
+    : ' Session notes/reports can go in .anti-hall/history/** or the ' +
     'scratchpad (exempt); repo docs need a subagent or a trusted .anti-hall/edit-allow.json.';
 
   let reason;
@@ -850,6 +855,13 @@ function delegationReason(toolLabel, cwd) {
       'thread.' + SKIP_HINT + ' (tool: ' + toolLabel + ')';
   }
 
+  if (codexHost) {
+    // Codex wording: the sub-agent primitive is spawn_agent. Only the delegate
+    // noun changes; the Claude text above is untouched.
+    reason = reason
+      .replace(/spawn a subagent to make this edit/g, 'spawn ' + SUB + ' to make this edit')
+      .replace('Do NOT hand a workspace-scale matter to a subagent.', 'Do NOT hand a workspace-scale matter to a sub-agent.');
+  }
   return reason;
 }
 
@@ -934,7 +946,7 @@ function main() {
     block(
       'anti-hall edit-guard: could not parse this apply_patch (' + patchError + '), so its ' +
       'target files cannot be checked against the edit-delegation rule. Send a well-formed ' +
-      'patch (*** Begin Patch ... *** End Patch), or delegate the edit to a subagent. (tool: ' +
+      'patch (*** Begin Patch ... *** End Patch), or delegate the edit to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '. (tool: ' +
       toolName + ')'
     );
   }
@@ -962,7 +974,7 @@ function main() {
       block(
         'EDIT-ALLOW SELF-EDIT: .anti-hall/edit-allow.json decides which files the main thread ' +
         'may edit directly, so the main thread never edits it. Ask the user to change it (or ' +
-        'delegate the change to a subagent), then the user re-trusts it with `node ' +
+        'delegate the change to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '), then the user re-trusts it with `node ' +
         '<plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`. (tool: ' + toolName + ')'
       );
     }
@@ -978,7 +990,7 @@ function main() {
         'initiative. (tool: ' + toolName + ')'
       );
     }
-    block(delegationReason(toolName, cwd));
+    block(delegationReason(toolName, cwd, payload));
   }
   process.exit(0);
 }

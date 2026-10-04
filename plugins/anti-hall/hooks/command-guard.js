@@ -4345,7 +4345,7 @@ function main() {
       && !isSkipped('edit-guard')
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
       if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
-        const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect)', payload.cwd);
+        const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect)', payload.cwd, payload);
         emitBlock(reason);
       }
     }
@@ -4490,7 +4490,42 @@ function main() {
   // to the subagent-only text.
   let tierText = false;
   try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(process.env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
-  const reason = devswarmPrimary && !tierText
+  const codexHost = require('./lib/host-text.js').isCodex(payload);
+  let reason;
+  if (codexHost) {
+    // Codex variant: no scratchpad-script path (no scratchpad dir, no
+    // run_in_background on Codex Bash), Codex sub-agent + cheap-tier wording.
+    const H = require('./lib/host-text.js');
+    const CODEX_HINT =
+      'State changes (commit, push, patch apply, gh mutations, repo edits) and test runs go to ' + H.CODEX_SUBAGENT + '. ';
+    const inlineCodex = INLINE_ALLOWED_HINT.replace('<scratch/tmp dir>', '<tmp dir>');
+    reason = devswarmPrimary && !tierText
+      ? (CODEX_HINT +
+         'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
+         'heavy/long/state-changing commands inline (raw output floods the main thread); ' +
+         'otherwise DELEGATE to ' + H.CODEX_CHEAP + ' that returns ' +
+         'only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
+         inlineCodex + cdJoinHint)
+      : devswarmPrimary
+      ? (CODEX_HINT +
+         'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
+         'heavy/long/state-changing commands inline (raw output floods the main thread). ' +
+         'Otherwise CHOOSE THE TIER: if this belongs to a workspace-scale MATTER (a ' +
+         'feature/fix/deploy: multi-step, own branch, own review), spin a CHILD WORKSPACE ' +
+         'that owns it end-to-end: `node scripts/devswarm.js spawn <branch> ' +
+         '-p "<brief>"` (guard-exempt, run it inline). Only genuinely small/scoped work ' +
+         '(one command, a lookup, a scoped check) goes to ' + H.CODEX_CHEAP + ' that returns a tight summary. ' +
+         'Do NOT hand a workspace-scale matter to a sub-agent. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
+         inlineCodex + cdJoinHint)
+      : (CODEX_HINT +
+         'COMMAND-DELEGATION RULE: heavy/long/state-changing commands never run inline in ' +
+         'the main coordinator context (raw output floods the main thread). Otherwise ' +
+         'DELEGATE to ' + H.CODEX_CHEAP + ': pass the command, let it ' +
+         'run and return only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
+         inlineCodex + cdJoinHint);
+  }
+
+  if (!codexHost) reason = devswarmPrimary && !tierText
     ? (SCRATCHPAD_SCRIPT_HINT +
        'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
        'heavy/long/state-changing commands inline (raw output floods the main thread); ' +
