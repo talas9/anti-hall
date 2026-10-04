@@ -12,6 +12,7 @@ pub mod defaults;
 pub mod docs;
 pub mod error;
 pub mod frame;
+pub mod gitcache;
 pub mod health;
 pub mod hookio;
 pub mod impact;
@@ -26,6 +27,7 @@ pub mod storage;
 pub mod store;
 pub mod telemetry;
 pub mod tier;
+pub mod transcript;
 
 /// Version this build reports and compares for handoff. The `version` env override (plugin
 /// version in production, arbitrary in tests).

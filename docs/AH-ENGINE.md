@@ -65,6 +65,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Status headline summary | implemented | D50-D52 |
 | Embedded SQLite storage: `hot.db` and `archive.db`, WAL, configured durability, versioned migrations, the `Store` trait over SQLite | implemented | D19, D21, D73 |
 | Tiered lifecycle: write-through to SQLite then memory, active items only, byte budget, key-value with TTL, pub/sub channels | implemented | D20, D22, D25 |
+| Transcript index: one incremental read of a session transcript, facts instead of lines, rebuilt on truncation or rotation | implemented as a library, not yet used by any check (planned, D75) | D22, D75 |
+| Per-repo git cache: HEAD, branch, upstream, remotes, aliases, config values and the dirty bit, proven fresh by a file signature | implemented as a library, not yet used by any check (planned, D75) | D61, D75 |
 | Pushing channel notifications to sessions (Monitor) | planned (D45) | D45 |
 | Size control: retention, the hot-to-archive mover, WAL checkpoints and VACUUM, `ah-engine maintain` | implemented | D26 |
 | Running maintenance on a schedule | planned (D33) | D33 |
@@ -207,6 +209,62 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
   the missing ones, each in its own transaction, and re-running them changes nothing. A database written by a newer build
   is refused rather than rewritten.
 
+## Shared read paths: the transcript index and the git cache
+
+Two facts sources the guards will share instead of each re-reading a transcript or spawning `git` themselves. Both are
+libraries inside the engine (`src/transcript/`, `src/gitcache/`); no check calls them yet, the checks that do are ported
+in wave 2 (planned, D75).
+
+**Transcript index (`ah_engine::transcript`).** At least 20 hooks read the session transcript, each in its own process,
+so a Stop with 11 hooks read the same tail up to 11 times. An `Index` follows one transcript file and keeps a byte
+offset at a line boundary. A refresh reads only the appended bytes. The first refresh reads the last
+`transcript.initial_window_bytes` (the same 1.5 MB window and dropped partial first line as `hooks/lib/transcript-tail.js`).
+What it keeps, all bounded by `transcript.toml`:
+
+| Fact | Mirrors |
+|---|---|
+| record counts by kind, malformed lines, sidechain, meta and compact-summary rows, compaction boundaries | the filters in `devswarm-idle.js`, `inference-check.js` and `compact-advice.js` |
+| the newest assistant text, in the deduplicated and in the legacy extraction | `speculation-guard.js` `collectTextFromEntryDedup` and `collectTextFromEntryLegacy` |
+| the newest typed user prompt | `inference-check.js` `lastUserPrompt` |
+| the newest tool uses of any tool | `task-state.js` `collectTU` |
+| the task-tool uses and their string results, in order | what `task-state.js` `reconstructTasks` reads |
+| every `<task-notification>` block, from all three transcript shapes (a `user` entry, an `attachment` prompt, a `queue-operation` content), with the terminal-agent view of `agent-scan.js` and the final-key view of `devswarm-idle.js` | `notificationTexts`, `finishedTaskKeys`, `scanTranscript` |
+| `task_status` attachments that a compaction writes for live agents | `agent-scan.js` |
+
+Safety: a file smaller than the offset (truncation), a different device or inode (rotation), or a changed start or
+changed bytes just before the offset (a rewrite) throws the facts away and rebuilds them from the file, so the index can
+always be recreated from the transcript alone. A last line without a newline is shown through a one-record overlay and
+never counted twice. More than `transcript.max_update_bytes` appended between two refreshes skips ahead to the newest
+bytes and counts a gap. An `Indexes` registry holds one index per path, at most `transcript.max_indexes`, and drops an
+idle one after `transcript.idle_ttl_ms` (D22: memory holds only active items). Parity with the Node readers is checked by
+`tests/transcript_parity.rs` and, over real transcripts, by `parity/run-transcript.js`.
+
+**Git cache (`ah_engine::gitcache`).** Guards spawn `git` for the branch, the remotes, the aliases, the work tree root
+and the dirty state. `GitCache::repo(dir, env)` finds the repository the way git does from a directory (a `.git`
+directory, or a `gitdir:` file for a submodule or a linked worktree, with `commondir` followed) and returns a handle whose
+methods answer from memory while a signature of the repository's files is unchanged, else run `git` once.
+
+| Fact | Method | Fresh equivalent |
+|---|---|---|
+| work tree root, absolute git directory | `toplevel`, `git_dir` | `rev-parse --show-toplevel`, `--absolute-git-dir` |
+| commit and branch | `head`, `branch` | `rev-parse HEAD`, `symbolic-ref --short HEAD` |
+| upstream and remotes | `upstream`, `remotes` | `rev-parse --abbrev-ref --symbolic-full-name @{upstream}`, `remote` |
+| aliases | `aliases` | `config -z --get-regexp ^alias\.`, parsed like `git-alias-scan.js` |
+| one config value | `config_get`, `config_path` | `config --get`, `config --path --get` |
+| dirty bit | `dirty`, `dirty_exact` | `status --porcelain=v1` |
+
+The signature (D61) holds the content of `HEAD` and of the branch ref it names, and the stat (device, inode, size, mtime,
+ctime) of the index, the repository and per-worktree config, `packed-refs`, the user's global and system config, and, for
+the upstream fact, the remote-tracking directories. Git replaces these files by rename, so a commit, a checkout, a config
+change or a fetch changes the signature even within one clock tick. A hard TTL (`gitcache.ttl_ms`) applies as well.
+Limits that the signature cannot see are handled in the open: a working-tree edit changes none of those files, so the
+dirty bit has its own short TTL (`gitcache.dirty_ttl_ms`) and `dirty_exact` always asks git (a destructive decision must
+use it); `include.path` and `GIT_*` overrides are not signed, so a call whose environment sets one of
+`gitcache.bypass_env` is refused (`Bypassed`) and the caller runs git itself. A run that times out or fails to start is an
+error and is never remembered; an exit status other than 0 is remembered as "git said no". `tests/gitcache_parity.rs`
+compares every fact with a fresh `git` invocation on a plain repository, a linked worktree and a submodule, before and
+after commits, amends, resets, branch switches, detached HEAD, `pack-refs`, config changes, fetches and stashes.
+
 ## Reliability and safety
 
 - **Hard budget.** The client enforces a total deadline (default 2 s) with a watchdog thread; `hooks.json`'s own timeout is
@@ -234,6 +292,8 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `telemetry.toml` | the metric and impact-kind registries and the savings method |
 | `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention, backups |
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
+| `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
+| `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or

@@ -29,10 +29,13 @@ never a submodule (D69).
 | `src/maintain.rs` | size control: the hot-to-archive mover, retention, checkpoints and VACUUM (`ah-engine maintain`) |
 | `src/spool.rs` | the write spool: retry with backoff, framed fsync'd records, ordered idempotent drain, quarantine |
 | `src/db.rs`, `src/sql.rs` | the SQLite pair (`hot.db`, `archive.db`): settings, versioned migrations, the group-committing writer; the schema and statements |
+| `src/transcript/` | the per-session transcript index (X1): incremental reader, record parser (each function cites the Node reader it mirrors), registry |
+| `src/gitcache/` | the per-repo git cache (X3, D61): repository discovery, the file signature, bounded git runs |
 | `src/defaults.rs`, `build.rs`, `defaults/*.toml` | shipped defaults, compiled into the binary from the TOML files |
 | `src/docs.rs` | the reference generator |
 | `tests/` | end-to-end and reliability tests against a real daemon, the no-hardcoding test, the defaults-keys test, the reference drift test, the agent CLI and residency tests |
-| `parity/` | the parity harnesses against the Node guards |
+| `parity/` | the parity harnesses against the Node guards, and `transcript-facts.js` / `run-transcript.js` for the transcript index |
+| `examples/transcript_facts.rs` | prints the facts the index derives from a transcript (the parity harness runs it) |
 | `DECISIONS.md`, `REFERENCE.md` | the decision record and the generated reference |
 
 ## Build and test
@@ -92,6 +95,8 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | Size control: inactive rows move to the archive and active ones stay, totals stay exact, a crash between copy and remove loses and duplicates nothing, the impact cap moves the oldest, no hard delete unless configured, maintain beside a live daemon | `maintain::tests`, `tests/agent_cli.rs` (`maintain_runs_beside_a_live_daemon_and_is_reported_in_metrics`) |
 | Spool: 100 writes with the engine down are applied exactly once and in order per session, a replay changes nothing, a busy engine makes the client spool, damage is quarantined, a take is never spooled | `tests/spool.rs`, `spool::tests` |
 | Durability: SIGKILL mid-burst, 50 loops: every acknowledged write present, nothing torn, invented or duplicated, write ids match rows; group commit shares syncs within its window | `tests/durability.rs`, `db::tests::concurrent_writes_share_commits_within_the_window` |
+| Transcript index: appended bytes only, truncation, rotation and in-place rewrite rebuild, a final unterminated line counted once, caps, registry bounds; facts equal the Node readers' on fixtures and on real transcripts | `tests/transcript_index.rs`, `tests/transcript_parity.rs`, `parity/run-transcript.js` |
+| Git cache: every fact equals a fresh `git` before and after each mutation on a plain repository, a linked worktree and a submodule; each signed file invalidates on its own; the dirty bit is time-bounded and `dirty_exact` is not; a bypass environment and a timeout are errors, never cached | `tests/gitcache_parity.rs` |
 | Storage: WAL and configured durability, versioned idempotent migrations, a newer schema refused, acknowledged only after commit, queued writes committed on close; both `Store` backends behave the same | `db::tests`, `storage::tests` |
 
 Known limits: CI runs the whole suite on ubuntu and macOS (`.github/workflows/ah-engine.yml`); the Linux CI run found a real
@@ -220,4 +225,5 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Metrics and impact persisted through the SQLite `Store` (D51, D52)
 - [x] Storage phase measured (README, Measurements)
 - [x] Config files: layered over the defaults, watched, validated, hot-swapped; `config`, `config validate` (D18, file part)
+- [x] Shared read paths: transcript index (X1) and per-repo git cache (X3, D61); no check uses them yet (D75 wave 2)
 - [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage and rollback (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases
