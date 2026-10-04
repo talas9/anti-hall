@@ -12,7 +12,7 @@ const seeds = [];
 for (const f of arg('--seeds', '').split(',').filter(Boolean)) for (const l of fs.readFileSync(f, 'utf8').split('\n').filter(Boolean)) { try { const o = JSON.parse(l); if (o.command && o.command.length < 500) seeds.push(o); } catch {} }
 const P = 'pu' + 'sh', F = '--for' + 'ce', CO = 'Co-Authored' + '-By', GEN = 'Generated' + ' with';
 const FRAG = [`git ${P} ${F} origin main`, `git ${P} -f`, `git ${P} origin +main`, `git ${P} origin :b`, `git ${P} --delete origin b`, `git commit -m "x\n\n${CO}: Claude <noreply@anthropic.com>"`, `git commit -F - <<'EOF'\n${GEN} Claude Code\nEOF`, 'git status', 'git log -1', 'echo hi', 'ls -la', 'cat f.md', `git -c alias.p=${P} p ${F}`, `git config alias.x '!git ${P} ${F}'`, 'git commit --amend --no-edit', 'git add -A', `git ${P}`, 'git commit -m ok'];
-const SPECIAL = ['\'', '"', '`', '$', '(', ')', '{', '}', '[', ']', '<', '>', '|', '&', ';', '\n', '\\', '#', '!', '*', '?', ' ', '-', '+', ':', '=', '$(', '<<', '<<<', '&&', '||', '\\\n', '$\'', '\t', '\r', 'é', '\u{1F916}', '\0'];
+const SPECIAL = ['\'', '"', '`', '$', '(', ')', '{', '}', '[', ']', '<', '>', '|', '&', ';', '\n', '\\', '#', '!', '*', '?', ' ', '-', '+', ':', '=', '$(', '<<', '<<<', '&&', '||', '\\\n', '$\'', '\t', '\r', 'é', '\u{1F916}', '\0', '\u0085', '\ufeff', '\u180e', '\u2028', '\u2029', '\u00a0'];
 const WRAP = [
   s => `bash -c ${JSON.stringify(s)}`, s => `sh -c '${s.replace(/'/g, "'\\''")}'`, s => `eval ${JSON.stringify(s)}`, s => `$(${s})`, s => `{ ${s}; }`, s => `( ${s} )`,
   s => `sudo ${s}`, s => `env A=1 ${s}`, s => `command ${s}`, s => `time ${s}`, s => `nohup ${s}`, s => `timeout 5 ${s}`, s => `nice -n 5 ${s}`, s => `FOO=bar ${s}`,

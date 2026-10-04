@@ -36,10 +36,9 @@ pub struct Ev {
     pub env: std::collections::HashMap<String, String>,
 }
 
-/// JavaScript whitespace: Unicode white space plus the byte-order mark, which `String.prototype.trim` also strips.
-pub fn is_js_space(c: char) -> bool {
-    c.is_whitespace() || c == '\u{feff}'
-}
+/// JavaScript whitespace (`\s`), the exact ECMAScript set; Rust's `char::is_whitespace` differs (U+0085 is in it,
+/// U+FEFF is not), so the shared helper is used.
+pub use crate::checks::guardkit::text::is_js_space;
 
 /// Trim like JavaScript `String.prototype.trim`.
 pub fn js_trim(s: &str) -> &str {
