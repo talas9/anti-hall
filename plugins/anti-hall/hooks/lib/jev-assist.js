@@ -455,13 +455,29 @@ function rotateAuditIfNeeded(p) {
 // triggered by `wouldChange` only (not `changed`), the stored row carries
 // `shadow: true` so `jev-report label` can tell an actual change from a
 // would-have-changed one.
+// Integrations whose verdict lives at the END of the judged text store a
+// head+tail snippet (200 + 400 chars + joiner, <= 700 total) instead of head-only.
+const TAIL_SNIPPET_IDS = new Set(['outputVerifyGuard']);
+const SNIPPET_HEAD = 200;
+const SNIPPET_TAIL = 400;
+
 function maybeWriteAuditSnippet({ home, id, hash, state, changed, wouldChange }) {
   try {
     const trigger = changed || wouldChange;
     if (!trigger || typeof state !== 'string' || !state) return;
     if (!readAuditConfig(home).snippets) return;
-    const scrubbed = scrubSecrets(state.slice(0, 2000));
-    const snippet = scrubbed.slice(0, 200);
+    let snippet;
+    if (TAIL_SNIPPET_IDS.has(id)) {
+      // Head+tail: the verdict (pass/fail summary) sits at the END of the
+      // output. Scrub the WHOLE text first so a secret straddling a cut
+      // boundary can't survive half-redacted, then keep head + tail.
+      const scrubbed = scrubSecrets(state);
+      snippet = scrubbed.length <= SNIPPET_HEAD + SNIPPET_TAIL
+        ? scrubbed
+        : scrubbed.slice(0, SNIPPET_HEAD) + ' \u2026 ' + scrubbed.slice(-SNIPPET_TAIL);
+    } else {
+      snippet = scrubSecrets(state.slice(0, 2000)).slice(0, 200);
+    }
     const p = auditLogPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     rotateAuditIfNeeded(p);

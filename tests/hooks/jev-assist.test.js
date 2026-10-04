@@ -1397,3 +1397,33 @@ test('askSync(): recordDisagreement logs wouldChange + audit snippet on an ON ro
     });
   } finally { h.cleanup(); }
 });
+
+test('maybeWriteAuditSnippet: outputVerifyGuard stores head+tail (tail summary kept, tail secrets redacted, <=700)', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { audit: { snippets: true } });
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    const state = 'HEADLINE ' + 'x '.repeat(2000) + ' key sk-' + 'FAKEFAKEFAKEFAKE1234 ' + 'y '.repeat(50) + 'Tests: 3 failed, 12 passed';
+    maybeWriteAuditSnippet({ home: h.home, id: 'outputVerifyGuard', hash: 'h1', state, changed: 'added' });
+    const row = JSON.parse(fs.readFileSync(auditLogPath(h.home), 'utf8').trim());
+    assert.ok(row.snippet.startsWith('HEADLINE'));
+    assert.ok(row.snippet.endsWith('Tests: 3 failed, 12 passed'));
+    assert.ok(row.snippet.includes(' … '));
+    assert.ok(row.snippet.length <= 700);
+    assert.ok(!row.snippet.includes('FAKEFAKEFAKEFAKE1234'));
+    assert.ok(row.snippet.includes('[REDACTED_KEY]'));
+    assert.strictEqual(fs.statSync(auditLogPath(h.home)).mode & 0o777, 0o600);
+  } finally { h.cleanup(); }
+});
+
+test('maybeWriteAuditSnippet: other integrations stay head-only (byte-identical 200-char prefix)', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { audit: { snippets: true } });
+    const { maybeWriteAuditSnippet, auditLogPath } = freshLib();
+    const state = 'a '.repeat(50) + 'b '.repeat(300) + 'TAILMARK';
+    maybeWriteAuditSnippet({ home: h.home, id: 'speculation', hash: 'h2', state, changed: 'added' });
+    const row = JSON.parse(fs.readFileSync(auditLogPath(h.home), 'utf8').trim());
+    assert.strictEqual(row.snippet, state.slice(0, 200));
+  } finally { h.cleanup(); }
+});
