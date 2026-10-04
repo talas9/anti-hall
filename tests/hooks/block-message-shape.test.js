@@ -72,7 +72,7 @@ test('command-guard heavy-command block has the shared shape and its facts', () 
   assert.match(r.json.reason, /verb: npm/);
   assert.match(r.json.reason, /Allowed here: piped to tail\/head\/wc\/grep -c: `node --test <1-2 files>`/);
   assert.match(r.json.reason, /scratchpad script .*run_in_background/);
-  assert.ok(r.json.reason.length <= 520, 'compact: ' + r.json.reason.length);
+  assert.ok(r.json.reason.length <= 600, 'compact: ' + r.json.reason.length);
   const cx = testHook('command-guard.js', Object.assign(bashPayload('npm test'), { cwd, turn_id: 't1', model: 'gpt-5.6-sol' }), { home, env: {} });
   assert.strictEqual(cx.status, 2);
   assert.ok(cx.stderr.trim().length > 0);

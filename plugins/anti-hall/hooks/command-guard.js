@@ -4496,8 +4496,8 @@ function main() {
   const delegateTo = 'delegate to ' + (codexHost ? H.CODEX_CHEAP : SUB) + ' (it returns a short summary)';
   // Compact allowed list: exactly the shapes isQualifyingSingleTargetCheck accepts
   // (piped to tail/head/wc/grep -c/grep -m N) plus the scratchpad read-only script.
-  const allowedShapes = 'piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, --check/--dry-run/--list forms' +
-    (codexHost ? '.' : '; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background.');
+  const allowedShapes = 'piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <n>`, `<cc> -fsyntax-only`, --check/--dry-run/--list' +
+    (codexHost ? '.' : '; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background (never in the foreground).');
   const reason = bm().blockMessage({
     guard: 'command-guard',
     what: heavyWhat,

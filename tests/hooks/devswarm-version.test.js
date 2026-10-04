@@ -225,8 +225,7 @@ test('ALERT: fresh cache, MINOR drift => one-line advisory naming both versions'
     assert.match(ctx, new RegExp(BASELINE.replace(/\./g, '\\.')));
     assert.match(ctx, /docs\/KB-devswarm-hivecontrol\.md/);
     // Exactly one line (advisory only — never more than a single nudge).
-    assert.ok(ctx.split('
-').length <= 4, 'short shaped message'); got: ${JSON.stringify(ctx)}`);
+    assert.ok(ctx.split('\n').length <= 4, 'short shaped message');
   } finally { h.cleanup(); }
 });
 

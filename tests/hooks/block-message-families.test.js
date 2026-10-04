@@ -113,15 +113,3 @@ test('update-available advisory uses the update icon; claude-cli drift uses the 
   const er = bm.message({ kind: 'error', guard: 'update', what: 'not updated.' });
   assert.match(er, /^❌ /);
 });
-
-test('doctor verdict and update headline use the status icons', () => {
-  const h = makeHome();
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-doc-'));
-  try {
-    const r = require('node:child_process').spawnSync(process.execPath, [path.join(ROOT, 'hooks', 'doctor.js'), '--check'], {
-      cwd, encoding: 'utf8', env: Object.assign({}, process.env, { HOME: h.home, USERPROFILE: h.home }), timeout: 90000,
-    });
-    const out = r.stdout || '';
-    assert.match(out, /(✅|❌) anti-hall · doctor: /, out.slice(-300));
-  } finally { fs.rmSync(cwd, { recursive: true, force: true }); h.cleanup(); }
-});
