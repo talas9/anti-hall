@@ -270,9 +270,40 @@ after any commit-creating command and tells the agent to reword one that
 carries a trailer added OFF the command line (a repo `commit-msg` /
 `prepare-commit-msg` hook, a template, an editor, a cherry-pick). **Documented
 fail-open scope:** the audit is advisory (PostToolUse cannot un-run a commit),
-a commit made inside a script file is not seen by the command-text scan, and `xargs` /
-an aliased `g push` can still bypass the force-push block. These are
+a commit made inside a script file is not seen by the command-text scan, and `xargs`
+can still bypass the force-push block. These are
 documented boundaries, not silent gaps.
+
+**Aliases** (`guards.gitAliasResolve`, safety, default on). `git <name>` where
+`<name>` is not a git builtin is resolved through the git config of the repo the
+command runs in (one `git config --get-regexp ^alias\.` per repo per call;
+builtins never spawn git, since git ignores an alias that shadows one). Alias
+chains are followed (a loop resolves to nothing, as git refuses to run it), and
+the expansion is scanned as the command it really is: `git <body> <args>`, or the
+shell text of a `!` alias. The PostToolUse audit follows aliases too. Defining
+an alias whose body is a blocked git command is itself blocked:
+`git config alias.x '<body>'`, `git -c alias.x=<body>`,
+`GIT_CONFIG_VALUE_<n>=<body>`, and a shell `alias x='<body>'` (shell function
+bodies are ordinary command segments and were already scanned). A call to a
+shell alias or function defined in the same command is scanned as what it
+forwards: `g(){ git "$@"; }; g push --force` expands `"$@"`/`$*`/`$1`… to the
+call's arguments, wrappers calling wrappers included (depth-bounded). Not
+covered: a shell alias or function defined in your shell profile rather than in
+the command (the hook only sees the command text).
+
+**Reused commit messages** (`guards.gitReusedMessageCheck`, safety, default
+on). A `git commit` with no `-m`/`-F` takes its message from somewhere the
+command line does not show. Before it runs, git-guard reads that message:
+`git log -1 --format=%B <rev>` for `-C`/`-c`/`--reuse-message`/`--reedit-message`,
+HEAD for `--amend`, the `-t` file or `commit.template`. If it carries an AI
+self-credit trailer the commit is blocked when the message would be reused
+verbatim (`-C`, `--no-edit`, or a no-op editor such as `GIT_EDITOR=true`), and
+also on the editor path when the command sets no real editor of its own. A
+command that sets a real editor (`GIT_EDITOR=…`, `core.editor`) is left to the
+PostToolUse audit, since that editor may be the cleanup. Why both layers: the
+PreToolUse check can only see a message that already exists (a commit, a file);
+what an editor or a `commit-msg` hook writes exists only after the commit, so
+the audit reads the new HEAD and tells the agent to amend.
 
 ### Task discipline
 
@@ -1124,6 +1155,8 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.gitignoreHint` | `true` | `ANTIHALL_GITIGNORE_HINT` | One-time (per project, every 7 days) SessionStart reminder to git-ignore `.anti-hall/` when it exists in a git repo and is not ignored; doctor always reports it. |
 | `guards.allowAnthropicEnvKey` adv safety | `false` | — | SAFETY, home-settings only (no env or project override). Opt-in: let the speculation judge and Jev triage read `ANTHROPIC_API_KEY` from the environment. Default off: only the `anthropic_api_key` plugin option is used. |
 | `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |
+| `guards.gitAliasResolve` adv safety | `true` | `ANTIHALL_GIT_ALIAS_RESOLVE` | SAFETY (confirm to change — see settings.js set/reset). git-guard: resolve `git <alias>` through the repo/global git config (alias chains and `!shell` aliases included; loops resolve to nothing, as in git) and scan the command it really runs; block defining a git alias (`git config alias.x`, `-c alias.x=`, `GIT_CONFIG_VALUE_<n>`) or a shell `alias x=` whose body is a blocked git command; scan a call to a shell alias or function defined in the same command as the git command it forwards to. Builtin subcommands never spawn git. |
+| `guards.gitReusedMessageCheck` adv safety | `true` | `ANTIHALL_GIT_REUSED_MESSAGE_CHECK` | SAFETY (confirm to change — see settings.js set/reset). git-guard: for a `git commit` with no `-m`/`-F`, read the message it would reuse (`-C`/`-c`/`--reuse-message`/`--reedit-message <rev>`, HEAD for `--amend`, `-t`/`commit.template`) and block it when it carries an AI self-credit trailer. A message reused verbatim (`-C`, `--no-edit`, a no-op editor such as `true`) always blocks; an editor-path commit blocks only when the command sets no real editor of its own. What an editor or commit hook writes is caught afterwards by the PostToolUse `--audit`. |
 | `guards.editGuardAllow` adv safety | — | `ANTIHALL_EDIT_GUARD_ALLOW` | SAFETY (confirm to change — see settings.js set/reset). Extra allowed file globs for edit-guard (comma/colon separated). |
 | `guards.allowSubagentMailbox` adv safety | `false` | `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` | SAFETY (confirm to change — see settings.js set/reset). One-off allow for the subagent-mailbox command pattern. |
 | `guards.reaperMatch` adv | — | `ANTIHALL_REAPER_MATCH` | Extra process-name pattern for the MCP session-end reaper. |

@@ -77,6 +77,8 @@ function fail_open() {
 // gm(opts) -> block text in the shared shape (lib/block-message.js).
 function gm(o) { return require('./lib/block-message.js').blockMessage(Object.assign({ guard: 'git-guard' }, o)); }
 function skipCmd(k) { return require('./lib/skip-cmd.js').skipCommand(k); }
+// Alias resolution + reused-commit-message checks live in lib/git-alias-scan.js.
+function aliasScan() { return require('./lib/git-alias-scan.js'); }
 
 function block(msg) {
   try {
@@ -2092,6 +2094,9 @@ function scanCommand(cmd, depth, baseCwd) {
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
 
+    const aliasDef = aliasScan().shellDefinitionVerdict(tokens, ev, (c) => scanCommand(c, d + 1, lastCdDir), d, currentRawCommand);
+    if (aliasDef) return aliasDef;
+
     if (writesLauncherDir(tokens, ev, lastCdDir)) {
       return LAUNCHER_BLOCK_MSG;
     }
@@ -2278,6 +2283,10 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
 
   const { sub, rest } = gitSubcommand(ev.args);
   if (sub === null) return null;
+
+  const aliasHit = aliasScan().gitVerdict({ args: ev.args, sub, rest, dir: lastCdDir, depth: d, rawCmd: currentRawCommand,
+    rescan: (c, dir) => scanCommand(c, d + 1, dir), hasSelfCredit, gm });
+  if (aliasHit) return aliasHit;
 
   // `git config [--file f] key value`: scan each operand as a possible value.
   if (sub === 'config') {
@@ -2684,8 +2693,8 @@ function commitRepoDirs(cmd, base, depth, out) {
       continue;
     }
     if (ev.verb !== 'git') continue;
-    const { sub } = gitSubcommand(ev.args);
-    if (!COMMIT_CREATING.has(sub)) continue;
+    const { sub, rest } = gitSubcommand(ev.args);
+    if (!COMMIT_CREATING.has(sub) && !aliasScan().aliasCreatesCommit(ev.args, sub, rest, cdDir, COMMIT_CREATING)) continue;
     let dir = cdDir;
     for (let k = 0; k < ev.args.length; k++) {
       const t = ev.args[k].text;
