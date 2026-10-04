@@ -32,6 +32,7 @@
 //   exit 0 : always (fail-open on ANY error).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const path = require('path');
 // v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);

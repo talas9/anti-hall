@@ -1918,8 +1918,10 @@ if (REPAIR_RESURRECTED) {
     const sb = require('./lib/jev-assist.js').speculationBackend();
     head('semantic judge');
     if (sb.backend === 'jev') infol('semantic judge: Jev (speculation-guard) is active; the paid API judge is skipped.');
-    else if (sb.backend === 'api') infol('semantic judge: Anthropic API (jev.semanticJudge on); needs an anthropic_api_key.');
-    else infol('speculation-judge is off (opt-in). Enable: node scripts/settings.js judge on (or /anti-hall:settings). Costs about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated, not measured.');
+    else if (sb.backend === 'api' && sb.judgeBackend === 'cli') infol('semantic judge: local claude CLI (jev.semanticJudge on, jev.judgeBackend=cli); no API key, about 5\u20136 s per turn end.');
+    else if (sb.backend === 'api' && sb.judgeBackend === 'auto') infol('semantic judge: Anthropic API when an anthropic_api_key is visible, else the local claude CLI (jev.judgeBackend=auto).');
+    else if (sb.backend === 'api') infol('semantic judge: Anthropic API (jev.semanticJudge on); needs an anthropic_api_key, or set jev.judgeBackend=cli to use the local claude CLI.');
+    else infol('speculation-judge is off (opt-in). Enable: node scripts/settings.js judge on (or /anti-hall:settings). API backend: about $0.0001\u20130.001 and 1\u20133 s per turn end, estimated; cli backend: no API key, about 5\u20136 s, measured.');
   } catch (_) { /* report-only */ }
 })();
 

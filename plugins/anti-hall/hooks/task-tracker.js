@@ -32,11 +32,12 @@
 // No external deps; pure Node built-ins. JSON via JSON.stringify.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 const DD = require('./lib/dispatch-demand.js');
 const { reconstructTasks, classifyOpen, openOf, unknownNote } = require('./lib/task-state.js');
 

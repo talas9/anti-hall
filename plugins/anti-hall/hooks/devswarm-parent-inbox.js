@@ -56,6 +56,11 @@
 // flush race on macOS Node 18/20 (mirrors limit-conserve-inject.js / task-tracker.js).
 
 'use strict';
+require('./lib/judge-child-exit');
+
+// Cheap no-op exit for a session this hook cannot act on (non-DevSwarm, child,
+// setting off) BEFORE the heavy requires below — see lib/devswarm-primary-gate.js.
+require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'parentInbox' });
 
 const fs = require('fs');
 const os = require('os');

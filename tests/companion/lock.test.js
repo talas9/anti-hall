@@ -389,3 +389,20 @@ test('withLock: busy returns onBusy()/lockBusy and never runs fn; a Promise-retu
     assert.strictEqual(fs.existsSync(t.p), false);
   } finally { t.cleanup(); }
 });
+
+test('adopt: a successor takes over a lock by token, refreshes and releases it; a wrong/stale token is refused', () => {
+  const t = tmp();
+  try {
+    const h = L.acquire(t.p, {});
+    assert.ok(h);
+    assert.strictEqual(L.adopt(t.p, 'nope'), null);
+    assert.strictEqual(L.adopt(t.p, ''), null);
+    const a = L.adopt(t.p, h.token);
+    assert.ok(a);
+    assert.strictEqual(a.refresh({ pid: 424242 }), true);
+    assert.strictEqual(JSON.parse(fs.readFileSync(t.p, 'utf8')).pid, 424242);
+    assert.strictEqual(a.release(), true);
+    assert.strictEqual(fs.existsSync(t.p), false);
+    assert.strictEqual(L.adopt(t.p, h.token), null); // gone -> refused
+  } finally { t.cleanup(); }
+});

@@ -1749,3 +1749,17 @@ test('STABLE header: a just-updated progress file passes (no header demand)', ()
     assert.ok(!isBlock(r), `fresh progress must allow; stdout: ${r.stdout}`);
   } finally { h.cleanup(); }
 });
+
+test('BLOCK (bypass probe): a STALE heartbeat file and no agent in the transcript still read as "no agent live"', () => {
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
+    const agentsDir = path.join(h.antiHall, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'a1.json'), JSON.stringify({ ts: Date.now() - 3 * 60 * 60 * 1000 }), 'utf8');
+    const tp = h.writeTranscript([...twoInProgress()]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `no live agent must still block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason || '', /NO background agent is live/);
+  } finally { h.cleanup(); }
+});

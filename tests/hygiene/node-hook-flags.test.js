@@ -46,6 +46,7 @@ function run(flags, hook, payload, home, extraEnv, timeout) {
 const ARG_ALLOWLIST = {
   'git-guard.js': { args: ['--audit'], claudeOnly: [] },
   'coordinator-work-guard.js': { args: ['--post'], claudeOnly: [] },
+  'merge-side-pick.js': { args: ['--post'], claudeOnly: [] },
   'verify-first-orch.js': { args: ['--host=claude'], claudeOnly: ['--host=claude'] },
 };
 

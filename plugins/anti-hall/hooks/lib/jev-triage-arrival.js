@@ -4,5 +4,5 @@
 // the arrival queue through the normal triage path, then releases the lock.
 try {
   const home = process.env.ANTIHALL_TRIAGE_ARRIVAL_HOME;
-  if (home) require('./jev-triage.js').runArrivalWorker(home);
+  if (home) require('./jev-triage.js').runArrivalWorker(home, process.env.ANTIHALL_TRIAGE_ARRIVAL_TOKEN);
 } catch (_) { /* advisory only */ }

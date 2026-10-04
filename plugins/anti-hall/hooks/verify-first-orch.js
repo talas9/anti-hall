@@ -30,6 +30,8 @@
 //     (lib/orch-full-state.js) tells orch-on-spawn.js to send ORCH_FULL once on the first Agent/Task/
 //     Workflow spawn of this epoch. This hook runs on EVERY SessionStart source, so each
 //     compaction/clear/resume re-arms the marker with a fresh epochId.
+//   - Codex (positive detectPlatform evidence) + context.codexOrchFullOn=spawn (opt-in, default session): the same
+//     compact-at-start + marker `pending` flow, delivered on the first spawn_agent PreToolUse (orch-on-spawn.js).
 //   - orchFullOn=off -> ORCH_COMPACT only.
 //   The marker says `none` whenever this hook sent full text (or nothing), so a stale `pending`
 //   never survives into a new epoch.
@@ -40,6 +42,7 @@
 //   exit 0 : always (never blocks). Fail-open on any error.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const core = require('./verify-first-core');
@@ -134,6 +137,13 @@ function main() {
   let mode = String(setting('orchFullOn', 'auto'));
   if (mode === 'auto') mode = 'session'; // spawn delivery is opt-in until proven live
   if (mode === 'spawn' && !confident) mode = 'session'; // explicit spawn is coerced when not confident
+  // Codex: orchFullOn is Claude-only; the separate, opt-in codexOrchFullOn=spawn defers ORCH_FULL to the
+  // first spawn_agent PreToolUse. Needs POSITIVE Codex evidence (detectPlatform) and a session id.
+  if (codex && !confident && mode !== 'off') {
+    mode = 'session';
+    const sid = payload && typeof payload.session_id === 'string' ? payload.session_id : '';
+    if (sid && String(setting('codexOrchFullOn', 'session')) === 'spawn') mode = 'spawn';
+  }
   if (mode === 'spawn') {
     // orch-on-spawn honours the same skip.json switch; a skipped guard sends the full text here.
     try { if (require('./skip-guard.js').isSkipped('orch-on-spawn')) mode = 'session'; } catch (_) { /* proceed */ }

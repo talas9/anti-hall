@@ -233,8 +233,9 @@ const DEADLY_LOOP_PROBES = [
   HDW + 'head -n "$(sh x.sh)" x.sh',
   `cat > x.sh <<'EOF'\ngit push --force origin HEAD:refs/heads/main\nEOF\necho "$(sh x.sh)"`,
   HDW + "GIT_SSH_COMMAND='sh x.sh' git status",
-  `cat > x.txt <<'EOF'\n${FPB}\nEOF\ngit status`,
 ];
+// (`cat > x.txt <<'EOF' ... EOF` + `git status` writes prose into a .txt
+// file: a data heredoc, now allowed - see git-guard-heredoc-data.test.js.)
 
 const BLOCK = [
   // --- Force push (Rule 2): literal force flags / +refspec ---
@@ -411,7 +412,6 @@ const BLOCK = [
   { cmd: "cat > .git/hooks/pre-commit <<'EOF'\ngit push --force origin main\nEOF\nchmod +x .git/hooks/pre-commit\ngit commit -m x", reason: REASON.FORCE },
   { cmd: "cat > .git/hooks/pre-push <<'EOF'\ngit push --force origin main\nEOF\nchmod +x .git/hooks/pre-push\ngit push origin main", reason: REASON.FORCE },
   { cmd: "git -c alias.x='!sh' x <<'EOF'\ngit push --force origin main\nEOF", reason: REASON.FORCE },
-  { cmd: "cat <<-'EOF' > /tmp/m.md\n\tgit push --force\n\tEOF\ngit push origin main", reason: REASON.FORCE },
   // Read-only git verbs that run programs from env or config (round 2,
   // R2-RV1-1 / R2A1-GG-1): pager, external diff, fsmonitor.
   { cmd: "cat <<'EOF' > x.sh\ngit push --force origin main\nEOF\nGIT_PAGER='sh x.sh' git log", reason: REASON.FORCE },
@@ -431,8 +431,9 @@ const BLOCK = [
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\nprintf \"%s\" \"$(sh x.sh)\"", reason: REASON.FORCE },
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\ncd \"$(sh x.sh)\"", reason: REASON.FORCE },
   { cmd: "cat > x.sh <<'EOF'\ngit push --force origin main\nEOF\ngit log \"$(sh x.sh)\"", reason: REASON.FORCE },
-  // Prose heredocs outside the exact launcher-send shape: still scanned.
-  { cmd: 'cat > /tmp/m.md <<"EOF"\nstep: && git push --force `x`\nEOF', reason: REASON.FORCE },
+  // (Prose heredocs written into a .md/.txt file are data and no longer
+  // scanned: see git-guard-heredoc-data.test.js. A script target, an
+  // interpreter consumer or a launcher send in the same line still is.)
 ];
 
 const ALLOW = [
@@ -522,16 +523,13 @@ for (const { cmd, reason } of LAUNCHER_MSG_BLOCK_HINTED) {
 // rule and must carry the SAME generalized hint (looksLikeFileWriteShape),
 // not just the old devswarm-mailbox-only shape.
 const FILE_WRITE_BLOCK_HINTED = [
+  // (The peer repro - prose into .anti-hall/handovers/.../HANDOVER.md - and
+  // `tee /tmp/notes.md <<'EOF'` prose are data heredocs and now allowed:
+  // see git-guard-heredoc-data.test.js.)
   {
-    // cat > f <<'EOF' ... EOF - the exact peer repro shape.
-    cmd: "cat > .anti-hall/handovers/2026-09-28/sess1/HANDOVER.md <<'EOF'\n## Next steps\nRun `git push` to publish.\nEOF\n",
+    // A script target keeps its body scanned (it may be run later).
+    cmd: "cat > /tmp/notes.sh <<'EOF'\nRun `git push` to publish.\nEOF\n",
     reason: REASON.CMDSUBST,
-  },
-  {
-    // tee f <<EOF ... EOF (no `>`/cat at all) - the heredoc body carries a
-    // real force-push mention, so it blocks on Rule 2 directly.
-    cmd: "tee /tmp/notes.md <<'EOF'\ndo not run `git push --force` here\nEOF\n",
-    reason: REASON.FORCE,
   },
   {
     // echo redirected into a file (no heredoc) - a command-valued config

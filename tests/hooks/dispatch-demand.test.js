@@ -430,3 +430,161 @@ test('owner set -> attended (unchanged); both messages carry the owner hint', ()
     assert.match(r.json.reason, /set the task owner to it \(TaskUpdate owner\)/);
   } finally { h2.cleanup(); }
 });
+
+// IDLE NEGLECT proof rule (guards.idleNeglectProvenOnly). Field shape from the
+// 2026-10 replay: the main thread holds one in_progress task, launches ONE
+// background agent whose description names no "#id" for the pending task, and
+// stops waiting on it. The in_progress-first estimate parks the agent on the
+// in_progress task and blocked with "no in-flight agent" on the very task the
+// agent was working.
+function provenFixture(pendingSubjects) {
+  return [
+    ...createTasks(['P1: persist modal selections', ...pendingSubjects], 1),
+    taskUpdate('toolu_u1', { taskId: '1', status: 'in_progress' }),
+    ...agentLaunch('toolu_a1', 'eeeeeeeeeeeeeeee1', 'Install deps, render sample PDFs'),
+  ];
+}
+
+test('PROVEN-ONLY (field repro): 1 unmapped live agent, 1 in_progress, 1 pending -> no IDLE NEGLECT block; DISPATCH NOW line still shown', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(provenFixture(['P1: fix PDF diagram stretch']));
+    const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP });
+    assert.ok(!isIdleNeglect(r), 'unproven claim must not block; stdout: ' + r.stdout);
+    const line = demandLine(ctx(testHook(TRACKER, trackerPayload(tp), { home: h.home, env: Object.assign({}, NO_DEDUPE, HIGH_CAP) })));
+    assert.match(line, /#2 "fix PDF diagram stretch"/, 'advisory line unchanged: ' + line);
+  } finally { h.cleanup(); }
+});
+
+test('PROVEN-ONLY setting off -> the same field shape blocks again (old estimate)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(provenFixture(['P1: fix PDF diagram stretch']));
+    const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: Object.assign({ ANTIHALL_IDLE_NEGLECT_PROVEN_ONLY: '0' }, HIGH_CAP) });
+    assert.ok(isIdleNeglect(r), 'expected IDLE NEGLECT with the setting off; stdout: ' + r.stdout);
+  } finally { h.cleanup(); }
+});
+
+test('PROVEN-ONLY probes: still blocks when the claim is proven', () => {
+  // (a) more dispatchable tasks than unmapped agents: one is uncovered however the agent is placed.
+  let h = makeHome();
+  try {
+    const tp = h.writeTranscript(provenFixture(['P1: fix PDF diagram stretch', 'P1: gate and push']));
+    assert.ok(isIdleNeglect(testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP })), '2 pending > 1 unmapped must block');
+  } finally { h.cleanup(); }
+  // (b) the agent has finished: no live agent, a fresh global heartbeat must not count.
+  h = makeHome();
+  try {
+    plantGlobalHeartbeat(h);
+    const tp = h.writeTranscript([...provenFixture(['P1: fix PDF diagram stretch']), agentDone('eeeeeeeeeeeeeeee1')]);
+    assert.ok(isIdleNeglect(testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP })), 'finished agent + heartbeat must block');
+  } finally { h.cleanup(); }
+  // (c) no agent ever launched + a stale heartbeat file.
+  h = makeHome();
+  try {
+    const dir = path.join(h.antiHall, 'agents');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'recent-spawn.json'), JSON.stringify({ ts: Date.now() - 3 * 60 * 60 * 1000 }), 'utf8');
+    const tp = h.writeTranscript([...createTasks(['P1: fix PDF diagram stretch'], 1)]);
+    assert.ok(isIdleNeglect(testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP })), 'no live agent must block');
+  } finally { h.cleanup(); }
+  // (d) an agent mapped by "#id" to another task does not count as unmapped.
+  h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...createTasks(['P1: alpha', 'P1: beta'], 1),
+      ...agentLaunch('toolu_a1', 'eeeeeeeeeeeeeeee2', 'Lane #1 alpha'),
+    ]);
+    const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP });
+    assert.ok(isIdleNeglect(r), 'mapped agent covers only #1: ' + r.stdout);
+    assert.match(r.json.reason, /#2 "alpha"|#2 "beta"/);
+  } finally { h.cleanup(); }
+});
+
+test('evaluate(): proven is fire && dispatch > unmapped', () => {
+  const DD = require('../../plugins/anti-hall/hooks/lib/dispatch-demand.js');
+  const act = [{ id: '2', content: 'b' }];
+  const one = DD.evaluate({ actionable: act, knownIds: ['1', '2'], inProgressIds: ['1'], running: [{ description: 'x' }], cap: 8 });
+  assert.strictEqual(one.fire, true);
+  assert.strictEqual(one.proven, false);
+  const two = DD.evaluate({ actionable: act.concat({ id: '3', content: 'c' }), knownIds: ['1', '2', '3'], inProgressIds: ['1'], running: [{ description: 'x' }], cap: 8 });
+  assert.strictEqual(two.proven, true);
+  const none = DD.evaluate({ actionable: act, knownIds: ['2'], inProgressIds: [], running: [], cap: 8 });
+  assert.strictEqual(none.proven, true);
+});
+
+// IDLE NEGLECT proof: a hung agent or an unrelated one must not hide a pending
+// task (guards.idleNeglectAgentMaxAgeMin; launched-before-the-task rule).
+const taskAt = (subject, n, ts) => [taskCreate('toolu_c' + n, subject, null, ts), taskCreated('toolu_c' + n, n, subject, ts)];
+
+test('PROVEN COVER: a 6h-old unmapped agent with no activity does not hide the pending task', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...taskAt('P1: fix PDF diagram stretch', 1, iso(7 * 60)),
+      ...agentLaunch('toolu_a1', 'eeeeeeeeeeeeeeee3', 'Install deps, render sample PDFs', iso(6 * 60)),
+    ]);
+    const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP });
+    assert.ok(isIdleNeglect(r), 'hung agent must not cover; stdout: ' + r.stdout);
+    // The age is a setting: 0 = never age out -> the old cover rule holds again.
+    const off = testHook(GUARD, stopPayload(tp), { home: h.home, env: Object.assign({ ANTIHALL_IDLE_NEGLECT_AGENT_MAX_AGE_MIN: '0' }, HIGH_CAP) });
+    assert.ok(!isIdleNeglect(off), 'max age 0 keeps the agent as cover; stdout: ' + off.stdout);
+    // A recent SendMessage resume is a sign of life: the 6h-old agent counts again.
+    const tp2 = h.writeTranscript([
+      ...taskAt('P1: fix PDF diagram stretch', 1, iso(7 * 60)),
+      ...agentLaunch('toolu_a1', 'eeeeeeeeeeeeeeee3', 'Install deps, render sample PDFs', iso(6 * 60)),
+      ...sendMessageResume('toolu_s1', 'eeeeeeeeeeeeeeee3', iso(3)),
+    ]);
+    assert.ok(!isIdleNeglect(testHook(GUARD, stopPayload(tp2), { home: h.home, env: HIGH_CAP })), 'resumed agent is alive');
+  } finally { h.cleanup(); }
+});
+
+test('PROVEN COVER: a fresh unmapped agent launched after the task still covers it', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...taskAt('P1: fix PDF diagram stretch', 1, iso(30)),
+      ...agentLaunch('toolu_a1', 'eeeeeeeeeeeeeeee4', 'Install deps, render sample PDFs', iso(10)),
+    ]);
+    const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP });
+    assert.ok(!isIdleNeglect(r), 'fresh agent covers; stdout: ' + r.stdout);
+  } finally { h.cleanup(); }
+});
+
+test('PROVEN COVER: an agent launched before the task existed (an unrelated reviewer) does not cover it', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      ...agentLaunch('toolu_a1', 'eeeeeeeeeeeeeeee5', 'Review the release diff', iso(20)),
+      ...taskAt('P1: fix PDF diagram stretch', 1, iso(10)),
+    ]);
+    const r = testHook(GUARD, stopPayload(tp), { home: h.home, env: HIGH_CAP });
+    assert.ok(isIdleNeglect(r), 'pre-task agent must not cover; stdout: ' + r.stdout);
+  } finally { h.cleanup(); }
+  // A task set back to pending later counts from that update, not its create
+  // (fresh home: task-guard dedupes a repeated identical block per session).
+  const h2 = makeHome();
+  try {
+    const tp2 = h2.writeTranscript([
+      ...taskAt('P1: fix PDF diagram stretch', 1, iso(40)),
+      taskUpdate('toolu_u1', { taskId: '1', status: 'in_progress' }, iso(35)),
+      ...agentLaunch('toolu_a1', 'eeeeeeeeeeeeeeee5', 'Review the release diff', iso(20)),
+      taskUpdate('toolu_u2', { taskId: '1', status: 'pending' }, iso(10)),
+    ]);
+    assert.ok(isIdleNeglect(testHook(GUARD, stopPayload(tp2), { home: h2.home, env: HIGH_CAP })), 'reset to pending after the launch');
+  } finally { h2.cleanup(); }
+});
+
+test('evaluate(): proven discounts stale and pre-task unmapped agents; unknown times keep them', () => {
+  const DD = require('../../plugins/anti-hall/hooks/lib/dispatch-demand.js');
+  const now = Date.parse('2026-10-04T12:00:00Z');
+  const base = { knownIds: ['1'], inProgressIds: [], cap: 8, nowMs: now, agentMaxAgeMs: 30 * 60 * 1000 };
+  const task = (sinceMs) => [{ id: '1', content: 'a', sinceMs }];
+  const ag = (o) => Object.assign({ description: 'x' }, o);
+  const run = (tasks, agent) => DD.evaluate(Object.assign({ actionable: tasks, running: [agent] }, base));
+  assert.strictEqual(run(task(now - 120 * 60000), ag({ launchedAtMs: now - 10 * 60000, lastActivityMs: now - 10 * 60000 })).proven, false, 'fresh + after task');
+  assert.strictEqual(run(task(now - 120 * 60000), ag({ launchedAtMs: now - 90 * 60000, lastActivityMs: now - 90 * 60000 })).proven, true, 'stale');
+  assert.strictEqual(run(task(now - 5 * 60000), ag({ launchedAtMs: now - 10 * 60000, lastActivityMs: now - 1 * 60000 })).proven, true, 'launched before the task');
+  assert.strictEqual(run(task(undefined), ag({ launchedAtMs: now - 10 * 60000, lastActivityMs: now - 1 * 60000 })).proven, false, 'unknown task time counts');
+  assert.strictEqual(run(task(now - 5 * 60000), ag({ launchedAtMs: NaN, lastActivityMs: NaN })).proven, false, 'unknown agent age counts');
+});

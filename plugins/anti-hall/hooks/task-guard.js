@@ -54,11 +54,12 @@
 //   - NEVER throws: all logic is wrapped in a top-level try/catch -> exit 0.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 
 // metricsHome() — metrics home or null; never throws (the test-home guard
 // refuses the real HOME under a test runner).
@@ -180,6 +181,14 @@ function main() {
       let running = null;
       try { running = require('./lib/agent-scan.js').runningAgentsOrNull(transcriptPath); } catch (_) { running = null; }
       demand = DD.evaluate({ actionable, knownIds: [...taskMap.keys()], inProgressIds: openTasks.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running });
+      // Block only on a PROVEN uncovered task (guards.idleNeglectProvenOnly,
+      // default on): with unmapped running agents, the guard cannot tell which
+      // task each one is on, so "no in-flight agent on them" is unproven while
+      // dispatch <= unmapped. task-tracker's per-turn DISPATCH NOW line still
+      // shows. Off = the older in_progress-first estimate also blocks.
+      // The proof (demand.proven) also discounts hung and pre-task agents, so
+      // under proven-only the block follows it, not the per-turn estimate.
+      if (DD.provenOnly() && !demand.unknown) demand = Object.assign({}, demand, { fire: !!demand.proven });
     } else {
       // Setting off: legacy blanket rule.
       demand = { fire: !haveAgents, dispatch: actionable };
@@ -287,6 +296,17 @@ function main() {
     );
     process.exit(0);
   }
+
+  // PER-PROMPT BUDGET (cost-trim Phase 1; guards.stopNagBudgetPerPrompt, default 0 = off =
+  // today's behaviour): consulted only now that this Stop WILL block. A spent budget allows the
+  // stop; the session cap above stays the outer bound.
+  try {
+    if (require('./lib/stop-policy.js').budgetSpent({
+      home: require('../companion/lib/test-home-guard.js').resolveHome(),
+      sessionId: String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_'),
+      hook: 'task-guard', payload, transcriptPath,
+    })) process.exit(0);
+  } catch (_) { /* fail-open to today's behaviour */ }
 
   // Write the new state before blocking (so a no-op next Stop won't re-block and
   // the cap is enforced even if the set keeps changing).
@@ -827,6 +847,7 @@ function parseTasksFromFile(filePath) {
       }
     }
 
+    const entryTsMs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
     const toolUses = collectToolUses(entry);
     for (const tu of toolUses) {
       const name = tu.name || '';
@@ -861,6 +882,7 @@ function parseTasksFromFile(filePath) {
               // TodoWrite items have no owner/dependency model — they are the
               // main thread's own list, so they count as unowned + unblocked
               // (i.e. always actionable when pending).
+              sinceMs: entryTsMs,
               owner: normOwner(todo.owner),
               blockedBy: normBlockedBy(todo.blockedBy),
               priority: normPriority(
@@ -901,7 +923,7 @@ function parseTasksFromFile(filePath) {
         const blockedOn = (inp.metadata != null && inp.metadata.blockedOn != null)
           ? inp.metadata.blockedOn : inp.blockedOn;
         if (toolUseId) {
-          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy, priority, blockedOn });
+          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy, priority, blockedOn, sinceMs: entryTsMs });
         }
         continue;
       }
@@ -944,6 +966,8 @@ function parseTasksFromFile(filePath) {
             // unless the update carries one; lib/task-subject-backfill.js recovers
             // it from before the window, else the task is neither open nor nagged.
             status: inp.status || existing.status,
+            // When the task last became (or was set) pending / in_progress.
+            sinceMs: /^(pending|in[-_]?progress)$/i.test(String(inp.status || '')) ? entryTsMs : existing.sinceMs,
             // Only overwrite owner/blockedBy when the update actually carries the
             // field; an unrelated status-only update must not clear them.
             owner: inp.owner !== undefined ? normOwner(inp.owner) : (existing.owner || ''),
@@ -972,16 +996,17 @@ function parseTasksFromFile(filePath) {
       existing = Object.assign({}, existing, require('./lib/task-state.js').fillFromCreate(existing, rec));
       taskMap.set(key, existing);
     }
+    if (existing && Number.isFinite(rec.sinceMs) && !(existing.sinceMs >= rec.sinceMs)) existing.sinceMs = rec.sinceMs;
     if (!existing) {
       taskMap.set(key, {
-        id: key, content: rec.content, status: rec.status,
+        id: key, content: rec.content, status: rec.status, sinceMs: rec.sinceMs,
         owner: rec.owner || '', blockedBy: rec.blockedBy || [],
         priority: rec.priority || null, blockedOn: rec.blockedOn,
       });
     } else if (!existing.content || existing.content === key) {
       // Backfill subject from provisional record (update may have arrived first).
       taskMap.set(key, {
-        id: key, content: rec.content, status: existing.status,
+        id: key, content: rec.content, status: existing.status, sinceMs: existing.sinceMs,
         owner: existing.owner || rec.owner || '',
         blockedBy: (existing.blockedBy && existing.blockedBy.length) ? existing.blockedBy : (rec.blockedBy || []),
         priority: existing.priority || rec.priority || null,

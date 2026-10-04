@@ -90,6 +90,11 @@
       },
       {
         "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", "timeout": 10 }
+        ]
+      },
+      {
+        "hooks": [
           { "type": "command", "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", "timeout": 10 }
         ]
       },
@@ -130,6 +135,12 @@
       {
         "matcher": "Bash",
         "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\"", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/merge-gate.js\"", "timeout": 10 }
         ]
       },
@@ -140,7 +151,13 @@
         ]
       },
       {
-        "matcher": "apply_patch",
+        "matcher": "^(?:collaboration)?spawn_agent$",
+        "hooks": [
+          { "type": "command", "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/orch-on-spawn.js\"", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "apply_patch|Bash",
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/api-guard.js\"", "timeout": 45 },
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/ship-it-guard.js\"", "timeout": 10 }
@@ -213,6 +230,12 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", "timeout": 10 }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [

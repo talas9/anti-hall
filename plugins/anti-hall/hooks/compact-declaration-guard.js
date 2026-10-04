@@ -24,16 +24,16 @@
 // and Write/Edit of .anti-hall/handovers/** is exempt (refreshing the handover). Injected <task-notification>s do NOT reset: a
 // background result arriving after SAFE is exactly the "kept working" case.
 //
-// Contract (PreToolUse): matches sibling PreToolUse guards (command-guard.js,
-// edit-guard.js) — stdout {"decision":"block","reason":…} then exit 2 to
-// block; nothing + exit 0 to allow.
+// Contract (PreToolUse): evaluate(payload, env) returns {exitCode, stdout, stderr};
+// a block is stdout {"decision":"block","reason":…} + exit 2, an allow is nothing +
+// exit 0 (the CLI wrapper at the bottom writes the streams and exits).
 // Switch: guards.compactDeclarationGuard. Skip: skip-guard 'compact-declaration-guard'.
 // FAIL-OPEN everywhere. Pure Node built-ins.
 
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
+const io = require('./lib/guard-io.js');
 
 const WORK_TOOLS = new Set(['Agent', 'Task', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 const EXTRA_BASH_WORK_RE = /\bgit\s+(?:push|tag)\b|\bgh\s+pr\s+(?:merge|create)\b/i;
@@ -60,37 +60,40 @@ function isNewWork(payload) {
   return BASH_WORK_RE.test(n) || EXTRA_BASH_WORK_RE.test(n);
 }
 
-function main() {
-  const settings = require('./lib/settings.js');
-  if (!settings.enabled('guards', 'compactDeclarationGuard', { home: require('../companion/lib/test-home-guard.js').resolveHome(), env: process.env })) return;
+function evaluate(payload, env, opts) {
+  try { return decide(payload, env || process.env); } catch (_) { return io.decision(0); } // fail-open
+}
 
-  let payload = null;
-  try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { return; }
-  if (!payload || typeof payload !== 'object') return;
+function decide(payload, env) {
+  const settings = require('./lib/settings.js');
+  if (!settings.enabled('guards', 'compactDeclarationGuard', settings.envOpts(env))) return io.decision(0);
+
+  if (!payload || typeof payload !== 'object') return io.decision(0);
 
   const { isSubagentByPayload } = require('./coordinator-detect.js');
   const { isSkipped } = require('./skip-guard.js');
-  if (isSubagentByPayload(payload) || isSkipped('compact-declaration-guard')) return;
-  if (!isNewWork(payload)) return;
+  if (isSubagentByPayload(payload) || isSkipped('compact-declaration-guard', env)) return io.decision(0);
+  if (!isNewWork(payload)) return io.decision(0);
 
   const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : null;
-  if (!transcriptPath) return;
+  if (!transcriptPath) return io.decision(0);
   const { readTail } = require('./lib/transcript-tail.js');
   const lines = readTail(transcriptPath);
-  if (!lines) return;
+  if (!lines) return io.decision(0);
 
   const advice = require('./lib/compact-advice.js');
   const decl = advice.activeDeclaration(advice.readTurn(lines).turnText, { declarationsOnly: true });
-  if (!decl) return;
+  if (!decl) return io.decision(0);
 
-  require('./lib/emit-block.js').emitBlock(require('./lib/block-message.js').blockMessage({
+  return io.blockDecision(require('./lib/block-message.js').blockMessage({
     guard: 'compact-declaration-guard',
     what: 'you declared SAFE TO COMPACT this turn ("' + decl.phrase + '") and then started new work (' + (payload.tool_name || 'this tool') + ').',
     why: 'The declaration must be the last act of the turn; new work after it makes the handover stale.',
     instead: 'stop, or retract: write a line "RETRACT SAFE TO COMPACT: <why>", then refresh the handover before declaring again.',
     allowed: 'read-only tools.',
-  }))
+  }));
 }
 
-try { main(); } catch (_) { /* fail-open */ }
-process.exit(0);
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

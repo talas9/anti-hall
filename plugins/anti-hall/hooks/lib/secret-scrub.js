@@ -18,7 +18,13 @@ function scrubSecrets(text) {
   s = s.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, '$1[REDACTED]@');
   // JWTs (three base64url segments, first starts with eyJ).
   s = s.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[REDACTED_JWT]');
+  // Authorization header values (Basic base64 / Bearer), whole value incl. + / =.
+  s = s.replace(/\b(Authorization["']?\s*[:=]\s*["']?)(Basic|Bearer)\s+[^\s"']+/gi, '$1$2 [REDACTED]');
   s = s.replace(/\bBearer\s+[A-Za-z0-9\-_.=]+/gi, 'Bearer [REDACTED]');
+  // Standalone provider tokens: Stripe (sk_/rk_ live|test), GitLab PAT, npm.
+  s = s.replace(/(?<![A-Za-z0-9])[sr]k_(?:live|test)_[A-Za-z0-9]{8,}\b/g, '[REDACTED_KEY]');
+  s = s.replace(/(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{10,}/g, '[REDACTED_KEY]');
+  s = s.replace(/(?<![A-Za-z0-9])npm_[A-Za-z0-9]{20,}\b/g, '[REDACTED_KEY]');
   s = s.replace(/\b(sk|pk)-[A-Za-z0-9]{10,}\b/g, '[REDACTED_KEY]');
   s = s.replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, '[REDACTED_KEY]');
   s = s.replace(/\bgh[pousr]_[A-Za-z0-9]{10,}\b/g, '[REDACTED_KEY]');
@@ -28,6 +34,8 @@ function scrubSecrets(text) {
   // Any identifier CONTAINING secret/password/passwd/token/apikey/api_key/key,
   // then optional spaces and ':' or '=' — AWS_SECRET_ACCESS_KEY=…,
   // DB_PASSWORD=short, "apiKey": "…". Values of any length (>=1 char).
+  // Quoted values may hold spaces (SECRET_KEY = "a b c"): redact to the closing quote.
+  s = s.replace(/\b([A-Za-z0-9_.-]*(?:secret|password|passwd|token|apikey|api_key|key)[A-Za-z0-9_.-]*)(["']?\s*[:=]\s*)(["'])(?:(?!\3)[^\n])*\3/gi, '$1$2[REDACTED]');
   s = s.replace(/\b([A-Za-z0-9_.-]*(?:secret|password|passwd|token|apikey|api_key|key)[A-Za-z0-9_.-]*)(["']?\s*[:=]\s*)(["']?)[^\s"',}]+\3/gi, '$1$2[REDACTED]');
   s = s.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[REDACTED_EMAIL]');
   // Generic catch-all: any remaining long base64/hex-ish run (>=32 chars) is

@@ -102,4 +102,74 @@ function clear(home, sessionId, hook, kinds) {
   if (changed) writeBuckets(file, buckets);
 }
 
-module.exports = { stopHookActive, kindSignature, statePath, consume, clear };
+// ---------------------------------------------------------------------------
+// Per-prompt Stop-nag budget (cost-trim Phase 1; setting guards.stopNagBudgetPerPrompt,
+// default 0 = off = today's behaviour). task-guard and tasklist-guard consult it
+// just before they emit a block. One bucket per (session, hook) holding
+// {promptKey, count, lastAt}: a new prompt key restarts the count, so the cap is
+// per user prompt and the guards' own session caps stay the outer bound.
+// ---------------------------------------------------------------------------
+
+// budgetPerPrompt(opts) -> integer >= 0 (0 = off). Any settings error -> 0 (today's behaviour).
+function budgetPerPrompt(opts) {
+  try {
+    const v = require('./settings.js').get('guards', 'stopNagBudgetPerPrompt', 0, opts);
+    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+  } catch (_) { return 0; }
+}
+
+// promptKey(payload, transcriptPath) -> string | null. `prompt_id` from the Stop payload
+// when present, else the uuid of the last REAL user entry in the transcript tail (a user
+// entry whose content is only tool_result blocks, or that is meta/sidechain, is not a prompt).
+function promptKey(payload, transcriptPath) {
+  try {
+    if (payload && typeof payload.prompt_id === 'string' && payload.prompt_id) return payload.prompt_id;
+    const lines = require('./transcript-tail.js').readTail(transcriptPath);
+    if (!Array.isArray(lines)) return null;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const t = lines[i] && lines[i].trim();
+      if (!t || t.indexOf('"user"') === -1) continue;
+      let e;
+      try { e = JSON.parse(t); } catch (_) { continue; }
+      if (!e || e.type !== 'user' || e.isMeta === true || e.isSidechain === true) continue;
+      if (typeof e.uuid !== 'string' || !e.uuid) continue;
+      const c = e.message && e.message.content;
+      const real = typeof c === 'string' ? c.trim() !== ''
+        : Array.isArray(c) && c.some((b) => b && b.type !== 'tool_result');
+      if (real) return e.uuid;
+    }
+  } catch (_) { /* fall through */ }
+  return null;
+}
+
+// consumePrompt(home, sessionId, hook, key, budget, now) -> { block, count, persisted }.
+// block=true while this prompt has used fewer than `budget` blocks for this hook (the count is
+// incremented); block=false once spent. An unpersistable count allows the stop (fail-open).
+function consumePrompt(home, sessionId, hook, key, budget, now) {
+  const file = statePath(home, sessionId);
+  const buckets = readBuckets(file);
+  const bk = String(sessionId) + '|' + String(hook) + '|prompt';
+  const b = buckets[bk];
+  const same = b && b.promptKey === key && Number.isFinite(b.count);
+  const n = same ? b.count : 0;
+  if (n >= budget) return { block: false, count: n, persisted: true };
+  buckets[bk] = { promptKey: key, count: n + 1, lastAt: Number.isFinite(now) ? now : Date.now() };
+  const persisted = writeBuckets(file, buckets);
+  return { block: persisted, count: n + 1, persisted };
+}
+
+// budgetSpent({home, sessionId, hook, payload, transcriptPath, env}) -> true when the
+// per-prompt budget is ON and spent for this prompt (the guard must NOT block). Off, no prompt
+// key, or any error -> false (today's behaviour).
+function budgetSpent(o) {
+  try {
+    const opts = { home: o.home, env: o.env };
+    const budget = budgetPerPrompt(opts);
+    if (!budget) return false;
+    const key = promptKey(o.payload, o.transcriptPath);
+    if (!key) return false;
+    return !consumePrompt(o.home, o.sessionId, o.hook, key, budget, o.now).block;
+  } catch (_) { return false; }
+}
+
+module.exports = { stopHookActive, kindSignature, statePath, consume, clear, budgetPerPrompt, promptKey, consumePrompt, budgetSpent };

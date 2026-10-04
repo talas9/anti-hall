@@ -1,6 +1,6 @@
 ---
 name: anti-hall-doctor
-description: Check anti-hall's Codex installation and runtime posture. Use when the user asks whether anti-hall is active in Codex, whether hooks are installed, or why a guard did or did not fire.
+description: Check anti-hall in Codex, including installed hooks and runtime posture. Use for "is anti-hall active" or "why did a guard not fire".
 ---
 
 # anti-hall doctor for Codex

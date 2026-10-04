@@ -422,6 +422,30 @@ test('budget cut-off: items the worker never attempted are NOT cached as permane
 });
 
 // JT-1: two processes triaging the SAME uncached message at once must pay for ONE Jev call and write ONE log row.
+test('runArrivalWorker fails closed: a stolen arrival lock (stale token) leaves the queue and the new owner lock untouched', () => {
+  const home = tmpHome();
+  try {
+    const lock = require('../../plugins/anti-hall/companion/lib/lock.js');
+    const tri = require(LIB);
+    const lp = tri.arrivalLockPath(home);
+    const qp = tri.arrivalQueuePath(home);
+    fs.mkdirSync(path.dirname(lp), { recursive: true });
+    const oldH = lock.acquire(lp, { staleMs: 30000 });
+    assert.ok(oldH, 'old owner acquires');
+    // old lock goes stale: another owner reclaims it (staleMs/liveStaleMs -1 = already stale)
+    const newH = lock.acquire(lp, { staleMs: -1, liveStaleMs: -1, maxTries: 2 });
+    assert.ok(newH, 'new owner re-acquires the stale lock');
+    assert.notStrictEqual(newH.token, oldH.token);
+    const queued = JSON.stringify({ h: hashMessage('hello'), t: 'hello' }) + '\n';
+    fs.writeFileSync(qp, queued, 'utf8');
+    const lockBefore = fs.readFileSync(lp, 'utf8');
+    tri.runArrivalWorker(home, oldH.token);
+    assert.strictEqual(fs.readFileSync(qp, 'utf8'), queued, 'queue file unchanged');
+    assert.strictEqual(fs.readFileSync(lp, 'utf8'), lockBefore, 'new owner lock intact');
+    assert.strictEqual(JSON.parse(fs.readFileSync(lp, 'utf8')).token, newH.token);
+  } finally { rm(home); }
+});
+
 test('concurrent triage of the same uncached message: one Jev call, one log row (claims)', async () => {
   const home = tmpHome();
   try {

@@ -4,17 +4,17 @@ What semantic versioning freezes at 1.0. Anything listed here is a public surfac
 1.0, breaking it needs a MAJOR release. Anything not listed is internal and may change in
 any release.
 
-Status: **draft**, written against the `dev` branch at plugin version 0.200.0. Every item
+Status: **draft**, written against the `dev` branch at plugin version 0.202.0. Every item
 names the file it comes from; when this document and the code disagree, the code is
 right and this document gets a fix.
 
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 246 in 14 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
+| Settings keys | 264 in 14 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
-| Hook scripts | 60 (67 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.json` |
-| Codex hook scripts | 41 (43 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
+| Hook scripts | 62 (70 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.json` |
+| Codex hook scripts | 44 (47 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
 | Skills | 18 Claude, 21 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys
@@ -27,22 +27,22 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | Section | Label | Keys | Headline keys (keep a native `/config` row) |
 |---|---|---|---|
 | `autoHandover` | Auto Handover | 10 | `enabled`, `pct` |
-| `guards` | Guards | 59 | `modelRouting` |
+| `guards` | Guards | 74 | `modelRouting` |
 | `safety` | Safety Guards | 4 | `gitGuard`, `commandGuard`, `editGuard`, `swarmGuard` |
-| `context` | Context Injections | 8 | |
+| `context` | Context Injections | 11 | |
 | `maintenance` | Maintenance | 5 | |
 | `versionAlerts` | Version Alerts | 3 | |
 | `updates` | Updates / Maintenance | 5 | |
 | `limitConserve` | Limit Conservation | 3 | `mode` |
-| `jev` | Jev (semantic decision engine) | 29 | `enabled` |
+| `jev` | Jev (semantic decision engine) | 31 | `enabled` |
 | `jevIntegrations` | Jev integration | 21 | |
 | `devswarm` | DevSwarm | 92 | `supervisorMode` |
 | `statusline` | Statusline | 2 | |
 | `codexNudge` | Codex Nudge | 2 | |
 | `defects` | Defects | 1 | |
 
-Of the 246 keys: 119 are `advanced` (hidden from `settings.js show` without `--all`), 167
-have an env override, 11 are `locked` (safety keys), 3 are `homeOnly`. The full list with
+Of the 264 keys: 133 are `advanced` (hidden from `settings.js show` without `--all`), 185
+have an env override, 13 are `locked` (safety keys), 3 are `homeOnly`. The full list with
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.
 
@@ -156,6 +156,7 @@ output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
 |---|---|---|---|---|---|
 | `verify-first` | UserPromptSubmit | context | `context.verifyFirstTurn` | — | yes |
 | `task-tracker` | UserPromptSubmit | context | `context.taskTracker` | `task-tracker` | yes |
+| `idle-agent-sweep` | UserPromptSubmit | context | `guards.idleAgentSweep` | `idle-agent-sweep` | yes |
 | `limit-conserve-inject` | UserPromptSubmit | context | `limitConserve.mode` | `limit-conserve` | yes |
 | `devswarm-parent-inbox` | UserPromptSubmit | context | `devswarm.parentInbox` | — | yes |
 | `devswarm-child-turn` | UserPromptSubmit | context | `devswarm.childTurn` | — | yes |

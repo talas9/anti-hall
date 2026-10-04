@@ -43,10 +43,14 @@
 //      above) goes one step further — checking declared SCOPE, not just
 //      existence — but is advisory-only precisely because `files:` is prose, not
 //      a schema.
-//   2. BYPASSABLE — PreToolUse fires on Edit|Write|MultiEdit only. An agent can
-//      route the same write through `Bash` (e.g. a heredoc `cat > file`), which
-//      this hook does not see. It is a speed-bump for the honest path, not a
-//      sandbox.
+//   2. SHELL WRITES — also registered on Bash (both hosts; guards.shellWriteChecks):
+//      the files a shell write targets (`cat >`/`>>`, echo/printf redirects, tee,
+//      sed -i, perl -i, cp/mv destinations, python -c open(...,'w'), `> f`) go
+//      through the same existence gate (lib/shell-writes.js). Writes into the
+//      session scratchpad or a tmp root outside a repo are not gated. A target the
+//      parser cannot know (a variable, a glob, dd/install/rsync, a script that
+//      writes files when run) is not seen: it is a speed-bump for the honest
+//      path, not a sandbox. The conformance advisory stays on Edit/Write only.
 //   3. DEFAULT-OFF — with the env unset it is a pure no-op (exit 0), so it can
 //      never disrupt an unsuspecting user. You must opt in.
 //   4. CONSERVATIVE — the BLOCK path ONLY fires on hard-risk paths, never on
@@ -66,14 +70,15 @@
 //      accepted because the mechanism only ever advises, never blocks.
 
 const fs = require('fs');
+const io = require('./lib/guard-io.js');
 const path = require('path');
 
 // ON only when explicitly enabled — env var (highest precedence) or
 // ~/.anti-hall/settings.json guards.shipitGate (v0.108.0 unified settings; see
 // hooks/lib/settings.js). Fail-open to disabled on any error.
-function gateEnabled() {
+function gateEnabled(env) {
   try {
-    return require('./lib/settings.js').get('guards', 'shipitGate') === true;
+    return require('./lib/settings.js').get('guards', 'shipitGate', undefined, require('./lib/settings.js').envOpts(env)) === true;
   } catch (_) {
     return false;
   }
@@ -240,44 +245,53 @@ function advise(additionalContext) {
       additionalContext,
     },
   };
-  try { fs.writeSync(1, JSON.stringify(out) + '\n'); } catch (_) { /* best-effort */ }
-  process.exit(0);
+  return io.decision(0, JSON.stringify(out) + '\n');
 }
 
-function main() {
+function main(payload, env) {
   // 1. Read stdin first; on any read failure fail-open.
-  let raw = '';
-  try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { process.exit(0); }
+  if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
 
   // 2. Skip-hatch: an explicit user opt-out disables this guard (TTL'd).
   let isSkipped;
   try { ({ isSkipped } = require('./skip-guard.js')); } catch (_) { isSkipped = () => false; }
-  try { if (isSkipped('ship-it-guard')) process.exit(0); } catch (_) { /* fail-open */ }
+  try { if (isSkipped('ship-it-guard', env)) return io.decision(0); } catch (_) { /* fail-open */ }
 
   // 3. DEFAULT OFF — no-op unless explicitly enabled.
-  if (!gateEnabled()) process.exit(0);
-
-  let payload;
-  try { payload = JSON.parse(raw); } catch (_) { process.exit(0); }
+  if (!gateEnabled(env)) return io.decision(0);
 
   const cwd = (payload && typeof payload.cwd === 'string') ? payload.cwd : process.cwd();
   // Codex apply_patch: every Add/Update/Delete path + Move-to destination. A
   // patch the parser rejects yields no paths -> fail open (Codex rejects it too).
   const codexPatch = !!payload && payload.tool_name === 'apply_patch';
+  const shellWrite = !!payload && payload.tool_name === 'Bash';
   let files;
-  if (codexPatch) {
+  if (shellWrite) {
+    // Existence gate only, over the shell write's targets (header limit 2).
+    let on = true;
+    try { on = require('./lib/settings.js').get('guards', 'shellWriteChecks', undefined, require('./lib/settings.js').envOpts(env)) !== false; } catch (_) { on = true; }
+    if (!on) return io.decision(0);
+    const command = payload.tool_input && payload.tool_input.command;
+    const realCwd = require('./lib/scratchpad.js').realpathOrSelf(cwd);
+    files = require('./lib/shell-writes.js').shellWrites(command, payload)
+      .filter((w) => !w.scratch)
+      .map((w) => {
+        const rel = path.relative(realCwd, w.abs);
+        return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : w.abs;
+      });
+  } else if (codexPatch) {
     const { parseApplyPatch, patchTargetPaths } = require('./lib/codex-apply-patch.js');
     const parsed = parseApplyPatch(payload.tool_input && payload.tool_input.command);
     files = parsed.ok ? patchTargetPaths(parsed.files, cwd) : [];
   } else {
     files = targetPaths(payload && payload.tool_input);
   }
-  if (!files.length) process.exit(0);
+  if (!files.length) return io.decision(0);
 
   // 4. CODE files only — docs/tests/PLAN.md itself are never gated, by either
   //    mechanism.
   const codeFiles = files.filter((f) => !isNonCode(f));
-  if (!codeFiles.length) process.exit(0);
+  if (!codeFiles.length) return io.decision(0);
 
   const risky = codeFiles.filter(isHardRisk);
   const planPath = findPlanPath(cwd);
@@ -294,8 +308,7 @@ function main() {
       override: 'if this is genuinely a smaller change, unset ANTIHALL_SHIPIT_GATE or use the documented skip hatch',
     });
 
-    process.stderr.write(reason + '\n');
-    process.exit(2);
+    return io.decision(2, '', reason + '\n');
   }
 
   // 6. MECHANISM 2 — CONFORMANCE ADVISORY (never blocks): only runs when a
@@ -305,7 +318,7 @@ function main() {
   //    `# Plan` (as used by the existence-gate tests) has nothing to compare
   //    against, so it's skipped (fail-open), not treated as "everything is out
   //    of scope."
-  if (planPath && !codexPatch) { // conformance is Claude-only by design (header)
+  if (planPath && !codexPatch && !shellWrite) { // conformance: Claude Edit/Write only (header)
     let planContent = '';
     try { planContent = fs.readFileSync(planPath, 'utf8'); } catch (_) { planContent = ''; }
     const declared = parsePlanDeclaredFiles(planContent);
@@ -313,7 +326,7 @@ function main() {
       const outOfScope = codeFiles.filter((f) => !fileMatchesDeclared(f, declared, cwd));
       if (outOfScope.length) {
         const shown = outOfScope[0];
-        advise(require('./lib/block-message.js').message({
+        return advise(require('./lib/block-message.js').message({
           kind: 'warn',
           guard: 'ship-it-guard',
           what: shown + ' does not appear in any phase\'s declared "files:" list in ' + planPath + ' (advisory, not a block).',
@@ -324,7 +337,13 @@ function main() {
     }
   }
 
-  process.exit(0);
+  return io.decision(0);
 }
 
-try { main(); } catch (_) { process.exit(0); } // fail-open on anything unexpected
+function evaluate(payload, env) {
+  try { return main(payload, env || process.env); } catch (_) { return io.decision(0); } // fail-open on anything unexpected
+}
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

@@ -56,6 +56,7 @@
 'use strict';
 
 const fs = require('fs');
+const io = require('./lib/guard-io.js');
 const path = require('path');
 const { parseHeredocAt } = require('./lib/shell-scan.js');
 
@@ -142,12 +143,13 @@ function segmentMatchesAllowlist(segment, userPatterns) {
 // never re-scan PATH.
 // ---------------------------------------------------------------------------
 const probeCache = new Map();
+let probeEnv = process.env; // the env of the current evaluate() call
 
 function probeOnPath(tool) {
   if (probeCache.has(tool)) return probeCache.get(tool);
   let found = false;
   try {
-    const PATH = process.env.PATH || '';
+    const PATH = probeEnv.PATH || '';
     for (const dir of PATH.split(path.delimiter)) {
       if (!dir) continue;
       try {
@@ -256,36 +258,18 @@ function looksLikeUnsafeInsertionPoint(rest) {
   return false;
 }
 
-function emit(hookSpecificOutputExtra) {
-  const out = {
+function emit(out, hookSpecificOutputExtra) {
+  out.json({
     hookSpecificOutput: Object.assign({ hookEventName: 'PreToolUse' }, hookSpecificOutputExtra),
-  };
-  try {
-    // fs.writeSync(1, ...) not process.stdout.write — CLAUDE.md: on macOS
-    // node 18/20 a synchronous exit right after process.stdout.write can
-    // race the async pipe flush and truncate the JSON; writeSync is atomic.
-    fs.writeSync(1, JSON.stringify(out) + '\n');
-  } catch (_) { /* fail-open: nothing we can do about a write failure */ }
+  });
 }
 
-function main() {
+function main(payload, env, out) {
   // Setting guards.scanThrottle (env ANTIHALL_SCAN_THROTTLE=0 (deprecated alias ANTI_HALL_SCAN_THROTTLE) still wins).
   // Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('guards', 'scanThrottle')) return; } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('guards', 'scanThrottle', require('./lib/settings.js').envOpts(env))) return; } catch (_) { /* run */ }
 
-  let raw = '';
-  try {
-    raw = fs.readFileSync(0, 'utf8');
-  } catch (_) {
-    return;
-  }
-
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (_) {
-    return;
-  }
+  if (payload === undefined) return; // unreadable / unparseable stdin
 
   const toolName = (payload && typeof payload.tool_name === 'string') ? payload.tool_name : '';
   if (toolName !== 'Bash') return;
@@ -302,7 +286,7 @@ function main() {
   const segments = splitSegments(command);
   if (!segments.length) return;
 
-  const userPatterns = parseUserPatterns(process.env.ANTI_HALL_THROTTLE_PATTERNS);
+  const userPatterns = parseUserPatterns(env.ANTI_HALL_THROTTLE_PATTERNS);
 
   let matchIndex = -1;
   for (let idx = 0; idx < segments.length; idx++) {
@@ -329,7 +313,7 @@ function main() {
   if (!positionSafe) {
     // A scan command exists, but the prefix position is not unambiguous
     // (mid-compound match, or wrapped in a subshell/brace group): generic note.
-    emit({
+    emit(out, {
       additionalContext: require('./lib/block-message.js').message({
         kind: 'tip',
         guard: 'scan-throttle',
@@ -344,7 +328,7 @@ function main() {
   // `NAME=value` assignments stay BEFORE the prefix — `nice` would otherwise
   // try to exec the literal `NAME=value`). Advisory only; input is untouched.
   const throttled = leadingText + prefix + rest;
-  emit({
+  emit(out, {
     additionalContext: require('./lib/block-message.js').message({
       kind: 'tip',
       guard: 'scan-throttle',
@@ -355,9 +339,14 @@ function main() {
   });
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: never surface a hook bug to the model, never block.
+function evaluate(payload, env) {
+  const out = io.recorder();
+  probeCache.clear();
+  probeEnv = env || process.env;
+  try { main(payload, probeEnv, out); } catch (_) { /* fail-open: never surface a hook bug to the model, never block */ }
+  return out.done(0);
 }
-process.exit(0);
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

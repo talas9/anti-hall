@@ -1,6 +1,6 @@
 ---
 name: anti-hall-install-statusline
-description: Explain and install anti-hall statusline support where available. Use when the user asks for the anti-hall statusline in Codex or wants OMC/anti-hall status visibility.
+description: Install anti-hall statusline support where available. Use for "install the statusline" or OMC/anti-hall status.
 ---
 
 # anti-hall statusline for Codex

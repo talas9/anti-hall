@@ -882,6 +882,10 @@ item graders are effect-only.
 | arms: `without`, `with`, `files-present-no-plugin`, `with-settings`, `with@<tag>` (before/after builds) | `lib/arms.js` |
 | interleaving of arms per case, alternating order, so neither arm systematically warms the prompt cache | `run.js --arms a,b --reps K`, `lib/arms.js` |
 | a global spend cap summed across every run of a study | `run.js --max-total-usd`, `lib/spend.js` (sums `costUsd` under all result dirs with the label prefix; each call's ceiling is `min(per-batch, remaining)`) |
+| a per-run cost pre-check | `run.js --run-reserve-usd R`: a run launches only while spend + R fits the cap (the CLI gets `ceiling - R`; interleaved jobs stop when what is left is <= R). Spend stays <= cap + max(0, costliest run - R), times `--concurrency` runs in flight. With R = 0 a cap can be overshot by one full run (the CLI checks its ceiling only before each run). |
+| runs per case on a single arm | `run.js --reps K` (passed as `--runs K`; omitted = each case's `runs:`) |
+| blind cases kept out of the repo | `run.js --cases-dir <dir>` (`<dir>/<case>/` or `<dir>/<category>/<case>/`; reads `<dir>/manifest.json` or generates one: family = case name minus `-vN`, graders = `graders/*`, split from `headline`/`dev-smoke` tags). The manifest is written beside the results, never into `<dir>` |
+| kept temp dirs and traces that outlive the run (and a `--rm` container) | `run.js -- --keep-temp`: after each call, every run's temp dir is copied into `<results dir>/kept/` and `tracePath` is rewritten relative to the results dir (`tracePathOriginal` keeps the old value); `run-in-container.sh` mounts an outside `--cases-dir` read-only |
 | cost per model, tier of each spawn, Bash by tier, main-thread shares, first-request `cache_read` | `lib/trace.js` |
 | bootstrap, quiz grading, claim regex | `lib/stats.js`, `lib/quiz.js`, `lib/claim-regex.js` |
 | paired metrics, bootstrap ratio, `--ni-margin`, `--compare` of two arms | `analyze.js --study --arm name=<dir> ...` |

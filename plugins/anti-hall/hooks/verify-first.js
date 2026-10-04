@@ -30,9 +30,10 @@
 // on any error: a bug here must never wedge a turn.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 
 // Short nudges. Each is a different facet of the always-on disciplines (root-cause +
 // orchestration + anti-sycophancy) so novelty fights habituation without diluting the

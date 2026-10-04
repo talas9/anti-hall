@@ -143,7 +143,9 @@ node <plugin-root>/scripts/settings.js judge on|off|status
 `on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
 itself; a key stored as a plugin option is visible to hooks only, so "not visible" means
 unverified from the CLI) and how to add one, and prints the cost: about $0.0001–0.001 and
-1–3 s per turn end, estimated, not measured; no precision eval yet. `status` shows on/off, key
+1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on
+`eval/inference-bench.js` (84 synthetic cases). With `jev.judgeBackend` `cli` it uses the local
+`claude -p` CLI on the user's Claude login instead of a key (about 5–6 s per turn end, measured). `status` shows on/off, key
 visibility and the model (`jev.judgeModel`). Relay that output; do not add claims about accuracy.
 
 ## Turning a hook off
@@ -166,6 +168,11 @@ task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off
 agents are in flight, independent of that mode;
 `guards.sharedTreeAgentNote` (default on) adds one advisory sentence when a write-capable agent is
 spawned without `isolation:"worktree"` while another write-capable agent runs in the same working tree;
+`guards.mergeSidePickAdvisory` (default on) adds one advisory to a push when a conflict was resolved by
+taking one side wholesale (`--ours`/`--theirs`, `-X ours|theirs`) and no test run followed;
+`guards.idleAgentSweep` (default on) lists, once per prompt, agents that finished but were never stopped
+(teammates: TaskStop; Codex: close_agent), when `guards.idleAgentSweepCount` (3) are idle or one has been
+idle `guards.idleAgentSweepMin` (15) minutes;
 `guards.injectionRepeatEvery` — turns between full re-injections of a static
 per-turn reminder block (VERIFY-FIRST, the DevSwarm PRIMARY dispatch-tier/
 top-fan-out-tier suffixes) once its first-turn/post-compact copy is consumed,
@@ -174,7 +181,7 @@ quota/rate-limit exhaustion seen in a `codex:codex-rescue` result so other
 sessions stop rediscovering it independently, default on;
 `guards.coordinatorWorkWindowMinutes` (default 10, 0 = off; main-thread state-changing Bash calls counted over that many minutes — in a non-git project only coordinator-writable or fresh scripts count),
 `guards.coordinatorWorkNudgeAt` (default 4, 0 = no nudge), `guards.coordinatorWorkBlockAt` (default 7, 0 = no block; recovery commands and loosely matched inline code are never blocked),
-`guards.coordinatorWorkMaxEntries` (default 50, min 1) and `guards.bashEditParity` (default on — command-guard applies edit-guard's verdict to Bash writes into repo files in the main thread)),
+`guards.coordinatorWorkMaxEntries` (default 50, min 1), `guards.bashEditParity` (default on — command-guard applies edit-guard's verdict to Bash writes into repo files in the main thread), `guards.shellWriteChecks` (default on — api-guard and ship-it-guard also check Bash file writes) and `guards.gitGuardHeredocData` (default on — git-guard does not scan a heredoc body that only feeds a prose file, a commit message or a PR body; off = scan every body as shell)),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
 parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin;
 `dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` (independent of it) the once-per-session

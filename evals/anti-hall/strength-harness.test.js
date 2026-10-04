@@ -390,6 +390,130 @@ test('execute: --dry-run spawns nothing', (t) => {
   assert.ok(JSON.parse(fs.readFileSync(path.join(s.outDirs[0], 'command.json'), 'utf8')).args.includes('--case'));
 });
 
+// ── smoke-run findings: --reps on a single arm, per-run reserve, --cases-dir, container keep dir ──
+function blindCases(t, layout = 'flat') {
+  const dir = path.join(tmpdir(t), 'b1');
+  for (const n of ['fam-a-v1', 'fam-a-v2']) {
+    const d = layout === 'flat' ? path.join(dir, n) : path.join(dir, 'cat', n);
+    fs.mkdirSync(path.join(d, 'graders'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'prompt.md'), `---\ntags: ["b1","${n === 'fam-a-v1' ? 'headline' : 'dev-smoke'}"]\nruns: 5\n---\nDo it.\n`);
+    fs.writeFileSync(path.join(d, 'graders', 'success_b.md'), '---\ntype: "regex"\n---\n');
+    fs.writeFileSync(path.join(d, 'graders', 'safe_a.md'), '---\ntype: "regex"\n---\n');
+  }
+  return dir;
+}
+
+function fakeEval(calls, costPerRun = 0.5) {
+  return (cmd, args) => {
+    calls.push(args);
+    const out = args[args.indexOf('--output-dir') + 1];
+    fs.mkdirSync(out, { recursive: true });
+    const runs = args.includes('--runs') ? Number(args[args.indexOf('--runs') + 1]) : 5;
+    fs.writeFileSync(path.join(out, 'aggregate-result.json'), JSON.stringify({ cases: [{ name: 'x', arms: { with: Array.from({ length: runs }, () => ({ costUsd: costPerRun })) } }] }));
+    return { status: 0 };
+  };
+}
+
+test('generateManifest: flat and nested case dirs, graders, family, split from tags', (t) => {
+  for (const layout of ['flat', 'nested']) {
+    const m = R.generateManifest(blindCases(t, layout));
+    assert.deepStrictEqual(m.cases.map((c) => c.name), ['fam-a-v1', 'fam-a-v2']);
+    assert.strictEqual(m.cases[0].category, layout === 'flat' ? 'b1' : 'cat');
+    assert.strictEqual(m.cases[0].family, 'fam-a');
+    assert.deepStrictEqual(m.cases[0].graders, ['safe_a', 'success_b']);
+    assert.deepStrictEqual(m.cases.map((c) => c.split), ['headline', 'dev']);
+  }
+  assert.throws(() => R.generateManifest(tmpdir(t)), /no case dirs/);
+});
+
+test('execute --cases-dir: cases copied from outside the repo, generated manifest written beside results', (t) => {
+  const dir = blindCases(t);
+  const calls = [];
+  const resultsRoot = path.join(tmpdir(t), 'results');
+  let pluginCases = null;
+  const spawn = (cmd, args) => { pluginCases = fs.readdirSync(path.join(args[2], 'evals', 'b1')).sort(); return fakeEval(calls)(cmd, args); };
+  const s = R.execute(R.parseArgs(['--arm', 'with', '--cases-dir', dir, '--cases', 'fam-a-v2', '--max-cost-usd', '2']), { spawn, resultsRoot, log: () => {} });
+  assert.deepStrictEqual(pluginCases, ['fam-a-v2']);
+  const m = JSON.parse(fs.readFileSync(path.join(s.outDirs[0], 'manifest.json'), 'utf8'));
+  assert.strictEqual(m.generatedBy, 'evals/anti-hall/run.js --cases-dir');
+  assert.strictEqual(m.cases.length, 2);
+  assert.ok(!fs.existsSync(path.join(dir, 'manifest.json')), 'the cases dir is never written to');
+  assert.throws(() => R.parseArgs(['--arm', 'with', '--cases-dir', dir, '--suite', 'b1', '--max-cost-usd', '1']), /--suite or --cases-dir/);
+  assert.throws(() => R.execute(R.parseArgs(['--arm', 'with', '--cases-dir', path.join(dir, 'nope'), '--max-cost-usd', '1']), { spawn, resultsRoot, log: () => {} }), /does not exist/);
+});
+
+test('execute single arm: --reps reaches the CLI as --runs; omitted keeps case.runs', (t) => {
+  const dir = blindCases(t);
+  const resultsRoot = path.join(tmpdir(t), 'results');
+  const calls = [];
+  R.execute(R.parseArgs(['--arm', 'with', '--cases-dir', dir, '--reps', '1', '--max-cost-usd', '2']), { spawn: fakeEval(calls), resultsRoot, log: () => {} });
+  R.execute(R.parseArgs(['--arm', 'with', '--cases-dir', dir, '--max-cost-usd', '2', '--label', 'b']), { spawn: fakeEval(calls), resultsRoot, log: () => {} });
+  assert.strictEqual(calls[0][calls[0].indexOf('--runs') + 1], '1');
+  assert.ok(!calls[1].includes('--runs'));
+});
+
+test('--run-reserve-usd: single-arm CLI ceiling is cap - reserve; interleaved stops before a run that cannot fit', (t) => {
+  const cap = new SpendCap(2, 1.5);
+  assert.strictEqual(cap.nextCeiling(1), 0.5);
+  assert.strictEqual(cap.nextCeiling(1, 0.5), null, 'left == reserve: do not launch');
+  assert.strictEqual(cap.nextCeiling(1, 0.4), 0.5);
+  assert.throws(() => R.parseArgs(['--arm', 'with', '--max-cost-usd', '1', '--run-reserve-usd', '1']), /below --max-cost-usd/);
+  assert.throws(() => R.parseArgs(['--arm', 'with', '--max-cost-usd', '1', '--run-reserve-usd', '-1']), />= 0/);
+  const dir = blindCases(t);
+  const resultsRoot = path.join(tmpdir(t), 'results');
+  const calls = [];
+  R.execute(R.parseArgs(['--arm', 'with', '--cases-dir', dir, '--max-cost-usd', '2', '--run-reserve-usd', '0.75']), { spawn: fakeEval(calls), resultsRoot, log: () => {} });
+  assert.strictEqual(calls[0][calls[0].indexOf('--max-cost-usd') + 1], '1.25');
+  const icalls = [];
+  const s = R.execute(R.parseArgs(['--arms', 'with,without', '--cases-dir', dir, '--reps', '2', '--max-cost-usd', '1', '--max-total-usd', '2', '--run-reserve-usd', '0.6', '--label', 'res']), { spawn: fakeEval(icalls, 0.5), resultsRoot, log: () => {} });
+  // $0.5 per run: after 3 runs $0.5 is left, which cannot cover a $0.6 run, so the 4th never launches
+  assert.strictEqual(s.launched, 3);
+  assert.ok(s.spentUsd <= 2);
+  assert.match(s.stopped, /global spend cap/);
+});
+
+test('keepRunDirs: copies each kept temp dir into <outDir>/kept and makes tracePath relative', (t) => {
+  const tmpRoot = fs.realpathSync(tmpdir(t));
+  const runDir = path.join(tmpRoot, 'claude-eval-abc');
+  fs.mkdirSync(path.join(runDir, 'out'), { recursive: true });
+  fs.mkdirSync(path.join(runDir, 'ws'), { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'out', 'trace.jsonl'), '{"type":"result"}\n');
+  fs.writeFileSync(path.join(runDir, 'ws', 'RELEASE.txt'), 'Released 3.0.0\n');
+  fs.symlinkSync('RELEASE.txt', path.join(runDir, 'ws', 'link'));
+  fs.mkdirSync(path.join(runDir, 'sealed', 'home'), { recursive: true });
+  fs.chmodSync(path.join(runDir, 'sealed'), 0o000); // the CLI seals plugin-written dirs like this
+  const outDir = path.join(tmpdir(t), 'res');
+  fs.mkdirSync(outDir);
+  const trace = path.join(runDir, 'out', 'trace.jsonl');
+  fs.writeFileSync(path.join(outDir, 'aggregate-result.json'), JSON.stringify({ cases: [{ name: 'c', arms: { with: [{ costUsd: 1, tracePath: trace }, { costUsd: 1, tracePath: '/elsewhere/t.jsonl' }] } }] }));
+  try { assert.strictEqual(R.keepRunDirs(outDir, tmpRoot), 1); } finally { fs.chmodSync(path.join(runDir, 'sealed'), 0o700); }
+  const agg = JSON.parse(fs.readFileSync(path.join(outDir, 'aggregate-result.json'), 'utf8'));
+  const run = agg.cases[0].arms.with[0];
+  assert.strictEqual(run.tracePath, path.join('kept', 'claude-eval-abc', 'out', 'trace.jsonl'));
+  assert.strictEqual(run.tracePathOriginal, trace);
+  assert.strictEqual(fs.readFileSync(path.join(outDir, run.tracePath), 'utf8'), '{"type":"result"}\n');
+  assert.strictEqual(fs.readlinkSync(path.join(outDir, 'kept', 'claude-eval-abc', 'ws', 'link')), 'RELEASE.txt');
+  assert.strictEqual(agg.cases[0].arms.with[1].tracePath, '/elsewhere/t.jsonl', 'paths outside the temp root are left alone');
+  assert.deepStrictEqual(fs.readdirSync(path.join(outDir, 'kept', 'claude-eval-abc', 'sealed')), [], 'sealed dir skipped, not fatal');
+});
+
+test('run-in-container.sh: --cases-dir outside the repo mounted read-only and made absolute; inside maps to /work', (t) => {
+  const bin = path.join(tmpdir(t), 'fakec');
+  fs.writeFileSync(bin, '#!/bin/bash\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+  const cases = blindCases(t);
+  const run = (args) => spawnSync('bash', [path.join(__dirname, 'run-in-container.sh'), ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir(t), CONTAINER_BIN: bin, EVAL_NO_CRED_CHECK: '1' } });
+  const r = run(['--arm', 'with', '--cases-dir', cases, '--max-cost-usd', '1', '--', '--keep-temp']);
+  assert.strictEqual(r.status, 0, r.stderr);
+  const out = r.stdout.split('\n');
+  const casesAbs = fs.realpathSync(cases);
+  assert.ok(out.includes(`${casesAbs}:${casesAbs}:ro`), r.stdout);
+  assert.strictEqual(out[out.indexOf('--cases-dir') + 1], casesAbs);
+  assert.ok(out.includes('--keep-temp'));
+  const inside = run(['--arm', 'with', '--cases-dir', path.join(__dirname, 'cases'), '--max-cost-usd', '1']).stdout.split('\n');
+  assert.strictEqual(inside[inside.indexOf('--cases-dir') + 1], '/work/evals/anti-hall/cases');
+  assert.ok(!inside.some((l) => l.endsWith(':ro')));
+});
+
 // ── compaction fallback ladder, multi-turn driver ──
 test('forceCompaction: tries /compact, then autocompact, then tmux; fails loudly when none works', (t) => {
   const dir = tmpdir(t);

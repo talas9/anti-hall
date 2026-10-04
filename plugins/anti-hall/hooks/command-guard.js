@@ -44,11 +44,15 @@ const {
   dequoteSegment,
   extractSubstitutions,
   SHELL_VERBS,
+  segmentHeredocBodies,
 } = require('./lib/shell-scan.js');
 // v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
 // fail-open to `undefined` (never the value that would arm/allow a guard).
+// The env of the current evaluate() call: every env-dependent decision reads this, never process.env.
+let guardEnv = process.env;
+function settingsOpts() { return require('./lib/settings.js').envOpts(guardEnv); }
 function settingsGet(section, key) {
-  try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
+  try { return require('./lib/settings.js').get(section, key, undefined, settingsOpts()); } catch (_) { return undefined; }
 }
 
 // Commands whose FIRST WORD (verb) are always heavy in coordinator context.
@@ -137,7 +141,7 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
 // for the full anchoring rationale: which home-anchor forms are accepted,
 // and why the anchoring stays as narrow as anchoredAntiHallCli above).
 const { anchoredAntiHallStableLauncher } = require('./lib/stable-launcher.js');
-const { emitBlock } = require('./lib/emit-block.js');
+const io = require('./lib/guard-io.js');
 
 // Commands that look heavy by verb but are actually lightweight inspection commands.
 // We allow these even if the verb matches HEAVY_VERBS.
@@ -2654,8 +2658,7 @@ function isBoundedVerificationCommand(command, ctx) {
 // doctor.js reports each case.
 function loadProjectCommandAllowPatterns(cwd) {
   const lib = require('./lib/command-allow.js');
-  const testHomeGuard = require('../companion/lib/test-home-guard.js');
-  return lib.loadTrustedPatterns(cwd, testHomeGuard.resolveHome(undefined, process.env));
+  return lib.loadTrustedPatterns(cwd, io.homeOf(guardEnv));
 }
 
 // hasUnquotedRedirectChar(segment) -> true if a bare (unquoted) '>' or '<'
@@ -2749,8 +2752,7 @@ function redactAuditCommand(command) {
 function appendProjectCommandAllowAudit(entry) {
   let fd = null;
   try {
-    const testHomeGuard = require('../companion/lib/test-home-guard.js');
-    const home = testHomeGuard.resolveHome(undefined, process.env);
+    const home = io.homeOf(guardEnv);
     const ahDir = path.join(home, '.anti-hall');
     const logDir = path.join(ahDir, 'logs');
     fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
@@ -3869,7 +3871,7 @@ function scriptRunToken(segment) {
 
 // hookHomeRaw() -> the hook's HOME (resolveHome), '' when unavailable; hookHome() realpath'd.
 function hookHomeRaw() {
-  try { return require('../companion/lib/test-home-guard.js').resolveHome() || ''; } catch (_) { return ''; }
+  try { return io.homeOf(guardEnv) || ''; } catch (_) { return ''; }
 }
 function hookHome() {
   const h = hookHomeRaw();
@@ -3890,7 +3892,7 @@ function resolveScriptPath(token, ctx) {
   let unset = false;
   t = t.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (m, a, b) => {
     const name = a || b;
-    const v = name === 'PWD' ? ctx.cwd : process.env[name];
+    const v = name === 'PWD' ? ctx.cwd : guardEnv[name];
     if (typeof v !== 'string' || !v) { unset = true; return ''; }
     return v;
   });
@@ -3931,7 +3933,7 @@ function gitCleanTracked(root, abs, cache) {
   let clean = false;
   try {
     const out = require('child_process').execFileSync('git', ['status', '--porcelain=v1', '--ignored', '--', path.relative(root, abs)],
-      { cwd: root, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: '0' }) });
+      { cwd: root, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: Object.assign({}, guardEnv, { GIT_OPTIONAL_LOCKS: '0' }) });
     clean = String(out).trim() === '';
   } catch (_) { clean = false; }
   if (cache) cache.set(key, clean);
@@ -4002,15 +4004,19 @@ const INLINE_GIT_GH_LITERAL_RE = /(['"`])\s*((?:git|gh)\s[^'"`]*)\1/g;
 const INLINE_GIT_GH_ARRAY_RE = /\[\s*(['"])(git|gh)\1((?:\s*,\s*(['"])[^'"]*\4)*)\s*\]/g;
 const INLINE_OPEN_RE = /\bopen\s*\(\s*(['"])([^'"]+)\1\s*,\s*(['"])([^'"]*)\3\s*[,)]/g;
 const INLINE_OPEN_NONLIT_RE = /\bopen\s*\(\s*[^'"\s)][^,)]*,\s*(['"])([^'"]*)\1\s*[,)]/g;
-const INLINE_WRITEFILE_RE = /(?:write|append)File(?:Sync)?\(\s*(['"])([^'"]+)\1/g;
+const INLINE_PERL_OPEN3_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?(>>?|\+<)[:\w]*\s*\1\s*,\s*(['"])([^'"]+)\3/g;
+// Perl dup modes (>&, >&=, >>&, 2-arg >-) open an existing handle, not a file: the 3-arg
+// mode class [:\w]* cannot consume `&`, and the 2-arg target excludes `&`, `=`, `-` as first char.
+const INLINE_PERL_OPEN2_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?>>?\s*([^'"\s>&=-][^'"\s]*)\s*\1/g;
+const INLINE_WRITEFILE_RE = /(?:(?:write|append)File(?:Sync)?|createWriteStream)\(\s*(['"])([^'"]+)\1/g;
 const INLINE_FILE_WRITE_RE = /(?:File|IO)\.write\(\s*(['"])([^'"]+)\1/g;
 const INLINE_WRITE_NONLIT_RE = /(?:(?:write|append)File(?:Sync)?|(?:File|IO)\.write)\(\s*[^'"\s)]/;
 const INLINE_REDIRECT_RE = /['"][^'"]*\s>>?\s*([\w./~-]+)/;
 const isWriteMode = (m) => /^[rwaxbt+]{1,4}$/.test(m) && /[wax+]/.test(m);
 
-// inlineCodeWork(segment, ctx, payload, rootOf) -> null | { precise } for
-// `python|python3 -c` / `perl|ruby|node -e|-E` bodies (Decision 3, never executed).
-function inlineCodeWork(segment, ctx, payload, rootOf) {
+// inlineCodeBody(segment) -> the `python|python3 -c` / `perl|ruby|node -e|-E`
+// code string, or null when the segment carries none.
+function inlineCodeBody(segment) {
   const verb = effectiveVerb(segment).replace(/["']/g, '');
   if (!INLINE_VERBS.has(verb)) return null;
   const toks = tokenizeQuoted(segment);
@@ -4018,7 +4024,29 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
   const flags = verb.startsWith('python') ? ['-c'] : ['-e', '-E'];
   const fi = toks.findIndex((t, k) => k > vi && flags.includes(t));
   if (vi === -1 || fi === -1 || typeof toks[fi + 1] !== 'string') return null;
-  const body = toks[fi + 1];
+  return toks[fi + 1];
+}
+
+// inlineWriteLiterals(segment) -> literal paths inline code writes: open(<lit>,
+// <write mode>), (write|append)File[Sync](<lit>), File/IO.write(<lit>). A
+// non-literal target is not returned (unknowable, fail open).
+function inlineWriteLiterals(segment) {
+  const body = inlineCodeBody(segment);
+  if (body === null) return [];
+  const literals = [];
+  for (const m of body.matchAll(INLINE_OPEN_RE)) if (isWriteMode(m[4])) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_PERL_OPEN3_RE)) literals.push(m[4]);
+  for (const m of body.matchAll(INLINE_PERL_OPEN2_RE)) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_WRITEFILE_RE)) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_FILE_WRITE_RE)) literals.push(m[2]);
+  return literals;
+}
+
+// inlineCodeWork(segment, ctx, payload, rootOf) -> null | { precise } for
+// `python|python3 -c` / `perl|ruby|node -e|-E` bodies (Decision 3, never executed).
+function inlineCodeWork(segment, ctx, payload, rootOf) {
+  const body = inlineCodeBody(segment);
+  if (body === null) return null;
   const exec = INLINE_EXEC_RE.test(body);
   if (exec) {
     const cmds = [];
@@ -4042,10 +4070,7 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
     if (!sp.isInsideDir(abs, r.base)) return 'outside';
     return require('./edit-guard.js').isNotesTarget(abs, r.base, Object.assign({}, payload, { cwd: r.base })) ? 'notes' : 'repo';
   };
-  const literals = [];
-  for (const m of body.matchAll(INLINE_OPEN_RE)) if (isWriteMode(m[4])) literals.push(m[2]);
-  for (const m of body.matchAll(INLINE_WRITEFILE_RE)) literals.push(m[2]);
-  for (const m of body.matchAll(INLINE_FILE_WRITE_RE)) literals.push(m[2]);
+  const literals = inlineWriteLiterals(segment);
   let loose = false;
   for (const t of literals) {
     const k = targetKind(t);
@@ -4062,7 +4087,104 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
 
 const MAX_CLASSIFY_LEN = 65536;
 
+// resolveWriteTarget(t, ctx, payload, rootOf) -> null (an expansion, glob, `~`
+// or a relative path under an unknown cwd: unknowable, fail open) or
+// { abs, base, toplevel, inBase, scratch }. abs has its directory part
+// realpath'd (/tmp -> /private/tmp) and its last component kept, so edit-guard
+// still sees a symlink. scratch = this session's own scratchpad, or a tmp root
+// outside a git work tree (a repo that lives under /tmp is still a repo).
+// base = the cwd's git toplevel, else the session's project base (rootOf).
+function resolveWriteTarget(t, ctx, payload, rootOf) {
+  if (typeof t !== 'string' || !t || /[$`*?[\]{}]/.test(t) || t.startsWith('~')) return null;
+  if (ctx.cwdUnknown && !path.isAbsolute(t)) return null;
+  const sp = require('./lib/scratchpad.js');
+  const resolved = path.resolve(ctx.cwd, t);
+  const abs = path.join(sp.realpathOrSelf(path.dirname(resolved)), path.basename(resolved));
+  const r = rootOf(ctx.cwd);
+  const inTop = !!r.toplevel && sp.isInsideDir(abs, r.toplevel);
+  const scratch = isScratchpadOrTmpPath(abs, { payload, ownOnly: true })
+    || (!inTop && isScratchpadOrTmpPath(abs, { payload }));
+  return { abs, base: r.base, toplevel: r.toplevel, inBase: sp.isInsideDir(abs, r.base), scratch };
+}
+
+// projectRootResolver(payload) -> rootOf(cwd) -> { toplevel, base }, memoised.
+// base = the cwd's git toplevel; with none, the SESSION's project base (the
+// payload cwd's toplevel, or the payload cwd itself). A `cd` into a non-git
+// dir (e.g. ~/.claude/projects/<slug>/memory) does not make that dir a
+// project root: its files are judged against the session project, as an
+// Edit-tool write to the same file would be.
+function projectRootResolver(payload) {
+  const sp = require('./lib/scratchpad.js');
+  const p = payload || {};
+  const roots = new Map();
+  const startCwd = sp.realpathOrSelf(path.resolve((typeof p.cwd === 'string' && p.cwd) || process.cwd()));
+  const rootOf = (cwd) => {
+    if (!roots.has(cwd)) {
+      let toplevel = null;
+      try { toplevel = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { toplevel = null; }
+      if (toplevel) toplevel = sp.realpathOrSelf(toplevel);
+      const base = toplevel || (cwd === startCwd ? cwd : rootOf(startCwd).base);
+      roots.set(cwd, { toplevel, base });
+    }
+    return roots.get(cwd);
+  };
+  return rootOf;
+}
+
+// shellRunPayloads(segments, text) -> the command strings these segments run
+// inline: `sh -c '<cmd>'`, `eval <cmd>`, and a heredoc fed to a shell
+// (`bash <<EOF` with no -c: the body is a script, not data).
+// withIndex: return [{ cmd, i }] (i = the segment that runs it) instead.
+function shellRunPayloads(segments, text, withIndex) {
+  const out = [];
+  let bodies = null;
+  const add = (cmd, i) => out.push(withIndex ? { cmd, i } : cmd);
+  segments.forEach((seg, i) => {
+    const c = extractShellCPayload(seg);
+    if (c) add(c, i);
+    const e = extractEvalPayload(seg);
+    if (e) add(e, i);
+    if (!c && SHELL_VERBS.has(effectiveVerb(seg)) && seg.includes('<<')) {
+      if (!bodies) bodies = segmentHeredocBodies(segments, text);
+      const b = bodies[i] || [];
+      if (b.length && b[b.length - 1]) add(b[b.length - 1], i);
+    }
+  });
+  return out;
+}
+
+// forEachShellSegment(command, payload, fn) -> calls fn(seg, ctxs, segments,
+// delims, i) for every segment of `command` and, up to depth 3, of the
+// commands it runs inline (`sh -c`, eval, `$(…)`, backticks, `>(…)`). ctxs =
+// the cd-aware cwds the segment may run in. The same walk classifyBashWork
+// does; used by lib/shell-writes.js. No-op on non-string / oversized input.
+function forEachShellSegment(command, payload, fn, depth = 0) {
+  if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return;
+  const p = payload || {};
+  const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
+  masked.text = blankTestOperators(masked.text);
+  const { segments, delims } = splitSegmentsDetailed(masked.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?![A-Za-z0-9_])/g, '$$$1'));
+  const ctxs = cdAwareContexts(segments, delims, p);
+  segments.forEach((seg, i) => fn(seg, ctxs[i], segments, delims, i, masked.text));
+  if (depth >= 3) return;
+  // An inline command runs in its segment's cwd: recurse with that cwd when it
+  // is the one known cwd, else skip it (its relative targets are unknowable).
+  for (const { cmd, i } of shellRunPayloads(segments, masked.text, true)) {
+    const c = ctxs[i] || [];
+    if (c.length === 1 && !c[0].cwdUnknown) forEachShellSegment(cmd, Object.assign({}, p, { cwd: c[0].cwd }), fn, depth + 1);
+  }
+  for (const sub of extractSubstitutions(masked.text).concat(masked.inners)) forEachShellSegment(sub, payload, fn, depth + 1);
+}
+
+// opts.env: score under that env (the caller's evaluate() env), restored on return.
 function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null) {
+  if (depth !== 0 || !opts || !opts.env) return classifyBashWorkImpl(command, payload, opts, depth, shared);
+  const prev = guardEnv;
+  guardEnv = opts.env;
+  try { return classifyBashWorkImpl(command, payload, opts, depth, shared); } finally { guardEnv = prev; }
+}
+
+function classifyBashWorkImpl(command, payload, opts = {}, depth = 0, shared = null) {
   const res = { work: false, blockable: false, labels: new Set(), editBlocks: [] };
   if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return res;
   const o = Object.assign({ sessionStartTs: Date.now() - 21600000 }, opts || {});
@@ -4074,25 +4196,9 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
     }
     return sh.trusted;
   };
-  const sp = require('./lib/scratchpad.js');
   const eg = require('./edit-guard.js');
-  const roots = new Map();
-  const startCwd = sp.realpathOrSelf(path.resolve((typeof p.cwd === 'string' && p.cwd) || process.cwd()));
-  // base = the cwd's git toplevel; with none, the SESSION's project base (the
-  // payload cwd's toplevel, or the payload cwd itself). A `cd` into a non-git
-  // dir (e.g. ~/.claude/projects/<slug>/memory) does not make that dir a
-  // project root: its files are judged against the session project, as an
-  // Edit-tool write to the same file would be.
-  const rootOf = (cwd) => {
-    if (!roots.has(cwd)) {
-      let toplevel = null;
-      try { toplevel = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { toplevel = null; }
-      if (toplevel) toplevel = sp.realpathOrSelf(toplevel);
-      const base = toplevel || (cwd === startCwd ? cwd : rootOf(startCwd).base);
-      roots.set(cwd, { toplevel, base });
-    }
-    return roots.get(cwd);
-  };
+  // Session project roots (see projectRootResolver).
+  const rootOf = projectRootResolver(p);
   const blocks = new Set();
 
   const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
@@ -4120,26 +4226,19 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
         res.labels.add('inline');
         if (inl.precise) segWork = true;
       }
-      for (const t of bashWriteTargets(seg, ctx.cwd)) {
-        if (/[$`*?[\]{}]/.test(t) || t.startsWith('~')) continue;
-        if (ctx.cwdUnknown && !path.isAbsolute(t)) continue;
-        const resolved = path.resolve(ctx.cwd, t);
-        // Directory part realpath'd (/tmp -> /private/tmp), last component kept so edit-guard sees a symlink.
-        const abs = path.join(sp.realpathOrSelf(path.dirname(resolved)), path.basename(resolved));
-        const r = rootOf(ctx.cwd);
-        const inTop = !!r.toplevel && sp.isInsideDir(abs, r.toplevel);
-        // Own scratchpad always skipped; a tmp root only outside a git work tree
-        // (a repo that lives under /tmp is still a repo).
-        if (isScratchpadOrTmpPath(abs, { payload: p, ownOnly: true })) continue;
-        if (!inTop && isScratchpadOrTmpPath(abs, { payload: p })) continue;
-        const egPayload = Object.assign({}, p, { cwd: r.base });
-        // F3 judges writes into the session project only ("into repo files").
-        if (!sp.isInsideDir(abs, r.base)) continue;
-        if (!eg.isNotesTarget(abs, r.base, egPayload)) {
+      // Inline-code literal targets (python -c open(..,'w')) only feed the
+      // edit block; their WORK count already comes from inlineCodeWork above.
+      const targets = bashWriteTargets(seg, ctx.cwd).map((t) => [t, true])
+        .concat(inlineWriteLiterals(seg).map((t) => [t, false]));
+      for (const [t, countsAsWork] of targets) {
+        const w = resolveWriteTarget(t, ctx, p, rootOf);
+        if (!w || w.scratch || !w.inBase) continue; // F3 judges writes into the session project only
+        const egPayload = Object.assign({}, p, { cwd: w.base });
+        if (countsAsWork && !eg.isNotesTarget(w.abs, w.base, egPayload)) {
           segWork = true;
           res.labels.add('repo-write');
         }
-        if (!isGit && eg.editVerdict(abs, r.base, egPayload) !== 'allow') blocks.add(abs);
+        if (!isGit && eg.editVerdict(w.abs, w.base, egPayload) !== 'allow') blocks.add(w.abs);
       }
     }
     if (segWork) {
@@ -4149,13 +4248,7 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
   });
 
   if (depth < 3) {
-    const inner = [];
-    for (const seg of segments) {
-      const c = extractShellCPayload(seg);
-      if (c) inner.push(c);
-      const e = extractEvalPayload(seg);
-      if (e) inner.push(e);
-    }
+    const inner = shellRunPayloads(segments, masked.text);
     inner.push(...extractSubstitutions(masked.text), ...masked.inners);
     for (const sub of inner) {
       const r = classifyBashWork(sub, payload, o, depth + 1, sh);
@@ -4169,24 +4262,16 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
   return res;
 }
 
-function main() {
-  // Read + parse the payload FIRST — coordinator/subagent detection needs the
-  // payload's agent_id/agent_type markers (the only reliable signal under cmux).
-  let raw = '';
-  try {
-    raw = fs.readFileSync(0, 'utf8');
-  } catch (_) {
-    process.exit(0);
-  }
+// Returns the decision ({exitCode, stdout, stderr}); every block is a RETURNED
+// io.blockDecision(), never an exit, so the fail-open try/catch blocks below
+// cannot swallow it. `payload` is the parsed stdin (undefined when unreadable).
+function main(payload, env) {
+  // Coordinator/subagent detection needs the payload's agent_id/agent_type
+  // markers (the only reliable signal under cmux).
+  if (payload === undefined) return io.decision(0);
 
-  const { isSkipped } = require('./skip-guard.js');
-
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (_) {
-    process.exit(0);
-  }
+  const skipGuard = require('./skip-guard.js');
+  const isSkipped = (name) => skipGuard.isSkipped(name, env);
 
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
 
@@ -4205,24 +4290,21 @@ function main() {
   try {
     let devswarmActive = false;
     try {
-      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(env);
     } catch (_) {
       devswarmActive = false; // fail-open: dormant
     }
     if (devswarmActive && !isSkipped('devswarm-read-guard')) {
-      // Emit via fs.writeSync(1,…) not process.stdout.write per CLAUDE.md: on macOS
-      // node 18/20 a synchronous exit right after process.stdout.write can race the
-      // async pipe flush and truncate the JSON; writeSync is atomic.
       const kind = detectHivectlDestructiveRead(command);
       if (kind) {
-        const reason = buildDevswarmReason(kind, process.env);
-        emitBlock(reason);
+        const reason = buildDevswarmReason(kind, env);
+        return io.blockDecision(reason);
       }
       const cwd = (payload && payload.cwd) || '';
-      const fileKind = detectProtectedFileRead(command, os.homedir(), cwd);
+      const fileKind = detectProtectedFileRead(command, io.homeOf(env), cwd);
       if (fileKind) {
         const reason = buildRawFileReadReason(fileKind);
-        emitBlock(reason);
+        return io.blockDecision(reason);
       }
     }
   } catch (_) {
@@ -4245,7 +4327,7 @@ function main() {
   try {
     let devswarmActive = false;
     try {
-      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(env);
     } catch (_) {
       devswarmActive = false; // fail-open: dormant
     }
@@ -4253,7 +4335,7 @@ function main() {
       const sendKind = detectHivectlMessageSend(command);
       if (sendKind) {
         const reason = buildDevswarmSendReason(sendKind);
-        emitBlock(reason);
+        return io.blockDecision(reason);
       }
     }
   } catch (_) {
@@ -4274,7 +4356,7 @@ function main() {
       && settingsGet('guards', 'allowSubagentMailbox') !== true
       && !isSkipped('devswarm-subagent-mailbox-guard')
       && detectSubagentMailboxTouch(command)) {
-      emitBlock(buildSubagentMailboxReason());
+      return io.blockDecision(buildSubagentMailboxReason());
     }
   } catch (_) {
     // fail-open: never block a turn on a devswarm-subagent-mailbox-guard bug.
@@ -4309,7 +4391,7 @@ function main() {
         if (armed) {
           const { isSubagentByPayload } = require('./coordinator-detect.js');
           const subagent = isSubagentByPayload(payload);
-          emitBlock(buildGitStashReason(stashSub, subagent));
+          return io.blockDecision(buildGitStashReason(stashSub, subagent));
         }
       }
     }
@@ -4318,32 +4400,39 @@ function main() {
   }
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
-  if (isSkipped('command-guard')) process.exit(0);
+  if (isSkipped('command-guard')) return io.decision(0);
   // Settings switch safety.commandGuard (0.108.4, safety: set/reset need --confirmed).
   // Off -> the core heavy-command gate below no-ops; the data-safety
   // sub-guards above (DevSwarm read/send/mailbox, armed stash) already ran.
   // Fail-open: any error runs the gate.
-  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard')) process.exit(0); } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard', settingsOpts())) return io.decision(0); } catch (_) { /* run */ }
   const { isCoordinator } = require('./coordinator-detect.js');
 
   // Only block heavy commands in coordinator context (subagents pass through).
-  if (!isCoordinator(payload)) {
-    process.exit(0);
+  if (!isCoordinator(payload, env)) {
+    return io.decision(0);
   }
 
   // Bash edit parity (F3): a main-thread Bash write (sed -i/perl -i/tee/cp/mv/
-  // redirect) into a file edit-guard would block for the Edit tool gets the
+  // redirect, a literal open-for-write path in python -c / node -e, and the same
+  // inside sh -c, eval, $(…) or a heredoc fed to a shell) into a file edit-guard would block for the Edit tool gets the
   // same delegation block. Off with guards.bashEditParity, safety.editGuard or
   // an edit-guard skip; a trusted (redirect-free) project command-allow match
   // passes. Both hosts (a Codex main thread is detected). Fail-open.
   try {
     if (settingsGet('guards', 'bashEditParity') !== false
-      && require('./lib/settings.js').enabled('safety', 'editGuard')
+      && require('./lib/settings.js').enabled('safety', 'editGuard', settingsOpts())
       && !isSkipped('edit-guard')
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
-      if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
-        const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect)', payload.cwd, payload);
-        emitBlock(reason);
+      // Over the classify cap: scan the heredoc header / first 16 KB (and the text after the heredoc), see lib/shell-writes.js.
+      let scans = [command];
+      if (command.length > MAX_CLASSIFY_LEN) {
+        const bp = require('./lib/shell-writes.js').bigCommandParts(command);
+        scans = bp.rest ? [bp.head, bp.rest] : [bp.head];
+      }
+      if (scans.some((c) => classifyBashWork(c, payload, { editOnly: true }).editBlocks.length)) {
+        const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload);
+        return io.blockDecision(reason);
       }
     }
   } catch (_) {
@@ -4351,7 +4440,7 @@ function main() {
   }
 
   if (!isHeavyCommand(command)) {
-    process.exit(0);
+    return io.decision(0);
   }
 
   // Narrow allow (owner-approved 2026-09-26): a bounded, single-target
@@ -4361,7 +4450,7 @@ function main() {
   // ordinary block below). See isBoundedVerificationCommand's header.
   try {
     if (settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command, { payload })) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -4381,7 +4470,7 @@ function main() {
         let repoTop = '';
         try { repoTop = require('../companion/lib/identity.js').resolveContext(cwd || process.cwd(), { missingPath: 'ancestor' }).toplevel || ''; } catch (_) { /* best-effort only */ }
         appendProjectCommandAllowAudit({ cwd, repo: repoTop, pattern: matched, command });
-        process.exit(0);
+        return io.decision(0);
       }
     }
   } catch (_) {
@@ -4397,7 +4486,7 @@ function main() {
     if (settingsGet('guards', 'allowPlainPush') !== false) {
       const cwd = (payload && payload.cwd) || '';
       if (isAllowedPlainPushChain(command, cwd, payload)) {
-        process.exit(0);
+        return io.decision(0);
       }
     }
   } catch (_) {
@@ -4410,7 +4499,7 @@ function main() {
   // See isBackgroundScratchScript's header. Fail-closed on any error.
   try {
     if (settingsGet('guards', 'allowBackgroundScratchScripts') !== false && isBackgroundScratchScript(command, payload)) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -4421,7 +4510,7 @@ function main() {
   // isAllowedGcloudReadCommand's header. Fail-closed on any error.
   try {
     if (settingsGet('guards', 'allowGcloudReads') !== false && isAllowedGcloudReadCommand(command)) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -4451,8 +4540,8 @@ function main() {
   let devswarmPrimary = false;
   try {
     devswarmPrimary =
-      require('./lib/devswarm-detect.js').isDevswarmActive(process.env) &&
-      !require('./lib/devswarm-role.js').isChildWorkspace(process.env);
+      require('./lib/devswarm-detect.js').isDevswarmActive(env) &&
+      !require('./lib/devswarm-role.js').isChildWorkspace(env);
   } catch (_) {
     devswarmPrimary = false;
   }
@@ -4485,7 +4574,7 @@ function main() {
   // work. Advice text only; the block decision above is unchanged. Fail-open
   // to the subagent-only text.
   let tierText = false;
-  try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(process.env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
+  try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
   const H = require('./lib/host-text.js');
   const codexHost = H.isCodex(payload);
   const heavyWhat = (cls && cls.kind === 'remote' ? 'state-changing remote command' : 'heavy command') +
@@ -4507,19 +4596,25 @@ function main() {
       : delegateTo + '.') + cdJoinHint,
     allowed: allowedShapes,
   });
-  emitBlock(reason);
+  return io.blockDecision(reason);
 }
 
-if (require.main === module) {
+function evaluate(payload, env) {
+  const prev = guardEnv;
+  guardEnv = env || process.env;
   try {
-    main();
+    return main(payload, guardEnv) || io.decision(0);
   } catch (_) {
-    // Fail-open: never block a turn due to a hook bug.
+    return io.decision(0); // Fail-open: never block a turn due to a hook bug.
+  } finally {
+    guardEnv = prev;
   }
-  process.exit(0);
 }
+
+if (require.main === module) io.runCli(evaluate);
 
 module.exports = {
+  evaluate,
   ANTI_HALL_CLI_PATTERNS,
   scriptPathVerdict,
   classifyBashWork,
@@ -4532,4 +4627,9 @@ module.exports = {
   isScratchpadOrTmpPath,
   splitSegmentsDetailed,
   effectiveVerb,
+  argvWithoutRedirects,
+  inlineWriteLiterals,
+  resolveWriteTarget,
+  projectRootResolver,
+  forEachShellSegment,
 };

@@ -4,7 +4,8 @@
 // managed, in-repo, outside), the binary/CLI/plugin exemptions, freshness,
 // precise (blockable) and loose (count-only) inline code, the frozen anti-hall
 // CLI list, the reworded scratchpad hint, git spawn counts and latency.
-// Classification only: no row's command-guard exit changes (F1 enforces).
+// Classification only (F1 enforces); the one exit change is F3 Bash edit
+// parity on a literal repo-file write in inline code.
 require('../helpers/isolate-home.js');
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -161,10 +162,12 @@ const INLINE_ROWS = [
   // precise: WORK, blockable
   [`python3 -c "import subprocess;subprocess.run(['git','push'])"`, true, true, 0],
   [`python3 -c "import os;os.system('gh pr merge 1')"`, true, true, 0],
-  [`python3 -c "open('src/a.py','w').write('x')"`, true, true, 0],
-  [`python3 -c "open('src/x.py','r+').write('x')"`, true, true, 0],
+  // A literal repo-file write in inline code is also a Bash edit (F3 parity
+  // with edit-guard), so the main thread is blocked on it (exit 2).
+  [`python3 -c "open('src/a.py','w').write('x')"`, true, true, 2],
+  [`python3 -c "open('src/x.py','r+').write('x')"`, true, true, 2],
   [`node -e 'require("fs").writeFileSync("CHANGELOG.md","x")'`, true, true, 2],
-  [`ruby -e 'File.write("a.rb","x")'`, true, true, 0],
+  [`ruby -e 'File.write("a.rb","x")'`, true, true, 2],
   [`perl -e 'system("git commit -am x")'`, true, true, 0],
   // loose: WORK, count-only
   [`python3 -c "import os;os.system('echo x > a.txt')"`, true, false, 0],

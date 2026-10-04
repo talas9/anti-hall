@@ -27,6 +27,7 @@
 //   exit 0 : always (fail-open on ANY error).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');

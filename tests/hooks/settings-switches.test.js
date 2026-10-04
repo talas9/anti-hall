@@ -76,6 +76,8 @@ const SWITCHES = {
   'failure-root-cause-nudge.js': 'guards.failureRootCauseNudge',
   'repo-self-drift.js': 'guards.repoSelfDrift',
   'merge-gate.js': 'guards.mergeGate',
+  'merge-side-pick.js': 'guards.mergeSidePickAdvisory',
+  'idle-agent-sweep.js': 'guards.idleAgentSweep',
   'ship-it-guard.js': 'guards.shipitGate',
   'codex-nudge.js': 'codexNudge.enabled',
   'version-alert.js': 'versionAlerts.antiHall',
@@ -113,6 +115,7 @@ const NEW_KEYS = [
 const LOCKED_KEYS = [
   'safety.gitGuard', 'safety.commandGuard', 'safety.editGuard', 'safety.swarmGuard',
   'guards.stashGuard', 'guards.editGuardAllow', 'guards.allowSubagentMailbox',
+  'guards.gitAliasResolve', 'guards.gitReusedMessageCheck',
   'devswarm.maintainerNotice.post',
 ];
 
@@ -132,6 +135,8 @@ const EXPECTED_WARNING = {
   'safety.editGuard': 'Turning off edit-guard means edits to protected files like plugin config and secrets will no longer be stopped. Ask the user to confirm, then re-run with --confirmed.',
   'safety.swarmGuard': 'Turning off swarm-guard means nothing will stop runaway agent spawning that can overload the machine. Ask the user to confirm, then re-run with --confirmed.',
   'guards.stashGuard': 'Turning off stash-guard means git stash commands that can silently drop uncommitted work will no longer be blocked. Ask the user to confirm, then re-run with --confirmed.',
+  'guards.gitAliasResolve': 'Turning off git-alias-resolve means a git alias (or a shell alias) that runs a force push or an AI-credited commit will no longer be seen through. Ask the user to confirm, then re-run with --confirmed.',
+  'guards.gitReusedMessageCheck': 'Turning off git-reused-message-check means a commit that reuses an AI-credited message (-C/-c <rev>, --amend, a commit template) will no longer be blocked before it runs. Ask the user to confirm, then re-run with --confirmed.',
   'guards.editGuardAllow': 'Adding foo to edit-guard\'s allow list means those files can be edited without edit-guard\'s protection. Ask the user to confirm, then re-run with --confirmed.',
   'guards.allowSubagentMailbox': 'Turning on allow-subagent-mailbox means subagents can read/ack the Primary\'s mailbox, which is normally blocked. Ask the user to confirm, then re-run with --confirmed.',
   'devswarm.maintainerNotice.post': 'Turning on maintainer-notice.post means this checkout would be allowed to post a maintainer notice that every project\'s Primary sees — the checkout-name check is a mistake guard, not authentication, so only turn this on in the anti-hall dev checkout. Ask the user to confirm, then re-run with --confirmed.',
@@ -433,7 +438,9 @@ test('SAFETY: every locked key is exactly the expected set; non-advanced ones ar
     const [sec, key] = split(k);
     const e = schema.findSetting(sec, key);
     // Non-advanced keys are /config rows; advanced ones (pluginOptionLegacy) live in /anti-hall:settings only.
+    // An advanced key added after the /config trim never had a plugin option at all.
     if (e.pluginOptionLegacy) assert.ok(e.pluginOption && !uc[e.pluginOption], k + ' is advanced: no /config row, legacy read source only');
+    else if (e.advanced && !e.pluginOption) assert.ok(true);
     else assert.ok(e.pluginOption && uc[e.pluginOption], k + ' must be a /config row so the human can change it natively');
     assert.ok(e.env, k + ' must keep an env override (Codex has no /config)');
   }

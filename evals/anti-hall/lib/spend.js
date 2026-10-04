@@ -43,9 +43,10 @@ class SpendCap {
   }
   remaining() { return Math.max(0, this.max - this.spent); }
   // Budget for the next invocation: min(per-batch ceiling, what is left). null = cap reached, do not launch.
-  nextCeiling(perBatch) {
+  // reserve = expected cost of one run: also null when what is left cannot cover it (per-run pre-check).
+  nextCeiling(perBatch, reserve = 0) {
     const left = this.remaining();
-    if (left <= 0) return null;
+    if (left <= 0 || left <= reserve) return null;
     return perBatch > 0 ? Math.min(perBatch, left) : left;
   }
   record(costUsd) { this.spent += Number(costUsd) || 0; return this.spent; }

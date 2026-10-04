@@ -3,7 +3,10 @@
 // api-guard.js — PreToolUse hook on Write/Edit/MultiEdit (Claude) and
 // apply_patch (Codex; only the patch's added lines are checked, so an import that
 // sits outside the changed hunk is not seen — same fragment limit as an Edit's
-// new_string).
+// new_string). Also Bash on both hosts (guards.shellWriteChecks): the text a
+// shell write puts in a .py/.js/.ts file, where the command shows it (heredoc
+// into cat/tee, echo/printf), per lib/shell-writes.js. A shell write whose text
+// is not visible (cp, sed -i, python -c, a variable) is not checked.
 //
 // THE MECHANICAL ANSWER TO API HALLUCINATION. The benchmark in the eval/ directory showed the
 // verify-first *prompt* does not reliably stop a model inventing non-existent
@@ -41,7 +44,7 @@
 //   - Shadowed names (locals, params, `with/except as`) are excluded, so a param
 //     named like an import (`def f(pd): pd.x`) is never false-blocked.
 
-const fs = require('fs');
+const io = require('./lib/guard-io.js');
 const os = require('os');
 const { spawnSync } = require('child_process');
 
@@ -55,22 +58,25 @@ const MAX_MODULES = 8;          // bound interpreter spawns (one per module grou
 // TOTAL_DEADLINE_MS (30000, leaves 15000ms headroom) and the hooks.json 45000ms
 // hook ceiling (leaves 15000ms headroom there too). Overridable (test-only: lets
 // tests force a fast, deterministic timeout without sleeping the real budget).
-const SPAWN_TIMEOUT_MS = (() => {
-  const v = parseInt(process.env.ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS || '', 10);
+// The env of the current evaluate() call: every env-dependent decision reads this, never process.env.
+let guardEnv = process.env;
+function settingsOpts() { return require('./lib/settings.js').envOpts(guardEnv); }
+function spawnTimeoutMs() {
+  const v = parseInt(guardEnv.ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS || '', 10);
   return Number.isFinite(v) && v > 0 ? v : 15000;
-})();
+}
 const TOTAL_DEADLINE_MS = 30000; // global wall-clock budget (< hooks.json 45s timeout, with headroom)
 const MAX_CODE_BYTES = 600000;  // skip absurdly large chunks
 
 // Sanitized env: full parent env MINUS interpreter-injection vectors, so a
 // poisoned env (NODE_OPTIONS=--require evil, PYTHONSTARTUP, PYTHONPATH) can't
 // influence the check — while keeping what Windows needs to spawn at all.
-const SAFE_ENV = (() => {
-  const e = { ...process.env };
+function safeEnv() {
+  const e = { ...guardEnv };
   const DANGER = /^(NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PYTHONINSPECT|PYTHONEXECUTABLE|PYTHONUSERBASE|PYTHONSAFEPATH)$/i;
   for (const k of Object.keys(e)) { if (DANGER.test(k)) delete e[k]; }
   return e;
-})();
+}
 
 // JS global builtins whose static / prototype members we can verify (always safe
 // — no import side effects).
@@ -85,9 +91,9 @@ const JS_GLOBALS = new Set([
 // edit time (a confirmed RCE vector). So 3rd-party checking is OPT-IN only:
 //   ANTIHALL_API_GUARD_THIRDPARTY=1  -> also check installed 3rd-party packages.
 // v0.108.0 unified settings: env > ~/.anti-hall/settings.json > default false.
-const THIRDPARTY = (() => {
-  try { return require('./lib/settings.js').get('guards', 'apiGuardThirdparty') === true; } catch (_) { return false; }
-})();
+function thirdparty() {
+  try { return require('./lib/settings.js').get('guards', 'apiGuardThirdparty', undefined, settingsOpts()) === true; } catch (_) { return false; }
+}
 
 const PY_STDLIB = new Set([
   'os', 'sys', 'math', 'cmath', 'random', 'json', 're', 'collections', 'itertools',
@@ -102,8 +108,8 @@ const NODE_BUILTINS = new Set([
   'querystring', 'http', 'https', 'net', 'dns', 'zlib', 'readline', 'child_process',
   'assert', 'timers', 'string_decoder', 'tls', 'dgram', 'process',
 ]);
-function pyAllowed(baseMod) { return THIRDPARTY || PY_STDLIB.has(baseMod); }
-function jsModAllowed(mod) { return THIRDPARTY || NODE_BUILTINS.has(mod); }
+function pyAllowed(baseMod) { return thirdparty() || PY_STDLIB.has(baseMod); }
+function jsModAllowed(mod) { return thirdparty() || NODE_BUILTINS.has(mod); }
 
 // A module specifier that resolves to a FILE ON DISK (relative/absolute) — never
 // probe these: importing them executes project-local code at edit time.
@@ -112,6 +118,14 @@ function isPathSpec(mod) {
   // scoped/subpath packages (@scope/name, lodash/fp) which resolve from node_modules.
   return /^[.\/\\]/.test(mod) || /^[A-Za-z]:[\\/]/.test(mod) || mod.indexOf('..') !== -1 || mod.indexOf('\\') !== -1;
 }
+
+// guards.shellWriteChecks (default on): run on Bash writes too. Fail-open to on.
+function shellWriteChecksOn() {
+  try { return require('./lib/settings.js').get('guards', 'shellWriteChecks', undefined, settingsOpts()) !== false; } catch (_) { return true; }
+}
+// A Bash command naming no file langFor() checks has nothing to verify: skip
+// parsing it (most Bash calls end here).
+const SHELL_CODE_EXT_RE = /\.(?:py|pyi|js|mjs|cjs|ts|tsx|jsx)\b/i;
 
 // ---------------------------------------------------------------------------
 function newCodeChunks(payload) {
@@ -127,6 +141,13 @@ function newCodeChunks(payload) {
     const edits = Array.isArray(ti.edits) ? ti.edits : [];
     for (const e of edits) {
       if (e && typeof e.new_string === 'string') out.push({ file_path: fp, code: e.new_string });
+    }
+  } else if (tn === 'Bash') {
+    const sw = require('./lib/shell-writes.js');
+    if (shellWriteChecksOn() && sw.mayWrite(ti.command) && SHELL_CODE_EXT_RE.test(ti.command)) {
+      for (const w of sw.shellWrites(ti.command, payload)) {
+        if (typeof w.content === 'string') out.push({ file_path: w.abs, code: w.content });
+      }
     }
   } else if (tn === 'apply_patch') {
     // Codex: one chunk per added/updated file = its "+" lines only (context and
@@ -261,7 +282,7 @@ function jsCandidates(code) {
   let m;
 
   const reqVar = {};
-  const reReqVar = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/g;
+  const reReqVar = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)(?!\s*[.(\[?])/g;
   while ((m = reReqVar.exec(noComments))) { if (!isPathSpec(m[2]) && jsModAllowed(m[2])) reqVar[m[1]] = m[2]; }
   for (const v of Object.keys(reqVar)) {
     const re = new RegExp('\\b' + v.replace(/\$/g, '\\$') + '\\s*=(?!=)', 'g');
@@ -278,6 +299,7 @@ function jsCandidates(code) {
     const re = new RegExp('\\b' + varName.replace(/\$/g, '\\$') + '\\.([A-Za-z_$][\\w$]*)', 'g');
     while ((m = re.exec(src))) {
       if (m[1].startsWith('__')) continue;
+      if (/^[ \t]*=(?!=)/.test(src.slice(m.index + m[0].length))) continue; // `mod.x = 1` defines x, it is not an API read
       push({ kind: 'require', mod, attr: m[1], label: mod + '(' + varName + ').' + m[1] });
     }
   }
@@ -315,14 +337,14 @@ let timeoutNotice = null; // { bin, budgetMs } | null
 function noteSpawnOutcome(bin, res) {
   if (timeoutNotice) return; // report only the first occurrence per run
   if (res && (res.signal || (res.error && res.error.code === 'ETIMEDOUT'))) {
-    timeoutNotice = { bin, budgetMs: SPAWN_TIMEOUT_MS };
+    timeoutNotice = { bin, budgetMs: spawnTimeoutMs() };
   }
 }
 
 function spawnJSON(bin, argv, cwd) {
   let res;
   try {
-    res = spawnSync(bin, argv, { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 262144, cwd: cwd || undefined });
+    res = spawnSync(bin, argv, { timeout: spawnTimeoutMs(), encoding: 'utf8', env: safeEnv(), maxBuffer: 262144, cwd: cwd || undefined });
   } catch (_) { return null; }
   noteSpawnOutcome(bin, res);
   if (!res || res.error || res.signal || res.status !== 0) return null;
@@ -419,19 +441,17 @@ function verifyJs(cands, deadline) {
 // identical to a genuinely-verified-clean one — that's the defect this closes.
 // STDERR ONLY (never stdout: PreToolUse stdout is protocol-significant), ONE
 // line, wrapped so a write failure can never block the edit it's reporting on.
-function emitTimeoutNotice() {
+function emitTimeoutNotice(out) {
   if (!timeoutNotice) return;
-  try {
-    process.stderr.write(
-      'anti-hall api-guard: API verification skipped (probe for "' + timeoutNotice.bin +
-      '" timed out after ' + timeoutNotice.budgetMs + 'ms budget) — edit allowed unchecked.\n'
-    );
-  } catch (_) { /* never let a stderr failure block the edit */ }
+  out.err(
+    'anti-hall api-guard: API verification skipped (probe for "' + timeoutNotice.bin +
+    '" timed out after ' + timeoutNotice.budgetMs + 'ms budget) — edit allowed unchecked.\n'
+  );
 }
 
 function runtimeVersion(bin) {
   try {
-    const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
+    const r = spawnSync(bin, ['--version'], { timeout: spawnTimeoutMs(), encoding: 'utf8', env: safeEnv(), maxBuffer: 65536 });
     return ((r && (r.stdout || r.stderr)) || '').trim().split('\n')[0] || bin;
   } catch (_) { return bin; }
 }
@@ -442,7 +462,7 @@ function pyBin() {
   _pyBin = null;
   for (const bin of ['python3', 'python']) {
     try {
-      const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
+      const r = spawnSync(bin, ['--version'], { timeout: spawnTimeoutMs(), encoding: 'utf8', env: safeEnv(), maxBuffer: 65536 });
       noteSpawnOutcome(bin, r);
       if (r && !r.error && r.status === 0 && /Python 3\./.test((r.stdout || '') + (r.stderr || ''))) { _pyBin = bin; break; }
     } catch (_) { /* try next */ }
@@ -450,22 +470,18 @@ function pyBin() {
   return _pyBin;
 }
 
-function main() {
+function main(payload, out) {
   // Settings switch guards.apiGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('guards', 'apiGuard')) return; } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('guards', 'apiGuard', settingsOpts())) return; } catch (_) { /* run */ }
   const deadline = Date.now() + TOTAL_DEADLINE_MS;
-  let raw = '';
-  try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { process.exit(0); }
+  if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
 
   let isSkipped;
   try { ({ isSkipped } = require('./skip-guard.js')); } catch (_) { isSkipped = () => false; }
-  if (isSkipped('api-guard')) process.exit(0);
-
-  let payload;
-  try { payload = JSON.parse(raw); } catch (_) { process.exit(0); }
+  if (isSkipped('api-guard', guardEnv)) return io.decision(0);
 
   const chunks = newCodeChunks(payload);
-  if (!chunks.length) process.exit(0);
+  if (!chunks.length) return io.decision(0);
 
   const pyCands = [];
   const jsCands = [];
@@ -475,7 +491,7 @@ function main() {
     if (lang === 'py') pyCands.push(...pyCandidates(ch.code));
     else if (lang === 'js') jsCands.push(...jsCandidates(ch.code));
   }
-  if (!pyCands.length && !jsCands.length) process.exit(0);
+  if (!pyCands.length && !jsCands.length) return io.decision(0);
 
   const fakes = [];
   const binsUsed = new Set();
@@ -485,7 +501,7 @@ function main() {
   }
   if (jsCands.length) { binsUsed.add('node'); fakes.push(...verifyJs(jsCands, deadline)); }
 
-  if (!fakes.length) { emitTimeoutNotice(); process.exit(0); }
+  if (!fakes.length) { emitTimeoutNotice(out); return io.decision(0, out.stdout, out.stderr); }
 
   const seen = new Set();
   const uniq = fakes.filter((f) => (seen.has(f.label) ? false : (seen.add(f.label), true)));
@@ -501,15 +517,20 @@ function main() {
     extra: list.split('\n'),
   });
 
-  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   // Codex honors exit 2 only with the reason on stderr (it reads stdout JSON on
   // exit 0 only); Claude output is unchanged.
-  if (payload.tool_name === 'apply_patch') fs.writeSync(2, reason + '\n');
-  process.exit(2);
+  const toStderr = payload.tool_name === 'apply_patch' || payload.tool_name === 'Bash';
+  return io.decision(2, JSON.stringify({ decision: 'block', reason }) + '\n', toStderr ? reason + '\n' : '');
 }
 
-try {
-  main();
-} catch (_) {
-  process.exit(0); // FAIL-OPEN on any internal error
+function evaluate(payload, env) {
+  const out = io.recorder();
+  guardEnv = env || process.env;
+  timeoutNotice = null;
+  _pyBin = undefined;
+  try { return main(payload, out) || io.decision(0, out.stdout, out.stderr); } catch (_) { return io.decision(0); } // FAIL-OPEN on any internal error
 }
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

@@ -56,7 +56,7 @@ Codex limitations after activation:
 
 - shell guards are hard hooks
 - session/prompt/stop nudges are hooks
-- edit-time `edit-guard`, `api-guard` and `ship-it-guard` (existence gate) are hard hooks on `apply_patch` edits (Codex 0.134+); shell writes bypass them
+- edit-time `edit-guard`, `api-guard` and `ship-it-guard` (existence gate) are hard hooks on `apply_patch` edits (Codex 0.134+) and on shell writes whose target is literal in the command; a target in a variable, a glob or a script is not seen
 - subagent lifecycle hooks are not available in Codex today
 
 Use `anti-hall-doctor` to inspect the active state.

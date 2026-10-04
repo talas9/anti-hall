@@ -216,31 +216,31 @@ function claimDir(home) {
   return path.join(homeDir(home), '.anti-hall', 'cache', 'jev-triage.claims');
 }
 
+const lockLib = () => require('../../companion/lib/lock.js');
+const heldClaims = new Map(); // home + hash -> lock handle (this process)
+
 function claimHash(home, hash) {
   try {
     const dir = claimDir(home);
     fs.mkdirSync(dir, { recursive: true });
-    const p = path.join(dir, hash);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        fs.closeSync(fs.openSync(p, 'wx'));
-        return true;
-      } catch (e) {
-        if (!e || e.code !== 'EEXIST') return false;
-        let age = 0;
-        try { age = Date.now() - fs.statSync(p).mtimeMs; } catch (_) { continue; }
-        if (age < CLAIM_STALE_MS) return false;
-        try { fs.unlinkSync(p); } catch (_) { /* raced: retry the create */ }
-      }
-    }
-    return false;
+    // Age-only staleness (a claim older than CLAIM_STALE_MS is a dead process's),
+    // exactly as before: the same bound applies to a live-looking holder.
+    const h = lockLib().acquire(path.join(dir, hash), {
+      staleMs: CLAIM_STALE_MS, liveStaleMs: CLAIM_STALE_MS, maxTries: 2,
+    });
+    if (!h) return false; // held (or an fs error: the old code also returned false)
+    heldClaims.set(home + '\u0000' + hash, h);
+    return true;
   } catch (_) {
     return true; // claims are best-effort: an unusable dir must not disable triage
   }
 }
 
 function releaseClaim(home, hash) {
-  try { fs.unlinkSync(path.join(claimDir(home), hash)); } catch (_) { /* best-effort */ }
+  const k = home + '\u0000' + hash;
+  const h = heldClaims.get(k);
+  heldClaims.delete(k);
+  try { if (h) lockLib().release(h); } catch (_) { /* best-effort */ }
 }
 
 // triageMessagesSync(items, opts) -> Map<key, {urgency?, kind?}>
@@ -446,31 +446,32 @@ function appendArrival(home, text) {
   }
 }
 
-// tryArrivalLock(home) -> true when THIS caller now owns the lock. A lock whose
-// mtime is older than ARRIVAL_LOCK_STALE_MS belongs to a dead worker: reclaim.
+// The drain lock lives in companion/lib/lock.js. The spawning hook acquires it
+// and hands the token to the detached worker (env), which adopts it; the worker
+// re-points the record's pid at itself and refreshes it every batch. A lock not
+// refreshed for ARRIVAL_LOCK_STALE_MS belongs to a dead worker: reclaimed.
+let arrivalHandle = null;
 function tryArrivalLock(home) {
-  const p = arrivalLockPath(home);
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const fd = fs.openSync(p, 'wx');
-        try { fs.writeSync(fd, String(process.pid)); } catch (_) { /* pid is informational */ }
-        fs.closeSync(fd);
-        return true;
-      } catch (e) {
-        if (!e || e.code !== 'EEXIST') return false;
-        let age = 0;
-        try { age = Date.now() - fs.statSync(p).mtimeMs; } catch (_) { continue; }
-        if (age < ARRIVAL_LOCK_STALE_MS) return false;
-        try { fs.unlinkSync(p); } catch (_) { /* raced: retry */ }
-      }
-    }
-  } catch (_) { /* fall through */ }
-  return false;
+    const p = arrivalLockPath(home);
+    arrivalHandle = lockLib().acquire(p, { staleMs: ARRIVAL_LOCK_STALE_MS, liveStaleMs: ARRIVAL_LOCK_STALE_MS, maxTries: 2 });
+    return !!arrivalHandle;
+  } catch (_) { arrivalHandle = null; return false; }
 }
-function touchArrivalLock(home) { try { const t = new Date(); fs.utimesSync(arrivalLockPath(home), t, t); } catch (_) { /* best-effort */ } }
-function releaseArrivalLock(home) { try { fs.unlinkSync(arrivalLockPath(home)); } catch (_) { /* best-effort */ } }
+// Detached worker: take over the lock the spawning hook acquired.
+function adoptArrivalLock(home, token) {
+  try {
+    arrivalHandle = lockLib().adopt(arrivalLockPath(home), token);
+    if (arrivalHandle) arrivalHandle.refresh({ pid: process.pid });
+    return !!arrivalHandle;
+  } catch (_) { arrivalHandle = null; return false; }
+}
+function touchArrivalLock() { try { if (arrivalHandle) arrivalHandle.refresh(); } catch (_) { /* best-effort */ } }
+function releaseArrivalLock() {
+  const h = arrivalHandle;
+  arrivalHandle = null;
+  try { if (h) lockLib().release(h); } catch (_) { /* best-effort */ }
+}
 
 // takeQueue(home) -> [{h,t}] — atomically claims the whole queue (rename), so a
 // concurrent append starts a fresh file and nothing is read twice or lost.
@@ -494,7 +495,10 @@ function queueNonEmpty(home) {
 }
 
 // runArrivalWorker(home) — called by the detached child that already owns the lock.
-function runArrivalWorker(home) {
+function runArrivalWorker(home, token) {
+  // fail closed: a token we cannot adopt means the lock was stolen/reclaimed, so a new
+  // owner may be draining; touching the queue now would race it.
+  if (token && !adoptArrivalLock(home, token)) return;
   arrivalTrace('start ' + process.pid);
   const t0 = Date.now();
   let batches = 0;
@@ -512,17 +516,17 @@ function runArrivalWorker(home) {
         return true;
       });
       if (pending.length === 0) {
-        releaseArrivalLock(home);
+        releaseArrivalLock();
         // an arrival that landed between the last drain and the release has a
         // lock-less queue: re-take the lock and keep going instead of stranding it.
         if (queueNonEmpty(home) && tryArrivalLock(home)) continue;
         return;
       }
       if (batches >= ARRIVAL_MAX_BATCHES || Date.now() - t0 > ARRIVAL_MAX_WALL_MS) {
-        releaseArrivalLock(home);
+        releaseArrivalLock();
         return; // total cap: leftovers are labelled at render time as before
       }
-      touchArrivalLock(home);
+      touchArrivalLock();
       const batch = pending.splice(0, ARRIVAL_BATCH_SIZE);
       batches++;
       try {
@@ -537,7 +541,7 @@ function runArrivalWorker(home) {
       }
     }
   } catch (_) {
-    releaseArrivalLock(home);
+    releaseArrivalLock();
   } finally {
     arrivalTrace('end ' + process.pid);
   }
@@ -554,15 +558,16 @@ function enqueueArrival({ home, text } = {}) {
     if (!appendArrival(home, text)) return false;
     if (!tryArrivalLock(home)) return true; // a live worker will drain it: NO spawn
     const { spawn } = require('child_process');
+    const lockToken = arrivalHandle && arrivalHandle.token;
     let child;
     try {
       child = spawn(process.execPath, [path.join(__dirname, 'jev-triage-arrival.js')], {
         detached: true,
         stdio: 'ignore',
-        env: Object.assign({}, process.env, { ANTIHALL_TRIAGE_ARRIVAL_HOME: home, HOME: home, USERPROFILE: home }),
+        env: Object.assign({}, process.env, { ANTIHALL_TRIAGE_ARRIVAL_HOME: home, ANTIHALL_TRIAGE_ARRIVAL_TOKEN: lockToken, HOME: home, USERPROFILE: home }),
       });
-    } catch (_) { releaseArrivalLock(home); return true; }
-    child.on('error', () => { releaseArrivalLock(home); });
+    } catch (_) { releaseArrivalLock(); return true; }
+    child.on('error', () => { releaseArrivalLock(); });
     arrivalTrace('spawn');
     child.unref();
     return true;

@@ -1,6 +1,6 @@
 ---
 name: anti-hall-update
-description: Check or update anti-hall from the local marketplace clone. Use when the user asks to update anti-hall, check whether anti-hall is current, or refresh the Codex port files.
+description: Update anti-hall from the local marketplace clone. Use for "update anti-hall" or "is anti-hall current".
 ---
 
 # anti-hall update for Codex

@@ -45,7 +45,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
 
 function stateDir(home) {
   return path.join(home, '.anti-hall', 'stop-ack');

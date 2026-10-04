@@ -77,6 +77,10 @@
 //   exit 0 : always (fail-open on ANY error).
 
 'use strict';
+require('./lib/judge-child-exit');
+
+// Cheap no-op exit for a non-child session BEFORE the heavy requires below (see lib header).
+require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'childGate', guard: 'devswarm-child-gate', role: 'child' });
 
 const fs = require('fs');
 const path = require('path');

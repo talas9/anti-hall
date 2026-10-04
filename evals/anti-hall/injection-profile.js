@@ -210,9 +210,14 @@ const SCENARIOS = [
   { id: 'seq-unconfident', channel: 'sequence', steps: [
     { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-claude.json', label: 'start', stripHost: true },
     { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-1', optional: true } ] },
-  // Codex-shaped: ORCH_FULL at SessionStart, no marker, nothing on a spawn (orch-on-spawn is not registered on Codex).
+  // Codex-shaped: ORCH_FULL at SessionStart, no marker, nothing on a spawn (default codexOrchFullOn=session).
   { id: 'seq-codex', channel: 'sequence', flavour: 'codex', steps: [
     { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-codex.json', label: 'start' } ] },
+  // Codex, EXPERIMENTAL codexOrchFullOn=spawn: compact at SessionStart, full once on the first spawn_agent, none on the second.
+  { id: 'seq-codex-spawn', channel: 'sequence', flavour: 'codex', env: { ANTIHALL_CODEX_ORCH_FULL_ON: 'spawn' }, steps: [
+    { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-codex.json', label: 'start' },
+    { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-spawn-agent.json', label: 'spawn-1', optional: true },
+    { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-spawn-agent.json', label: 'spawn-2', optional: true } ] },
 ];
 
 // The orch-full marker's decision in a scenario HOME ('pending' | 'none' | null when absent).
@@ -365,6 +370,7 @@ function checkD3(p) {
   if (!spawn1 || spawn1.skipped) return { applicable: false, results: res };
   const has = (o, re) => !!o && !o.skipped && re.test(o.text);
   const ORCH_FULL_RE = /ORCHESTRATION DISCIPLINE/;
+  const COMPACT_RE = /ORCHESTRATION \(main thread/;
   const silent = (o) => !o || o.skipped || o.text === '';
   // Default (auto -> session): inline ORCH_FULL next to the compact core, no pending marker, spawns silent.
   add('default: ORCH_FULL inline at SessionStart, marker none', has(get('start', dflt), ORCH_FULL_RE) && get('start', dflt).marker === 'none');
@@ -383,6 +389,12 @@ function checkD3(p) {
   const cx = p.scenarios['seq-codex'];
   const cxs = cx && cx.outputs.find((x) => x.label === 'start');
   add('codex-shaped sequence: ORCH_FULL at SessionStart, no marker', has(cxs, ORCH_FULL_RE) && cxs.marker === null);
+  const cs = p.scenarios['seq-codex-spawn'];
+  if (cs) {
+    const g = (l) => cs.outputs.find((x) => x.label === l);
+    add('codex spawn mode (experimental): compact at SessionStart, marker pending', g('start') && COMPACT_RE.test(g('start').text) && !ORCH_FULL_RE.test(g('start').text) && g('start').marker === 'pending', 'start chars=' + (g('start') && g('start').chars));
+    add('codex spawn mode: ORCH_FULL once on first spawn_agent, none on the second', has(g('spawn-1'), ORCH_FULL_RE) && silent(g('spawn-2')), 'spawn-1 chars=' + (g('spawn-1') && g('spawn-1').chars));
+  }
   const oc = p.scenarios['orch-codex'].outputs[0];
   add('codex-shaped: ORCH_FULL at SessionStart', oc && !oc.skipped && ORCH_FULL_RE.test(oc.text));
   const op = p.scenarios['orch-primary'].outputs[0];

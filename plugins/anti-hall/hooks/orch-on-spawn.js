@@ -26,6 +26,10 @@
 //     PostToolUse equal): background spawns get the text at launch. The hook echoes the event name it
 //     is given, so a PostToolUse registration would work unchanged.
 //
+// Codex (opt-in context.codexOrchFullOn=spawn, experimental): registered on PreToolUse matcher `^(?:collaboration)?spawn_agent$`;
+// sends ORCH_FULL_CODEX through the same marker + claim (+ retry) mechanism. Codex 0.160 surfaces PreToolUse
+// additionalContext to the model as a developer message (probe 2026-10-04).
+//
 // Contract: stdin JSON { session_id, transcript_path, tool_name, hook_event_name, ... }; stdout JSON
 // { hookSpecificOutput: { hookEventName, additionalContext } } or nothing. Exit 0 always (fail-open).
 
@@ -41,7 +45,9 @@ function now() {
   return Date.now();
 }
 
-const SPAWN_TOOLS = new Set(['Agent', 'Task', 'Workflow']);
+// Codex 0.160 reports the spawn tool as `collaborationspawn_agent` (namespace glued on, live probe 2026-10-04); `spawn_agent` is
+// kept for older/other builds. `collaborationwait_agent` etc. are NOT spawns. (the only Codex spawn matcher; codex/hooks/hooks.json registers this hook on it).
+const SPAWN_TOOLS = new Set(['Agent', 'Task', 'Workflow', 'spawn_agent', 'collaborationspawn_agent']);
 
 function main() {
   let payload = null;
@@ -77,7 +83,9 @@ function main() {
 
   const core = require('./verify-first-core.js');
   const event = typeof payload.hook_event_name === 'string' && payload.hook_event_name ? payload.hook_event_name : 'PreToolUse';
-  const text = core.ORCH_FULL + '\n' + state.tokenFor(marker.epochId);
+  let codex = /spawn_agent$/.test(String(payload.tool_name));
+  try { codex = codex || require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex'; } catch (_) { /* keep */ }
+  const text = (codex ? core.ORCH_FULL_CODEX : core.ORCH_FULL) + '\n' + state.tokenFor(marker.epochId);
   fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } }) + '\n');
 }
 

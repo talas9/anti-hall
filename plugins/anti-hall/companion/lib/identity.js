@@ -34,8 +34,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
-const { spawnSync } = require('child_process');
+const crypto = require('../../hooks/lib/lazy-node.js').crypto; // lazy: loaded on first hash
+const cp = require('../../hooks/lib/lazy-node.js').lazy('child_process'); // lazy: loaded on first git spawn
 
 // B1: the key primitives live HERE and devswarm-repokey.js re-exports them, so
 // the require edge is repokey -> identity only (no identity <-> repokey cycle).
@@ -176,7 +176,7 @@ function rawGitInfo(dir, opts) {
   }
 }
 
-function defaultSpawn(cmd, args, options) { return spawnSync(cmd, args, options); }
+function defaultSpawn(cmd, args, options) { return cp.spawnSync(cmd, args, options); }
 
 function freeze(o) { return Object.freeze(o); }
 

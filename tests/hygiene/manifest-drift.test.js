@@ -104,8 +104,6 @@ const CLAUDE_ONLY_ALLOWLIST = [
   // PostToolUse Agent: reads the result of a Claude-side codex:codex-rescue
   // Agent dispatch to record a Codex quota outage for later Claude sessions.
   { event: 'PostToolUse', file: 'codex-quota-detect.js', reason: 'Agent-tool matcher — inspects a Claude Code codex:codex-rescue subagent result; no Codex equivalent tool matcher' },
-  // PreToolUse Agent|Task|Workflow: delivers the full orchestration rules on the coordinator's first spawn.
-  { event: 'PreToolUse', file: 'orch-on-spawn.js', reason: 'Agent/Task/Workflow-tool matcher — Claude Code subagent dispatch; Codex gets the full orchestration text at SessionStart instead (no Codex equivalent tool matcher)' },
   // PreToolUse SendMessage: DevSwarm mesh tool name specific to the Claude
   // Task-tool ecosystem.
   { event: 'PreToolUse', file: 'devswarm-comms-guard.js', reason: 'SendMessage-tool matcher — Claude-side DevSwarm mesh tool; no Codex equivalent tool matcher' },

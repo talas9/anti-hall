@@ -79,11 +79,15 @@
 // async-flush race (mirrors limit-conserve-inject.js / devswarm-child-role.js).
 
 'use strict';
+require('./lib/judge-child-exit');
+
+// Cheap no-op exit for a non-child session BEFORE the heavy requires below (see lib header).
+require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'childTurn', role: 'child' });
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');

@@ -1,6 +1,6 @@
 ---
 name: anti-hall-omc
-description: Inspect or integrate optional oh-my-claudecode/OMC state with anti-hall in Codex. Use when the user asks whether OMC is installed for Codex or why anti-hall did not install OMC.
+description: Inspect optional oh-my-claudecode (OMC) state in Codex. Use to ask whether OMC is installed or why anti-hall did not install it.
 ---
 
 # anti-hall OMC integration for Codex

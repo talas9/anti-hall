@@ -30,11 +30,12 @@
 // MAX_BLOCKS cap stops churn-driven loops.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 const { appendIndexLineIfAbsent } = require('./session-history-index.js');
 // sessionProjectRoot(cwd) -- the canonical resolver (companion/lib/identity.js
 // via hooks/lib/handover-find.js): every .anti-hall/progress|history|handovers
@@ -315,6 +316,19 @@ function main() {
     process.exit(0);
   }
 
+  // NAG FORM (cost-trim Phase 1, guards.tasklistNoTaskTools): 'reduced' / 'skip' only when the
+  // session is positively known to lack task tools (lib/task-tool-evidence.js); otherwise 'full'
+  // = today's TaskCreate demand, unchanged.
+  let nagForm = 'full';
+  try {
+    nagForm = require('./lib/task-tool-evidence.js').nagForm({
+      codex: require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex',
+      transcriptPath,
+    });
+  } catch (_) { nagForm = 'full'; }
+  if (nagForm === 'skip') process.exit(0);
+  const reducedNag = nagForm === 'reduced';
+
   // JEV (tasklistTrivial, default "shadow" — hooks/lib/jev-assist.js consultRelax): a
   // raw count treats every edit the same, so a small bounded chore can trip
   // this nudge. In shadow/off the consult is fire-and-forget (logged for
@@ -456,7 +470,14 @@ function main() {
     what = 'stop blocked: ' + workCount + ' file-changing actions but ' + progressPath + ' is missing or stale.';
     why = 'The progress file must track what was done.';
   }
-  const instead = (!sawTaskActivity && taskStoreReset
+  let instead;
+  if (reducedNag) {
+    // Reduced form (<= 450 chars): no TaskCreate demand. Reduced is only chosen when the transcript
+    // shows no task-tool evidence, so the only cause here is "no tasks tracked" (or a reset store).
+    if (!taskStoreReset) { what = 'stop blocked: ' + workCount + ' file-changing actions, no tasks tracked.'; why = 'Untracked work gets lost.'; }
+    instead = 'list the open tasks and status in your reply, priority first. Progress: ' + progressPath +
+      ' History: ' + historyPath;
+  } else instead = (!sawTaskActivity && taskStoreReset
       ? (codexHost ? 'recreate the open tasks in your task list (see the progress file / handover), then continue. ' : 'recreate the open tasks with TaskCreate (see the progress file / handover), then continue. ')
       : '') +
     (hasStaleInProgress && sawTaskActivity
@@ -503,7 +524,8 @@ function main() {
   // repeats nagging on subsequent Stops.
   let finalReason = reason;
   try {
-    if (root && typeof root === 'string') {
+    // The reduced nag stays short: no handover advisory rides it.
+    if (!reducedNag && root && typeof root === 'string') {
       const handoverDir = path.join(root, '.anti-hall', 'handovers', progressDate, sessionIdForPath);
       let handoverDirExists = false;
       try {
@@ -607,6 +629,17 @@ function main() {
   // Without a working cap, blocking is unsafe, so we fail-OPEN: if the persist
   // throws/fails, exit 0 WITHOUT emitting a block. We only block when the cap
   // state was durably written (so the dedup + MAX_BLOCKS cap can actually fire).
+  // STOP-POLICY (cost-trim Phase 1), consulted only now that this Stop WILL block:
+  //  - per-prompt budget (guards.stopNagBudgetPerPrompt, default 0 = off = today's behaviour):
+  //    a spent budget allows the stop; session caps above stay the outer bound.
+  //  - reduced form: blocks at most ONCE per session (kind `no-task-tools`); a stale progress
+  //    file alone never re-blocks in this mode.
+  try {
+    const SP = require('./lib/stop-policy.js');
+    const spHome = require('../companion/lib/test-home-guard.js').resolveHome();
+    if (SP.budgetSpent({ home: spHome, sessionId: safeSession, hook: 'tasklist-guard', payload, transcriptPath })) process.exit(0);
+    if (reducedNag && !SP.consume(spHome, safeSession, 'tasklist-guard', ['no-task-tools'], 1).block) process.exit(0);
+  } catch (_) { /* fail-open to today's behaviour: no extra cap */ }
   try {
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(stateFile, JSON.stringify({ hash, blocks: blocks + 1, started: startedIso }), 'utf8');

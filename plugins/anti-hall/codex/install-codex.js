@@ -104,6 +104,7 @@ const ANTI_HALL_HOOKS = {
   UserPromptSubmit: [
     group(null, ['verify-first.js'], 10),
     group(null, ['task-tracker.js'], 10),
+    group(null, ['idle-agent-sweep.js'], 10),
     group(null, ['limit-conserve-inject.js'], 10),
     group(null, ['devswarm-parent-inbox.js'], 10),
     group(null, ['devswarm-child-turn.js'], 10),
@@ -113,8 +114,10 @@ const ANTI_HALL_HOOKS = {
   PreToolUse: [
     group('Bash', ['git-guard.js'], 10),
     group('Bash', ['command-guard.js'], 10),
+    group('Bash', ['merge-side-pick.js'], 10),
     group('Bash', ['merge-gate.js'], 10),
     group('Bash', ['compact-declaration-guard.js'], 10),
+    group('^(?:collaboration)?spawn_agent$', ['orch-on-spawn.js'], 10),
     group('apply_patch', ['api-guard.js'], 45),
     group('apply_patch', ['ship-it-guard.js'], 10),
     group('apply_patch', ['edit-guard.js'], 10),
@@ -135,6 +138,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['precompact-snapshot.js'], 10),
   ],
   PostToolUse: [
+    group('Bash', ['merge-side-pick.js --post'], 10),
     group('Bash', ['git-guard.js --audit'], 10),
     group('Bash', ['devswarm-parent-reply-tracker.js'], 10),
     group('Bash', ['devswarm-child-drain.js'], 10),
