@@ -75,7 +75,6 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `doctor` | "is anti-hall working?" | live self-tests on every guard; `--repair` for safe auto-fixes |
 | `system-briefing` | "brief me on anti-hall", "what does X mean" | operator guide (terms, rules, verbs, settings) + live inventory of every hook/skill shipped |
 | `update` | "update anti-hall" | pulls latest, shows changelog delta, prompts `/reload-plugins` (restart only if a hook or skill path still shows the old version) |
-| `flutter-debug` | debugging a running Flutter app | agent-driven hot-reload + visual-verification debug loop |
 | `activate` | first-time setup | one-shot idempotent install of statusline + model-routing state (statusline, model routing, sentinel) |
 | `simplify` | "simplify this" / "deslop" | behavior-preserving simplification with a measured `net: -N lines` score |
 | `debt` | tracking deliberate shortcuts | register + audit `// anti-hall: <ceiling>,<when>` debt markers for rot risk |
@@ -110,7 +109,6 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | [`KB-overengineering.md`](./KB-overengineering.md) | Overengineering causes and measurement; anti-hall's scope-fidelity implications. |
 | [`KB-session-handover.md`](./KB-session-handover.md) | AI-agent session handover design; backs the `handover` skill. |
 | [`KB-handover-research.md`](./KB-handover-research.md) | 2026-09-24 sourced handover research: compaction loss, context rot, trigger points, Claude Code + Codex compaction/hook facts, receiver read-back; the gap review behind the 0.108 handover changes. |
-| [`KB-flutter-claude-debug.md`](./KB-flutter-claude-debug.md) | Research backing the `flutter-debug` skill. |
 | [`CONTEXT-PRESERVATION-KB.md`](./CONTEXT-PRESERVATION-KB.md) | Slowing main-agent context growth — caching, sub-agent isolation, compaction, JIT retrieval. |
 | [`CODEX-KB-MIGRATION-MAP.md`](./CODEX-KB-MIGRATION-MAP.md) | Cross-reference between Claude-side and Codex-side KB docs. |
 
@@ -141,7 +139,6 @@ Historical working documents live in [`archive/`](./archive/README.md); they may
 | [`archive/ULTRAPLAN.md`](./archive/ULTRAPLAN.md) | Single consolidated reconciliation plan, `v0.3.0`-era. Superseded; executed. |
 | [`archive/2026-06-06-context-opt-test-design.md`](./archive/2026-06-06-context-opt-test-design.md) | Dated context-optimization test-harness design. |
 | [`archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md`](./archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md) | Dated v0.32.0 design plan (Fable 5 support, model-routing guard). |
-| [`2026-06-10-v0.34.0-flutter-debug-plan.md`](./2026-06-10-v0.34.0-flutter-debug-plan.md) | Dated v0.34.0 design plan (flutter-debug agent + skill). Kept here: `tests/hooks/flutter-debug.test.js` reads it by path. |
 | [`archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md`](./archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md) | Approved design — DevSwarm-aware workspace-tier orchestration. |
 | [`archive/superpowers/plans/2026-07-06-devswarm-orchestration.md`](./archive/superpowers/plans/2026-07-06-devswarm-orchestration.md) | Implementation plan for the design above. |
 | [`archive/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md`](./archive/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md) | Design — DevSwarm liveness supervisor (wedged-session recovery). |

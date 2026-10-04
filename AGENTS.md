@@ -287,8 +287,8 @@ feature/KB touches this area:
 - PreCompact — precompact-snapshot [C]
 - SessionEnd — session-end-mcp-reaper
 
-**Skills** — Claude `/anti-hall:<name>`: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `defects`, `devswarm`, `doctor`, `flutter-debug`, `handover`, `install-statusline`, `jev`, `orchestration`, `root-cause`, `settings`, `ship-it`, `simplify`, `system-briefing`, `update`.
-Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects, devswarm, doctor, flutter-debug, handover, install-statusline, jev, model-policy, omc, omx, orchestration, root-cause, settings, ship-it, simplify, system-briefing, update.
+**Skills** — Claude `/anti-hall:<name>`: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `defects`, `devswarm`, `doctor`, `handover`, `install-statusline`, `jev`, `orchestration`, `root-cause`, `settings`, `ship-it`, `simplify`, `system-briefing`, `update`.
+Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects, devswarm, doctor, handover, install-statusline, jev, model-policy, omc, omx, orchestration, root-cause, settings, ship-it, simplify, system-briefing, update.
 
 **CLI verbs**:
 - `scripts/devswarm.js`: `primary`, `register`, `ensure`, `heartbeat`, `inbox`, `workspaces`, `gate`, `done`, `nudge`, `archive`, `reap-orphans`, `reconcile-registry`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `register-primary`, `migrate`, `logs`, `migrate-owner-keys`, `send`, `relay`, `roster`, `wake-directive`, `app-state`, `sync-ui`, `app-sync`, `diagnose`, `plan`, `scope`, `supervision-report`, `respawn`, `correct`, `healthcheck`, `ready-check`, `mesh`, `reconcile`, `reap-stale`, `reconcile-active`, `spawn`, `merge`, `skip`, `auto-archive`, `prune-archived`, `gate-intent`, `retention`, `notice` (`help <verb>`).

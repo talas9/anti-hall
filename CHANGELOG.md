@@ -6,6 +6,10 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+- Removed the Flutter-specific `flutter-debug` skill and agent; anti-hall is language-agnostic. The removed code remains in git history.
+
 ## 0.202.0 (2026-10-04)
 
 ### Highlights

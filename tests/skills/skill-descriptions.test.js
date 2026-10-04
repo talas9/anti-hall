@@ -38,10 +38,10 @@ function all() {
   return out;
 }
 
-test('39 skills found (18 Claude + 21 Codex)', () => {
+test('37 skills found (17 Claude + 20 Codex)', () => {
   const s = all();
-  assert.strictEqual(s.filter((x) => x.label === 'claude').length, 18);
-  assert.strictEqual(s.filter((x) => x.label === 'codex').length, 21);
+  assert.strictEqual(s.filter((x) => x.label === 'claude').length, 17);
+  assert.strictEqual(s.filter((x) => x.label === 'codex').length, 20);
 });
 
 test('every description (+ when_to_use) is <= 200 chars and every body has "## When to use"', () => {

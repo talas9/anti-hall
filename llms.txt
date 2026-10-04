@@ -168,7 +168,6 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | devswarm | DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB, screenshot sync. |
 | jev | Jev classifier activation, modes per integration, report. |
 | defects | File/list/show/rule on anti-hall defect reports. |
-| flutter-debug | Agent-driven Flutter run/hot-reload/drive/screenshot debug loop (plus the `flutter-debug` agent). |
 
 `skills/MODEL-POLICY.md` is the shared model roster (Claude + Codex tables).
 
@@ -183,7 +182,6 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 | anti-hall-defects | defects |
 | anti-hall-devswarm | devswarm |
 | anti-hall-doctor | doctor |
-| anti-hall-flutter-debug | flutter-debug |
 | anti-hall-handover | handover |
 | anti-hall-install-statusline | install-statusline (explains what applies on Codex) |
 | anti-hall-jev | jev |

@@ -103,7 +103,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-ship-it` — scaled plan/build/verify workflow (replaces the retired `anti-hall-feature-launch`)
 - `anti-hall-context-conserve` — context/usage conservation and model routing
 - `anti-hall-model-policy` — Codex model routing table
-- `anti-hall-doctor`, `anti-hall-update`, `anti-hall-debt`, `anti-hall-simplify`, `anti-hall-flutter-debug`, `anti-hall-install-statusline`, `anti-hall-omx`, `anti-hall-omc`
+- `anti-hall-doctor`, `anti-hall-update`, `anti-hall-debt`, `anti-hall-simplify`, `anti-hall-install-statusline`, `anti-hall-omx`, `anti-hall-omc`
 - `anti-hall-defects` — file/list/show/rule on anti-hall defect reports
 - `anti-hall-devswarm` — DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB
 - `anti-hall-jev` — activate/configure/check the opt-in Jev classifier

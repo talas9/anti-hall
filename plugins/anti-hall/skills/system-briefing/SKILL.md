@@ -92,7 +92,6 @@ the guards fire?", use `doctor`.
 | `devswarm` | anything DevSwarm: mesh, recovery, auto-archive, prune, retention, app DB, screenshot sync |
 | `jev` | activating/configuring/reporting on Jev |
 | `defects` | filing or checking anti-hall defect reports |
-| `flutter-debug` | driving and fixing a running Flutter app |
 | Codex only: `context-conserve`, `model-policy`, `omc`, `omx` | limit conservation, model routing table, OMC state, oh-my-codex integration |
 
 ## CLI verbs (run from the plugin root; heavy ones via a subagent)

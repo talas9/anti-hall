@@ -15,7 +15,7 @@ right and this document gets a fix.
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
 | Hook scripts | 62 (70 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.json` |
 | Codex hook scripts | 44 (47 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
-| Skills | 18 Claude, 21 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
+| Skills | 17 Claude, 20 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys
 
@@ -141,8 +141,8 @@ and so does the `unknown command:` error, so neither can drift from the dispatch
 each with `--apply`); their names are stable, their report text is not.
 `update.js --post-pull-only` is an internal re-exec handshake, not a public flag.
 
-**Skill names** are stable too: `/anti-hall:<name>` for the 18 Claude skills and
-`anti-hall-<name>` for the 21 Codex skills. Renaming or removing one is MAJOR.
+**Skill names** are stable too: `/anti-hall:<name>` for the 17 Claude skills and
+`anti-hall-<name>` for the 20 Codex skills. Renaming or removing one is MAJOR.
 
 ## 3. Hook contracts
 
