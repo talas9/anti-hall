@@ -1,0 +1,10 @@
+[package]
+name = "engine"
+version = "0.0.1"
+edition = "2021"
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+strip = true
+codegen-units = 1
