@@ -205,6 +205,16 @@ pub struct JevClient {
     clock: Arc<dyn Clock>,
 }
 
+/// The budget of one call in milliseconds: the caller's request when it is positive, else the configured one, and never
+/// more than `jev.max_timeout_ms`, whatever was asked (a `u64::MAX` request is the ceiling, not an overflow).
+fn budget_for(s: &JevSettings, requested: Option<u64>) -> u64 {
+    let ceiling = defaults::num("jev.max_timeout_ms");
+    match requested {
+        Some(t) if t > 0 => t.min(ceiling),
+        _ => s.timeout_ms.min(ceiling),
+    }
+}
+
 fn is_eligible(r: &CallResult) -> bool {
     match &r.reason {
         None => false,
@@ -225,7 +235,8 @@ impl JevClient {
         self.breakers.is_open(vendor)
     }
 
-    fn model_for(vendor: Vendor) -> &'static str {
+    /// The model name sent to `vendor`.
+    pub(crate) fn model_for(vendor: Vendor) -> &'static str {
         match vendor {
             Vendor::Vercel => defaults::text("jev.model_vercel"),
             Vendor::Typesafe => defaults::text("jev.model_typesafe"),
@@ -251,6 +262,7 @@ impl JevClient {
 
     /// Run a call through the primary and, when eligible, the backup, inside `total_ms` (Node: `runWithFallback`).
     fn run_with_fallback(&self, s: &JevSettings, total_ms: u64, body_for: &dyn Fn(&str) -> String, parse: Parse<'_>) -> CallResult {
+        let total_ms = total_ms.min(defaults::num("jev.max_timeout_ms")); // belt and braces: no caller can lift the ceiling
         let primary_key = resolve_key(s, s.transport).key;
         let Some(primary_key) = primary_key else {
             let mut r = CallResult::failed(Reason::NoKey);
@@ -271,9 +283,12 @@ impl JevClient {
         let t0 = self.clock.now_ms();
         let mut primary_res: Option<CallResult> = None;
         if !primary_open {
-            let reserve =
-                if fallback_open { 0 } else { defaults::num("jev.fallback_reserve_ms").min(total_ms * defaults::num("jev.fallback_reserve_pct") / 100) };
-            let r = self.attempt(s, &Target { vendor: s.transport, primary: true, key: &primary_key }, body_for, parse, total_ms - reserve);
+            let reserve = if fallback_open {
+                0
+            } else {
+                defaults::num("jev.fallback_reserve_ms").min(total_ms.saturating_mul(defaults::num("jev.fallback_reserve_pct")) / 100)
+            };
+            let r = self.attempt(s, &Target { vendor: s.transport, primary: true, key: &primary_key }, body_for, parse, total_ms.saturating_sub(reserve));
             if r.ok() {
                 self.breakers.record(s.transport, true);
                 return r;
@@ -325,10 +340,7 @@ impl JevClient {
         if !s.enabled {
             return CallResult::failed(Reason::Disabled);
         }
-        let budget = match timeout_ms {
-            Some(t) if t > 0 => t.min(defaults::num("jev.max_timeout_ms")),
-            _ => s.timeout_ms,
-        };
+        let budget = budget_for(s, timeout_ms);
         // The ONE outbound scrub: every body, primary and fallback alike, carries the scrubbed text.
         let outbound = scrub_secrets(state);
         let kind = question.kind;
@@ -366,10 +378,7 @@ impl JevClient {
         if !s.enabled {
             return failed(Reason::Disabled);
         }
-        let budget = match timeout_ms {
-            Some(t) if t > 0 => t, // Node applies no ceiling to a multi call's explicit timeout
-            _ => s.timeout_ms,
-        };
+        let budget = budget_for(s, timeout_ms); // Node applies no ceiling to a multi call; the engine does (a key never waits unbounded)
         let ordered = js_key_order(questions.iter().map(|(k, q)| (k.clone(), q.to_wire())).collect());
         let outbound = scrub_secrets(state);
         let qs: Vec<String> = ordered.iter().map(|(k, w)| format!("{}:{}", json_str(k), w)).collect();
@@ -420,6 +429,25 @@ mod tests {
 
     fn q() -> Question {
         Question::noul("Is it?", "yes", "no")
+    }
+
+    #[test]
+    fn no_budget_a_caller_asks_for_can_pass_the_ceiling_or_overflow() {
+        let ceiling = Duration::from_millis(defaults::num("jev.max_timeout_ms"));
+        let both = json!({"transport": "vercel", "fallbackTransport": "typesafe"});
+        for ask in [Some(u64::MAX), Some(u64::MAX / 100), Some(ceiling.as_millis() as u64 + 1)] {
+            let f = Arc::new(Fake::new(vec![ok(500, "x"), ok(200, r#"{"answers":{"decision":{"noul":1}}}"#)]));
+            let r = client(&f).decide(&settings(&KEYS, both.clone()), &q(), "hello", ask);
+            assert!(r.ok(), "{ask:?}: the fallback still answers");
+            assert!(f.timeouts.lock().unwrap().iter().all(|t| *t <= ceiling), "{ask:?}: {:?}", f.timeouts.lock().unwrap());
+            let f = Arc::new(Fake::new(vec![ok(200, r#"{"answers":{"decision":{"noul":1}}}"#)]));
+            let m = client(&f).decide_multi(&settings(&KEYS, both.clone()), &[("decision".into(), q())], "hello", ask);
+            assert!(m.call.reason.is_none(), "{ask:?}");
+            assert!(f.timeouts.lock().unwrap().iter().all(|t| *t <= ceiling), "{ask:?} multi: {:?}", f.timeouts.lock().unwrap());
+        }
+        let f = Arc::new(Fake::new(vec![ok(200, r#"{"answers":{"decision":{"noul":1}}}"#)]));
+        client(&f).decide(&settings(&KEYS, json!({})), &q(), "hello", Some(0));
+        assert_eq!(f.timeouts.lock().unwrap()[0], Duration::from_millis(1500), "zero means the configured budget");
     }
 
     #[test]

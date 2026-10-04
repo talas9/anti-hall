@@ -15,6 +15,9 @@ use super::settings::JevSettings;
 use crate::defaults;
 use serde_json::Value;
 use std::time::Duration;
+use ureq::http::Uri;
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 /// How a body read failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,16 +65,38 @@ pub trait Transport: Send + Sync {
     fn send(&self, req: &Request<'_>) -> Result<RawResponse, NetError>;
 }
 
-/// The real transport: a shared `ureq` agent (its connection pool is the "warm connection" of D36).
+/// The real transport: a shared `ureq` agent (its connection pool is the "warm connection" of D36), and a second agent
+/// for loopback targets whose resolver can only ever return a loopback address.
 pub struct HttpTransport {
     agent: ureq::Agent,
+    loopback: ureq::Agent,
+}
+
+/// A resolver that keeps only loopback addresses. The agent that carries a test-endpoint key uses it, so the peer the key
+/// is sent to is verified to be loopback by construction: whatever the URL's host resolves to, nothing else is dialled.
+#[derive(Debug, Default)]
+struct LoopbackResolver(DefaultResolver);
+
+impl Resolver for LoopbackResolver {
+    fn resolve(&self, uri: &Uri, config: &ureq::config::Config, timeout: NextTimeout) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        let all = self.0.resolve(uri, config, timeout)?;
+        let mut kept = self.empty();
+        for addr in all.iter().filter(|a| a.ip().is_loopback()) {
+            kept.push(*addr);
+        }
+        if kept.is_empty() {
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(kept)
+    }
 }
 
 impl HttpTransport {
     /// Build the agent: no redirects, no proxy, statuses returned rather than raised.
     pub fn new() -> HttpTransport {
         let config = ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).max_redirects_will_error(false).proxy(None).build();
-        HttpTransport { agent: ureq::Agent::new_with_config(config) }
+        let loopback = ureq::Agent::with_parts(config.clone(), DefaultConnector::default(), LoopbackResolver::default());
+        HttpTransport { agent: ureq::Agent::new_with_config(config), loopback }
     }
 }
 
@@ -91,9 +116,10 @@ fn classify(e: &ureq::Error) -> NetError {
 impl Transport for HttpTransport {
     fn send(&self, req: &Request<'_>) -> Result<RawResponse, NetError> {
         let header = format!("Bearer {}", req.bearer);
+        // A loopback URL (a test endpoint override, already canonical) goes through the agent that can only dial loopback.
+        let agent = if super::loopback::endpoint(req.url).is_some() { &self.loopback } else { &self.agent };
         let result = match req.body {
-            Some(body) => self
-                .agent
+            Some(body) => agent
                 .post(req.url)
                 .config()
                 .timeout_global(Some(req.timeout))
@@ -101,7 +127,7 @@ impl Transport for HttpTransport {
                 .header("Authorization", &header)
                 .header("Content-Type", "application/json")
                 .send(body),
-            None => self.agent.get(req.url).config().timeout_global(Some(req.timeout)).build().header("Authorization", &header).call(),
+            None => agent.get(req.url).config().timeout_global(Some(req.timeout)).build().header("Authorization", &header).call(),
         };
         let mut resp = result.map_err(|e| classify(&e))?;
         let status = resp.status().as_u16();
@@ -230,6 +256,19 @@ mod tests {
     }
 
     #[test]
+    fn the_loopback_resolver_returns_loopback_addresses_and_nothing_else() {
+        use ureq::unversioned::transport::time::Duration as UDuration;
+        let resolve = |url: &str| {
+            let timeout = NextTimeout { after: UDuration::NotHappening, reason: ureq::Timeout::Global };
+            LoopbackResolver::default().resolve(&url.parse::<Uri>().unwrap(), &ureq::config::Config::default(), timeout)
+        };
+        let ok = resolve("http://127.0.0.1:9/x").unwrap();
+        assert_eq!(ok.iter().map(|a| a.to_string()).collect::<Vec<_>>(), ["127.0.0.1:9"]);
+        assert_eq!(resolve("http://[::1]:9/x").unwrap().iter().count(), 1);
+        assert!(matches!(resolve("http://8.8.8.8:9/x"), Err(ureq::Error::HostNotFound)), "an address that is not loopback is never dialled");
+    }
+
+    #[test]
     fn endpoints_are_the_built_in_ones_unless_a_loopback_override_applies() {
         let settings = |env: &[(&str, &str)]| {
             JevSettings::resolve(std::path::Path::new("/h"), Sources { env: Env::from_pairs(env.iter().copied()), ..Default::default() })
@@ -244,6 +283,6 @@ mod tests {
             "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
             "the generic override is for the primary only"
         );
-        assert_eq!(endpoint_for(&o, Vendor::Typesafe, false), "http://localhost:9/t");
+        assert_eq!(endpoint_for(&o, Vendor::Typesafe, false), "http://127.0.0.1:9/t", "localhost is rewritten to the literal");
     }
 }

@@ -5,7 +5,9 @@
 //! rule, and every failure (disabled, off, no key, over budget, timeout, bad response, queue full, log I/O error)
 //! degrades to the caller's `baseline`: with Jev off, missing or failing, behaviour equals the deterministic non-Jev
 //! path (D35). Nothing here runs on the hot path while Jev is off: the call returns after one clock read and one
-//! settings snapshot, with no hashing, no cache lookup, no network and no log I/O.
+//! settings snapshot, with no hashing, no cache lookup, no network and no log I/O. The one I/O an off call can cause is
+//! the settings re-check: at most one `stat` of each of the two settings files per `jev.settings_recheck_ms` (and none
+//! between), taken by whichever call finds the window elapsed; [`Jev::reload`] is the notification path that replaces it.
 //!
 //! Trust rules (D36). Jev may ADD a block or an advisory and never remove one:
 //!
@@ -22,11 +24,12 @@
 use super::breaker::{Clock, SystemClock};
 use super::cache::{Cached, JevCache, MemCache};
 use super::client::{Answer, CallResult, JevClient};
+use super::credentials::resolve_key;
 use super::error::Reason;
 use super::log::{DecisionLog, FileLog, Row};
 use super::question::Question;
-use super::settings::{Env, Files, JevSettings, Mode, Sources};
-use super::transport::{HttpTransport, Transport};
+use super::settings::{Env, Files, JevSettings, Mode, Sources, Vendor};
+use super::transport::{endpoint_for, HttpTransport, Transport};
 use crate::defaults;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -352,10 +355,14 @@ fn now_unix_ms() -> u64 {
 
 /// The content hash: SHA-256 of the parts joined with U+0001, as lowercase hex cut to `jev.hash_len`.
 pub fn content_hash(parts: &[&str]) -> String {
-    let joined = parts.join("\u{1}");
-    let digest = ring::digest::digest(&ring::digest::SHA256, joined.as_bytes());
-    let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    let hex = full_hash(parts);
     hex[..(defaults::num("jev.hash_len") as usize).min(hex.len())].to_string()
+}
+
+/// The whole SHA-256 of the parts joined with U+0001, as lowercase hex (the cache key; the log keeps the short form).
+fn full_hash(parts: &[&str]) -> String {
+    let joined = parts.join("\u{1}");
+    ring::digest::digest(&ring::digest::SHA256, joined.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Node's `computeFinal` with this engine's trust rules (see the module docs).
@@ -510,14 +517,19 @@ impl Jev {
         if req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true) {
             return self.finish(&s, req, mode, None, false, true); // nothing to relax: not consulted
         }
-        let hash = self.hash_of(req);
-        if let Some(c) = self.cache.get(&hash) {
-            let r = CallResult::answered(c.answer, c.confidence, 0);
-            return self.finish(&s, req, mode, Some(r), true, true);
+        // The cache is shared by every session, so an entry is only valid for a session that would have asked the same vendor
+        // the same way: the key names the vendor chain, models and endpoints, and a test endpoint override never reads or
+        // writes the cache. A hit still needs a key for the CALLING session; without one the call fails as `no-key`.
+        let cache_key = self.cache_key_of(&s, req);
+        if let Some(ck) = cache_key.as_deref().filter(|_| resolve_key(&s, s.transport).key.is_some()) {
+            if let Some(c) = self.cache.get(ck) {
+                let r = CallResult::answered(c.answer, c.confidence, 0);
+                return self.finish(&s, req, mode, Some(r), true, true);
+            }
         }
         let r = self.client.decide(&s, &req.question, &req.state, req.budget_ms);
-        if let Some(a) = &r.answer {
-            self.cache.put(&hash, Cached { answer: a.clone(), confidence: r.confidence });
+        if let (Some(a), Some(ck)) = (&r.answer, &cache_key) {
+            self.cache.put(ck, Cached { answer: a.clone(), confidence: r.confidence });
         }
         self.finish(&s, req, mode, Some(r), false, true)
     }
@@ -570,6 +582,23 @@ impl Jev {
             std::thread::sleep(defaults::millis("jev.drain_poll_ms"));
         }
         true
+    }
+
+    /// The key an answer is cached under for the session whose settings are `s`; `None` when it must not be cached (a test
+    /// endpoint override is in effect). Unlike the logged hash it covers everything that decides who answers and how.
+    fn cache_key_of(&self, s: &JevSettings, req: &AskRequest) -> Option<String> {
+        if s.has_endpoint_override() {
+            return None;
+        }
+        let qv = defaults::text("jev.question_version");
+        let vendors: Vec<Vendor> = std::iter::once(s.transport).chain(s.fallback).collect();
+        let chain: String = vendors
+            .iter()
+            .enumerate()
+            .map(|(i, v)| format!("{}|{}|{}", v.as_str(), JevClient::model_for(*v), endpoint_for(s, *v, i == 0)))
+            .collect::<Vec<_>>()
+            .join(">");
+        Some(full_hash(&[&req.id, qv, &chain, req.cache_key.as_deref().unwrap_or(&req.state)]))
     }
 
     fn hash_of(&self, req: &AskRequest) -> String {
@@ -984,6 +1013,56 @@ mod tests {
         b.env = Some(Env::from_pairs([("ANTIHALL_JEV", "1")]));
         assert_eq!(jev.ask(&b).reason, Some(Reason::NoKey), "another session's key is not borrowed");
         assert_eq!(f.seen.lock().unwrap().len(), 1);
+    }
+
+    fn session(pairs: &[(&str, &str)]) -> Option<Env> {
+        Some(Env::from_pairs(pairs.iter().copied()))
+    }
+
+    #[test]
+    fn an_answer_from_a_test_endpoint_session_never_reaches_a_session_without_one() {
+        let (jev, f, _) = lane(&[], vec![ok(200, &answer(0.99)), ok(200, &answer(0.01))]);
+        let mut a = req("speculation", Trust::AddBlock, json!(false));
+        a.env = session(&[("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk"), ("ANTIHALL_JEV_TEST_ENDPOINT", "http://127.0.0.1:9/x")]);
+        let da = jev.ask(&a);
+        assert_eq!((da.backend, da.outcome), (Backend::Jev, json!(true)), "session A got the mock's answer");
+        assert!(jev.cache.is_empty(), "an answer obtained through an override is never cached");
+        // session B: same text, no override, another vendor
+        let mut b = a.clone();
+        b.env = session(&[("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT", "typesafe"), ("CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY", "tk")]);
+        let db = jev.ask(&b);
+        assert_eq!((db.backend, db.outcome), (Backend::Jev, json!(false)), "B asked its own vendor and was not served A's answer");
+        let seen = f.seen.lock().unwrap();
+        assert_eq!((seen.len(), seen[0].0.as_str(), seen[1].0.as_str()), (2, "http://127.0.0.1:9/x", "https://api.typesafe.ai/v1/systemone"));
+        assert_eq!((seen[0].1.as_str(), seen[1].1.as_str()), ("vk", "tk"), "each key went only to its own session's endpoint");
+    }
+
+    #[test]
+    fn a_cache_entry_is_per_vendor_chain_and_a_hit_needs_the_callers_key() {
+        let (jev, f, _) = lane(&[], vec![ok(200, &answer(0.99)), ok(200, &answer(0.01))]);
+        let mut a = req("speculation", Trust::AddBlock, json!(false));
+        a.env = session(&ON);
+        assert_eq!(jev.ask(&a).backend, Backend::Jev);
+        assert_eq!(jev.ask(&a).backend, Backend::Cache, "the same session shape shares the entry");
+        let mut other = a.clone();
+        other.env = session(&[("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "another-key")]);
+        assert_eq!(jev.ask(&other).backend, Backend::Cache, "a session with the same vendor chain and its own key shares it");
+        let mut fb = a.clone();
+        fb.env = session(&[
+            ("ANTIHALL_JEV", "1"),
+            ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk"),
+            ("CLAUDE_PLUGIN_OPTION_JEV_FALLBACK_TRANSPORT", "typesafe"),
+            ("CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY", "tk"),
+        ]);
+        assert_eq!(jev.ask(&fb).backend, Backend::Jev, "a different vendor chain is a different entry");
+        let mut nokey = a.clone();
+        nokey.env = session(&[("ANTIHALL_JEV", "1")]);
+        let d = jev.ask(&nokey);
+        assert_eq!((d.backend, d.reason), (Backend::BaselineOnly, Some(Reason::NoKey)), "a hit is not served to a session with no key");
+        let mut off = a.clone();
+        off.env = session(&[]);
+        assert_eq!(jev.ask(&off).backend, Backend::BaselineOnly, "nor to one with Jev off");
+        assert_eq!(f.seen.lock().unwrap().len(), 2);
     }
 
     #[test]

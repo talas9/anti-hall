@@ -121,6 +121,7 @@ fn status(p: &Parsed) -> Result<i32, JevError> {
         "enabled": s.enabled, "transport": s.transport.as_str(), "fallback": s.fallback.map(Vendor::as_str),
         "timeout_ms": s.timeout_ms, "confidence_threshold": s.confidence_threshold,
         "key_resolves": {"vercel": key(Vendor::Vercel), "typesafe": key(Vendor::Typesafe)},
+        "endpoint_override": s.has_endpoint_override(),
         "integrations": modes,
         "log": home.join(defaults::text("paths.base_dir")).join(defaults::text("jev.log_file")).display().to_string(),
     });

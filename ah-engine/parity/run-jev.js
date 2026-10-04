@@ -12,6 +12,7 @@
 //            (every field, in the same key order), over modes x trust x server behaviour x fallback x redirect x timeout x cache
 //   config   the resolved settings and every integration's mode, over a matrix of settings.json / jev.json / env
 //   table    the shipped integration table against hooks/lib/settings-schema.js
+//   loopback which test-endpoint URLs may receive a key (WHATWG host forms, credentials, ports); plus an engine-stricter list
 // Deliberate deviations (D36, documented in DECISIONS.md) are asserted separately, never silently skipped:
 //   relax-block is observe-only, a `true` advisory baseline is never lowered, and an off call writes no log row.
 // Mode: the Jev lane is not yet wired into the daemon (the dispatcher lane does that), so only the one-shot CLI path exists.
@@ -203,6 +204,18 @@ async function decisionCase(c, idx) {
   const nd = n.out.split('\n').filter(Boolean).map((l) => JSON.parse(l)), rd = r.out.split('\n').filter(Boolean).map((l) => JSON.parse(l));
   if (n.code !== 0 || r.code !== 0 || nd.length !== c.requests.length || rd.length !== c.requests.length) return tally('decision', false, { ...info, why: 'run failed', nodeCode: n.code, rustCode: r.code, nodeErr: n.err.slice(0, 300), rustErr: r.err.slice(0, 300), nd: nd.length, rd: rd.length });
   const off = c.mode === 'off' || c.offRow;
+  // Deviation (security): this harness points every call at a test endpoint override, and the engine never caches an answer
+  // obtained through one (the cache is shared by every session, so a mock's answer must not reach a session without the
+  // override). Where Node serves a cache hit the engine therefore asks again: assert exactly that instead of comparing.
+  const nodeHits = nd.filter((d) => d.backend === 'cache').length;
+  if (nodeHits) {
+    const rr = readRows(homes.rust);
+    const sent = (side) => ['vercel', 'typesafe'].reduce((t, v) => t + (seen[`${side}/${cid}/${v}`] || []).length, 0);
+    const keyed = ['vercel', 'typesafe'].every((v) => (seen[`rust/${cid}/${v}`] || []).every((x) => x.auth === `Bearer ${(c.expectKey || {})[v] || 'key-' + v}`));
+    tally('deviation-override-never-cached', rd.every((d) => d.backend !== 'cache') && rr.every((x) => x.cached !== true) && sent('rust') === sent('node') + nodeHits && keyed,
+      { ...info, node: nd.map((d) => d.backend), rust: rd.map((d) => d.backend), nodeSent: sent('node'), rustSent: sent('rust'), nodeHits });
+    return;
+  }
   // decisions
   const DKEYS = ['final', 'jev', 'baseline', 'confidence', 'confident', 'backend', 'reason', 'h', 'costUsd', 'costSource'];
   const dropD = (c.ignore || []).includes('final') ? ['final'] : [];
@@ -306,12 +319,49 @@ process.stdout.write(JSON.stringify({ enabled: cfg.enabled, transport: cfg.trans
   for (const [id, , opt] of schemaIds) tally('table-option-names', opt === 'jev_integration_' + snake(id), { id, schema: opt, derived: 'jev_integration_' + snake(id) });
 }
 
+// ---------------------------------------------------------------- loopback endpoint rule
+// Which ANTIHALL_JEV_TEST_ENDPOINT values may receive a key: Node's loopbackEndpointOrNull (the WHATWG URL parser, then an
+// exact hostname check) against the engine's own URL rules. The engine canonicalises what it accepts and refuses anything it
+// cannot prove loopback, so the two must agree on every case below except the engine-stricter list, which Node may accept
+// but the engine must refuse.
+async function loopbackParity() {
+  const hosts = ['127.0.0.1', 'localhost', 'LOCALHOST', 'LocalHost', '127.1', '127.0.1', '2130706433', '0x7f.1', '0x7f000001', '0177.0.0.1', '0177.1', '127.0.0.1.',
+    'localhost.', '[::1]', '[0:0:0:0:0:0:0:1]', '[::0001]', '[0::1]', '[::ffff:7f00:1]', '[::ffff:127.0.0.1]', '[::2]', '[::]', '127.0.0.2', '127.0.0.1.evil.com',
+    'localhost.evil.com', 'evil.localhost', '0.0.0.0', '%31%32%37.0.0.1', '%6cocalhost', '127.0.0.0x1', '127.0.0.256', '4294967297', '0x7f.0.0.0x1', '1.2.3.4',
+    'evil.com', '127.0.0.01', '127.0.0.1e0', '127.0.0.1.0', '256.1', '0x7f.0x0.0x0.0x1', '1.1', '017700000001', '0X7F.1', '127..1', ''];
+  const pre = ['http://', 'https://', 'HTTP://', 'http://@', 'http://:@', 'http://u:p@', 'http://127.0.0.1@', 'ftp://', 'ws://'];
+  const suf = ['', '/', '/x?y=1', ':9000/', ':099/', ':99999', ':80x', '/a@b', '\\x'];
+  const urls = [];
+  for (const p of pre) for (const h of hosts) for (const x of suf) urls.push(p + h + x);
+  urls.push(' http://127.0.0.1/ ', '\thttp://127.0.0.1/', 'http://127.0.0.1\n/x', 'ht\ttp://127.0.0.1/', '127.0.0.1', '//127.0.0.1', 'http://127.0.0.1:80@evil.com/',
+    'http://evil.com\\@127.0.0.1/', 'http://evil.com#@127.0.0.1/', 'http://evil.com?@127.0.0.1/', 'http://127.0.0.1\\@evil.com/', 'javascript:http://127.0.0.1/');
+  // Node refuses these and so must the engine; Node ACCEPTS the next group (IDNA maps full-width characters) and the engine refuses it on purpose.
+  const stricter = ['http://\uff11\uff12\uff17.0.0.1/', 'http://\uff4c\uff4f\uff43\uff41\uff4c\uff48\uff4f\uff53\uff54/', 'http:127.0.0.1:9/x', 'http:///127.0.0.1/x', 'http:\\\\127.0.0.1/x'];
+  const NODE_LB = path.join(tmp, 'node-lb.js');
+  fs.writeFileSync(NODE_LB, `
+const path = require('path');
+const client = require(path.join(${JSON.stringify(HOOKS)}, 'lib', 'jev-client.js'));
+process.stderr.write = () => true;
+const out = JSON.parse(process.argv[2]).map((u) => { process.env.ANTIHALL_JEV_TEST_ENDPOINT = u; return client.loadJevConfig().endpointOverride !== null; });
+process.stdout.write(JSON.stringify(out));
+`);
+  const nodeAll = urls.concat(stricter);
+  const nodeRes = JSON.parse((await run('node', [NODE_LB, JSON.stringify(nodeAll)], '', { ...baseEnv, HOME: path.join(tmp, 'cfg0') })).out);
+  const strictSet = new Set(stricter);
+  await pool(nodeAll, CONC, async (u, i) => {
+    const r = JSON.parse((await run(ENGINE, ['jev', 'status', '--json'], '', { ...baseEnv, HOME: path.join(tmp, 'cfg0'), ANTIHALL_JEV_TEST_ENDPOINT: u })).out);
+    if (strictSet.has(u)) tally('loopback-stricter', r.endpoint_override === false, { url: u, node: nodeRes[i], rust: r.endpoint_override });
+    else tally('loopback-rule', r.endpoint_override === nodeRes[i], { url: u, node: nodeRes[i], rust: r.endpoint_override });
+  });
+}
+
 (async () => {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const t0 = Date.now();
   await scrubParity();
   await pool(cases, CONC, (c, i) => decisionCase(c, i));
   await configParity();
+  await loopbackParity();
   server.close();
   console.log(`jev parity: engine ${ENGINE}\n  cases ${cases.length}, requests ${cases.reduce((a, c) => a + c.requests.length, 0)}, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   let allOk = true;

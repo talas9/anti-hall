@@ -12,6 +12,7 @@
 //! | `settings` | `jev-client.js` `loadJevConfig`, `jev-assist.js` `getMode`, `settings.js` | resolves settings and each integration's mode |
 //! | `credentials` | `credentials.js` | a key goes only to the vendor it was entered for |
 //! | `question` | the question objects callers build | the Noul and Choice questions and their wire form |
+//! | `loopback` | `jev-client.js` `loopbackEndpointOrNull` | which test endpoint may receive a key, canonicalised |
 //! | `transport` | `jev-client.js` `postSystemone` | one HTTP request under one deadline; no redirects, no proxy |
 //! | `breaker` | `jev-client.js` breaker | per-vendor circuit breaker with a half-open probe |
 //! | `client` | `jev-client.js` `jevDecide`, `runWithFallback` | a decision call with an optional backup vendor |
@@ -30,6 +31,7 @@ pub mod client;
 pub mod credentials;
 pub mod error;
 pub mod log;
+pub mod loopback;
 pub mod question;
 pub mod scrub;
 pub mod settings;

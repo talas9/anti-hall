@@ -228,6 +228,28 @@ fn a_whole_decision_goes_through_the_real_transport_to_a_loopback_endpoint_and_i
 }
 
 #[test]
+fn a_localhost_override_is_dialled_as_the_loopback_literal_never_resolved() {
+    let m = Mock::start(|_, _| ok_json(r#"{"answers":{"decision":{"noul":0.97}}}"#));
+    let home = temp_home("localhost");
+    // `127.1` and `localhost` spell the same loopback address; both are rewritten to the literal before anything is dialled
+    for (i, host) in ["localhost", "127.1", "LOCALHOST"].into_iter().enumerate() {
+        let url = m.url("/x").replace("127.0.0.1", host);
+        let env = Env::from_pairs([
+            ("ANTIHALL_JEV", "1".to_string()),
+            ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk".to_string()),
+            ("ANTIHALL_JEV_TEST_ENDPOINT_VERCEL", url),
+        ]);
+        let jev = Jev::with_parts(&home, env, Arc::new(HttpTransport::new()), Arc::new(SystemClock), None, None);
+        let mut req = AskRequest::new("speculation", Question::noul("Is it?", "yes", "no"), &format!("text {i}"), Trust::AddBlock, serde_json::json!(false));
+        req.project = Some("p".into());
+        let d = jev.ask(&req);
+        assert_eq!((d.backend, d.outcome), (Backend::Jev, serde_json::json!(true)), "{host}");
+    }
+    assert_eq!(m.seen.lock().unwrap().len(), 3);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn a_dead_endpoint_degrades_to_the_baseline_within_the_budget() {
     let port = {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();

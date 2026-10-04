@@ -1,6 +1,6 @@
 # ah-engine decision record
 
-**Version: 1.56** (2026-10-05). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
+**Version: 1.58** (2026-10-05). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
 
 Status: living document. Owner decisions from 2026-10-04, recorded in the order they were made. Where a later decision supersedes an earlier one, that is stated. Branch: `engine-proto`.
 
@@ -146,7 +146,8 @@ item cites its Node source in its doc comment; the module doc has the file-by-fi
   and a redacted `Debug`. The transport sends it only in the Authorization header, never follows a redirect (a 3xx is a
   network error and the redirect target is never contacted, tested against a real loopback server), and ignores proxy
   variables in the environment (the Node `fetch` does not use them either; `ureq` would by default). The test endpoint
-  override (`ANTIHALL_JEV_TEST_ENDPOINT*`) is honoured only for `127.0.0.1`, `localhost` or `[::1]` without credentials.
+  override (`ANTIHALL_JEV_TEST_ENDPOINT*`) is honoured only for a loopback host without credentials (rules in the review-fixes
+  paragraph below).
 - **Trust (D36), deliberately stricter than Node in two places.** `add-block` is identical. `advisory` never lowers a
   baseline of `true` (Node's can). `relax-block`, which lets Jev turn a block into a non-block in Node, is observe-only: the
   call is consulted and logged like a shadow call and never changes the outcome. A caller that needs a block removed
@@ -154,9 +155,36 @@ item cites its Node source in its doc comment; the module doc has the file-by-fi
   separately).
 - **Hot path.** With Jev disabled or the integration off, `ask` returns after one clock read and one settings snapshot: no
   hashing, no cache lookup, no network, no thread and, unlike Node, no log row (the key `jev.log_off_rows` restores it). The
-  settings files are re-checked at most every `jev.settings_recheck_ms`. The asynchronous path (`ask_async`) does not even
+  settings files are re-checked at most every `jev.settings_recheck_ms`: the exact I/O of an off call is at most one `stat` of
+  each of the two files (`settings.json`, `jev.json`) per window, taken by the first call after the window elapses, and none
+  otherwise. Zero I/O between change notifications needs the daemon's config watcher to call `Jev::reload`; that wiring is
+  planned with the dispatcher (D58), and the config lane's watcher does not cover `jev.json` today. The asynchronous path (`ask_async`) does not even
   queue an off call; its worker thread starts on the first real call, the queue is bounded (`jev.queue_cap`, a full queue is
   logged as `busy`), and the thread ends when the lane is dropped.
+- **Review fixes (Codex security review, 2026-10-05).**
+  - *Cache poisoning across sessions.* The cache key (`Jev::cache_key_of`) is the SHA-256 of the integration, the question
+    version, the vendor chain (each vendor, its model and its endpoint) and the text or explicit cache key. A session with a
+    different vendor, fallback or model never shares an entry. An answer obtained through a test endpoint override is never
+    written, and a session with an override never reads, the cache. A hit is served only after the calling session passed
+    the `enabled`, mode and key checks; a session with no key for its primary vendor gets `no-key`, not a borrowed answer. The
+    logged `h` is still Node's short hash.
+  - *Budget overflow.* Every entry point (`decide`, `decide_multi`, the fallback split) clamps its budget to
+    `jev.max_timeout_ms` and uses `saturating_mul` and `saturating_sub`; tested with `u64::MAX`. Deviation from Node:
+    `jevDecideMulti` applies no ceiling to an explicit timeout; the engine does.
+  - *Loopback.* `src/jev/loopback.rs` follows the WHATWG host parser where the Node comparison depends on it: `127.1`,
+    `2130706433`, `0x7f.1`, `0177.0.0.1`, `127.0.0.1.`, percent-encoded hosts and `[0:0:0:0:0:0:0:1]` are accepted (as in
+    Node); `127.0.0.1.evil.com`, `localhost.`, `[::ffff:7f00:1]` and anything with credentials are refused. An accepted URL is
+    stored canonically with the host rewritten to the literal `127.0.0.1` or `[::1]`, so `localhost` is never resolved through
+    DNS or a hosts file. The transport sends any loopback URL through a second `ureq` agent whose resolver returns only
+    loopback addresses, so the peer a key is sent to is loopback by construction. Deliberately stricter than Node: a
+    non-ASCII host (IDNA would map full-width characters to `127.0.0.1`) and `http:127.0.0.1` or three slashes, which Node
+    accepts; the harness asserts the engine refuses them.
+  - *Key text in memory.* The per-environment memo is keyed by a SHA-256 digest of the environment (length-prefixed), not by
+    text that contains key values. The resolved settings still hold the environment, because key lookup needs it; that
+    is unchanged.
+  - *TLS roots.* `cargo tree -e features` shows the `rustls` feature of `ureq` pulls `rustls-webpki-roots` and `webpki-roots`
+    and nothing from the platform: no `rustls-platform-verifier`, no `rustls-native-certs`, no `security-framework` in the
+    tree. Roots are the compiled-in Mozilla set, never the system store.
 - **Parity (D31).** `parity/run-jev.js` compares, against the Node files on dev: the outbound scrub over 37,005 texts (real
   commands from the field corpus plus fuzz), the request bodies and headers, the decisions and the `jev-assist.ndjson` rows
   over a matrix of integrations x trust x baselines x server behaviour x fallback x breaker x redirect x timeout x cache, and
@@ -532,3 +560,5 @@ Each D-item gets a status (`done` / `partial` / `not started` / `superseded`) wi
 - **1.54** (2026-10-05, lane w1-ports-small): D29-D31, D75. `coordinator-work-guard` ported in part (`src/checks/coordinator_work/`): the payload-provable exits (not Bash, no session id, subagent markers by the exact Node truthiness rules, including the Codex variant) are answered; every main-thread call defers, because the window needs `classifyBashWork` (command-guard port) and `CLAUDE_CODE_ENTRYPOINT` from the hook's environment. The engine keeps no window state, so there is no state to disagree with Node's. Offload effect measured on the field data: 238360 of 269361 recorded Bash calls (88 percent) carry subagent markers. `parity/run-coordinator-work-guard.js`: 8327 scenarios, 0 mismatches; deferrals are exactly the main-thread calls.
 - **1.55** (2026-10-05, lane w1-ports-small): D29-D31, D75. `compact-declaration-guard` ported (`src/checks/compact_decl/`): the new-work test (`BASH_WORK_RE` with its two lookarounds done by hand, quote blanking, handover exemption) and the transcript-tail turn reconstruction are exact; the phrase analysis (`compact-advice.js` `findAdvice`) is not ported, a turn whose text contains "safe" defers to Node. Blocks (stdout JSON plus stderr, exit 2) defer because the engine reply carries one or the other, not both: the dispatcher lane's reply format may remove that limit. `parity/run-compact-declaration-guard.js`: 17458 scenarios (hand-written transcripts, 700 windows of real Claude and Codex transcripts, 6000 real commands plus 6000 fuzzed ones and 1500 real file paths against an active declaration) with 0 mismatches and 0 work-classification divergences.
 - **1.56** (2026-10-05): the Jev lane (D34-D38) implemented as `src/jev/`: HTTPS client (`ureq` over `rustls`, +1.0 MiB measured), Vercel and TypeSafe transports with a per-vendor breaker and a fallback, Noul and Choice questions, off/shadow/on modes with `add-block` and `advisory` trust (relax-block observe-only, D36), a content-hash cache, async queue with budgets, and the `jev-assist.ndjson` rows; `ah-engine jev ask|status|scrub`; `parity/run-jev.js` at 100%.
+- **1.57** (2026-10-05): the Jev lane (D34-D38) implemented as `src/jev/`: HTTPS client (`ureq` over `rustls`, +1.0 MiB measured), Vercel and TypeSafe transports with a per-vendor breaker and a fallback, Noul and Choice questions, off/shadow/on modes with `add-block` and `advisory` trust (relax-block observe-only, D36), a content-hash cache, async queue with budgets, and the `jev-assist.ndjson` rows; `ah-engine jev ask|status|scrub`; `parity/run-jev.js` at 100%.
+- **1.58** (2026-10-05): Jev lane review fixes (Codex security review): the answer cache is keyed by vendor chain, model and endpoint and never holds an answer from a test endpoint override (a hit also needs the calling session's key); every timeout is clamped to `jev.max_timeout_ms` with saturating arithmetic; the loopback rule follows the WHATWG host forms Node accepts (`127.1`, `2130706433`, `0x7f.1`), refuses `localhost.` and IPv4-mapped IPv6, rewrites `localhost` to the literal and dials only loopback addresses; the per-environment memo holds a SHA-256 digest, not key text; the exact off-path I/O is documented; the `ureq` roots are webpki, not the system store (evidence in the Jev section). Parity: loopback rule 3,576 URL cases plus an engine-stricter list, and the cache cases assert the no-cache-through-override deviation.

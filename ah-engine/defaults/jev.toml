@@ -107,7 +107,7 @@ min = 1
 max = 256
 
 [jev.settings_recheck_ms]
-doc = "How often the settings files are re-checked for changes; between checks a call costs one clock read, so an off Jev stays off the hot path."
+doc = "How often the settings files are re-checked for changes: at most one stat of each of the two files per window, taken by the first call after it elapses; between checks a call costs one clock read, so an off Jev stays off the hot path."
 value = 2000
 unit = "ms"
 

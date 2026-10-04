@@ -325,7 +325,8 @@ judgement calls do.
   balance. A rejected key (401) is never masked by the backup. Each vendor has its own circuit breaker: after three
   consecutive eligible failures it is skipped for five minutes, then probed once. A key goes only to the vendor it was entered
   for, only in the Authorization header; a redirect is never followed and a proxy variable is never used. A test endpoint
-  override is honoured only for a loopback host.
+  override is honoured only for a loopback host (`127.0.0.1`, `[::1]`, or `localhost`, which is rewritten to the literal so it is
+  never resolved), and the connection is made through a resolver that returns only loopback addresses.
 - **Modes.** Each integration (the table in `jev.toml`, with the defaults from the Node settings schema) is `off`, `shadow`
   or `on`. `shadow` consults Jev and logs what it would have changed but never changes an outcome. `on` applies the call's
   trust rule: `add-block` may turn a non-blocking baseline into a block; `advisory` may supply a label or an advisory. Jev
@@ -336,7 +337,8 @@ judgement calls do.
 - **Budget, queue, cache.** A call has a time budget (default 1.5 s, at most 3 s) covering connect, request and body. A
   caller either waits for it (`ask`) or queues it and moves on (`ask_async`: a bounded queue, a worker thread started on first
   use, a full queue answered with the baseline). Answers are cached by content hash, bounded to 500 entries, in memory for
-  now (persisting them in `hot.db` is planned, D21).
+  now (persisting them in `hot.db` is planned, D21). The key covers the vendor, model and endpoint, so one session's answer is
+  never served to a session that would have asked someone else, and an answer from a test endpoint override is never cached.
 - **The log.** One row per decision in `~/.anti-hall/logs/jev-assist.ndjson`, in the row shape `jev report` reads: hashes,
   verdicts, confidences, latencies, costs and the reason a call produced nothing; never prompt text, never a key. It rotates
   at 2 MB. The daily rollups and the spend budget watch the Node client also writes are planned (D38).

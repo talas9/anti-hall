@@ -97,11 +97,20 @@ impl Env {
         self.0.get(name).map(String::as_str)
     }
 
-    /// A stable text form of the whole environment (sorted `name=value` lines), used to tell two sessions' environments apart.
+    /// A stable SHA-256 digest (lowercase hex) of the whole environment, used to tell two sessions' environments apart.
+    /// A digest, not the text: the memo that holds it never contains a key value.
     pub fn digest(&self) -> String {
         let mut pairs: Vec<(&String, &String)> = self.0.iter().collect();
         pairs.sort();
-        pairs.iter().map(|(k, v)| format!("{k}={v}\n")).collect()
+        let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+        for (k, v) in pairs {
+            // length-prefixed, so no pair of different environments can serialise to the same bytes
+            for part in [k, v] {
+                ctx.update(&(part.len() as u64).to_le_bytes());
+                ctx.update(part.as_bytes());
+            }
+        }
+        ctx.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// A variable's value when it is non-empty after trimming.
@@ -254,41 +263,17 @@ pub fn known_integrations() -> Vec<&'static str> {
     defaults::raw("jev.integrations").as_table().map(|t| t.iter().map(|(k, _)| *k).collect()).unwrap_or_default()
 }
 
-/// A resolved vendor endpoint override that passed the loopback rule.
+/// A resolved vendor endpoint override that passed the loopback rule, in its canonical form (see [`super::loopback`]).
 fn loopback_or_none(raw: Option<String>, refused: &mut bool) -> Option<String> {
-    let val = raw?.trim().to_string();
-    if val.is_empty() {
+    let val = raw?;
+    if super::js_trim(&val).is_empty() {
         return None;
     }
-    if is_loopback_url(&val) {
-        Some(val)
-    } else {
+    let canonical = super::loopback::endpoint(&val);
+    if canonical.is_none() {
         *refused = true;
-        None
     }
-}
-
-/// True for an http(s) URL whose host is loopback (`127.0.0.1`, `localhost` or `[::1]`) and that carries no
-/// credentials. Node: `loopbackEndpointOrNull`. Anything else is refused, so a key can never follow an override
-/// planted in a project's environment to a remote host.
-pub fn is_loopback_url(url: &str) -> bool {
-    let Some((scheme, rest)) = url.split_once("://") else { return false };
-    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
-        return false;
-    }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.contains('@') {
-        return false;
-    }
-    let host = if let Some(stripped) = authority.strip_prefix('[') {
-        match stripped.split_once(']') {
-            Some((h, tail)) if tail.is_empty() || tail.starts_with(':') => format!("[{h}]"),
-            _ => return false,
-        }
-    } else {
-        authority.rsplit_once(':').map_or(authority, |(h, port)| if port.chars().all(|c| c.is_ascii_digit()) { h } else { authority }).to_string()
-    };
-    matches!(host.to_ascii_lowercase().as_str(), "127.0.0.1" | "localhost" | "[::1]")
+    canonical
 }
 
 /// The fully resolved Jev settings (Node: `loadJevConfig` plus the pieces `getMode` and `computeCostUsd` read).
@@ -406,6 +391,12 @@ impl JevSettings {
             sources,
             home: home.to_path_buf(),
         }
+    }
+
+    /// True when any test endpoint override applies. Answers obtained through an override are never cached, and never served
+    /// to a session that has none.
+    pub fn has_endpoint_override(&self) -> bool {
+        self.endpoint_override.is_some() || self.endpoint_overrides.iter().any(Option::is_some)
     }
 
     /// The home directory these settings were resolved for.
@@ -561,29 +552,33 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_overrides_are_honoured_only_for_loopback() {
-        assert!(is_loopback_url("http://127.0.0.1:8080/x"));
-        assert!(is_loopback_url("http://localhost/"));
-        assert!(is_loopback_url("https://[::1]:9/"));
-        for bad in [
-            "https://evil.example/",
-            "http://127.0.0.1.evil.com/",
-            "http://user:p@127.0.0.1/",
-            "ftp://127.0.0.1/",
-            "http://localhost.evil.com",
-            "127.0.0.1",
-            "http://[::2]/",
-        ] {
-            assert!(!is_loopback_url(bad), "{bad}");
-        }
+    fn endpoint_overrides_are_honoured_only_for_loopback_and_stored_canonically() {
         let s = resolve(
-            &[("ANTIHALL_JEV_TEST_ENDPOINT", "https://evil.example/"), ("ANTIHALL_JEV_TEST_ENDPOINT_VERCEL", "http://127.0.0.1:1/v")],
+            &[
+                ("ANTIHALL_JEV_TEST_ENDPOINT", "https://evil.example/"),
+                ("ANTIHALL_JEV_TEST_ENDPOINT_VERCEL", "http://127.0.0.1:1/v"),
+                ("ANTIHALL_JEV_TEST_ENDPOINT_TYPESAFE", "http://localhost:2/t"),
+            ],
             json!({}),
             json!({}),
         );
         assert_eq!(s.endpoint_override, None);
         assert_eq!(s.endpoint_overrides[0].as_deref(), Some("http://127.0.0.1:1/v"));
+        assert_eq!(s.endpoint_overrides[1].as_deref(), Some("http://127.0.0.1:2/t"), "localhost is rewritten, never resolved");
         assert!(s.override_refused);
+        assert!(s.has_endpoint_override());
+        assert!(!resolve(&[], json!({}), json!({})).has_endpoint_override());
+    }
+
+    #[test]
+    fn the_env_digest_is_a_hash_that_never_holds_a_key_and_tells_environments_apart() {
+        let a = Env::from_pairs([("K", "secret-key-value")]);
+        let d = a.digest();
+        assert_eq!(d.len(), 64);
+        assert!(!d.contains("secret"));
+        assert_eq!(d, Env::from_pairs([("K", "secret-key-value")]).digest());
+        assert_ne!(d, Env::from_pairs([("K", "secret-key-valuf")]).digest());
+        assert_ne!(Env::from_pairs([("ab", "c")]).digest(), Env::from_pairs([("a", "bc")]).digest(), "the pair boundaries are part of the digest");
     }
 
     #[test]
