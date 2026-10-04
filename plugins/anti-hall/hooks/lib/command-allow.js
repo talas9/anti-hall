@@ -23,7 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
 
 const KINDS = {
   command: { rel: path.join('.anti-hall', 'command-allow.json'), trustFile: 'trusted-command-allow.json', listKey: 'patterns' },

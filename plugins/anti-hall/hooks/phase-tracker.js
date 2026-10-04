@@ -18,7 +18,7 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 
 const DIR       = path.join(os.homedir(), '.anti-hall');
 const LOG       = path.join(DIR, 'agent-spawns.log');

@@ -11,7 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
 
 const PREFIX = 'orch-full';
 // Internal constants (not settings): the retry slot opens after this lease, and only if no delivered

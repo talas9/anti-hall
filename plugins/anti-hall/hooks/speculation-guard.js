@@ -59,7 +59,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 
 // --------------------------------------------------------------------------
 // Speculation markers — case-insensitive, must appear at a word boundary.

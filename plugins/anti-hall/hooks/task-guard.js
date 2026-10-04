@@ -58,7 +58,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 
 // metricsHome() — metrics home or null; never throws (the test-home guard
 // refuses the real HOME under a test runner).

@@ -44,7 +44,7 @@ function settingsGet(section, key) {
   try { return require('./lib/settings.js').get(section, key); } catch (_) { return undefined; }
 }
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 // tmpRoots / ownScratchpadDirs / isInsideDir live in lib/scratchpad.js (shared
 // with edit-guard.js / command-guard.js's own-scratchpad exemption).
 const { ownScratchpadDirs, isInsideDir } = require('./lib/scratchpad.js');

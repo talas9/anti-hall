@@ -118,6 +118,10 @@
 
 'use strict';
 
+// Cheap no-op exit for a session this hook cannot act on (non-DevSwarm, child,
+// setting off, user skip) BEFORE the heavy requires below — see the lib header.
+require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'parentGate', guard: 'devswarm-parent-gate' });
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');

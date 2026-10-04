@@ -34,7 +34,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
+const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash
 const { appendIndexLineIfAbsent } = require('./session-history-index.js');
 // sessionProjectRoot(cwd) -- the canonical resolver (companion/lib/identity.js
 // via hooks/lib/handover-find.js): every .anti-hall/progress|history|handovers

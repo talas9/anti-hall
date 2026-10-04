@@ -96,8 +96,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
-const { execFileSync, spawn } = require('child_process');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
+const cp = require('./lazy-node.js').lazy('child_process'); // lazy: loaded on first spawn
 const { jevDecide, loadJevConfig, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS } = require('./jev-client.js');
 const testHomeGuard = require('../../companion/lib/test-home-guard.js');
 const { scrubSecrets } = require('./secret-scrub.js');
@@ -790,7 +790,7 @@ function jevDecideSync({ question, state, timeoutMs, home }) {
     const input = JSON.stringify({ question, state, timeoutMs: budget }); // jev-client scrubs outbound text
     const env = Object.assign({}, process.env);
     if (home) env.HOME = home; // propagate a test fixture HOME to the worker
-    const raw = execFileSync(process.execPath, [WORKER_PATH], {
+    const raw = cp.execFileSync(process.execPath, [WORKER_PATH], {
       input,
       timeout: budget + 500, // hard backstop above the worker's own internal timeout
       maxBuffer: 1024 * 1024,
@@ -1062,7 +1062,7 @@ function askDetached(opts = {}) {
       if (cfgTimeout !== DEFAULT_TIMEOUT_MS) detachedBudgetMs = cfgTimeout;
     }
     const input = JSON.stringify({ id, question, state, trust, baseline, cacheKey, budgetMs: detachedBudgetMs, home, compare, project, sessionId, turnRef });
-    const child = spawn(process.execPath, [DETACHED_WORKER_PATH], {
+    const child = cp.spawn(process.execPath, [DETACHED_WORKER_PATH], {
       detached: true,
       stdio: ['pipe', 'ignore', 'ignore'],
       env: process.env,

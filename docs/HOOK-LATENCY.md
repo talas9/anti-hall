@@ -9,7 +9,7 @@ How long anti-hall's hooks take, measured with `scripts/hook-latency.js` (`node 
 - **Wall** is spawn to exit. **p50/p95** are nearest-rank over 19 runs (20 run, first dropped). With 19 samples p95 is effectively the slowest run.
 - **CPU** is the hook process's own user+system time from `process.resourceUsage()`, written at exit by a `--require` probe in a second pass (so the probe never inflates the wall numbers). I chose it over `/usr/bin/time` because that tool prints different formats on macOS and GNU, rounds to 10 ms, and is missing on some systems. It does not count grandchildren: a hook that shells out to `git` is charged for itself only.
 - **Total per tool call**: Claude Code runs all matching hooks in parallel (hooks docs, code.claude.com/docs/en/hooks: "All matching hooks run in parallel."; `docs/KB-claude-codex.md` does not say), so the wall total is the slowest hook, not the sum. The "parallel, measured" column starts the matching hooks together and times the group. "max" is the derived lower bound and "sum" is what a sequential runner would cost. CPU adds up, so the CPU total is the sum.
-- Scenario hook sets follow the matchers in `hooks.json` (for example `Bash` matches 5 PreToolUse hooks; `Agent` matches 4). `edit-guard` exits 2 (blocks) in the Edit/Write scenarios because the fixture is a coordinator session; that is its normal path.
+- Scenario hook sets follow the matchers in `hooks.json` (for example `Bash` matches 6 PreToolUse hooks and 5 PostToolUse hooks since `coordinator-work-guard`; `Agent` matches 4). `edit-guard` exits 2 (blocks) in the Edit/Write scenarios because the fixture is a coordinator session; that is its normal path.
 - The benchmark covers SessionStart, UserPromptSubmit, PreToolUse (Bash, Edit, Write, Agent), PostToolUse (Bash, Agent) and Stop. PostToolUse `TaskCreate|TaskUpdate`, PreToolUse `Read`/`SendMessage`/`AskUserQuestion`/`TaskStop` and the other events are not measured.
 
 ## Results
@@ -130,3 +130,34 @@ Node compile cache (`NODE_COMPILE_CACHE`, Node 22.1+) was measured and **not ado
 | speculation-guard | 49.3 | 50.0 |
 
 Most of a hook's CPU is process startup, not compiling its own modules; loading `command-guard.js` alone measured about 8 ms CPU on this machine.
+
+## Addendum 2026-10-04 (second): what was cut, and what the numbers really are
+
+**Two corrections to the figures above.** (1) The table was measured with the benchmark inheriting the developer's own `DEVSWARM_*` variables, so the DevSwarm hooks (`devswarm-parent-gate` 109.5 ms, `devswarm-parent-inbox` 52.9, `devswarm-child-role` 51.5) ran their full DevSwarm logic. A session that is not a DevSwarm Primary or child, the common case, never pays that. (2) On a quiet machine (load 3 to 6, 14 samples, median of 3 runs) the per-hook CPU floor is a bare `node -e 0` at about 16 to 18 ms and most hooks sit at 22 to 35 ms; the 40 to 60 ms rows above are partly load. Do not read the table's absolute figures as a baseline.
+
+**What was cut** (decisions unchanged):
+
+- `devswarm-parent-gate`, `-parent-inbox`, `-child-turn`, `-child-gate`, `-child-drain` loaded 70 to 187 KB of source plus a dozen companion libs before reaching their "not DevSwarm / wrong role" early return. `hooks/lib/devswarm-primary-gate.js` repeats the same payload-independent checks first and exits. Verified by require-cache probe (the heavy lib is absent from a non-DevSwarm run and present for the right role, `tests/hooks/devswarm-primary-gate-fastexit.test.js`) and by measurement.
+- `crypto` / `child_process` load on first use (`hooks/lib/lazy-node.js`) in the hooks that rarely hash or spawn.
+
+Paired and interleaved (base and patched alternate per sample), DevSwarm env stripped, 30 samples, CPU p50 ms, load 33 to 40 (so the floor reads about 20 here), bare `node -e 0` about 16.5 on a quiet machine:
+
+| Event | Hook | Before | After | Delta |
+|---|---|---:|---:|---:|
+| Stop | devswarm-parent-gate | 36.1 | 20.7 | -15.3 |
+| UserPromptSubmit | devswarm-parent-inbox | 36.5 | 20.8 | -15.7 |
+| UserPromptSubmit | devswarm-child-turn | 29.2 | 20.2 | -9.0 |
+| Stop | devswarm-child-gate | 25.8 | 20.4 | -5.4 |
+| Stop | task-guard | 24.3 | 21.8 | -2.5 |
+| Stop | compact-advice-guard | 23.9 | 21.9 | -2.0 |
+| PreToolUse Agent | phase-tracker | 28.1 | 25.3 | -2.7 |
+
+Per call for a non-DevSwarm session: Stop about 20 ms CPU less, UserPromptSubmit about 25 ms less. The other hooks in the lazy-require change moved by -4 to +1.4 ms (noise level at this load) and are not claimed.
+
+**Checked and not changed (no gain, or a decision would change):**
+
+- Node compile cache: command-guard 32.2 to 30.5 ms, within noise (see the earlier addendum); not adopted.
+- `command-guard` and `coordinator-work-guard`: profiled, about 3 ms is module compile and the rest is runtime startup; `coordinator-work-guard` already skips `command-guard.js` for read-only commands. `git commit` costs it about 5 ms more because the classifier is genuinely needed.
+- `git-guard` on `git commit -a`: wall 58 ms vs CPU 35 ms is two serial `git diff --name-only` spawns (staged, then unstaged) for the handover-commit check. They cannot be merged into one `git diff` without changing which paths are reported, so they stay.
+- `tasklist-guard` / `silent-agent-nudge` scale with transcript size: both already read a bounded tail (512 KB, with a 16 MB presence-only fallback; 64 MB for silent-agent-nudge). Shrinking those windows changes what they can see, so they are unchanged.
+- `devswarm-parent-gate` in a real DevSwarm Primary still costs about 51 ms CPU (full logic, a `spawnSync`); unchanged.

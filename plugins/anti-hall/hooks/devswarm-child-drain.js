@@ -46,6 +46,9 @@
 
 'use strict';
 
+// Cheap no-op exit for a non-child session BEFORE the requires below (see lib/devswarm-primary-gate.js).
+require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'childDrain', role: 'child' });
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

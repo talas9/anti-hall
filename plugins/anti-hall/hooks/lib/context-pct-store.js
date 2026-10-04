@@ -36,7 +36,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
 
 const WRITE_INTERVAL_MS = 30 * 1000;
 const WRITE_MIN_DELTA = 1;

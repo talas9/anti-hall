@@ -25,7 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const crypto = require('./lazy-node.js').crypto; // lazy: loaded on first use
 
 function statePath(home) {
   return path.join(require('../../companion/lib/test-home-guard.js').resolveHome(home), '.anti-hall', 'codex-availability.json');
