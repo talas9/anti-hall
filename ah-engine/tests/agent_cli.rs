@@ -1,0 +1,180 @@
+//! The agent-facing commands and residency, against a real daemon (D7, D50-D52): `--json` on every command,
+//! metrics and impact fed by real hook calls, a read-only status summary, planned commands that say so, the idle-exit
+//! config key (default disabled), and no daemon surviving a test.
+
+mod common;
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
+const RULES: &str = r#"{"version":1,"rules":[
+  {"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny"},
+  {"id":"warn-rm","events":["PreToolUse"],"tools":["Bash"],"pattern":"rm -rf","action":"warn","message":"careful"}]}"#;
+
+struct Env {
+    dir: PathBuf,
+    extra: Vec<(String, String)>,
+}
+
+impl Env {
+    fn new(tag: &str, extra: &[(&str, &str)]) -> Env {
+        let dir = PathBuf::from("/tmp").join(format!("ah-cli-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::write(dir.join("rules.json"), RULES).unwrap();
+        Env { dir, extra: extra.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() }
+    }
+
+    fn cmd(&self) -> Command {
+        let mut c = Command::new(BIN);
+        c.env("HOME", self.dir.join("home"))
+            .env("AH_ENGINE_DIR", self.dir.join("eng"))
+            .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
+            .env("AH_ENGINE_VERSION", "0.1.0")
+            .env_remove("AH_ENGINE_NOSPAWN");
+        for (k, v) in &self.extra {
+            c.env(k, v);
+        }
+        c
+    }
+
+    fn hook(&self, command: &str) -> (String, String, i32) {
+        let payload =
+            serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/tmp", "session_id": "s", "tool_input": {"command": command}})
+                .to_string();
+        let mut ch = self.cmd().arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).trim().to_string(), String::from_utf8_lossy(&o.stderr).trim().to_string(), o.status.code().unwrap_or(-1))
+    }
+
+    fn run(&self, args: &[&str]) -> (String, i32) {
+        let o = self.cmd().args(args).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).trim().to_string(), o.status.code().unwrap_or(-1))
+    }
+
+    fn json(&self, args: &[&str]) -> serde_json::Value {
+        let (out, _) = self.run(args);
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("{args:?} did not print JSON ({e}): {out}"))
+    }
+
+    fn up(&self) -> bool {
+        self.run(&["ctl", "ping"]).1 == 0
+    }
+
+    /// Start the daemon with a hook call and wait until it answers.
+    fn warm(&self) {
+        self.hook("echo warm");
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(3) && !self.up() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(self.up(), "daemon never came up");
+    }
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        common::reap(&self.dir.join("eng"), || {
+            let _ = self.run(&["stop"]);
+        });
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+const FORCE: &str = "git pu\x73h --force origin main";
+
+#[test]
+fn metrics_impact_and_status_reflect_real_hook_calls() {
+    let e = Env::new("obs", &[]);
+    e.warm();
+    assert_eq!(e.hook(FORCE).2, 2, "the git check blocks a force push");
+    assert_eq!(e.hook("git status").2, 0);
+    e.hook("rm -rf build");
+    let imp = e.json(&["impact", "--json"]);
+    assert_eq!(imp["by_kind"]["block"], 1, "{imp}");
+    assert_eq!(imp["by_kind"]["warning"], 1, "{imp}");
+    assert_eq!(imp["blocks_by_reason"]["git-guard"], 1);
+    assert_eq!(imp["savings"]["model_routing"]["label"], "estimate");
+    assert!(imp["savings"]["model_routing"]["estimated_usd"].is_null(), "no routing events: no invented figure");
+    assert!(!imp["project_path_is_never_stored"].is_string());
+    let text = imp.to_string();
+    assert!(!text.contains("/tmp"), "the project is a hash, never a path: {text}");
+    let by_kind = e.json(&["impact", "--json", "--kind", "warning"]);
+    assert_eq!(by_kind["total"], 1);
+
+    let m = e.json(&["metrics", "--json"]);
+    let counters = m["metrics"]["counters"].as_array().unwrap();
+    let calls: u64 = counters.iter().filter(|c| c["name"] == "check_calls").map(|c| c["value"].as_u64().unwrap()).sum();
+    assert!(calls >= 3, "{m}");
+    let hists = m["metrics"]["histograms"].as_array().unwrap();
+    let git = hists.iter().find(|h| h["name"] == "check_latency_us").expect("a check latency histogram");
+    assert!(git["p95_us"].as_u64().unwrap() >= git["p50_us"].as_u64().unwrap());
+    let only_git = e.json(&["metrics", "--json", "--check", "git"]);
+    assert!(only_git["metrics"]["counters"].as_array().unwrap().iter().all(|c| c["labels"]["check"] == "git"));
+
+    let st = e.json(&["status", "--json"]);
+    assert_eq!(st["summary"]["blocks"], 1);
+    assert_eq!(st["summary"]["warnings"], 1);
+    let human = e.run(&["status"]).0;
+    assert!(human.contains("summary:") && human.contains("blocks: 1"), "{human}");
+}
+
+#[test]
+fn every_implemented_read_only_command_prints_json_and_planned_ones_say_so() {
+    let e = Env::new("json", &[]);
+    e.warm();
+    for c in ["status", "metrics", "impact", "version"] {
+        let v = e.json(&[c, "--json"]);
+        assert!(v.is_object(), "{c}");
+    }
+    let docs = e.json(&["docs", "--json"]);
+    assert!(docs["commands"].as_array().unwrap().len() >= 12 && docs["checks"].as_array().unwrap().iter().any(|c| c["name"] == "git"));
+    let md = e.run(&["docs", "--format", "md"]).0;
+    assert!(md.starts_with("# ah-engine reference"));
+    for planned in ["schedule", "config", "backup", "restore"] {
+        let (out, code) = e.run(&[planned, "--json"]);
+        assert_eq!(code, 64, "{planned}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["status"].as_str().unwrap().starts_with("planned"), "{v}");
+    }
+    let (_, code) = e.run(&["no-such-command"]);
+    assert_eq!(code, 64);
+}
+
+#[test]
+fn without_a_daemon_reports_say_so_in_json() {
+    let e = Env::new("down", &[("AH_ENGINE_NOSPAWN", "1")]);
+    let m = e.json(&["metrics", "--json"]);
+    assert_eq!(m["running"], false);
+    let i = e.json(&["impact", "--json"]);
+    assert_eq!(i["running"], false);
+    assert_eq!(e.json(&["status", "--json"])["running"], false);
+}
+
+#[test]
+fn the_daemon_stays_resident_when_idle_by_default() {
+    let e = Env::new("res", &[]);
+    e.warm();
+    std::thread::sleep(Duration::from_millis(1600));
+    assert!(e.up(), "idle exit is disabled by default (D7): the engine must stay up");
+}
+
+#[test]
+fn idle_exit_is_a_config_key_and_is_reset_by_activity() {
+    let e = Env::new("idle", &[("AH_ENGINE_IDLE_EXIT_S", "2"), ("AH_ENGINE_WATCHDOG_TICK_MS", "100")]);
+    e.warm();
+    let pid = common::marker_pid(&e.dir.join("eng")).expect("run marker");
+    std::thread::sleep(Duration::from_millis(1200));
+    e.hook("echo still here"); // activity resets the idle clock
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(common::alive(pid), "a request within the idle window keeps the daemon up");
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(6) && common::alive(pid) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!common::alive(pid), "the daemon must exit once idle for idle_exit_s");
+}

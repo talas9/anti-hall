@@ -66,9 +66,9 @@ impl Config {
             session_burst: num("daemon.session_burst") as f64,
             project_rps: num("daemon.project_rps") as f64,
             project_burst: num("daemon.project_burst") as f64,
-            idle_exit: match num("daemon.idle_exit_min") {
+            idle_exit: match num("daemon.idle_exit_s") {
                 0 => None,
-                m => Some(Duration::from_secs(m * 60)),
+                s => Some(Duration::from_secs(s)),
             },
             test_hooks: crate::defaults::env_var("test_hooks").is_some(),
         }

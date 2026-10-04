@@ -1,5 +1,6 @@
 //! End-to-end for the built-in `check = "git"`: real binary, real daemon, isolated HOME + engine dir.
 //! A block must reach the host the way the Node guard does it: exit code 2 with the reason on stderr.
+mod common;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -62,8 +63,9 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = self.cmd().args(["ctl", "stop"]).output();
-        std::thread::sleep(Duration::from_millis(50));
+        common::reap(&self.dir.join("eng"), || {
+            let _ = self.cmd().args(["ctl", "stop"]).output();
+        });
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

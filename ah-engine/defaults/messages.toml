@@ -133,7 +133,7 @@ doc = "Drain reason for exceeding the memory cap."
 value = "rss cap"
 
 [msg.exit_reason_idle]
-doc = "Drain reason for idle exit (only when daemon.idle_exit_min is set)."
+doc = "Drain reason for idle exit (only when daemon.idle_exit_s is set)."
 value = "idle"
 
 [msg.exit_reason_sigterm]

@@ -29,7 +29,7 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --release
+      - run: ./test.sh
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings

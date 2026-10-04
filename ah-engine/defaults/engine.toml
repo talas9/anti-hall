@@ -277,14 +277,14 @@ doc = "Write timeout for the BUSY reply sent from the accept loop."
 value = 100
 unit = "ms"
 
-[daemon.idle_exit_min]
-doc = "Minutes without any request after which the daemon exits; 0 keeps it resident (default, D7: scheduler and mailbox must keep running)."
+[daemon.idle_exit_s]
+doc = "Seconds without any request after which the daemon exits; 0 keeps it resident (default, D7: the scheduler and mailbox must keep running with no session open)."
 value = 0
-env = "AH_ENGINE_IDLE_EXIT_MIN"
-unit = "min"
+env = "AH_ENGINE_IDLE_EXIT_S"
+unit = "s"
 
 [daemon.idle_check_ms]
-doc = "How often the watchdog compares the last request time with idle_exit_min."
+doc = "How often the watchdog compares the last request time with idle_exit_s."
 value = 1000
 unit = "ms"
 

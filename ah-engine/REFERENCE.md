@@ -85,8 +85,8 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `daemon.drain_poll_ms` | `20` |  | ms | Accept-loop poll interval while draining. |
 | `daemon.eval_budget_us` | `200000` | `AH_ENGINE_EVAL_BUDGET_US` | us | Per-request thread CPU budget for rule evaluation; 0 turns the budget off. |
 | `daemon.forced_exit_code` | `75` |  |  | Exit status of a forced drain exit (sysexits EX_TEMPFAIL, 75); the next client call starts a fresh daemon. |
-| `daemon.idle_check_ms` | `1000` |  | ms | How often the watchdog compares the last request time with idle_exit_min. |
-| `daemon.idle_exit_min` | `0` | `AH_ENGINE_IDLE_EXIT_MIN` | min | Minutes without any request after which the daemon exits; 0 keeps it resident (default, D7: scheduler and mailbox must keep running). |
+| `daemon.idle_check_ms` | `1000` |  | ms | How often the watchdog compares the last request time with idle_exit_s. |
+| `daemon.idle_exit_s` | `0` | `AH_ENGINE_IDLE_EXIT_S` | s | Seconds without any request after which the daemon exits; 0 keeps it resident (default, D7: the scheduler and mailbox must keep running with no session open). |
 | `daemon.lock_poll_ms` | `10` |  | ms | Poll interval while waiting for the singleton lock. |
 | `daemon.lock_wait_ms` | `1500` |  | ms | How long a starting daemon waits for an outgoing (version-handoff) daemon to release the singleton lock. |
 | `daemon.max_request` | `1048576` | `AH_ENGINE_MAX_REQUEST` | bytes | Largest request the daemon reads; the client sends nothing larger (it falls back instead). |
@@ -354,7 +354,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.err_value_too_large` | A stored value exceeds the per-value cap. |
 | `msg.err_wrong_owner` | A state or socket directory belongs to another user. Placeholders: {path}, {found}, {expected}. |
 | `msg.exit_reason_handoff` | Drain reason for a handoff to a newer build or a stop request. |
-| `msg.exit_reason_idle` | Drain reason for idle exit (only when daemon.idle_exit_min is set). |
+| `msg.exit_reason_idle` | Drain reason for idle exit (only when daemon.idle_exit_s is set). |
 | `msg.exit_reason_rss` | Drain reason for exceeding the memory cap. |
 | `msg.exit_reason_sigterm` | Drain reason for SIGTERM. |
 | `msg.exit_reason_stall` | Drain reason for a stalled loop. |

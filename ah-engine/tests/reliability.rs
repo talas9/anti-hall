@@ -1,9 +1,10 @@
 //! Reliability e2e: real binary, real daemon, isolated HOME + engine dir under /tmp (short socket paths).
 //! The Node fallback is simulated with `/bin/sh <script>` via AH_ENGINE_NODE.
+mod common;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -74,13 +75,15 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = self.ctl("stop");
+        let state = self.extra.iter().find(|(k, _)| k == "AH_ENGINE_DIR").map(|(_, v)| PathBuf::from(v)).unwrap_or_else(|| self.eng());
+        common::reap(&state, || {
+            let _ = self.ctl("stop");
+        });
         if let Some(p) = std::fs::read_to_string(self.eng().join("e.sock.lock")).ok().and_then(|t| t.trim().parse::<i32>().ok()) {
-            if p > 1 {
+            if p > 1 && common::alive(p) {
                 unsafe { libc::kill(p, libc::SIGKILL) };
             }
         }
-        std::thread::sleep(Duration::from_millis(50));
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -272,7 +275,8 @@ fn breaker_opens_after_repeated_failures_and_skips_engine() {
     let (out, _, dt) = e.hook(DENY_IN, true);
     assert_eq!(out, "NODE-FALLBACK");
     assert!(dt < Duration::from_millis(140), "open breaker goes straight to fallback, took {dt:?}");
-    let st: serde_json::Value = serde_json::from_str(&e.cmd().args(["status", "--json"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap()).unwrap();
+    let st: serde_json::Value =
+        serde_json::from_str(&e.cmd().args(["status", "--json"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap()).unwrap();
     assert!(st["breaker"].as_str().unwrap().starts_with("open"), "{st}");
 }
 
@@ -491,6 +495,10 @@ fn long_path_socket_dir_is_private_and_owner_checked() {
     let d = sock.parent().unwrap();
     assert_eq!(std::fs::metadata(d).unwrap().permissions().mode() & 0o777, 0o700, "{d:?}");
     assert!(sock.as_os_str().len() < 100);
+    // stop the daemon while its state dir and socket still exist, then clean up
+    common::reap(Path::new(&long), || {
+        let _ = e.ctl("stop");
+    });
     let _ = std::fs::remove_dir_all(format!("/tmp/ah-r-long-{}", std::process::id()));
     let _ = std::fs::remove_file(&sock);
 }

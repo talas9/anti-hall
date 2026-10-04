@@ -58,6 +58,7 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
       else { if (ed.d !== 'allow' && nd.d === 'allow') st.engine_only++; else st.node_only++; if (mism.length < 4000) mism.push({ rule, command: c.command.slice(0, 300), node: nd.d, engine: ed.d, source: c.source }); }
     });
     await run(ENGINE, ['ctl', 'stop'], '', env);
+    for (let i = 0; i < 100; i++) { const r = await run(ENGINE, ['ctl', 'ping'], '', env); if (r.code !== 0) break; await new Promise(r => setTimeout(r, 30)); } // the daemon must be gone before the next rule
   }
   console.log('rule'.padEnd(18) + 'n'.padStart(6) + 'decision-agree'.padStart(16) + 'msg-agree'.padStart(11) + 'node-deny'.padStart(11) + 'engine-deny'.padStart(13) + 'engine-only'.padStart(13) + 'node-only'.padStart(11));
   let tn = 0, ta = 0;

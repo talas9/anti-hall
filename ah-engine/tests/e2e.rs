@@ -1,4 +1,5 @@
 //! End-to-end: real binary, real daemon, isolated HOME + engine dir (never the user's real ~/.anti-hall).
+mod common;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -47,8 +48,9 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = self.ctl("stop");
-        std::thread::sleep(Duration::from_millis(50));
+        common::reap(&self.dir.join("eng"), || {
+            let _ = self.ctl("stop");
+        });
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

@@ -64,6 +64,10 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
   if (MODE !== 'oneshot') console.log(`  daemon  agreement: ${stats.daemon}/${stats.n} = ${pc(stats.daemon)}`);
   fs.writeFileSync(OUT, JSON.stringify(mism, null, 1));
   for (const m of mism.slice(0, SHOW)) console.log(JSON.stringify({ c: m.command.slice(0, 200), n: [m.node.code, m.node.err.slice(0, 90), m.node.out.slice(0, 60)], e: (m.oneshot || m.daemon) && [(m.oneshot || m.daemon).code, (m.oneshot || m.daemon).err.slice(0, 90), (m.oneshot || m.daemon).out.slice(0, 60)] }));
-  if (MODE !== 'oneshot') await run(ENGINE, ['ctl', 'stop'], '', denv, '/tmp');
+  if (MODE !== 'oneshot') {
+    await run(ENGINE, ['ctl', 'stop'], '', denv, '/tmp');
+    // wait until the daemon is really gone, so the harness never leaves one behind
+    for (let i = 0; i < 100; i++) { const r = await run(ENGINE, ['ctl', 'ping'], '', denv, '/tmp'); if (r.code !== 0) break; await new Promise(r => setTimeout(r, 30)); }
+  }
   fs.rmSync(tmp, { recursive: true, force: true });
 })();
