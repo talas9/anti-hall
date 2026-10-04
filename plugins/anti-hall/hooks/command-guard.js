@@ -4288,7 +4288,7 @@ function main() {
   // redirect) into a file edit-guard would block for the Edit tool gets the
   // same delegation block. Off with guards.bashEditParity, safety.editGuard or
   // an edit-guard skip; a trusted (redirect-free) project command-allow match
-  // passes. Claude host; Codex coordinator detection is unverified. Fail-open.
+  // passes. Both hosts (a Codex main thread is detected). Fail-open.
   try {
     if (settingsGet('guards', 'bashEditParity') !== false
       && require('./lib/settings.js').enabled('safety', 'editGuard')
@@ -4296,8 +4296,7 @@ function main() {
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
       if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
         const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect)', payload.cwd);
-        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-        process.exit(2);
+        emitBlock(reason);
       }
     }
   } catch (_) {

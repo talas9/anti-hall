@@ -93,6 +93,8 @@ test('judge with a bad verb exits non-zero with usage', () => {
 });
 
 function doctor(home) {
+  // Never default to the real machine home: an omitted HOME falls back to a disposable dir.
+  if (!home) home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-default-home-'));
   const r = cp.spawnSync(process.execPath, [DOCTOR, '--check'], {
     cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-judge-cwd-')),
     env: envFor(home), encoding: 'utf8', timeout: 60000,
