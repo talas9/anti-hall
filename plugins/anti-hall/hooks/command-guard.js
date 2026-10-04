@@ -4003,7 +4003,9 @@ const INLINE_GIT_GH_LITERAL_RE = /(['"`])\s*((?:git|gh)\s[^'"`]*)\1/g;
 const INLINE_GIT_GH_ARRAY_RE = /\[\s*(['"])(git|gh)\1((?:\s*,\s*(['"])[^'"]*\4)*)\s*\]/g;
 const INLINE_OPEN_RE = /\bopen\s*\(\s*(['"])([^'"]+)\1\s*,\s*(['"])([^'"]*)\3\s*[,)]/g;
 const INLINE_OPEN_NONLIT_RE = /\bopen\s*\(\s*[^'"\s)][^,)]*,\s*(['"])([^'"]*)\1\s*[,)]/g;
-const INLINE_WRITEFILE_RE = /(?:write|append)File(?:Sync)?\(\s*(['"])([^'"]+)\1/g;
+const INLINE_PERL_OPEN3_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?(>>?|\+<)[:\w]*\s*\1\s*,\s*(['"])([^'"]+)\3/g;
+const INLINE_PERL_OPEN2_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?>>?\s*([^'"\s>][^'"\s]*)\s*\1/g;
+const INLINE_WRITEFILE_RE = /(?:(?:write|append)File(?:Sync)?|createWriteStream)\(\s*(['"])([^'"]+)\1/g;
 const INLINE_FILE_WRITE_RE = /(?:File|IO)\.write\(\s*(['"])([^'"]+)\1/g;
 const INLINE_WRITE_NONLIT_RE = /(?:(?:write|append)File(?:Sync)?|(?:File|IO)\.write)\(\s*[^'"\s)]/;
 const INLINE_REDIRECT_RE = /['"][^'"]*\s>>?\s*([\w./~-]+)/;
@@ -4030,6 +4032,8 @@ function inlineWriteLiterals(segment) {
   if (body === null) return [];
   const literals = [];
   for (const m of body.matchAll(INLINE_OPEN_RE)) if (isWriteMode(m[4])) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_PERL_OPEN3_RE)) literals.push(m[4]);
+  for (const m of body.matchAll(INLINE_PERL_OPEN2_RE)) literals.push(m[2]);
   for (const m of body.matchAll(INLINE_WRITEFILE_RE)) literals.push(m[2]);
   for (const m of body.matchAll(INLINE_FILE_WRITE_RE)) literals.push(m[2]);
   return literals;
@@ -4420,7 +4424,13 @@ function main() {
       && require('./lib/settings.js').enabled('safety', 'editGuard')
       && !isSkipped('edit-guard')
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
-      if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
+      // Over the classify cap: scan the heredoc header / first 16 KB (and the text after the heredoc), see lib/shell-writes.js.
+      let scans = [command];
+      if (command.length > MAX_CLASSIFY_LEN) {
+        const bp = require('./lib/shell-writes.js').bigCommandParts(command);
+        scans = bp.rest ? [bp.head, bp.rest] : [bp.head];
+      }
+      if (scans.some((c) => classifyBashWork(c, payload, { editOnly: true }).editBlocks.length)) {
         const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload);
         emitBlock(reason);
       }

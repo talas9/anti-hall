@@ -15,9 +15,17 @@
 //   targets  `>`, `>>`, `>|`, `&>` redirects (incl. bare `> f` truncation),
 //            tee [-a], sed -i, perl -i/-pi, cp/mv destinations (mv also its
 //            sources), literal open(…,'w')/writeFile(…) paths in python -c /
-//            node|perl|ruby -e code.
+//            node|perl|ruby -e code (python open(...,'w'|'a'|'x'), perl 2- and
+//            3-arg open, ruby File.write/File.open(...,'w'|'a'), node
+//            fs.writeFileSync/appendFileSync/createWriteStream with a literal path).
 //   content  heredoc body fed to cat/tee, echo/printf arguments, and the same
 //            producers piped into tee. Everything else has content null.
+// Commands over command-guard's classify cap (64 KB) are not parsed whole (the cap
+// bounds regex cost): the first-line heredoc header is parsed with an empty body
+// and the real body is attached as the content (api-guard still skips a body over
+// its own 600 KB cap, as it does for the Write tool); text after the heredoc is
+// parsed too unless the header line has a cd; a big command without a leading
+// heredoc is judged on its first 16 KB (cut at a line end). The rest is unchecked.
 // Anything else (a target with `$`, a glob, `~`, a relative path after a
 // non-literal cd, dd/install/rsync/xargs, python reading a heredoc on stdin, a
 // script file that writes when run, ...)
@@ -29,7 +37,7 @@ const { basename, segmentHeredocBodies } = require('./shell-scan.js');
 
 // Cheap pre-filter: no redirect, tee, in-place editor, cp/mv or inline-code
 // write means no target can come back, so a hook skips loading the parser.
-const MAYBE_WRITE_RE = /[>]|\btee\b|\bsed\b|\bperl\b|\bcp\b|\bmv\b|\bopen\s*\(|File(?:Sync)?\s*\(|\.write\(/;
+const MAYBE_WRITE_RE = /[>]|\btee\b|\bsed\b|\bperl\b|\bcp\b|\bmv\b|\bopen\b|createWriteStream|File(?:Sync)?\s*\(|\.write\(/;
 function mayWrite(command) {
   return typeof command === 'string' && MAYBE_WRITE_RE.test(command);
 }
@@ -61,6 +69,44 @@ function producerText(segment, bodies, cg) {
   return [decodeEscapes(args[0])].concat(args.slice(1)).join('\n') + '\n';
 }
 
+const BIG_LEN = 60000;
+const HEAD_LEN = 16384;
+const HEREDOC_HDR_RE = /<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/;
+
+// bigCommandParts(command) -> { head, body, rest }: `head` is a command under the
+// cap to scan in place of the whole (the heredoc header with an empty body; or the
+// first 16 KB of a heredoc-less one), `body` the real heredoc text (or null) and
+// `rest` the text after the heredoc, or '' when it is unknown, too big, or runs
+// under a cwd the header changed.
+function bigCommandParts(command) {
+  const nl = command.indexOf('\n');
+  const first = nl === -1 ? command : command.slice(0, nl);
+  const m = nl !== -1 && first.length <= HEAD_LEN ? HEREDOC_HDR_RE.exec(first) : null;
+  const cut = command.lastIndexOf('\n', HEAD_LEN);
+  const prefix = { head: command.slice(0, cut > 0 ? cut : HEAD_LEN), body: null, rest: '' };
+  if (!m) return prefix;
+  const delim = m[2];
+  const end = command.indexOf('\n' + delim + '\n', nl);
+  const bodyEnd = end !== -1 ? end : (command.endsWith('\n' + delim) ? command.length - delim.length - 1 : -1);
+  if (bodyEnd === -1) return prefix;
+  const rest = end !== -1 ? command.slice(end + delim.length + 2) : '';
+  return {
+    head: first + '\n\n' + delim,
+    body: command.slice(nl + 1, bodyEnd),
+    // A `cd` on the header line changes the cwd the rest runs in, which is not tracked here.
+    rest: rest.trim() && rest.length <= BIG_LEN && !/\bcd\b|\bpushd\b/.test(first) ? rest : '',
+  };
+}
+
+function bigCommandWrites(command, payload) {
+  const { head, body, rest } = bigCommandParts(command);
+  const out = shellWrites(head, payload);
+  // The empty-body parse gives content '\n' for the heredoc producer: swap in the real body.
+  if (body !== null) for (const w of out) if (w.content === '\n') w.content = body + '\n';
+  if (rest) for (const w of shellWrites(rest, payload)) if (!out.some((o) => o.abs === w.abs)) out.push(w);
+  return out;
+}
+
 // shellWrites(command, payload) -> [{ abs, base, toplevel, inBase, scratch, content }]
 // one entry per resolved target (deduped by path; content kept when any
 // occurrence has it). abs/base/scratch come from command-guard's
@@ -68,6 +114,7 @@ function producerText(segment, bodies, cg) {
 function shellWrites(command, payload) {
   try {
     if (!mayWrite(command)) return [];
+    if (command.length > BIG_LEN) return bigCommandWrites(command, payload);
     const cg = require('../command-guard.js');
     const rootOf = cg.projectRootResolver(payload || {});
     const byPath = new Map();
@@ -100,4 +147,4 @@ function shellWrites(command, payload) {
   }
 }
 
-module.exports = { shellWrites, mayWrite };
+module.exports = { shellWrites, mayWrite, bigCommandParts, BIG_LEN };

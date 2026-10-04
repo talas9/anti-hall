@@ -194,6 +194,68 @@ for (const host of ['claude', 'codex']) {
   }));
 }
 
+// ------------------------------------------------------------ commands over the classify cap
+const bigBody = (n) => FAKE_PY.repeat(n);
+for (const host of ['claude', 'codex']) {
+  test(`api-guard ${host}: 96 KB heredoc write with a fake API -> BLOCK; 1 MB command stays fast`, () => withRepo((home, repo) => {
+    const cmd = "cat > src/auth/big.py <<'EOF'\n" + bigBody(3000) + 'EOF\necho done\n';
+    assert.ok(cmd.length > 65536);
+    const r = run('api-guard.js', host, home, cmd, repo);
+    assertBlock(r);
+    assert.match(r.stderr, /os\.getcwdz/);
+    // over api-guard's own 600 KB chunk cap (same as the Write tool): allowed, but not slow
+    const t = Date.now();
+    const r2 = run('api-guard.js', host, home, "cat > src/auth/big.py <<'EOF'\n" + bigBody(35000) + 'EOF\n', repo);
+    assert.strictEqual(r2.status, 0);
+    assert.ok(Date.now() - t < 1500, 'hook wall time ' + (Date.now() - t) + ' ms (incl. node startup)');
+  }));
+
+  test(`ship-it-guard ${host}: 96 KB heredoc write to a hard-risk path -> BLOCK`, () => withRepo((home, repo) => {
+    assertBlock(run('ship-it-guard.js', host, home, "cat > src/auth/big.py <<'EOF'\n" + bigBody(3000) + 'EOF\n', repo, GATE));
+  }));
+
+  test(`api-guard ${host}: big command with real API, or a big non-heredoc command -> allow`, () => withRepo((home, repo) => {
+    assert.strictEqual(run('api-guard.js', host, home, "cat > src/x.py <<'EOF'\n" + REAL_PY.repeat(5000) + 'EOF\n', repo).status, 0);
+    assert.strictEqual(run('api-guard.js', host, home, 'echo ok\n' + '# pad\n'.repeat(12000), repo).status, 0);
+  }));
+}
+
+test('shellWrites: big command keeps its target, real body, and a write after the heredoc', () => withRepo((home, repo) => {
+  const p = { cwd: repo, session_id: 'sw-1' };
+  const cmd = "cat > src/a.py <<'EOF'\n" + bigBody(3000) + 'EOF\necho x > b.js\n';
+  const got = (c) => sw.shellWrites(c, p).map((w) => [path.relative(repo, w.abs), w.content && w.content.length]);
+  assert.deepStrictEqual(got(cmd), [['src/a.py', bigBody(3000).length], ['b.js', 2]]);
+  // a cd on the header line: the target is resolved, the text after the heredoc is not guessed at
+  assert.deepStrictEqual(got(cmd.replace('cat > src/a.py', 'cd src && cat > a.py')), [['src/a.py', bigBody(3000).length]]);
+  // a big command without a heredoc is judged on its first 16 KB
+  const big = 'echo x > a.py\n' + '# pad\n'.repeat(12000);
+  assert.deepStrictEqual(sw.shellWrites(big, p).map((w) => path.relative(repo, w.abs)), ['a.py']);
+}));
+
+// ------------------------------------------------------------ inline-code write literals
+test('inlineWriteLiterals: perl 2/3-arg open, ruby File.open/write, node write/append/createWriteStream', () => withRepo((home, repo) => {
+  const p = { cwd: repo, session_id: 'sw-1' };
+  const got = (c) => sw.shellWrites(c, p).map((w) => path.relative(repo, w.abs));
+  assert.deepStrictEqual(got(`perl -e "open(F,'>','src/a.pl')"`), ['src/a.pl']);
+  assert.deepStrictEqual(got(`perl -e 'open(F,">src/b.pl")'`), ['src/b.pl']);
+  assert.deepStrictEqual(got(`perl -e 'open(my $f, ">>", "src/c.pl")'`), ['src/c.pl']);
+  assert.deepStrictEqual(got(`perl -e 'open(F,"<src/h.pl")'`), []);
+  assert.deepStrictEqual(got(`perl -e 'open(F,"<","src/h.pl")'`), []);
+  assert.deepStrictEqual(got(`ruby -e "File.open('src/d.rb','w'){}"`), ['src/d.rb']);
+  assert.deepStrictEqual(got(`ruby -e "File.write('src/e.rb','x')"`), ['src/e.rb']);
+  assert.deepStrictEqual(got(`node -e "require('fs').appendFileSync('src/f.js','x')"`), ['src/f.js']);
+  assert.deepStrictEqual(got(`node -e "require('fs').writeFileSync('src/f.js','x')"`), ['src/f.js']);
+  assert.deepStrictEqual(got(`node -e "require('fs').createWriteStream('src/g.js')"`), ['src/g.js']);
+}));
+
+for (const host of ['claude', 'codex']) {
+  test(`command-guard ${host}: commands over 64 KB still get Bash edit parity -> BLOCK`, () => withRepo((home, repo) => {
+    assertBlock(run('command-guard.js', host, home, "python3 -c \"open('src/a.py','w').write('x')\"\n" + '# pad\n'.repeat(15000), repo));
+    assertBlock(run('command-guard.js', host, home, "cat > src/auth/big.py <<'EOF'\n" + bigBody(3000) + 'EOF\n', repo));
+    assert.strictEqual(run('command-guard.js', host, home, "python3 -c \"print(1)\"\n" + '# pad\n'.repeat(15000), repo).status, 0);
+  }));
+}
+
 // ------------------------------------------------------------ registration
 test('api-guard and ship-it-guard are registered on Bash for both hosts', () => {
   const root = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
