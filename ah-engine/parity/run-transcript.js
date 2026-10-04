@@ -9,6 +9,7 @@ const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? proces
 const HOOKS = path.resolve(arg('--hooks', path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks')));
 const ENGINE = path.resolve(arg('--engine', path.join(__dirname, '..', 'target', 'release', 'examples', 'transcript_facts')));
 const files = process.argv.slice(2).filter((a, i, v) => !a.startsWith('--') && (i === 0 || !['--hooks', '--engine'].includes(v[i - 1])));
+if (!files.length) { console.log('SKIPPED: no corpus (pass transcript file paths); nothing was compared'); process.exit(0); }
 let bad = 0;
 const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x));
 const run = (cmd, args) => { const r = cp.spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 1 << 30 }); if (r.status !== 0) throw new Error(cmd + ' failed: ' + r.stderr); return JSON.parse(r.stdout); };

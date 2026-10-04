@@ -392,11 +392,14 @@ fn a_git_that_cannot_finish_is_an_error_and_is_not_cached() {
     let fx = Fx::new("gc-slow");
     let d = fx.init("repo");
     fx.commit(&d, "a.txt", "one");
+    // a stand-in git that never finishes, so the timeout is what ends the run (no race with a fast real git)
+    let stub = fx.tmp.path("slow-git");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut l = limits();
-    // A zero timeout: the runner's first check after the spawn already finds the budget spent and kills the run. (A
-    // 1 ms timeout was not enough: the poll sleep overshoots, and on a fast CI runner git had already exited 0.)
-    l.timeout = Duration::ZERO;
-    l.poll = Duration::from_millis(1);
+    l.git_binary = stub.to_string_lossy().to_string();
+    l.timeout = Duration::from_millis(100);
+    l.poll = Duration::from_millis(5);
     let cache = GitCache::with_limits(l);
     let r = cache.repo(&d, &fx.env).unwrap();
     // every run times out; none of them may be remembered

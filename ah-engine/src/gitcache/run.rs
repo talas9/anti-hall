@@ -25,7 +25,7 @@ impl<'a> Runner<'a> {
     pub(super) fn run(&self, args: &[&str]) -> Result<Option<String>, GitCacheError> {
         let shown = args.join(" ");
         let fail = |source: std::io::Error| GitCacheError::Run { args: shown.clone(), source };
-        let mut cmd = Command::new(defaults::text("gitcache.git_binary"));
+        let mut cmd = Command::new(&self.lim.git_binary);
         cmd.args(args).current_dir(self.work_dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
         for a in defaults::list("gitcache.run_env") {
             if let Some((k, v)) = a.split_once('=') {

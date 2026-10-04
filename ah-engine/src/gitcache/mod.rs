@@ -71,6 +71,8 @@ impl std::error::Error for GitCacheError {}
 /// Caps and times of the cache; [`GitLimits::from_defaults`] reads `defaults/gitcache.toml`.
 #[derive(Debug, Clone)]
 pub struct GitLimits {
+    /// The git program run on a miss.
+    pub git_binary: String,
     /// Hard lifetime of a memo.
     pub ttl: Duration,
     /// Lifetime of the dirty memo.
@@ -93,6 +95,7 @@ impl GitLimits {
     /// The shipped limits.
     pub fn from_defaults() -> GitLimits {
         GitLimits {
+            git_binary: defaults::text("gitcache.git_binary").to_string(),
             ttl: defaults::millis("gitcache.ttl_ms"),
             dirty_ttl: defaults::millis("gitcache.dirty_ttl_ms"),
             timeout: defaults::millis("gitcache.timeout_ms"),
