@@ -1,6 +1,6 @@
 # Hook latency
 
-How long anti-hall's hooks take, measured with `scripts/hook-latency.js` (`node scripts/hook-latency.js [-n 20] [--json] [--only name,name]`). It starts every command registered in `plugins/anti-hall/hooks/hooks.json` the way Claude Code does (command string through a shell, `${CLAUDE_PLUGIN_ROOT}` expanded, node flags kept, JSON payload on stdin, `CLAUDE_CODE_ENTRYPOINT=cli`, `HOME` set to a temp dir, cwd a small git repo) and feeds it a realistic payload for each scenario.
+How long anti-hall's hooks take, measured with `scripts/hook-latency.js` (`node scripts/hook-latency.js [-n 20] [--json] [--only name,name] [--grouped]`). `--grouped` skips the per-hook passes and, for each event scenario, starts the whole matching hook set in parallel (as Claude Code does) and reports group wall and summed CPU. It starts every command registered in `plugins/anti-hall/hooks/hooks.json` the way Claude Code does (command string through a shell, `${CLAUDE_PLUGIN_ROOT}` expanded, node flags kept, JSON payload on stdin, `CLAUDE_CODE_ENTRYPOINT=cli`, `HOME` set to a temp dir, cwd a small git repo) and feeds it a realistic payload for each scenario.
 
 **Caveat: this was measured while other work ran on the machine** (load average about 20 to 30 on a 16-logical-CPU machine, see below), so absolute numbers are inflated and the p95 column carries scheduler noise. Re-run it on a quiet machine before quoting a figure as a baseline.
 
@@ -9,7 +9,7 @@ How long anti-hall's hooks take, measured with `scripts/hook-latency.js` (`node 
 - **Wall** is spawn to exit. **p50/p95** are nearest-rank over 19 runs (20 run, first dropped). With 19 samples p95 is effectively the slowest run.
 - **CPU** is the hook process's own user+system time from `process.resourceUsage()`, written at exit by a `--require` probe in a second pass (so the probe never inflates the wall numbers). I chose it over `/usr/bin/time` because that tool prints different formats on macOS and GNU, rounds to 10 ms, and is missing on some systems. It does not count grandchildren: a hook that shells out to `git` is charged for itself only.
 - **Total per tool call**: Claude Code runs all matching hooks in parallel (hooks docs, code.claude.com/docs/en/hooks: "All matching hooks run in parallel."; `docs/KB-claude-codex.md` does not say), so the wall total is the slowest hook, not the sum. The "parallel, measured" column starts the matching hooks together and times the group. "max" is the derived lower bound and "sum" is what a sequential runner would cost. CPU adds up, so the CPU total is the sum.
-- Scenario hook sets follow the matchers in `hooks.json` (for example `Bash` matches 6 PreToolUse hooks and 5 PostToolUse hooks since `coordinator-work-guard`; `Agent` matches 4). `edit-guard` exits 2 (blocks) in the Edit/Write scenarios because the fixture is a coordinator session; that is its normal path.
+- Scenario hook sets follow the matchers in `hooks.json` (for example `Bash` matches 9 PreToolUse hooks and 6 PostToolUse hooks; `Agent` matches 5 PreToolUse and 1 PostToolUse; `Edit` matches 4; a prompt runs 8; Stop runs 11; SessionStart runs 16 on 0.201.0. The Codex port runs Bash 7 + 4, prompt 8, Stop 10, SessionStart 15). `edit-guard` exits 2 (blocks) in the Edit/Write scenarios because the fixture is a coordinator session; that is its normal path.
 - The benchmark covers SessionStart, UserPromptSubmit, PreToolUse (Bash, Edit, Write, Agent), PostToolUse (Bash, Agent) and Stop. PostToolUse `TaskCreate|TaskUpdate`, PreToolUse `Read`/`SendMessage`/`AskUserQuestion`/`TaskStop` and the other events are not measured.
 
 ## Results
@@ -103,7 +103,7 @@ CPU method: process.resourceUsage() of the hook process via a --require probe (e
 
 ## Addendum 2026-10-04: coordinator-work-guard and the Node compile cache
 
-The table above predates `coordinator-work-guard` (PreToolUse and PostToolUse `Bash`), so the Bash scenarios there list 5 PreToolUse and 4 PostToolUse hooks and now run 6 and 5.
+The table above predates `coordinator-work-guard` (PreToolUse and PostToolUse `Bash`), so the Bash scenarios there list 5 PreToolUse and 4 PostToolUse hooks. On 0.201.0 they run 9 and 6, after `coordinator-work-guard`, `compact-declaration-guard`, `api-guard` and `ship-it-guard` added `Bash`.
 
 **Conditions: the machine was far more loaded than for the table above.** Load average (1 min) was 220 to 257 at the start of each run below (the table above ran at 17 to 29). CPU time is not load-immune (a bare `node -e 0` costs more CPU when the machine is oversubscribed), so compare only numbers from the same run. These runs interleave the variants hook by hook (base, then changed, then base...) so load drift hits both equally. Same fixture and payloads as `scripts/hook-latency.js`, CPU from the same `--require` probe, 29 samples (30 runs, first dropped), p50 only, ms.
 

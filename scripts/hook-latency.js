@@ -6,7 +6,11 @@
 // stdin, project dir as cwd) and reports wall-clock and CPU time per hook plus the
 // per-tool-call total for each event.
 //
-//   node scripts/hook-latency.js [-n 20] [--json] [--only name,name]
+//   node scripts/hook-latency.js [-n 20] [--json] [--only name,name] [--grouped]
+//
+// --grouped skips the per-hook passes and, per event scenario, starts the whole
+// matching hook set together (as Claude Code does) N times, reporting group wall
+// and summed CPU (each hook's own getrusage, read in the same run).
 //
 // Wall: spawn -> close, N runs, first dropped, nearest-rank p50/p95.
 // CPU: a second pass with `node --require <probe>` added, where the probe writes
@@ -32,10 +36,11 @@ const HOOK_TIMEOUT_MS = 10000;
 const PARALLEL_SOURCE = 'Claude Code hooks docs (code.claude.com/docs/en/hooks): "All matching hooks run in parallel." docs/KB-claude-codex.md does not state it.';
 
 function parseArgs(argv) {
-  const o = { n: 20, json: false, only: null };
+  const o = { n: 20, json: false, only: null, grouped: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '-n') o.n = Math.max(2, parseInt(argv[++i], 10) || 20);
     else if (argv[i] === '--json') o.json = true;
+    else if (argv[i] === '--grouped') o.grouped = true;
     else if (argv[i] === '--only') o.only = new Set(String(argv[++i] || '').split(',').filter(Boolean));
   }
   return o;
@@ -191,6 +196,42 @@ async function bench(opts) {
   return { meta, hooks, totals };
 }
 
+// Grouped mode: one parallel group per event scenario, no per-hook passes. Each run
+// starts every matching hook together with the CPU probe on; wall is the group's
+// spawn-to-last-exit time, CPU is the sum of the hooks' own CPU in that run.
+async function benchGrouped(opts) {
+  const hooksJson = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  const fx = makeFixture();
+  const meta = {
+    date: new Date().toISOString(), platform: process.platform + ' ' + os.release(), cpu: os.cpus()[0].model, node: process.version,
+    n: opts.n, samples_per_group: opts.n - 1, loadavg: os.loadavg().map(round), loadavg_end: null,
+    percentile: 'nearest-rank over the runs after dropping the first', parallel: PARALLEL_SOURCE,
+    cpu_method: 'sum of process.resourceUsage() of each hook process in the group (excludes grandchildren)',
+  };
+  const groups = [];
+  try {
+    for (const sc of scenarios(fx)) {
+      const list = hooksFor(hooksJson, sc, opts.only);
+      if (!list.length) continue;
+      const runs = await sample(opts.n, async () => {
+        const t0 = process.hrtime.bigint();
+        const rs = await Promise.all(list.map((h) => runOnce(h.command, sc.payload, fx, true)));
+        const wall = Number(process.hrtime.bigint() - t0) / 1e6;
+        return { wall, cpu: rs.every((r) => r.cpu !== null) ? rs.reduce((a, r) => a + r.cpu, 0) : null };
+      });
+      const cpus = runs.map((r) => r.cpu).filter((v) => v !== null);
+      groups.push({
+        event: sc.event, scenario: sc.scenario, hooks: list.length, samples: runs.length,
+        wall: stats(runs.map((r) => r.wall)), cpu: cpus.length ? stats(cpus) : null, loadavg: os.loadavg().map(round),
+      });
+    }
+  } finally {
+    meta.loadavg_end = os.loadavg().map(round);
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+  return { meta, groups };
+}
+
 const f = (v) => (v === null || v === undefined ? 'n/a' : v.toFixed(1));
 function markdown(rep) {
   const m = rep.meta;
@@ -207,11 +248,23 @@ function markdown(rep) {
   return L.join('\n') + '\n';
 }
 
+function markdownGrouped(rep) {
+  const m = rep.meta;
+  const L = [`Date: ${m.date}  `, `Machine: ${m.cpu}, ${m.platform}, Node ${m.node}  `,
+    `Load average (1/5/15 min) at start: ${m.loadavg.join(' / ')}; at end: ${m.loadavg_end.join(' / ')}  `,
+    `N=${m.n} runs per group, first dropped (${m.samples_per_group} samples), nearest-rank percentiles. All times in ms.`, '',
+    'Each row starts the event\'s whole matching hook set together, as Claude Code does. Wall is the group\'s spawn to last exit; CPU is the sum of the hooks\' own CPU.', '',
+    '| Event | Scenario | Hooks | Wall p50 | Wall p95 | CPU sum p50 | CPU sum p95 | Load (1 min) |', '|---|---|---:|---:|---:|---:|---:|---:|'];
+  for (const g of rep.groups) L.push(`| ${g.event} | ${g.scenario} | ${g.hooks} | ${f(g.wall.p50)} | ${f(g.wall.p95)} | ${f(g.cpu && g.cpu.p50)} | ${f(g.cpu && g.cpu.p95)} | ${g.loadavg[0]} |`);
+  L.push('', `Parallel vs sequential: ${m.parallel}`, `CPU method: ${m.cpu_method}.`);
+  return L.join('\n') + '\n';
+}
+
 if (require.main === module) {
   const opts = parseArgs(process.argv.slice(2));
-  bench(opts).then((rep) => {
-    fs.writeSync(1, opts.json ? JSON.stringify(rep, null, 2) + '\n' : markdown(rep));
+  (opts.grouped ? benchGrouped(opts) : bench(opts)).then((rep) => {
+    fs.writeSync(1, opts.json ? JSON.stringify(rep, null, 2) + '\n' : (opts.grouped ? markdownGrouped(rep) : markdown(rep)));
   }).catch((e) => { process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(1); });
 }
 
-module.exports = { bench, markdown };
+module.exports = { bench, markdown, benchGrouped, markdownGrouped, parseArgs };
