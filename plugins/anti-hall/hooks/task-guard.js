@@ -325,42 +325,37 @@ function main() {
     return JSON.stringify(subject) + ' [' + JSON.stringify(status) + ']';
   }).join('; ');
 
+  // Task-tool names are Claude Code's; a Codex session gets neutral wording.
+  let codexHost = false;
+  try { codexHost = require('./lib/host-text.js').isCodex(payload); } catch (_) { codexHost = false; }
+  const UPD = codexHost ? 'update your task list' : 'TaskUpdate';
+  const bm = require('./lib/block-message.js');
   let reason;
   if (idleNeglect) {
     DD.recordIdleNeglect({ home: metricsHome() });
     const list = demand.dispatch.slice(0, 12).map((t) => DD.label(t)).join(', ');
     const more = demand.dispatch.length > 12 ? ' (and ' + (demand.dispatch.length - 12) + ' more)' : '';
-    reason =
-      'IDLE NEGLECT: ' + demand.dispatch.length + ' non-blocked, unassigned task(s) with ' +
-      'NO in-flight agent on them — DISPATCH NOW in PARALLEL (one background agent ' +
-      'each, cap ' + (demand.cap || '~min(16, cores-2)') + '): ' + list + more + '. ' +
-      'Do not end the turn idle; only stop if a task truly needs the user (then ' +
-      'say which + why). If a task is genuinely blocked on the OWNER (hardware, a ' +
-      'decision only a human can make), mark it non-dispatchable honestly — ' +
-      'metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or an "OWNER:" / ' +
-      '"OWNER DECISION" subject prefix — never a fake blockedBy dependency. ' +
-      'If a task waits on an in-flight task, set its blockedBy (TaskUpdate addBlockedBy) instead of dispatching it. ' +
-      'If a running agent already covers a task, set the task\'s owner to it (TaskUpdate owner) and it counts as attended.' +
-      (anyLiveDevswarmChildren()
-        ? ' If this task is delegated to a DevSwarm workspace, set its owner to the ' +
-          'workspace id, branch or title (TaskUpdate owner) and it counts as attended.'
-        : '');
+    reason = bm.blockMessage({
+      guard: 'task-guard',
+      what: 'stop blocked: ' + demand.dispatch.length + ' non-blocked, unassigned task(s) have no in-flight agent: ' + list + more + '.',
+      why: 'Dispatchable work is sitting idle.',
+      instead: 'dispatch them now in parallel (one background agent each, cap ' + (demand.cap || '~min(16, cores-2)') + '), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy (' + UPD + ' addBlockedBy). A running agent already covers a task: set the task owner to it (' + UPD + ' owner) and it counts as attended.' +
+        (anyLiveDevswarmChildren() ? ' Delegated to a DevSwarm workspace: set owner to its id, branch or title.' : ''),
+      allowed: 'a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or give it an "OWNER:" / "OWNER DECISION" subject prefix. Never a fake blockedBy dependency.',
+    });
   } else {
     const list = renderList(nudgeTasks);
     const more = nudgeTasks.length > 5 ? ' (and ' + (nudgeTasks.length - 5) + ' more)' : '';
-    reason =
-      'Open tasks remain and the session is stopping: ' + list + more + '. ' +
-      'Actively drain the task list: pick up pending tasks and dispatch subagents to ' +
-      'finalize them; run independent tasks in parallel (up to the concurrency cap, ' +
-      '~min(16, cores-2)); do not let tasks sit neglected. ' +
-      'Continue them, mark them completed or deferred via TaskUpdate, or tell the user ' +
-      'explicitly what is pending and why you are stopping. If a task is genuinely ' +
-      'blocked, mark it honestly via TaskUpdate — blockedBy:[<open task id>] for a task ' +
-      'dependency, or metadata.blockedOn:\'owner\'/\'user\'/\'human\'/\'external\' for an ' +
-      'outside wait — and it is no longer listed here.';
+    reason = bm.blockMessage({
+      guard: 'task-guard',
+      what: 'stop blocked: open tasks remain: ' + list + more + '.',
+      why: 'Tasks should not sit neglected when the session stops.',
+      instead: 'pick up pending tasks and dispatch subagents to finish them in parallel (up to the cap, ~min(16, cores-2)); or mark them completed/deferred (' + UPD + '), or tell the user what is pending and why you are stopping.',
+      allowed: 'a genuinely blocked task: mark it via ' + UPD + ' with blockedBy:[<open task id>] or metadata.blockedOn:\'owner\'/\'user\'/\'human\'/\'external\'; it is then no longer listed.',
+    });
   }
   const unkLine = takeUnknownNote();
-  if (unkLine) reason += ' ' + unkLine;
+  if (unkLine) reason += '\n' + unkLine;
 
   // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
   // macOS node 18/20 (repo-wide hook-output rule; R2-N1).

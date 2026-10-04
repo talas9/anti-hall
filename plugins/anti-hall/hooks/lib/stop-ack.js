@@ -125,9 +125,7 @@ function recordAck(home, sessionId, hook, signature, now) {
 // explicitly confirmed the condition is a false positive.
 function ackHint(hook, signature, home, sessionId) {
   const p = statePath(require('../../companion/lib/test-home-guard.js').resolveHome(home), sessionId || 'nosession');
-  return 'If the user has explicitly confirmed this exact condition is fine, ack it for the ' +
-    'rest of this session (advisory only afterward, never blocks again for this exact signature) ' +
-    'by writing {"' + ackKey(hook, signature) + '": ' + Date.now() + '} into ' + p + ' (merge with any existing keys).';
+  return 'Override (only if the user explicitly confirmed this exact condition is fine): write {"' + ackKey(hook, signature) + '": ' + Date.now() + '} into ' + p + ' (merge with existing keys); it then stays advisory for the rest of the session.';
 }
 
 module.exports = { signatureFor, isAcked, recordAck, ackHint, statePath, stateDir };

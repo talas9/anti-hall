@@ -427,58 +427,50 @@ function main() {
     process.exit(0);
   }
 
-  // Pick the MOST-SPECIFIC sub-cause for the lead sentence.
-  let lead;
+  // Pick the MOST-SPECIFIC sub-cause. Task-tool names are Claude Code's; a
+  // Codex session gets neutral wording ("your task list").
+  let codexHost = false;
+  try { codexHost = require('./lib/host-text.js').isCodex(payload); } catch (_) { codexHost = false; }
+  const progressPath = progressAbsPath || progressRelPath;
+  const historyPath = historyAbsPath || historyRelPath;
+  let what;
+  let why;
   if (!sawTaskActivity && taskStoreReset) {
     // T4(a): a reset task store (DevSwarm session restore) explains the
     // "tracked NO tasks" reading -- old ids are gone, not un-tracked.
-    lead =
-      'The task store was reset (session restore) — recreate the open tasks ' +
-      'with TaskCreate (see the progress file / handover), then continue.';
+    what = 'the task store was reset (session restore).';
+    why = 'The old task ids are gone, not un-tracked.';
   } else if (!sawTaskActivity) {
-    lead =
-      'You made ' + workCount + ' file-changing actions this session but tracked ' +
-      'NO tasks.';
-    // THREAD (v0.75.0): a NO-TASKS session may simply be a fresh resume that
-    // never rebuilt its task list from a PRIOR session's handover snapshot —
-    // point at it (if one exists) rather than let the agent invent a list from
-    // scratch. Capped implicitly by hash-dedup above (same lead text -> same
-    // signal each Stop until sawTaskActivity flips true). Fail-open: any error
-    // here just omits the pointer, never blocks/throws.
+    what = 'stop blocked: ' + workCount + ' file-changing actions this session but NO tasks tracked.';
+    why = 'Work this size needs a task list and a progress file.';
+    // THREAD (v0.75.0): a NO-TASKS session may be a fresh resume that never
+    // rebuilt its task list from a PRIOR session's handover snapshot. Fail-open.
     try {
       const priorState = findPriorSessionStateFile(root, progressDate, sessionIdForPath);
-      if (priorState) {
-        lead += ' A prior session\'s handover snapshot exists at ' + priorState +
-          ' — recreate your task list from ' + priorState + ' first.';
-      }
+      if (priorState) why += ' A prior session\'s snapshot exists at ' + priorState + ': recreate your task list from it first.';
     } catch (_) { /* fail-open: omit the pointer */ }
   } else if (hasStaleInProgress) {
-    lead =
-      inProgressCount + ' tasks are in_progress but NO background agent is live — they are ' +
-      'STALLED, not being worked in parallel. DISPATCH a background agent for EACH now so they ' +
-      'progress concurrently (do NOT serialize down to one), or set the idle ones back to ' +
-      'pending. Priority ≠ stop the rest: spin the HIGHEST-priority task\'s agent FIRST and ' +
-      'check it more often, but keep the others running in parallel — never pause them.';
+    what = 'stop blocked: ' + inProgressCount + ' tasks are in_progress but NO background agent is live.';
+    why = 'They are stalled, not worked in parallel.';
   } else {
-    lead =
-      'You made ' + workCount + ' file-changing actions but ' +
-      (progressAbsPath || progressRelPath) + ' is missing or stale.';
+    what = 'stop blocked: ' + workCount + ' file-changing actions but ' + progressPath + ' is missing or stale.';
+    why = 'The progress file must track what was done.';
   }
+  const instead = (hasStaleInProgress && sawTaskActivity
+      ? 'dispatch a background agent for EACH now (do not serialize to one), or set idle ones back to pending; start the highest-priority task\'s agent first but keep the rest running. '
+      : '') +
+    (codexHost
+      ? 'Capture the work as priority-sorted tasks in your task list (check it first to dedup; link related ones), set statuses, and update '
+      : 'Capture the work as priority-sorted tasks via TaskCreate/TaskUpdate (TaskList first to dedup; link with addBlockedBy/addBlocks), set statuses, and update ') +
+    progressPath + ' (done/in-progress/next); a new file gets this header on top: ' + progressHeader +
+    '. Gitignore it. Append each COMPLETED task to ' + historyPath +
+    ' (append-only ledger, one entry per task: Cause / Fix / Verified; gitignore it too; it usually exists already, so ' +
+    (codexHost ? 'append with a one-line `>>`, never overwrite it' : 'append with the Edit tool or a one-line `>>`, never the Write tool') +
+    '). The progress file can be written freely. No Bash heredoc (git-guard scans its body as shell).';
 
-  const reason = sanitizeReason(
-    lead +
-      ' Capture this work as priority-sorted tasks via TaskCreate/TaskUpdate ' +
-      '(check TaskList FIRST to dedup/relate — do not duplicate an existing task; ' +
-      'link related ones with addBlockedBy/addBlocks), set statuses ' +
-      '(in_progress/completed), and update ' + (progressAbsPath || progressRelPath) + ' ' +
-      '(done/in-progress/next); if creating it, put this header at the very top: ' +
-      progressHeader + '. Gitignore it so it never ships. ' +
-      'Also append each COMPLETED task to ' + (historyAbsPath || historyRelPath) + ' (append-only ' +
-      'ledger, one entry per task: Cause / Fix / Verified; gitignore it too). That file usually ' +
-      'EXISTS already (the task-lifecycle hook writes it) — APPEND with the Edit tool or a one-line ' +
-      '`>>`, NEVER the Write tool (it overwrites the existing ledger). The progress file is the one ' +
-      'to Write/Edit freely. Never use a Bash heredoc (its body is scanned as shell by git-guard.js).'
-  );
+  const reason = sanitizeReason(require('./lib/block-message.js').blockMessage({
+    guard: 'tasklist-guard', what, why, instead,
+  }));
 
   // OMC-awareness: if an autonomous OMC loop (ralph, ultrawork, autopilot, etc.)
   // is active, SUPPRESS the Stop block — emit a one-line advisory and exit 0.
@@ -526,8 +518,7 @@ function main() {
         }
         if (!alreadyAdvised) {
           finalReason = sanitizeReason(
-            finalReason + ' Also: significant work this session and no handover exists — ' +
-            'consider /anti-hall:handover before ending.'
+            finalReason + '\n\u{1F4A1} No handover exists yet after significant work: consider /anti-hall:handover before ending.'
           );
           try {
             fs.mkdirSync(stateDir, { recursive: true });
@@ -586,8 +577,7 @@ function main() {
             }
             if (!alreadyWarned) {
               finalReason = sanitizeReason(
-                finalReason + ' Also: handover is STALE (work happened after it was ' +
-                'written) — refresh it before the user compacts.'
+                finalReason + '\n\u26A0\uFE0F The handover is stale (work happened after it was written): refresh it before the user compacts.'
               );
               try {
                 fs.mkdirSync(stateDir, { recursive: true });
@@ -630,7 +620,7 @@ function main() {
   }
 
   if (sessionId) {
-    try { finalReason = sanitizeReason(finalReason + ' ' + stopAck.ackHint('tasklist-guard', ackSignature, ackHome, sessionId)); }
+    try { finalReason = sanitizeReason(finalReason + '\n' + stopAck.ackHint('tasklist-guard', ackSignature, ackHome, sessionId)); }
     catch (_) { /* best-effort — the block still fires without the hint */ }
   }
 
@@ -744,7 +734,7 @@ function maintainSessionIndex(cwd, date, sessionId, kind) {
 // no unbounded growth from a task subject/path) while leaving real headroom.
 function sanitizeReason(s) {
   if (typeof s !== 'string') return '';
-  let out = s.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').replace(/\s+/g, ' ').trim();
+  let out = s.replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, ' ').replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n').trim();
   if (out.length > 2000) out = out.slice(0, 2000).trimEnd() + '…';
   return out;
 }

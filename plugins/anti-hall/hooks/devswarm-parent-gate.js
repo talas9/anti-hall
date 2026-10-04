@@ -2509,7 +2509,11 @@ function main() {
   const base = (blocking.length || unanswered.length || truncated)
     ? buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache, own.ownSource || null)
     : 'anti-hall: DevSwarm Stop gate.';
-  const reason = base + (parkedSegment ? '\n\n' + parkedSegment : '') + wakeLine;
+  const reason = require('./lib/block-message.js').frame({
+    guard: 'devswarm-parent-gate',
+    headline: 'Primary turn held: DevSwarm workspaces or messages need attention first.',
+    body: base + (parkedSegment ? '\n\n' + parkedSegment : '') + wakeLine,
+  });
 
   // IN-FLIGHT DRAIN MARKER: evaluated ABOVE now (before this persist), not
   // here — see the "R11 Auditor A2 fix" comment at that earlier call site for
@@ -2764,7 +2768,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     const who = unanswered.slice(0, 5).map((q) => (q && q.from != null ? String(q.from) : 'unknown sender')).join('; ');
     const moreQ = unanswered.length > 5 ? ' (and ' + (unanswered.length - 5) + ' more)' : '';
     return (
-      'DEVSWARM ESCALATION: ' + (truncated ? 'a truncated set of unanswered questions' : 'unanswered question(s) from ' + who + moreQ) +
+      'Escalation: ' + (truncated ? 'a truncated set of unanswered questions' : 'unanswered question(s) from ' + who + moreQ) +
       ' has forced-blocked this Stop ' + qEscalateTimes + ' times with no reply sent — ' +
       'a human should look. This will not repeat automatically after this message ' +
       '(the question itself is still tracked and unresolved). ' +
@@ -2793,7 +2797,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     // signature `escalateTimes` times with no observed change is itself the
     // signal, distinct from "here is what to go read/ack".
     body +=
-      'DEVSWARM ESCALATION: this neglect signature (' + stableShown + more + ') has been ' +
+      'Escalation: this neglect signature (' + stableShown + more + ') has been ' +
       'forced-acknowledged ' + escalateTimes + ' times with no observed resolution' +
       (hasIntent ? ' (a stated intent was on file for this exact condition, but the absolute backstop was still reached)' : '') +
       ' — a human should look. This will not repeat automatically after this message. ' +
@@ -2816,7 +2820,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
   // ." sentence with nothing after the colon.
   if (blocking.length > 0) {
     body +=
-      'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
+      'Neglect: ' + blocking.length + ' workspace(s) still need attention ' +
       'before this Primary turn ends: ' + shown + more + '. ';
   }
   // ATTRIBUTION (re-scoped fix — a family total that is a SUM over >1

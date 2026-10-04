@@ -545,7 +545,12 @@ function writeState(stateFile, state) {
 // emitBlock(reason) — the ONE place this hook writes its Stop verdict.
 // fs.writeSync(1): a synchronous write to fd 1 — process.stdout.write races the
 // async pipe flush with process.exit() on macOS node 18/20 (project convention).
-function emitBlock(reason) {
+function emitBlock(text) {
+  const reason = require('./lib/block-message.js').frame({
+    guard: 'devswarm-child-gate',
+    headline: 'Stop held: finish this DevSwarm workspace duty first.',
+    body: text,
+  });
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 
@@ -807,7 +812,7 @@ function cronMissingWarning(env, home, now) {
     } catch (_) { ageMs = null; } // absent/unreadable/malformed -> "never ticked"
     if (ageMs !== null) {
       if (ageMs <= warnMs) return null; // recently ticked -> fine
-      return 'MAILBOX CRON MISSING: no inbox tick for ' + Math.round(ageMs / 60000) + 'm — run `CronList`; '
+      return 'Mailbox cron missing: no inbox tick for ' + Math.round(ageMs / 60000) + 'm — run `CronList`; '
         + 'if no tick cron exists, `CronCreate` it with the tick prompt (see SessionStart directive).'
         + wakeReassertLine(env, true);
     }
@@ -821,7 +826,7 @@ function cronMissingWarning(env, home, now) {
       if (hb && Number.isFinite(hb.ts)) hbAgeMs = now - hb.ts;
     } catch (_) { hbAgeMs = null; }
     if (hbAgeMs === null || hbAgeMs <= warnMs) return null;
-    return 'MAILBOX CRON MISSING: no inbox tick this session (heartbeat is ' + Math.round(hbAgeMs / 60000)
+    return 'Mailbox cron missing: no inbox tick this session (heartbeat is ' + Math.round(hbAgeMs / 60000)
       + 'm old) — run `CronList`; if no tick cron exists, `CronCreate` it with the tick prompt '
       + '(see SessionStart directive).' + wakeReassertLine(env, true);
   } catch (_) {
@@ -913,7 +918,7 @@ function main() {
         metrics.recordEvent(archivedGateHome, archivedStop.id, decision.block ? 'stop-blocked' : 'stop-cleared', { now, handoverWritten });
       } catch (_) { /* metrics only, never blocks */ }
       if (decision.block) {
-        emitBlock('DEVSWARM CHILD ARCHIVED: this workspace was archived. '
+        emitBlock('Archived: this workspace was archived. '
           + archivedHandoverAsk + ', THEN stop — this workspace is '
           + 'no longer tracked and you will not be asked again. Delete your own `inbox tick` '
           + 'cron (CronList, CronDelete); the mailbox watcher is already silent.');
@@ -1143,20 +1148,20 @@ function main() {
   const nativeUnknown = unreadPendingPre === 'unknown';
   const durableNow = unreadPending ? null : readDurableUnread(process.env, os.homedir());
   const inboundPrefix = unreadPending
-    ? 'DEVSWARM CHILD INBOX — you have unpulled/unread parent message(s): run ' +
+    ? 'Inbox: you have unpulled/unread parent message(s): run ' +
       '`node ' + CLI + ' inbox pull ' + resolvedIdSafe(process.env) + '` (or `inbox read` ' +
       'if already pulled), then `inbox ack` once addressed — BEFORE you stop. '
     : (durableNow && durableNow.unknown)
-    ? 'DEVSWARM CHILD INBOX — your unread count is UNKNOWN (' + String(durableNow.reason || 'store-read-error') +
+    ? 'Inbox: your unread count is UNKNOWN (' + String(durableNow.reason || 'store-read-error') +
       '): the store could not be read, so this gate cannot prove your inbox is empty. Run `node ' + CLI +
       ' inbox count ' + resolvedIdSafe(process.env) + '` and read any mail BEFORE you stop. '
     : nativeUnknown
     ? (nativeOnlyUnknown
-      ? 'DEVSWARM CHILD INBOX — the native `hivecontrol workspace message-count` probe failed or timed out, so this '
+      ? 'Inbox: the native `hivecontrol workspace message-count` probe failed or timed out, so this '
         + 'gate cannot prove your native queue is empty (your mesh inbox and report are fine). Try `node ' + CLI
         + ' inbox pull ' + resolvedIdSafe(process.env) + '` once and handle any mail; if it fails the same way the '
         + 'native channel is unreachable from here, so you may stop — this warning will not repeat.'
-      : 'DEVSWARM CHILD INBOX — your NATIVE unread count is UNKNOWN (the `hivecontrol workspace message-count` '
+      : 'Inbox: your NATIVE unread count is UNKNOWN (the `hivecontrol workspace message-count` '
         + 'probe failed or timed out), so this gate cannot prove your native queue is empty. Run `node ' + CLI
         + ' inbox pull ' + resolvedIdSafe(process.env) + '` and handle any mail BEFORE you stop. ')
     : '';
@@ -1173,8 +1178,8 @@ function main() {
   // instead of re-prescribing the exact heartbeat command that just failed
   // for this same reason on this same episode.
   const outboundLine = dropAttempt
-    ? 'DEVSWARM CHILD WORKSPACE — ' + describeDropAttempt(dropAttempt, process.env) + ', THEN stop.'
-    : 'DEVSWARM CHILD WORKSPACE — before you stop, emit a heartbeat / self-report to ' +
+    ? 'Heartbeat: ' + describeDropAttempt(dropAttempt, process.env) + ', THEN stop.'
+    : 'Heartbeat: before you stop, emit a heartbeat / self-report to ' +
       'your parent orchestrator so you do not silently drop off its radar and later ' +
       'read as stale. Run `node ' + CLI + ' heartbeat ' + resolvedIdSafe(process.env) + ' ' +
       '--summary "<status>"` with a one-line status (e.g. "done — awaiting next task", ' +

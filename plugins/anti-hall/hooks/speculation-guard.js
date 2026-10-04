@@ -902,16 +902,14 @@ async function main() {
     });
   } catch (_) {}
 
-  const reason = jevBlock
-    ? 'anti-hall speculation-guard: your reply asserts a cause or outcome without ' +
-      'citing evidence (command output, a test result, or a file:line reference). ' +
-      'Verify it with a tool, or explicitly say what\'s unverified / \'I don\'t know - ' +
-      'here\'s what I\'d check\', then continue.'
-    : 'anti-hall speculation-guard: your reply states something speculative (\'' +
-      marker +
-      '\') without verifying it or flagging it as unverified. ' +
-      'Verify it with a tool, or explicitly say what\'s unverified / \'I don\'t know - ' +
-      'here\'s what I\'d check\', then continue.';
+  const reason = require('./lib/block-message.js').blockMessage({
+    guard: 'speculation-guard',
+    what: jevBlock
+      ? 'your reply asserts a cause or outcome without citing evidence (command output, a test result, or a file:line reference).'
+      : 'your reply states something speculative (\'' + marker + '\') without verifying it or flagging it as unverified.',
+    why: 'Unverified claims read as facts.',
+    instead: 'verify it with a tool, or say what is unverified (\'I don\'t know, here is what I would check\'), then continue.',
+  });
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   finish('block');

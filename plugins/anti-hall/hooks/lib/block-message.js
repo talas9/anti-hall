@@ -17,7 +17,7 @@ const ICONS = {
   warn: '⚠️',   // warning / advisory
   tip: '💡',    // tip / nudge
   ok: '✅',           // ok / done
-  update: '\u2191',   // update available (plain arrow, not the boxed emoji)
+  update: '\u2B06\uFE0F',   // update available
   error: '❌',        // error
 };
 
@@ -42,6 +42,14 @@ function message(o) {
   return lines.join('\n');
 }
 
+// frame({ kind, guard, headline, body }) -> the shared first line followed by an
+// already-assembled multi-segment body (the DevSwarm gates build theirs from many
+// conditional segments). Body lines are kept as-is.
+function frame(o) {
+  const icon = ICONS[o.kind] || ICONS.block;
+  return icon + ' anti-hall \u00B7 ' + clean(o.guard) + ': ' + clean(o.headline) + '\n' + String(o.body == null ? '' : o.body).trim();
+}
+
 const blockMessage = (o) => message(Object.assign({}, o, { kind: 'block' }));
 
-module.exports = { message, blockMessage, ICONS, OVERRIDE_LABEL };
+module.exports = { message, blockMessage, frame, ICONS, OVERRIDE_LABEL };

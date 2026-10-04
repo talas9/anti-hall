@@ -74,6 +74,10 @@ function fail_open() {
   process.exit(0);
 }
 
+// gm(opts) -> block text in the shared shape (lib/block-message.js).
+function gm(o) { return require('./lib/block-message.js').blockMessage(Object.assign({ guard: 'git-guard' }, o)); }
+function skipCmd(k) { return require('./lib/skip-cmd.js').skipCommand(k); }
+
 function block(msg) {
   try {
     process.stderr.write(msg + '\n');
@@ -898,12 +902,11 @@ function ghSelfCreditMessage(args) {
     const normalized = v.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
     for (const text of [v, normalized]) {
       if (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text) || SELF_CREDIT_GH_BODY.test(text)) {
-        return (
-          'anti-hall git-guard: BLOCKED. A gh pr/issue/release body or title carries ' +
-          'AI/assistant self-credit ("Generated with Claude Code" / the 🤖 footer / ' +
-          'Co-Authored-By / a claude.com/claude-code link). Remove it — PRs and issues ' +
-          'carry no AI attribution.'
-        );
+        return gm({
+      what: 'a gh pr/issue/release body or title carries AI/assistant self-credit ("Generated with" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.',
+      why: 'PRs and issues carry no AI attribution.',
+      instead: 'remove it and re-run.',
+    });
       }
     }
   }
@@ -917,12 +920,11 @@ function ghSelfCreditMessage(args) {
   // confidence -> baseline (unblocked), matching every other jev-assist caller.
   for (const v of vals) {
     if (v && consultGitGuardSelfCreditJev(v)) {
-      return (
-        'anti-hall git-guard: BLOCKED. A gh pr/issue/release body or title appears to ' +
-        'credit an AI assistant (paraphrased self-credit, flagged by the Jev ' +
-        'classifier — not a literal trailer/footer match). Remove it — PRs and issues ' +
-        'carry no AI attribution.'
-      );
+      return gm({
+      what: 'a gh pr/issue/release body or title appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) and is blocked.',
+      why: 'PRs and issues carry no AI attribution.',
+      instead: 'remove it and re-run.',
+    });
     }
   }
   return null;
@@ -1137,12 +1139,11 @@ function xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
   if (!innerEv || innerEv.verb !== 'git') return null;
   const { sub } = gitSubcommand(innerEv.args);
   if (sub === 'push') {
-    return (
-      'anti-hall git-guard: BLOCKED. Force push detected via `xargs git push` - ' +
-      'xargs appends words it reads from stdin to the command it runs, so the ' +
-      'full argv (and any hidden --force/-f) cannot be verified statically. Run ' +
-      '`git push` directly, with explicit arguments, instead of through xargs.'
-    );
+    return gm({
+      what: 'force push via `xargs git push` is blocked.',
+      why: 'xargs appends words from stdin, so the full argv (and any hidden --force/-f) cannot be verified statically.',
+      instead: 'run `git push` directly with explicit arguments.',
+    });
   }
   return gitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
 }
@@ -1644,13 +1645,11 @@ function targetResolvesIntoLauncherDir(rawPath, cdDir, opts) {
   return pathHasLauncherSegment(rejoined);
 }
 
-const LAUNCHER_BLOCK_MSG = (
-  'anti-hall git-guard: BLOCKED. This command writes into ~/.anti-hall/bin/, ' +
-  'the stable launcher directory. anti-hall installs those files itself ' +
-  '(update / doctor --repair); overwriting one would run arbitrary code (such ' +
-  'as a force push) under a trusted launcher name. Leave that directory alone; ' +
-  'if the path only appears as prose inside a heredoc/brief, write that text with the Write tool instead.'
-);
+const LAUNCHER_BLOCK_MSG = gm({
+    what: 'a write into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.',
+    why: 'anti-hall installs those files itself (update / doctor --repair); overwriting one would run arbitrary code (such as a force push) under a trusted launcher name.',
+    instead: 'leave that directory alone; if the path only appears as prose in a heredoc/brief, write that text with the Write tool instead.',
+  })
 
 // Redirect targets read from RAW text (quotes intact): after each `>`, `>>`,
 // `>|`, `&>`, `N>` the shell word - quoted spans taken up to the MATCHING
@@ -2034,15 +2033,12 @@ function handoverCommitVerdict(ev, lastCdDir) {
     if (!handoverGuardOn) return null;
     const hits = committedHandovers(ev, lastCdDir);
     if (!hits) return null;
-    return (
-      'anti-hall git-guard: BLOCKED. This commit includes a session handover (' +
-      hits.slice(0, 3).join(', ') + (hits.length > 3 ? ', ...' : '') + '). Handovers are ' +
-      'local session state and are never committed. To unstage a NEW one: ' +
-      '`git restore --staged <path>`. If it is ALREADY tracked: `git rm --cached <path>` ' +
-      'and commit that removal (allowed). If the owner explicitly asked to commit this ' +
-      'file, the override is the ~/.anti-hall/skip.json git-guard escape hatch (direct ' +
-      'human instruction only).'
-    );
+    return gm({
+      what: 'this commit includes a session handover (' + hits.slice(0, 3).join(', ') + (hits.length > 3 ? ', ...' : '') + ') and is blocked.',
+      why: 'Handovers are local session state and are never committed.',
+      instead: 'unstage a NEW one with `git restore --staged <path>`; if ALREADY tracked, `git rm --cached <path>` and commit that removal (allowed).',
+      override: skipCmd('git-guard') + ' (only if the owner explicitly asked to commit this file)',
+    });
   } catch (_) {
     return null; // fail open
   }
@@ -2295,35 +2291,29 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
   // --- Rule 2: force push ---
   if (sub === 'push') {
     if (isForcePush(rest)) {
-      return (
-        'anti-hall git-guard: BLOCKED. Force push detected. Rewriting published ' +
-        'history is a deliberate human action - do it manually with explicit ' +
-        'owner confirmation, never from an automated push.'
-      );
+      return gm({
+      what: 'force push is blocked.',
+      why: 'Rewriting published history is a deliberate human action.',
+      instead: 'do it manually with explicit owner confirmation, never from an automated push.',
+    });
     }
     if (isDeleteRefPush(rest)) {
-      return (
-        'anti-hall git-guard: BLOCKED. Remote ref deletion detected (push --delete / -d / ' +
-        '--prune / an empty-source :<ref> refspec). Deleting published branches or tags ' +
-        'needs explicit owner confirmation. If the owner has asked for this exact ' +
-        'deletion, the override is the ~/.anti-hall/skip.json git-guard escape hatch ' +
-        '(direct human instruction only); otherwise leave the ref.'
-      );
+      return gm({
+      what: 'remote ref deletion (push --delete / -d / --prune / an empty-source :<ref> refspec) is blocked.',
+      why: 'Deleting published branches or tags needs explicit owner confirmation.',
+      instead: 'leave the ref.',
+      override: skipCmd('git-guard') + ' (only if the owner asked for this exact deletion)',
+    });
     }
     if (hasCmdSubstArg(rest)) {
-      return (
-        'anti-hall git-guard: BLOCKED. `git push` has an argument produced by a ' +
-        'command substitution / backtick expansion, which can smuggle a --force ' +
-        'flag past static inspection. Run the push with literal arguments (no ' +
-        '$( ) or backticks) so the force-push guard can verify it. If this is ' +
-        'message text (e.g. inside printf/echo written to a file), write that ' +
-        'file with the Write tool instead.' +
-        (/<<-?[ \t]*['"\\]?[A-Za-z_]/.test(currentRawCommand)
-          ? ' Heredoc bodies are scanned as shell even when a script only reads ' +
-            'them as text: write the script or note with the Write tool, then ' +
-            'run or reference the file.'
-          : '')
-      );
+      return gm({
+        what: '`git push` with an argument produced by command substitution / backticks is blocked.',
+        why: 'It can smuggle a --force flag past static inspection.',
+        instead: 'run the push with literal arguments (no dollar-paren or backticks). If this is message text in printf/echo written to a file, write that file with the Write tool instead.' +
+          (/<<-?[ \t]*['"\\]?[A-Za-z_]/.test(currentRawCommand)
+            ? ' Heredoc bodies are scanned as shell even when a script only reads them as text: write the script or note with the Write tool, then run or reference the file.'
+            : ''),
+      });
     }
   }
 
@@ -2338,12 +2328,11 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
     // would emit a Co-Authored-By / Generated-with trailer from a benign-looking
     // custom token, dodging the value scan below.
     if (hasSelfCreditTrailerKeyRemap(ev.args)) {
-      return (
-        'anti-hall git-guard: BLOCKED. `-c trailer.*.key=` remaps a custom ' +
-        'trailer token to an AI/assistant self-credit key (Co-Authored-By / ' +
-        'Generated-with). Remove the trailer remap - commits carry no AI ' +
-        'co-author credit.'
-      );
+      return gm({
+      what: 'a `-c trailer.*.key=` remap to an AI self-credit key (Co-Authored-By / Generated-with) is blocked.',
+      why: 'Commits carry no AI co-author credit.',
+      instead: 'remove the trailer remap.',
+    });
     }
     const msgs = inlineCommitMessages(rest);
     for (const m of msgs) {
@@ -2355,11 +2344,11 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
         SELF_CREDIT_COAUTHOR.test(m) || SELF_CREDIT_GENERATED.test(m) ||
         SELF_CREDIT_COAUTHOR.test(normalized) || SELF_CREDIT_GENERATED.test(normalized)
       ) {
-        return (
-          'anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant ' +
-          'self-credit trailer (Co-Authored-By / "Generated with <AI>"). Remove it - ' +
-          'commits carry no AI co-author credit. Re-run the commit without that trailer.'
-        );
+        return gm({
+      what: 'a commit message with an AI/assistant self-credit trailer (Co-Authored-By / "Generated with <AI>") is blocked.',
+      why: 'Commits carry no AI co-author credit.',
+      instead: 're-run the commit without that trailer.',
+    });
       }
     }
     // JEV ADD-BLOCK (gitGuardSelfCredit, default mode "shadow" — see
@@ -2369,11 +2358,11 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
     // block, never relax the regex verdict.
     for (const m of msgs) {
       if (m && useJev && consultGitGuardSelfCreditJev(m)) {
-        return (
-          'anti-hall git-guard: BLOCKED. Commit message appears to credit an AI ' +
-          'assistant (paraphrased self-credit, flagged by the Jev classifier — not ' +
-          'a literal trailer match). Remove it - commits carry no AI co-author credit.'
-        );
+        return gm({
+      what: 'a commit message that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.',
+      why: 'Commits carry no AI co-author credit.',
+      instead: 'reword the message and re-run.',
+    });
       }
     }
 
@@ -2410,22 +2399,20 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
       if (hasSelfCreditVerdict === null
         ? (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text))
         : hasSelfCreditVerdict) {
-        return (
-          'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`, ' +
-          'read from a heredoc body or file) contains an AI/assistant self-credit ' +
-          'trailer (Co-Authored-By / "Generated with <AI>"). Remove it - commits ' +
-          'carry no AI co-author credit. Re-run the commit without that trailer.'
-        );
+        return gm({
+      what: 'a commit message (via `-F`/`--file`, from a heredoc body or file) with an AI/assistant self-credit trailer is blocked.',
+      why: 'Commits carry no AI co-author credit.',
+      instead: 're-run the commit without that trailer.',
+    });
       }
       // JEV ADD-BLOCK (gitGuardSelfCredit) — same twin call as the inline
       // -m/--trailer path above, for a `-F`/`--file`-sourced message.
       if (useJev && consultGitGuardSelfCreditJev(text)) {
-        return (
-          'anti-hall git-guard: BLOCKED. Commit message (via `-F`/`--file`) appears ' +
-          'to credit an AI assistant (paraphrased self-credit, flagged by the Jev ' +
-          'classifier — not a literal trailer match). Remove it - commits carry no ' +
-          'AI co-author credit.'
-        );
+        return gm({
+      what: 'a commit message (via `-F`/`--file`) that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.',
+      why: 'Commits carry no AI co-author credit.',
+      instead: 'reword the message and re-run.',
+    });
       }
     }
   }
@@ -2433,13 +2420,11 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
   // --- Rule 1 (whole command): any commit-creating git verb whose command
   // text carries a self-credit trailer line, however it reaches git ---
   if (COMMIT_CREATING.has(sub) && hasSelfCredit(currentRawCommand)) {
-    return (
-      'anti-hall git-guard: BLOCKED. This command creates a commit (git ' + sub + ') ' +
-      'and its text contains an AI/assistant self-credit trailer line ' +
-      '(Co-Authored-By / "Generated with <AI>") - via a pipe, variable, file ' +
-      'written in the same command, or similar. Remove it - commits carry no AI ' +
-      'co-author credit.'
-    );
+    return gm({
+      what: 'a command that creates a commit (git ' + sub + ') and carries an AI/assistant self-credit trailer line is blocked.',
+      why: 'Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).',
+      instead: 'remove the trailer line and re-run.',
+    });
   }
   return null;
 }
@@ -2786,10 +2771,7 @@ function main() {
   const msg = scanCommand(cmd, 0, cwd);
   if (msg) {
     if (looksLikeFileWriteShape(cmd)) {
-      return block(msg + '\nHint: this file\'s content was scanned as shell - write ' +
-        'the file with the Write tool or the Edit tool instead of a Bash heredoc ' +
-        '(Write/Edit are not shell-scanned), then reference that file path in a ' +
-        'plain follow-up command (e.g. `devswarm.js send --message-file <path>`).');
+      return block(msg + '\nTip: this file\'s content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `devswarm.js send --message-file <path>`).');
     }
     return block(msg);
   }

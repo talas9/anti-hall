@@ -774,6 +774,7 @@ function isNotesTarget(filePath, cwd, payload) {
 }
 
 // The coordinator delegation block text for `toolLabel` (e.g. 'Edit', 'Write').
+const bm0 = () => require('./lib/block-message.js');
 function delegationReason(toolLabel, cwd, payload) {
   const codexHost = require('./lib/host-text.js').isCodex(payload);
   const SUB = codexHost ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent';
@@ -785,83 +786,52 @@ function delegationReason(toolLabel, cwd, payload) {
     devswarmActive = false; // fail-open: treat as standalone/dormant
   }
 
-  // SKIP-GUARD OVERRIDE HINT (papercut fix): the block message never told the
-  // agent the sanctioned override exists, and the reason title's "DEVSWARM
-  // EDIT-DELEGATION RULE" mismatched the real skip key ("edit-guard"), which
-  // misled agents into writing a useless "devswarm-edit-delegation" key instead.
-  // Appended verbatim to ALL THREE reason branches below — the skip key is
-  // ALWAYS "edit-guard" regardless of DevSwarm role/activity.
-  const SKIP_HINT = ' If the user EXPLICITLY instructed you to make THIS edit ' +
-    'yourself, that is the documented override — run ' + skipCommand('edit-guard') +
-    ' to record your consent (~/.anti-hall/skip.json, 15-min TTL), then retry. ' +
-    'Never skip on your own initiative.';
-
-  // Points at the exempt locations so a coordinator's own notes/reports need no
-  // delegation; repo docs still need a subagent or a trusted edit-allow.json.
-  const NOTES_HINT = codexHost
-    ? ' Session notes/reports can go in .anti-hall/history/** (exempt); repo docs need ' + SUB +
-      ' or a trusted .anti-hall/edit-allow.json.'
-    : ' Session notes/reports can go in .anti-hall/history/** or the ' +
-    'scratchpad (exempt); repo docs need a subagent or a trusted .anti-hall/edit-allow.json.';
-
+  // Shared shape (lib/block-message.js). The skip key is ALWAYS "edit-guard"
+  // regardless of DevSwarm role/activity. Exempt locations are named so a
+  // coordinator's own notes/reports need no delegation. Codex wording: only the
+  // delegate noun and the (absent) scratchpad exemption differ.
+  const bm = require('./lib/block-message.js');
+  const override = skipCommand('edit-guard') + ' (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry';
+  const NOTES = codexHost
+    ? 'session notes/reports in .anti-hall/history/**; repo docs need ' + SUB + ' or a trusted .anti-hall/edit-allow.json'
+    : 'session notes/reports in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json';
+  const what = toolLabel + ' edit blocked: the ' + (devswarmActive ? 'orchestrator' : 'coordinator') + ' does not touch files directly.';
   let reason;
   if (devswarmActive) {
-    // Topology-aware noun: a child workspace is a sub-orchestrator, but the root
-    // session is the primary/main orchestrator — the old wording hardcoded
-    // "sub-orchestrator" even for the Primary. Fail-open: if devswarm-role
-    // require/throws, default to the current (sub-orchestrator) wording. This only
-    // changes the noun; the block decision is identical for both roles.
-    let childWorkspace = true; // default to current wording on any failure
+    // Topology-aware noun (child workspace = sub-orchestrator, root = primary);
+    // fail-open to the generic wording. The block decision is identical for both.
+    let childWorkspace = true;
     try {
       childWorkspace = require('./lib/devswarm-role.js').isChildWorkspace(process.env);
     } catch (_) {
-      childWorkspace = true; // fall back to current generic (sub-orchestrator) wording
+      childWorkspace = true;
     }
-    // PRIMARY redirect names the RIGHT primitive first. The Primary's top fan-out
-    // tier is a CHILD WORKSPACE (docs/KB-devswarm-hivecontrol.md §8.1-8.2); naming
-    // "spawn a subagent" as the only exit at the exact point the Primary is blocked
-    // from working is what drove Primaries to decompose feature-scale work into
-    // subagents instead of workspaces. No mechanical scale classifier is used (a
-    // false positive would break legitimate subagent use) — the reason states the
-    // CHOICE and lets the model classify. The CHILD wording is unchanged, and the
-    // BLOCK DECISION is identical for both roles (only the redirect text differs).
-    // The workspace recommendation is shared with the other Primary tier text
-    // (lib/primary-tier.js): a repo that forbids workspaces for real work (or
-    // devswarm.dispatchTierText off) gets the subagent-only advice. Fail-open
-    // to the subagent-only text. Advice text only; the block is unchanged.
+    // PRIMARY redirect names the RIGHT primitive first: the Primary's top fan-out
+    // tier is a CHILD WORKSPACE (docs/KB-devswarm-hivecontrol.md 8.1-8.2). No
+    // mechanical scale classifier (a false positive would break legitimate
+    // subagent use) - the text states the CHOICE. Fail-open to subagent-only text.
     let tierText = false;
     try { tierText = !childWorkspace && require('./lib/primary-tier.js').primaryTierTextOn(process.env, cwd); } catch (_) { tierText = false; }
-    reason = childWorkspace
-      ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
-         'directly in its workspace — spawn a subagent to make this edit and have it ' +
-         'report a tight summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolLabel + ')')
-      : !tierText
-      ? ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
-         'files directly — spawn a subagent to make this edit and have it report a tight ' +
-         'summary.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolLabel + ')')
-      : ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
-         'files directly. CHOOSE THE TIER: if this edit belongs to a workspace-scale ' +
-         'MATTER (a feature/fix/deploy — multi-step, own branch, own review), spin a ' +
-         'CHILD WORKSPACE and let it own the work: `node scripts/devswarm.js spawn ' +
-         '<branch> -p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for ' +
-         'genuinely small/scoped work (a one-file tweak, a mechanical transform): spawn ' +
-         'a subagent to make this edit and have it report a tight summary. Do NOT hand a ' +
-         'workspace-scale matter to a subagent.' + NOTES_HINT + SKIP_HINT + ' (tool: ' + toolLabel + ')');
+    reason = bm.blockMessage({
+      guard: 'edit-guard',
+      what,
+      why: 'Raw edits in the main thread flood it; a worker returns a tight summary instead.',
+      instead: tierText
+        ? 'workspace-scale matter (feature/fix/deploy, own branch + review): `node scripts/devswarm.js spawn <branch> -p "<brief>"` (guard-exempt, run inline). Small scoped edit: spawn ' + SUB + ' and have it report a tight summary. Never hand a workspace-scale matter to ' + SUB + '.'
+        : 'spawn ' + SUB + ' to make this edit and have it report a tight summary.',
+      allowed: NOTES,
+      override,
+    });
   } else {
-    reason =
-      'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
-      'a subagent to make this edit and have it report a tight summary. The ' +
-      'coordinator synthesizes the summary; raw edits never happen in the main ' +
-      'thread.' + SKIP_HINT + ' (tool: ' + toolLabel + ')';
+    reason = bm.blockMessage({
+      guard: 'edit-guard',
+      what,
+      why: 'Raw edits never happen in the main thread; the coordinator synthesizes a summary.',
+      instead: 'spawn ' + SUB + ' to make this edit and have it report a tight summary.',
+      override,
+    });
   }
 
-  if (codexHost) {
-    // Codex wording: the sub-agent primitive is spawn_agent. Only the delegate
-    // noun changes; the Claude text above is untouched.
-    reason = reason
-      .replace(/spawn a subagent to make this edit/g, 'spawn ' + SUB + ' to make this edit')
-      .replace('Do NOT hand a workspace-scale matter to a subagent.', 'Do NOT hand a workspace-scale matter to a sub-agent.');
-  }
   return reason;
 }
 
@@ -925,14 +895,13 @@ function main() {
   // under a trusted name on the next invocation. Checked before the
   // isCoordinator gate on purpose (R3A1-3).
   if (filePaths.some((p) => resolvesIntoLauncherBinDir(p, cwd))) {
-    block(
-      'anti-hall edit-guard: BLOCKED. This ' + toolName + ' targets ' +
-      '~/.anti-hall/bin/, the stable launcher directory anti-hall installs ' +
-      'and manages itself (update / doctor --repair). Overwriting a launcher ' +
-      'file here would run arbitrary code under a trusted name on the next ' +
-      'invocation. Leave that directory alone; the rest of .anti-hall/** ' +
-      '(handovers, progress, history, state) stays writable as usual.'
-    );
+    block(bm0().blockMessage({
+      guard: 'edit-guard',
+      what: toolName + ' into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.',
+      why: 'anti-hall installs and refreshes those files itself; overwriting one would run arbitrary code under a trusted name.',
+      instead: 'leave that directory alone.',
+      allowed: 'the rest of .anti-hall/** (handovers, progress, history, state).',
+    }));
   }
 
   // Only block in coordinator context (subagents pass through) past this point.
@@ -943,12 +912,12 @@ function main() {
   // targets cannot be checked, and Codex's own parser (which this one ports)
   // rejects the same text, so the block costs nothing.
   if (patchError !== null) {
-    block(
-      'anti-hall edit-guard: could not parse this apply_patch (' + patchError + '), so its ' +
-      'target files cannot be checked against the edit-delegation rule. Send a well-formed ' +
-      'patch (*** Begin Patch ... *** End Patch), or delegate the edit to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '. (tool: ' +
-      toolName + ')'
-    );
+    block(bm0().blockMessage({
+      guard: 'edit-guard',
+      what: 'this apply_patch could not be parsed (' + patchError + '), so its targets cannot be checked.',
+      why: 'Edits in the main thread must be checked against the delegation rule.',
+      instead: 'send a well-formed patch (*** Begin Patch ... *** End Patch), or delegate the edit to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '.',
+    }));
   }
 
   // Advisory inline-work nudge (devswarm.inlineWorkNudge, Primary only, once per
@@ -971,24 +940,22 @@ function main() {
     const verdict = editVerdict(filePath, cwd, payload);
     if (verdict === 'allow') continue;
     if (verdict === 'block-self-edit') {
-      block(
-        'EDIT-ALLOW SELF-EDIT: .anti-hall/edit-allow.json decides which files the main thread ' +
-        'may edit directly, so the main thread never edits it. Ask the user to change it (or ' +
-        'delegate the change to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '), then the user re-trusts it with `node ' +
-        '<plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`. (tool: ' + toolName + ')'
-      );
+      block(bm0().blockMessage({
+        guard: 'edit-guard',
+        what: toolName + ' of .anti-hall/edit-allow.json is blocked.',
+        why: 'That file decides which files the main thread may edit directly, so the main thread never edits it.',
+        instead: 'ask the user to change it (or delegate the change to ' + (require('./lib/host-text.js').isCodex(payload) ? require('./lib/host-text.js').CODEX_SUBAGENT : 'a subagent') + '), then the user re-trusts it with `node <plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`.',
+      }));
     }
     if (verdict === 'block-handover') {
-      block(
-        'HANDOVER-LOCATION RULE: a NEW session-handover doc belongs under ' +
-        '.anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (see the `handover` skill, ' +
-        'which computes <date>/<session-id> for you) — not at this path. Write ' +
-        'handovers under .anti-hall/handovers/** (exempt); copy elsewhere afterwards ' +
-        'if the project wants one. If this is an intentional exception, honor it via ' +
-        "the existing skip mechanism — run " + skipCommand('edit-guard') + " " +
-        '(~/.anti-hall/skip.json, 15-min TTL), then retry. Never skip on your own ' +
-        'initiative. (tool: ' + toolName + ')'
-      );
+      block(bm0().blockMessage({
+        guard: 'edit-guard',
+        what: toolName + ' of a new session-handover doc at this path is blocked.',
+        why: 'New handovers belong under .anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (the `handover` skill computes <date>/<session-id>).',
+        instead: 'write it under .anti-hall/handovers/** and copy elsewhere afterwards if the project wants one.',
+        allowed: '.anti-hall/handovers/**.',
+        override: skipCommand('edit-guard') + ' (~/.anti-hall/skip.json, 15-min TTL), then retry',
+      }));
     }
     block(delegationReason(toolName, cwd, payload));
   }

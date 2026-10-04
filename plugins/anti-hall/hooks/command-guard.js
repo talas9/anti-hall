@@ -636,15 +636,14 @@ function detectSubagentMailboxTouch(command, depth) {
   return false;
 }
 function buildSubagentMailboxReason() {
-  return 'DEVSWARM SUBAGENT MAILBOX GUARD: this Bash command invokes the DevSwarm mailbox ' +
-    '(inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, ' +
-    'reap-orphans, register, archive, or heartbeat) from SUBAGENT context. Only the workspace MAIN THREAD may own ' +
-    'the mailbox — a subagent that acks/reads it advances the shared cursor, so the main thread ' +
-    'silently misses mail (defect f0958b13fe2b). Do NOT delegate mailbox verbs to a subagent. ' +
-    'Report what you learned back to your parent instead; the main thread will drain the ' +
-    'mailbox itself. Read-only verbs (`inbox count`, `inbox peek-primary`, `mesh read --peek`, ' +
-    'plain `roster`) are unaffected. To disable this guard entirely, set ' +
-    'ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1.';
+  return bm().blockMessage({
+    guard: 'devswarm-mailbox',
+    what: 'a DevSwarm mailbox verb (inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, reap-orphans, register, archive, heartbeat) is blocked in a subagent.',
+    why: 'A subagent that acks or reads advances the shared cursor, so the main thread silently misses mail (defect f0958b13fe2b).',
+    instead: 'report what you learned to your parent; the main thread drains the mailbox itself. Never delegate mailbox verbs.',
+    allowed: '`inbox count`, `inbox peek-primary`, `mesh read --peek`, plain `roster`.',
+    override: 'set ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1 to disable this guard entirely',
+  });
 }
 
 // git-stash-guard (defect b08b26566b92): mutating `git stash` detection —
@@ -779,19 +778,21 @@ function hasProtectedStashesMarker(cwd) {
     return false;
   }
 }
+const bm = () => require('./lib/block-message.js');
 // buildGitStashReason(sub, subagent) -> closed-vocabulary block reason (NEVER
 // reflects command/stdin text). `sub` is drawn from a fixed, code-defined set
 // (see mutatingGitStashInSegment), never raw input.
 function buildGitStashReason(sub, subagent) {
   const scope = subagent
-    ? 'SUBAGENT context (a worker must never touch the coordinator\'s working tree via stash)'
-    : 'this repo (this guard is armed — .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1)';
-  return 'GIT STASH GUARD: `git stash ' + sub + '` is blocked in ' + scope + ' (defect b08b26566b92 — ' +
-    'a worker ran `git stash push` despite an explicit no-stash brief, stopped only by an ' +
-    '.git/index.lock race, not by any guard). Do NOT stash here. If you need to preserve ' +
-    'uncommitted work, commit it (even as a WIP commit) instead — never delegate a stash ' +
-    'to a subagent, and never stash over another agent\'s protected WIP. `git stash list` ' +
-    '(read-only) is unaffected.';
+    ? 'a subagent (workers must never touch the coordinator\'s working tree via stash)'
+    : 'this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1)';
+  return bm().blockMessage({
+    guard: 'git-stash-guard',
+    what: '`git stash ' + sub + '` is blocked for ' + scope + '.',
+    why: 'A stash can swallow another agent\'s protected WIP (defect b08b26566b92).',
+    instead: 'commit the work (even as a WIP commit); never delegate a stash to a subagent.',
+    allowed: '`git stash list` (read-only).',
+  });
 }
 
 // buildDevswarmSendReason(kind) -> closed-vocabulary block reason (NEVER reflects
@@ -799,14 +800,13 @@ function buildGitStashReason(sub, subagent) {
 // PLAN.md's CLI VERB CONTRACT: `send --to-primary|--to <meshId>` to direct-
 // message, `heartbeat <id> --summary "<text>"` to report status.
 function buildDevswarmSendReason(kind) {
-  const killSwitch = ' To disable this guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
-  return 'DEVSWARM MESH-ONLY MESSAGING: `hivecontrol workspace ' + kind + '` is blocked. ' +
-    'anti-hall\'s shared mesh store is the SOLE agent-initiated messaging transport for ' +
-    'DevSwarm — native per-worktree messaging (no from/to/broadcast) is replaced. Do NOT ' +
-    'delegate this to a subagent either — a delegated send writes the native queue ' +
-    'identically. Use the anti-hall DevSwarm CLI instead: `node scripts/devswarm.js send ' +
-    '--to-primary --message-file <path>` (or `--to <meshId>`) to direct-message, or `node ' +
-    'scripts/devswarm.js heartbeat <id> --summary "<text>"` to report status.' + killSwitch;
+  return bm().blockMessage({
+    guard: 'devswarm-mesh-only',
+    what: '`hivecontrol workspace ' + kind + '` is blocked.',
+    why: 'anti-hall\'s shared mesh store is the only agent-initiated messaging transport; a delegated send writes the native queue identically.',
+    instead: '`node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `node scripts/devswarm.js heartbeat <id> --summary "<text>"` to report status.',
+    override: 'set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely',
+  });
 }
 
 // File-read verbs whose path ARGUMENTS must be classified against the DevSwarm
@@ -915,20 +915,23 @@ function detectProtectedFileRead(command, home, cwd, depth) {
 // desync + store-layering violation — NOT "drains the queue", which is false for
 // the append-only inbox). NEVER echoes the path (injection hygiene).
 function buildRawFileReadReason(kind) {
-  const killSwitch = ' To disable this guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
+  const override = 'set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely';
   if (kind === 'deny-store') {
-    return 'DEVSWARM STORE READ-GUARD: reading the raw DevSwarm store (the SQLite db + ' +
-      'sidecars, or the store journal NDJSON) via a shell read is blocked. The store is ' +
-      'the write/derive layer — hooks/agents NEVER open it (devswarm-store.js layering); ' +
-      'a raw read risks a partial/inconsistent view and a store-layering violation. Read ' +
-      'through the wrapper: `devswarm.js inbox read <id>` (or `devswarm.js inbox pull ' +
-      '<id>` to import first).' + killSwitch;
+    return bm().blockMessage({
+      guard: 'devswarm-store-read',
+      what: 'a shell read of the raw DevSwarm store (SQLite db, sidecars, journal NDJSON) is blocked.',
+      why: 'The store is the write/derive layer; a raw read risks a partial view and a layering violation.',
+      instead: '`devswarm.js inbox read <id>` (or `devswarm.js inbox pull <id>` first to import).',
+      override,
+    });
   }
-  return 'DEVSWARM INBOX READ-GUARD: reading the raw DevSwarm inbox file via a shell ' +
-    'read is blocked. This does NOT drain the queue (append-only NDJSON), but a raw read ' +
-    'BYPASSES THE DURABLE CURSOR — it causes CURSOR DESYNC (messages re-processed or ' +
-    'skipped) and violates the store layering. Read the safe, cursor-tracked way: ' +
-    '`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.' + killSwitch;
+  return bm().blockMessage({
+    guard: 'devswarm-inbox-read',
+    what: 'a shell read of the raw DevSwarm inbox file is blocked.',
+    why: 'It does not drain the queue, but bypasses the durable cursor, so messages get re-processed or skipped.',
+    instead: '`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.',
+    override,
+  });
 }
 
 // buildDevswarmReason(kind, env) -> closed-vocabulary block reason. NEVER reflects
@@ -944,32 +947,26 @@ function buildDevswarmReason(kind, env) {
   try { inboxCmd = require('./lib/settings.js').getWithEnv('devswarm', 'inboxCmd', '', e); }
   catch (_) { inboxCmd = e.ANTIHALL_DEVSWARM_INBOX_CMD; }
   const hasInboxCmd = typeof inboxCmd === 'string' && inboxCmd.trim() !== '';
-  const doNotDelegate =
-    ' Do NOT delegate this to a subagent either — a delegated read drains the ' +
-    'queue identically.';
-  const viaDurable = hasInboxCmd
-    ? ' Read pending messages via the consumer-configured ANTIHALL_DEVSWARM_INBOX_CMD ' +
-      'command instead — it does not drain the native queue.'
-    : '';
-  const viaWrapper =
-    ' Use the anti-hall DevSwarm CLI instead — `devswarm.js inbox pull <id>` then ' +
-    '`devswarm.js inbox read <id>` — which reads via the durable cursor.';
-  const killSwitch =
-    ' To disable the DevSwarm read-guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
+  const instead = (hasInboxCmd ? 'read via the configured ANTIHALL_DEVSWARM_INBOX_CMD, or ' : '') +
+    '`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cursor). Do not delegate this to a subagent either.';
+  const override = 'set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely';
   if (kind === 'monitor') {
-    return 'DEVSWARM COORDINATOR-READ REDIRECT: `hivecontrol workspace monitor` is ' +
-      'a blocking long-poll with no default timeout — running it inline hangs the ' +
-      'shell/Bash call until a message arrives or the process is killed, and it ' +
-      'consumes the native message queue. Do NOT run it here.' +
-      doNotDelegate + viaDurable + viaWrapper + killSwitch;
+    return bm().blockMessage({
+      guard: 'devswarm-read-guard',
+      what: '`hivecontrol workspace monitor` is blocked.',
+      why: 'It is a long-poll with no default timeout: it hangs the shell until a message arrives and consumes the native queue.',
+      instead,
+      override,
+    });
   }
-  return 'DEVSWARM COORDINATOR-READ REDIRECT: `hivecontrol workspace read-messages` ' +
-    'is a DESTRUCTIVE read — it mark-reads / drains the native message queue. Under ' +
-    'DevSwarm the durable inbox cursor is the read path, so draining the native queue ' +
-    'loses messages the durable layer still needs. Do NOT run it here.' +
-    doNotDelegate + viaDurable + viaWrapper + killSwitch +
-    ' Note: `hivecontrol workspace message-count` reflects the NATIVE queue only; a ' +
-    '0 there does NOT mean there are no pending messages when a durable inbox is in use.';
+  return bm().blockMessage({
+    guard: 'devswarm-read-guard',
+    what: '`hivecontrol workspace read-messages` is blocked.',
+    why: 'It mark-reads and drains the native queue, losing messages the durable inbox still needs.',
+    instead,
+    allowed: '`message-count` reflects the NATIVE queue only; a 0 does not mean nothing is pending.',
+    override,
+  });
 }
 
 // Heredoc handling (opener kept, body skipped) fixes the confirmed root cause
@@ -4471,9 +4468,8 @@ function main() {
   // TEXT ONLY: same rule, same inline-allowed set. Rules clause keeps the exact
   // shapes the carve-out accepts.
   const SCRATCHPAD_SCRIPT_HINT =
-    'To capture READ-ONLY output yourself: write the command to a scratchpad script and run it with run_in_background (then read its output); each script run is counted as main-thread work. ' +
-    'State changes (commit, push, patch apply, gh mutations, repo edits) and test runs go to a subagent. ' +
-    'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A script piped to tail is STILL blocked in the foreground. ';
+    'To read output yourself: put a READ-ONLY command in a scratchpad script and run it with run_in_background (executable, literal absolute path, no VAR=... prefix, chain only wc/head/tail/grep -c/grep -m N; each run counts as main-thread work; a script piped to tail is still blocked in the foreground). ' +
+    'Commits, pushes, patch applies, gh mutations, repo edits and test runs go to a subagent.';
   // A leading `cd <dir>;` leaves the cwd unknown (only an unconditional `&&`
   // cd is tracked), so a relative-path check fails ONLY because of the `;`.
   // Hint exactly then: the same command joined with `&&` would qualify.
@@ -4481,7 +4477,7 @@ function main() {
   try {
     const m = /^(\s*cd\s+[^;&|\n]+?)\s*;/.exec(command);
     if (m && isBoundedVerificationCommand(m[1] + ' &&' + command.slice(m[0].length), { payload })) {
-      cdJoinHint = ' If the check is meant to run inline: use `cd <dir> &&`, not `;`.';
+      cdJoinHint = ' To run the check inline, use `cd <dir> &&`, not `;`.';
     }
   } catch (_) { /* hint is best-effort */ }
   // Workspace recommendation shared with the other Primary tier text
@@ -4490,67 +4486,28 @@ function main() {
   // to the subagent-only text.
   let tierText = false;
   try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(process.env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
-  const codexHost = require('./lib/host-text.js').isCodex(payload);
-  let reason;
-  if (codexHost) {
-    // Codex variant: no scratchpad-script path (no scratchpad dir, no
-    // run_in_background on Codex Bash), Codex sub-agent + cheap-tier wording.
-    const H = require('./lib/host-text.js');
-    const CODEX_HINT =
-      'State changes (commit, push, patch apply, gh mutations, repo edits) and test runs go to ' + H.CODEX_SUBAGENT + '. ';
-    const inlineCodex = INLINE_ALLOWED_HINT.replace('<scratch/tmp dir>', '<tmp dir>');
-    reason = devswarmPrimary && !tierText
-      ? (CODEX_HINT +
-         'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
-         'heavy/long/state-changing commands inline (raw output floods the main thread); ' +
-         'otherwise DELEGATE to ' + H.CODEX_CHEAP + ' that returns ' +
-         'only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-         inlineCodex + cdJoinHint)
-      : devswarmPrimary
-      ? (CODEX_HINT +
-         'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
-         'heavy/long/state-changing commands inline (raw output floods the main thread). ' +
-         'Otherwise CHOOSE THE TIER: if this belongs to a workspace-scale MATTER (a ' +
-         'feature/fix/deploy: multi-step, own branch, own review), spin a CHILD WORKSPACE ' +
-         'that owns it end-to-end: `node scripts/devswarm.js spawn <branch> ' +
-         '-p "<brief>"` (guard-exempt, run it inline). Only genuinely small/scoped work ' +
-         '(one command, a lookup, a scoped check) goes to ' + H.CODEX_CHEAP + ' that returns a tight summary. ' +
-         'Do NOT hand a workspace-scale matter to a sub-agent. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-         inlineCodex + cdJoinHint)
-      : (CODEX_HINT +
-         'COMMAND-DELEGATION RULE: heavy/long/state-changing commands never run inline in ' +
-         'the main coordinator context (raw output floods the main thread). Otherwise ' +
-         'DELEGATE to ' + H.CODEX_CHEAP + ': pass the command, let it ' +
-         'run and return only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-         inlineCodex + cdJoinHint);
-  }
-
-  if (!codexHost) reason = devswarmPrimary && !tierText
-    ? (SCRATCHPAD_SCRIPT_HINT +
-       'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
-       'heavy/long/state-changing commands inline (raw output floods the main thread); ' +
-       'otherwise DELEGATE to a subagent (cheap model: Haiku or similar) that returns ' +
-       'only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-       INLINE_ALLOWED_HINT + cdJoinHint)
-    : devswarmPrimary
-    ? (SCRATCHPAD_SCRIPT_HINT +
-       'DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
-       'heavy/long/state-changing commands inline (raw output floods the main thread). ' +
-       'Otherwise CHOOSE THE TIER: if this belongs to a workspace-scale MATTER (a ' +
-       'feature/fix/deploy: multi-step, own branch, own review), spin a CHILD WORKSPACE ' +
-       'that owns it end-to-end: `node scripts/devswarm.js spawn <branch> ' +
-       '-p "<brief>"` (guard-exempt, run it inline). Only genuinely small/scoped work ' +
-       '(one command, a lookup, a scoped check) goes to a subagent (cheap model: Haiku or ' +
-       'similar) that returns a tight summary. Do NOT hand a workspace-scale matter to a ' +
-       'subagent. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-       INLINE_ALLOWED_HINT + cdJoinHint)
-    : (SCRATCHPAD_SCRIPT_HINT +
-       'COMMAND-DELEGATION RULE: heavy/long/state-changing commands never run inline in ' +
-       'the main coordinator context (raw output floods the main thread). Otherwise ' +
-       'DELEGATE to a subagent (cheap model: Haiku or similar): pass the command, let it ' +
-       'run and return only a tight summary. ' + detected + (detail ? ' ' + detail : '') + ' — ' +
-       INLINE_ALLOWED_HINT + cdJoinHint);
-
+  const H = require('./lib/host-text.js');
+  const codexHost = H.isCodex(payload);
+  const heavyWhat = (cls && cls.kind === 'remote' ? 'state-changing remote command' : 'heavy command') +
+    (detail ? ' ' + detail : '') + ' blocked in the main thread.';
+  // Codex variant: no scratchpad-script path (no scratchpad dir, no
+  // run_in_background on Codex Bash), Codex sub-agent + cheap-tier wording.
+  const SUB = codexHost ? H.CODEX_SUBAGENT : 'a subagent';
+  const delegateTo = codexHost
+    ? 'delegate to ' + H.CODEX_CHEAP + ' that returns only a tight summary'
+    : 'delegate to a subagent (cheap model: Haiku or similar) that returns only a tight summary';
+  const howToRead = codexHost
+    ? 'Commits, pushes, patch applies, gh mutations, repo edits and test runs go to ' + SUB + '.'
+    : SCRATCHPAD_SCRIPT_HINT.trim();
+  const reason = bm().blockMessage({
+    guard: 'command-guard',
+    what: heavyWhat,
+    why: 'Raw output floods the main thread; a worker returns a tight summary instead.',
+    instead: devswarmPrimary && tierText
+      ? 'workspace-scale matter (feature/fix/deploy, own branch + review): `node scripts/devswarm.js spawn <branch> -p "<brief>"` (guard-exempt, run inline). One command or scoped check: ' + delegateTo + '. Never hand a workspace-scale matter to ' + SUB + '.'
+      : delegateTo + '. ' + howToRead + cdJoinHint,
+    allowed: codexHost ? INLINE_ALLOWED_HINT.replace('<scratch/tmp dir>', '<tmp dir>') : INLINE_ALLOWED_HINT,
+  });
   emitBlock(reason);
 }
 
