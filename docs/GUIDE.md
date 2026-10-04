@@ -189,8 +189,10 @@ Moved from plugins/anti-hall/README.md "How it works" (v0.107.0 doc sweep).
 
 ### Verify-first protocol (the core)
 
-- **SessionStart full protocol** — `verify-first-full.js` injects the FULL
-  verify-first + root-cause protocol in the Superpowers **Iron Law +
+- **SessionStart protocol** — by default (`context.protocolLevel=compact`) `verify-first-full.js`
+  injects a compact core that keeps every load-bearing clause inline and points at the generated
+  `PROTOCOL.md`; `context.protocolLevel=full` injects the FULL
+  verify-first + root-cause protocol described next, byte for byte, in the Superpowers **Iron Law +
   rationalization-table** form. It names the specific bypass excuses ("probably",
   "should work", "seems to", "I'll just assume", "looks done", "tests pass on first
   run") and includes a skill primer listing the core 4 skills (root-cause, orchestration,
@@ -201,7 +203,7 @@ Moved from plugins/anti-hall/README.md "How it works" (v0.107.0 doc sweep).
   not decoration), and avoid renderer-dropped syntax. Styling organizes, never pads.
   SessionStart is the primacy slot. Its companion `verify-first-orch.js` (also
   SessionStart) carries the always-on orchestration ruleset (rules A–N + the
-  DevSwarm-Primary workspace-tier rule W) — split out in 0.60.0 so both halves
+  DevSwarm-Primary workspace-tier rule W; by default inline at SessionStart, see `context.orchFullOn`) — split out in 0.60.0 so both halves
   clear the ~10k per-hook injection cap and land 100% inline instead of one
   spilling to a file (Claude Code leaves a 2,000-char preview inline and does not ask Claude to read the rest).
 - **Surviving compaction** — SessionStart re-fires after a compaction with
@@ -817,10 +819,10 @@ Moved from plugins/anti-hall/README.md "Features" (v0.107.0 doc sweep).
 | Component | Event | Purpose |
 |---|---|---|
 | `verify-first-full.js` | SessionStart | The verify-first FOUNDATION: full Iron-Law + rationalization-table protocol, the always-on **scope & fidelity** discipline (simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked / drop nothing), and the always-vs-conditional skill/disciplines index; survives compaction. |
-| `verify-first-orch.js` | SessionStart | (Default `context.protocolLevel=compact`: sends `ORCH_COMPACT` plus a per-session marker so `orch-on-spawn.js` delivers the full rules on the first spawn; Codex, unconfirmed platforms, a DevSwarm Primary and `protocolLevel=full` get the full text here. The compact core of `verify-first-full.js` points at `PROTOCOL.md`, the generated full text.) The companion to `verify-first-full.js` carrying the always-on **orchestration discipline** ruleset (rules A–N + the DevSwarm-Primary workspace-tier rule W). SPLIT from `verify-first-full.js` in 0.60.0 because the combined ~15.3k-char payload exceeded the ~10k per-hook injection cap — over which Claude Code spills the overflow to a file instead of delivering it inline, so only ~2k chars landed and rules A–N + rule W reached no session inline. Each half is now under the cap; zero content dropped. Survives compaction. |
+| `verify-first-orch.js` | SessionStart | (Default: the full rules inline here. Experimental `context.orchFullOn=spawn` sends `ORCH_COMPACT` plus a per-session marker so `orch-on-spawn.js` delivers the full rules on the first spawn instead. The compact core of `verify-first-full.js` points at `PROTOCOL.md`, the generated full text.) The companion to `verify-first-full.js` carrying the always-on **orchestration discipline** ruleset (rules A–N + the DevSwarm-Primary workspace-tier rule W). SPLIT from `verify-first-full.js` in 0.60.0 because the combined ~15.3k-char payload exceeded the ~10k per-hook injection cap — over which Claude Code spills the overflow to a file instead of delivering it inline, so only ~2k chars landed and rules A–N + rule W reached no session inline. Each half is now under the cap; zero content dropped. Survives compaction. |
 | `verify-first-subagent.js` | SubagentStart | Re-injects the Iron Law + rationalization table + positive rules + scope-fidelity into each spawned subagent. Deliberately omits the orchestration/delegate block (subagents are workers; re-injecting it would recreate deep nesting). Shared core extracted to `verify-first-core.js`. |
-| `verify-first-core.js` | Shared module (not a hook) | Single source of truth for every protocol text: today's full text (`CORE_FULL`, `ORCH_FULL`, the subagent block), the compact forms (`CORE_COMPACT`, `ORCH_COMPACT`, `WORKER`) and the generator input for `PROTOCOL.md`. Shared by `verify-first-full.js`, `verify-first-orch.js`, `verify-first-subagent.js`, `orch-on-spawn.js` and `tools/gen-protocol.js`. |
-| `orch-on-spawn.js` | PreToolUse (Agent\|Task\|Workflow) | Sends the full orchestration rules (A-N) once per context epoch on the coordinator's first spawn, when `verify-first-orch.js` sent only the compact lines and left a `pending` marker (`~/.anti-hall/orch-full/`). One sender per epoch (O_EXCL claim), a retry slot after a 2-minute lease if no delivered copy shows in the transcript; silent for subagents. Claude Code only; Codex gets the full text at SessionStart. Obeys `context.verifyFirstOrchestration` and the `orch-on-spawn` skip name. |
+| `verify-first-core.js` | Shared module (not a hook) | Single source of truth for every protocol text: today's full text (`CORE_FULL`, `ORCH_FULL`, the subagent block), the compact forms (`CORE_COMPACT_BODY` / `coreCompactSession()`, `orchCompact()`, `WORKER`) and the generator input for `PROTOCOL.md`. Shared by `verify-first-full.js`, `verify-first-orch.js`, `verify-first-subagent.js`, `orch-on-spawn.js` and `tools/gen-protocol.js`. |
+| `orch-on-spawn.js` | PreToolUse (Agent\|Task\|Workflow) | **Experimental, opt-in (`context.orchFullOn=spawn`); silent by default.** Sends the full orchestration rules (A-N) once per context epoch on the coordinator's first spawn, when `verify-first-orch.js` sent only the compact lines and left a `pending` marker (`~/.anti-hall/orch-full/`). One sender per epoch (O_EXCL claim), a retry slot after a 2-minute lease if no delivered copy shows in the transcript; silent for subagents. Claude Code only; Codex gets the full text at SessionStart. Unverified live (landing point, transcript shape, Workflow spawns). Obeys `context.verifyFirstOrchestration` and the `orch-on-spawn` skip name. |
 | `verify-first.js` | UserPromptSubmit | Short, varying one-line nudge each turn (anti-habituation). |
 | `git-guard.js` | PreToolUse (Bash) | Blocks AI self-credit attribution — in `git commit` trailers AND in `gh pr/issue/release create\|edit\|comment` `--body`/`--title` (the 🤖 footer, Co-Authored-By, claude.com/claude-code link) — plus `git push --force` and remote branch/tag deletion (`--delete`, `-d`, `:ref`, `--prune`). Inline values only (`--body-file` is fail-open). |
 | `api-guard.js` | PreToolUse (Write/Edit/MultiEdit) | Blocks code that references a **non-existent** stdlib/builtin API — resolves `module.attr` in the code-to-be-written against the installed `python3`/`node` and refuses the write when the attribute is fabricated. The mechanical answer to API hallucination. Default = stdlib/builtins (import-safe); opt-in `ANTIHALL_API_GUARD_THIRDPARTY=1` also checks installed 3rd-party packages (off by default — verifying a package imports it, running its code at edit time). 0 FP + full in-scope catch on `eval/api-guard-bench.js`; never probes local/relative modules; fail-open; skip-hatch. |
@@ -1172,7 +1174,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `context.verifyFirstSession` | `true` | — | verify-first-full (SessionStart): inject the full verify-first protocol (also re-injected after compaction). |
 | `context.verifyFirstOrchestration` | `true` | — | verify-first-orch (SessionStart): inject the orchestration discipline for the main thread. |
 | `context.protocolLevel` | `compact` (`compact`/`full`) | `ANTIHALL_PROTOCOL_LEVEL` | Size of the injected verify-first and orchestration text. `compact` (default): a short core with every load-bearing clause inline, pointing at `PROTOCOL.md`; `full`: today's complete text on every channel, byte for byte (the one-key rollback). |
-| `context.orchFullOn` | `auto` (`auto`/`spawn`/`session`/`off`) | `ANTIHALL_ORCH_FULL_ON` | When the full orchestration rules A-N are sent under `compact`: `auto` = once on the first Agent/Task/Workflow spawn of each context epoch when Claude Code is positively detected (the Claude hooks.json passes `--host=claude`), else at SessionStart; `spawn` is coerced to `session` when the platform is not confirmed; `session` = inline at SessionStart; `off` = compact lines only. Ignored under `full`; a DevSwarm Primary always gets the full text at SessionStart. |
+| `context.orchFullOn` | `auto` (`auto`/`spawn`/`session`/`off`) | `ANTIHALL_ORCH_FULL_ON` | When the full orchestration rules A-N are sent under `compact`: `auto` (default) = `session` = inline at SessionStart next to the compact core; `spawn` = **experimental, opt-in**: compact lines at SessionStart and the full text once on the first Agent/Task/Workflow spawn of each context epoch, only with positive Claude evidence (`--host=claude` in the Claude hooks.json), otherwise coerced to `session`; spawn delivery is not yet verified live, so it is not the default; `off` = compact lines only. Ignored under `full`; a DevSwarm Primary always gets the full text at SessionStart. Settings/env only (no `/config` row). |
 | `context.verifyFirstTurn` | `true` | — | verify-first (UserPromptSubmit): the short per-turn verify-first nudge. |
 | `context.verifyFirstSubagent` | `true` | — | verify-first-subagent (SubagentStart): inject the protocol into every subagent. |
 | `context.taskTracker` | `true` | — | task-tracker (UserPromptSubmit): the task-list discipline directive and per-turn reminder. |
@@ -1345,8 +1347,8 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 
 ## Configuration / tuning
 
-- **Verify-first wording** — edit `hooks/verify-first-full.js` (the full SessionStart
-  protocol) and the `NUDGES` array in `hooks/verify-first.js` (the per-turn one-liners).
+- **Verify-first wording** — edit `hooks/verify-first-core.js` (the single source of every protocol text;
+  then run `node tools/gen-protocol.js` to regenerate `PROTOCOL.md`, `protocol-md.test.js` fails on drift) and the `NUDGES` array in `hooks/verify-first.js` (the per-turn one-liners).
 - **Hard gates / force patterns** — `hooks/git-guard.js` holds the commit-trailer and
   force-push logic; `command-guard.js` and the other always-on guards cover deploy CLIs,
   payment commands, and bulk deletes at command dispatch. `ship-it` relies on these

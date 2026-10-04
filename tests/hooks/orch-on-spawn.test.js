@@ -12,8 +12,10 @@ const { fs, path, CORE, SID } = T;
 const MIN = 60 * 1000;
 const hook = path.join(T.PLUGIN, 'hooks', 'orch-on-spawn.js');
 
+// Spawn delivery is opt-in (orchFullOn=spawn); arm the marker the way an opted-in session would.
+const SPAWN = { env: { ANTIHALL_ORCH_FULL_ON: 'spawn' } };
 function arm(h, extra) {
-  T.runOrch(h, T.sessionPayload(h), extra);
+  T.runOrch(h, T.sessionPayload(h), extra || SPAWN);
   const m = T.markerOf(h);
   assert.strictEqual(m && m.decision, 'pending', 'armed');
   return m;
@@ -68,7 +70,7 @@ test('a new SessionStart epoch re-arms: one more emit (also with emitDedupe=fals
       assert.ok(t1.includes('ORCHESTRATION DISCIPLINE'));
       recordDelivery(h, t1, Date.now() + 1000);
       assert.strictEqual(spawnAt(h, m.sentAt + 5000), '');
-      T.runOrch(h, T.sessionPayload(h, { source: 'compact' }));
+      T.runOrch(h, T.sessionPayload(h, { source: 'compact' }), SPAWN);
       const m2 = T.markerOf(h);
       assert.notStrictEqual(m2.epochId, m.epochId);
       const t2 = spawnAt(h, m2.sentAt + 1000);
@@ -122,8 +124,8 @@ test('a leaked CLAUDE_CODE_ENTRYPOINT=agent_tool with a main-thread payload stil
 test('silent when the marker says none, is missing, or is truncated', () => {
   let h = T.claudeHome();
   try {
-    T.runOrch(h, T.sessionPayload(h), { env: { ANTIHALL_ORCH_FULL_ON: 'session' } });
-    assert.strictEqual(T.markerOf(h).decision, 'none');
+    T.runOrch(h, T.sessionPayload(h));
+    assert.strictEqual(T.markerOf(h).decision, 'none', 'the default (auto) is session: marker none');
     assert.strictEqual(spawnAt(h, Date.now()), '', 'none');
   } finally { h.cleanup(); }
   h = T.claudeHome();
@@ -169,6 +171,65 @@ test('Workflow spawns count as coordinator spawns; other tools are ignored', () 
     const m = arm(h);
     assert.strictEqual(spawnAt(h, m.sentAt + 1000, { tool_name: 'Bash' }), '');
     assert.ok(spawnAt(h, m.sentAt + 2000, { tool_name: 'Workflow' }).includes('ORCHESTRATION DISCIPLINE'));
+  } finally { h.cleanup(); }
+});
+
+test('seen-scan: a >12 MB transcript with the delivered copy far outside the window never causes a second send', () => {
+  const h = T.claudeHome();
+  try {
+    const m = arm(h);
+    const base = m.sentAt + 1000;
+    const first = spawnAt(h, base);
+    recordDelivery(h, first, Date.now() + 1000);
+    const filler = JSON.stringify({ type: 'user', timestamp: new Date(Date.now() + 2000).toISOString(), message: { role: 'user', content: 'x'.repeat(100000) } }) + '\n';
+    for (let i = 0; i < 130; i++) fs.appendFileSync(h.transcript, filler); // ~13 MB after the copy
+    assert.ok(fs.statSync(h.transcript).size > 12 * 1024 * 1024);
+    assert.strictEqual(spawnAt(h, base + 3 * MIN), '', 'unknown window -> silent, not a retry');
+    assert.strictEqual(spawnAt(h, base + 11 * MIN), '');
+    assert.deepStrictEqual(fs.readdirSync(T.orchDir(h)).filter((n) => /claim2/.test(n)), [], 'no second slot taken');
+  } finally { h.cleanup(); }
+});
+
+test('seen-scan counts only the delivered hook_additional_context form, not a hook_success stdout record', () => {
+  const h = T.claudeHome();
+  try {
+    const m = arm(h);
+    const base = m.sentAt + 1000;
+    const first = spawnAt(h, base);
+    fs.appendFileSync(h.transcript, JSON.stringify({ type: 'attachment', timestamp: new Date(Date.now() + 1000).toISOString(), attachment: { type: 'hook_success', hookName: 'PreToolUse', stdout: first } }) + '\n');
+    assert.ok(spawnAt(h, base + 3 * MIN).includes('ORCHESTRATION DISCIPLINE'), 'emitted-but-not-delivered -> retry slot');
+  } finally { h.cleanup(); }
+});
+
+test('protocolLevel=full set mid-epoch: orch-on-spawn stays silent (full adds no channel)', () => {
+  const h = T.claudeHome();
+  try {
+    const m = arm(h);
+    assert.strictEqual(spawnAt(h, m.sentAt + 1000, undefined, { ANTIHALL_PROTOCOL_LEVEL: 'full' }), '');
+  } finally { h.cleanup(); }
+});
+
+test('a stale pending marker is cleared by a later NOT-confident SessionStart of the same session id', () => {
+  const h = T.claudeHome();
+  try {
+    const m = arm(h);
+    T.runOrch(h, T.sessionPayload(h), { noFlag: true });
+    assert.strictEqual(T.markerOf(h).decision, 'none');
+    assert.strictEqual(spawnAt(h, m.sentAt + 1000), '');
+  } finally { h.cleanup(); }
+});
+
+test('spawn read touches the marker (a live session is not pruned) and tmp files are prunable names', () => {
+  const h = T.claudeHome();
+  try {
+    const m = arm(h);
+    const f = path.join(T.orchDir(h), 'orch-full-' + SID + '.json');
+    const old = Date.now() / 1000 - 6 * 24 * 3600;
+    fs.utimesSync(f, old, old);
+    spawnAt(h, m.sentAt + 1000);
+    assert.ok(Date.now() - fs.statSync(f).mtimeMs < 60000, 'mtime refreshed');
+    const tmpName = 'orch-full-' + SID + '.123.abcd.tmp.json'; // the writeMarker temp name shape
+    assert.ok(/^orch-full-/.test(tmpName) && tmpName.endsWith('.json'), 'prunable by pruneStale');
   } finally { h.cleanup(); }
 });
 

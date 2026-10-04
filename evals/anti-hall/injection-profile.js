@@ -191,9 +191,14 @@ const SCENARIOS = [
     { event: 'UserPromptSubmit', script: 'task-tracker.js', payload: 'userpromptsubmit.json', label: 'second-prompt', consumeBefore: true } ] },
   { id: 'tasklist-guard-nag', channel: 'stop', transcript: { edits: 4, tasks: 0 }, steps: [{ event: 'Stop', script: 'tasklist-guard.js', payload: 'stop.json' }] },
   { id: 'task-guard-nag', channel: 'stop', transcript: { edits: 0, tasks: 2 }, steps: [{ event: 'Stop', script: 'task-guard.js', payload: 'stop.json' }] },
-  // Claude-confident sequence: SessionStart -> first spawn -> second spawn -> compact -> spawn.
-  // Steps for scripts absent in the checkout (orch-on-spawn on a before leg) are skipped.
-  { id: 'seq-claude-confident', channel: 'sequence', steps: [
+  // Claude default (orchFullOn=auto -> session): ORCH_FULL inline at SessionStart, marker none, spawns silent.
+  // This is the sequence the size gate uses. Steps for scripts absent in the checkout are skipped.
+  { id: 'seq-claude-default', channel: 'sequence', steps: [
+    { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-claude.json', label: 'start', hostArg: true },
+    { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-1', optional: true },
+    { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-2', optional: true } ] },
+  // Claude, EXPERIMENTAL orchFullOn=spawn: SessionStart -> first spawn -> second spawn -> compact -> spawn.
+  { id: 'seq-claude-spawn', channel: 'sequence', env: { ANTIHALL_ORCH_FULL_ON: 'spawn' }, steps: [
     { event: 'SessionStart', script: 'verify-first-orch.js', payload: 'sessionstart-claude.json', label: 'start', hostArg: true },
     { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-1', optional: true },
     { event: 'PreToolUse', script: 'orch-on-spawn.js', payload: 'pretooluse-agent.json', label: 'spawn-2', optional: true },
@@ -314,7 +319,7 @@ function sessionChars(p) { return outChars(p, 'core-claude') + outChars(p, 'orch
 
 // metrics(p) -> the numbers the gate uses.
 function metrics(p) {
-  const seq = p.scenarios['seq-claude-confident'];
+  const seq = p.scenarios['seq-claude-default'];
   const lbl = (l) => { const o = seq && seq.outputs.find((x) => x.label === l); return o && !o.skipped ? o.chars : 0; };
   // Confident-sequence SessionStart = core + the sequence's own orch output (what Claude sends at start).
   const ss = outChars(p, 'core-claude') + lbl('start');
@@ -351,22 +356,28 @@ function metrics(p) {
 function checkD3(p) {
   const res = [];
   const add = (name, ok, detail) => res.push({ name, ok: !!ok, detail: detail || '' });
-  const seq = p.scenarios['seq-claude-confident'];
-  const get = (l) => seq && seq.outputs.find((x) => x.label === l);
+  const seq = p.scenarios['seq-claude-spawn'];
+  const dflt = p.scenarios['seq-claude-default'];
+  const get = (l, sc) => (sc || seq) && (sc || seq).outputs.find((x) => x.label === l);
   const spawn1 = get('spawn-1');
   if (!spawn1 || spawn1.skipped) return { applicable: false, results: res };
   const has = (o, re) => !!o && !o.skipped && re.test(o.text);
   const ORCH_FULL_RE = /ORCHESTRATION DISCIPLINE/;
-  add('claude-confident: ORCH_COMPACT at SessionStart (not full)', has(get('start'), /ORCHESTRATION \(main thread/) && !has(get('start'), ORCH_FULL_RE));
-  add('claude-confident: marker pending after SessionStart', get('start') && get('start').marker === 'pending');
-  add('claude-confident: compact names the spawn delivery', has(get('start'), /sent in full on your first spawn/));
-  add('claude-confident: ORCH_FULL exactly once on first spawn', has(spawn1, ORCH_FULL_RE));
-  add('claude-confident: none on second spawn', !get('spawn-2') || get('spawn-2').skipped || get('spawn-2').text === '');
-  add('claude-confident: epoch reset on compact, ORCH_FULL once more', has(get('spawn-after-compact'), ORCH_FULL_RE));
+  const silent = (o) => !o || o.skipped || o.text === '';
+  // Default (auto -> session): inline ORCH_FULL next to the compact core, no pending marker, spawns silent.
+  add('default: ORCH_FULL inline at SessionStart, marker none', has(get('start', dflt), ORCH_FULL_RE) && get('start', dflt).marker === 'none');
+  add('default: nothing on a spawn', silent(get('spawn-1', dflt)) && silent(get('spawn-2', dflt)));
+  // Experimental spawn mode.
+  add('spawn mode: ORCH_COMPACT at SessionStart (not full)', has(get('start'), /ORCHESTRATION \(main thread/) && !has(get('start'), ORCH_FULL_RE));
+  add('spawn mode: marker pending after SessionStart', get('start') && get('start').marker === 'pending');
+  add('spawn mode: compact names the spawn delivery', has(get('start'), /sent in full on your first spawn/));
+  add('spawn mode: ORCH_FULL exactly once on first spawn', has(spawn1, ORCH_FULL_RE));
+  add('spawn mode: none on second spawn', silent(get('spawn-2')));
+  add('spawn mode: epoch reset on compact, ORCH_FULL once more', has(get('spawn-after-compact'), ORCH_FULL_RE));
   const uc = p.scenarios['seq-unconfident'];
   const ucs = uc && uc.outputs.find((x) => x.label === 'start');
   const ucp = uc && uc.outputs.find((x) => x.label === 'spawn-1');
-  add('unconfident: ORCH_FULL at SessionStart, no marker, nothing on spawn', has(ucs, ORCH_FULL_RE) && ucs.marker === null && (!ucp || ucp.skipped || ucp.text === ''));
+  add('unconfident: ORCH_FULL at SessionStart, no marker, nothing on spawn', has(ucs, ORCH_FULL_RE) && ucs.marker === null && silent(ucp));
   const cx = p.scenarios['seq-codex'];
   const cxs = cx && cx.outputs.find((x) => x.label === 'start');
   add('codex-shaped sequence: ORCH_FULL at SessionStart, no marker', has(cxs, ORCH_FULL_RE) && cxs.marker === null);
@@ -488,7 +499,7 @@ function main(argv) {
   lines.push('  before: SessionStart ' + g.mb.sessionStartChars + ' + listing ' + g.mb.listingChars + '; subagent ' + g.mb.subagentNormal + ' / child ' + g.mb.subagentChild + '; codex hooks ' + g.mb.codexHooks);
   lines.push('  after : SessionStart ' + g.ma.sessionStartChars + ' + listing ' + g.ma.listingChars + '; subagent ' + g.ma.subagentNormal + ' / child ' + g.ma.subagentChild + '; codex hooks ' + g.ma.codexHooks);
   lines.push('  ratios: main ' + (g.ratios.main * 100).toFixed(1) + '%, subagent ' + (g.ratios.subagentNormal * 100).toFixed(1) + '%, child ' + (g.ratios.subagentChild * 100).toFixed(1) + '%, codex ' + (g.ratios.codexHooks * 100).toFixed(1) + '%, whole session ' + (g.ratios.wholeSession * 100).toFixed(1) + '%');
-  lines.push('  per session type, chars per context epoch (hooks + skill listing): before ' + g.mb.mainPerEpochNoSpawn + ' (spawn or not); after, no spawn ' + g.ma.mainPerEpochNoSpawn + ' (' + pct(g.ma.mainPerEpochNoSpawn / g.mb.mainPerEpochNoSpawn) + '), with a first spawn ' + g.ma.mainPerEpochWithSpawn + ' (' + pct(g.ma.mainPerEpochWithSpawn / g.mb.mainPerEpochNoSpawn) + ')');
+  lines.push('  per context epoch (hooks + skill listing), default settings: before ' + g.mb.mainPerEpochNoSpawn + ' (spawn or not); after ' + g.ma.mainPerEpochNoSpawn + ' (' + pct(g.ma.mainPerEpochNoSpawn / g.mb.mainPerEpochNoSpawn) + '), spawn or not (spawn delivery is opt-in)');
   for (const c of g.checks) lines.push('  [' + (c.ok ? 'PASS' : 'FAIL') + '] ' + c.name + ' (' + c.detail + ')');
   if (!g.d3Applicable) lines.push('  [n/a ] D3 assertions: checkout has no orch-on-spawn');
   for (const side of ['before', 'after']) for (const c of report.selfChecks[side]) lines.push('  [' + (c.ok ? 'PASS' : 'FAIL') + '] self-check(' + side + '): ' + c.name + (c.detail ? ' (' + c.detail + ')' : ''));

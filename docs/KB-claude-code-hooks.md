@@ -199,7 +199,7 @@ doc; the "silent truncation" conclusion is superseded by the documented spill-to
 (`tests/hooks/injection-cap.test.js`). The ~15.3k-char doctrine payload is split across two
 `SessionStart` registrations (`plugins/anti-hall/hooks/verify-first-full.js` and
 `verify-first-orch.js`) so each lands 100% inline instead of spilling to a file with only a
-2,000-char preview. The split stays.
+2,000-char preview. The split stays. (Cost-trim Phase 3: the default text is now a compact core pointing at `PROTOCOL.md`; `context.protocolLevel=full` restores the text above.)
 
 ---
 

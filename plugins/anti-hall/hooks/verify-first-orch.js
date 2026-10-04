@@ -23,11 +23,14 @@
 //   - context.protocolLevel=full, a DevSwarm Primary, Codex or any not-confident platform
 //     (lib/auto-handover-text.js isClaudeConfident: needs the `--host=claude` argv flag that only
 //     the Claude hooks.json command carries) -> ORCH_FULL inline here, today's text.
-//   - Claude + confident + context.orchFullOn auto|spawn -> ORCH_COMPACT here, and a per-session
-//     marker (lib/orch-full-state.js) tells orch-on-spawn.js to send ORCH_FULL once on the first
-//     Agent/Task/Workflow spawn of this epoch. This hook runs on EVERY SessionStart source, so each
+//   - context.orchFullOn=auto (default) and session -> ORCH_FULL inline here, next to the compact core.
+//     Spawn-time delivery is EXPERIMENTAL and opt-in (orchFullOn=spawn) until the live probes (does a
+//     PreToolUse additionalContext reach the coordinator, the real transcript line shape, the Workflow
+//     discriminator) prove it: Claude + confident + spawn -> ORCH_COMPACT here, and a per-session marker
+//     (lib/orch-full-state.js) tells orch-on-spawn.js to send ORCH_FULL once on the first Agent/Task/
+//     Workflow spawn of this epoch. This hook runs on EVERY SessionStart source, so each
 //     compaction/clear/resume re-arms the marker with a fresh epochId.
-//   - orchFullOn=session -> ORCH_FULL inline; off -> ORCH_COMPACT only.
+//   - orchFullOn=off -> ORCH_COMPACT only.
 //   The marker says `none` whenever this hook sent full text (or nothing), so a stale `pending`
 //   never survives into a new epoch.
 //
@@ -96,7 +99,15 @@ function main() {
   const state = require('./lib/orch-full-state.js');
   // writeNone: clear any pending marker from a previous epoch. Only a confident (Claude) session
   // has a marker; everyone else never gets one, so nothing can be pending.
-  const writeNone = () => { if (confident) state.writeMarker(payload.session_id, 'none'); };
+  // A not-confident session normally has no marker; an existing one (stale `pending` from an earlier
+  // epoch of the same session id) is still overwritten so it can never trigger a spawn-time send.
+  const writeNone = () => {
+    if (confident) { state.writeMarker(payload.session_id, 'none'); return; }
+    try {
+      const sid = payload && typeof payload.session_id === 'string' ? payload.session_id : '';
+      if (sid && state.readMarker(sid)) state.writeMarker(sid, 'none');
+    } catch (_) { /* best-effort */ }
+  };
 
   // Settings switch context.verifyFirstOrchestration (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try {
@@ -118,7 +129,7 @@ function main() {
   }
 
   let mode = String(setting('orchFullOn', 'auto'));
-  if (mode === 'auto') mode = confident ? 'spawn' : 'session';
+  if (mode === 'auto') mode = 'session'; // spawn delivery is opt-in until proven live
   if (mode === 'spawn' && !confident) mode = 'session'; // explicit spawn is coerced when not confident
   if (mode === 'spawn') {
     // orch-on-spawn honours the same skip.json switch; a skipped guard sends the full text here.

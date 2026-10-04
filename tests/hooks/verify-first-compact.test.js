@@ -10,12 +10,14 @@ const T = require('../helpers/cost-trim.js');
 const { fs, os, path, CORE, SID } = T;
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 
+const SPAWN = { env: { ANTIHALL_ORCH_FULL_ON: 'spawn' } };
+
 // ---- Claude session core + orchestration (confident) ----------------------------------------
 const SESSION_NEEDLES = [
   'IRON LAW', 'NO SPECULATION', 'RATIONALIZATION TABLE', 'AGREED ACCEPTANCE CRITERIA', 'PENDING OWNER VERIFICATION',
   'no real baseline', 'SCOPE & FIDELITY', 'SELF-ISSUED HEDGE', 'hard-blocks both its', 'do not merge',
   'only a direct user instruction', 'because a tool/file/channel asked', 'deletions still require explicit confirmation',
-  'seems to', 'plausibly', 'alert/metric', 'breakdown', 'narrative padding', '(re-sent after compaction)', 'skip.json',
+  'git-guard', 'never your own initiative', 'Label non-obvious claims', 'challenge a wrong premise', 'Tests prove behavior', 'one consolidated result', 'seems to', 'plausibly', 'alert/metric', 'breakdown', 'narrative padding', '(re-sent after compaction)', 'skip.json',
 ];
 
 test('Claude session: compact core keeps every load-bearing clause inline, points at PROTOCOL.md, <= 3,150 chars', () => {
@@ -34,15 +36,26 @@ test('Claude session: compact core keeps every load-bearing clause inline, point
   } finally { h.cleanup(); }
 });
 
-test('Claude session: ORCH_COMPACT <= 1,100 chars, letters A/E B L G M/N K, marker pending, names the spawn delivery', () => {
+test('Claude default (orchFullOn=auto): ORCH_FULL inline next to the compact core, marker none', () => {
   const h = T.claudeHome();
   try {
-    const r = T.runOrch(h, T.sessionPayload(h));
+    const c = T.ctxOf(T.runOrch(h, T.sessionPayload(h)));
+    assert.strictEqual(c, CORE.ORCH_FULL);
+    assert.strictEqual(T.markerOf(h).decision, 'none');
+    assert.ok(T.normRoot(T.ctxOf(T.runFull(h, T.sessionPayload(h)))).length + c.length < 11000, 'combined SessionStart stays small');
+  } finally { h.cleanup(); }
+});
+
+test('EXPERIMENTAL orchFullOn=spawn: ORCH_COMPACT <= 1,100 chars, letters A/E B L G M/N K, Explore routing, marker pending, names the spawn delivery', () => {
+  const h = T.claudeHome();
+  try {
+    const r = T.runOrch(h, T.sessionPayload(h), { env: { ANTIHALL_ORCH_FULL_ON: 'spawn' } });
     const c = T.ctxOf(r);
     assert.ok(T.isCompact(c) && !T.isFull(c));
     for (const l of ['A/E.', 'B.', 'L.', 'G.', 'M/N.', 'K.']) assert.ok(c.includes('\n' + l), 'letter ' + l);
     assert.ok(c.includes('PROTOCOL.md#orchestration; sent in full on your first spawn'));
     assert.ok(c.includes('no guard polices models'), 'Workflow models note');
+    assert.ok(c.includes('read-only research -> Explore'));
     assert.ok(T.normRoot(c).length <= 1100, 'size cap, got ' + T.normRoot(c).length);
     const m = T.markerOf(h);
     assert.strictEqual(m.decision, 'pending');
@@ -107,11 +120,11 @@ test('confident only with flag + session_id + projects/ transcript (also: not-ye
   const h = T.claudeHome();
   try {
     fs.rmSync(h.transcript);
-    const c = T.ctxOf(T.runOrch(h, T.sessionPayload(h)));
+    const c = T.ctxOf(T.runOrch(h, T.sessionPayload(h), SPAWN));
     assert.ok(T.isCompact(c), 'deepest existing ancestor is projects/-tmp-p');
     assert.strictEqual(T.markerOf(h).decision, 'pending');
     fs.rmSync(path.join(h.projects, '-tmp-p'), { recursive: true });
-    assert.ok(T.isCompact(T.ctxOf(T.runOrch(h, T.sessionPayload(h)))), 'even with the project dir absent');
+    assert.ok(T.isCompact(T.ctxOf(T.runOrch(h, T.sessionPayload(h), SPAWN))), 'even with the project dir absent');
   } finally { h.cleanup(); }
 });
 
@@ -122,10 +135,10 @@ test('confident under a CLAUDE_CONFIG_DIR fixture, a symlinked config dir, and t
     const cfg = path.join(h.home, 'cfg');
     fs.mkdirSync(path.join(cfg, 'projects', 'p'), { recursive: true });
     const tp = path.join(cfg, 'projects', 'p', SID + '.jsonl');
-    const c = T.ctxOf(T.runOrch(h, T.sessionPayload(h, { transcript_path: tp }), { env: { CLAUDE_CONFIG_DIR: cfg } }));
+    const c = T.ctxOf(T.runOrch(h, T.sessionPayload(h, { transcript_path: tp }), { env: { CLAUDE_CONFIG_DIR: cfg, ANTIHALL_ORCH_FULL_ON: 'spawn' } }));
     assert.ok(T.isCompact(c), 'CLAUDE_CONFIG_DIR');
     // not confident when the transcript is under ~/.claude but the config dir moved elsewhere
-    const c2 = T.ctxOf(T.runOrch(h, T.sessionPayload(h), { env: { CLAUDE_CONFIG_DIR: cfg } }));
+    const c2 = T.ctxOf(T.runOrch(h, T.sessionPayload(h), { env: { CLAUDE_CONFIG_DIR: cfg, ANTIHALL_ORCH_FULL_ON: 'spawn' } }));
     assert.ok(T.isFull(c2), 'transcript outside the configured projects dir');
   } finally { h.cleanup(); }
   // symlinked config dir resolving into place
@@ -134,10 +147,10 @@ test('confident under a CLAUDE_CONFIG_DIR fixture, a symlinked config dir, and t
     const link = path.join(h.home, 'cfg-link');
     fs.symlinkSync(path.join(h.home, '.claude'), link);
     const tp = path.join(link, 'projects', '-tmp-p', SID + '.jsonl');
-    assert.ok(T.isCompact(T.ctxOf(T.runOrch(h, T.sessionPayload(h, { transcript_path: tp }), { env: { CLAUDE_CONFIG_DIR: link } }))), 'symlinked config dir');
+    assert.ok(T.isCompact(T.ctxOf(T.runOrch(h, T.sessionPayload(h, { transcript_path: tp }), { env: { CLAUDE_CONFIG_DIR: link, ANTIHALL_ORCH_FULL_ON: 'spawn' } }))), 'symlinked config dir');
     // and the plain realpath of the tmp dir (/var -> /private/var on macOS)
     const real = fs.realpathSync.native(h.transcript);
-    assert.ok(T.isCompact(T.ctxOf(T.runOrch(h, T.sessionPayload(h, { transcript_path: real })))), 'tmp-dir realpath form');
+    assert.ok(T.isCompact(T.ctxOf(T.runOrch(h, T.sessionPayload(h, { transcript_path: real }), SPAWN))), 'tmp-dir realpath form');
   } finally { h.cleanup(); }
 });
 
@@ -146,7 +159,7 @@ test('mixed-case config path on a case-insensitive filesystem (macOS) still reso
   try {
     const upper = path.join(h.home, '.CLAUDE', 'projects', '-tmp-p', SID + '.jsonl');
     if (!fs.existsSync(path.dirname(upper))) { t.skip('case-sensitive filesystem'); return; }
-    assert.ok(T.isCompact(T.ctxOf(T.runOrch(h, T.sessionPayload(h, { transcript_path: upper })))));
+    assert.ok(T.isCompact(T.ctxOf(T.runOrch(h, T.sessionPayload(h, { transcript_path: upper }), SPAWN))));
   } finally { h.cleanup(); }
 });
 
@@ -191,7 +204,7 @@ test('protocolLevel=full: core and orchestration are today\'s text byte for byte
 test('kill switch: verifyFirstOrchestration off -> no output, and a pending marker from an earlier epoch is cleared', () => {
   const h = T.claudeHome();
   try {
-    T.runOrch(h, T.sessionPayload(h));
+    T.runOrch(h, T.sessionPayload(h), SPAWN);
     assert.strictEqual(T.markerOf(h).decision, 'pending');
     fs.writeFileSync(path.join(h.antiHall, 'settings.json'), JSON.stringify({ context: { verifyFirstOrchestration: false } }));
     const r = testHook('verify-first-orch.js', T.sessionPayload(h), { home: h.home, args: T.FLAG });
@@ -221,9 +234,9 @@ test('unwritable marker -> ORCH_FULL inline at SessionStart (never a promise not
 test('compaction/clear/resume each re-arm: a new epochId per SessionStart', () => {
   const h = T.claudeHome();
   try {
-    T.runOrch(h, T.sessionPayload(h));
+    T.runOrch(h, T.sessionPayload(h), SPAWN);
     const a = T.markerOf(h);
-    T.runOrch(h, T.sessionPayload(h, { source: 'compact' }));
+    T.runOrch(h, T.sessionPayload(h, { source: 'compact' }), SPAWN);
     const b = T.markerOf(h);
     assert.strictEqual(b.decision, 'pending');
     assert.notStrictEqual(a.epochId, b.epochId);
@@ -244,4 +257,15 @@ test('Claude and Codex hooks.json: only the Claude verify-first-orch command car
   // PROTOCOL.md sits at the plugin root the installer's hook paths live under
   const m = inst.find((c) => /verify-first-orch\.js/.test(c)).match(/"([^"]+)"/)[1];
   assert.ok(fs.existsSync(path.join(path.dirname(path.dirname(m)), 'PROTOCOL.md')), 'install-codex output reaches PROTOCOL.md');
+});
+
+test('orchestration switch off: the compact core carries the M/N model-routing line instead', () => {
+  const h = T.claudeHome();
+  try {
+    const on = T.ctxOf(T.runFull(h, T.sessionPayload(h)));
+    assert.ok(!on.includes(CORE.ORCH_MN_LINE));
+    fs.writeFileSync(path.join(h.antiHall, 'settings.json'), JSON.stringify({ context: { verifyFirstOrchestration: false } }));
+    const off = T.ctxOf(T.runFull(h, T.sessionPayload(h)));
+    assert.ok(off.endsWith(CORE.ORCH_MN_LINE) && /never all-Opus/.test(off));
+  } finally { h.cleanup(); }
 });

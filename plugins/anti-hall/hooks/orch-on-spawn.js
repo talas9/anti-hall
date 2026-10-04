@@ -2,6 +2,10 @@
 'use strict';
 // anti-hall :: orch-on-spawn (PreToolUse Agent|Task|Workflow)
 //
+// EXPERIMENTAL, opt-in (context.orchFullOn=spawn): the default (auto) sends ORCH_FULL inline at SessionStart and
+// leaves the marker `none`, so this hook stays silent. It becomes the default only after the live probes
+// (PreToolUse additionalContext reaches the coordinator, real transcript line shape, Workflow discriminator).
+//
 // Delivers the FULL orchestration ruleset (ORCH_FULL, rules A-N) once per context epoch, on the
 // coordinator's first spawn. SessionStart (verify-first-orch.js) sent only ORCH_COMPACT and wrote a
 // marker saying `pending`; this hook is the other half of that contract (cost-trim D3).
@@ -48,19 +52,25 @@ function main() {
 
   try { if (!require('./lib/settings.js').enabled('context', 'verifyFirstOrchestration')) return; } catch (_) { /* run */ }
   try { if (require('./skip-guard.js').isSkipped('orch-on-spawn')) return; } catch (_) { /* proceed */ }
+  try { if (require('./verify-first-core.js').protocolLevel() === 'full') return; } catch (_) { return; }
   try { if (require('./coordinator-detect.js').isSubagentByPayload(payload)) return; } catch (_) { return; }
 
   const state = require('./lib/orch-full-state.js');
   const marker = state.readMarker(payload.session_id);
   if (!marker || marker.decision !== 'pending') return;
+  // Keep a live session's marker out of the 7-day prune: touch it on every spawn read.
+  try { const nowS = Date.now() / 1000; require('fs').utimesSync(state.markerPath(payload.session_id), nowS, nowS); } catch (_) { /* best-effort */ }
 
   const t = now();
   let won = state.tryClaim(state.claimPath(payload.session_id, marker.epochId, 1), t);
   if (!won) {
     // Retry slot: only after the lease, only when no delivered copy is visible.
+    // Once the second slot exists the epoch is done: return before any transcript read.
+    if (fs.existsSync(state.claimPath(payload.session_id, marker.epochId, 2))) return;
     const at = state.claimAt(state.claimPath(payload.session_id, marker.epochId, 1));
     if (at === null || t - at < state.LEASE_MS) return;
-    if (state.seen(payload.transcript_path, marker.epochId, marker.sentAt) === true) return;
+    // Retry only on a CONCLUSIVE absence (false); unknown (null) and delivered (true) both stay silent.
+    if (state.seen(payload.transcript_path, marker.epochId, marker.sentAt) !== false) return;
     won = state.tryClaim(state.claimPath(payload.session_id, marker.epochId, 2), t);
   }
   if (!won) return;

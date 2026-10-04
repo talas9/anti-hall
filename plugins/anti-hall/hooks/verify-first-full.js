@@ -57,6 +57,14 @@ const core = require('./verify-first-core');
 // rule W lives in verify-first-orch.js, so nothing here is env-gated.
 const FOUNDATION_FULL = [...core.CORE_FULL, ...core.DISCIPLINES_INDEX].join('\n');
 
+// Compact core; when the orchestration hook is switched off, today's index would still have carried the
+// model-routing and delegation summary, so the M/N line rides here instead.
+function compactText() {
+  let t = core.coreCompactSession();
+  try { if (!require('./lib/settings.js').enabled('context', 'verifyFirstOrchestration')) t += '\n' + core.ORCH_MN_LINE; } catch (_) { /* core only */ }
+  return t;
+}
+
 function main() {
   // Settings switch context.verifyFirstSession (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('context', 'verifyFirstSession')) return; } catch (_) { /* run */ }
@@ -93,7 +101,7 @@ function main() {
   const out = {
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: core.protocolLevel() === 'full' ? FOUNDATION_FULL : core.coreCompactSession(),
+      additionalContext: core.protocolLevel() === 'full' ? FOUNDATION_FULL : compactText(),
     },
   };
 

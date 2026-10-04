@@ -139,7 +139,7 @@ On Codex the judge hook is registered (`codex/hooks/hooks.json`), but it needs `
 
 Every hook the Codex port registers reads the same switch as on Claude Code, so "turn
 off X" is one `set <section.key> false`: `context.*` (verify-first injections, task
-tracker, handover resume, defect nudge; `context.protocolLevel` (`compact` default / `full` = today's complete text everywhere) and `context.orchFullOn` (Codex always receives the full orchestration rules at SessionStart); `context.dedupeWindowMin` — fallback
+tracker, handover resume, defect nudge; `context.protocolLevel` (`compact` default / `full` = today's complete text everywhere) and `context.orchFullOn` (Codex receives the full orchestration rules at SessionStart unless set to `off`); `context.dedupeWindowMin` — fallback
 per-session suppression window (minutes) for repeated UserPromptSubmit blocks (LIMIT
 CONSERVATION, TASK-LIST, DEVSWARM COMMS OVERRIDE, DEVSWARM WORKSPACES) when a burst
 of queued prompts lands in one turn, default 20, 0 = off/disables emit-dedupe

@@ -168,7 +168,7 @@ reproduce/validate/lint steps and run them before claiming success.
 
 The plugin enforces no-speculation discipline at three layers:
 
-**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart),
+**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart; a compact core pointing at the generated `PROTOCOL.md` by default, today's full text under `context.protocolLevel=full`),
 `verify-first-subagent.js` (SubagentStart — re-injects the Iron Law into every spawned
 subagent without the orchestration block, so workers don't recurse), and `verify-first.js` (per-turn) inject the Iron Law,
 banning both confident inference-as-fact and hedge-word speculation.

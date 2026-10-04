@@ -43,7 +43,7 @@ function writeMarker(sessionId, decision, opts) {
     const sentAt = Date.now();
     const epochId = String(sentAt);
     const file = markerPath(sessionId, opts);
-    const tmp = file + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+    const tmp = file.replace(/\.json$/, '') + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp.json'; // ends .json: prunable
     fs.writeFileSync(tmp, JSON.stringify({ epochId, decision, sentAt }));
     fs.renameSync(tmp, file);
     try { require('./state-prune.js').pruneStale({ stateDir: dir, prefix: PREFIX, keepFile: file }); } catch (_) { /* best-effort */ }
@@ -90,12 +90,19 @@ function claimAt(file) {
   try { return fs.statSync(file).mtimeMs; } catch (_) { return null; }
 }
 
-// seen(transcriptPath, epochId, sentAt) -> true | false | null (unknown: no usable transcript).
-// A delivered copy is a transcript line holding this epoch's token with a timestamp >= sentAt.
-// 256 KB tail first, widened once to 4 MB when the file is larger and nothing was found.
+// seen(transcriptPath, epochId, sentAt) -> true | false | null.
+//   true  = a delivered copy exists: a `hook_additional_context` attachment (the delivered form; the
+//           `hook_success` record of the raw stdout does not count) holding this epoch's token with a
+//           timestamp >= sentAt;
+//   false = CONCLUSIVELY absent: the scanned window reaches back to sentAt (its first timestamp is
+//           <= sentAt, or the whole file was scanned) and nothing matched;
+//   null  = unknown (unreadable transcript, or the window does not reach sentAt: real epochs run
+//           9-11 MB, so a 4 MB tail cannot see the start). Callers never retry on null.
+// 256 KB tail first, widened once to 4 MB.
 function seen(transcriptPath, epochId, sentAt) {
   if (!transcriptPath || typeof transcriptPath !== 'string') return null;
   const token = tokenFor(epochId);
+  let reached = false;
   let usable = false;
   for (const bytes of [TAIL_BYTES, TAIL_BYTES_WIDE]) {
     let fd = null;
@@ -108,21 +115,29 @@ function seen(transcriptPath, epochId, sentAt) {
       let lines = buf.toString('utf8', 0, got).split('\n');
       if (size > n) lines = lines.slice(1); // first line is partial
       usable = true;
+      let firstTs = null;
       for (const line of lines) {
-        if (!line || line.indexOf(token) === -1) continue;
+        if (!line) continue;
+        if (firstTs === null && line.indexOf('"timestamp"') !== -1) {
+          try { const t = Date.parse(JSON.parse(line).timestamp); if (Number.isFinite(t)) firstTs = t; } catch (_) { /* partial */ }
+        }
+        if (line.indexOf(token) === -1) continue;
         let e = null;
         try { e = JSON.parse(line); } catch (_) { continue; }
-        const ts = Date.parse(e && e.timestamp);
+        const a = e && e.type === 'attachment' ? e.attachment : null;
+        if (!a || a.type !== 'hook_additional_context') continue;
+        const ts = Date.parse(e.timestamp);
         if (Number.isFinite(ts) && ts >= sentAt) return true;
       }
-      if (size <= n) break; // whole file scanned
+      reached = size <= n || (firstTs !== null && firstTs <= sentAt);
+      if (reached) break;
     } catch (_) {
-      return usable ? false : null;
+      return null;
     } finally {
       if (fd !== null) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } }
     }
   }
-  return usable ? false : null;
+  return usable && reached ? false : null;
 }
 
 module.exports = { PREFIX, LEASE_MS, dirOf, markerPath, claimPath, tokenFor, writeMarker, readMarker, tryClaim, claimAt, seen };

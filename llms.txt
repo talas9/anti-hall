@@ -78,8 +78,8 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | Event (matcher) | Hook | What it does | Codex | Switch |
 |---|---|---|---|---|
 | SessionStart | verify-first-full.js | Injects the verify-first foundation: Iron Law, rationalization table, positive rules, scope & fidelity, output-presentation rule K. | ✓ | context.verifyFirstSession |
-| SessionStart | verify-first-orch.js | Injects the orchestration ruleset: compact lines plus a per-session marker on Claude Code (full rules A–N arrive on the first spawn via orch-on-spawn.js), the full text on Codex, a DevSwarm Primary (rule W) and `context.protocolLevel=full`. | ✓ | context.verifyFirstOrchestration |
-| PreToolUse (Agent\|Task\|Workflow) | orch-on-spawn.js | Sends the full orchestration rules once per context epoch on the coordinator's first spawn (Claude Code only; the Codex port gets them at SessionStart). | — | context.verifyFirstOrchestration |
+| SessionStart | verify-first-orch.js | Injects the orchestration ruleset (rules A–N, DevSwarm-Primary rule W) inline by default; experimental `context.orchFullOn=spawn` sends compact lines plus a per-session marker instead and orch-on-spawn.js delivers the full text on the first spawn. | ✓ | context.verifyFirstOrchestration |
+| PreToolUse (Agent\|Task\|Workflow) | orch-on-spawn.js | Experimental, opt-in (`context.orchFullOn=spawn`, unverified live): sends the full orchestration rules once per context epoch on the coordinator's first spawn (Claude Code only); silent by default. | — | context.verifyFirstOrchestration |
 | SessionStart | version-alert.js | Tells the user when anti-hall is behind: remote newer → update then reload; plugin-cache mirror newer → reload only. Once per session; 2 h detached refresh. | ✓ | `ANTIHALL_VERSION_ALERT=off` |
 | SessionStart | claude-cli-version.js | Flags Claude Code CLI drift from the version anti-hall's harness KB was verified against. | ✓ | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT=off` |
 | SessionStart | devswarm-version.js | Flags DevSwarm/hivecontrol version drift (DevSwarm only). | ✓ | `ANTIHALL_DEVSWARM_VERSION_ALERT=off` |
