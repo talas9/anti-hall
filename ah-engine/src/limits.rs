@@ -124,7 +124,7 @@ pub fn peer_uid(s: &UnixStream) -> Option<u32> {
         let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
         let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
         let rc = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
-        return (rc == 0).then_some(cred.uid);
+        (rc == 0).then_some(cred.uid)
     }
     #[cfg(not(target_os = "linux"))]
     {
