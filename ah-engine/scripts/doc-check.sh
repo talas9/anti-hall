@@ -114,6 +114,7 @@ for body in "$work"/blocks/*.sh; do
 done
 
 # No daemon may outlive the blocks (the same rule as ah-engine/test.sh).
+# shellcheck disable=SC2009  # pgrep -f is not portable across macOS and Linux
 survivors="$(ps -Ao pid,command | grep -F "$work/" | grep -F "ah-engine serve" | grep -v grep | awk '{print $1}' || true)"
 if [ -n "$survivors" ]; then
   echo "FAIL: daemons survived the blocks: $(echo "$survivors" | tr '\n' ' ')" >&2

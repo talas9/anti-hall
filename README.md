@@ -81,6 +81,8 @@ These are the notable things it runs and writes outside the project. Hook state 
 
 Escape hatches, remaining limits and hook latency: [Limits and escape hatches](docs/GUIDE.md#limits-and-escape-hatches).
 
+Building, testing and releasing the plugin and the Rust engine: [Development guide](docs/DEVELOPMENT.md).
+
 ## Links
 
 - [Documentation](https://github.com/talas9/anti-hall/blob/main/docs/README.md)

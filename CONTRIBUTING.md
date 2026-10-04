@@ -16,6 +16,8 @@ Thanks for helping. anti-hall is pure Node (built-ins only, no dependencies) and
 
 ## Set up and run the tests
 
+Building the Rust engine, running every suite and the porting workflow are in the [Development guide](docs/DEVELOPMENT.md).
+
 Node.js **22 or newer** (CI runs ubuntu on Node 22 and 24; macOS runs Node 24 on pull requests and on `main`, and Node 22 as well only on `rc-v*` release-candidate tags). There is no install step; run from the repo root.
 
 ```bash

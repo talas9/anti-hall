@@ -4,9 +4,9 @@ name: ah-engine
 on:
   push:
     branches: [engine-proto]
-    paths: ['ah-engine/**', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
-    paths: ['ah-engine/**', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
 
 permissions:
   contents: read
@@ -33,3 +33,20 @@ jobs:
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # Runs every shell command in docs/DEVELOPMENT.md in a fresh clone (D83), so the guide cannot drift from the repo.
+  doc-check:
+    name: doc-check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+      - uses: dtolnay/rust-toolchain@stable
+      - run: ah-engine/scripts/doc-check.sh
