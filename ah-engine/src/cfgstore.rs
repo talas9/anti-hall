@@ -505,21 +505,45 @@ pub fn parse_user(path: &Path, text: &str) -> Result<BTreeMap<String, Json>, Con
     Ok(out)
 }
 
-/// Read both files. A missing file is an empty layer; an unreadable or invalid one is an error.
-pub fn load_layers(p: &Paths) -> Result<Layers, ConfigError> {
-    let user = match read_text(&p.user)? {
-        Some(t) => parse_user(&p.user, &t)?,
-        None => BTreeMap::new(),
-    };
-    let settings = match p.settings.as_deref().map(|s| read_text(s).map(|t| (s, t))).transpose()? {
-        Some((path, Some(t))) => match serde_json::from_str::<Json>(&t) {
-            Ok(j @ Json::Object(_)) => j,
-            Ok(_) => return Err(ConfigError::NotObject(path.to_path_buf())),
-            Err(e) => return Err(ConfigError::Parse { path: path.to_path_buf(), message: e.to_string() }),
+fn load_user(p: &Paths) -> Result<BTreeMap<String, Json>, ConfigError> {
+    match read_text(&p.user)? {
+        Some(t) => parse_user(&p.user, &t),
+        None => Ok(BTreeMap::new()),
+    }
+}
+
+fn load_settings(p: &Paths) -> Result<Json, ConfigError> {
+    let Some(path) = p.settings.as_deref() else { return Ok(Json::Null) };
+    match read_text(path)? {
+        Some(t) => match serde_json::from_str::<Json>(&t) {
+            Ok(j @ Json::Object(_)) => Ok(j),
+            Ok(_) => Err(ConfigError::NotObject(path.to_path_buf())),
+            Err(e) => Err(ConfigError::Parse { path: path.to_path_buf(), message: e.to_string() }),
         },
-        _ => Json::Null,
-    };
-    Ok(Layers { settings, user })
+        None => Ok(Json::Null),
+    }
+}
+
+/// Read both files for a live reload. A missing file is an empty layer; an unreadable or invalid one is an error
+/// (the caller keeps the last good config).
+pub fn load_layers(p: &Paths) -> Result<Layers, ConfigError> {
+    Ok(Layers { user: load_user(p)?, settings: load_settings(p)? })
+}
+
+/// Read both files at a cold start, where there is no last good config to keep. Each file stands alone: a corrupt
+/// `settings.json` reads as `{}` exactly as Node's `load()` does (so the engine and Node decide alike on the first
+/// request), and a rejected `config.toml` reads as empty. Every rejection is returned for logging.
+pub fn load_layers_cold(p: &Paths) -> (Layers, Vec<ConfigError>) {
+    let mut errs = vec![];
+    let user = load_user(p).unwrap_or_else(|e| {
+        errs.push(e);
+        BTreeMap::new()
+    });
+    let settings = load_settings(p).unwrap_or_else(|e| {
+        errs.push(e);
+        Json::Null
+    });
+    (Layers { settings, user }, errs)
 }
 
 /// `config validate <file>`: check a user TOML file; returns how many settings it sets.
@@ -624,15 +648,12 @@ impl ConfigStore {
     pub fn load_from(paths: Paths) -> ConfigStore {
         let seen = fingerprint(&paths);
         let env = |n: &str| std::env::var(n).ok();
-        let snap = match load_layers(&paths) {
-            Ok(layers) => Snapshot::build(1, Effective::resolve(&layers, &env), None),
-            Err(e) => {
-                health::log_event("config_invalid", e.code(), &e.to_string());
-                let mut s = Snapshot::build(1, Effective::defaults(), None);
-                s.last_error = Some(format!("{}: {e}", e.code()));
-                s
-            }
-        };
+        let (layers, errs) = load_layers_cold(&paths);
+        for e in &errs {
+            health::log_event("config_invalid", e.code(), &e.to_string());
+        }
+        let mut snap = Snapshot::build(1, Effective::resolve(&layers, &env), None);
+        snap.last_error = errs.first().map(|e| format!("{}: {e}", e.code()));
         ConfigStore { cur: RwLock::new(Arc::new(snap)), paths: Some(paths), watch: Mutex::new(Watch { seen, pending: None, last_poll: Instant::now() }) }
     }
 
@@ -741,14 +762,10 @@ fn report_of(s: &Snapshot, paths: Option<&Paths>) -> Json {
 pub fn report_from_files() -> Json {
     let paths = Paths::from_env();
     let env = |n: &str| std::env::var(n).ok();
-    match load_layers(&paths) {
-        Ok(layers) => report_of(&Snapshot::build(1, Effective::resolve(&layers, &env), None), Some(&paths)),
-        Err(e) => {
-            let mut s = Snapshot::build(1, Effective::defaults(), None);
-            s.last_error = Some(format!("{}: {e}", e.code()));
-            report_of(&s, Some(&paths))
-        }
-    }
+    let (layers, errs) = load_layers_cold(&paths);
+    let mut s = Snapshot::build(1, Effective::resolve(&layers, &env), None);
+    s.last_error = errs.first().map(|e| format!("{}: {e}", e.code()));
+    report_of(&s, Some(&paths))
 }
 
 #[cfg(test)]
@@ -908,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_file_at_startup_runs_the_defaults() {
+    fn an_invalid_engine_file_at_startup_runs_the_defaults() {
         let d = tmp("start-bad");
         let paths = Paths { user: d.join("config.toml"), settings: None };
         std::fs::write(&paths.user, "[daemon]\nqueue = [").unwrap();
@@ -916,6 +933,23 @@ mod tests {
         let s = store.snapshot();
         assert_eq!(s.queue, Config::from_env().queue);
         assert!(s.last_error.as_deref().unwrap().starts_with("parse"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn cold_start_reads_a_corrupt_settings_json_as_empty_like_node() {
+        let d = tmp("cold-settings");
+        let paths = Paths { user: d.join("config.toml"), settings: Some(d.join("settings.json")) };
+        std::fs::write(paths.settings.clone().unwrap(), "{ not json").unwrap();
+        std::fs::write(&paths.user, "[daemon]\nqueue = 31\n").unwrap();
+        let s = ConfigStore::load_from(paths.clone()).snapshot();
+        let node =
+            Effective::resolve(&Layers { settings: Json::Null, user: parse_user(&paths.user, "[daemon]\nqueue = 31\n").unwrap() }, &|n| std::env::var(n).ok());
+        for (k, r) in node.iter() {
+            assert_eq!(s.effective.get(k), Some(r), "{k}: a corrupt settings.json must read as {{}} at cold start");
+        }
+        assert_eq!(s.queue, 31, "the valid engine file still applies");
+        assert!(s.last_error.as_deref().unwrap().starts_with("parse"), "the problem is still reported");
         let _ = std::fs::remove_dir_all(&d);
     }
 
