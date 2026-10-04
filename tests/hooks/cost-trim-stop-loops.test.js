@@ -75,7 +75,7 @@ test('Codex WITH structural evidence (deferred_tools attachment naming TaskCreat
     const tp = h.writeTranscript([attachment({ type: 'deferred_tools_delta', addedNames: ['TaskCreate'] }), ...edits(4)]);
     const r = testHook(TL, stop(h, tp, CODEX), { home: h.home });
     assert.ok(isBlock(r), r.stdout);
-    assert.ok(!/list the open tasks and their status in your reply/.test(r.json.reason), r.json.reason);
+    assert.ok(!/list the open tasks and status in your reply/.test(r.json.reason), r.json.reason);
   } finally { h.cleanup(); }
 });
 
@@ -85,7 +85,7 @@ test('Codex: the guard\'s own text in the transcript does not count as evidence'
     const tp = h.writeTranscript([attachment({ type: 'hook_success', content: 'Capture the work as tasks via TaskCreate/TaskUpdate' }), ...edits(4)]);
     const r = testHook(TL, stop(h, tp, CODEX), { home: h.home });
     assert.ok(isBlock(r), r.stdout);
-    assert.match(r.json.reason, /list the open tasks and their status in your reply/);
+    assert.match(r.json.reason, /list the open tasks and status in your reply/);
   } finally { h.cleanup(); }
 });
 
@@ -94,14 +94,14 @@ test('guards.tasklistNoTaskTools: full restores the full demand on Codex; skip n
   try {
     const tp = h.writeTranscript(edits(4));
     const full = testHook(TL, stop(h, tp, CODEX, 'a'), { home: h.home, env: { ANTIHALL_TASKLIST_NO_TASK_TOOLS: 'full' } });
-    assert.ok(isBlock(full)); assert.ok(!/list the open tasks and their status in your reply/.test(full.json.reason));
+    assert.ok(isBlock(full)); assert.ok(!/list the open tasks and status in your reply/.test(full.json.reason));
     const skip = testHook(TL, stop(h, tp, CODEX, 'b'), { home: h.home, env: { ANTIHALL_TASKLIST_NO_TASK_TOOLS: 'skip' } });
     assert.ok(!isBlock(skip), skip.stdout);
     const pl = testHook(TL, stop(h, tp, CODEX, 'c'), { home: h.home, env: { ANTIHALL_PROTOCOL_LEVEL: 'full' } });
-    assert.ok(isBlock(pl)); assert.ok(!/list the open tasks and their status in your reply/.test(pl.json.reason));
+    assert.ok(isBlock(pl)); assert.ok(!/list the open tasks and status in your reply/.test(pl.json.reason));
     // an explicit value wins over protocolLevel=full
     const ex = testHook(TL, stop(h, tp, CODEX, 'd'), { home: h.home, env: { ANTIHALL_PROTOCOL_LEVEL: 'full', ANTIHALL_TASKLIST_NO_TASK_TOOLS: 'reduced' } });
-    assert.match(ex.json.reason, /list the open tasks and their status in your reply/);
+    assert.match(ex.json.reason, /list the open tasks and status in your reply/);
   } finally { h.cleanup(); }
 });
 

@@ -473,8 +473,8 @@ function main() {
   if (reducedNag) {
     // Reduced form (<= 450 chars): no TaskCreate demand. Reduced is only chosen when the transcript
     // shows no task-tool evidence, so the only cause here is "no tasks tracked" (or a reset store).
-    if (!taskStoreReset) { what = 'stop blocked: ' + workCount + ' file-changing actions, no tasks tracked.'; why = ''; }
-    instead = 'list the open tasks and their status in your reply, priority first. Progress: ' + progressPath +
+    if (!taskStoreReset) { what = 'stop blocked: ' + workCount + ' file-changing actions, no tasks tracked.'; why = 'Untracked work gets lost.'; }
+    instead = 'list the open tasks and status in your reply, priority first. Progress: ' + progressPath +
       ' History: ' + historyPath;
   } else instead = (!sawTaskActivity && taskStoreReset
       ? (codexHost ? 'recreate the open tasks in your task list (see the progress file / handover), then continue. ' : 'recreate the open tasks with TaskCreate (see the progress file / handover), then continue. ')

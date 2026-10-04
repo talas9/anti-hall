@@ -35,7 +35,7 @@ test('Codex, no evidence: reduced nag, no TaskCreate demand, <= 450 chars, names
     assert.ok(isBlock(r), r.stdout);
     const reason = r.json.reason;
     assert.ok(!/TaskCreate|TaskUpdate|TodoWrite/.test(reason), reason);
-    assert.match(reason, /list the open tasks and their status in your reply/);
+    assert.match(reason, /list the open tasks and status in your reply/);
     assert.ok(reason.includes(path.join('.anti-hall', 'progress')) && reason.includes(path.join('.anti-hall', 'history')), reason);
     const body = reason.split('\n').filter((l) => !l.startsWith('Override')).join('\n');
     assert.ok(body.length <= 450, 'reduced nag is ' + body.length + ' chars: ' + body);
