@@ -17,6 +17,7 @@ const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const sw = require('../../plugins/anti-hall/hooks/lib/shell-writes.js');
+const { classifyBashWork } = require('../../plugins/anti-hall/hooks/command-guard.js');
 
 const FAKE_PY = 'import os\nprint(os.getcwdz())\n';
 const REAL_PY = 'import os\nprint(os.getcwd())\n';
@@ -241,6 +242,19 @@ test('inlineWriteLiterals: perl 2/3-arg open, ruby File.open/write, node write/a
   assert.deepStrictEqual(got(`perl -e 'open(my $f, ">>", "src/c.pl")'`), ['src/c.pl']);
   assert.deepStrictEqual(got(`perl -e 'open(F,"<src/h.pl")'`), []);
   assert.deepStrictEqual(got(`perl -e 'open(F,"<","src/h.pl")'`), []);
+  // dup-handle opens are not file writes
+  for (const c of [
+    `perl -e 'open(F,">&STDERR")'`,
+    `perl -e 'open(F,">&=2")'`,
+    `perl -e 'open(F,">-")'`,
+    `perl -e 'open(F,">>&STDOUT")'`,
+    `perl -e 'open(F,">&",\\*STDOUT)'`,
+    `perl -e 'open(F,">&=",2)'`,
+    `perl -e 'open(F,">>&","STDOUT")'`,
+  ]) {
+    assert.deepStrictEqual(got(c), [], c);
+    assert.deepStrictEqual(classifyBashWork(c, p, { sessionStartTs: Date.now() - 1000 }).editBlocks || [], [], c);
+  }
   assert.deepStrictEqual(got(`ruby -e "File.open('src/d.rb','w'){}"`), ['src/d.rb']);
   assert.deepStrictEqual(got(`ruby -e "File.write('src/e.rb','x')"`), ['src/e.rb']);
   assert.deepStrictEqual(got(`node -e "require('fs').appendFileSync('src/f.js','x')"`), ['src/f.js']);

@@ -4004,7 +4004,9 @@ const INLINE_GIT_GH_ARRAY_RE = /\[\s*(['"])(git|gh)\1((?:\s*,\s*(['"])[^'"]*\4)*
 const INLINE_OPEN_RE = /\bopen\s*\(\s*(['"])([^'"]+)\1\s*,\s*(['"])([^'"]*)\3\s*[,)]/g;
 const INLINE_OPEN_NONLIT_RE = /\bopen\s*\(\s*[^'"\s)][^,)]*,\s*(['"])([^'"]*)\1\s*[,)]/g;
 const INLINE_PERL_OPEN3_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?(>>?|\+<)[:\w]*\s*\1\s*,\s*(['"])([^'"]+)\3/g;
-const INLINE_PERL_OPEN2_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?>>?\s*([^'"\s>][^'"\s]*)\s*\1/g;
+// Perl dup modes (>&, >&=, >>&, 2-arg >-) open an existing handle, not a file: the 3-arg
+// mode class [:\w]* cannot consume `&`, and the 2-arg target excludes `&`, `=`, `-` as first char.
+const INLINE_PERL_OPEN2_RE = /\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*(['"])\s*\+?>>?\s*([^'"\s>&=-][^'"\s]*)\s*\1/g;
 const INLINE_WRITEFILE_RE = /(?:(?:write|append)File(?:Sync)?|createWriteStream)\(\s*(['"])([^'"]+)\1/g;
 const INLINE_FILE_WRITE_RE = /(?:File|IO)\.write\(\s*(['"])([^'"]+)\1/g;
 const INLINE_WRITE_NONLIT_RE = /(?:(?:write|append)File(?:Sync)?|(?:File|IO)\.write)\(\s*[^'"\s)]/;
