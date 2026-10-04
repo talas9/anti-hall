@@ -151,6 +151,9 @@ Code silently skips every anti-hall hook — verify with `node --version`. No np
 install, no native deps, no other config. There is intentionally no shell-based
 preflight. Install Node from <https://nodejs.org>.
 
+**Supported systems:** macOS and Linux (both CI-tested), including WSL on Windows,
+which runs the Linux build. Native Windows is not supported yet.
+
 **The `/config` rows (14 options) need Claude Code ≥ 2.1.269; older versions still work via the skill.**
 The plugin's `userConfig` never declares `options` (a public plugin can't require v2.1.271+
 just for its settings UI — per the Claude Code plugin docs, an `options` picker would break

@@ -26,6 +26,8 @@
 
 Needs **Node.js 22+** on your `PATH` (`node --version`).
 
+**Supported systems:** macOS and Linux, including WSL on Windows (it runs the Linux build). Native Windows is not supported yet.
+
 **Claude Code:**
 
 ```bash
