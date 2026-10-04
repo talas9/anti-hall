@@ -45,8 +45,8 @@ test('every line of every full-level hook output is in PROTOCOL.md', () => {
       core: T.ctxOf(testHook('verify-first-full.js', sess, { home: h.home, env: FULL, expectJson: true })),
       orch: T.ctxOf(testHook('verify-first-orch.js', sess, { home: h.home, env: FULL, expectJson: true })),
       primary: T.ctxOf(testHook('verify-first-orch.js', sess, { home: h.home, env: { ...FULL, DEVSWARM_REPO_ID: 'repo-x' }, expectJson: true })),
-      sub: T.ctxOf(testHook('verify-first-subagent.js', sub, { home: h.home, expectJson: true })),
-      child: T.ctxOf(testHook('verify-first-subagent.js', sub, { home: h.home, env: { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'f/x' }, expectJson: true })),
+      sub: T.ctxOf(testHook('verify-first-subagent.js', sub, { home: h.home, env: FULL, expectJson: true })),
+      child: T.ctxOf(testHook('verify-first-subagent.js', sub, { home: h.home, env: { ...FULL, DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'f/x' }, expectJson: true })),
     };
     for (const [name, text] of Object.entries(outs)) {
       assert.ok(text.length > 1000, name + ' produced text');

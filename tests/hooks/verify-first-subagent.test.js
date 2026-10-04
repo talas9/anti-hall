@@ -8,6 +8,8 @@ const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'verify-first-subagent.js';
+// These tests pin TODAY's text, i.e. context.protocolLevel=full (the compact default: verify-first-subagent-compact.test.js).
+const FULL = { ANTIHALL_PROTOCOL_LEVEL: 'full' };
 
 function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
@@ -24,7 +26,7 @@ function subagentPayload() {
 test('SubagentStart -> Iron Law present in additionalContext', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SubagentStart', 'echoes SubagentStart');
     const c = ctx(r);
@@ -37,7 +39,7 @@ test('SubagentStart -> Iron Law present in additionalContext', () => {
 test('SubagentStart -> RATIONALIZATION TABLE present', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     const c = ctx(r);
     assert.ok(c.includes('RATIONALIZATION TABLE'), 'RATIONALIZATION TABLE header must be present');
     assert.ok(c.includes("it's probably"), "rationalization entry 'probably' must be present");
@@ -49,7 +51,7 @@ test('SubagentStart -> RATIONALIZATION TABLE present', () => {
 test('SubagentStart -> POSITIVE RULES present', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     const c = ctx(r);
     assert.ok(c.includes('POSITIVE RULES'), 'POSITIVE RULES header must be present');
     assert.ok(c.includes('Collect evidence first'), 'rule 1 keyword must be present');
@@ -64,7 +66,7 @@ test('SubagentStart -> POSITIVE RULES present', () => {
 test('SubagentStart -> SCOPE & FIDELITY present', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     const c = ctx(r);
     assert.ok(c.includes('SCOPE & FIDELITY'), 'SCOPE & FIDELITY section header must be present');
     assert.ok(c.includes('SIMPLEST solution'), 'scope: SIMPLEST solution keyword must be present');
@@ -80,7 +82,7 @@ test('SubagentStart -> SCOPE & FIDELITY present', () => {
 test('SubagentStart -> ORCHESTRATION DISCIPLINE block absent (orchestrator-only)', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     const c = ctx(r);
     assert.ok(!c.includes('ORCHESTRATION DISCIPLINE'), 'ORCHESTRATION DISCIPLINE must be absent from subagent injection');
     assert.ok(!c.includes('main thread is a coordinator'), '"main thread is a coordinator" phrase must be absent');
@@ -98,7 +100,7 @@ test('SubagentStart -> ORCHESTRATION DISCIPLINE block absent (orchestrator-only)
 test('SubagentStart -> subagent-role discipline present', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     const c = ctx(r);
     assert.ok(c.includes('subagent role'), 'subagent role discipline must be present');
     assert.ok(c.includes('do NOT re-delegate'), 'anti-nesting note must be present');
@@ -108,7 +110,7 @@ test('SubagentStart -> subagent-role discipline present', () => {
 test('SubagentStart -> autonomous-execution discipline present (worker framing, safety gates intact)', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     const c = ctx(r);
     assert.ok(c.includes('- autonomous-execution:'), 'autonomous-execution discipline must be present');
     assert.ok(c.includes('your assigned task IS your authorization'), 'subagent framing: assignment is the authorization');
@@ -126,7 +128,7 @@ test('SubagentStart -> autonomous-execution discipline present (worker framing, 
 test('SubagentStart -> scannable presentation is stated as the DEFAULT, drift-corrected', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     const c = ctx(r);
     assert.ok(c.includes('PRESENT FINDINGS SCANNABLY'), 'rule K mirror must be present');
     assert.ok(c.includes('DEFAULT shape for every report you return'), 'scannable style must be stated as the DEFAULT');
@@ -138,7 +140,7 @@ test('SubagentStart -> scannable presentation is stated as the DEFAULT, drift-co
 test('SubagentStart -> teammate reporting note present (SendMessage-before-finish + no background-wait)', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     const c = ctx(r);
     assert.ok(c.includes('SendMessage your final report to the coordinator BEFORE finishing'), 'must instruct sending final report before finishing');
     assert.ok(c.includes('a bare turn-end silently loses it'), 'must warn a bare turn-end loses the report');
@@ -159,7 +161,7 @@ test('SubagentStart -> child-workspace mailbox-ownership note present when DEVSW
   try {
     const r = testHook(HOOK, subagentPayload(), {
       home: h.home,
-      env: { DEVSWARM_SOURCE_BRANCH: 'main' },
+      env: { ...FULL, DEVSWARM_SOURCE_BRANCH: 'main' },
       expectJson: true,
     });
     assert.strictEqual(r.status, 0);
@@ -173,7 +175,7 @@ test('SubagentStart -> child-workspace mailbox-ownership note present when DEVSW
 test('SubagentStart -> child-workspace mailbox-ownership note ABSENT when not a child workspace', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
     assert.ok(!c.includes('DevSwarm child workspace'), 'must be absent for a non-child-workspace session');
@@ -187,7 +189,7 @@ test('SubagentStart -> child-workspace mailbox-ownership note ABSENT when not a 
 test('FAIL-OPEN: empty stdin -> exit 0', () => {
   const h = makeHome();
   try {
-    const r = testHookRaw(HOOK, '', { home: h.home, expectJson: true });
+    const r = testHookRaw(HOOK, '', { env: FULL, home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0, 'must exit 0 on empty stdin');
     assert.ok(ctx(r).includes('IRON LAW'), 'IRON LAW must still be injected on empty stdin');
   } finally { h.cleanup(); }
@@ -196,7 +198,7 @@ test('FAIL-OPEN: empty stdin -> exit 0', () => {
 test('FAIL-OPEN: malformed JSON -> exit 0', () => {
   const h = makeHome();
   try {
-    const r = testHookRaw(HOOK, '{bad json', { home: h.home });
+    const r = testHookRaw(HOOK, '{bad json', { env: FULL, home: h.home });
     assert.strictEqual(r.status, 0, 'must exit 0 on malformed JSON');
   } finally { h.cleanup(); }
 });
@@ -209,7 +211,7 @@ test('SKIP HATCH: skip.json active -> exit 0, no additionalContext', () => {
   const h = makeHome();
   try {
     h.writeSkip({ 'verify-first-subagent': Date.now() + 600000 });
-    const r = testHook(HOOK, subagentPayload(), { home: h.home });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home });
     assert.strictEqual(r.status, 0, 'must exit 0 when skipped');
     // When skipped, the hook exits early before emitting JSON; stdout may be empty.
     const c = ctx(r);
@@ -221,7 +223,7 @@ test('SKIP HATCH: expired skip -> still injects', () => {
   const h = makeHome();
   try {
     h.writeSkip({ 'verify-first-subagent': Date.now() - 1 }); // already expired
-    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const r = testHook(HOOK, subagentPayload(), { env: FULL, home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     assert.ok(ctx(r).includes('IRON LAW'), 'expired skip must not suppress injection');
   } finally { h.cleanup(); }

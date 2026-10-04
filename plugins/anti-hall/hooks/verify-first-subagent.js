@@ -26,13 +26,21 @@
 'use strict';
 
 const fs = require('fs');
-const { CORE_LINES } = require('./verify-first-core');
+const core = require('./verify-first-core');
+const { CORE_LINES } = core;
 
 // Subagent disciplines footer, teammate note and child-workspace note live in verify-first-core.js
 // (moved verbatim; the output is byte-identical).
 const { SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE, CHILD_WORKSPACE_MAILBOX_NOTE } = require('./verify-first-core');
 
-const SUBAGENT_TEXT_BASE = [...CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE].join('\n');
+// context.protocolLevel=full -> today's text, byte for byte. Default (compact) -> the shared compact core
+// (subagent header + skills line) + WORKER, which replaces the DISCIPLINES block and the teammate note.
+const SUBAGENT_TEXT_FULL = [...CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE].join('\n');
+function subagentTextBase() {
+  return core.protocolLevel() === 'full'
+    ? SUBAGENT_TEXT_FULL
+    : [core.coreCompactSubagent(), core.WORKER].join('\n');
+}
 
 function main() {
   // Settings switch context.verifyFirstSubagent (0.108.4): off -> no-op. Fail-open: any error runs the hook.
@@ -71,8 +79,8 @@ function main() {
     isChild = false;
   }
   const subagentText = isChild
-    ? [SUBAGENT_TEXT_BASE, CHILD_WORKSPACE_MAILBOX_NOTE].join('\n')
-    : SUBAGENT_TEXT_BASE;
+    ? [subagentTextBase(), CHILD_WORKSPACE_MAILBOX_NOTE].join('\n')
+    : subagentTextBase();
 
   const out = {
     hookSpecificOutput: {
