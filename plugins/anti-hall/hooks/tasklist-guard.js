@@ -171,7 +171,9 @@ function main() {
   // (FIX 6) the newest transcript-observed write to the progress file itself.
   let scan;
   try {
-    scan = scanTranscript(transcriptPath, { progressAbsPath });
+    let codex = false;
+    try { codex = require('./lib/auto-handover-text.js').detectPlatform(payload) === 'codex'; } catch (_) { codex = false; }
+    scan = scanTranscript(transcriptPath, { progressAbsPath, codex });
   } catch (_) {
     process.exit(0);
   }
@@ -1075,10 +1077,17 @@ function scanTranscript(filePath, opts) {
   // LEGITIMATE when background agents are running — anti-hall itself promotes parallel
   // fan-out (N live agents => N in_progress is correct, not a smell). Flagging it then
   // cripples the very parallelism the plugin encourages. So only treat >1 in_progress as
-  // "stale" when NO live agent is running (mirror task-guard/task-tracker's agentsRunning
-  // heartbeat check). When agents stop, a later Stop with no live agent still catches any
-  // genuinely-dangling in_progress, so nothing is permanently masked.
-  const hasStaleInProgress = inProgressCount > 1 && !agentsRunning();
+  // "stale" when NO live agent is running. "Running" comes from THIS session's transcript
+  // (agent-scan: launched, not yet terminal), as task-guard does. The machine-global
+  // ~/.anti-hall/agents heartbeat it replaced goes stale after 20 minutes while a long
+  // agent still runs, which blocked parallel work with "NO background agent is live".
+  // An unknown count (null: unreadable / launch before the scan window) is NOT stale
+  // (fail-open). When agents stop, a later Stop still catches any dangling in_progress.
+  // Codex rollouts carry SubagentStart lifecycle rows agent-scan does not parse, so a
+  // readable Codex transcript would read as a proven 0: treat it as unknown (fail-open).
+  let liveAgents = null;
+  try { if (!(opts && opts.codex)) liveAgents = require('./lib/agent-scan.js').runningAgentsOrNull(filePath); } catch (_) { liveAgents = null; }
+  const hasStaleInProgress = inProgressCount > 1 && Array.isArray(liveAgents) && liveAgents.length === 0;
 
   // T4(a) fix: widen the search ONLY when the cheap tail scan found nothing
   // AND there is earlier content it never saw (tail.truncated) — a healthy
@@ -1090,34 +1099,6 @@ function scanTranscript(filePath, opts) {
   }
 
   return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs, lastProgressWriteTs, taskStoreReset };
-}
-
-// agentsRunning() — true if ~/.anti-hall/agents/ holds a FRESH heartbeat, meaning
-// background subagents are live RIGHT NOW (so multiple in_progress tasks are legitimate
-// parallel work, not a stall). Mirrors task-guard/task-tracker. Absent/unreadable dir or
-// any error => false (fail-open toward "not running", which can only permit a nudge, never
-// wrongly silence a genuinely-stalled session).
-function agentsRunning(freshMs) {
-  const FRESH = freshMs || 20 * 60 * 1000;
-  const dir = path.join(os.homedir(), '.anti-hall', 'agents');
-  let files;
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
-  } catch (_) {
-    return false;
-  }
-  const now = Date.now();
-  for (const f of files) {
-    const full = path.join(dir, f);
-    let ts = 0;
-    try {
-      const data = JSON.parse(fs.readFileSync(full, 'utf8'));
-      if (data && typeof data.ts === 'number') ts = data.ts;
-    } catch (_) { /* fall back to mtime */ }
-    if (!ts) { try { ts = fs.statSync(full).mtimeMs; } catch (_) { ts = 0; } }
-    if (ts && (now - ts) < FRESH) return true;
-  }
-  return false;
 }
 
 // checkResumeVerification({homeDir, sessionId, workCount, threshold}) ->
