@@ -40,7 +40,9 @@ function main() {
   const now = Date.now();
   const st = lib.readState(home, sid);
   const id = typeof payload.tool_use_id === 'string' && payload.tool_use_id && command.trim() ? payload.tool_use_id : '';
-  const classify = () => require('./command-guard.js').classifyBashWork(command, payload, { sessionStartTs: lib.sessionStart(st, now) });
+  const classify = () => (lib.provablyNotWork(command)
+    ? { work: false, blockable: false }
+    : require('./command-guard.js').classifyBashWork(command, payload, { sessionStartTs: lib.sessionStart(st, now) }));
   const skipped = () => require('./skip-guard.js').isSkipped(GUARD);
 
   if (!process.argv.includes('--post')) {

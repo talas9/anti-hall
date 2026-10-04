@@ -377,8 +377,34 @@ function replay(rows, cfg, classify) {
   };
 }
 
+// provablyNotWork(command): a conservative pre-filter so the hook can skip loading
+// command-guard.js (237 KB) for plain read-only commands. True ONLY for a command
+// built from a closed vocabulary: every segment (split at && || ; | newline) starts
+// with a read-only verb (or `git <read-only sub>`) and the whole string has no
+// quote, substitution, redirect, glob, brace, backslash or env assignment. Anything
+// else returns false and goes through classifyBashWork unchanged. Differentially
+// tested against classifyBashWork (tests/hooks/coordinator-work-fastpath.test.js).
+const RO_VERBS = new Set(['ls', 'cat', 'head', 'tail', 'pwd', 'wc', 'grep', 'rg', 'which', 'whoami', 'stat', 'du', 'df', 'basename', 'dirname', 'realpath', 'readlink', 'id', 'uname', 'hostname', 'true', 'false']);
+const RO_GIT_SUBS = new Set(['status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'blame', 'describe']);
+const SAFE_CMD_RE = /^[A-Za-z0-9 \t\n_.\/:=@%+,&|;-]*$/;
+const SAFE_ARG_RE = /^[A-Za-z0-9_.\/:=@%+,-]+$/;
+function provablyNotWork(command) {
+  if (typeof command !== 'string' || !command.trim() || command.length > 4096) return false;
+  if (!SAFE_CMD_RE.test(command)) return false;
+  for (const seg of command.split(/&&|\|\||;|\||\n/)) {
+    if (/&/.test(seg)) return false; // a lone `&` (background) is not handled
+    const t = seg.trim().split(/\s+/).filter(Boolean);
+    if (!t.length) continue; // empty segment: the classifier ignores it too
+    if (!t.every((x, i) => i === 0 ? /^[a-z-]+$/.test(x) : SAFE_ARG_RE.test(x))) return false;
+    if (RO_VERBS.has(t[0])) continue;
+    if (t[0] === 'git' && t.length >= 2 && RO_GIT_SUBS.has(t[1]) && !t.slice(2).some((a) => /output|^-o/.test(a))) continue;
+    return false;
+  }
+  return true;
+}
+
 module.exports = {
-  DEFAULTS, VERSION, config, emptyState, normalize, rememberPre, takePre, sessionStart, prune, checkPre, stepPost,
+  provablyNotWork, DEFAULTS, VERSION, config, emptyState, normalize, rememberPre, takePre, sessionStart, prune, checkPre, stepPost,
   sessionPath, metricsPath, readState, update, bumpMetrics, logTrip, foldStale, summary,
   BLOCK, NUDGE, replay,
 };

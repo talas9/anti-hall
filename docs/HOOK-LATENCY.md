@@ -100,3 +100,33 @@ Per-tool-call totals. Wall (parallel, measured) starts every matching hook toget
 
 Parallel vs sequential: Claude Code hooks docs (code.claude.com/docs/en/hooks): "All matching hooks run in parallel." docs/KB-claude-codex.md does not state it.
 CPU method: process.resourceUsage() of the hook process via a --require probe (excludes grandchildren).
+
+## Addendum 2026-10-04: coordinator-work-guard and the Node compile cache
+
+The table above predates `coordinator-work-guard` (PreToolUse and PostToolUse `Bash`), so the Bash scenarios there list 5 PreToolUse and 4 PostToolUse hooks and now run 6 and 5.
+
+**Conditions: the machine was far more loaded than for the table above.** Load average (1 min) was 220 to 257 at the start of each run below (the table above ran at 17 to 29). CPU time is not load-immune (a bare `node -e 0` costs more CPU when the machine is oversubscribed), so compare only numbers from the same run. These runs interleave the variants hook by hook (base, then changed, then base...) so load drift hits both equally. Same fixture and payloads as `scripts/hook-latency.js`, CPU from the same `--require` probe, 29 samples (30 runs, first dropped), p50 only, ms.
+
+| Event | Scenario | Hook | CPU p50 before | CPU p50 after | Load (1 min) |
+|---|---|---|---:|---:|---:|
+| PreToolUse | Bash: git status | coordinator-work-guard | 53.4 | 45.0 | 220 |
+| PostToolUse | Bash: git status | coordinator-work-guard --post | 44.2 | 45.6 | 220 |
+
+What changed: for a plain read-only command (`git status`, `ls`, `cat | head`, ...) the hook no longer loads `command-guard.js` (237 KB) at all; `lib/coordinator-work.js` `provablyNotWork` recognises a closed vocabulary and answers "not work". Any other command still goes through `classifyBashWork` unchanged, so a state-changing or unknown command (`git commit`) costs what it did before. `--post` is unchanged because it reuses the verdict stored at Pre by `tool_use_id` and does not classify.
+
+Node compile cache (`NODE_COMPILE_CACHE`, Node 22.1+) was measured and **not adopted**: it moved CPU p50 by 0 to 6 percent, below the 15 percent bar. Same method, base vs `NODE_COMPILE_CACHE=<dir>` (warm cache), load 220 to 257:
+
+| Hook | CPU p50 no cache | CPU p50 compile cache |
+|---|---:|---:|
+| compact-declaration-guard | 40.9 | 41.0 |
+| git-guard | 45.0 | 42.3 |
+| command-guard | 60.2 | 56.8 |
+| coordinator-work-guard | 57.9 | 55.6 |
+| merge-gate | 39.2 | 40.3 |
+| scan-throttle | 38.5 | 38.4 |
+| edit-guard | 61.6 | 61.6 |
+| ship-it-guard | 39.3 | 38.1 |
+| task-guard | 45.1 | 44.9 |
+| speculation-guard | 49.3 | 50.0 |
+
+Most of a hook's CPU is process startup, not compiling its own modules; loading `command-guard.js` alone measured about 8 ms CPU on this machine.
