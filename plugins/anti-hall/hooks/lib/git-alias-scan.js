@@ -34,6 +34,7 @@
 // on). Fail-open on every internal error: a git that cannot be run, a repo that
 // cannot be read or a timeout resolves nothing and blocks nothing.
 
+const CMDSUBST_SENTINEL = '\x00CMDSUBST\x00';
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
@@ -84,6 +85,38 @@ function repoArgs(args) {
   return out;
 }
 
+// Inline environment that changes which config / repository a spawned git sees.
+// The real command runs with these set (`VAR=x git ...`, `env VAR=x git ...`,
+// `export VAR=x; git ...`); the lookups here must run with them too, or an
+// alias or HEAD is read from the wrong place. A value that is not a literal
+// (`$VAR`, `$(...)`, backticks) is not forwarded: it resolves nothing, as before.
+const FORWARD_ENV_RE = /^(?:GIT_CONFIG_(?:GLOBAL|SYSTEM|NOSYSTEM|COUNT|PARAMETERS|KEY_\d+|VALUE_\d+)|GIT_DIR|GIT_WORK_TREE|HOME|XDG_CONFIG_HOME)$/;
+function forwardable(tokens) {
+  const out = {};
+  for (const t of tokens) {
+    if (t.quotedOnly) continue;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(t.text);
+    if (!m || !FORWARD_ENV_RE.test(m[1])) continue;
+    if (/[$`]/.test(m[2]) || m[2].indexOf(CMDSUBST_SENTINEL) !== -1) continue;
+    out[m[1]] = m[2];
+  }
+  return out;
+}
+// Per segment: { inline } applies to this segment's git only; { persist }
+// (an `export`, or a bare assignment segment) applies to the later segments.
+function segmentEnv(tokens) {
+  try {
+    const gi = tokens.findIndex((t) => !t.quotedOnly && t.text === 'git');
+    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {} };
+    const first = tokens[0] && !tokens[0].quotedOnly ? tokens[0].text : '';
+    const allAssign = tokens.every((t) => !t.quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text));
+    if (first === 'export' || first === 'declare' || allAssign) {
+      return { inline: {}, persist: forwardable(tokens) };
+    }
+  } catch (_) { /* fail open */ }
+  return { inline: {}, persist: {} };
+}
+
 function spawnCwd(dir) {
   try { if (dir && fs.statSync(dir).isDirectory()) return dir; } catch (_) { /* fall through */ }
   return undefined; // the hook's own cwd
@@ -92,15 +125,16 @@ function spawnCwd(dir) {
 // One process handles one hook call, and git-guard runs gitVerdict from two
 // passes (quote-aware + backstop): memoize so each query spawns git once.
 const gitCache = new Map();
-function git(argv, dir) {
-  const key = JSON.stringify([argv, spawnCwd(dir) || '']);
-  if (!gitCache.has(key)) gitCache.set(key, gitUncached(argv, dir));
+function git(argv, dir, env) {
+  const key = JSON.stringify([argv, spawnCwd(dir) || '', env || null]);
+  if (!gitCache.has(key)) gitCache.set(key, gitUncached(argv, dir, env));
   return gitCache.get(key);
 }
-function gitUncached(argv, dir) {
+function gitUncached(argv, dir, env) {
   try {
     return execFileSync('git', argv, {
       cwd: spawnCwd(dir), encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS,
+      env: env && Object.keys(env).length ? Object.assign({}, process.env, env) : process.env,
       stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 4 * 1024 * 1024,
     });
   } catch (_) {
@@ -111,12 +145,12 @@ function gitUncached(argv, dir) {
 // name (lower-case) -> alias value, for the repo `args`/`dir` select. Cached
 // per (repo args, dir) for the life of the one hook process.
 const aliasCache = new Map();
-function aliasesFor(args, dir) {
+function aliasesFor(args, dir, env) {
   const ra = repoArgs(args);
-  const key = JSON.stringify([ra, spawnCwd(dir) || '']);
+  const key = JSON.stringify([ra, spawnCwd(dir) || '', env || null]);
   if (aliasCache.has(key)) return aliasCache.get(key);
   const map = new Map();
-  const out = git(ra.concat(['config', '-z', '--get-regexp', '^alias\\.']), dir);
+  const out = git(ra.concat(['config', '-z', '--get-regexp', '^alias\\.']), dir, env);
   if (out) {
     for (const rec of out.split('\0')) {
       const nl = rec.indexOf('\n');
@@ -131,7 +165,6 @@ function aliasesFor(args, dir) {
 
 // Re-quote tokenizer tokens as shell words. A token that came from a command
 // substitution keeps one, so git-guard's push-arg `$(…)` rule still sees it.
-const CMDSUBST_SENTINEL = '\x00CMDSUBST\x00';
 function shellWords(tokens) {
   return tokens.map((t) => {
     if (t.text.indexOf(CMDSUBST_SENTINEL) !== -1) return '"$(:)"';
@@ -154,9 +187,9 @@ function aliasable(sub) {
 // { chain, verb, command } where `command` is the text git would run (a git
 // command line, or the shell text of a `!` alias), or null when `sub` is not
 // an alias (or the chain loops — git refuses to run a looping alias).
-function expandAlias(args, sub, rest, dir) {
+function expandAlias(args, sub, rest, dir, env) {
   if (!aliasEnabled() || !aliasable(sub)) return null;
-  const map = aliasesFor(args, dir);
+  const map = aliasesFor(args, dir, env);
   if (!map.size) return null;
   let name = sub.toLowerCase();
   if (!map.has(name)) return null;
@@ -288,20 +321,20 @@ function setsRealEditor(rawCmd) {
   return false;
 }
 
-function readTemplate(args, dir, explicit) {
+function readTemplate(args, dir, explicit, env) {
   let p = explicit;
   if (!p) {
-    const out = git(repoArgs(args).concat(['config', '--path', '--get', 'commit.template']), dir);
+    const out = git(repoArgs(args).concat(['config', '--path', '--get', 'commit.template']), dir, env);
     p = out ? out.trim() : '';
   }
   if (!p) return null;
-  if (p === '~' || p.startsWith('~/')) p = path.join(require('os').homedir(), p.slice(1));
+  if (p === '~' || p.startsWith('~/')) p = path.join((env && env.HOME) || require('os').homedir(), p.slice(1));
   // git resolves -t / commit.template relative to the cwd it runs in.
   const base = spawnCwd(dir) || process.cwd();
   try { return fs.readFileSync(path.resolve(base, p), 'utf8'); } catch (_) { return null; }
 }
 
-function reusedMessageVerdict(args, rest, dir, rawCmd, hasSelfCredit, gm) {
+function reusedMessageVerdict(args, rest, dir, rawCmd, hasSelfCredit, gm, env) {
   if (!reuseEnabled()) return null;
   const o = commitSources(rest);
   if (o.message) return null; // -m / -F / --fixup / --squash: scanned (or authored) elsewhere
@@ -309,16 +342,16 @@ function reusedMessageVerdict(args, rest, dir, rawCmd, hasSelfCredit, gm) {
   let origin = null;
   let verbatim = false;
   if (o.reuse && !o.reuse.startsWith('-')) { // never hand git log an option-shaped revision
-    text = git(repoArgs(args).concat(['log', '-1', '--format=%B', o.reuse, '--']), dir);
+    text = git(repoArgs(args).concat(['log', '-1', '--format=%B', o.reuse, '--']), dir, env);
     origin = 'commit `' + (/^[0-9a-f]{40,}$/i.test(o.reuse) ? o.reuse.slice(0, 12) : o.reuse) + '`';
     verbatim = !o.reedit && !o.edit;
     if (o.noEdit) verbatim = true;
   } else if (o.amend) {
-    text = git(repoArgs(args).concat(['log', '-1', '--format=%B', 'HEAD', '--']), dir);
+    text = git(repoArgs(args).concat(['log', '-1', '--format=%B', 'HEAD', '--']), dir, env);
     origin = 'HEAD (`--amend` reuses it)';
     verbatim = o.noEdit;
   } else if (!o.noEdit) {
-    text = readTemplate(args, dir, o.template);
+    text = readTemplate(args, dir, o.template, env);
     origin = 'the commit template';
   }
   if (!text || !hasSelfCredit(text)) return null;
@@ -340,14 +373,14 @@ function gitVerdict(o) {
       const def = gitDefinitionVerdict(o.args, o.sub, o.rest, (c) => o.rescan(c, o.dir));
       if (def) return def;
       if (o.depth < 3) {
-        const ex = expandAlias(o.args, o.sub, o.rest, o.dir);
+        const ex = expandAlias(o.args, o.sub, o.rest, o.dir, o.env);
         if (ex) {
           const hit = o.rescan(ex.command, o.dir);
           if (hit) return annotate(hit, 'via git alias `' + ex.chain.join('` -> `') + '`:');
         }
       }
     }
-    if (o.sub === 'commit') return reusedMessageVerdict(o.args, o.rest, o.dir, o.rawCmd, o.hasSelfCredit, o.gm);
+    if (o.sub === 'commit') return reusedMessageVerdict(o.args, o.rest, o.dir, o.rawCmd, o.hasSelfCredit, o.gm, o.env);
   } catch (_) { /* fail open */ }
   return null;
 }
@@ -431,16 +464,16 @@ function shellDefinitionVerdict(tokens, ev, rescan, depth, rawCmd) {
 
 // PostToolUse audit hook: does `git <sub>` resolve (through aliases) to a
 // commit-creating verb, or to a `!shell` alias (which may commit)?
-function aliasCreatesCommit(args, sub, rest, dir, commitVerbs) {
+function aliasCreatesCommit(args, sub, rest, dir, commitVerbs, env) {
   try {
-    const ex = expandAlias(args, sub, rest, dir);
+    const ex = expandAlias(args, sub, rest, dir, env);
     if (!ex) return false;
     return ex.verb === '!' || ex.verb.startsWith('-') || commitVerbs.has(ex.verb);
   } catch (_) { return false; }
 }
 
 module.exports = {
-  gitVerdict, shellDefinitionVerdict, aliasCreatesCommit,
+  gitVerdict, shellDefinitionVerdict, aliasCreatesCommit, segmentEnv, forwardable,
   // exported for tests
   expandAlias, commitSources, GIT_BUILTINS,
 };

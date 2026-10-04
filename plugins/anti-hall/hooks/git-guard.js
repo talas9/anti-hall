@@ -2076,9 +2076,13 @@ function scanCommand(cmd, depth, baseCwd) {
     if (hit) return hit;
   }
 
+  let persistEnv = {}; // exported / bare config-affecting assignments, for later segments
   for (const seg of segments) {
     const tokens = tokenize(seg);
     if (!tokens.length) continue;
+    const segEnv = aliasScan().segmentEnv(tokens);
+    const gitEnv = Object.assign({}, persistEnv, segEnv.inline);
+    Object.assign(persistEnv, segEnv.persist);
 
     // Shell assignments (`GIT_PAGER=…`, `export X=…`, `env X=…`): the value
     // may be run as a command by git.
@@ -2093,6 +2097,7 @@ function scanCommand(cmd, depth, baseCwd) {
 
     const ev = effectiveVerb(tokens);
     if (!ev) continue;
+    ev.env = gitEnv;
 
     const aliasDef = aliasScan().shellDefinitionVerdict(tokens, ev, (c) => scanCommand(c, d + 1, lastCdDir), d, currentRawCommand);
     if (aliasDef) return aliasDef;
@@ -2284,7 +2289,7 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
   const { sub, rest } = gitSubcommand(ev.args);
   if (sub === null) return null;
 
-  const aliasHit = aliasScan().gitVerdict({ args: ev.args, sub, rest, dir: lastCdDir, depth: d, rawCmd: currentRawCommand,
+  const aliasHit = aliasScan().gitVerdict({ args: ev.args, sub, rest, dir: lastCdDir, depth: d, rawCmd: currentRawCommand, env: ev.env,
     rescan: (c, dir) => scanCommand(c, d + 1, dir), hasSelfCredit, gm });
   if (aliasHit) return aliasHit;
 
@@ -2592,6 +2597,7 @@ function backstopVerb(text) {
 // effective verb is `git`. This only ADDS blocks on top of backstopPieces:
 // it can never suppress one.
 function gitBackstopLines(cmd, d, heredocBodies, cwd) {
+  const benv = backstopEnv(cmd);
   const joined = cmd.replace(/\\\r?\n/g, ' ');
   for (const line of joined.split('\n')) {
     if (!/\bgit\b/.test(line)) continue;
@@ -2606,6 +2612,7 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
         continue;
       }
       if (ev.verb !== 'git') continue;
+      ev.env = benv;
       const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
       if (hit) return hit;
     }
@@ -2613,7 +2620,22 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
   return null;
 }
 
+// The backstop cuts the command quote-blind, so it cannot tell which segment an
+// assignment belongs to: it forwards every literal config-affecting assignment
+// that is exported or sits in front of a `git` word (it only adds blocks).
+function backstopEnv(cmd) {
+  const env = {};
+  try {
+    for (const seg of splitSegments(cmd)) {
+      const e = aliasScan().segmentEnv(tokenize(seg));
+      Object.assign(env, e.persist, e.inline);
+    }
+  } catch (_) { /* fail open */ }
+  return env;
+}
+
 function gitBackstop(cmd, d, heredocBodies, baseCwd) {
+  const benv = backstopEnv(cmd);
   const cwd = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
   // A1-5 (0.117.2 follow-up): a literal `echo "..." | bash` piped-script form
   // never resolves to verb `git` in EITHER piece (echo/bash), so it must be
@@ -2645,6 +2667,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
       const ev = backstopVerb(v);
       if (!ev) continue;
       if (ev.verb === 'git') {
+        ev.env = benv;
         const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
         if (hit) return hit;
       } else if (d < 3 && (ev.verb === 'eval' || SHELL_VERBS.has(ev.verb.toLowerCase()))) {

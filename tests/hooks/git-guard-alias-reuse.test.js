@@ -280,6 +280,47 @@ test('commitSources parses the message-source options', () => {
     [true, 'abc', true, true, 'f', null]);
 });
 
+// ------------------------------------------------- inline env is forwarded
+const GCFG = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'git-guard-alias-cfg-')), 'g.cfg');
+fs.writeFileSync(GCFG, '[alias]\n\tgg = ' + PUSH + ' ' + FORCE + '\n');
+const XDG = fs.mkdtempSync(path.join(os.tmpdir(), 'git-guard-alias-xdg-'));
+fs.mkdirSync(path.join(XDG, 'git'));
+fs.writeFileSync(path.join(XDG, 'git', 'config'), '[alias]\n\tgx = ' + PUSH + ' ' + FORCE + '\n');
+const CLEAN = mkRepo(false); // no aliases, clean HEAD
+const INLINE_BLOCK = [
+  ['GIT_CONFIG_GLOBAL inline', 'GIT_CONFIG_GLOBAL=' + GCFG + ' git gg origin main', FORCE_RE],
+  ['env VAR=x git', 'env GIT_CONFIG_GLOBAL=' + GCFG + ' git gg origin main', FORCE_RE],
+  ['export VAR=x; git', 'export GIT_CONFIG_GLOBAL=' + GCFG + '; git gg origin main', FORCE_RE],
+  ['bare VAR=x; git', 'GIT_CONFIG_GLOBAL=' + GCFG + '; git gg origin main', FORCE_RE],
+  ['XDG_CONFIG_HOME inline', 'XDG_CONFIG_HOME=' + XDG + ' git gx origin main', FORCE_RE],
+  ['GIT_CONFIG_COUNT/KEY/VALUE inline',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.gc GIT_CONFIG_VALUE_0="' + PUSH + ' ' + FORCE + '" git gc origin main', FORCE_RE],
+];
+for (const [name, cmd, re] of INLINE_BLOCK) {
+  test('INLINE ENV BLOCK: ' + name, () => {
+    const r = run(cmd, CLEAN.repo);
+    assert.strictEqual(r.status, 2, cmd + '\n' + r.stderr);
+    assert.match(r.stderr, re);
+  });
+}
+test('INLINE ENV: unresolvable value ($VAR) is not forwarded - fails open as before', () => {
+  const r = run('GIT_CONFIG_GLOBAL=$CFG git gg origin main', CLEAN.repo);
+  assert.strictEqual(r.status, 0, r.stderr);
+});
+test('INLINE ENV: an assignment from an earlier unrelated segment does not leak a non-exported inline value', () => {
+  const r = run('GIT_CONFIG_GLOBAL=' + GCFG + ' echo hi; git gg origin main', CLEAN.repo);
+  assert.strictEqual(r.status, 0, r.stderr);
+});
+test('INLINE ENV: GIT_DIR targets the credited repo for --amend --no-edit, from a clean cwd', () => {
+  const r = run('GIT_DIR=' + path.join(B.repo, '.git') + ' git commit --amend --no-edit', CLEAN.repo);
+  assert.strictEqual(r.status, 2, r.stderr);
+  assert.match(r.stderr, REUSED);
+});
+test('INLINE ENV: GIT_DIR pointing at a clean repo from a credited cwd stays allowed', () => {
+  const r = run('GIT_DIR=' + path.join(CLEAN.repo, '.git') + ' git commit --amend --no-edit', B.repo);
+  assert.strictEqual(r.status, 0, r.stderr);
+});
+
 test.after(() => {
   for (const R of [A, B]) fs.rmSync(R.repo, { recursive: true, force: true });
   h.cleanup();
