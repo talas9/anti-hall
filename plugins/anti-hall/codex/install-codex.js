@@ -113,6 +113,7 @@ const ANTI_HALL_HOOKS = {
   PreToolUse: [
     group('Bash', ['git-guard.js'], 10),
     group('Bash', ['command-guard.js'], 10),
+    group('Bash', ['merge-side-pick.js'], 10),
     group('Bash', ['merge-gate.js'], 10),
     group('Bash', ['compact-declaration-guard.js'], 10),
     group('apply_patch', ['api-guard.js'], 45),
@@ -135,6 +136,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['precompact-snapshot.js'], 10),
   ],
   PostToolUse: [
+    group('Bash', ['merge-side-pick.js --post'], 10),
     group('Bash', ['git-guard.js --audit'], 10),
     group('Bash', ['devswarm-parent-reply-tracker.js'], 10),
     group('Bash', ['devswarm-child-drain.js'], 10),

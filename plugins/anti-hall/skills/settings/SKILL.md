@@ -166,6 +166,8 @@ task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off
 agents are in flight, independent of that mode;
 `guards.sharedTreeAgentNote` (default on) adds one advisory sentence when a write-capable agent is
 spawned without `isolation:"worktree"` while another write-capable agent runs in the same working tree;
+`guards.mergeSidePickAdvisory` (default on) adds one advisory to a push when a conflict was resolved by
+taking one side wholesale (`--ours`/`--theirs`, `-X ours|theirs`) and no test run followed;
 `guards.injectionRepeatEvery` — turns between full re-injections of a static
 per-turn reminder block (VERIFY-FIRST, the DevSwarm PRIMARY dispatch-tier/
 top-fan-out-tier suffixes) once its first-turn/post-compact copy is consumed,

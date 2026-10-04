@@ -76,6 +76,7 @@ const SWITCHES = {
   'failure-root-cause-nudge.js': 'guards.failureRootCauseNudge',
   'repo-self-drift.js': 'guards.repoSelfDrift',
   'merge-gate.js': 'guards.mergeGate',
+  'merge-side-pick.js': 'guards.mergeSidePickAdvisory',
   'ship-it-guard.js': 'guards.shipitGate',
   'codex-nudge.js': 'codexNudge.enabled',
   'version-alert.js': 'versionAlerts.antiHall',

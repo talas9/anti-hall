@@ -130,6 +130,12 @@
       {
         "matcher": "Bash",
         "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\"", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/merge-gate.js\"", "timeout": 10 }
         ]
       },
@@ -213,6 +219,12 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", "timeout": 10 }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [

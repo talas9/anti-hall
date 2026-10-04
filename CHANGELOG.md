@@ -8,6 +8,10 @@ the update.
 
 ## Unreleased
 
+### Added
+
+- **merge-side-pick advisory** (`hooks/merge-side-pick.js`, PostToolUse + PreToolUse Bash, Claude and Codex): after a conflict is resolved by taking one side wholesale (`git checkout|restore --ours|--theirs`, `git merge|pull|rebase -X ours|theirs`, `git merge -s ours`), a push with no test run since (npm/pnpm/yarn test, `node --test`, pytest, go/cargo/flutter/dart test, mvn/gradle test, make test, ...) gets one advisory line in the shared message shape. Never blocks; per-session state in `~/.anti-hall/merge-side-pick-<session>.json`, pruned after 7 days. Setting `guards.mergeSidePickAdvisory` (default on, env `ANTIHALL_MERGE_SIDE_PICK_ADVISORY`). On Codex the advisory is shown only by Codex builds that support PreToolUse additionalContext (rust-v0.129.0 and later, docs/KB-claude-codex.md section 5.2); older builds ignore it and the recorder stays harmless. Designed from the owner-decisions description; the original report text was not found.
+
 ### Fixed
 
 - Jev triage: the per-hash claim and the arrival drain lock now use the single lock primitive (`companion/lib/lock.js`) instead of hand-rolled O_EXCL markers; the lock gained `adopt(path, token)` so the detached drain worker takes over the lock its spawning hook acquired. Behaviour unchanged; the hygiene allowlist entry is gone.
