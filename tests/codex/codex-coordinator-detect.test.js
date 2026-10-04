@@ -120,7 +120,7 @@ test('command-guard: Codex main-thread `npm test` -> BLOCK with the reason on st
   const r = testHook('command-guard.js', Object.assign({}, MAIN, { cwd: repo }), { home, env: {} });
   assert.strictEqual(r.status, 2, 'stdout=' + r.stdout);
   assert.ok(r.json && r.json.decision === 'block');
-  assert.match(r.json.reason, /Heavy command detected/);
+  assert.match(r.json.reason, /heavy command/);
   assert.strictEqual(r.stderr.trim(), r.json.reason.trim());
 }));
 

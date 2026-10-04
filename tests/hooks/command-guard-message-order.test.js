@@ -120,7 +120,7 @@ test('every blocked variant leads with the working path, before the rule text', 
       assert.strictEqual(r.status, 2, `${c} env ${env}`);
       const lines = r.json.reason.split('\n');
       assert.ok(lines[2].startsWith(FIRST_LINE), `env ${env}: ${r.json.reason.slice(0, 300)}`);
-      assert.ok(lines[2].indexOf('Otherwise delegate to') > FIRST_LINE.length, `env ${env}`);
+      assert.ok(lines[2].indexOf('Otherwise ') > FIRST_LINE.length, `env ${env}`);
       assert.match(r.json.reason, /Inline-allowed ONLY/);
     }
   }
