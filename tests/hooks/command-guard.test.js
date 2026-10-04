@@ -93,14 +93,16 @@ const BLOCK = [
   'node plugins/anti-hall/scripts/jev-report.js prune-audit --days 30',
   'gcloud compute instances delete foo',
   // 0.113 P1: a read verb only counts as the LAST command-path word; a
-  // separated flag value (or any later token) posing as the verb is refused,
-  // and so is a separated flag value in general.
+  // separated flag value (or any later token) posing as the verb is refused.
+  // (A separated value for the closed read-flag list --project/--region/--zone/
+  // --location/--limit/--freshness/--page-size/--sort-by is allowed; see
+  // command-guard-readonly-cli-forms.test.js.)
   'gcloud compute instances reset vm1 --zone list',
   'gcloud compute instances reset vm1 list',
   'gcloud compute instances delete-access-config vm list',
   'gcloud secrets versions access latest --secret list',
-  'gcloud run services describe foo --project p --region r',
-  'gcloud logging read "severity>=ERROR" --limit 5',
+  'gcloud run services describe foo --impersonate-service-account sa --region r',
+  'gcloud logging read "severity>=ERROR" --max-age 5',
   'kubectl delete pod foo',
   // P1 fp (rc-v0.108.4.2 review): a mutating verb earlier on the line must not
   // be shadowed by a LATER compound word that merely CONTAINS a read-only

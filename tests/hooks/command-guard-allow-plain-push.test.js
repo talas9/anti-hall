@@ -575,7 +575,7 @@ const D_BLOCK = [
   'git push origin main > out.txt',
   'git push origin main 2>&1 | tail -2 | sh', // more than one pipe
   'git push origin main | grep x', // not a tail/head filter
-  'git push origin main | tail -2 && git status', // filter not at the end
+  'git push origin main | tail -2 | sh && git status', // more than one pipe mid-chain
   // A1-6: with NO explicit remote token, git parses the SOLE positional
   // argument as the <repository> (remote), not a refspec — a colon-bearing
   // token here is an scp-like remote URL to real git (`host:path`), however
@@ -797,8 +797,8 @@ test('allow-plain-push: `-u` push with an appended substitution/chain/redirect/e
       'git push {U} origin main $(id)', 'git push {U} origin main `id`', 'git push {U} origin main; id',
       'git push {U} origin main && id', 'git push {U} origin main || id', 'git push {U} origin main\nid',
       'git push {U} origin main <<EOF\nx\nEOF',
-      // chained after the push: rev-parse / ls-remote / node / echo stay outside the tail allow-list
-      'git push {U} origin main; git rev-parse HEAD', 'git push {U} origin main && git ls-remote origin',
+      // chained after the push: flagged rev-parse / ls-remote (plain `rev-parse <ref>` and `ls-remote <remote> [ref]` are post-push reads, see command-guard-readonly-cli-forms.test.js) / node / echo stay outside the tail allow-list
+      'git push {U} origin main; git rev-parse --exec-path', 'git push {U} origin main && git ls-remote --upload-pack=x origin',
       'git push {U} origin main; node x.js', 'git push {U} origin main; echo done',
       'GIT_SSH_COMMAND=x git push {U} origin main', 'git -c core.sshCommand=x push {U} origin main',
       'git -C /tmp push {U} origin main', 'git push {U} origin main > /tmp/x',

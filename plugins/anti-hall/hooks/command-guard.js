@@ -1609,7 +1609,18 @@ function isSafeSqliteReadonly(segment, wholeCommand) {
 // create-token, update-container, reset-windows-password, …) are refused too.
 const GCLOUD_REFUSED_PATH_RE = /^(?:access|ssh|scp|run|sign|print-.*|attach-.*|detach-.*|add-.*|set-.*|remove-.*|(?:reset|suspend|resume|publish|call|execute|decrypt|encrypt|delete|create|update|deploy)(?:-.*)?)$/;
 const GCLOUD_BOOLEAN_FLAGS = new Set(['--quiet', '--uri']);
-function gcloudReadGrammar(rest, verbs) {
+// Value-taking read flags that may carry a SEPARATED value (`--project foo`,
+// `--limit 5`). Closed list: any other `--k v` stays refused (a separated
+// value could otherwise pose as the verb or a second positional). The value
+// must be one non-dash token. Only honoured when the caller passes
+// sepValues=true, i.e. from isWholeCommandReadOnlyForm (the whole command is
+// validated there; the per-segment exemptions keep the strict `--k=v` grammar). `--format`/`--filter` are NOT on the list: the
+// narrow shape-B carve-out requires the `--format=<json|yaml|value(..)>` form.
+const GCLOUD_VALUE_FLAGS = new Set([
+  '--project', '--region', '--zone', '--location', '--limit', '--freshness',
+  '--page-size', '--sort-by',
+]);
+function gcloudReadGrammar(rest, verbs, sepValues) {
   let i = 0;
   const path = [];
   while (i < rest.length && !rest[i].startsWith('-')) {
@@ -1640,6 +1651,11 @@ function gcloudReadGrammar(rest, verbs) {
       continue;
     }
     if (GCLOUD_BOOLEAN_FLAGS.has(t)) { flags.push(t); continue; }
+    if (sepValues === true && GCLOUD_VALUE_FLAGS.has(t) && i + 1 < rest.length && !rest[i + 1].startsWith('-')) {
+      flags.push(t + '=' + rest[i + 1]);
+      i++;
+      continue;
+    }
     return null;
   }
   return { path, verb, positional, flags };
@@ -1691,6 +1707,76 @@ function isReadOnlyCloudInspect(segment) {
     if (CLOUD_MUTATING_VERBS.has(rest[i].toLowerCase())) return false;
   }
   return true;
+}
+
+// isWholeCommandReadOnlyForm(command) -> true iff the COMPLETE command is
+// exactly one read-only form, optionally piped into bounded non-executing sinks:
+//   (a) `<firebase|gcloud|aws|az|kubectl|helm|terraform|pulumi|vercel|netlify|
+//       heroku|serverless> --version|-V` (optionally a trailing `2>&1` /
+//       `2>/dev/null`), or
+//   (b) a gcloud describe/list/get/read under the strict grammar WITH separated
+//       values for the closed GCLOUD_VALUE_FLAGS list.
+// Unlike a per-segment light exception this approves nothing else on the line:
+// every delimiter must be a pipe (no ;, &&, ||, &, newline, heredoc), there is
+// no substitution/expansion/backslash, no redirection but one trailing `2>&1`
+// (or `2>/dev/null` on a version query), and each pipe stage after the first is
+// a closed stdin-only tail/head/wc/grep -c/-m N shape (isClosedSinkStage: no
+// file operand, no unknown flag) — never sh/bash/xargs/eval/jq/tee.
+const VERSION_CLI_RE = /^(?:firebase|gcloud|aws|az|kubectl|helm|terraform|pulumi|vercel|netlify|heroku|serverless)\s+(?:--version|-V)$/i;
+function isWholeCommandReadOnlyForm(command) {
+  const cmd = command.trim();
+  if (!/^(?:firebase|gcloud|aws|az|kubectl|helm|terraform|pulumi|vercel|netlify|heroku|serverless)\s/i.test(cmd)) return false;
+  if (/[\n\r]/.test(cmd) || hasShellExpansionAnywhere(cmd)) return false;
+  const split = splitSegmentsDetailed(cmd);
+  const segs = split.segments;
+  if (!segs.length || split.delims[split.delims.length - 1] !== 'end') return false;
+  for (let i = 0; i < split.delims.length - 1; i++) if (split.delims[i] !== '|') return false;
+  const first = segs[0].trim();
+  let ok = false;
+  const vq = first.replace(/\s+2>(?:&1|\/dev\/null)$/, '');
+  if (VERSION_CLI_RE.test(vq)) {
+    ok = !hasUnquotedRedirectChar(vq);
+  } else {
+    const stripped = stripGcloudStderrMerge(first);
+    if (!hasUnquotedRedirectChar(stripped)) {
+      const st = tokenizeQuoted(stripped);
+      if (st[0] === 'gcloud') {
+        const g = gcloudReadGrammar(st.slice(1), GCLOUD_INSPECT_VERBS, true);
+        ok = !!g && !(g.verb === 'read' && g.path[g.path.length - 1] !== 'logging');
+      }
+    }
+  }
+  if (!ok) return false;
+  for (let i = 1; i < segs.length; i++) {
+    if (!isClosedSinkStage(segs[i].trim())) return false;
+  }
+  return true;
+}
+
+// isClosedSinkStage(segment) -> true iff the stage is EXACTLY one of the closed
+// stdin-only sink shapes (no file operand, no unknown flag; only used by
+// isWholeCommandReadOnlyForm — isBoundedSinkSegment's looser rule is untouched):
+//   head|tail            [no args | -N | -n N | -n +N]   (numeric only)
+//   wc                   [-l|-c|-w|-m ...], no operands
+//   grep -c PATTERN | grep -m N PATTERN   (one pattern token, no file operand)
+function isClosedSinkStage(segment) {
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const t = tokenizeQuoted(segment);
+  if (!t.length) return false;
+  const rest = t.slice(1);
+  if (t[0] === 'head' || t[0] === 'tail') {
+    if (rest.length === 0) return true;
+    if (rest.length === 1) return /^-\d+$/.test(rest[0]);
+    if (rest.length === 2) return rest[0] === '-n' && /^\+?\d+$/.test(rest[1]);
+    return false;
+  }
+  if (t[0] === 'wc') return rest.every((a) => /^-[lcwm]$/.test(a));
+  if (t[0] === 'grep') {
+    if (rest.length === 2) return rest[0] === '-c' && !rest[1].startsWith('-');
+    if (rest.length === 3) return rest[0] === '-m' && /^\d+$/.test(rest[1]) && !rest[2].startsWith('-');
+    return false;
+  }
+  return false;
 }
 
 // P2 fix: `gh` mutating subcommands were never classified heavy at all — `gh`
@@ -1971,6 +2057,7 @@ function extractEvalPayload(segment) {
 function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
+  if (d === 0 && isWholeCommandReadOnlyForm(command)) return false;
   for (const seg of splitSegments(command)) {
     if (isHeavySegment(seg, command)) return true;
     if (d < 3) {
@@ -2717,6 +2804,11 @@ const TRAILING_STDERR_MERGE_RE = /\s+2>&1\s*$/;
 const PLAIN_LOG_SEGMENT_RE = /^git\s+log\s+--oneline(?:\s+-\d+)?\s*$/;
 const PLAIN_STATUS_SEGMENT_RE = /^git\s+status(?:\s+(?:--short|-s))?\s*$/;
 const PLAIN_SHOW_SEGMENT_RE = /^git\s+show\s+--stat(?:\s+(?:-\d+|HEAD))?\s*$/;
+// Post-push verification reads: `git ls-remote [--heads] <remote> [<ref>]` and
+// `git rev-parse [--short] <HEAD|ref>`. Bare tokens only (no flag other than
+// the one listed, no `:`/`+`); the ls-remote remote must be a configured name.
+const PLAIN_LSREMOTE_SEGMENT_RE = /^git\s+ls-remote(?:\s+--heads)?\s+((?![-+])[A-Za-z0-9_.\/-]+)(?:\s+(?![-+])[A-Za-z0-9_.\/-]+)?\s*$/;
+const PLAIN_REVPARSE_SEGMENT_RE = /^git\s+rev-parse(?:\s+--short)?\s+(?![-+])[A-Za-z0-9_.\/-]+\s*$/;
 
 // hasSubstitutionOutsideSingleQuotes(segment) -> true if a `` ` `` or `$(`
 // appears anywhere the shell would actually EXPAND it — i.e. outside single
@@ -2793,6 +2885,9 @@ function classifyPlainGitChainSegment(segment) {
   if (PLAIN_LOG_SEGMENT_RE.test(trimmed)) return { kind: 'log' };
   if (PLAIN_STATUS_SEGMENT_RE.test(trimmed)) return { kind: 'status' };
   if (PLAIN_SHOW_SEGMENT_RE.test(trimmed)) return { kind: 'show' };
+  const lr = trimmed.match(PLAIN_LSREMOTE_SEGMENT_RE);
+  if (lr) return { kind: 'lsremote', remote: lr[1] };
+  if (PLAIN_REVPARSE_SEGMENT_RE.test(trimmed)) return { kind: 'revparse' };
   return null;
 }
 
@@ -2997,6 +3092,16 @@ function isAllowedPlainPushChain(command, cwd, payload) {
     delims.pop();
     delims[delims.length - 1] = 'end';
   }
+  // (d2) a `| tail/head -N` output filter piped from a PLAIN PUSH segment in
+  // the MIDDLE of the chain (`git push origin b 2>&1 | tail -3; git ls-remote …`):
+  // drop the filter and let the push segment carry the following delimiter.
+  for (let i = segments.length - 2; i >= 0; i--) {
+    if (delims[i] !== '|' || !PLAIN_OUTPUT_FILTER_RE.test(segments[i + 1].trim())) continue;
+    const prev = classifyPlainGitChainSegment(segments[i].trim());
+    if (!prev || prev.kind !== 'push') continue;
+    segments.splice(i + 1, 1);
+    delims.splice(i, 1);
+  }
   // Every delimiter between segments must be '&&' or ';' — a pipe, '||',
   // background '&', newline, heredoc, subshell/group, or command
   // substitution boundary disqualifies the WHOLE chain. The final delimiter
@@ -3041,7 +3146,9 @@ function isAllowedPlainPushChain(command, cwd, payload) {
     // meaningful AFTER a push has already appeared in this chain — before
     // that, `git status`/`git log`/`git show` were never part of the
     // original allowance and must not silently start qualifying.
-    if ((cls.kind === 'log' || cls.kind === 'status' || cls.kind === 'show') && !sawPush) return false;
+    if ((cls.kind === 'log' || cls.kind === 'status' || cls.kind === 'show' ||
+         cls.kind === 'lsremote' || cls.kind === 'revparse') && !sawPush) return false;
+    if (cls.kind === 'lsremote' && !isPlainPushRemoteAllowed(cls.remote, gitCwd)) return false;
   }
   return true;
 }
