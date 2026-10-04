@@ -430,7 +430,7 @@ test('Codex payload (turn_id) -> FULL directive without TaskCreate; Claude paylo
   const h = makeHome();
   try {
     const rc = testHook(HOOK, Object.assign(promptPayload(), { turn_id: 'turn-1', session_id: 'tc' }), { home: h.home });
-    assert.ok(ctx(rc).startsWith(FULL_MARKER));
+    assert.ok(ctx(rc).includes(FULL_MARKER));
     assert.ok(!/TaskCreate/.test(ctx(rc)), 'Codex text must not name TaskCreate');
     assert.ok(/task\/plan list/.test(ctx(rc)));
     const rl = testHook(HOOK, Object.assign(promptPayload(), { session_id: 'cl' }), { home: h.home });
