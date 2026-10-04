@@ -43,6 +43,10 @@ const ALLOWLIST = {
   'companion/lib/devswarm-read-wal.js': {
     'excl-create': { count: 2, reason: 'read-WAL spill + last-resort spill files: each entry id is unique, O_EXCL only refuses to overwrite a spilled entry' },
   },
+  'hooks/lib/jev-triage.js': {
+    'excl-create': { count: 2, reason: 'TEMPORARY (jev arrival work): per-hash triage claim + arrival drain lock, both short-TTL O_EXCL markers; the drain lock is handed from the spawning hook to the detached worker, which lock.js ownership records do not model — migrate or keep deliberately' },
+    'unlink-lock': { count: 1, reason: 'stale-claim/arrival-lock reclaim for the two markers above (same follow-up)' },
+  },
   'hooks/lib/defect-store.js': {
     'excl-create': { count: 1, reason: 'defect report files are created once (O_EXCL refuses to clobber an existing report) then appended' },
   },
