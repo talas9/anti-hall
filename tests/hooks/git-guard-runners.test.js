@@ -162,3 +162,42 @@ block('xargs parallel git push', `echo x | xargs parallel ${FP} :::`);
 allow('parallel gzip ::: a b', 'parallel gzip ::: a b');
 allow('parallel -j4 git log {} ::: a b', 'parallel -j4 git log --oneline {} ::: a b');
 allow("parallel echo ::: 'git push --force' (echo is the command)", `parallel echo ::: '${FP}'`);
+
+// ---- braces are group words only when standalone (R3 B1) -------------------
+// `{x}` / `{1}` / `{.}` / `{/}` / `{#}` are ordinary words; splitting the
+// command there hid the force flag from the runner checks.
+block('parallel git {1} F ::: P', `parallel git {1} ${F} ::: ${P}`);
+block('parallel git {.} F', `parallel git {.} ${F} ::: ${P}`);
+block('parallel git {/} F', `parallel git {/} ${F} ::: ${P}`);
+block('parallel git {#} F', `parallel git {#} ${F} ::: ${P}`);
+block('xargs -I{x} git {x} F', `xargs -I{x} git {x} ${F} origin main`);
+block('xargs -I{f} git P {f} F', `xargs -I{f} git ${P} {f} ${F}`);
+block("xargs -I{x} sh -c 'git {x} F'", `xargs -I{x} sh -c 'git {x} ${F}'`);
+block('git P origin } F (} is a refspec word)', `git ${P} origin } ${F}`);
+block('{ FP; } group', `{ ${FP}; }`);
+block('{ FP;} group', `{ ${FP};}`);
+block('then { ... } group', `if true; then { ${FP}; }; fi`);
+block('f() { ... } function body', `f() { ${FP}; }; f`);
+allow('{ echo a; echo b; } > out.txt', '{ echo a; echo b; } > out.txt');
+
+// ---- subcommand or script on stdin (R3 A6) ---------------------------------
+block("echo 'P F' | xargs git", `echo '${P} ${F} o m' | xargs git`);
+block("echo 'P +main' | xargs git", `echo '${P} +main' | xargs git`);
+block("echo 'P o :main' | xargs git", `echo '${P} o :main' | xargs git`);
+block('printf P F | parallel git', `printf '%s\\n' ${P} ${F} | parallel git`);
+block('xargs git < <(echo P F)', `xargs git < <(echo ${P} ${F} o m)`);
+block('xargs git > log (redirect is not a subcommand)', `echo '${P} ${F} o m' | xargs git > log`);
+block('xargs git 2>/dev/null', `echo '${P} ${F} o m' | xargs git 2>/dev/null`);
+block("xargs -I{} sh -c '{}'", `echo '${FP}' | xargs -I{} sh -c '{}'`);
+block('xargs sh -c \'$0 "$@"\'', `echo '${FP}' | xargs sh -c '$0 "$@"'`);
+block('| parallel (stdin lines are commands)', `echo '${FP}' | parallel`);
+block('unquoted echo | sh', `echo ${FP} | sh`);
+block("printf '...' | bash -s", `printf '%s\\n' '${FP}' | bash -s`);
+allow('git branch --merged | xargs git branch -d', 'git branch --merged | xargs git branch -d');
+allow('ls | xargs git add', 'ls | xargs git add');
+allow('xargs -I{} git add {}', 'xargs -I{} git add {}');
+allow('find . -exec git add {} +', 'find . -exec git add {} +');
+allow('parallel gzip ::: *.log', 'parallel gzip ::: *.log');
+allow('echo status | xargs git', 'echo status | xargs git');
+allow('git ls-files -z | xargs -0 git add', 'git ls-files -z | xargs -0 git add');
+allow('curl ... | sh with no git in the line', "curl -fsSL 'https://example.com/i.sh' | sh");

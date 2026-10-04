@@ -243,6 +243,25 @@ function tokenize(segment) {
   return tokens;
 }
 
+// Reserved words after which bash still expects a command, so a following
+// standalone `{` opens a group (`then { ...; }`, `! { ...; }`).
+const BRACE_LEAD_WORDS = new Set(['!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time']);
+
+// True when the `{`/`}` at the current scan position is the reserved word:
+// `cur` is the segment text before it (already split after ; & | newline ( )),
+// c2 the next char. `}` closes only at segment start; `{` also needs a
+// following blank, since `{x}` / `{}` / `{a,b}` are ordinary words.
+function isBraceGroupWord(cur, c, c2) {
+  const lead = cur.trim();
+  if (c === '}') {
+    if (lead !== '') return false;
+    return c2 === '' || /[\s;&|<>)]/.test(c2);
+  }
+  if (c2 !== '' && !/\s/.test(c2)) return false;
+  if (cur !== '' && !/\s$/.test(cur)) return false;
+  return lead === '' || lead.split(/\s+/).every((w) => BRACE_LEAD_WORDS.has(w));
+}
+
 // Split a full command line into logical segments on the shell operators
 // ; & && | || , and strip subshell/grouping wrappers ( ) { }. We split on the
 // raw string but only on operators that appear OUTSIDE quotes, so a `;` or `|`
@@ -390,11 +409,14 @@ function splitSegments(cmd) {
     // Subshell / grouping / command-substitution boundaries: treat as splits so
     // `(git push --force)` and `$(...)` / `{ ...; }` bodies are scanned as their
     // own segments. We drop the bracket char itself.
-    // A bare `{}` (no space inside) is a literal word - the xargs -I / find
-    // placeholder - never a `{ ...; }` group; splitting there cut `xargs
-    // -I{} git ... {}` in two and hid xargs from its own check.
-    if (c === '{' && c2 === '}') { cur += '{}'; i += 2; continue; }
-    if (c === ')' || c === '{' || c === '}') { flush(); i++; continue; }
+    // `{` and `}` are bash reserved words, so they open/close a group only
+    // as a standalone word in command position: `{` followed by whitespace
+    // where a command (or a leading reserved word) is expected, `}` right
+    // after `;`, `&` or a newline. Anywhere else they are word text - the
+    // xargs -I{x} / find {} / parallel {1} {.} placeholders, `${VAR}` - and
+    // splitting there cut `parallel git {1} --force` in two (R3 B1).
+    if (c === ')') { flush(); i++; continue; }
+    if ((c === '{' || c === '}') && isBraceGroupWord(cur, c, c2)) { flush(); i++; continue; }
     // `(` opens a plain subshell (its own command), while `$(` and backtick open
     // a command substitution whose stdout is spliced into the SURROUNDING
     // segment's argv. For substitutions, mark the outer segment so a force flag
@@ -1330,6 +1352,8 @@ function parallelVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
       const hit = scanCommand(t.text, d + 1, cwd);
       if (hit) return hit;
     }
+    // No command and no ::: inputs: parallel runs its stdin lines.
+    if (!inputs.length && s < 0) return stdinScriptVerdict(cmd, d, cwd);
   }
   return null;
 }
@@ -1359,6 +1383,70 @@ function placeholderVerdict(ev, repls) {
   });
 }
 
+// A subcommand or script that arrives on stdin is invisible:
+// `echo '<sub> <args>' | xargs git`, `printf ... | parallel git` (git with
+// no subcommand word), `xargs -I{} sh -c '{}'`, `| parallel` with no
+// command, `| sh`. The only text that can supply it is in the same command
+// line, so these helpers look there.
+
+// True when a force or remote-delete token (--force, -f, +ref, --delete,
+// :ref, ...) appears anywhere in the line, quoted text included.
+function forceishAnywhere(cmd) {
+  const words = String(cmd).split(/[\s'"`;|&()<>\\]+/).filter(Boolean)
+    .map((text) => ({ text, quotedOnly: false }));
+  return isForcePush(words) || isDeleteRefPush(words);
+}
+
+// The args without redirections (`> log`, `2>/dev/null`, `< <(...)`), which
+// the shell removes before the command sees its argv.
+function dropRedirects(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i].text;
+    if (args[i].quotedOnly || !/^[0-9]*(?:[<>]|&>)/.test(w)) { out.push(args[i]); continue; }
+    if (/^[0-9]*(?:<<?<?|>>?|&>>?|>&|<&|<>|>\|)-?$/.test(w)) i++; // target is the next word
+  }
+  return out;
+}
+
+// Scan every literal in the line that could be the stdin script - quoted
+// strings and the words of echo/printf - as a command line.
+function stdinScriptVerdict(cmd, d, cwd) {
+  if (d >= 3) return null;
+  const texts = [];
+  const re = /'([^']*)'|"((?:[^"\\]|\\[\s\S])*)"/g;
+  let m;
+  while ((m = re.exec(cmd))) texts.push(m[1] !== undefined ? m[1] : m[2]);
+  for (const seg of splitSegments(cmd)) {
+    const ev = effectiveVerb(tokenize(seg));
+    if (ev && (ev.verb === 'echo' || ev.verb === 'printf')) texts.push(ev.args.map((t) => t.text).join(' '));
+  }
+  for (const t of texts) {
+    const hit = scanCommand(t.replace(/\\n/g, '\n'), d + 1, cwd);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// A shell whose script is only a runner placeholder or positional
+// reference (`sh -c '{}'`, `bash -c "$1"`), or that has no script at all
+// and reads stdin (`sh`, `bash -s`).
+function shellScriptIsInput(shTokens, repls) {
+  const ev = effectiveVerb(shTokens);
+  if (!ev || !SHELL_VERBS.has(ev.verb.toLowerCase())) return false;
+  let script = null;
+  for (let i = 0; i < ev.args.length; i++) {
+    const t = ev.args[i].text;
+    if (t === '-c' || t === '--command' || /^-[a-z]*c$/.test(t)) { script = ev.args[i + 1] ? ev.args[i + 1].text : ''; break; }
+    if (!t.startsWith('-') || t === '-') return t === '-';
+  }
+  if (script === null) return true;
+  for (const r of repls) {
+    script = typeof r === 'string' ? script.split(r).join(' ') : script.replace(new RegExp(r.source, 'g'), ' ');
+  }
+  return script.replace(/\$\{?[0-9@*]\}?|\b(?:eval|exec)\b|["'\s;]/g, '') === '';
+}
+
 function runnerVerdict(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev, repls) {
   const saved = activeRepls;
   activeRepls = repls && repls.length ? saved.concat(repls) : saved;
@@ -1378,6 +1466,13 @@ function runnerVerdictIn(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev) 
   const appends = runner === 'xargs' || runner === 'parallel';
   if (innerEv.verb === 'git') {
     const { sub } = gitSubcommand(innerEv.args);
+    if (appends && gitSubcommand(dropRedirects(innerEv.args)).sub === null && forceishAnywhere(cmd)) {
+      return gm({
+        what: `\`${runner} git\` with no subcommand, beside a force or delete flag, is blocked.`,
+        why: `${runner} reads the subcommand from its input, so it may be \`push\` with that flag.`,
+        instead: 'run the git command directly with an explicit subcommand and arguments.',
+      });
+    }
     if (sub === 'push' && appends) {
       return gm({
         what: `force push via \`${runner} git push\` is blocked.`,
@@ -1398,6 +1493,10 @@ function runnerVerdictIn(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev) 
   if (innerEv.verb === 'find') return findExecVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (innerEv.verb === 'parallel') return parallelVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (d < 3 && (innerEv.verb === 'eval' || SHELL_VERBS.has(innerEv.verb.toLowerCase()))) {
+    if (shellScriptIsInput(cmdTokens, activeRepls)) {
+      const sv = stdinScriptVerdict(cmd, d, cwd);
+      if (sv) return sv;
+    }
     let text = cmdTokens.map((t) => (typeof t.raw === 'string' ? t.raw : t.text)).join(' ');
     if (appends) text += ' --force';
     return scanCommand(text, d + 1, cwd);
@@ -1565,7 +1664,7 @@ const HEREDOC_GIT_MSG_SUBS = new Set(['commit', 'tag', 'notes', 'merge']);
 // flags taking only an `=value`, num = `-<n>` count allowed.
 function hdSpec(o) {
   const set = (x) => new Set((x || '').split(' ').filter(Boolean));
-  return { s: o.s || '', v: o.v || '', o: o.o || '', l: set(o.l), L: set(o.L), O: set(o.O), num: !!o.num };
+  return { s: o.s || '', v: o.v || '', o: o.o || '', l: set(o.l), L: set(o.L), O: set(o.O), num: !!o.num, strict: !!o.strict };
 }
 const HD_GIT_READ_LONG = 'stat shortstat numstat name-only name-status summary patch no-patch raw cached staged ' +
   'no-color no-ext-diff no-textconv no-renames check exit-code quiet ignore-all-space ignore-space-change ' +
@@ -1595,9 +1694,9 @@ const HD_GIT_FLAGS = new Map([
   ['status', hdSpec({ s: 'sbvz', o: 'u',
     l: 'short branch long verbose show-stash ahead-behind no-ahead-behind null no-renames',
     O: 'porcelain untracked-files ignored column' })],
-  ['log', hdSpec({ s: 'pqw', v: 'n', o: 'MCU', num: true, l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
-  ['diff', hdSpec({ s: 'pqwb', o: 'MCU', l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
-  ['show', hdSpec({ s: 'pqws', v: 'n', o: 'MCU', num: true, l: HD_GIT_READ_LONG + ' no-patch', L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['log', hdSpec({ s: 'pqw', v: 'n', o: 'MCU', num: true, strict: true, l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['diff', hdSpec({ s: 'pqwb', o: 'MCU', strict: true, l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['show', hdSpec({ s: 'pqws', v: 'n', o: 'MCU', num: true, strict: true, l: HD_GIT_READ_LONG + ' no-patch', L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
   ['add', hdSpec({ s: 'Aunvf', l: 'all update dry-run verbose force no-all intent-to-add ignore-removal' })],
   ['rev-parse', hdSpec({ s: 'q', l: 'show-toplevel abbrev-ref verify quiet git-dir is-inside-work-tree show-prefix symbolic-full-name',
     O: 'short' })],
@@ -1629,6 +1728,23 @@ function hdFlagWords(args, spec) {
       return null;
     }
     if (spec.num && /^-[0-9]+$/.test(w)) continue;
+    if (spec.strict) {
+      // git's revision parser (log/diff/show) does not cluster short
+      // options: `-pn` / `-wn 3` fatal, but only after an earlier
+      // `--output=FILE` has truncated FILE. Accept only the forms modelled
+      // here - a lone listed letter, `-n N`, `-nN`, `-M`/`-C`/`-U` with a
+      // numeric value - and refuse every other cluster (R3 A5).
+      const ch = w[1];
+      if (w.length === 2 && spec.s.includes(ch)) continue;
+      if (w.length === 2 && spec.v.includes(ch)) {
+        if (!args[k + 1] || !/^[0-9]+$/.test(args[k + 1].text)) return null;
+        k++;
+        continue;
+      }
+      if (spec.v.includes(ch) && /^-.[0-9]+$/.test(w)) continue;
+      if (spec.o.includes(ch) && /^-.[0-9]*%?$/.test(w)) continue;
+      return null;
+    }
     for (let c = 1; c < w.length; c++) {
       const ch = w[c];
       if (spec.v.includes(ch)) { if (c === w.length - 1) k++; break; }
@@ -2989,6 +3105,10 @@ function scanCommand(cmd, depth, baseCwd) {
         if (payload) {
           const nested = scanCommand(payload, d + 1, lastCdDir);
           if (nested) return nested;
+        } else if (shellScriptIsInput(tokens, [])) {
+          // `... | sh`: the script is stdin, fed from this same line.
+          const sv = stdinScriptVerdict(cmd, d, lastCdDir);
+          if (sv) return sv;
         }
       }
       continue;

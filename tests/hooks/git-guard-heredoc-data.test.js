@@ -210,3 +210,15 @@ allow('log --abbrev=8 --pretty=format:%h -U3', CDOC + 'git log -1 --abbrev=8 --p
 allow('diff --stat -U5 --unified=3', CDOC + 'git diff --stat -U5 --unified=3');
 allow('log --date iso -n 2 --author me --diff-filter M', CDOC + 'git log --date iso -n 2 --author me --diff-filter M');
 allow('tag -l --sort --format (both take the next word)', CDOC + "git tag -l --sort -v:refname --format '%(refname)'");
+
+// git's revision parser does not cluster short options: `-pn` / `-wn 3`
+// fatal only after `--output=FILE` truncated FILE. Beside a data heredoc,
+// log/diff/show accept only modelled short forms (R3 A5).
+block('log -pn --output', CDOC + 'git log -pn --output=.git/config');
+block('log -wn 3 --output', CDOC + 'git log -wn 3 --output=.git/config');
+block('show -qpn x --output', CDOC + 'git show -qpn x --output=.git/config');
+block('diff -sn x --output', CDOC + 'git diff -sn x --output=x');
+block('diff -wb cluster', CDOC + 'git diff -wb');
+block('log -n <non-number> --output', CDOC + 'git log -n x --output=.git/config');
+allow('log -U3 -M50% -5 -p -n 2 -n3', CDOC + 'git log -U3 -M50% -5 -p -n 2 -n3 --oneline');
+allow('diff -w -b -p', CDOC + 'git diff -w -b -p');
