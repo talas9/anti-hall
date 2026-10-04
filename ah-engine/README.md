@@ -55,7 +55,7 @@ shared reaper stops it (a test whose daemon survives fails). Cargo commands here
 
 ## Building from source
 
-The toolchain is pinned by `ah-engine/rust-toolchain.toml` (added by the release-CI change). From `ah-engine/`:
+The toolchain (the latest stable Rust, with rustfmt and clippy) is pinned by `ah-engine/rust-toolchain.toml`, and the crate is on edition 2024. Dependencies are kept at their latest versions by Dependabot and a weekly `ah-engine-deps` workflow; `cargo deny check` (`ah-engine/deny.toml`) and `cargo audit` gate licences and advisories (D84). From `ah-engine/`:
 
 ```
 cargo build --release --locked      # binary: target/release/ah-engine
