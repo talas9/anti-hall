@@ -254,12 +254,24 @@ fn cmd_reset(p: &Parsed) -> i32 {
 
 fn cmd_proj(p: &Parsed) -> i32 {
     let arg = |i: usize| p.rest.get(i).map(String::as_str).unwrap_or("");
-    match client::proj(arg(0), arg(1), &p.rest[2.min(p.rest.len())..].join(" ")) {
-        Some(r) => {
+    let session = defaults::env_var("session").unwrap_or_else(|| "-".to_string());
+    match crate::spool::write(arg(0), arg(1), &p.rest[2.min(p.rest.len())..].join(" "), &session) {
+        crate::spool::Outcome::Answered(r) => {
             emit(p, r.clone(), json!({"reply": r}));
             0
         }
-        None => 1,
+        crate::spool::Outcome::Spooled(id) => {
+            emit(p, defaults::render("msg.spool_spooled", &[("id", &id)]), json!({"spooled": true, "write_id": id}));
+            0
+        }
+        crate::spool::Outcome::Refused(why) | crate::spool::Outcome::Failed(why) => {
+            if p.json {
+                println!("{}", json!({"error": why}));
+            } else {
+                eprintln!("{why}");
+            }
+            1
+        }
     }
 }
 

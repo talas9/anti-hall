@@ -374,15 +374,45 @@ fn project_op(cwd: &str, body: &str, sh: &Shared) -> Reply {
         None => ("", body),
     };
     let (verb, args) = body.trim_end_matches('\n').split_once(' ').unwrap_or((body.trim(), ""));
+    if verb != "get" && verb != "len" {
+        drain_spool(sh); // spooled writes are older than this one: apply them first, so order holds (D24)
+    }
     match sh.store.op(&key, write_id, verb, args) {
         Ok(v) => Reply::Ok(v),
-        Err(crate::error::DbError::Busy) => {
+        Err(crate::error::DbError::Rejected(e)) => Reply::Err(e.to_string()),
+        Err(_) => {
+            // busy, timed out, or storage failing: the client may retry and spool it (the write id keeps it once)
             sh.stats.busy.fetch_add(1, SeqCst);
             sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
             Reply::Busy
         }
-        Err(e) => Reply::Err(e.to_string()),
     }
+}
+
+/// Apply the spooled writes, in order, through the same store and write ids as live requests (D24).
+pub fn drain_spool(sh: &Shared) -> crate::spool::Drained {
+    use crate::error::DbError;
+    use crate::spool::Applied;
+    if sh.db.is_none() {
+        return Default::default();
+    }
+    let r = crate::spool::drain(&crate::spool::path(), &mut |rec| {
+        if !crate::spool::spoolable(&rec.verb) {
+            return Applied::Refused(defaults::render("msg.err_unknown_verb", &[("verb", &rec.verb)]));
+        }
+        match sh.store.op(&project_key(sh, &rec.cwd), &rec.id, &rec.verb, &rec.args) {
+            Ok(_) => Applied::Done,
+            Err(DbError::Rejected(e)) => Applied::Refused(e.to_string()),
+            Err(_) => Applied::Later,
+        }
+    });
+    if r.applied + r.quarantined > 0 {
+        sh.telemetry.with_metrics(|m| {
+            m.add("spool_applied", &[], r.applied as u64);
+            m.add("spool_quarantined", &[], r.quarantined as u64);
+        });
+    }
+    r
 }
 
 /// Read a whole request within `read_deadline` and `max` bytes.
@@ -627,6 +657,7 @@ pub fn serve() {
             sh.storage = e.code().to_string();
         }
     }
+    drain_spool(&sh); // writes spooled while the engine was down, before any new one
     let sh = Arc::new(sh);
     for i in 0..sh.cfg.workers {
         let s = sh.clone();
@@ -636,6 +667,10 @@ pub fn serve() {
         let s = sh.clone();
         std::thread::spawn(move || watchdog(s));
     }
+    if sh.db.is_some() {
+        let s = sh.clone();
+        std::thread::spawn(move || spool_drainer(s));
+    }
     accept_loop(&sh, &listener);
     if let Some(db) = &sh.db {
         db.close(); // everything queued commits before the process exits
@@ -644,6 +679,16 @@ pub fn serve() {
     health::log_event("exit", "clean", "drained");
     // The socket was unlinked when the drain began (a successor may already own that path); the lock
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
+}
+
+/// Drains the spool every `spool.drain_ms` (D24): writes a client spooled while this daemon was busy get applied
+/// even if no other write arrives.
+fn spool_drainer(sh: Arc<Shared>) {
+    let every = defaults::millis("spool.drain_ms");
+    while !sh.draining.load(SeqCst) {
+        std::thread::sleep(every);
+        drain_spool(&sh);
+    }
 }
 
 fn next_start_count() -> u64 {
@@ -779,7 +824,7 @@ mod tests {
     fn project_ops_are_partitioned_by_cwd() {
         let d = crate::db::TempDir::new("daemon-proj");
         let mut sh = shared();
-        assert!(matches!(handle_request(b"P /nonexistent-a\nput x", &sh).0, Reply::Err(_)), "no storage: refused, never kept in memory alone");
+        assert_eq!(handle_request(b"P /nonexistent-a\nput x", &sh).0, Reply::Busy, "no storage: the client retries and spools; never kept in memory alone");
         sh.attach_db(crate::db::Db::open(&d.0).unwrap());
         let p = |cwd: &str, body: &str| handle_request(format!("P {cwd}\n{body}").as_bytes(), &sh).0;
         assert_eq!(p("/nonexistent-a", "put hello"), Reply::Ok("ok".into()));

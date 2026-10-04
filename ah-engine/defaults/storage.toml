@@ -109,3 +109,40 @@ value = 1024
 [tier.project_channel_prefix]
 doc = "Channel name prefix for a project's notifications; the hashed project key follows it."
 value = "project:"
+
+# ---- spool (D24) ----------------------------------------------------------------------------------------
+
+[spool.verbs]
+doc = "Project verbs a client may spool when the engine is down or busy: writes whose answer it does not need."
+value = ["put", "set", "setex"]
+
+[spool.retries]
+doc = "Retries of a project write before it is spooled (the first attempt is not counted)."
+value = 4
+env = "AH_ENGINE_SPOOL_RETRIES"
+max = 20
+
+[spool.backoff_ms]
+doc = "First retry delay; each retry doubles it, up to backoff_max_ms, with random jitter of up to half the delay."
+value = 20
+env = "AH_ENGINE_SPOOL_BACKOFF_MS"
+unit = "ms"
+min = 1
+
+[spool.backoff_max_ms]
+doc = "Longest retry delay."
+value = 400
+unit = "ms"
+
+[spool.max_bytes]
+doc = "Largest spool; a write that would grow it past this is refused instead of spooled, so the client learns it was not kept."
+value = 16777216
+env = "AH_ENGINE_SPOOL_MAX_BYTES"
+unit = "bytes"
+
+[spool.drain_ms]
+doc = "How often the daemon applies spooled writes on its own (it also drains on start and before each project write)."
+value = 1000
+env = "AH_ENGINE_SPOOL_DRAIN_MS"
+unit = "ms"
+min = 10

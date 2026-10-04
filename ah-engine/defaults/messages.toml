@@ -294,6 +294,22 @@ value = "ok"
 doc = "Status value when the daemon runs without storage (unit tests, or before it opened)."
 value = "memory only"
 
+[msg.spool_spooled]
+doc = "Printed by `proj` when the engine could not take a write and it was spooled. Placeholder: {id}."
+value = "spooled {id}: the engine applies it when it is back"
+
+[msg.spool_full]
+doc = "Printed by `proj` when the spool is full, so the write was not kept."
+value = "the engine is unavailable and the spool is full; the write was not kept"
+
+[msg.spool_io]
+doc = "Printed by `proj` when the spool could not be written. Placeholder: {err}."
+value = "the engine is unavailable and the spool could not be written: {err}"
+
+[msg.spool_damaged]
+doc = "Quarantine reason for spool bytes that are not a valid record."
+value = "damaged spool record"
+
 [msg.err_unknown_check]
 doc = "`check` was asked for a check that is not registered. Placeholder: {name}."
 value = "unknown check {name}"

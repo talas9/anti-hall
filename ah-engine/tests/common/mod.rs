@@ -46,3 +46,18 @@ pub fn reap(state_dir: &Path, stop: impl Fn()) {
         assert!(!alive(pid), "daemon {pid} of {} survived its test", state_dir.display());
     }
 }
+
+/// Stop a daemon a test started as its own child (`ah-engine serve`): ask it to stop over `sock`, then SIGKILL; it is
+/// waited for (reaped) either way, so it can never outlive the test.
+pub fn stop_child(sock: &Path, child: &mut std::process::Child) {
+    let _ = ah_engine::client::exchange(sock, b"CTL stop\n", Duration::from_millis(500));
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(3) {
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}

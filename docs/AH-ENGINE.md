@@ -68,7 +68,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Pushing channel notifications to sessions (Monitor) | planned (D45) | D45 |
 | Retention, archive mover, checkpoints and VACUUM | planned (D26) | D26 |
 | Config loaded into versioned storage with reload and rollback | planned (D18) | D18 |
-| Durable write spool when the engine is down | planned (D24) | D24 |
+| Durable write spool when the engine is down or busy: retry with backoff, fsync'd spool, drained exactly once in order | implemented | D24 |
 | Scheduler and ticker, `ah-engine schedule` | planned (D33) | D33 |
 | Mesh messaging, Monitor push, chat database | planned (D45) | D45 |
 | Jev decision lane inside the engine | planned (D34-D38) | D34-D38 |
@@ -97,7 +97,7 @@ arguments, is in the generated reference.
 | `ah-engine ctl <verb>` | no | `ping`, `reload`, `stop`, `status`. |
 | `ah-engine stop` | no | Drain and exit. |
 | `ah-engine reset` | no | Clear the breaker, crash-loop stop and failure record. |
-| `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. |
+| `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. A write the engine cannot take is spooled. |
 | `ah-engine schedule`, `config`, `backup`, `restore` | no | planned (D33, D18, D27); they say so and exit 64. |
 
 ## Metrics and the impact ledger
@@ -107,8 +107,8 @@ the upper bound of the histogram bucket that holds that rank, so they are upper 
 `requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `hook_calls`, `hook_latency_us`,
 `check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth`, `uptime_s`, and for the
 memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evictions`, `tier_expired`, `bus_published`
-and `bus_dropped`, and for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is
-sharing syncs).
+and `bus_dropped`, for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is sharing syncs), and for
+the spool `spool_applied` and `spool_quarantined`.
 
 **Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. They
 are stored in `hot.db` with exact per-combination totals, so counts survive a restart; the project is only ever a short
@@ -161,6 +161,16 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
 - **Idempotent writes.** A project write may carry a write id (`W <id>` in the request). The writer records the id with
   the result in the same transaction, so a repeat returns the first answer and changes nothing.
 - **Nothing in memory alone.** Without storage every project operation is refused, so the client can retry and spool it.
+- **The spool (D24).** `ah-engine proj` gives every write an id and sends it; while the daemon is absent (the client
+  starts it), busy or failing, it retries with exponential backoff and jitter (`spool.retries`, `spool.backoff_ms`). If
+  there is still no answer, a write (`put`, `set`, `setex`) is appended to `spool.log` in the state directory, framed,
+  checksummed, under a file lock and fsync'd, and the command reports `spooled <id>`. A `take` is never spooled, since
+  it needs an answer. The daemon applies the spool on start, every `spool.drain_ms`, and before each project write
+  (so a spooled write lands before a newer direct one), in file order, which keeps each session's order
+  (`AH_ENGINE_SESSION` names the session). Each record carries its write id, so applying it twice changes nothing. A
+  record that is damaged, or that the store refuses for good (a full mailbox), goes to `spool.quarantine` with its
+  reason; nothing is dropped. The spool is capped (`spool.max_bytes`): past the cap the write is refused, so the caller
+  knows it was not kept. Hooks do not write project state today; they will use the same path when they do.
 - **Versioned schema.** Each database records how many migrations it has run (`PRAGMA user_version`); opening applies
   the missing ones, each in its own transaction, and re-running them changes nothing. A database written by a newer build
   is refused rather than rewritten.
@@ -190,14 +200,15 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `commands.toml` | the command registry data |
 | `telemetry.toml` | the metric and impact-kind registries and the savings method |
-| `storage.toml` | database file names, SQLite durability settings and the writer queue |
+| `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
 message is written in Rust instead (`no_hardcoded_tunables`), and another if code and defaults disagree. User-level
 overrides loaded from files and versioned storage are planned (D18).
 
-State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.db` and `archive.db`, the event log,
+State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.db` and `archive.db`, the write spool
+`spool.log` and its `spool.quarantine`, the event log,
 `failure.json`, the breaker and crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The rules file is
 `rules.json` there, or the path in `AH_ENGINE_RULES`.
 
@@ -246,6 +257,8 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | "state directory is not writable" | Fix ownership and mode 700 of `~/.anti-hall/ah-engine`, or point `AH_ENGINE_DIR` at a directory you own. |
 | "socket path is too long" | Set `AH_ENGINE_DIR` to a shorter path. |
 | Stop it | `ah-engine stop`. It starts again on the next hook call unless the engine is turned off. |
+| `proj` printed `spooled <id>` | The engine was down or busy; the write is safe in `spool.log` and is applied when the engine runs. |
+| `spool.quarantine` has entries | Records that were damaged or refused for good (for example a full mailbox), each with its reason; nothing was dropped. |
 | A check misbehaves | Run `ah-engine check git` with the payload on stdin to see its verdict without a daemon. |
 
 ## FAQ

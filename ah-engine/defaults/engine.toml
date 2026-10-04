@@ -42,6 +42,10 @@ value = "AH_ENGINE_TEST_HOOKS"
 doc = "Plugin install directory, used by built-in checks that build override commands (a rule's `options.plugin_root` wins)."
 value = "AH_ENGINE_PLUGIN_ROOT"
 
+[env.session]
+doc = "Session id a `proj` write is spooled under; spooled writes keep their order per session (D24)."
+value = "AH_ENGINE_SESSION"
+
 [env.home]
 doc = "Home directory variable."
 value = "HOME"
@@ -120,6 +124,14 @@ value = "daemon.run.reaped."
 [files.starts]
 doc = "Counter of daemon starts, surfaced as `starts` and `restarts` in status."
 value = "starts"
+
+[files.spool]
+doc = "The write spool: project writes a client could not deliver, applied by the daemon in order (D24)."
+value = "spool.log"
+
+[files.spool_quarantine]
+doc = "Spool records that could not be parsed or that the store refused for good, kept with their reason, never dropped (D24)."
+value = "spool.quarantine"
 
 [files.advised_dir]
 doc = "Directory with one empty file per session that has already seen the failure advisory."

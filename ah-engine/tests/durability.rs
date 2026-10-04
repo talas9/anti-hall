@@ -10,6 +10,8 @@
 //! It loops `LOOPS` times against the same state directory, so recovery after recovery is tested too. Every daemon it
 //! starts is its own child process and is reaped (waited for) before the test ends.
 
+mod common;
+
 use ah_engine::client::{exchange, Exch};
 use ah_engine::frame::Kind;
 use std::collections::{HashMap, HashSet};
@@ -42,20 +44,6 @@ fn spawn(dir: &Path) -> Child {
         .unwrap()
 }
 
-/// Stop a daemon this test started as its own child: politely, then SIGKILL; it must be gone (and reaped) after.
-fn stop_child(dir: &Path, child: &mut Child) {
-    let _ = exchange(&sock(dir), b"CTL stop\n", Duration::from_millis(500));
-    let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(3) {
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 /// The running daemon and its directory; dropping it (also on a failed assertion) stops and reaps the daemon and
 /// removes the directory, so a failing run leaves nothing behind.
 struct Run {
@@ -65,7 +53,7 @@ struct Run {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        stop_child(&self.dir, &mut self.daemon);
+        common::stop_child(&sock(&self.dir), &mut self.daemon);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

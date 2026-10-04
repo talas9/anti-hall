@@ -21,6 +21,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     // ---- wire and host protocols: part of the interface, versioned with it, not tunables --------------------
     ("src/frame.rs", "const MAGIC", "reply frame magic: the wire format identifier"),
     ("src/frame.rs", "const END", "reply frame trailer: the wire format identifier"),
+    ("src/spool.rs", "const MAGIC", "spool record magic: the on-disk spool format identifier, versioned with the format"),
     ("src/hookio.rs", "pub const EXIT2", "reply-body marker for an exit-2 block: internal wire contract between daemon and client"),
     ("src/hookio.rs", "pub const FALLBACK", "reply-body marker for a deferral: internal wire contract between daemon and client"),
     ("src/docs.rs", "writeln!", "layout of the generated Markdown reference (headings, table headers): the generator's own format, not a tunable and not a message the engine shows at run time"),

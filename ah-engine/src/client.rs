@@ -89,11 +89,6 @@ pub fn ctl(verb: &str) -> Option<String> {
     ctl_body(&paths::socket(), &format!("CTL {verb}\n"))
 }
 
-/// A project-partitioned state operation (see `store.rs`): the daemon derives the partition from `cwd`.
-pub fn proj(cwd: &str, verb: &str, args: &str) -> Option<String> {
-    ctl_body(&paths::socket(), &format!("P {cwd}\n{verb} {args}"))
-}
-
 /// The daemon's own status JSON, or what the state dir says when it is down.
 pub fn status_value() -> serde_json::Value {
     if let Some(v) = ctl("status").and_then(|s| serde_json::from_str(&s).ok()) {
@@ -118,7 +113,8 @@ pub fn ctl_json(verb: &str) -> Option<serde_json::Value> {
     ctl(verb).and_then(|s| serde_json::from_str(&s).ok())
 }
 
-fn spawn_daemon() -> Option<std::process::Child> {
+/// Start a detached daemon (unless the `nospawn` env var is set); `None` when it could not be started.
+pub fn spawn_daemon() -> Option<std::process::Child> {
     if defaults::env_var("nospawn").is_some() {
         return None;
     }

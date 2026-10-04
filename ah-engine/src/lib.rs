@@ -17,6 +17,7 @@ pub mod limits;
 pub mod metrics;
 pub mod paths;
 pub mod rules;
+pub mod spool;
 pub mod sql;
 pub mod storage;
 pub mod store;

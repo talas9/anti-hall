@@ -140,6 +140,14 @@ value = { kind = "gauge", unit = "commits", labels = [] }
 doc = "Writes carried by those transactions since the daemon started."
 value = { kind = "gauge", unit = "writes", labels = [] }
 
+[metric.spool_applied]
+doc = "Spooled writes the daemon applied (D24)."
+value = { kind = "counter", unit = "writes", labels = [] }
+
+[metric.spool_quarantined]
+doc = "Spool records moved to quarantine: damaged, or refused for good by the store (D24)."
+value = { kind = "counter", unit = "records", labels = [] }
+
 # ---- impact kinds ---------------------------------------------------------------------------------------
 
 [impact.block]

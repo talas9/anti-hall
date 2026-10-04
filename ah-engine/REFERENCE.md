@@ -122,6 +122,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `env.nospawn` | `AH_ENGINE_NOSPAWN` |  |  | When set, the client never starts a daemon (tests, and hosts that manage the daemon themselves). |
 | `env.plugin_root` | `AH_ENGINE_PLUGIN_ROOT` |  |  | Plugin install directory, used by built-in checks that build override commands (a rule's `options.plugin_root` wins). |
 | `env.rules` | `AH_ENGINE_RULES` |  |  | Overrides the rules file path. |
+| `env.session` | `AH_ENGINE_SESSION` |  |  | Session id a `proj` write is spooled under; spooled writes keep their order per session (D24). |
 | `env.test_hooks` | `AH_ENGINE_TEST_HOOKS` |  |  | When set, the daemon accepts the test-only control verbs (sleep, stall, panic). Never set in production. |
 | `env.tmpdir` | `TMPDIR` |  |  | Temporary directory variable, used for the short-path socket fallback. |
 | `env.version` | `AH_ENGINE_VERSION` |  |  | Overrides the version this build reports and compares for handoff (the plugin version in production, arbitrary in tests). |
@@ -137,6 +138,8 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `files.log` | `ah-engine.log` |  |  | Event log file name (state directory). |
 | `files.reaped_prefix` | `daemon.run.reaped.` |  |  | Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended). |
 | `files.run_marker` | `daemon.run` |  |  | Written while a daemon runs; a leftover one with a dead pid is logged as one crash. |
+| `files.spool` | `spool.log` |  |  | The write spool: project writes a client could not deliver, applied by the daemon in order (D24). |
+| `files.spool_quarantine` | `spool.quarantine` |  |  | Spool records that could not be parsed or that the store refused for good, kept with their reason, never dropped (D24). |
 | `files.starts` | `starts` |  |  | Counter of daemon starts, surfaced as `starts` and `restarts` in status. |
 
 ### engine.toml / health
@@ -318,6 +321,17 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `telemetry.project_key_len` | `12` |  |  | Hex digits of the hashed project key shown in impact events (the project path itself is never stored). |
 | `telemetry.recent_default` | `20` |  |  | How many of the most recent impact events `impact` shows unless asked for more. |
 
+### storage.toml / spool
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `spool.backoff_max_ms` | `400` |  | ms | Longest retry delay. |
+| `spool.backoff_ms` | `20` | `AH_ENGINE_SPOOL_BACKOFF_MS` | ms | First retry delay; each retry doubles it, up to backoff_max_ms, with random jitter of up to half the delay. |
+| `spool.drain_ms` | `1000` | `AH_ENGINE_SPOOL_DRAIN_MS` | ms | How often the daemon applies spooled writes on its own (it also drains on start and before each project write). |
+| `spool.max_bytes` | `16777216` | `AH_ENGINE_SPOOL_MAX_BYTES` | bytes | Largest spool; a write that would grow it past this is refused instead of spooled, so the client learns it was not kept. |
+| `spool.retries` | `4` | `AH_ENGINE_SPOOL_RETRIES` |  | Retries of a project write before it is spooled (the first attempt is not counted). |
+| `spool.verbs` | `put, set, setex` |  |  | Project verbs a client may spool when the engine is down or busy: writes whose answer it does not need. |
+
 ### storage.toml / storage
 
 | Key | Default | Env override | Unit | What it is |
@@ -431,6 +445,10 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.reply_test_panic` | Panic text of the test-only `panic` verb. |
 | `msg.reply_too_large` | ERR body for an oversize request. |
 | `msg.reply_unknown_request` | ERR body for a request the daemon does not understand. |
+| `msg.spool_damaged` | Quarantine reason for spool bytes that are not a valid record. |
+| `msg.spool_full` | Printed by `proj` when the spool is full, so the write was not kept. |
+| `msg.spool_io` | Printed by `proj` when the spool could not be written. Placeholder: {err}. |
+| `msg.spool_spooled` | Printed by `proj` when the engine could not take a write and it was spooled. Placeholder: {id}. |
 | `msg.state_open` | Status text for a breaker that is open. Placeholder: {secs}. |
 | `msg.state_stopped` | Status text for a crash-loop stop that is active. Placeholder: {secs}. |
 | `msg.storage_off` | Status value when the daemon runs without storage (unit tests, or before it opened). |
@@ -473,6 +491,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `requests` | counter | requests |  | Requests the daemon handled, any type. |
 | `rss_kb` | gauge | KB |  | Resident set of the daemon, sampled when status or metrics is read. |
 | `rule_hits` | counter | matches | action | Regex rule matches, by action (deny, warn, context). |
+| `spool_applied` | counter | writes |  | Spooled writes the daemon applied (D24). |
+| `spool_quarantined` | counter | records |  | Spool records moved to quarantine: damaged, or refused for good by the store (D24). |
 | `tier_bytes` | gauge | bytes |  | Bytes charged to the in-memory layer's budget (D25). |
 | `tier_evictions` | gauge | items |  | Items dropped from memory to stay within the budget since the daemon started (SQLite keeps them). |
 | `tier_expired` | gauge | items |  | Items dropped from memory because their TTL ended since the daemon started (SQLite keeps them). |
