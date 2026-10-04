@@ -15,6 +15,11 @@ the update.
 ### Fixed
 
 - Jev triage: the per-hash claim and the arrival drain lock now use the single lock primitive (`companion/lib/lock.js`) instead of hand-rolled O_EXCL markers; the lock gained `adopt(path, token)` so the detached drain worker takes over the lock its spawning hook acquired. Behaviour unchanged; the hygiene allowlist entry is gone.
+### Changed
+
+- **tasklist-guard reduced nag (`guards.tasklistNoTaskTools`, default `reduced`).** A session that is positively known to lack task tools (today: a Codex session whose transcript shows no task-tool evidence) gets a short nag (no TaskCreate demand: list the tasks in the reply, with the progress and history paths) that blocks at most once per session. A Claude session with no evidence keeps today's full TaskCreate demand: under `claude -p` the task tools are listed but deferred, so the tool list proves nothing. Evidence is read structurally from the transcript (a TaskCreate/TaskUpdate/TodoWrite tool_use, a `deferred_tools*` attachment naming TaskCreate, or a `task_reminder` attachment), never by substring, so the guard's own text cannot confirm itself. Values `full` (today's nag) and `skip`. Unset, `context.protocolLevel=full` makes the default `full`.
+- **Per-prompt Stop-nag budget (`guards.stopNagBudgetPerPrompt`, default 0 = off = today's behaviour).** task-guard and tasklist-guard consult `hooks/lib/stop-policy.js` just before they block; with N > 0 each blocks at most N times per user prompt (key: Stop payload `prompt_id`, else the last user entry uuid; no key = not applied), inside their existing session caps. Other Stop hooks and the PreToolUse guards are unchanged.
+- **Jev recommend notice is not sent in non-interactive runs (`jev.recommendNoticeHeadless`, default `false`).** `claude -p` exports `CLAUDE_CODE_ENTRYPOINT=sdk-cli` (verified live; interactive is `cli`); the notice is skipped for `sdk-*` entrypoints and the 30-day dedupe stamp is not written, so a headless run does not use up the interactive user's slot. JEV REVIEW DUE and the doctor line are unchanged; Codex is unchanged. Unset, `context.protocolLevel=full` makes the default `true`.
 
 ## 0.200.0 (2026-10-04)
 

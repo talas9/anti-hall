@@ -288,6 +288,17 @@ function main() {
     process.exit(0);
   }
 
+  // PER-PROMPT BUDGET (cost-trim Phase 1; guards.stopNagBudgetPerPrompt, default 0 = off =
+  // today's behaviour): consulted only now that this Stop WILL block. A spent budget allows the
+  // stop; the session cap above stays the outer bound.
+  try {
+    if (require('./lib/stop-policy.js').budgetSpent({
+      home: require('../companion/lib/test-home-guard.js').resolveHome(),
+      sessionId: String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_'),
+      hook: 'task-guard', payload, transcriptPath,
+    })) process.exit(0);
+  } catch (_) { /* fail-open to today's behaviour */ }
+
   // Write the new state before blocking (so a no-op next Stop won't re-block and
   // the cap is enforced even if the set keeps changing).
   try {

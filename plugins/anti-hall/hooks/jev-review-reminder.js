@@ -117,7 +117,7 @@ function main() {
   if (keyNotice) lines.push(keyNotice);
 
   // "Recommended: enable Jev" — only while Jev is OFF, deduped (jev-recommend.js).
-  const recommend = require('./lib/jev-recommend.js').sessionNotice({ home, env: process.env });
+  const recommend = require('./lib/jev-recommend.js').sessionNotice({ home, env: process.env, payload });
   if (recommend) lines.push(recommend);
 
   const reviewLine = reviewDueLine(home);

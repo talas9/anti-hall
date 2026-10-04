@@ -247,6 +247,8 @@ Codex: no `/config`, use the skill.
 | guards.questionAgentsNote | true | `ANTIHALL_QUESTION_AGENTS_NOTE` |
 | guards.sharedTreeAgentNote | true | `ANTIHALL_SHARED_TREE_AGENT_NOTE` |
 | guards.mergeSidePickAdvisory | true | `ANTIHALL_MERGE_SIDE_PICK_ADVISORY` |
+| guards.tasklistNoTaskTools | reduced | `ANTIHALL_TASKLIST_NO_TASK_TOOLS` |
+| guards.stopNagBudgetPerPrompt | 0 | `ANTIHALL_STOP_NAG_BUDGET` |
 | guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTIHALL_SCAN_THROTTLE` (scanThrottle; deprecated alias `ANTI_HALL_SCAN_THROTTLE`) |
 | safety.gitGuard / commandGuard / editGuard / swarmGuard (safety: risky `set`/`reset` need `--confirmed`; normal precedence applies, settings.json values count) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
@@ -260,6 +262,7 @@ Codex: no `/config`, use the skill.
 | jev.audit.snippets, jev.prices (advanced) | false, — | `ANTIHALL_JEV_AUDIT_SNIPPETS` |
 | jev.logRotatedFiles / rollupRetentionDays (advanced) | 10 / 0 (keep all) | — |
 | jev.weeklyNotice | true | — |
+| jev.recommendNoticeHeadless | false | `ANTIHALL_JEV_NOTICE_HEADLESS` |
 | jev.recommendNotice | true | `ANTIHALL_JEV_RECOMMEND_NOTICE` |
 | jevIntegrations.speculation / triage / newRequest / claimLedger / outputVerifyGuard / gitGuardSelfCredit / modelRouting / tasklistTrivial / codexNudgeSubstantial / mergeGateHedge / parentGateQuestion / supervisorBlockerLabel / findingDedup / postHandoverGate (one row each; legacy jev.json / jev["integrations.<id>"] auto-migrate) | on (speculation, triage, findingDedup) / off (postHandoverGate) / shadow (rest) | `ANTIHALL_JEV_<ID>=0` forces an integration off |
 | devswarm.planTracking / planRequired / stepStallMin / strayWarnMax / burnTokensWarn / burnCacheReadPct / respawnGraceMin / respawnWipWaitSec; jevIntegrations.devswarmOnBrief / devswarmExtraSanctioned / devswarmWaitKind / devswarmLoop / devswarmStepMap | Meeseeks supervision (0.117.0): step plans, advisory straying warnings (stall, off-scope, idle, token burn), `devswarm.js correct` / `scope add` / `supervision-report`, and the Primary-run `respawn <id>` (after a warning and a grace period: WIP pushed or parked on a new pushed branch, handover, new workspace from the default branch, old one archived); the five Jev integrations are recommendations to the Primary (default on), never a suppression, block or kill. |

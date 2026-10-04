@@ -620,7 +620,7 @@ Jev not being `enabled` at all is also silent.
 Codex port) also emits the "Recommended: enable Jev" notice from `hooks/lib/jev-recommend.js`: once on
 first install, then at most every 30 days (stamp `~/.anti-hall/state/jev-recommend-notice.json`), via the
 same `Tell the user now` additionalContext channel as `version-alert.js`; `doctor` prints the same
-recommendation. `jev.recommendNotice=false` silences it. The only measured figure it quotes is the
+recommendation. `jev.recommendNotice=false` silences it. In non-interactive runs (`claude -p`, `CLAUDE_CODE_ENTRYPOINT=sdk-*`) it is not sent unless `jev.recommendNoticeHeadless=true`. The only measured figure it quotes is the
 `findingDedup` benchmark in §7 (65/65 vs 45%), with its scope stated; there is no end-to-end accuracy
 figure for the other guards. `tests/hooks/jev-recommend.test.js` fails on superlatives ("massive",
 "dramatic", "guarantee", "100%") in the notice and README blocks.
