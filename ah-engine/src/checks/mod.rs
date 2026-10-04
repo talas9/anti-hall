@@ -42,7 +42,7 @@ pub trait Check: Send + Sync {
 /// the first time its code path runs, so a failure is a bug in the source, not a runtime condition. The tests that
 /// exercise each code path compile every such pattern, so an invalid one fails the build, not a user.
 pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
-    regex::Regex::new(pattern).expect("literal regex is valid (compiled by the tests that run its code path)")
+    regex::Regex::new(pattern).unwrap_or_else(|e| panic!("{}: {e}", crate::defaults::text("msg.regex_literal_invalid")))
 }
 
 /// Every built-in check, in a fixed order.
@@ -62,7 +62,7 @@ pub fn get(name: &str) -> Option<&'static dyn Check> {
 pub fn cli_main(name: &str) -> i32 {
     use std::io::{Read, Write};
     let Some(check) = get(name) else {
-        let _ = writeln!(std::io::stderr(), "unknown check {name:?}");
+        let _ = writeln!(std::io::stderr(), "{}", crate::defaults::render("msg.err_unknown_check", &[("name", &format!("{name:?}"))]));
         return 64;
     };
     let mut raw = String::new();

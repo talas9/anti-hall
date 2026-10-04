@@ -2,6 +2,7 @@
 //! body is removed before the segment scans. All-or-nothing and fail-closed: any doubt returns the command
 //! unchanged.
 use super::gitcmd::git_subcommand;
+use super::tables::{tables, Spec};
 use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
@@ -9,86 +10,6 @@ use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-
-/// Mirrors `git-guard.js` `HEREDOC_SAFE_VERBS`.
-const HEREDOC_SAFE_VERBS: &[&str] =
-    &["cat", "tee", "git", "gh", "echo", "printf", "cd", "pushd", "popd", "mkdir", "wc", "head", "tail", "ls", "pwd", "true", ":", "date", "stat", "test", "["];
-/// Mirrors `git-guard.js` `HEREDOC_GIT_MSG_SUBS`.
-const HEREDOC_GIT_MSG_SUBS: &[&str] = &["commit", "tag", "notes", "merge"];
-
-struct Spec {
-    s: String,
-    v: String,
-    o: String,
-    l: HashSet<String>,
-    big_l: HashSet<String>,
-    big_o: HashSet<String>,
-    num: bool,
-    strict: bool,
-}
-
-fn set(x: &str) -> HashSet<String> {
-    x.split(' ').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn spec(s: &str, v: &str, o: &str, l: &str, big_l: &str, big_o: &str, num: bool, strict: bool) -> Spec {
-    Spec { s: s.into(), v: v.into(), o: o.into(), l: set(l), big_l: set(big_l), big_o: set(big_o), num, strict }
-}
-
-/// Mirrors `git-guard.js` `HD_GIT_READ_LONG`.
-const HD_GIT_READ_LONG: &str = "stat shortstat numstat name-only name-status summary patch no-patch raw cached staged no-color no-ext-diff no-textconv no-renames check exit-code quiet ignore-all-space ignore-space-change oneline graph all reverse first-parent no-merges merges abbrev-commit follow decorate no-decorate full-history source date-order topo-order";
-/// Mirrors `git-guard.js` `HD_GIT_READ_VAL`.
-const HD_GIT_READ_VAL: &str = "max-count skip since until after before author committer grep date diff-filter";
-/// Mirrors `git-guard.js` `HD_GIT_READ_OPT`.
-const HD_GIT_READ_OPT: &str = "color word-diff decorate format pretty unified abbrev find-renames find-copies relative";
-
-fn git_spec(sub: &str) -> Option<Spec> {
-    Some(match sub {
-        "commit" => spec(
-            "aqvsnei",
-            "mFCct",
-            "uS",
-            "all amend no-edit edit no-verify verify signoff no-signoff quiet verbose dry-run allow-empty allow-empty-message only include short porcelain no-gpg-sign reset-author status no-status",
-            "message file author date cleanup trailer fixup squash reuse-message reedit-message",
-            "untracked-files gpg-sign",
-            false,
-            false,
-        ),
-        "tag" => spec("asfdlv", "mFu", "n", "annotate sign no-sign force delete list no-edit edit", "message file local-user cleanup points-at sort format", "contains", false, false),
-        "notes" => spec("f", "mFCc", "", "force allow-empty", "message file reuse-message reedit-message ref", "", false, false),
-        "merge" => spec(
-            "nqv",
-            "mF",
-            "",
-            "no-ff ff ff-only squash no-squash no-commit commit no-edit stat no-stat log no-log quiet verbose abort continue quit signoff no-signoff no-verify allow-unrelated-histories no-gpg-sign",
-            "message file cleanup",
-            "log",
-            false,
-            false,
-        ),
-        "status" => spec("sbvz", "", "u", "short branch long verbose show-stash ahead-behind no-ahead-behind null no-renames", "", "porcelain untracked-files ignored column", false, false),
-        "log" => spec("pqw", "n", "MCU", HD_GIT_READ_LONG, HD_GIT_READ_VAL, HD_GIT_READ_OPT, true, true),
-        "diff" => spec("pqwb", "", "MCU", HD_GIT_READ_LONG, HD_GIT_READ_VAL, HD_GIT_READ_OPT, false, true),
-        "show" => spec("pqws", "n", "MCU", &format!("{HD_GIT_READ_LONG} no-patch"), HD_GIT_READ_VAL, HD_GIT_READ_OPT, true, true),
-        "add" => spec("Aunvf", "", "", "all update dry-run verbose force no-all intent-to-add ignore-removal", "", "", false, false),
-        "rev-parse" => spec("q", "", "", "show-toplevel abbrev-ref verify quiet git-dir is-inside-work-tree show-prefix symbolic-full-name", "", "short", false, false),
-        _ => return None,
-    })
-}
-
-fn gh_spec() -> Spec {
-    spec(
-        "dfp",
-        "tbFBHlarmRnT",
-        "",
-        "draft fill fill-first fill-verbose prerelease generate-notes no-maintainer-edit edit-last verify-tag",
-        "title body body-file base head label add-label remove-label assignee add-assignee remove-assignee reviewer add-reviewer remove-reviewer milestone repo project add-project remove-project notes notes-file target notes-start-tag",
-        "latest",
-        false,
-        false,
-    )
-}
 
 fn all_digits(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
@@ -217,9 +138,9 @@ fn hd_git_ok(args: &[Tok]) -> bool {
         break;
     }
     let sub = if k < args.len() { args[k].text.as_str() } else { "" };
-    let Some(sp) = git_spec(sub) else { return false };
-    let Some(words) = hd_flag_words(&args[(k + 1).min(args.len())..], &sp) else { return false };
-    if sub == "notes" && !words.is_empty() && !matches!(words[0].as_str(), "add" | "append" | "show" | "list") {
+    let Some(sp) = tables().hd_specs.get(sub) else { return false };
+    let Some(words) = hd_flag_words(&args[(k + 1).min(args.len())..], sp) else { return false };
+    if sub == "notes" && !words.is_empty() && !tables().hd_notes_subs.has(words[0].as_str()) {
         return false;
     }
     true
@@ -230,78 +151,15 @@ fn hd_gh_words(args: &[Tok]) -> Option<Vec<String>> {
     if args.iter().any(|a| a.text == "--") {
         return None;
     }
-    let words = hd_flag_words(args, &gh_spec())?;
+    let words = hd_flag_words(args, &tables().hd_gh_spec)?;
     if words.len() < 2 {
         return None;
     }
-    if !matches!(words[0].as_str(), "pr" | "issue" | "release") || !matches!(words[1].as_str(), "create" | "edit" | "comment") {
+    if !tables().hd_gh_subs.has(words[0].as_str()) || !tables().hd_gh_actions.has(words[1].as_str()) {
         return None;
     }
     Some(words)
 }
-
-/// Mirrors `git-guard.js` `HEREDOC_DENY_FIRST`.
-const HEREDOC_DENY_FIRST: &[&str] = &[
-    "bash",
-    "sh",
-    "zsh",
-    "dash",
-    "ksh",
-    "ash",
-    "fish",
-    "csh",
-    "tcsh",
-    "busybox",
-    "eval",
-    "source",
-    ".",
-    "exec",
-    "xargs",
-    "env",
-    "sudo",
-    "su",
-    "doas",
-    "command",
-    "builtin",
-    "node",
-    "nodejs",
-    "deno",
-    "bun",
-    "perl",
-    "ruby",
-    "php",
-    "lua",
-    "tclsh",
-    "expect",
-    "osascript",
-    "pwsh",
-    "powershell",
-    "rscript",
-    "ssh",
-    "at",
-    "batch",
-    "crontab",
-    "watch",
-    "parallel",
-    "find",
-    "awk",
-    "gawk",
-    "sed",
-    "make",
-    "npm",
-    "npx",
-    "pnpm",
-    "yarn",
-    "docker",
-    "kubectl",
-    "script",
-    "nohup",
-    "setsid",
-    "time",
-    "timeout",
-    "nice",
-    "coproc",
-];
 
 /// Mirrors `git-guard.js` `hdDeniedFirstWord`.
 fn hd_denied_first_word(skel: &str) -> bool {
@@ -315,7 +173,7 @@ fn hd_denied_first_word(skel: &str) -> bool {
             return true;
         }
         let lw = w.to_lowercase();
-        if HEREDOC_DENY_FIRST.contains(&lw.as_str()) {
+        if tables().hd_deny_first.has(&lw) {
             return true;
         }
         let rest = lw.strip_prefix("python").or_else(|| lw.strip_prefix("pypy"));
@@ -328,45 +186,11 @@ fn hd_denied_first_word(skel: &str) -> bool {
     false
 }
 
-/// Nesting limit for the substitution scanners (JS overflows its stack far deeper and its caller then scans the raw text, which is what `None` means here).
-const MAX_NEST: usize = 1500;
-
-/// Mirrors `git-guard.js` `HEREDOC_BAD_DIRS`.
-const HEREDOC_BAD_DIRS: &[&str] = &[".git", ".husky", ".githooks", "hooks", ".ssh", ".config", ".claude", ".codex", ".local", ".gnupg"];
-
 /// Mirrors `git-guard.js` `hdBadPath`.
 fn hd_bad_path(p: &str) -> bool {
     let segs: Vec<String> = p.split('/').filter(|x| !x.is_empty()).map(|x| x.to_lowercase()).collect();
-    segs.iter().enumerate().any(|(k, x)| HEREDOC_BAD_DIRS.contains(&x.as_str()) || (x == ".anti-hall" && segs.get(k + 1).map(|s| s.as_str()) == Some("bin")))
+    segs.iter().enumerate().any(|(k, x)| tables().hd_bad_dirs.has(x) || (x == ".anti-hall" && segs.get(k + 1).map(|s| s.as_str()) == Some("bin")))
 }
-
-/// Mirrors `git-guard.js` `GIT_HOOK_NAMES`.
-const GIT_HOOK_NAMES: &[&str] = &[
-    "applypatch-msg",
-    "pre-applypatch",
-    "post-applypatch",
-    "pre-commit",
-    "pre-merge-commit",
-    "prepare-commit-msg",
-    "commit-msg",
-    "post-commit",
-    "pre-rebase",
-    "post-checkout",
-    "post-merge",
-    "pre-push",
-    "pre-receive",
-    "update",
-    "proc-receive",
-    "post-receive",
-    "post-update",
-    "reference-transaction",
-    "push-to-checkout",
-    "pre-auto-gc",
-    "post-rewrite",
-    "sendemail-validate",
-    "fsmonitor-watchman",
-    "post-index-change",
-];
 
 fn at(s: &[char], i: usize) -> Option<char> {
     s.get(i).copied()
@@ -374,7 +198,7 @@ fn at(s: &[char], i: usize) -> Option<char> {
 
 /// Mirrors `git-guard.js` `hdSkipQuote`.
 fn hd_skip_quote(s: &[char], i: usize, depth: usize) -> Option<usize> {
-    if depth > MAX_NEST {
+    if depth > tables().max_nest {
         return None;
     }
     if s[i] == '\'' {
@@ -407,7 +231,7 @@ fn hd_skip_quote(s: &[char], i: usize, depth: usize) -> Option<usize> {
 
 /// Mirrors `git-guard.js` `hdSubstEnd`.
 fn hd_subst_end(s: &[char], mut i: usize, closer: char, depth_nest: usize) -> Option<usize> {
-    if depth_nest > MAX_NEST {
+    if depth_nest > tables().max_nest {
         return None;
     }
     let mut depth: i32 = 0;
@@ -734,17 +558,14 @@ fn hd_levels(text: &[char], levels: &mut Vec<Level>, next_id: &mut usize, depth:
     true
 }
 
-/// Mirrors `git-guard.js` `HEREDOC_DATA_EXT`.
-const HEREDOC_DATA_EXT: &[&str] = &["md", "markdown", "mdx", "txt", "text", "rst", "adoc", "asciidoc", "org", "log", "csv", "tsv"];
-
 /// Mirrors `git-guard.js` `hdIsDataSink`.
 fn hd_is_data_sink(t: &str) -> bool {
-    if matches!(t, "/dev/null" | "/dev/stdout" | "/dev/stderr") {
+    if tables().hd_sinks_basic.has(t) {
         return true;
     }
     let base = t.rsplit('/').next().unwrap_or("");
     match base.rfind('.') {
-        Some(dot) if dot > 0 => HEREDOC_DATA_EXT.contains(&base[dot + 1..].to_lowercase().as_str()),
+        Some(dot) if dot > 0 => tables().hd_data_ext.has(&base[dot + 1..].to_lowercase()),
         _ => false,
     }
 }
@@ -763,7 +584,7 @@ fn hd_target_ok(ctx: &Ctx, t: &str, dirs: &[String]) -> bool {
             break;
         }
     }
-    if matches!(t.as_str(), "/dev/null" | "/dev/stdout" | "/dev/stderr" | "/dev/fd/1" | "/dev/fd/2") {
+    if tables().hd_sinks_basic.has(&t) || tables().hd_sinks_fd.has(&t) {
         return true;
     }
     if !safe_path_word(&t) || t.contains("__AH") {
@@ -780,7 +601,7 @@ fn hd_target_ok(ctx: &Ctx, t: &str, dirs: &[String]) -> bool {
         Some(p) => &base[..p],
         None => base.as_str(),
     };
-    if GIT_HOOK_NAMES.contains(&stem.to_lowercase().as_str()) || GIT_HOOK_NAMES.contains(&base.to_lowercase().as_str()) {
+    if tables().git_hook_names.has(&stem.to_lowercase()) || tables().git_hook_names.has(&base.to_lowercase()) {
         return false;
     }
     let home = ctx.home.as_str();
@@ -921,7 +742,7 @@ fn hd_markers(tokens: &[Tok], re: &Regex) -> Vec<usize> {
 /// Mirrors `git-guard.js` `hdMessageTaker`.
 fn hd_message_taker(ev: &Ev) -> bool {
     if ev.verb == "git" {
-        return git_subcommand(&ev.args).0.is_some_and(|s| HEREDOC_GIT_MSG_SUBS.contains(&s.as_str()));
+        return git_subcommand(&ev.args).0.is_some_and(|s| tables().heredoc_git_msg_subs.has(&s));
     }
     if ev.verb == "gh" {
         return hd_gh_words(&ev.args).is_some();
@@ -994,7 +815,7 @@ fn mask_inner(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> Option<String
                 return None;
             }
             let ev = effective_verb(&tokens)?;
-            if !HEREDOC_SAFE_VERBS.contains(&ev.verb.as_str()) || tokens[0].quoted_only || tokens[0].text != ev.verb {
+            if !tables().heredoc_safe_verbs.has(&ev.verb) || tokens[0].quoted_only || tokens[0].text != ev.verb {
                 return None;
             }
             if ev.verb == "gh" && hd_gh_words(&ev.args).is_none() {

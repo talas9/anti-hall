@@ -1,6 +1,8 @@
 //! Small helpers: message builder, ASCII case-insensitive matching, Node-compatible path functions,
 //! bounded child processes, and the settings / skip.json reads the Node guard performs.
+use super::tables::{tables, Switch};
 use super::tokenize::js_trim;
+use crate::defaults;
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -29,18 +31,19 @@ fn clean(s: &str) -> String {
 ///
 /// Mirrors `git-guard.js` `gm`.
 pub fn gm(m: Msg) -> String {
-    let mut lines = vec![format!("\u{26d4} anti-hall \u{b7} git-guard: {}", clean(m.what))];
+    let t = tables();
+    let mut lines = vec![format!("{}{}{}", t.block_emoji, t.block_mark, clean(m.what))];
     if !m.why.is_empty() {
-        lines.push(format!("Why: {}", clean(m.why)));
+        lines.push(format!("{}{}", t.label_why, clean(m.why)));
     }
     if !m.instead.is_empty() {
-        lines.push(format!("Do instead: {}", clean(m.instead)));
+        lines.push(format!("{}{}", t.label_instead, clean(m.instead)));
     }
     if !m.allowed.is_empty() {
-        lines.push(format!("Allowed here: {}", clean(m.allowed)));
+        lines.push(format!("{}{}", t.label_allowed, clean(m.allowed)));
     }
     if !m.override_.is_empty() {
-        lines.push(format!("Override (only if the user explicitly asked): {}", clean(m.override_)));
+        lines.push(format!("{}{}", t.label_override, clean(m.override_)));
     }
     lines.join("\n")
 }
@@ -212,7 +215,7 @@ pub fn run_capture(prog: &str, args: &[String], cwd: Option<&str>, env: &HashMap
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(1)),
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(tables().child_poll),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -220,7 +223,7 @@ pub fn run_capture(prog: &str, args: &[String], cwd: Option<&str>, env: &HashMap
             }
         }
     };
-    let bytes = rx.recv_timeout(Duration::from_millis(500)).unwrap_or_default();
+    let bytes = rx.recv_timeout(tables().child_read).unwrap_or_default();
     if !status.success() {
         return None;
     }
@@ -250,23 +253,23 @@ impl Settings {
     /// Snapshot the current process environment.
     pub fn from_process() -> Settings {
         let env: HashMap<String, String> = std::env::vars().collect();
-        let home = env.get("HOME").cloned().or_else(|| env.get("USERPROFILE").cloned()).unwrap_or_default();
+        let home = env.get(defaults::env_name("home")).cloned().or_else(|| env.get(defaults::env_name("home_alt")).cloned()).unwrap_or_default();
         Settings { home, env }
     }
 
     /// `settings.enabled(section, key)`: false only when the switch resolves to exactly `false`.
     /// Chain: env var, settings.json, `CLAUDE_PLUGIN_OPTION_<name>` env, default (on).
-    pub fn enabled(&self, section: &str, key: &str, env_name: &str, plugin_option: Option<&str>) -> bool {
-        if let Some(v) = self.env.get(env_name) {
+    pub fn enabled(&self, sw: &Switch) -> bool {
+        if let Some(v) = self.env.get(&sw.env) {
             if let Some(b) = bool_token(v) {
                 return b;
             }
         }
         if !self.home.is_empty() {
-            let p = format!("{}/.anti-hall/settings.json", self.home);
+            let p = format!("{}/{}", self.home, tables().settings_file);
             if let Ok(txt) = std::fs::read_to_string(&p) {
                 if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(&txt) {
-                    let v = o.get(section).and_then(|s| s.as_object()).and_then(|s| s.get(key));
+                    let v = o.get(&sw.section).and_then(|s| s.as_object()).and_then(|s| s.get(&sw.key));
                     match v {
                         Some(serde_json::Value::Bool(b)) => return *b,
                         Some(serde_json::Value::String(s)) => {
@@ -279,8 +282,8 @@ impl Settings {
                 }
             }
         }
-        if let Some(po) = plugin_option {
-            if let Some(v) = self.env.get(&format!("CLAUDE_PLUGIN_OPTION_{}", po.to_uppercase())) {
+        if !sw.option.is_empty() {
+            if let Some(v) = self.env.get(&format!("{}{}", tables().plugin_option_prefix, sw.option.to_uppercase())) {
                 if let Some(b) = bool_token(v) {
                     return b;
                 }
@@ -296,18 +299,19 @@ impl Settings {
             if self.home.is_empty() {
                 return None;
             }
-            std::fs::read_to_string(format!("{}/.anti-hall/{rel}", self.home)).ok().and_then(|t| serde_json::from_str(&t).ok())
+            std::fs::read_to_string(format!("{}/{rel}", self.home)).ok().and_then(|t| serde_json::from_str(&t).ok())
         };
-        let settings = read("settings.json");
-        let jevjson = read("jev.json");
+        let settings = read(&tables().settings_file);
+        let jevjson = read(&tables().jev_file);
         let on = |v: Option<&serde_json::Value>| {
             matches!(v, Some(serde_json::Value::Bool(true))) || v.and_then(|x| x.as_str()).is_some_and(|x| bool_token(x) == Some(true))
         };
-        let mut enabled = on(jevjson.as_ref().and_then(|j| j.get("enabled"))) || self.env.get("ANTIHALL_JEV").is_some_and(|v| v == "1");
-        if let Some(v) = settings.as_ref().and_then(|j| j.get("jev")).and_then(|j| j.get("enabled")) {
+        let jn = &tables().jev;
+        let mut enabled = on(jevjson.as_ref().and_then(|j| j.get(&jn.enabled_key))) || self.env.get(&jn.env_enabled).is_some_and(|v| v == "1");
+        if let Some(v) = settings.as_ref().and_then(|j| j.get(&jn.section)).and_then(|j| j.get(&jn.enabled_key)) {
             enabled = on(Some(v));
         }
-        if let Some(v) = self.env.get("ANTIHALL_JEV") {
+        if let Some(v) = self.env.get(&jn.env_enabled) {
             if v == "0" {
                 enabled = false;
             }
@@ -315,20 +319,25 @@ impl Settings {
         if !enabled {
             return false;
         }
-        if self.env.get("ANTIHALL_JEV_GIT_GUARD_SELF_CREDIT").is_some_and(|v| v == "0") {
+        if self.env.get(&jn.env_integration).is_some_and(|v| v == "0") {
             return false;
         }
         let mode = settings
             .as_ref()
-            .and_then(|j| j.get("jevIntegrations"))
-            .and_then(|j| j.get("gitGuardSelfCredit"))
+            .and_then(|j| j.get(&jn.integrations_key))
+            .and_then(|j| j.get(&jn.integration))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or_else(|| self.env.get("ANTIHALL_JEV_GIT_GUARD_SELF_CREDIT").cloned())
+            .or_else(|| self.env.get(&jn.env_integration).cloned())
             .or_else(|| {
-                jevjson.as_ref().and_then(|j| j.get("integrations")).and_then(|j| j.get("gitGuardSelfCredit")).and_then(|v| v.as_str()).map(|s| s.to_string())
+                jevjson
+                    .as_ref()
+                    .and_then(|j| j.get(&jn.jev_json_integrations))
+                    .and_then(|j| j.get(&jn.integration))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
             });
-        mode.as_deref() == Some("on")
+        mode.as_deref() == Some(jn.mode_on.as_str())
     }
 
     /// skip-guard.js `isSkipped('git-guard')`.
@@ -336,7 +345,7 @@ impl Settings {
         if self.home.is_empty() {
             return false;
         }
-        let Ok(txt) = std::fs::read_to_string(format!("{}/.anti-hall/skip.json", self.home)) else { return false };
+        let Ok(txt) = std::fs::read_to_string(format!("{}/{}", self.home, tables().skip_file)) else { return false };
         let txt = js_trim(&txt);
         if txt.is_empty() {
             return false;

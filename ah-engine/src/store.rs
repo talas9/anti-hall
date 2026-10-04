@@ -5,10 +5,10 @@ use crate::error::StoreError;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
-const MAX_PROJECTS: usize = 256;
-const MAILBOX_CAP: usize = 64;
-const KV_CAP: usize = 64;
-const VALUE_CAP: usize = 64 * 1024;
+/// A numeric store cap from the defaults (`store.<name>`).
+fn cap(name: &str) -> usize {
+    crate::defaults::num(&format!("store.{name}")) as usize
+}
 
 /// Lexical normalization: collapse `.`/`..`/repeated slashes. Does not touch the filesystem.
 pub fn normalize(p: &str) -> String {
@@ -50,7 +50,7 @@ impl KeyCache {
         if let Some(k) = self.0.get(cwd) {
             return k.clone();
         }
-        if self.0.len() >= 1024 {
+        if self.0.len() >= cap("key_cache_cap") {
             self.0.clear();
         }
         let k = project_key(cwd);
@@ -84,17 +84,17 @@ impl Store {
                 return Ok(if verb == "len" { "0".into() } else { String::new() });
                 // reads never allocate a partition
             }
-            if self.projects.len() >= MAX_PROJECTS {
+            if self.projects.len() >= cap("max_projects") {
                 return Err(StoreError::TooManyProjects);
             }
         }
-        if args.len() > VALUE_CAP {
+        if args.len() > cap("value_cap") {
             return Err(StoreError::ValueTooLarge);
         }
         let p = self.projects.entry(key.to_string()).or_default();
         match verb {
             "put" => {
-                if p.mailbox.len() >= MAILBOX_CAP {
+                if p.mailbox.len() >= cap("mailbox_cap") {
                     return Err(StoreError::MailboxFull);
                 }
                 p.mailbox.push_back(args.to_string());
@@ -104,7 +104,7 @@ impl Store {
             "len" => Ok(p.mailbox.len().to_string()),
             "set" => {
                 let (k, v) = args.split_once(' ').unwrap_or((args, ""));
-                if !p.kv.contains_key(k) && p.kv.len() >= KV_CAP {
+                if !p.kv.contains_key(k) && p.kv.len() >= cap("kv_cap") {
                     return Err(StoreError::TooManyKeys);
                 }
                 p.kv.insert(k.to_string(), v.to_string());
@@ -155,13 +155,13 @@ mod tests {
     #[test]
     fn caps_hold() {
         let mut s = Store::default();
-        for i in 0..MAILBOX_CAP {
+        for i in 0..cap("mailbox_cap") {
             s.op("/p", "put", &i.to_string()).unwrap();
         }
         assert!(s.op("/p", "put", "x").is_err());
-        for i in 0..MAX_PROJECTS {
+        for i in 0..cap("max_projects") {
             s.op(&format!("/q{i}"), "put", "x").ok();
         }
-        assert!(s.projects() <= MAX_PROJECTS);
+        assert!(s.projects() <= cap("max_projects"));
     }
 }

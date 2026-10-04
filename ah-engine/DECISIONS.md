@@ -1,6 +1,6 @@
 # ah-engine decision record
 
-**Version: 1.25** (2026-10-04). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
+**Version: 1.27** (2026-10-04). Bump the minor version for each added or changed decision, and add a line to the Revision log at the end.
 
 Status: living document. Owner decisions from 2026-10-04, recorded in the order they were made. Where a later decision supersedes an earlier one, that is stated. Branch: `engine-proto`.
 
@@ -437,3 +437,5 @@ Each D-item gets a status (`done` / `partial` / `not started` / `superseded`) wi
 - **1.23** (2026-10-04): D69 added: monorepo while porting, a separate repo once the API is stable, never a submodule.
 - **1.24** (2026-10-04): D69 confirmed by the owner.
 - **1.25** (2026-10-04): D70 proposal recorded: Jev-backed rule-adherence and drift supervisor plus a user-decision tracker. Analysis only; implementation deferred until after the engine release.
+- **1.26** (2026-10-04): implementation of D30/D39 in `ah-engine/`: a `Check` trait plus registry in `src/checks/`, the git check split into modules named after their concern, typed error enums, `ah-engine check <name>` replacing the ad-hoc `gitguard` subcommand, and the `AH_ENGINE_*` environment prefix. No behaviour change (git parity stays 100%).
+- **1.27** (2026-10-04): implementation of D17, D50-D52 and D7 in `ah-engine/`. Shipped defaults are `defaults/*.toml`, one table per setting (`value`, `doc`, optional `env`/`min`/`max`/`unit`); the `no_hardcoded_tunables` test enforces them. Every command takes `--json` and sits in a registry marked read-only or state-changing; `docs` is generated from the registries and committed as `REFERENCE.md` with a drift test. Metrics and the impact ledger are in memory behind a `Store` trait until the storage phase, and savings are shown only as labelled estimates (no figure while no routing events exist). Idle exit is the config key `daemon.idle_exit_min`, default 0 (disabled), per D7.

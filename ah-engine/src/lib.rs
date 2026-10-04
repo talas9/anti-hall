@@ -1,22 +1,29 @@
 //! anti-hall engine: a tiny hook daemon + client. See README.md.
 #![deny(missing_docs)]
 pub mod checks;
+pub mod cli;
 pub mod client;
 pub mod config;
 pub mod daemon;
+pub mod defaults;
+pub mod docs;
 pub mod error;
 pub mod frame;
 pub mod health;
 pub mod hookio;
+pub mod impact;
 pub mod limits;
+pub mod metrics;
 pub mod paths;
 pub mod rules;
+pub mod storage;
 pub mod store;
+pub mod telemetry;
 
-/// Version this build reports and compares for handoff. `AH_ENGINE_VERSION` overrides it (plugin
+/// Version this build reports and compares for handoff. The `version` env override (plugin
 /// version in production, arbitrary in tests).
 pub fn version() -> String {
-    std::env::var("AH_ENGINE_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+    defaults::env_var("version").unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
 /// Numeric dotted-version compare ("0.10.0" > "0.9.0"); non-numeric parts count as 0, a pre-release

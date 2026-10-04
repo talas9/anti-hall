@@ -2,6 +2,8 @@
 //! verb resolution (wrappers), heredoc parsing and the quote-blind backstop cutter. Strings are scanned
 //! as `char` vectors (the JS source indexes UTF-16 units; the two agree away from astral characters).
 
+use super::tables::{tables, OptWrapper};
+
 /// Placeholder token text standing for a command substitution the tokenizer could not evaluate.
 pub const CMDSUBST: &str = "\0CMDSUBST\0";
 
@@ -382,48 +384,9 @@ pub fn split_segments(cmd: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------------------------------
 // verb resolution
 
-/// Mirrors `git-guard.js` `WRAPPERS`.
-const WRAPPERS: &[&str] =
-    &["command", "builtin", "exec", "sudo", "env", "nice", "nohup", "time", "timeout", "then", "do", "else", "if", "while", "until", "elif", "coproc", "!"];
-
-/// Option grammar of a wrapper command such as `stdbuf` or `caffeinate`: which short and long options take a value and how many operands precede the wrapped command.
-pub struct OptWrapper {
-    /// Short options that take no value.
-    pub s: &'static str,
-    /// Short options that take a value.
-    pub v: &'static str,
-    /// Long options that take no value.
-    pub l: &'static [&'static str],
-    /// Long options that take a value.
-    pub big_l: &'static [&'static str],
-    /// Positional operands the wrapper consumes before the wrapped command.
-    pub ops: usize,
-}
-
-fn opt_wrapper(name: &str) -> Option<OptWrapper> {
-    Some(match name {
-        "stdbuf" => OptWrapper { s: "", v: "ioe", l: &[], big_l: &["input", "output", "error"], ops: 0 },
-        "caffeinate" => OptWrapper { s: "dimsu", v: "tw", l: &[], big_l: &[], ops: 0 },
-        "ionice" => OptWrapper { s: "t", v: "cnpPu", l: &["ignore"], big_l: &["class", "classdata", "pid", "pgid", "uid"], ops: 0 },
-        "flock" => OptWrapper {
-            s: "sexnouFv",
-            v: "wE",
-            l: &["shared", "exclusive", "unlock", "nonblock", "nb", "close", "no-fork", "verbose"],
-            big_l: &["wait", "timeout", "conflict-exit-code"],
-            ops: 1,
-        },
-        "setsid" => OptWrapper { s: "cfw", v: "", l: &["ctty", "fork", "wait"], big_l: &[], ops: 0 },
-        "chrt" => OptWrapper {
-            s: "abdefiomrRpv",
-            v: "TPD",
-            l: &["all-tasks", "batch", "deadline", "ext", "fifo", "idle", "other", "rr", "reset-on-fork", "max", "pid", "verbose"],
-            big_l: &["sched-runtime", "sched-period", "sched-deadline"],
-            ops: 1,
-        },
-        "taskset" => OptWrapper { s: "apc", v: "", l: &["all-tasks", "pid", "cpu-list"], big_l: &[], ops: 1 },
-        "doas" => OptWrapper { s: "nsL", v: "uC", l: &[], big_l: &[], ops: 0 },
-        _ => return None,
-    })
+/// True when `flag` is an option of `wrapper` (sudo, timeout, nice) that takes a value.
+fn value_opt(wrapper: &str, flag: &str) -> bool {
+    tables().wrapper_value_opts.get(wrapper).is_some_and(|w| w.has(flag))
 }
 
 /// Mirrors `git-guard.js` `skipOptWrapper`.
@@ -436,7 +399,7 @@ fn skip_opt_wrapper(tokens: &[Tok], mut idx: usize, g: &OptWrapper) -> usize {
             break;
         }
         if let Some(long) = ws.strip_prefix("--") {
-            if !ws.contains('=') && g.big_l.contains(&long) {
+            if !ws.contains('=') && g.big_l.iter().any(|x| x == long) {
                 idx += 1;
             }
             continue;
@@ -455,7 +418,7 @@ fn skip_opt_wrapper(tokens: &[Tok], mut idx: usize, g: &OptWrapper) -> usize {
 
 /// Mirrors `git-guard.js` `flockCommand`.
 fn flock_command(tokens: &[Tok], mut i: usize) -> Option<Tok> {
-    let g = opt_wrapper("flock")?; // a fixed table entry
+    let g = tables().opt_wrappers.get("flock")?; // a fixed table entry
     let is_cmd = |n: &str| n.chars().count() >= 3 && "command".starts_with(n);
     let attached = |t: &str| Tok { text: t.to_string(), quoted_only: false, raw: None };
     let mut after_file = false;
@@ -501,7 +464,7 @@ fn flock_command(tokens: &[Tok], mut i: usize) -> Option<Tok> {
                     Some(p) => Some(attached(&rest[p + 1..])),
                 };
             }
-            if eq.is_none() && g.big_l.contains(&name) {
+            if eq.is_none() && g.big_l.iter().any(|x| x == name) {
                 i += 1;
             }
             i += 1;
@@ -541,44 +504,25 @@ pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
         let t = &tokens[idx];
         let word = t.text.as_str();
         if !t.quoted_only {
-            if let Some(g) = opt_wrapper(word) {
+            if let Some(g) = tables().opt_wrappers.get(word) {
                 let fc = if word == "flock" { flock_command(tokens, idx + 1) } else { None };
                 if let Some(fc) = fc {
                     return Some(Ev { verb: "sh".into(), args: vec![Tok::plain("-c"), fc], env: Default::default() });
                 }
-                idx = skip_opt_wrapper(tokens, idx + 1, &g);
+                idx = skip_opt_wrapper(tokens, idx + 1, g);
                 continue;
             }
         }
-        if !t.quoted_only && WRAPPERS.contains(&word) {
+        if !t.quoted_only && tables().wrappers.has(word) {
             idx += 1;
             if word == "sudo" {
-                /// Mirrors `git-guard.js` `SUDO_VAL`.
-                const SUDO_VAL: &[&str] = &[
-                    "-u",
-                    "-g",
-                    "-p",
-                    "-C",
-                    "-r",
-                    "-t",
-                    "-U",
-                    "-h",
-                    "--user",
-                    "--group",
-                    "--prompt",
-                    "--close-from",
-                    "--role",
-                    "--type",
-                    "--other-user",
-                    "--host",
-                ];
                 while idx < tokens.len() && !tokens[idx].quoted_only && tokens[idx].text.starts_with('-') {
                     let f = tokens[idx].text.as_str();
                     idx += 1;
                     if f == "--" {
                         break;
                     }
-                    if SUDO_VAL.contains(&f) && idx < tokens.len() && !tokens[idx].quoted_only && !tokens[idx].text.starts_with('-') {
+                    if value_opt("sudo", f) && idx < tokens.len() && !tokens[idx].quoted_only && !tokens[idx].text.starts_with('-') {
                         idx += 1;
                     }
                 }
@@ -595,11 +539,7 @@ pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
                 while idx < tokens.len() && !tokens[idx].quoted_only && tokens[idx].text.starts_with('-') {
                     let f = tokens[idx].text.as_str();
                     idx += 1;
-                    if (f == "-s" || f == "--signal" || f == "-k" || f == "--kill-after")
-                        && idx < tokens.len()
-                        && !tokens[idx].quoted_only
-                        && !tokens[idx].text.starts_with('-')
-                    {
+                    if value_opt("timeout", f) && idx < tokens.len() && !tokens[idx].quoted_only && !tokens[idx].text.starts_with('-') {
                         idx += 1;
                     }
                 }
@@ -614,7 +554,7 @@ pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
                 while idx < tokens.len() && !tokens[idx].quoted_only && tokens[idx].text.starts_with('-') {
                     let f = tokens[idx].text.as_str();
                     idx += 1;
-                    if (f == "-n" || f == "--adjustment") && idx < tokens.len() && !tokens[idx].quoted_only && !tokens[idx].text.starts_with('-') {
+                    if value_opt("nice", f) && idx < tokens.len() && !tokens[idx].quoted_only && !tokens[idx].text.starts_with('-') {
                         idx += 1;
                     }
                 }
@@ -633,15 +573,10 @@ pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
     Some(Ev { verb: basename(&vt.text), args: tokens[idx + 1..].to_vec(), env: Default::default() })
 }
 
-/// Shell programs whose `-c` argument is itself a script.
-///
-/// Mirrors `lib/shell-scan.js` `SHELL_VERBS`.
-pub const SHELL_VERBS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh", "ash"];
-
 /// True when `v` names a shell (case-insensitive).
 pub fn is_shell_verb(v: &str) -> bool {
     let l = v.to_lowercase();
-    SHELL_VERBS.contains(&l.as_str())
+    tables().shell_verbs.has(&l)
 }
 
 // ---------------------------------------------------------------------------------------------------

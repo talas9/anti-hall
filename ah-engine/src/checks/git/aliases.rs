@@ -1,6 +1,7 @@
 //! git-guard's alias and reused-message checks (lib/git-alias-scan.js).
 use super::gitcmd::*;
 use super::segments::scan_command;
+use super::tables::{argv_template, block, note, plain, tables};
 use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
@@ -8,12 +9,6 @@ use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use std::time::Duration;
-
-/// Mirrors `lib/git-alias-scan.js` `GIT_BUILTINS`.
-const GIT_BUILTINS: &str = "add am annotate apply archive bisect blame branch bundle cat-file check-attr check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick citool clean clone column commit commit-graph commit-tree config count-objects credential describe diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack filter-branch fmt-merge-msg for-each-ref for-each-repo format-patch fsck gc get-tar-commit-id grep gui hash-object help hook index-pack init instaweb interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base merge-file merge-index merge-tree mergetool mktag mktree multi-pack-index mv name-rev notes p4 pack-objects pack-redundant pack-refs prune prune-packed pull push range-diff read-tree rebase receive-pack reflog remote repack replace request-pull rerere reset restore rev-list rev-parse revert rm send-email send-pack shortlog show show-branch show-index show-ref sparse-checkout stage stash status stripspace submodule switch symbolic-ref tag unpack-file unpack-objects update-index update-ref update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag version whatchanged worktree write-tree";
-
-const MAX_CHAIN: usize = 10;
 
 /// Environment assignments (`NAME=value`) that prefix a command, keyed by name.
 pub type Env = HashMap<String, String>;
@@ -49,15 +44,16 @@ fn repo_args(args: &[Tok]) -> Vec<String> {
 }
 
 fn forward_env_name(n: &str) -> bool {
-    if matches!(n, "GIT_DIR" | "GIT_WORK_TREE" | "HOME" | "XDG_CONFIG_HOME") {
+    let t = tables();
+    if t.forward_env_names.has(n) {
         return true;
     }
     if let Some(r) = n.strip_prefix("GIT_CONFIG_") {
-        if matches!(r, "GLOBAL" | "SYSTEM" | "NOSYSTEM" | "COUNT" | "PARAMETERS") {
+        if t.forward_config_names.has(r) {
             return true;
         }
-        for p in ["KEY_", "VALUE_"] {
-            if let Some(d) = r.strip_prefix(p) {
+        for p in &t.forward_config_indexed {
+            if let Some(d) = r.strip_prefix(p.as_str()) {
                 return !d.is_empty() && d.chars().all(|c| c.is_ascii_digit());
             }
         }
@@ -127,7 +123,7 @@ fn git_run(ctx: &mut Ctx, argv: &[String], dir: Option<&str>, env: &Env) -> Opti
     if let Some(v) = ctx.git_cache.get(&key) {
         return v.clone();
     }
-    let r = run_capture("git", argv, if cwd.is_empty() { None } else { Some(&cwd) }, env, Duration::from_millis(1500));
+    let r = run_capture(&tables().git_binary, argv, if cwd.is_empty() { None } else { Some(&cwd) }, env, tables().git_timeout);
     ctx.git_cache.insert(key, r.clone());
     r
 }
@@ -144,7 +140,7 @@ fn aliases_for(ctx: &mut Ctx, args: &[Tok], dir: Option<&str>, env: &Env) -> Has
     }
     let mut map: HashMap<String, String> = HashMap::new();
     let mut argv = ra.clone();
-    argv.extend(["config", "-z", "--get-regexp", "^alias\\."].iter().map(|s| s.to_string()));
+    argv.extend(argv_template("argv_alias_list", ""));
     if let Some(out) = git_run(ctx, &argv, dir, env) {
         for rec in out.split('\0') {
             let Some(nl) = rec.find('\n') else { continue };
@@ -203,7 +199,7 @@ fn first_word(v: &str) -> (String, String) {
 fn aliasable(sub: &str) -> bool {
     let mut cs = sub.chars();
     let ok_first = cs.next().is_some_and(|c| c.is_ascii_alphanumeric());
-    ok_first && sub.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-') && !GIT_BUILTINS.split(' ').any(|b| b == sub)
+    ok_first && sub.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-') && !tables().git_builtins.has(sub)
 }
 
 struct Expansion {
@@ -229,7 +225,7 @@ fn expand_alias(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: &[Tok], di
     let mut chain: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut suffix = shell_words(rest);
-    while chain.len() < MAX_CHAIN {
+    while chain.len() < tables().max_chain {
         if seen.contains(&name) {
             return None;
         }
@@ -266,10 +262,10 @@ fn expand_alias(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: &[Tok], di
 
 /// Mirrors `lib/git-alias-scan.js` `annotate`.
 fn annotate(m: &str, note: &str) -> String {
-    const MARK: &str = " anti-hall \u{b7} git-guard: ";
+    let mark = tables().block_mark.as_str();
     if let Some(sp) = m.find(|c: char| is_js_space(c)) {
-        if sp > 0 && m[sp..].starts_with(MARK) {
-            let cut = sp + MARK.len();
+        if sp > 0 && m[sp..].starts_with(mark) {
+            let cut = sp + mark.len();
             return format!("{}{} {}", &m[..cut], note, &m[cut..]);
         }
     }
@@ -308,7 +304,7 @@ fn git_definition_verdict(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: 
                     if eq >= 1 {
                         let name = &rest_v[..eq];
                         let body = &rest_v[eq + 1..];
-                        let note = format!("defining git alias `{name}` to run a blocked command:");
+                        let note = note("note_git_alias_def", &[("name", &name)]);
                         if let Some(h) = scan_body(ctx, alias_body_command(body), &note, d, dir) {
                             return Some(h);
                         }
@@ -328,7 +324,7 @@ fn git_definition_verdict(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: 
         if v.get(..6).is_some_and(|x| x.eq_ignore_ascii_case("alias.")) {
             let name = &v[6..];
             if !name.is_empty() && !name.chars().any(is_js_space) {
-                let note = format!("defining git alias `{name}` to run a blocked command:");
+                let note = note("note_git_alias_def", &[("name", &name)]);
                 if let Some(h) = scan_body(ctx, alias_body_command(&rest[k + 1].text), &note, d, dir) {
                     return Some(h);
                 }
@@ -341,29 +337,9 @@ fn git_definition_verdict(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: 
 
 // ---- reused commit messages --------------------------------------------------------------------------
 
-/// Mirrors `lib/git-alias-scan.js` `COMMIT_LONG`.
-const COMMIT_LONG: &str = "ahead-behind all allow-empty allow-empty-message amend author branch cleanup date dry-run edit file fixup gpg-sign include inter-hunk-context interactive long message no-post-rewrite no-verify null only patch pathspec-file-nul pathspec-from-file porcelain post-rewrite quiet reedit-message reset-author reuse-message short signoff squash status template trailer unified untracked-files verbose verify no-edit no-status no-signoff no-gpg-sign no-allow-empty no-amend";
-/// Mirrors `lib/git-alias-scan.js` `COMMIT_LONG_VALUE`.
-const COMMIT_LONG_VALUE: &[&str] = &[
-    "author",
-    "date",
-    "message",
-    "file",
-    "reuse-message",
-    "reedit-message",
-    "fixup",
-    "squash",
-    "trailer",
-    "cleanup",
-    "template",
-    "pathspec-from-file",
-    "unified",
-    "inter-hunk-context",
-];
-
 /// Mirrors `lib/git-alias-scan.js` `commitLong`.
 fn commit_long(n: &str) -> Option<String> {
-    let all: Vec<&str> = COMMIT_LONG.split(' ').collect();
+    let all: Vec<&str> = tables().commit_long.iter().collect();
     if all.contains(&n) {
         return Some(n.to_string());
     }
@@ -414,7 +390,7 @@ fn commit_sources(rest: &[Tok]) -> Sources {
             let val: Option<String> = match val0 {
                 Some(v) => Some(v),
                 None => {
-                    if n.as_deref().is_some_and(|x| COMMIT_LONG_VALUE.contains(&x)) {
+                    if n.as_deref().is_some_and(|x| tables().commit_long_value.has(x)) {
                         k += 1;
                         Some(if k < rest.len() { rest[k].text.clone() } else { String::new() })
                     } else {
@@ -454,7 +430,7 @@ fn commit_sources(rest: &[Tok]) -> Sources {
             if ch == 'S' || ch == 'u' {
                 break;
             }
-            if !matches!(ch, 'm' | 'F' | 'C' | 'c' | 't') {
+            if !tables().commit_cluster_value_flags.contains(ch) {
                 j += 1;
                 continue;
             }
@@ -499,7 +475,7 @@ fn noop_editor(v: &str) -> bool {
         Some(_) => return false,
         None => v,
     };
-    matches!(base, "true" | ":" | "cat")
+    tables().noop_editors.has(base)
 }
 
 /// Mirrors `lib/git-alias-scan.js` `setsRealEditor`.
@@ -524,7 +500,7 @@ fn read_template(ctx: &mut Ctx, args: &[Tok], dir: Option<&str>, explicit: Optio
     let mut p: String = explicit.unwrap_or("").to_string();
     if p.is_empty() {
         let mut argv = repo_args(args);
-        argv.extend(["config", "--path", "--get", "commit.template"].iter().map(|s| s.to_string()));
+        argv.extend(argv_template("argv_commit_template", ""));
         let out = git_run(ctx, &argv, dir, env);
         p = out.map(|o| js_trim(&o).to_string()).unwrap_or_default();
     }
@@ -555,23 +531,23 @@ fn reused_message_verdict(ctx: &mut Ctx, args: &[Tok], rest: &[Tok], dir: Option
     let reuse = o.reuse.clone().filter(|r| !r.is_empty());
     if let Some(r) = reuse.as_ref().filter(|r| !r.starts_with('-')) {
         let mut argv = repo_args(args);
-        argv.extend(["log", "-1", "--format=%B", r.as_str(), "--"].iter().map(|s| s.to_string()));
+        argv.extend(argv_template("argv_log_message", r.as_str()));
         text = git_run(ctx, &argv, dir, env);
-        let hex = r.len() >= 40 && r.chars().all(|c| c.is_ascii_hexdigit());
-        origin = format!("commit `{}`", if hex { &r[..12] } else { r.as_str() });
+        let hex = r.len() >= tables().commit_hash_len && r.chars().all(|c| c.is_ascii_hexdigit());
+        origin = note("origin_commit", &[("ref", &if hex { &r[..tables().commit_hash_short] } else { r.as_str() })]);
         verbatim = !o.reedit && !o.edit;
         if o.no_edit {
             verbatim = true;
         }
     } else if o.amend {
         let mut argv = repo_args(args);
-        argv.extend(["log", "-1", "--format=%B", "HEAD", "--"].iter().map(|s| s.to_string()));
+        argv.extend(argv_template("argv_log_message", "HEAD"));
         text = git_run(ctx, &argv, dir, env);
-        origin = "HEAD (`--amend` reuses it)".to_string();
+        origin = plain("origin_amend").to_string();
         verbatim = o.no_edit;
     } else if !o.no_edit {
         text = read_template(ctx, args, dir, o.template.as_deref(), env);
-        origin = "the commit template".to_string();
+        origin = plain("origin_template").to_string();
     } else {
         text = None;
         origin = String::new();
@@ -584,11 +560,7 @@ fn reused_message_verdict(ctx: &mut Ctx, args: &[Tok], rest: &[Tok], dir: Option
     if !verbatim && sets_real_editor(&raw) {
         return None;
     }
-    Some(msg(
-        &format!("a commit whose message is taken from {origin} and carries an AI/assistant self-credit trailer is blocked."),
-        "Commits carry no AI co-author credit, even when the message is reused rather than typed.",
-        "commit with an explicit clean message (`-m \"<msg>\"` or `-F <file>`) instead of reusing that one.",
-    ))
+    Some(block("msg_reused_message", &[("origin", &origin)]))
 }
 
 /// gitVerdict hook: alias definitions, alias use, reused commit messages.
@@ -599,10 +571,10 @@ pub fn alias_git_verdict(ctx: &mut Ctx, args: &[Tok], sub: &str, rest: &[Tok], d
         if let Some(def) = git_definition_verdict(ctx, args, Some(sub), rest, depth, dir) {
             return Some(def);
         }
-        if depth < 3 {
+        if depth < tables().alias_depth {
             if let Some(ex) = expand_alias(ctx, args, Some(sub), rest, dir, env) {
                 if let Some(hit) = scan_command(ctx, &ex.command, depth + 1, dir) {
-                    let note = format!("via git alias `{}`:", ex.chain.join("` -> `"));
+                    let note = note("note_git_alias_use", &[("chain", &ex.chain.join(&tables().chain_joiner))]);
                     return Some(annotate(&hit, &note));
                 }
             }
@@ -807,7 +779,7 @@ pub fn shell_definition_verdict(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, depth: u
             if name.is_empty() || name.chars().any(is_js_space) || val.is_empty() {
                 continue;
             }
-            let note = format!("defining shell alias `{name}` to run a blocked command:");
+            let note = note("note_shell_alias_def", &[("name", &name)]);
             if let Some(h) = scan_body(ctx, Some(val.to_string()), &note, depth, last_cd) {
                 return Some(h);
             }
@@ -825,15 +797,15 @@ pub fn shell_definition_verdict(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, depth: u
         if !ok_name || val.is_empty() {
             continue;
         }
-        let note = format!("defining a git alias via `{name}` to run a blocked command:");
+        let note = note("note_env_alias_def", &[("name", &name)]);
         if let Some(h) = scan_body(ctx, alias_body_command(val), &note, depth, last_cd) {
             return Some(h);
         }
     }
-    if depth < 3 && !ev.args.is_empty() {
+    if depth < tables().alias_depth && !ev.args.is_empty() {
         let defs = shell_defs(ctx);
         if let Some(def) = defs.get(&ev.verb) {
-            let note = format!("via shell {} `{}`:", if def.is_alias { "alias" } else { "function" }, ev.verb);
+            let note = note("note_shell_def_use", &[("kind", &plain(if def.is_alias { "word_alias" } else { "word_function" })), ("name", &ev.verb)]);
             let body = wrapper_expansion(def, &ev.args);
             if let Some(h) = scan_body(ctx, Some(body), &note, depth, last_cd) {
                 return Some(h);
@@ -850,6 +822,6 @@ pub fn alias_creates_commit(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest
     let env = Env::new();
     match expand_alias(ctx, args, sub, rest, dir, &env) {
         None => false,
-        Some(ex) => ex.verb == "!" || ex.verb.starts_with('-') || COMMIT_CREATING.contains(&ex.verb.as_str()),
+        Some(ex) => ex.verb == "!" || ex.verb.starts_with('-') || tables().commit_creating.has(&ex.verb),
     }
 }

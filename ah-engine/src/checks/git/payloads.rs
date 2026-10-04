@@ -1,4 +1,5 @@
 //! Wrapper payload extraction: eval, `sh -c`, `env -S`, piped `echo ... | sh`, positional forwarding.
+use super::tables::tables;
 use super::tokenize::*;
 use crate::checks::lit_re;
 use regex::Regex;
@@ -175,7 +176,7 @@ pub fn piped_echo_shell_payloads(cmd: &str) -> Vec<String> {
         }
         p = ws(p + 1);
         let mut matched = None;
-        for v in ["bash", "sh", "zsh", "dash", "ksh", "ash"] {
+        for v in tables().shell_verbs.iter() {
             let vc: Vec<char> = v.chars().collect();
             if s[p.min(n)..].starts_with(&vc) {
                 matched = Some(p + vc.len());

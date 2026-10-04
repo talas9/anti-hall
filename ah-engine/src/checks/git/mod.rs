@@ -12,6 +12,7 @@ pub mod launcher;
 pub mod payloads;
 pub mod runner;
 pub mod segments;
+pub mod tables;
 #[cfg(test)]
 mod tests;
 pub mod tokenize;
@@ -24,6 +25,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
+use tables::{note, plain, tables};
 use util::Settings;
 
 /// Per-request state (the Node guard keeps these as module-level variables; one process = one call).
@@ -82,13 +84,13 @@ impl Ctx {
         Ctx {
             raw_cmd: String::new(),
             active_repls: Vec::new(),
-            launcher_fs_budget: 64,
+            launcher_fs_budget: tables().budget_launcher_fs,
             launcher_cmd_text: String::new(),
-            handover_query_budget: 8,
+            handover_query_budget: tables().budget_handover_queries,
             handover_skipped: 0,
             handover_cache: HashMap::new(),
             handover_adds: Vec::new(),
-            handover_eval_budget: 50,
+            handover_eval_budget: tables().budget_handover_evals,
             handover_guard_on: None,
             self_credit_cache: HashMap::new(),
             raw_credit: None,
@@ -113,7 +115,7 @@ impl Ctx {
     /// Mirrors `git-guard.js` `heredocDataEnabled`.
     pub fn heredoc_data_enabled(&mut self) -> bool {
         if self.hd_on.is_none() {
-            self.hd_on = Some(self.settings.enabled("guards", "gitGuardHeredocData", "ANTIHALL_GIT_GUARD_HEREDOC_DATA", None));
+            self.hd_on = Some(self.settings.enabled(&tables().setting_heredoc_data));
         }
         self.hd_on.unwrap()
     }
@@ -123,7 +125,7 @@ impl Ctx {
     /// Mirrors `lib/git-alias-scan.js` `aliasEnabled`.
     pub fn alias_enabled(&mut self) -> bool {
         if self.alias_on.is_none() {
-            self.alias_on = Some(self.settings.enabled("guards", "gitAliasResolve", "ANTIHALL_GIT_ALIAS_RESOLVE", None));
+            self.alias_on = Some(self.settings.enabled(&tables().setting_alias_resolve));
         }
         self.alias_on.unwrap()
     }
@@ -133,7 +135,7 @@ impl Ctx {
     /// Mirrors `lib/git-alias-scan.js` `reuseEnabled`.
     pub fn reuse_enabled(&mut self) -> bool {
         if self.reuse_on.is_none() {
-            self.reuse_on = Some(self.settings.enabled("guards", "gitReusedMessageCheck", "ANTIHALL_GIT_REUSED_MESSAGE_CHECK", None));
+            self.reuse_on = Some(self.settings.enabled(&tables().setting_reused_message));
         }
         self.reuse_on.unwrap()
     }
@@ -141,8 +143,7 @@ impl Ctx {
     /// Whether the handover-commit guard is on (read once per request).
     pub fn handover_guard_enabled(&mut self) -> bool {
         if self.handover_guard_on.is_none() {
-            self.handover_guard_on =
-                Some(self.settings.enabled("guards", "handoverCommitGuard", "ANTIHALL_HANDOVER_COMMIT_GUARD", Some("guards_handover_commit_guard")));
+            self.handover_guard_on = Some(self.settings.enabled(&tables().setting_handover_guard));
         }
         self.handover_guard_on.unwrap()
     }
@@ -151,8 +152,8 @@ impl Ctx {
     ///
     /// Mirrors `git-guard.js` `skipCmd`.
     pub fn skip_cmd(&self, key: &str) -> String {
-        let p = util::path_join(&self.plugin_root, "scripts/devswarm.js");
-        format!("node '{}' skip {}", p.replace('\'', "'\\''"), key)
+        let script = util::path_join(&self.plugin_root, plain("skip_script"));
+        crate::defaults::fill(plain("skip_command"), &[("script", &script.replace('\'', "'\\''")), ("key", &key)])
     }
 
     /// A path as the Node process would open it (relative paths resolve against the hook's cwd).
@@ -182,9 +183,6 @@ fn looks_like_file_write_shape(cmd: &str) -> bool {
     echo.is_match(cmd) && redirects
 }
 
-/// Mirrors `git-guard.js` `main`.
-const TIP: &str = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `devswarm.js send --message-file <path>`).";
-
 /// The git-guard PreToolUse decision for one Bash command. Runs on a thread with a large stack and turns a panic
 /// into `Defer`, so a bug or a pathological command can never take a daemon worker down.
 ///
@@ -192,7 +190,7 @@ const TIP: &str = "\nTip: this file's content was scanned as shell. Write the fi
 pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Verdict {
     let settings = Settings::from_process();
     let r = std::thread::scope(|sc| {
-        std::thread::Builder::new().stack_size(64 << 20).spawn_scoped(sc, || check_with(settings, cmd, cwd, plugin_root)).map(|h| h.join())
+        std::thread::Builder::new().stack_size(tables().stack_bytes).spawn_scoped(sc, || check_with(settings, cmd, cwd, plugin_root)).map(|h| h.join())
     });
     match r {
         Ok(Ok(o)) => o,
@@ -204,10 +202,10 @@ pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Verdict {
 ///
 /// Mirrors `git-guard.js` `main`.
 pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Verdict {
-    if !settings.enabled("safety", "gitGuard", "ANTIHALL_GIT_GUARD", Some("safety_git_guard")) {
+    if !settings.enabled(&tables().setting_git_guard) {
         return Verdict::Allow;
     }
-    if settings.is_skipped("git-guard") {
+    if settings.is_skipped(&tables().guard_name) {
         return Verdict::Allow;
     }
     if cmd.is_empty() {
@@ -224,15 +222,12 @@ pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root:
     }
     if let Some(m) = hit {
         if looks_like_file_write_shape(cmd) {
-            return Verdict::Block(format!("{m}{TIP}"));
+            return Verdict::Block(format!("{m}{}", tables().file_write_tip));
         }
         return Verdict::Block(m);
     }
     if ctx.handover_skipped > 0 {
-        let text = format!(
-            "anti-hall git-guard: the handover-commit check was skipped for {} commit(s) in this command (too many distinct commits/repos to check). Make sure none of them includes a session handover (.anti-hall/handovers/**, HANDOVER*.md, CONTINUE-HERE.md).",
-            ctx.handover_skipped
-        );
+        let text = note("handover_skipped_advisory", &[("n", &ctx.handover_skipped)]);
         let t = serde_json::to_string(&text).unwrap_or_default();
         return Verdict::Advisory(format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"PreToolUse\",\"additionalContext\":{t}}}}}"));
     }
@@ -248,7 +243,7 @@ impl Check for GitGuard {
     }
 
     fn summary(&self) -> &'static str {
-        "Port of the git-guard hook: blocks force pushes, AI self-credit in commits, broad adds and handover commits"
+        plain("check_summary")
     }
 
     fn run(&self, s: &Subject<'_>, opts: &Value) -> Option<Verdict> {
@@ -256,8 +251,7 @@ impl Check for GitGuard {
             return None;
         }
         let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
-        let root =
-            opts.get("plugin_root").and_then(Value::as_str).map(str::to_string).or_else(|| std::env::var("AH_ENGINE_PLUGIN_ROOT").ok()).unwrap_or_default();
+        let root = opts.get("plugin_root").and_then(Value::as_str).map(str::to_string).or_else(|| crate::defaults::env_var("plugin_root")).unwrap_or_default();
         Some(check_bash(cmd, s.cwd, &root))
     }
 }

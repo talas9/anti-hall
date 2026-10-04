@@ -1,0 +1,311 @@
+# ah-engine shipped message texts (D17): everything a person or an agent can read that the engine produces,
+# except the git check's block messages (git.toml). `{name}` marks a placeholder filled at the call site.
+# Format: see the header of engine.toml. Error codes and event kinds are stable identifiers and live in code.
+
+# ---- failure hints (one per environment-class error code group, see engine.toml health.error_codes) ----
+
+[msg.hint_disk_full]
+doc = "Self-fix hint when the disk is full (error code os28)."
+value = "the disk is full (no space left); free some space, then it recovers by itself"
+
+[msg.hint_state_dir]
+doc = "Self-fix hint when the state directory is not writable or not private. Placeholders: {state_dir}, {env_dir}."
+value = "ah-engine's state directory is not writable or not private; fix its ownership (chown to yourself) and permissions (chmod 700 {state_dir}), or set {env_dir} to a directory you own"
+
+[msg.hint_socket_path]
+doc = "Self-fix hint when the socket path is too long. Placeholder: {env_dir}."
+value = "the socket path is too long; set {env_dir} to a shorter path (e.g. /tmp/ah)"
+
+[msg.hint_fds]
+doc = "Self-fix hint when the process ran out of file descriptors."
+value = "the process ran out of file descriptors; raise `ulimit -n` or close other programs"
+
+[msg.hint_memory]
+doc = "Self-fix hint when the OS killed or starved the daemon. Placeholder: {env_mem}."
+value = "the OS killed or starved ah-engine (low memory); close other programs or lower {env_mem}"
+
+# ---- advisories ---------------------------------------------------------------------------------------
+
+[msg.advisory_env]
+doc = "Once-per-session advisory for an environment-class failure. Placeholder: {hint}."
+value = "⚠️ anti-hall · ah-engine: {hint}. Using the built-in checks instead."
+
+[msg.advisory_permanent]
+doc = "Once-per-session advisory for a permanent failure; nothing is ever filed automatically. Placeholders: {reason}, {diagnostics}."
+value = "⚠️ anti-hall · ah-engine: stopped after repeated failures ({reason}). Using the built-in checks instead. Please file an issue: https://github.com/talas9/anti-hall/issues/new\n{diagnostics}"
+
+[msg.diagnostics]
+doc = "Secret-scrubbed diagnostic block attached to a permanent-failure advisory. Placeholders: {version}, {os}, {arch}, {code}, {log}."
+value = "--- anti-hall ah-engine diagnostics ---\nversion: {version}\nos: {os} {arch}\nerror code: {code}\nlast log lines (ts, kind, code, detail):\n{log}\n---"
+
+[msg.reason_crashloop]
+doc = "Recorded reason when the daemon keeps dying. Placeholders: {n}, {secs}."
+value = "daemon died {n} times in {secs} s"
+
+[msg.reason_breaker]
+doc = "Recorded reason when the client breaker opens. Placeholders: {n}, {secs}, {why}."
+value = "{n} engine failures in {secs} s (last: {why})"
+
+[msg.state_open]
+doc = "Status text for a breaker that is open. Placeholder: {secs}."
+value = "open ({secs} s left)"
+
+[msg.state_stopped]
+doc = "Status text for a crash-loop stop that is active. Placeholder: {secs}."
+value = "stopped ({secs} s left)"
+
+# ---- event log details --------------------------------------------------------------------------------
+
+[msg.log_daemon_killed]
+doc = "Log detail when the daemon was killed by a signal while starting."
+value = "daemon killed while starting"
+
+[msg.log_fallback_timeout]
+doc = "Log detail when the Node fallback did not finish in time."
+value = "node fallback did not finish"
+
+[msg.log_operator_reset]
+doc = "Log detail for `reset`."
+value = "operator reset"
+
+[msg.log_crash]
+doc = "Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}."
+value = "daemon pid {pid} died without a clean exit"
+
+[msg.log_budget]
+doc = "Log detail when a rule evaluation exceeded its CPU budget."
+value = "rule evaluation exceeded its cpu budget"
+
+[msg.log_panic]
+doc = "Log and failure detail when a request handler panicked."
+value = "a request handler panicked"
+
+[msg.log_stall]
+doc = "Log detail when the accept loop stalled."
+value = "accept loop stalled"
+
+[msg.failure_stall]
+doc = "Failure reason when the accept loop stalled."
+value = "the ah-engine loop stalled"
+
+[msg.log_stuck]
+doc = "Log detail when a worker is stuck. Placeholder: {i}."
+value = "worker {i} stuck"
+
+[msg.failure_stuck]
+doc = "Failure reason when a worker is stuck."
+value = "an ah-engine worker got stuck"
+
+[msg.log_rss]
+doc = "Log detail when the daemon is over its memory cap. Placeholders: {rss}, {cap}."
+value = "rss {rss} KB over cap {cap} KB; restarting cleanly"
+
+[msg.log_start]
+doc = "Log detail for a daemon start. Placeholders: {version}, {pid}, {rlimit}."
+value = "v{version} pid {pid} mem_limit {rlimit}"
+
+[msg.log_lock_fail]
+doc = "Start-failure detail when the lock file cannot be opened. Placeholders: {path}, {err}."
+value = "lock {path}: {err}"
+
+[msg.log_not_socket]
+doc = "Start-failure detail when something other than a socket sits at the socket path. Placeholder: {path}."
+value = "{path} exists and is not a socket"
+
+[msg.log_bind_fail]
+doc = "Start-failure detail when binding the socket fails. Placeholders: {path}, {err}."
+value = "bind {path}: {err}"
+
+[msg.exit_reason_handoff]
+doc = "Drain reason for a handoff to a newer build or a stop request."
+value = "handoff or stop"
+
+[msg.exit_reason_stall]
+doc = "Drain reason for a stalled loop."
+value = "loop stalled"
+
+[msg.exit_reason_stuck]
+doc = "Drain reason for a stuck worker."
+value = "worker stuck"
+
+[msg.exit_reason_rss]
+doc = "Drain reason for exceeding the memory cap."
+value = "rss cap"
+
+[msg.exit_reason_idle]
+doc = "Drain reason for idle exit (only when daemon.idle_exit_min is set)."
+value = "idle"
+
+[msg.exit_reason_sigterm]
+doc = "Drain reason for SIGTERM."
+value = "SIGTERM"
+
+# ---- daemon replies -----------------------------------------------------------------------------------
+
+[msg.reply_unknown_request]
+doc = "ERR body for a request the daemon does not understand."
+value = "unknown request"
+
+[msg.reply_malformed]
+doc = "ERR body for a hook payload that is not JSON."
+value = "malformed payload"
+
+[msg.reply_defer]
+doc = "ERR body when a built-in check defers to the Node hook."
+value = "built-in check defers to the Node hook"
+
+[msg.reply_budget]
+doc = "ERR body when evaluation exceeded the CPU budget."
+value = "cpu budget exceeded"
+
+[msg.reply_missing_cwd]
+doc = "ERR body for a project request without a cwd."
+value = "missing cwd"
+
+[msg.reply_internal]
+doc = "ERR body after a contained panic."
+value = "internal error"
+
+[msg.reply_read_deadline]
+doc = "ERR body when the client did not deliver its request in time."
+value = "read deadline"
+
+[msg.reply_too_large]
+doc = "ERR body for an oversize request."
+value = "request too large"
+
+[msg.reply_read_error]
+doc = "ERR body for a socket read error."
+value = "read error"
+
+[msg.reply_test_panic]
+doc = "Panic text of the test-only `panic` verb."
+value = "test panic"
+
+# ---- client failure reasons ---------------------------------------------------------------------------
+
+[msg.client_bad_socket]
+doc = "Exchange failure when the socket path is not a socket owned by this user."
+value = "socket is not a socket owned by this user"
+
+[msg.client_timeout]
+doc = "Exchange failure when the hard deadline passed."
+value = "timeout"
+
+[msg.client_connect]
+doc = "Exchange failure when connecting failed. Placeholder: {err}."
+value = "connect: {err}"
+
+[msg.client_io]
+doc = "Exchange failure for another I/O step. Placeholders: {what}, {err}."
+value = "{what}: {err}"
+
+[msg.client_bad_frame]
+doc = "Exchange failure when the reply frame was damaged. Placeholder: {err}."
+value = "bad reply frame: {err}"
+
+# ---- typed errors (Display text) ----------------------------------------------------------------------
+
+[msg.err_rules_json]
+doc = "Rules file is not valid JSON. Placeholder: {err}."
+value = "rules json: {err}"
+
+[msg.err_rules_version]
+doc = "Rules file version is not supported. Placeholder: {version}."
+value = "unsupported rules version {version}"
+
+[msg.err_rules_action]
+doc = "A rule has an unknown action. Placeholders: {index}, {action}."
+value = "rule {index}: unknown action {action}"
+
+[msg.err_rules_check]
+doc = "A rule names an unknown check. Placeholders: {index}, {name}."
+value = "rule {index}: unknown check {name}"
+
+[msg.err_rules_pattern]
+doc = "A rule's pattern is not a valid regular expression. Placeholders: {index}, {id}, {err}."
+value = "rule {index} ({id}): {err}"
+
+[msg.err_path_io]
+doc = "An OS error on a path. Placeholders: {path}, {err}."
+value = "{path}: {err}"
+
+[msg.err_not_dir]
+doc = "A state or socket directory is not a plain directory. Placeholder: {path}."
+value = "{path} is not a plain directory"
+
+[msg.err_wrong_owner]
+doc = "A state or socket directory belongs to another user. Placeholders: {path}, {found}, {expected}."
+value = "{path} is owned by uid {found}, not {expected}"
+
+[msg.err_too_many_projects]
+doc = "The project partition limit was reached."
+value = "too many projects"
+
+[msg.err_value_too_large]
+doc = "A stored value exceeds the per-value cap."
+value = "value too large"
+
+[msg.err_mailbox_full]
+doc = "The project mailbox is full."
+value = "mailbox full"
+
+[msg.err_too_many_keys]
+doc = "The project key limit was reached."
+value = "too many keys"
+
+[msg.err_unknown_verb]
+doc = "A project operation verb is not known. Placeholder: {verb}."
+value = "unknown verb {verb}"
+
+[msg.err_unknown_check]
+doc = "`check` was asked for a check that is not registered. Placeholder: {name}."
+value = "unknown check {name}"
+
+# ---- command line -------------------------------------------------------------------------------------
+
+[msg.cli_no_daemon]
+doc = "Printed to stderr when a control command finds no daemon."
+value = "no daemon"
+
+[msg.cli_usage]
+doc = "Usage text for an unknown or missing subcommand. The command list is generated from the command registry."
+value = "usage: ah-engine {commands}"
+
+# ---- warnings -----------------------------------------------------------------------------------------
+
+[msg.regex_literal_invalid]
+doc = "Panic text when a literal regular expression in the source does not compile (a bug the tests catch)."
+value = "literal regex is valid (compiled by the tests that run its code path)"
+
+[msg.cli_planned]
+doc = "Printed when a planned command is run. Placeholders: {command}, {decision}."
+value = "{command} is planned ({decision}) and is not implemented yet"
+
+[msg.cli_unknown]
+doc = "Printed to stderr for an unknown command. Placeholder: {command}."
+value = "unknown command {command}"
+
+[msg.cli_not_running]
+doc = "Printed in place of a report when no daemon is running (`--json` output carries running=false)."
+value = "no daemon is running: start one with a hook call or `ah-engine serve`; metrics and impact are kept in memory by the running daemon"
+
+[msg.docs_intro]
+doc = "Opening paragraph of the generated reference."
+value = "This reference is generated from the engine's registries and shipped defaults by `ah-engine docs --format md`; do not edit it by hand. A test fails when it differs from the generated text."
+
+[msg.docs_checks_note]
+doc = "Paragraph under the checks heading of the generated reference."
+value = "A rule selects a built-in check with `\"check\": \"<name>\"`; the check's tables, limits and messages are in its defaults file."
+
+[msg.docs_rule_fields]
+doc = "Paragraph listing the fields of a rule in the generated reference."
+value = "Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`, `options`, `action` (deny, warn or context), `message`, `paths`."
+
+[msg.impact_no_routing]
+doc = "Status shown in place of a model-routing saving figure while no routing events are recorded."
+value = "no model-routing events are recorded yet (planned, D52)"
+
+[msg.metrics_quantile_note]
+doc = "Printed with every latency histogram: how to read its percentiles."
+value = "upper bound of the histogram bucket holding that rank"

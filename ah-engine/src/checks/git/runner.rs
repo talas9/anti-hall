@@ -2,8 +2,8 @@
 use super::gitcmd::*;
 use super::payloads::*;
 use super::segments::{git_verdict, scan_command};
+use super::tables::{block, tables};
 use super::tokenize::*;
-use super::util::*;
 use super::Ctx;
 use crate::checks::lit_re;
 use regex::Regex;
@@ -16,16 +16,6 @@ pub enum Repl {
     /// A pattern placeholder.
     R(Regex),
 }
-
-/// Mirrors `git-guard.js` `XARGS_SHORT_REQ`.
-const XARGS_SHORT_REQ: &str = "adEILnPsJRS";
-/// Mirrors `git-guard.js` `XARGS_SHORT_OPT`.
-const XARGS_SHORT_OPT: &str = "eil";
-/// Mirrors `git-guard.js` `XARGS_LONG_REQ`.
-const XARGS_LONG_REQ: &[&str] = &["arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var"];
-/// Mirrors `git-guard.js` `XARGS_LONG_OTHER`.
-const XARGS_LONG_OTHER: &[&str] =
-    &["null", "eof", "replace", "max-lines", "interactive", "no-run-if-empty", "verbose", "exit", "open-tty", "show-limits", "help", "version"];
 
 /// The command `xargs` will run (its tokens after its own options) and the placeholders it defines.
 ///
@@ -50,13 +40,13 @@ pub fn xargs_command_tokens(args: &[Tok]) -> (Vec<Tok>, Vec<Repl>) {
             if w.contains('=') {
                 continue;
             }
-            if XARGS_LONG_OTHER.contains(&name) || XARGS_LONG_REQ.contains(&name) {
-                if XARGS_LONG_REQ.contains(&name) {
+            if tables().xargs_long_other.has(name) || tables().xargs_long_req.has(name) {
+                if tables().xargs_long_req.has(name) {
                     i += 1;
                 }
                 continue;
             }
-            if XARGS_LONG_REQ.iter().any(|o| o.starts_with(name)) && !XARGS_LONG_OTHER.iter().any(|o| o.starts_with(name)) {
+            if tables().xargs_long_req.iter().any(|o| o.starts_with(name)) && !tables().xargs_long_other.iter().any(|o| o.starts_with(name)) {
                 i += 1;
             }
             continue;
@@ -64,14 +54,14 @@ pub fn xargs_command_tokens(args: &[Tok]) -> (Vec<Tok>, Vec<Repl>) {
         let wc: Vec<char> = w.chars().collect();
         for k in 1..wc.len() {
             let ch = wc[k];
-            if XARGS_SHORT_OPT.contains(ch) {
+            if tables().xargs_short_opt.contains(ch) {
                 if ch == 'i' {
                     let rest: String = wc[k + 1..].iter().collect();
                     repls.push(Repl::S(if rest.is_empty() { "{}".into() } else { rest }));
                 }
                 break;
             }
-            if XARGS_SHORT_REQ.contains(ch) {
+            if tables().xargs_short_req.contains(ch) {
                 let val: String = if k < wc.len() - 1 { wc[k + 1..].iter().collect() } else { args.get(i).map(|t| t.text.clone()).unwrap_or_default() };
                 if k == wc.len() - 1 {
                     i += 1;
@@ -101,7 +91,7 @@ pub fn find_exec_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, c
     let args = &ev.args;
     let mut i = 0usize;
     while i < args.len() {
-        if args[i].quoted_only || !matches!(args[i].text.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
+        if args[i].quoted_only || !tables().find_exec_flags.has(args[i].text.as_str()) {
             i += 1;
             continue;
         }
@@ -119,7 +109,7 @@ pub fn find_exec_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, c
 }
 
 fn is_parallel_sep(s: &str) -> bool {
-    matches!(s, ":::" | "::::" | ":::+" | "::::+")
+    tables().parallel_separators.has(s)
 }
 
 /// Verdict for GNU `parallel git ... ::: args`.
@@ -220,11 +210,7 @@ pub fn placeholder_verdict(ev: &Ev, repls: &[Repl]) -> Option<String> {
     if !unknown || !(is_force_push(&ev.args) || is_delete_ref_push(&ev.args)) {
         return None;
     }
-    Some(msg(
-        "a command whose name or git subcommand is an xargs / find / parallel placeholder, with a force or delete flag, is blocked.",
-        "The placeholder is filled from input at run time, so the command may be `git push`.",
-        "run the git command directly with an explicit subcommand and arguments.",
-    ))
+    Some(block("msg_runner_placeholder", &[]))
 }
 
 /// Mirrors `git-guard.js` `forceishAnywhere`.
@@ -248,7 +234,7 @@ fn is_redirect_word(w: &str) -> bool {
 fn is_bare_redirect(w: &str) -> bool {
     let t = w.trim_start_matches(|c: char| c.is_ascii_digit());
     let t = t.strip_suffix('-').unwrap_or(t);
-    matches!(t, "<" | "<<" | "<<<" | ">" | ">>" | "&>" | "&>>" | ">&" | "<&" | "<>" | ">|")
+    tables().redirect_words.has(t)
 }
 
 /// Mirrors `git-guard.js` `dropRedirects`.
@@ -381,25 +367,13 @@ fn runner_verdict_in(ctx: &mut Ctx, cmd_tokens: &[Tok], runner: &str, d: usize, 
     if inner.verb == "git" {
         let (sub, _) = git_subcommand(&inner.args);
         if appends && git_subcommand(&drop_redirects(&inner.args)).0.is_none() && forceish_anywhere(cmd) {
-            return Some(msg(
-                &format!("`{runner} git` with no subcommand, beside a force or delete flag, is blocked."),
-                &format!("{runner} reads the subcommand from its input, so it may be `push` with that flag."),
-                "run the git command directly with an explicit subcommand and arguments.",
-            ));
+            return Some(block("msg_runner_no_subcommand", &[("runner", &runner)]));
         }
         if sub.as_deref() == Some("push") && appends {
-            return Some(msg(
-                &format!("force push via `{runner} git push` is blocked."),
-                &format!("{runner} appends input words to the command, so the full argv (and any hidden --force/-f) cannot be verified statically."),
-                "run `git push` directly with explicit arguments.",
-            ));
+            return Some(block("msg_runner_push", &[("runner", &runner)]));
         }
         if sub.as_deref() == Some("push") && inner.args.iter().any(|t| t.text.contains("{}")) {
-            return Some(msg(
-                "push via `find -exec git push ... {}` is blocked.",
-                "find puts file names where {} stands, so the refspecs (a `+ref` is a force push) cannot be verified statically.",
-                "run `git push` directly with explicit arguments.",
-            ));
+            return Some(block("msg_find_push", &[]));
         }
         return git_verdict(ctx, &inner, d, cmd, hb, cwd, use_jev);
     }

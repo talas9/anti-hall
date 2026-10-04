@@ -1,4 +1,5 @@
 //! Writes into the stable launcher directory (`~/.anti-hall/bin`) and call-literal command extraction.
+use super::tables::{block, tables};
 use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
@@ -10,21 +11,13 @@ use std::sync::OnceLock;
 ///
 /// Mirrors `git-guard.js` `LAUNCHER_BLOCK_MSG`.
 pub fn launcher_block_msg() -> String {
-    msg_o(
-        "a write into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.",
-        "anti-hall installs those files itself (update / doctor --repair); overwriting one would run arbitrary code (such as a force push) under a trusted launcher name.",
-        "leave that directory alone; if the path only appears as prose in a heredoc/brief, write that text with the Write tool instead.",
-        "",
-    )
+    block("msg_launcher", &[])
 }
 
 fn launcher_dir_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| lit_re(r"(?i)\.anti-hall[\\/]+bin(?:[\\/]|$)"))
+    R.get_or_init(|| lit_re(&tables().launcher_dir_pattern))
 }
-
-/// Mirrors `git-guard.js` `COPY_VERBS`.
-const COPY_VERBS: &[&str] = &["cp", "mv", "install", "ln", "rsync", "ditto"];
 
 fn expand_tilde(p: &str, home: &str) -> String {
     if p == "~" {
@@ -98,7 +91,7 @@ fn is_symlink(p: &str) -> Option<bool> {
 
 /// Mirrors `git-guard.js` `resolveDanglingLinkTarget`.
 fn resolve_dangling_link_target(p: &str, hops: usize) -> Option<String> {
-    if hops > 10 {
+    if hops > tables().launcher_hops {
         return None;
     }
     let link = std::fs::read_link(p).ok()?.to_string_lossy().to_string();
@@ -441,7 +434,7 @@ pub fn writes_launcher_dir(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, cd_dir: Optio
     if verb == "tee" || verb == "truncate" {
         targets.extend(operands.iter().cloned());
     }
-    if COPY_VERBS.contains(&verb) {
+    if tables().copy_verbs.has(verb) {
         if let Some(l) = operands.last() {
             targets.push(l.clone());
         }
@@ -487,7 +480,7 @@ pub fn writes_launcher_dir(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, cd_dir: Optio
     if verb == "rm" && !operands.is_empty() {
         root_targets.extend(operands.iter().cloned());
     }
-    if COPY_VERBS.contains(&verb) && operands.len() >= 2 {
+    if tables().copy_verbs.has(verb) && operands.len() >= 2 {
         let dest_norm = normalize_guard_path(ctx, &operands[operands.len() - 1], cd_dir);
         let mut dest_is_dir = false;
         if !dest_norm.is_empty() && dest_norm.starts_with('/') {
@@ -579,7 +572,8 @@ pub fn launcher_backstop(ctx: &mut Ctx, raw_cmd: &str, base_cwd: Option<&str>) -
             let Some(ev) = backstop_verb(&v) else { continue };
             if ev.verb == "cd" || ev.verb == "pushd" {
                 if let Some(dt) = ev.args.iter().find(|t| !t.text.starts_with('-')) {
-                    let too_long = cd_dir.as_ref().is_some_and(|c| c.chars().count() > 4096 || c.split('/').count() > 64);
+                    let too_long =
+                        cd_dir.as_ref().is_some_and(|c| c.chars().count() > tables().cd_max_chars || c.split('/').count() > tables().cd_max_segments);
                     cd_dir = if too_long {
                         None
                     } else {

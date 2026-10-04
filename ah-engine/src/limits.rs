@@ -24,7 +24,7 @@ pub struct Buckets {
 impl Buckets {
     /// A bucket map allowing `rps` per second with bursts up to `burst`.
     pub fn new(rps: f64, burst: f64) -> Buckets {
-        Buckets { map: HashMap::new(), rps, burst: burst.max(1.0), cap: 4096 }
+        Buckets { map: HashMap::new(), rps, burst: burst.max(1.0), cap: crate::defaults::num("daemon.bucket_cap") as usize }
     }
     /// True when `key` may proceed; false when it is over its rate.
     pub fn allow(&mut self, key: &str) -> bool {
@@ -85,8 +85,10 @@ pub fn rss_kb() -> u64 {
             }
         }
     }
-    let out = std::process::Command::new("ps").args(["-o", "rss=", "-p", &std::process::id().to_string()]).output();
-    out.ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(0)
+    let probe = crate::defaults::list("health.rss_probe");
+    let Some((program, args)) = probe.split_first() else { return 0 };
+    let args: Vec<String> = args.iter().map(|a| a.replace("{pid}", &std::process::id().to_string())).collect();
+    std::process::Command::new(program).args(&args).output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(0)
 }
 
 /// Cap the data segment. Returns a status word for `status`: `ok:<mb>`, `off`, or `err:<errno>`.

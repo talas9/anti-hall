@@ -2,6 +2,7 @@
 //! client circuit breaker, crash-loop protection, failure classification and the once-per-session
 //! advisory. Every function is best-effort: a state-dir problem must never break a hook call.
 use crate::config::ClientConfig;
+use crate::defaults;
 use crate::paths;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -10,14 +11,23 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// File name of the event log inside the state directory.
-pub const LOG: &str = "ah-engine.log";
-const LOG_CAP: u64 = 64 * 1024;
+pub fn log_name() -> &'static str {
+    defaults::text("files.log")
+}
+
 /// Event kinds that count toward the crash-loop threshold.
-const CRASHY: &[&str] = &["crash", "panic", "start_fail", "watchdog", "rss"];
+fn crashy() -> Vec<&'static str> {
+    defaults::list("health.crashy_kinds")
+}
 
 /// Milliseconds since the Unix epoch (0 if the clock is before it).
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// A file inside the state directory, named by the `files.<key>` setting.
+fn state_file(key: &str) -> PathBuf {
+    file(defaults::text(&format!("files.{key}")))
 }
 
 fn file(name: &str) -> PathBuf {
@@ -25,7 +35,7 @@ fn file(name: &str) -> PathBuf {
 }
 
 fn clean(s: &str) -> String {
-    s.chars().map(|c| if c == '\n' || c == '\t' || c == '\r' { ' ' } else { c }).take(300).collect()
+    s.chars().map(|c| if c == '\n' || c == '\t' || c == '\r' { ' ' } else { c }).take(defaults::num("health.event_text_max") as usize).collect()
 }
 
 // ---- event log ---------------------------------------------------------------------------------
@@ -45,10 +55,10 @@ pub struct Event {
 
 /// Append `ts<TAB>kind<TAB>code<TAB>detail`. The log is trimmed to its last half when it passes 64 KiB.
 pub fn log_event(kind: &str, code: &str, detail: &str) {
-    let p = file(LOG);
-    if std::fs::metadata(&p).map(|m| m.len() > LOG_CAP).unwrap_or(false) {
+    let p = file(log_name());
+    if std::fs::metadata(&p).map(|m| m.len() > defaults::num("health.log_cap")).unwrap_or(false) {
         if let Ok(t) = std::fs::read_to_string(&p) {
-            let keep: Vec<&str> = t.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect();
+            let keep: Vec<&str> = t.lines().rev().take(defaults::num("health.log_keep_lines") as usize).collect::<Vec<_>>().into_iter().rev().collect();
             let _ = std::fs::write(&p, keep.join("\n") + "\n");
         }
     }
@@ -59,7 +69,7 @@ pub fn log_event(kind: &str, code: &str, detail: &str) {
 
 /// Every line of the event log, oldest first.
 pub fn events() -> Vec<Event> {
-    let Ok(t) = std::fs::read_to_string(file(LOG)) else { return vec![] };
+    let Ok(t) = std::fs::read_to_string(file(log_name())) else { return vec![] };
     t.lines()
         .filter_map(|l| {
             let mut it = l.splitn(4, '\t');
@@ -85,32 +95,44 @@ pub enum Class {
 }
 
 /// Classify an error code (`os<errno>`, `sig<n>`, `unsafe_dir`, `panic`, ...) and give a plain self-fix hint.
-pub fn classify(code: &str) -> (Class, &'static str) {
-    match code {
-        "os28" => (Class::Env, "the disk is full (no space left); free some space, then it recovers by itself"),
-        "os13" | "os1" | "unsafe_dir" => (Class::Env, "the engine's state directory is not writable or not private; fix its ownership (chown to yourself) and permissions (chmod 700 ~/.anti-hall/ah-engine), or set AH_ENGINE_DIR to a directory you own"),
-        "os36" | "os22" | "path_too_long" => (Class::Env, "the socket path is too long; set AH_ENGINE_DIR to a shorter path (e.g. /tmp/ah)"),
-        "os24" | "os23" => (Class::Env, "the process ran out of file descriptors; raise `ulimit -n` or close other programs"),
-        "os12" | "sig9" => (Class::Env, "the OS killed or starved the engine (low memory); close other programs or lower AH_ENGINE_MEM_MB"),
-        _ => (Class::Permanent, ""),
+///
+/// The code groups, their class and the hint message keys come from `health.error_codes` in the defaults; a code
+/// that is not listed is a permanent failure with no hint.
+pub fn classify(code: &str) -> (Class, String) {
+    let table = defaults::raw("health.error_codes").as_array().cloned().unwrap_or_default();
+    for group in &table {
+        let listed = group.get("codes").and_then(|c| c.as_array()).is_some_and(|c| c.iter().any(|x| x.as_str() == Some(code)));
+        if !listed {
+            continue;
+        }
+        let class = if group.get("class").and_then(|c| c.as_str()) == Some("env") { Class::Env } else { Class::Permanent };
+        let key = group.get("hint").and_then(|h| h.as_str()).unwrap_or("");
+        return (class, if key.is_empty() { String::new() } else { hint_text(key) });
     }
+    (Class::Permanent, String::new())
+}
+
+/// A hint message (by its `msg.` key) with its placeholders filled (state dir, env var names).
+pub fn hint_text(key: &str) -> String {
+    let state_dir = format!("~/{}/{}", defaults::text("paths.base_dir"), defaults::text("paths.state_dir"));
+    defaults::render(key, &[("state_dir", &state_dir), ("env_dir", &defaults::env_name("dir")), ("env_mem", &defaults::env_of("daemon.mem_mb").unwrap_or(""))])
 }
 
 /// Record a failure for the advisory: `failure.json` {ts, class, kind, code, hint, reason}.
 pub fn record_failure(kind: &str, code: &str, reason: &str) {
     let (class, hint) = classify(code);
     let v = json!({"ts": now_ms(), "class": if class == Class::Env {"env"} else {"permanent"}, "kind": kind, "code": code, "hint": hint, "reason": reason});
-    let _ = std::fs::write(file("failure.json"), v.to_string());
+    let _ = std::fs::write(state_file("failure"), v.to_string());
 }
 
-fn read_json(name: &str) -> Option<Value> {
-    serde_json::from_str(&std::fs::read_to_string(file(name)).ok()?).ok()
+fn read_json(key: &str) -> Option<Value> {
+    serde_json::from_str(&std::fs::read_to_string(state_file(key)).ok()?).ok()
 }
 
 /// A healthy start clears an environment-class failure (the user fixed it); permanent ones stay.
 pub fn clear_env_failure() {
-    if read_json("failure.json").and_then(|v| v["class"].as_str().map(|c| c == "env")).unwrap_or(false) {
-        let _ = std::fs::remove_file(file("failure.json"));
+    if read_json("failure").and_then(|v| v["class"].as_str().map(|c| c == "env")).unwrap_or(false) {
+        let _ = std::fs::remove_file(state_file("failure"));
     }
 }
 
@@ -125,58 +147,65 @@ pub fn pid_alive(pid: u32) -> bool {
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// The command line of `pid` as the probe command in `health.pid_probe` reports it (empty when it cannot be read).
+fn process_command(pid: u32) -> String {
+    let probe = defaults::list("health.pid_probe");
+    let Some((program, args)) = probe.split_first() else { return String::new() };
+    let args: Vec<String> = args.iter().map(|a| a.replace("{pid}", &pid.to_string())).collect();
+    std::process::Command::new(program).args(&args).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
+}
+
 /// True when `pid` is a live process running `<this binary> serve`.
 pub fn pid_is_engine(pid: u32) -> bool {
     if !pid_alive(pid) {
         return false;
     }
     let exe = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).unwrap_or_default();
-    let out = std::process::Command::new("ps").args(["-p", &pid.to_string(), "-o", "command="]).output();
-    let cmd = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
-    !exe.is_empty() && cmd.contains(&exe) && cmd.contains(" serve")
+    let cmd = process_command(pid);
+    !exe.is_empty() && cmd.contains(&exe) && cmd.contains(&format!(" {}", defaults::text("health.serve_arg")))
 }
 
 /// Record that a daemon is running, so a later start can tell a crash from a clean exit.
 pub fn write_marker() {
-    let _ = std::fs::write(file("daemon.run"), std::process::id().to_string());
+    let _ = std::fs::write(state_file("run_marker"), std::process::id().to_string());
 }
 
 /// Remove the run marker on a clean exit.
 pub fn clear_marker() {
-    let _ = std::fs::remove_file(file("daemon.run"));
+    let _ = std::fs::remove_file(state_file("run_marker"));
 }
 
 /// If a previous daemon left its run marker and is gone (or the pid is no longer an engine), it died
 /// without a clean exit: claim the marker atomically (rename) and log one `crash` event.
 pub fn reap_marker() {
-    let m = file("daemon.run");
+    let m = state_file("run_marker");
     let Ok(t) = std::fs::read_to_string(&m) else { return };
     let pid: u32 = t.trim().parse().unwrap_or(0);
     if pid != std::process::id() && pid_is_engine(pid) {
         return;
     }
-    let claim = file(&format!("daemon.run.reaped.{}", std::process::id()));
+    let claim = file(&format!("{}{}", defaults::text("files.reaped_prefix"), std::process::id()));
     if std::fs::rename(&m, &claim).is_ok() {
         let _ = std::fs::remove_file(&claim);
-        log_event("crash", "unknown", &format!("daemon pid {pid} died without a clean exit"));
+        log_event("crash", "unknown", &defaults::render("msg.log_crash", &[("pid", &pid.to_string())]));
     }
 }
 
 // ---- crash-loop protection (daemon deaths) -------------------------------------------------------
 
-fn halted(name: &str) -> Option<Duration> {
-    let until: u64 = std::fs::read_to_string(file(name)).ok()?.trim().parse().ok()?;
+fn halted(key: &str) -> Option<Duration> {
+    let until: u64 = std::fs::read_to_string(state_file(key)).ok()?.trim().parse().ok()?;
     let now = now_ms();
     (until > now).then(|| Duration::from_millis(until - now))
 }
 
-fn halt(name: &str, cooldown: Duration) {
-    let _ = std::fs::write(file(name), (now_ms() + cooldown.as_millis() as u64).to_string());
+fn halt(key: &str, cooldown: Duration) {
+    let _ = std::fs::write(state_file(key), (now_ms() + cooldown.as_millis() as u64).to_string());
 }
 
 /// Time left in a crash-loop cooldown, if one is active.
 pub fn crashloop_remaining() -> Option<Duration> {
-    halted("crashloop.until")
+    halted("crashloop_until")
 }
 
 /// Evaluate the crash-loop rule before (re)spawning: reap a dead daemon's marker, then if the daemon died
@@ -187,14 +216,14 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
         return true;
     }
     reap_marker();
-    let n = count_recent(CRASHY, cfg.crash_window);
+    let n = count_recent(&crashy(), cfg.crash_window);
     if n < cfg.crash_n {
         return false;
     }
-    halt("crashloop.until", cfg.crash_cooldown);
+    halt("crashloop_until", cfg.crash_cooldown);
     // a crash loop caused by the environment keeps that cause; otherwise it is a permanent failure
-    let env_code = events().into_iter().rev().find(|e| CRASHY.contains(&e.kind.as_str())).filter(|e| classify(&e.code).0 == Class::Env).map(|e| e.code);
-    let reason = format!("daemon died {n} times in {} s", cfg.crash_window.as_secs());
+    let env_code = events().into_iter().rev().find(|e| crashy().contains(&e.kind.as_str())).filter(|e| classify(&e.code).0 == Class::Env).map(|e| e.code);
+    let reason = defaults::render("msg.reason_crashloop", &[("n", &n.to_string()), ("secs", &cfg.crash_window.as_secs().to_string())]);
     let (kind, code) = ("crashloop".to_string(), env_code.unwrap_or_else(|| "crashloop".to_string()));
     log_event("crashloop", &code, &reason);
     record_failure(&kind, &code, &reason);
@@ -205,7 +234,7 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
 
 /// Time left until the client circuit breaker closes, if it is open.
 pub fn breaker_remaining() -> Option<Duration> {
-    halted("breaker.until")
+    halted("breaker_until")
 }
 
 /// Count one engine failure (timeout, bad frame, ...). `n` of them within `window` open the breaker for
@@ -213,8 +242,9 @@ pub fn breaker_remaining() -> Option<Duration> {
 pub fn breaker_failure(cfg: &ClientConfig, why: &str) {
     log_event("client_fail", "engine", why);
     if count_recent(&["client_fail"], cfg.breaker_window) >= cfg.breaker_n && breaker_remaining().is_none() {
-        halt("breaker.until", cfg.breaker_cooldown);
-        let reason = format!("{} engine failures in {} s (last: {why})", cfg.breaker_n, cfg.breaker_window.as_secs());
+        halt("breaker_until", cfg.breaker_cooldown);
+        let reason =
+            defaults::render("msg.reason_breaker", &[("n", &cfg.breaker_n.to_string()), ("secs", &cfg.breaker_window.as_secs().to_string()), ("why", &why)]);
         log_event("breaker_open", "breaker", &reason);
         record_failure("breaker", "breaker", &reason);
     }
@@ -222,30 +252,25 @@ pub fn breaker_failure(cfg: &ClientConfig, why: &str) {
 
 /// Operator reset: clear the breaker, the crash-loop cooldown and the failure record.
 pub fn reset() {
-    for n in ["breaker.until", "crashloop.until", "failure.json"] {
-        let _ = std::fs::remove_file(file(n));
+    for key in ["breaker_until", "crashloop_until", "failure"] {
+        let _ = std::fs::remove_file(state_file(key));
     }
-    log_event("reset", "-", "operator reset");
+    log_event("reset", "-", defaults::text("msg.log_operator_reset"));
 }
 
 // ---- scrubbing and the once-per-session advisory -------------------------------------------------
 
 /// Remove anything that looks like a secret, an email or the home path from `s`.
+///
+/// The patterns are `health.scrub_patterns` in the defaults (regex, replacement), applied in order; the home
+/// directory is replaced by `~` first so a diagnostic never names the user's account.
 pub fn scrub(s: &str) -> String {
-    let pats: [(&str, &str); 7] = [
-        (r"(?i)\b(?:sk|pk|rk|xox[a-z])[-_][A-Za-z0-9_\-]{12,}", "[redacted]"),
-        (r"\bgh[pousr]_[A-Za-z0-9]{20,}", "[redacted]"),
-        (r"\bAKIA[0-9A-Z]{16}\b", "[redacted]"),
-        (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{8,}", "$1 [redacted]"),
-        (r#"(?i)((?:api[_-]?key|token|secret|passw(?:or)?d|authorization)["']?\s*[=:]\s*)["']?[^\s"',}]+"#, "$1[redacted]"),
-        (r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "[email]"),
-        (r"\b[A-Za-z0-9+/_\-]{40,}\b", "[redacted]"),
-    ];
     let mut out = s.to_string();
-    if let Some(h) = std::env::var_os("HOME").map(|h| h.to_string_lossy().to_string()).filter(|h| h.len() > 1) {
+    if let Some(h) = defaults::env_var("home").filter(|h| h.len() > 1) {
         out = out.replace(&h, "~");
     }
-    for (re, rep) in pats {
+    for pair in defaults::raw("health.scrub_patterns").as_array().map(Vec::as_slice).unwrap_or_default() {
+        let (Some(re), Some(rep)) = (pair.get(0).and_then(|v| v.as_str()), pair.get(1).and_then(|v| v.as_str())) else { continue };
         if let Ok(r) = Regex::new(re) {
             out = r.replace_all(&out, rep).to_string();
         }
@@ -255,16 +280,12 @@ pub fn scrub(s: &str) -> String {
 
 /// The secret-scrubbed diagnostic block appended to a permanent-failure advisory.
 pub fn diagnostics(code: &str) -> String {
-    let log: Vec<String> = std::fs::read_to_string(file(LOG))
-        .map(|t| t.lines().rev().take(8).map(String::from).collect::<Vec<_>>().into_iter().rev().collect())
+    let log: Vec<String> = std::fs::read_to_string(file(log_name()))
+        .map(|t| t.lines().rev().take(defaults::num("health.diag_lines") as usize).map(String::from).collect::<Vec<_>>().into_iter().rev().collect())
         .unwrap_or_default();
-    let body = format!(
-        "--- anti-hall engine diagnostics ---\nversion: {}\nos: {} {}\nerror code: {}\nlast log lines (ts, kind, code, detail):\n{}\n---",
-        crate::version(),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        code,
-        log.join("\n")
+    let body = defaults::render(
+        "msg.diagnostics",
+        &[("version", &crate::version()), ("os", &std::env::consts::OS), ("arch", &std::env::consts::ARCH), ("code", &code), ("log", &log.join("\n"))],
     );
     scrub(&body)
 }
@@ -278,11 +299,11 @@ pub fn fnv(s: &str) -> u64 {
 /// then `None` for the rest of that session. Env failures get a self-fix hint; permanent ones get the
 /// issue-filing text and a scrubbed diagnostic block. Nothing is ever filed automatically.
 pub fn advisory(session: &str) -> Option<String> {
-    let f = read_json("failure.json")?;
-    if now_ms().saturating_sub(f["ts"].as_u64().unwrap_or(0)) > 3_600_000 {
+    let f = read_json("failure")?;
+    if now_ms().saturating_sub(f["ts"].as_u64().unwrap_or(0)) > defaults::num("health.advisory_ttl_ms") {
         return None;
     }
-    let dir = file("advised");
+    let dir = state_file("advised_dir");
     let _ = std::fs::create_dir_all(&dir);
     let stamp = dir.join(format!("{:016x}", fnv(&format!("{session}|{}", f["ts"]))));
     std::fs::OpenOptions::new().write(true).create_new(true).open(&stamp).ok()?; // already advised => None
@@ -290,24 +311,20 @@ pub fn advisory(session: &str) -> Option<String> {
     let reason = f["reason"].as_str().unwrap_or("unknown");
     let code = f["code"].as_str().unwrap_or("unknown");
     Some(if f["class"] == "env" {
-        format!("⚠️ anti-hall · engine: {}. Using the built-in checks instead.", f["hint"].as_str().unwrap_or(reason))
+        defaults::render("msg.advisory_env", &[("hint", &f["hint"].as_str().unwrap_or(reason))])
     } else {
-        format!(
-            "⚠️ anti-hall · engine: stopped after repeated failures ({}). Using the built-in checks instead. Please file an issue: https://github.com/talas9/anti-hall/issues/new\n{}",
-            scrub(reason),
-            diagnostics(code)
-        )
+        defaults::render("msg.advisory_permanent", &[("reason", &scrub(reason)), ("diagnostics", &diagnostics(code))])
     })
 }
 
 fn prune_advised(dir: &std::path::Path) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let all: Vec<_> = rd.flatten().collect();
-    if all.len() <= 500 {
+    if all.len() as u64 <= defaults::num("health.advised_cap") {
         return;
     }
     for e in all {
-        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > Duration::from_secs(2 * 86400));
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > defaults::secs("health.advised_expire_s"));
         if old {
             let _ = std::fs::remove_file(e.path());
         }
@@ -319,8 +336,7 @@ fn prune_advised(dir: &std::path::Path) {
 pub fn merge_advisory(event: &str, existing: &str, text: &str) -> Option<String> {
     let mut v: Value = if existing.trim().is_empty() { json!({}) } else { serde_json::from_str(existing).ok()? };
     let obj = v.as_object_mut()?;
-    let ctx_events = ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SubagentStart"];
-    if ctx_events.contains(&event) {
+    if defaults::list("health.context_events").contains(&event) {
         let hso = obj.entry("hookSpecificOutput").or_insert_with(|| json!({}));
         let h = hso.as_object_mut()?;
         h.entry("hookEventName").or_insert_with(|| json!(event));

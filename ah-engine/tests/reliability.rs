@@ -272,7 +272,7 @@ fn breaker_opens_after_repeated_failures_and_skips_engine() {
     let (out, _, dt) = e.hook(DENY_IN, true);
     assert_eq!(out, "NODE-FALLBACK");
     assert!(dt < Duration::from_millis(140), "open breaker goes straight to fallback, took {dt:?}");
-    let st: serde_json::Value = serde_json::from_str(&e.cmd().arg("status").output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap()).unwrap();
+    let st: serde_json::Value = serde_json::from_str(&e.cmd().args(["status", "--json"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap()).unwrap();
     assert!(st["breaker"].as_str().unwrap().starts_with("open"), "{st}");
 }
 
@@ -296,8 +296,8 @@ fn crash_loop_stops_respawning_records_reason_and_advises_once() {
     // fallback output is not JSON here, so the advisory is not merged; use a JSON-printing fallback
     std::fs::write(e.dir.join("fb.sh"), "cat >/dev/null\necho '{}'\n").unwrap();
     let a = e.hook(DENY_IN, true).0;
-    assert!(a.contains("⚠️ anti-hall · engine: stopped after repeated failures (daemon died 3 times"), "{a}");
-    assert!(a.contains("https://github.com/talas9/anti-hall/issues/new") && a.contains("--- anti-hall engine diagnostics ---"), "{a}");
+    assert!(a.contains("⚠️ anti-hall · ah-engine: stopped after repeated failures (daemon died 3 times"), "{a}");
+    assert!(a.contains("https://github.com/talas9/anti-hall/issues/new") && a.contains("--- anti-hall ah-engine diagnostics ---"), "{a}");
     assert!(a.contains("version:") && a.contains("error code:") && a.contains("last log lines"), "{a}");
     let again = e.hook(DENY_IN, true).0;
     assert!(!again.contains("stopped after repeated failures"), "advisory must be once per session: {again}");
@@ -563,6 +563,6 @@ fn status_reports_all_required_fields() {
     assert!(st["rss_kb"].as_u64().unwrap() > 0);
     assert_eq!(st["breaker"], "closed");
     let down = Env::new("stat2", &[("AH_ENGINE_NOSPAWN", "1")]);
-    let o = down.cmd().arg("status").output().unwrap();
+    let o = down.cmd().args(["status", "--json"]).output().unwrap();
     assert!(String::from_utf8_lossy(&o.stdout).contains(r#""running":false"#));
 }

@@ -12,6 +12,7 @@
 //! | Stop             | `{"decision":"block","reason"}` (never if `stop_hook_active`) | `{"systemMessage"}`               |
 //! | SessionStart / SubagentStart | n/a (treated as context)                    | `hookSpecificOutput.additionalContext`  |
 use crate::checks::{self, Verdict};
+use crate::defaults;
 use crate::rules::{Action, Budget, RuleSet, Subject};
 use serde_json::{json, Value};
 
@@ -21,9 +22,26 @@ pub const EXIT2: &str = "AHEXIT 2\n";
 /// Reply body of a built-in check that must defer to the Node hook (the daemon turns it into an ERR frame).
 pub const FALLBACK: &str = "AHFALLBACK";
 
-/// Event name from the payload; `None` when absent.
-fn event_of(p: &Value) -> Option<&str> {
-    ["hook_event_name", "hookEventName", "event"].iter().find_map(|k| p.get(*k).and_then(Value::as_str))
+/// Receives what happened while a payload was evaluated (checks run, rules matched). The daemon passes one that feeds
+/// metrics and the impact ledger; everything else passes [`NoObserver`].
+pub trait Observer {
+    /// A built-in check ran: its name, the id of the rule that named it, what it decided and how long it took.
+    fn check(&self, check: &str, rule_id: &str, verdict: &Verdict, micros: u64);
+    /// A regex rule matched.
+    fn rule(&self, rule_id: &str, action: Action);
+}
+
+/// An observer that ignores everything.
+pub struct NoObserver;
+
+impl Observer for NoObserver {
+    fn check(&self, _: &str, _: &str, _: &Verdict, _: u64) {}
+    fn rule(&self, _: &str, _: Action) {}
+}
+
+/// Event name from the payload (the first of `hook.event_keys` that is a string); `None` when absent.
+pub fn event_of(p: &Value) -> Option<&str> {
+    defaults::list("hook.event_keys").into_iter().find_map(|k| p.get(k).and_then(Value::as_str))
 }
 
 /// Evaluate `raw` (the stdin payload) against `rules`. Returns the JSON to print, or "" for "say nothing".
@@ -37,10 +55,15 @@ pub fn respond(raw: &str, rules: &RuleSet) -> String {
 
 /// `respond` on an already-parsed payload, abandoning the evaluation when `over()` turns true.
 pub fn respond_value(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<String, Budget> {
-    Ok(respond_inner(p, rules, over)?.unwrap_or_default())
+    respond_observed(p, rules, over, &NoObserver)
 }
 
-fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<Option<String>, Budget> {
+/// `respond_value` that reports checks and rule matches to `obs`.
+pub fn respond_observed(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn Observer) -> Result<String, Budget> {
+    Ok(respond_inner(p, rules, over, obs)?.unwrap_or_default())
+}
+
+fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn Observer) -> Result<Option<String>, Budget> {
     let r = |s: String| Ok(Some(s));
     let none = Ok(None);
     let Some(event) = event_of(p) else { return none };
@@ -60,7 +83,9 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<
         if !rule.in_scope(&subject) {
             continue;
         }
+        let started = std::time::Instant::now();
         if let Some(o) = builtin(rule, &subject) {
+            obs.check(rule.check.as_deref().unwrap_or(""), &rule.id, &o, started.elapsed().as_micros() as u64);
             match o {
                 Verdict::Block(m) => return r(format!("{EXIT2}{m}\n")),
                 Verdict::Advisory(j) => advisory = Some(j),
@@ -73,11 +98,14 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<
     if hits.is_empty() {
         return Ok(advisory);
     }
+    for h in &hits {
+        obs.rule(&h.id, h.action);
+    }
     let denies: Vec<&str> = hits.iter().filter(|r| r.action == Action::Deny).map(|r| r.message.as_str()).collect();
     let notes: Vec<String> = hits
         .iter()
         .filter(|r| r.action != Action::Deny)
-        .map(|r| if r.action == Action::Warn { format!("anti-hall warning: {}", r.message) } else { r.message.clone() })
+        .map(|r| if r.action == Action::Warn { format!("{}{}", defaults::text("hook.warn_prefix"), r.message) } else { r.message.clone() })
         .collect();
     let deny_text = denies.join("\n");
     let note_text = notes.join("\n");

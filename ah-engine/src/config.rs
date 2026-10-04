@@ -1,10 +1,6 @@
 //! Tunables, all overridable by `AH_ENGINE_*` env vars (tests shrink them to exercise limits fast).
 use std::time::Duration;
 
-fn num(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
-}
-
 /// Daemon-side limits.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -42,38 +38,42 @@ pub struct Config {
     pub project_rps: f64,
     /// Token-bucket burst per project.
     pub project_burst: f64,
-    /// Test-only control verbs (`CTL sleep`, `CTL stall`); never on unless this env is set.
+    /// Idle time after which the daemon exits; `None` keeps it resident (D7).
+    pub idle_exit: Option<Duration>,
+    /// Test-only control verbs (`CTL sleep`, `CTL stall`); never on unless the `test_hooks` env var is set.
     pub test_hooks: bool,
 }
 
 impl Config {
-    /// Read the limits, applying any `AH_ENGINE_*` overrides.
+    /// Read the limits from the shipped defaults, applying any `AH_ENGINE_*` overrides.
     pub fn from_env() -> Config {
+        use crate::defaults::{millis, num};
         Config {
-            workers: num("AH_ENGINE_WORKERS", 4).clamp(1, 32) as usize,
-            queue: num("AH_ENGINE_QUEUE", 16).clamp(1, 1024) as usize,
-            max_request: num("AH_ENGINE_MAX_REQUEST", MAX_REQUEST),
-            read_deadline: Duration::from_millis(num("AH_ENGINE_READ_MS", 1000)),
-            write_deadline: Duration::from_millis(num("AH_ENGINE_WRITE_MS", 1000)),
-            eval_budget_us: num("AH_ENGINE_EVAL_BUDGET_US", 200_000),
-            mem_mb: num("AH_ENGINE_MEM_MB", 64),
-            rss_cap_kb: num("AH_ENGINE_RSS_CAP_KB", 48 * 1024),
-            rss_check: Duration::from_millis(num("AH_ENGINE_RSS_CHECK_MS", 10_000)),
-            stuck: Duration::from_millis(num("AH_ENGINE_STUCK_MS", 8000)),
-            stall: Duration::from_millis(num("AH_ENGINE_STALL_MS", 5000)),
-            watchdog_tick: Duration::from_millis(num("AH_ENGINE_WATCHDOG_TICK_MS", 250)),
-            nice: num("AH_ENGINE_NICE", 5).min(19) as i32,
-            session_rps: num("AH_ENGINE_SESSION_RPS", 50) as f64,
-            session_burst: num("AH_ENGINE_SESSION_BURST", 200) as f64,
-            project_rps: num("AH_ENGINE_PROJECT_RPS", 100) as f64,
-            project_burst: num("AH_ENGINE_PROJECT_BURST", 400) as f64,
-            test_hooks: std::env::var_os("AH_ENGINE_TEST_HOOKS").is_some(),
+            workers: num("daemon.workers") as usize,
+            queue: num("daemon.queue") as usize,
+            max_request: num("daemon.max_request"),
+            read_deadline: millis("daemon.read_ms"),
+            write_deadline: millis("daemon.write_ms"),
+            eval_budget_us: num("daemon.eval_budget_us"),
+            mem_mb: num("daemon.mem_mb"),
+            rss_cap_kb: num("daemon.rss_cap_kb"),
+            rss_check: millis("daemon.rss_check_ms"),
+            stuck: millis("daemon.stuck_ms"),
+            stall: millis("daemon.stall_ms"),
+            watchdog_tick: millis("daemon.watchdog_tick_ms"),
+            nice: num("daemon.nice") as i32,
+            session_rps: num("daemon.session_rps") as f64,
+            session_burst: num("daemon.session_burst") as f64,
+            project_rps: num("daemon.project_rps") as f64,
+            project_burst: num("daemon.project_burst") as f64,
+            idle_exit: match num("daemon.idle_exit_min") {
+                0 => None,
+                m => Some(Duration::from_secs(m * 60)),
+            },
+            test_hooks: crate::defaults::env_var("test_hooks").is_some(),
         }
     }
 }
-
-/// Request size cap shared by client and daemon (the client sends nothing larger; it falls back instead).
-pub const MAX_REQUEST: u64 = 1024 * 1024;
 
 /// Client-side limits.
 #[derive(Debug, Clone)]
@@ -97,18 +97,18 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
-    /// Read the client limits, applying any `AH_ENGINE_*` overrides.
+    /// Read the client limits from the shipped defaults, applying any `AH_ENGINE_*` overrides.
     pub fn from_env() -> ClientConfig {
-        let s = |n: &str, d: u64| Duration::from_secs(num(n, d));
+        use crate::defaults::{millis, num, secs};
         ClientConfig {
-            deadline: Duration::from_millis(num("AH_ENGINE_DEADLINE_MS", 2000)),
-            breaker_n: num("AH_ENGINE_BREAKER_N", 5).max(1) as usize,
-            breaker_window: s("AH_ENGINE_BREAKER_WINDOW_S", 60),
-            breaker_cooldown: s("AH_ENGINE_BREAKER_COOLDOWN_S", 60),
-            crash_n: num("AH_ENGINE_CRASH_N", 4).max(1) as usize,
-            crash_window: s("AH_ENGINE_CRASH_WINDOW_S", 600),
-            crash_cooldown: s("AH_ENGINE_CRASH_COOLDOWN_S", 1800),
-            fallback_timeout: Duration::from_millis(num("AH_ENGINE_FALLBACK_MS", 8000)),
+            deadline: millis("client.deadline_ms"),
+            breaker_n: num("client.breaker_n") as usize,
+            breaker_window: secs("client.breaker_window_s"),
+            breaker_cooldown: secs("client.breaker_cooldown_s"),
+            crash_n: num("client.crash_n") as usize,
+            crash_window: secs("client.crash_window_s"),
+            crash_cooldown: secs("client.crash_cooldown_s"),
+            fallback_timeout: millis("client.fallback_ms"),
         }
     }
 }

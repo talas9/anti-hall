@@ -5,6 +5,7 @@ use super::heredoc::mask_data_heredocs;
 use super::launcher::*;
 use super::payloads::*;
 use super::runner::*;
+use super::tables::{argv_template, block, plain, tables};
 use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
@@ -12,7 +13,6 @@ use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 fn is_line_term(c: char) -> bool {
     c == '\n' || c == '\r' || c == '\u{2028}' || c == '\u{2029}'
@@ -123,7 +123,8 @@ fn is_handover_path(p: &str) -> bool {
     while let Some(r) = norm.strip_prefix("./") {
         norm = r.to_string();
     }
-    if norm.starts_with(".anti-hall/handovers/") || norm.contains("/.anti-hall/handovers/") {
+    let hd = tables().handover_dir_prefix.as_str();
+    if norm.starts_with(hd) || norm.contains(&format!("/{hd}")) {
         return true;
     }
     !norm.contains('/') && root.is_match(&norm)
@@ -144,9 +145,10 @@ fn handover_query(ctx: &mut Ctx, dir: &str, args: &[String], status_parse: bool)
         return Q::Exhausted;
     }
     ctx.handover_query_budget -= 1;
-    let mut argv: Vec<String> = vec!["-C".into(), dir.to_string(), "-c".into(), "diff.relative=false".into()];
+    let mut argv: Vec<String> = vec!["-C".into(), dir.to_string()];
+    argv.extend(argv_template("argv_diff_relative", ""));
     argv.extend(args.iter().cloned());
-    let out = run_capture("git", &argv, None, &HashMap::new(), Duration::from_millis(3000));
+    let out = run_capture(&tables().git_binary, &argv, None, &HashMap::new(), tables().handover_git_timeout);
     let parsed = out.map(|s| {
         let names: Vec<String> = s.split('\0').filter(|x| !x.is_empty()).map(|x| x.to_string()).collect();
         if status_parse {
@@ -199,23 +201,6 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
         }
         break;
     }
-    const VALUE_OPTS: &[&str] = &[
-        "-m",
-        "-F",
-        "-C",
-        "-c",
-        "-t",
-        "--message",
-        "--file",
-        "--author",
-        "--date",
-        "--template",
-        "--reuse-message",
-        "--reedit-message",
-        "--fixup",
-        "--squash",
-        "--cleanup",
-    ];
     let mut all = false;
     let mut specs: Vec<String> = Vec::new();
     let mut after_dd = false;
@@ -241,7 +226,7 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
             return None;
         }
         if t.starts_with("--") {
-            if VALUE_OPTS.contains(&t) {
+            if tables().add_commit_value_opts.has(t) {
                 i += 1;
             }
             i += 1;
@@ -265,7 +250,7 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
         i += 1;
     }
     let diff = |ctx: &mut Ctx, dir: &str, extra: &[String]| -> Q {
-        let mut a: Vec<String> = ["diff", "--name-only", "--diff-filter=d", "-z"].iter().map(|s| s.to_string()).collect();
+        let mut a: Vec<String> = argv_template("argv_diff_names", "");
         a.extend(extra.iter().cloned());
         handover_query(ctx, dir, &a, false)
     };
@@ -299,7 +284,7 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
                 "-z",
                 "--untracked-files=all",
                 "--",
-                ":(top,glob)**/.anti-hall/handovers/**",
+                &format!(":(top,glob)**/{}**", tables().handover_dir_prefix),
                 ":(top,glob)HANDOVER.md",
                 ":(top,glob)HANDOVER-*.md",
                 ":(top,glob)CONTINUE-HERE.md",
@@ -334,7 +319,9 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
     if hits.is_empty() {
         return None;
     }
-    let gd = run_capture("git", &["-C".into(), dir.clone(), "rev-parse".into(), "--git-dir".into()], None, &HashMap::new(), Duration::from_millis(3000));
+    let mut gd_argv: Vec<String> = vec!["-C".into(), dir.clone()];
+    gd_argv.extend(argv_template("argv_git_dir", ""));
+    let gd = run_capture(&tables().git_binary, &gd_argv, None, &HashMap::new(), tables().handover_git_timeout);
     let gd = gd?;
     if js_trim(&gd).is_empty() {
         return None;
@@ -364,12 +351,8 @@ fn handover_commit_verdict(ctx: &mut Ctx, ev: &Ev, last_cd: Option<&str>) -> Opt
     }
     let hits = committed_handovers(ctx, ev, last_cd)?;
     let shown = hits.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
-    Some(msg_o(
-        &format!("this commit includes a session handover ({}{}) and is blocked.", shown, if hits.len() > 3 { ", ..." } else { "" }),
-        "Handovers are local session state and are never committed.",
-        "unstage a NEW one with `git restore --staged <path>`; if ALREADY tracked, `git rm --cached <path>` and commit that removal (allowed).",
-        &format!("{} (only if the owner explicitly asked to commit this file)", ctx.skip_cmd("git-guard")),
-    ))
+    let shown = format!("{shown}{}", if hits.len() > 3 { tables().more_marker.as_str() } else { "" });
+    Some(block("msg_handover", &[("shown", &shown), ("skip", &ctx.skip_cmd(&tables().guard_name))]))
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -607,50 +590,29 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
     }
     if sub == "push" {
         if is_force_push(&rest) {
-            return Some(msg(
-                "force push is blocked.",
-                "Rewriting published history is a deliberate human action.",
-                "do it manually with explicit owner confirmation, never from an automated push.",
-            ));
+            return Some(block("msg_force_push", &[]));
         }
         if is_delete_ref_push(&rest) {
-            return Some(msg_o(
-                "remote ref deletion (push --delete / -d / --prune / an empty-source :<ref> refspec) is blocked.",
-                "Deleting published branches or tags needs explicit owner confirmation.",
-                "leave the ref.",
-                &format!("{} (only if the owner asked for this exact deletion)", ctx.skip_cmd("git-guard")),
-            ));
+            return Some(block("msg_delete_ref", &[("skip", &ctx.skip_cmd(&tables().guard_name))]));
         }
         if has_cmd_subst_arg(&rest) {
             static HD: OnceLock<Regex> = OnceLock::new();
             let hd = HD.get_or_init(|| lit_re(r#"<<-?[ \t]*['"\\]?[A-Za-z_]"#));
-            let mut instead = String::from("run the push with literal arguments (no dollar-paren or backticks). If this is message text in printf/echo written to a file, write that file with the Write tool instead.");
+            let mut m = block("msg_push_cmdsubst", &[]);
             if hd.is_match(&ctx.raw_cmd) {
-                instead.push_str(" Heredoc bodies are scanned as shell even when a script only reads them as text: write the script or note with the Write tool, then run or reference the file.");
+                m.push_str(plain("push_cmdsubst_heredoc_note"));
             }
-            return Some(msg(
-                "`git push` with an argument produced by command substitution / backticks is blocked.",
-                "It can smuggle a --force flag past static inspection.",
-                &instead,
-            ));
+            return Some(m);
         }
     }
-    if matches!(sub.as_str(), "commit" | "merge" | "commit-tree" | "interpret-trailers" | "tag") {
+    if tables().backstop_commit_subs.has(&sub) {
         if has_self_credit_trailer_key_remap(args) {
-            return Some(msg(
-                "a `-c trailer.*.key=` remap to an AI self-credit key (Co-Authored-By / Generated-with) is blocked.",
-                "Commits carry no AI co-author credit.",
-                "remove the trailer remap.",
-            ));
+            return Some(block("msg_trailer_remap", &[]));
         }
         for m in inline_commit_messages(&rest) {
             let n = norm_escapes(&m);
             if credit_regexes(&m) || credit_regexes(&n) {
-                return Some(msg(
-                    "a commit message with an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") is blocked.",
-                    "Commits carry no AI co-author credit.",
-                    "re-run the commit without that trailer.",
-                ));
+                return Some(block("msg_commit_credit", &[]));
             }
         }
         if _use_jev && inline_commit_messages(&rest).iter().any(|m| !m.is_empty()) {
@@ -675,23 +637,15 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
             }
             let Some(text) = text else { continue };
             if cached_credit.unwrap_or_else(|| credit_regexes(&text)) {
-                return Some(msg(
-                    "a commit message (via `-F`/`--file`, from a heredoc body or file) with an AI/assistant self-credit trailer is blocked.",
-                    "Commits carry no AI co-author credit.",
-                    "re-run the commit without that trailer.",
-                ));
+                return Some(block("msg_commit_file_credit", &[]));
             }
             if _use_jev {
                 ctx.jev_wanted = true;
             }
         }
     }
-    if COMMIT_CREATING.contains(&sub.as_str()) && raw_has_credit(ctx) {
-        return Some(msg(
-            &format!("a command that creates a commit (git {sub}) and carries an AI/assistant self-credit trailer line is blocked."),
-            "Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).",
-            "remove the trailer line and re-run.",
-        ));
+    if tables().commit_creating.has(&sub) && raw_has_credit(ctx) {
+        return Some(block("msg_creating_credit", &[("sub", &sub)]));
     }
     None
 }

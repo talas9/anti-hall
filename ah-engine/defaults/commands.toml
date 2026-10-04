@@ -1,0 +1,70 @@
+# ah-engine shipped command registry data (D50, D53). Format: see the header of engine.toml.
+#
+# Every command the binary understands has an entry here and a handler in code; a test keeps the two in step.
+# `read_only` marks a command that never changes state (an agent can run it freely; command-guard will
+# allowlist exactly these); `status` is `implemented` or `planned (D-n)` (a planned command is registered so the
+# generated reference lists it, and running it says so). Every command accepts `--json`.
+
+[cmd.serve]
+doc = "Run the resident daemon in the foreground (the client starts it detached when needed)."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.hook]
+doc = "The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback."
+value = { args = "[--fallback <hook.js>]", read_only = false, status = "implemented" }
+
+[cmd.status]
+doc = "Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did."
+value = { args = "", read_only = true, status = "implemented" }
+
+[cmd.metrics]
+doc = "Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check."
+value = { args = "[--check <name>]", read_only = true, status = "implemented" }
+
+[cmd.impact]
+doc = "Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates."
+value = { args = "[--kind <kind>] [--project <hash>]", read_only = true, status = "implemented" }
+
+[cmd.docs]
+doc = "Print the generated reference: every command, setting, metric, impact kind, check and error code."
+value = { args = "[--format md]", read_only = true, status = "implemented" }
+
+[cmd.check]
+doc = "Run one built-in check in-process on a hook payload from stdin (used by the parity harness)."
+value = { args = "<name>", read_only = true, status = "implemented" }
+
+[cmd.version]
+doc = "Print the version this build reports."
+value = { args = "", read_only = true, status = "implemented" }
+
+[cmd.ctl]
+doc = "Send a control verb to the daemon: ping, reload, stop or status."
+value = { args = "<ping|reload|stop|status>", read_only = false, status = "implemented" }
+
+[cmd.stop]
+doc = "Ask the daemon to drain and exit."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.reset]
+doc = "Clear the client breaker, the crash-loop stop and the failure record."
+value = { args = "", read_only = false, status = "implemented" }
+
+[cmd.proj]
+doc = "Per-project in-memory state: put, take, len, set, get (the partition is derived from the cwd)."
+value = { args = "<cwd> <put|take|len|set|get> [args]", read_only = false, status = "implemented" }
+
+[cmd.schedule]
+doc = "List, add and remove scheduled jobs."
+value = { args = "<list|add|remove>", read_only = false, status = "planned (D33)" }
+
+[cmd.config]
+doc = "Show config versions, roll back, export."
+value = { args = "<versions|rollback|export>", read_only = false, status = "planned (D18)" }
+
+[cmd.backup]
+doc = "Make a consistent online snapshot of the state databases, scrubbed."
+value = { args = "", read_only = false, status = "planned (D27)" }
+
+[cmd.restore]
+doc = "Restore a snapshot, keeping the current state first."
+value = { args = "<snapshot>", read_only = false, status = "planned (D27)" }

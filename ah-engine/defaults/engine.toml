@@ -1,0 +1,530 @@
+# ah-engine shipped defaults: process, paths, limits, timeouts, protocol options and health policy (D17).
+#
+# Format. Every setting is a table `[section.name]` with:
+#   value  the default (number, string, list or table)
+#   doc    what it is, in one sentence (a test fails if it is missing)
+#   env    optional: the environment variable that overrides a numeric value for one process
+#   min / max  optional clamps for a numeric value
+# Code reads these through `ah_engine::defaults`; nothing here is repeated in Rust. The same file is
+# embedded in the binary with `include_str!`, so a build always carries its own defaults.
+
+# ---- environment variable names -------------------------------------------------------------------------
+
+[env.dir]
+doc = "Overrides the state directory (default: base_dir/state_dir under the home directory)."
+value = "AH_ENGINE_DIR"
+
+[env.rules]
+doc = "Overrides the rules file path."
+value = "AH_ENGINE_RULES"
+
+[env.version]
+doc = "Overrides the version this build reports and compares for handoff (the plugin version in production, arbitrary in tests)."
+value = "AH_ENGINE_VERSION"
+
+[env.fallback]
+doc = "Path of the Node hook the client runs when the engine cannot answer (the `--fallback` argument wins)."
+value = "AH_ENGINE_FALLBACK"
+
+[env.node]
+doc = "The Node binary used to run the fallback hook."
+value = "AH_ENGINE_NODE"
+
+[env.nospawn]
+doc = "When set, the client never starts a daemon (tests, and hosts that manage the daemon themselves)."
+value = "AH_ENGINE_NOSPAWN"
+
+[env.test_hooks]
+doc = "When set, the daemon accepts the test-only control verbs (sleep, stall, panic). Never set in production."
+value = "AH_ENGINE_TEST_HOOKS"
+
+[env.plugin_root]
+doc = "Plugin install directory, used by built-in checks that build override commands (a rule's `options.plugin_root` wins)."
+value = "AH_ENGINE_PLUGIN_ROOT"
+
+[env.home]
+doc = "Home directory variable."
+value = "HOME"
+
+[env.home_alt]
+doc = "Fallback home directory variable (used by the git check when the home variable is unset)."
+value = "USERPROFILE"
+
+[env.tmpdir]
+doc = "Temporary directory variable, used for the short-path socket fallback."
+value = "TMPDIR"
+
+# ---- paths and file names -------------------------------------------------------------------------------
+
+[paths.base_dir]
+doc = "Directory under the home directory that holds all anti-hall state."
+value = ".anti-hall"
+
+[paths.state_dir]
+doc = "Engine state directory name inside base_dir (D53)."
+value = "ah-engine"
+
+[paths.socket_file]
+doc = "Socket file name inside the state directory."
+value = "e.sock"
+
+[paths.lock_suffix]
+doc = "Suffix appended to the socket path for the singleton lock file."
+value = ".lock"
+
+[paths.rules_file]
+doc = "Rules file name inside the state directory."
+value = "rules.json"
+
+[paths.fallback_tmp]
+doc = "Last-resort base for the short-path socket when TMPDIR is unset or too long."
+value = "/tmp"
+
+[paths.private_dir_prefix]
+doc = "Prefix of the private per-user directory that holds a short-path socket (the uid is appended)."
+value = "anti-hall-"
+
+[paths.short_socket_ext]
+doc = "Extension of a short-path socket file (its name is a stable hash of the state directory)."
+value = ".sock"
+
+[paths.socket_max_len]
+doc = "Longest socket path used as is; unix socket paths are capped at 104 bytes on macOS (108 on Linux), so this leaves headroom."
+value = 100
+unit = "bytes"
+
+[files.log]
+doc = "Event log file name (state directory)."
+value = "ah-engine.log"
+
+[files.failure]
+doc = "Last recorded failure, for the once-per-session advisory."
+value = "failure.json"
+
+[files.breaker_until]
+doc = "Marker holding the time (ms since the epoch) until which the client breaker stays open."
+value = "breaker.until"
+
+[files.crashloop_until]
+doc = "Marker holding the time until which respawning is stopped after a crash loop."
+value = "crashloop.until"
+
+[files.run_marker]
+doc = "Written while a daemon runs; a leftover one with a dead pid is logged as one crash."
+value = "daemon.run"
+
+[files.reaped_prefix]
+doc = "Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended)."
+value = "daemon.run.reaped."
+
+[files.starts]
+doc = "Counter of daemon starts, surfaced as `starts` and `restarts` in status."
+value = "starts"
+
+[files.advised_dir]
+doc = "Directory with one empty file per session that has already seen the failure advisory."
+value = "advised"
+
+# ---- daemon limits --------------------------------------------------------------------------------------
+
+[daemon.workers]
+doc = "Worker threads evaluating requests."
+value = 4
+env = "AH_ENGINE_WORKERS"
+min = 1
+max = 32
+
+[daemon.queue]
+doc = "Connections that may wait for a worker; beyond this the daemon answers BUSY and the client falls back."
+value = 16
+env = "AH_ENGINE_QUEUE"
+min = 1
+max = 1024
+
+[daemon.max_request]
+doc = "Largest request the daemon reads; the client sends nothing larger (it falls back instead)."
+value = 1048576
+env = "AH_ENGINE_MAX_REQUEST"
+unit = "bytes"
+
+[daemon.read_ms]
+doc = "Total time a client has to deliver its request."
+value = 1000
+env = "AH_ENGINE_READ_MS"
+unit = "ms"
+
+[daemon.write_ms]
+doc = "Time allowed to write a reply."
+value = 1000
+env = "AH_ENGINE_WRITE_MS"
+unit = "ms"
+
+[daemon.eval_budget_us]
+doc = "Per-request thread CPU budget for rule evaluation; 0 turns the budget off."
+value = 200000
+env = "AH_ENGINE_EVAL_BUDGET_US"
+unit = "us"
+
+[daemon.mem_mb]
+doc = "Data-segment limit applied with setrlimit (macOS accepts it but may not enforce it, so the RSS cap is the real guard there); 0 = none."
+value = 64
+env = "AH_ENGINE_MEM_MB"
+unit = "MB"
+
+[daemon.rss_cap_kb]
+doc = "Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none."
+value = 49152
+env = "AH_ENGINE_RSS_CAP_KB"
+unit = "KB"
+
+[daemon.rss_check_ms]
+doc = "How often the watchdog samples resident memory."
+value = 10000
+env = "AH_ENGINE_RSS_CHECK_MS"
+unit = "ms"
+
+[daemon.stuck_ms]
+doc = "A worker busy on one request for longer than this trips a drain and exit."
+value = 8000
+env = "AH_ENGINE_STUCK_MS"
+unit = "ms"
+
+[daemon.stall_ms]
+doc = "An accept loop silent for longer than this trips a drain and exit."
+value = 5000
+env = "AH_ENGINE_STALL_MS"
+unit = "ms"
+
+[daemon.watchdog_tick_ms]
+doc = "How often the watchdog thread wakes to look at heartbeats."
+value = 250
+env = "AH_ENGINE_WATCHDOG_TICK_MS"
+unit = "ms"
+
+[daemon.nice]
+doc = "`nice` increment applied to the daemon process."
+value = 5
+env = "AH_ENGINE_NICE"
+min = 0
+max = 19
+
+[daemon.session_rps]
+doc = "Sustained requests per second allowed per session; 0 = unlimited."
+value = 50
+env = "AH_ENGINE_SESSION_RPS"
+
+[daemon.session_burst]
+doc = "Token-bucket burst per session."
+value = 200
+env = "AH_ENGINE_SESSION_BURST"
+
+[daemon.project_rps]
+doc = "Sustained requests per second allowed per project; 0 = unlimited."
+value = 100
+env = "AH_ENGINE_PROJECT_RPS"
+
+[daemon.project_burst]
+doc = "Token-bucket burst per project."
+value = 400
+env = "AH_ENGINE_PROJECT_BURST"
+
+[daemon.bucket_cap]
+doc = "Most distinct keys one token-bucket map tracks; idle full buckets are dropped first and unknown keys are refused under a key flood."
+value = 4096
+
+[daemon.lock_wait_ms]
+doc = "How long a starting daemon waits for an outgoing (version-handoff) daemon to release the singleton lock."
+value = 1500
+unit = "ms"
+
+[daemon.lock_poll_ms]
+doc = "Poll interval while waiting for the singleton lock."
+value = 10
+unit = "ms"
+
+[daemon.drain_grace_ms]
+doc = "After a drain starts, a worker or loop that has not finished in this long is cut off."
+value = 1000
+unit = "ms"
+
+[daemon.accept_poll_ms]
+doc = "Accept-loop poll interval while serving."
+value = 200
+unit = "ms"
+
+[daemon.drain_poll_ms]
+doc = "Accept-loop poll interval while draining."
+value = 20
+unit = "ms"
+
+[daemon.rules_check_ms]
+doc = "How often the daemon checks the rules file (and SIGHUP) for a change."
+value = 200
+unit = "ms"
+
+[daemon.worker_wait_ms]
+doc = "How long an idle worker sleeps on the queue before looking again."
+value = 200
+unit = "ms"
+
+[daemon.read_poll_ms]
+doc = "Socket read timeout slice while collecting a request (the total is read_ms)."
+value = 100
+unit = "ms"
+
+[daemon.busy_write_ms]
+doc = "Write timeout for the BUSY reply sent from the accept loop."
+value = 100
+unit = "ms"
+
+[daemon.idle_exit_min]
+doc = "Minutes without any request after which the daemon exits; 0 keeps it resident (default, D7: scheduler and mailbox must keep running)."
+value = 0
+env = "AH_ENGINE_IDLE_EXIT_MIN"
+unit = "min"
+
+[daemon.idle_check_ms]
+doc = "How often the watchdog compares the last request time with idle_exit_min."
+value = 1000
+unit = "ms"
+
+[daemon.forced_exit_code]
+doc = "Exit status of a forced drain exit (sysexits EX_TEMPFAIL, 75); the next client call starts a fresh daemon."
+value = 75
+
+[daemon.start_fail_exit_code]
+doc = "Exit status when the daemon cannot start (sysexits EX_CONFIG, 78)."
+value = 78
+
+# ---- client limits --------------------------------------------------------------------------------------
+
+[client.deadline_ms]
+doc = "Overall deadline for one engine exchange (connect, write, read); a hard watchdog thread enforces it."
+value = 2000
+env = "AH_ENGINE_DEADLINE_MS"
+unit = "ms"
+
+[client.deadline_slack_ms]
+doc = "Extra wait for the exchange thread to report after the deadline before the client declares a timeout."
+value = 50
+unit = "ms"
+
+[client.breaker_n]
+doc = "Engine failures within the window that open the breaker (the client then skips the engine)."
+value = 5
+env = "AH_ENGINE_BREAKER_N"
+min = 1
+
+[client.breaker_window_s]
+doc = "Window in which breaker failures are counted."
+value = 60
+env = "AH_ENGINE_BREAKER_WINDOW_S"
+unit = "s"
+
+[client.breaker_cooldown_s]
+doc = "How long the breaker stays open once tripped."
+value = 60
+env = "AH_ENGINE_BREAKER_COOLDOWN_S"
+unit = "s"
+
+[client.crash_n]
+doc = "Daemon deaths within the window that stop respawning."
+value = 4
+env = "AH_ENGINE_CRASH_N"
+min = 1
+
+[client.crash_window_s]
+doc = "Window in which daemon deaths are counted."
+value = 600
+env = "AH_ENGINE_CRASH_WINDOW_S"
+unit = "s"
+
+[client.crash_cooldown_s]
+doc = "How long respawning stays stopped after a crash loop."
+value = 1800
+env = "AH_ENGINE_CRASH_COOLDOWN_S"
+unit = "s"
+
+[client.fallback_ms]
+doc = "The Node fallback hook is killed after this long (then plain allow, since it is unavailable)."
+value = 8000
+env = "AH_ENGINE_FALLBACK_MS"
+unit = "ms"
+
+[client.cold_start_wait_ms]
+doc = "How long a client with no fallback waits for a cold-started daemon before giving up (prints nothing)."
+value = 40
+unit = "ms"
+
+[client.cold_start_poll_ms]
+doc = "Poll interval while waiting for a cold-started daemon."
+value = 1
+unit = "ms"
+
+[client.max_reply]
+doc = "Largest reply the client reads."
+value = 2097152
+unit = "bytes"
+
+[client.max_stdin]
+doc = "Largest hook payload the client reads from stdin."
+value = 8388608
+unit = "bytes"
+
+[client.ctl_timeout_ms]
+doc = "Deadline for a control exchange (ping, status, reload, stop, project ops)."
+value = 1500
+unit = "ms"
+
+[client.fallback_poll_ms]
+doc = "Poll interval while the Node fallback runs."
+value = 2
+unit = "ms"
+
+[client.fallback_read_ms]
+doc = "Time allowed to collect the fallback's stdout after it exits."
+value = 500
+unit = "ms"
+
+# ---- project store --------------------------------------------------------------------------------------
+
+[store.max_projects]
+doc = "Most project partitions held in memory."
+value = 256
+
+[store.mailbox_cap]
+doc = "Most mailbox entries per project."
+value = 64
+
+[store.kv_cap]
+doc = "Most key-value pairs per project."
+value = 64
+
+[store.value_cap]
+doc = "Largest stored value."
+value = 65536
+unit = "bytes"
+
+[store.key_cache_cap]
+doc = "Most cwd-to-project-key mappings cached (cleared when full) so the hot path does not stat per request."
+value = 1024
+
+# ---- health and failure policy --------------------------------------------------------------------------
+
+[health.log_cap]
+doc = "Event log size above which it is trimmed to its last log_keep_lines lines."
+value = 65536
+unit = "bytes"
+
+[health.log_keep_lines]
+doc = "Lines kept when the event log is trimmed."
+value = 200
+
+[health.event_text_max]
+doc = "Longest kind, code or detail written to one log line (newlines and tabs become spaces)."
+value = 300
+unit = "chars"
+
+[health.crashy_kinds]
+doc = "Event kinds that count toward the crash-loop threshold."
+value = ["crash", "panic", "start_fail", "watchdog", "rss"]
+
+[health.advisory_ttl_ms]
+doc = "A recorded failure older than this no longer produces an advisory."
+value = 3600000
+unit = "ms"
+
+[health.advised_cap]
+doc = "When more session stamps than this exist, stamps older than advised_expire_s are removed."
+value = 500
+
+[health.advised_expire_s]
+doc = "Age after which a session stamp may be removed."
+value = 172800
+unit = "s"
+
+[health.diag_lines]
+doc = "Event-log lines included in the diagnostic block of a permanent-failure advisory."
+value = 8
+
+[health.context_events]
+doc = "Hook events whose output carries `additionalContext`; other events use `systemMessage` when an advisory is merged."
+value = ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SubagentStart"]
+
+[health.error_codes]
+doc = "Error-code classification: environment-class codes get a plain self-fix hint (a message key); every other code is a permanent failure that asks for an issue."
+value = [
+  { codes = ["os28"], class = "env", hint = "msg.hint_disk_full" },
+  { codes = ["os13", "os1", "unsafe_dir"], class = "env", hint = "msg.hint_state_dir" },
+  { codes = ["os36", "os22", "path_too_long"], class = "env", hint = "msg.hint_socket_path" },
+  { codes = ["os24", "os23"], class = "env", hint = "msg.hint_fds" },
+  { codes = ["os12", "sig9"], class = "env", hint = "msg.hint_memory" },
+]
+
+[health.scrub_patterns]
+doc = "Patterns removed from anything that goes into a diagnostic: each item is [regex, replacement]. Order matters."
+value = [
+  ["(?i)\\b(?:sk|pk|rk|xox[a-z])[-_][A-Za-z0-9_\\-]{12,}", "[redacted]"],
+  ["\\bgh[pousr]_[A-Za-z0-9]{20,}", "[redacted]"],
+  ["\\bAKIA[0-9A-Z]{16}\\b", "[redacted]"],
+  ["(?i)\\b(bearer|basic)\\s+[A-Za-z0-9._~+/=\\-]{8,}", "$1 [redacted]"],
+  ["(?i)((?:api[_-]?key|token|secret|passw(?:or)?d|authorization)[\"']?\\s*[=:]\\s*)[\"']?[^\\s\"',}]+", "$1[redacted]"],
+  ["[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}", "[email]"],
+  ["\\b[A-Za-z0-9+/_\\-]{40,}\\b", "[redacted]"],
+]
+
+[health.pid_probe]
+doc = "Command used to read a process's command line when checking whether a pid is a live engine: the program, then its arguments with `{pid}` substituted."
+value = ["ps", "-p", "{pid}", "-o", "command="]
+
+[health.rss_probe]
+doc = "Command used to read this process's resident set where /proc is unavailable (macOS): the program, then its arguments with `{pid}` substituted."
+value = ["ps", "-o", "rss=", "-p", "{pid}"]
+
+[health.serve_arg]
+doc = "Subcommand a daemon is started with; also how a live engine is recognised in the process list."
+value = "serve"
+
+# ---- hook protocol adapter ------------------------------------------------------------------------------
+
+[hook.event_keys]
+doc = "Payload fields that can carry the event name, tried in order (Claude Code and Codex send `hook_event_name`)."
+value = ["hook_event_name", "hookEventName", "event"]
+
+[hook.warn_prefix]
+doc = "Prefix of a `warn` rule's message in agent-visible output."
+value = "anti-hall warning: "
+
+# ---- socket protocol (listed in the generated reference, D50) -------------------------------------------
+
+[protocol.hook]
+doc = "A hook payload evaluated against the rules and built-in checks. The client half-closes after writing; the reply is always a framed OK, BUSY or ERR, and anything else makes the client run the Node hook."
+value = { request = "V <client-version>\n<hook payload JSON>", reply = "OK <hook output JSON or empty> | BUSY | ERR <reason>" }
+
+[protocol.ping]
+doc = "Liveness probe; also how a starting daemon checks that a live one already owns the socket."
+value = { request = "CTL ping", reply = "OK pong <version> <pid>" }
+
+[protocol.reload]
+doc = "Re-read the rules file now (it is also re-read on SIGHUP and on change)."
+value = { request = "CTL reload", reply = "OK ok" }
+
+[protocol.stop]
+doc = "Drain and exit."
+value = { request = "CTL stop", reply = "OK ok" }
+
+[protocol.status]
+doc = "The daemon's state as JSON, including a headline summary."
+value = { request = "CTL status", reply = "OK <status JSON>" }
+
+[protocol.metrics]
+doc = "All metric series as JSON, optionally for one check."
+value = { request = "CTL metrics [check=<name>]", reply = "OK <metrics JSON>" }
+
+[protocol.impact]
+doc = "The impact ledger report as JSON."
+value = { request = "CTL impact [kind=<kind>] [project=<hash>] [recent=<n>]", reply = "OK <impact JSON>" }
+
+[protocol.project]
+doc = "A per-project in-memory operation; the daemon derives the partition from the cwd, so a request cannot name another project's key."
+value = { request = "P <cwd>\n<put|take|len|set|get> [args]", reply = "OK <value> | ERR <reason> | BUSY" }

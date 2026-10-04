@@ -11,12 +11,14 @@
 //! Threads: the accept loop (poll, no busy wait), `workers` request threads fed by a bounded queue
 //! (overflow = BUSY), and a watchdog (heartbeats + RSS check) that turns a stall into a clean drain+exit.
 use crate::config::Config;
+use crate::defaults;
 use crate::frame::{self, Kind};
 use crate::health;
 use crate::limits::{self, Buckets};
 use crate::paths;
 use crate::rules::RuleSet;
 use crate::store::{KeyCache, Store};
+use crate::telemetry::{self, Telemetry};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -27,10 +29,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
-
-const LOCK_WAIT: Duration = Duration::from_millis(1500);
-/// After a drain starts, a worker or loop that does not finish in this long is cut off.
-const DRAIN_GRACE: Duration = Duration::from_millis(1000);
 
 static HUP: AtomicBool = AtomicBool::new(false);
 static TERM: AtomicBool = AtomicBool::new(false);
@@ -121,7 +119,16 @@ pub struct Shared {
     stall_ms: AtomicU64,
     /// Last sampled resident set, KB.
     pub rss_kb: AtomicU64,
+    /// ms since `started` when the last request was handled (idle exit, D7, compares against it).
+    last_request: AtomicU64,
+    /// Metrics and the impact ledger (D51, D52).
+    pub telemetry: Telemetry,
     starts: u64,
+}
+
+/// The value of `name=<value>` in a space-separated argument string (empty when absent).
+fn kv(args: &str, name: &str) -> String {
+    args.split_whitespace().find_map(|w| w.strip_prefix(name).and_then(|r| r.strip_prefix('='))).unwrap_or("").to_string()
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -153,12 +160,29 @@ impl Shared {
             busy_since: (0..workers).map(|_| AtomicU64::new(0)).collect(),
             stall_ms: AtomicU64::new(0),
             rss_kb: AtomicU64::new(0),
+            last_request: AtomicU64::new(0),
+            telemetry: Telemetry::new(),
             starts: 0,
         }
     }
 
     fn ms(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
+    }
+
+    /// The `metrics` control verb: `check=<name>` narrows to one check's series. Live gauges are refreshed first.
+    fn metrics_json(&self, args: &str) -> serde_json::Value {
+        let check = kv(args, "check");
+        let gauges =
+            [("rss_kb", limits::rss_kb() as f64), ("queue_depth", self.depth.load(SeqCst) as f64), ("uptime_s", self.started.elapsed().as_secs() as f64)];
+        self.telemetry.metrics_json(&check, &gauges)
+    }
+
+    /// The `impact` control verb: `kind=<kind>`, `project=<hash>`, `recent=<n>`.
+    fn impact_json(&self, args: &str) -> serde_json::Value {
+        let filter = crate::storage::ImpactFilter { kind: kv(args, "kind"), project: kv(args, "project") };
+        let recent = kv(args, "recent").parse().unwrap_or(defaults::num("telemetry.recent_default") as usize);
+        self.telemetry.impact_json(&filter, recent)
     }
 
     /// Re-read the rules file; a file that fails to parse keeps the previous rules.
@@ -191,9 +215,10 @@ impl Shared {
             "rejected_peers": self.stats.rejected.load(SeqCst),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
-            "breaker": b.map_or("closed".to_string(), |d| format!("open ({} s left)", d.as_secs() + 1)),
-            "crashloop": c.map_or("clear".to_string(), |d| format!("stopped ({} s left)", d.as_secs() + 1)),
+            "breaker": b.map_or("closed".to_string(), |d| defaults::render("msg.state_open", &[("secs", &(d.as_secs() + 1))])),
+            "crashloop": c.map_or("clear".to_string(), |d| defaults::render("msg.state_stopped", &[("secs", &(d.as_secs() + 1))])),
             "rules": {"version": rules.version, "count": rules.rules.len(), "fingerprint": format!("{:016x}", rules.fingerprint())},
+            "summary": self.telemetry.headline(),
             "mem_limit": self.rlimit,
             "rss_cap_kb": self.cfg.rss_cap_kb,
         })
@@ -204,6 +229,8 @@ impl Shared {
 /// Pure-ish request handler (no socket I/O) so it is unit-testable.
 pub fn handle_request(req: &[u8], sh: &Shared) -> (Reply, After) {
     sh.stats.requests.fetch_add(1, SeqCst);
+    sh.telemetry.request();
+    sh.last_request.store(sh.ms(), SeqCst);
     let text = String::from_utf8_lossy(req);
     let (head, body) = text.split_once('\n').unwrap_or((&text, ""));
     if let Some(v) = head.strip_prefix("V ") {
@@ -214,7 +241,11 @@ pub fn handle_request(req: &[u8], sh: &Shared) -> (Reply, After) {
     if let Some(cwd) = head.strip_prefix("P ") {
         return (project_op(cwd.trim(), body, sh), After::Continue);
     }
-    match head.strip_prefix("CTL ").map(str::trim) {
+    let ctl = head.strip_prefix("CTL ").map(str::trim);
+    let (verb, args) = ctl.map(|c| c.split_once(' ').unwrap_or((c, ""))).unwrap_or(("", ""));
+    match ctl.map(|_| verb) {
+        Some("metrics") => (Reply::Ok(sh.metrics_json(args).to_string()), After::Continue),
+        Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
         Some("reload") => {
             sh.reload();
@@ -222,8 +253,8 @@ pub fn handle_request(req: &[u8], sh: &Shared) -> (Reply, After) {
         }
         Some("stop") => (Reply::Ok("ok".into()), After::Exit),
         Some("status") => (Reply::Ok(sh.status()), After::Continue),
-        Some(t) if sh.cfg.test_hooks => test_verb(t, sh),
-        _ => (Reply::Err("unknown request".into()), After::Continue),
+        Some(_) if sh.cfg.test_hooks => test_verb(ctl.unwrap_or(""), sh),
+        _ => (Reply::Err(defaults::text("msg.reply_unknown_request").into()), After::Continue),
     }
 }
 
@@ -232,10 +263,10 @@ fn test_verb(t: &str, sh: &Shared) -> (Reply, After) {
     let (verb, arg) = t.split_once(' ').unwrap_or((t, ""));
     let ms: u64 = arg.trim().parse().unwrap_or(0);
     match verb {
-        "sleep" => std::thread::sleep(Duration::from_millis(ms)),
+        "sleep" => std::thread::sleep(Duration::from_millis(ms)), // ms comes from the test caller, not a tunable
         "stall" => sh.stall_ms.store(ms, SeqCst),
-        "panic" => panic!("test panic"),
-        _ => return (Reply::Err("unknown request".into()), After::Continue),
+        "panic" => panic!("{}", defaults::text("msg.reply_test_panic")),
+        _ => return (Reply::Err(defaults::text("msg.reply_unknown_request").into()), After::Continue),
     }
     (Reply::Ok("ok".into()), After::Continue)
 }
@@ -244,39 +275,67 @@ fn project_key(sh: &Shared, cwd: &str) -> String {
     lk(&sh.keys).key(cwd)
 }
 
+/// Feeds what a hook evaluation did into the daemon's telemetry for one project.
+struct DaemonObserver<'a> {
+    t: &'a Telemetry,
+    project: &'a str,
+}
+
+impl crate::hookio::Observer for DaemonObserver<'_> {
+    fn check(&self, check: &str, rule_id: &str, verdict: &crate::checks::Verdict, micros: u64) {
+        self.t.observe_check(check, rule_id, verdict, micros, self.project);
+    }
+
+    fn rule(&self, rule_id: &str, action: crate::rules::Action) {
+        self.t.observe_rule(rule_id, action, self.project);
+    }
+}
+
 fn hook(body: &str, sh: &Shared) -> Reply {
+    let started = Instant::now();
     let Ok(p) = serde_json::from_str::<serde_json::Value>(body) else {
         sh.stats.errors.fetch_add(1, SeqCst);
-        return Reply::Err("malformed payload".into());
+        sh.telemetry.with_metrics(|m| m.inc("errors", &[]));
+        sh.telemetry.fallback("malformed", "");
+        return Reply::Err(defaults::text("msg.reply_malformed").into());
     };
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
+    let phash = telemetry::project_hash(&pkey);
     if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
         sh.stats.busy.fetch_add(1, SeqCst);
+        sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
+        sh.telemetry.fallback("busy", &phash);
         return Reply::Busy;
     }
     let rules = sh.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
     let (start, budget) = (limits::thread_cpu_us(), sh.cfg.eval_budget_us);
     let over = move || budget > 0 && limits::thread_cpu_us().saturating_sub(start) > budget;
-    match crate::hookio::respond_value(&p, &rules, &over) {
-        Ok(out) if out == crate::hookio::FALLBACK => Reply::Err("built-in check defers to the Node hook".into()),
+    let obs = DaemonObserver { t: &sh.telemetry, project: &phash };
+    let reply = match crate::hookio::respond_observed(&p, &rules, &over, &obs) {
+        Ok(out) if out == crate::hookio::FALLBACK => Reply::Err(defaults::text("msg.reply_defer").into()),
         Ok(out) => Reply::Ok(out),
         Err(_) => {
             sh.stats.budget_trips.fetch_add(1, SeqCst);
-            health::log_event("budget", "-", "rule evaluation exceeded its cpu budget");
-            Reply::Err("cpu budget exceeded".into())
+            sh.telemetry.with_metrics(|m| m.inc("budget_trips", &[]));
+            sh.telemetry.fallback("budget", &phash);
+            health::log_event("budget", "-", defaults::text("msg.log_budget"));
+            Reply::Err(defaults::text("msg.reply_budget").into())
         }
-    }
+    };
+    sh.telemetry.observe_hook(crate::hookio::event_of(&p).unwrap_or(""), started.elapsed().as_micros() as u64);
+    reply
 }
 
 /// `P <cwd>\n<verb> <args>`: the partition is derived here from `cwd`; the request cannot name a key.
 fn project_op(cwd: &str, body: &str, sh: &Shared) -> Reply {
     if cwd.is_empty() {
-        return Reply::Err("missing cwd".into());
+        return Reply::Err(defaults::text("msg.reply_missing_cwd").into());
     }
     let key = project_key(sh, cwd);
     if !lk(&sh.projects).allow(&key) {
         sh.stats.busy.fetch_add(1, SeqCst);
+        sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
         return Reply::Busy;
     }
     let (verb, args) = body.trim_end_matches('\n').split_once(' ').unwrap_or((body.trim(), ""));
@@ -288,23 +347,23 @@ fn project_op(cwd: &str, body: &str, sh: &Shared) -> Reply {
 
 /// Read a whole request within `read_deadline` and `max` bytes.
 fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static str> {
-    s.set_read_timeout(Some(Duration::from_millis(100))).ok();
+    s.set_read_timeout(Some(defaults::millis("daemon.read_poll_ms"))).ok();
     let start = Instant::now();
     let (mut buf, mut chunk) = (Vec::new(), [0u8; 8192]);
     loop {
         if start.elapsed() > cfg.read_deadline {
-            return Err("read deadline");
+            return Err(defaults::text("msg.reply_read_deadline"));
         }
         match s.read(&mut chunk) {
             Ok(0) => return Ok(buf),
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
                 if buf.len() as u64 > cfg.max_request {
-                    return Err("request too large");
+                    return Err(defaults::text("msg.reply_too_large"));
                 }
             }
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
-            Err(_) => return Err("read error"),
+            Err(_) => return Err(defaults::text("msg.reply_read_error")),
         }
     }
 }
@@ -320,6 +379,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared) -> After {
         Ok(r) => r,
         Err(why) => {
             sh.stats.errors.fetch_add(1, SeqCst);
+            sh.telemetry.with_metrics(|m| m.inc("errors", &[]));
             write_reply(&mut s, &Reply::Err(why.into()), &sh.cfg);
             return After::Continue;
         }
@@ -328,9 +388,10 @@ fn serve_conn(mut s: UnixStream, sh: &Shared) -> After {
         Ok(r) => r,
         Err(_) => {
             sh.stats.panics.fetch_add(1, SeqCst);
-            health::log_event("panic", "panic", "a request handler panicked");
-            health::record_failure("panic", "panic", "a request handler panicked");
-            (Reply::Err("internal error".into()), After::Continue)
+            sh.telemetry.with_metrics(|m| m.inc("panics", &[]));
+            health::log_event("panic", "panic", defaults::text("msg.log_panic"));
+            health::record_failure("panic", "panic", defaults::text("msg.log_panic"));
+            (Reply::Err(defaults::text("msg.reply_internal").into()), After::Continue)
         }
     };
     write_reply(&mut s, &reply, &sh.cfg);
@@ -346,7 +407,7 @@ fn worker(sh: Arc<Shared>, idx: usize) {
                     sh.depth.fetch_sub(1, SeqCst);
                     break Some(c);
                 }
-                let (g, _) = sh.cv.wait_timeout(q, Duration::from_millis(200)).unwrap_or_else(|e| e.into_inner());
+                let (g, _) = sh.cv.wait_timeout(q, defaults::millis("daemon.worker_wait_ms")).unwrap_or_else(|e| e.into_inner());
                 q = g;
                 if q.is_empty() {
                     break None;
@@ -358,7 +419,7 @@ fn worker(sh: Arc<Shared>, idx: usize) {
         let after = serve_conn(conn, &sh);
         sh.busy_since[idx].store(0, SeqCst);
         if after == After::Exit {
-            begin_drain(&sh, "handoff or stop", false);
+            begin_drain(&sh, defaults::text("msg.exit_reason_handoff"), false);
         }
     }
 }
@@ -371,17 +432,19 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
     let _ = std::fs::remove_file(paths::socket());
     if forced_exit {
         let why = why.to_string();
+        let grace = defaults::millis("daemon.drain_grace_ms");
         std::thread::spawn(move || {
-            std::thread::sleep(DRAIN_GRACE);
+            std::thread::sleep(grace);
             health::clear_marker();
             health::log_event("exit", "forced", &why);
-            std::process::exit(75);
+            std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
         });
     }
 }
 
 fn watchdog(sh: Arc<Shared>) {
     let mut last_rss = Instant::now();
+    let mut last_idle_check = Instant::now();
     loop {
         std::thread::sleep(sh.cfg.watchdog_tick);
         if sh.draining.load(SeqCst) {
@@ -389,18 +452,29 @@ fn watchdog(sh: Arc<Shared>) {
         }
         let now = sh.ms();
         if now.saturating_sub(sh.loop_beat.load(SeqCst)) > sh.cfg.stall.as_millis() as u64 {
-            health::log_event("watchdog", "stall", "accept loop stalled");
-            health::record_failure("watchdog", "stall", "the engine loop stalled");
-            begin_drain(&sh, "loop stalled", true);
+            health::log_event("watchdog", "stall", defaults::text("msg.log_stall"));
+            health::record_failure("watchdog", "stall", defaults::text("msg.failure_stall"));
+            begin_drain(&sh, defaults::text("msg.exit_reason_stall"), true);
             continue;
         }
         for (i, b) in sh.busy_since.iter().enumerate() {
             let since = b.load(SeqCst);
             if since != 0 && now.saturating_sub(since - 1) > sh.cfg.stuck.as_millis() as u64 {
-                health::log_event("watchdog", "stuck", &format!("worker {i} stuck"));
-                health::record_failure("watchdog", "stuck", "an engine worker got stuck");
-                begin_drain(&sh, "worker stuck", true);
+                health::log_event("watchdog", "stuck", &defaults::render("msg.log_stuck", &[("i", &i)]));
+                health::record_failure("watchdog", "stuck", defaults::text("msg.failure_stuck"));
+                begin_drain(&sh, defaults::text("msg.exit_reason_stuck"), true);
                 break;
+            }
+        }
+        // Idle exit is off unless configured (D7): the engine stays resident so the scheduler and mailbox keep running.
+        if let Some(idle) = sh.cfg.idle_exit {
+            if last_idle_check.elapsed() >= defaults::millis("daemon.idle_check_ms") {
+                last_idle_check = Instant::now();
+                let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0;
+                if quiet && now.saturating_sub(sh.last_request.load(SeqCst)) > idle.as_millis() as u64 {
+                    begin_drain(&sh, defaults::text("msg.exit_reason_idle"), false);
+                    continue;
+                }
             }
         }
         if last_rss.elapsed() >= sh.cfg.rss_check {
@@ -408,8 +482,8 @@ fn watchdog(sh: Arc<Shared>) {
             let rss = limits::rss_kb();
             sh.rss_kb.store(rss, SeqCst);
             if sh.cfg.rss_cap_kb > 0 && rss > sh.cfg.rss_cap_kb {
-                health::log_event("rss", "rss", &format!("rss {rss} KB over cap {} KB; restarting cleanly", sh.cfg.rss_cap_kb));
-                begin_drain(&sh, "rss cap", true);
+                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &rss), ("cap", &sh.cfg.rss_cap_kb)]));
+                begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
             }
         }
     }
@@ -424,10 +498,10 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, 
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(Some(f));
         }
-        if start.elapsed() > LOCK_WAIT || crate::client::ping(sock).is_some() {
+        if start.elapsed() > defaults::millis("daemon.lock_wait_ms") || crate::client::ping(sock).is_some() {
             return Ok(None);
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(defaults::millis("daemon.lock_poll_ms"));
     }
 }
 
@@ -438,7 +512,7 @@ fn mtime(p: &Path) -> Option<(SystemTime, u64)> {
 fn start_fail(code: &str, detail: &str) -> ! {
     health::log_event("start_fail", code, detail);
     health::record_failure("start_fail", code, detail);
-    std::process::exit(78);
+    std::process::exit(defaults::num("daemon.start_fail_exit_code") as i32);
 }
 
 fn io_code(e: &std::io::Error) -> String {
@@ -461,7 +535,7 @@ pub fn serve() {
     let lock = match acquire_lock(&lock_path, &sock) {
         Ok(Some(l)) => l,
         Ok(None) => return, // a live daemon owns the socket (or the handoff is not done): not an error
-        Err(e) => start_fail(&io_code(&e), &format!("lock {}: {e}", lock_path.display())),
+        Err(e) => start_fail(&io_code(&e), &defaults::render("msg.log_lock_fail", &[("path", &lock_path.display()), ("err", &e)])),
     };
     // We hold the flock, so no other daemon owns this socket. Verify before touching anything: if the
     // pid recorded in the lock file is still a live engine (flock not honoured here), do not steal.
@@ -477,14 +551,14 @@ pub fn serve() {
         if m.file_type().is_socket() {
             let _ = std::fs::remove_file(&sock);
         } else {
-            start_fail("unsafe_dir", &format!("{} exists and is not a socket", sock.display()));
+            start_fail("unsafe_dir", &defaults::render("msg.log_not_socket", &[("path", &sock.display())]));
         }
     }
     let listener = match UnixListener::bind(&sock) {
         Ok(l) => l,
         Err(e) => {
-            let code = if sock.as_os_str().len() >= 100 { "path_too_long".to_string() } else { io_code(&e) };
-            start_fail(&code, &format!("bind {}: {e}", sock.display()));
+            let code = if sock.as_os_str().len() >= defaults::num("paths.socket_max_len") as usize { "path_too_long".to_string() } else { io_code(&e) };
+            start_fail(&code, &defaults::render("msg.log_bind_fail", &[("path", &sock.display()), ("err", &e)]));
         }
     };
     let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
@@ -498,7 +572,7 @@ pub fn serve() {
     health::write_marker();
     health::clear_env_failure();
     let starts = next_start_count();
-    health::log_event("start", "-", &format!("v{} pid {} mem_limit {}", crate::version(), std::process::id(), rlimit));
+    health::log_event("start", "-", &defaults::render("msg.log_start", &[("version", &crate::version()), ("pid", &std::process::id()), ("rlimit", &rlimit)]));
 
     let rules_path = paths::rules_file();
     let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);
@@ -538,11 +612,11 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             std::thread::sleep(Duration::from_millis(st)); // test hook: simulate a wedged loop
         }
         if TERM.swap(false, SeqCst) {
-            begin_drain(sh, "SIGTERM", false);
+            begin_drain(sh, defaults::text("msg.exit_reason_sigterm"), false);
         }
         let draining = sh.draining.load(SeqCst);
         let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        let timeout = if draining { 20 } else { 200 };
+        let timeout = defaults::num(if draining { "daemon.drain_poll_ms" } else { "daemon.accept_poll_ms" }) as i32;
         unsafe { libc::poll(&mut pfd, 1, timeout) };
         let mut got_any = false;
         // WouldBlock (or a transient error) ends the inner loop: back to poll
@@ -550,15 +624,17 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             got_any = true;
             if !limits::peer_allowed(&s, me) {
                 sh.stats.rejected.fetch_add(1, SeqCst);
+                sh.telemetry.with_metrics(|m| m.inc("rejected_peers", &[]));
                 continue; // dropped: another uid never gets a reply
             }
             let mut q = lk(&sh.queue);
             if q.len() >= sh.cfg.queue {
                 drop(q);
                 sh.stats.busy.fetch_add(1, SeqCst);
+                sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
                 let mut s = s;
                 s.set_nonblocking(false).ok();
-                s.set_write_timeout(Some(Duration::from_millis(100))).ok();
+                s.set_write_timeout(Some(defaults::millis("daemon.busy_write_ms"))).ok();
                 let _ = s.write_all(&Reply::Busy.frame());
             } else {
                 q.push_back(s);
@@ -571,7 +647,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             return; // queue drained, nothing in flight
         }
         // every ~200 ms: SIGHUP or a rules-file change
-        if !draining && last_check.elapsed() >= Duration::from_millis(200) {
+        if !draining && last_check.elapsed() >= defaults::millis("daemon.rules_check_ms") {
             last_check = Instant::now();
             let now = mtime(&sh.rules_path);
             if HUP.swap(false, SeqCst) || now != *lk(&sh.seen) {

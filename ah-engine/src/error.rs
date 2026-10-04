@@ -3,6 +3,7 @@
 //! Why enums: callers match on the cause (a full mailbox is a normal `ERR` reply, an unsafe state directory
 //! is a start failure with a self-fix hint), and the stable [`DirError::code`] feeds the health classifier.
 //! Display text is for people; never parse it.
+use crate::defaults;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -48,12 +49,16 @@ pub enum RulesError {
 impl fmt::Display for RulesError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RulesError::Io { path, source } => write!(f, "{}: {source}", path.display()),
-            RulesError::Json(e) => write!(f, "rules json: {e}"),
-            RulesError::Version(v) => write!(f, "unsupported rules version {v}"),
-            RulesError::Action { index, action } => write!(f, "rule {index}: unknown action {action:?}"),
-            RulesError::Check { index, name } => write!(f, "rule {index}: unknown check {name:?}"),
-            RulesError::Pattern { index, id, source } => write!(f, "rule {index} ({id}): {source}"),
+            RulesError::Io { path, source } => f.write_str(&defaults::render("msg.err_path_io", &[("path", &path.display()), ("err", source)])),
+            RulesError::Json(e) => f.write_str(&defaults::render("msg.err_rules_json", &[("err", e)])),
+            RulesError::Version(v) => f.write_str(&defaults::render("msg.err_rules_version", &[("version", v)])),
+            RulesError::Action { index, action } => {
+                f.write_str(&defaults::render("msg.err_rules_action", &[("index", index), ("action", &format!("{action:?}"))]))
+            }
+            RulesError::Check { index, name } => f.write_str(&defaults::render("msg.err_rules_check", &[("index", index), ("name", &format!("{name:?}"))])),
+            RulesError::Pattern { index, id, source } => {
+                f.write_str(&defaults::render("msg.err_rules_pattern", &[("index", index), ("id", id), ("err", source)]))
+            }
         }
     }
 }
@@ -96,9 +101,11 @@ impl DirError {
 impl fmt::Display for DirError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DirError::NotADirectory(p) => write!(f, "{} is not a plain directory", p.display()),
-            DirError::WrongOwner { path, found, expected } => write!(f, "{} is owned by uid {found}, not {expected}", path.display()),
-            DirError::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            DirError::NotADirectory(p) => f.write_str(&defaults::render("msg.err_not_dir", &[("path", &p.display())])),
+            DirError::WrongOwner { path, found, expected } => {
+                f.write_str(&defaults::render("msg.err_wrong_owner", &[("path", &path.display()), ("found", found), ("expected", expected)]))
+            }
+            DirError::Io { path, source } => f.write_str(&defaults::render("msg.err_path_io", &[("path", &path.display()), ("err", source)])),
         }
     }
 }
@@ -123,11 +130,11 @@ pub enum StoreError {
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StoreError::TooManyProjects => f.write_str("too many projects"),
-            StoreError::ValueTooLarge => f.write_str("value too large"),
-            StoreError::MailboxFull => f.write_str("mailbox full"),
-            StoreError::TooManyKeys => f.write_str("too many keys"),
-            StoreError::UnknownVerb(v) => write!(f, "unknown verb {v:?}"),
+            StoreError::TooManyProjects => f.write_str(defaults::text("msg.err_too_many_projects")),
+            StoreError::ValueTooLarge => f.write_str(defaults::text("msg.err_value_too_large")),
+            StoreError::MailboxFull => f.write_str(defaults::text("msg.err_mailbox_full")),
+            StoreError::TooManyKeys => f.write_str(defaults::text("msg.err_too_many_keys")),
+            StoreError::UnknownVerb(v) => f.write_str(&defaults::render("msg.err_unknown_verb", &[("verb", &format!("{v:?}"))])),
         }
     }
 }

@@ -1,0 +1,129 @@
+# ah-engine shipped metric and impact-event registries (D51, D52). Format: see the header of engine.toml.
+#
+# A metric or impact kind that code records must be registered here, so `ah-engine docs` lists it and a test
+# catches a typo; a registered name nothing records is flagged by the same test. Metrics are kept in memory,
+# bounded, and are not persisted yet (planned with the storage phase, D19-D26).
+
+[telemetry.latency_buckets_us]
+doc = "Upper bounds of the latency histogram buckets; a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate."
+value = [100, 250, 500, 1000, 2500, 5000, 10000, 25000, 100000, 1000000]
+unit = "us"
+
+[telemetry.max_series]
+doc = "Most distinct label combinations kept per metric; further combinations are counted under one overflow series."
+value = 128
+
+[telemetry.recent_default]
+doc = "How many of the most recent impact events `impact` shows unless asked for more."
+value = 20
+
+[telemetry.max_events]
+doc = "Most impact events kept in memory (oldest dropped first); counts per kind are kept exactly in separate counters."
+value = 5000
+env = "AH_ENGINE_MAX_EVENTS"
+
+[telemetry.not_persisted_note]
+doc = "Printed with metrics and impact output while they live in memory only."
+value = "kept in memory by the running daemon and reset when it exits; durable storage is planned (D19-D26)"
+
+[telemetry.overflow_label]
+doc = "Label value used for series beyond max_series."
+value = "other"
+
+[telemetry.project_key_len]
+doc = "Hex digits of the hashed project key shown in impact events (the project path itself is never stored)."
+value = 12
+
+# ---- metrics --------------------------------------------------------------------------------------------
+
+[metric.requests]
+doc = "Requests the daemon handled, any type."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.busy_replies]
+doc = "Requests answered BUSY (queue full or rate limited), which made the client fall back."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.errors]
+doc = "Requests answered ERR."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.budget_trips]
+doc = "Evaluations cut off by the per-request CPU budget."
+value = { kind = "counter", unit = "evaluations", labels = [] }
+
+[metric.panics]
+doc = "Request-handler panics that were contained."
+value = { kind = "counter", unit = "panics", labels = [] }
+
+[metric.rejected_peers]
+doc = "Connections dropped because the peer uid was not ours."
+value = { kind = "counter", unit = "connections", labels = [] }
+
+[metric.hook_calls]
+doc = "Hook requests served, by hook event."
+value = { kind = "counter", unit = "requests", labels = ["event"] }
+
+[metric.hook_latency_us]
+doc = "Wall time to serve a hook request inside the daemon, by hook event."
+value = { kind = "histogram", unit = "us", labels = ["event"] }
+
+[metric.check_calls]
+doc = "Built-in check runs, by check."
+value = { kind = "counter", unit = "runs", labels = ["check"] }
+
+[metric.check_decisions]
+doc = "Built-in check outcomes, by check and decision (allow, block, advisory, defer)."
+value = { kind = "counter", unit = "runs", labels = ["check", "decision"] }
+
+[metric.check_latency_us]
+doc = "Wall time of a built-in check run, by check."
+value = { kind = "histogram", unit = "us", labels = ["check"] }
+
+[metric.rule_hits]
+doc = "Regex rule matches, by action (deny, warn, context)."
+value = { kind = "counter", unit = "matches", labels = ["action"] }
+
+[metric.rss_kb]
+doc = "Resident set of the daemon, sampled when status or metrics is read."
+value = { kind = "gauge", unit = "KB", labels = [] }
+
+[metric.queue_depth]
+doc = "Connections waiting for a worker when status or metrics is read."
+value = { kind = "gauge", unit = "connections", labels = [] }
+
+[metric.uptime_s]
+doc = "Seconds since the daemon started."
+value = { kind = "gauge", unit = "s", labels = [] }
+
+# ---- impact kinds ---------------------------------------------------------------------------------------
+
+[impact.block]
+doc = "A check or rule blocked a call. The reason is the check or rule id."
+value = { counted = "exact" }
+
+[impact.advisory]
+doc = "A check returned an advisory instead of a decision (for example the handover-budget notice)."
+value = { counted = "exact" }
+
+[impact.warning]
+doc = "A warn-action rule matched and added a warning for the agent."
+value = { counted = "exact" }
+
+[impact.context]
+doc = "A context-action rule matched and injected text for the agent."
+value = { counted = "exact" }
+
+[impact.fallback]
+doc = "The engine could not or would not answer (a check deferred, or the request failed) and the client ran the Node hook instead."
+value = { counted = "exact" }
+
+# ---- savings estimates ----------------------------------------------------------------------------------
+
+[impact.price_table]
+doc = "Model price table used for model-routing savings: `date` and `source` say where the prices came from, `models` maps a model name to dollars per million input and output tokens. Empty until routing events are recorded (planned, D52)."
+value = { date = "", source = "not populated: no model-routing events are recorded yet", models = {} }
+
+[impact.savings_method]
+doc = "How a model-routing saving is computed, shown next to every figure so it is never read as a measurement."
+value = "estimate: tokens the routed agent actually used x (price of the model it asked for or inherited - price of the model selected); it assumes the original model would have used the same tokens"

@@ -1,12 +1,10 @@
 //! git argument analysis ported from git-guard.js: subcommand resolution (with inline aliases), push force /
 //! delete detection, command-substitution args, self-credit matching and commit-message extraction.
+use super::tables::{block, tables};
 use super::tokenize::*;
 use super::util::*;
 use super::Ctx;
 use std::collections::HashMap;
-
-/// Mirrors `git-guard.js` `GIT_OPTS_WITH_VALUE`.
-const GIT_OPTS_WITH_VALUE: &[&str] = &["-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"];
 
 fn is_sep_char(c: char) -> bool {
     is_js_space(c) || ";&|()\"'{}`".contains(c)
@@ -76,7 +74,7 @@ pub fn git_subcommand(args: &[Tok]) -> (Option<String>, Vec<Tok>) {
     let mut i = 0;
     while i < args.len() {
         let w = args[i].text.as_str();
-        if GIT_OPTS_WITH_VALUE.contains(&w) {
+        if tables().git_opts_with_value.has(w) {
             i += 2;
             continue;
         }
@@ -99,37 +97,6 @@ pub fn git_subcommand(args: &[Tok]) -> (Option<String>, Vec<Tok>) {
     (None, Vec::new())
 }
 
-/// Mirrors `git-guard.js` `PUSH_LONG_OPTS`.
-const PUSH_LONG_OPTS: &[&str] = &[
-    "all",
-    "branches",
-    "mirror",
-    "tags",
-    "follow-tags",
-    "delete",
-    "prune",
-    "force",
-    "force-with-lease",
-    "force-if-includes",
-    "atomic",
-    "dry-run",
-    "porcelain",
-    "verbose",
-    "quiet",
-    "progress",
-    "verify",
-    "set-upstream",
-    "signed",
-    "push-option",
-    "repo",
-    "receive-pack",
-    "exec",
-    "thin",
-    "recurse-submodules",
-    "ipv4",
-    "ipv6",
-];
-
 /// Mirrors `git-guard.js` `expandPushOptions`.
 fn expand_push_options(rest: &[Tok]) -> Vec<Tok> {
     let mut out = Vec::new();
@@ -147,11 +114,11 @@ fn expand_push_options(rest: &[Tok]) -> Vec<Tok> {
             None => (&w[2..], ""),
             Some(eq) => (&w[2..eq], &w[eq..]),
         };
-        if name.is_empty() || PUSH_LONG_OPTS.contains(&name) {
+        if name.is_empty() || tables().push_long_opts.has(name) {
             out.push(t.clone());
             continue;
         }
-        let cands: Vec<&&str> = PUSH_LONG_OPTS.iter().filter(|o| o.starts_with(name)).collect();
+        let cands: Vec<&str> = tables().push_long_opts.iter().filter(|o| o.starts_with(name)).collect();
         if cands.is_empty() {
             out.push(t.clone());
             continue;
@@ -273,12 +240,18 @@ fn coauthor_at(t: &[char], s: usize) -> bool {
     p += 1;
     let eol = t[p..].iter().position(|&c| c == '\n').map_or(t.len(), |x| x + p);
     for q in p..eol {
-        for alt in ["claude", "anthropic.com", "@openai.com", "chatgpt", "codex <", "cursor <", "github copilot"] {
+        for alt in &tables().credit_coauthor_alts {
             if ci_starts_with(t, q, alt) {
                 return true;
             }
         }
-        if ci_starts_with(t, q, "gpt-") && q + 4 < t.len() && (t[q + 4] == '4' || t[q + 4] == '5') && t.get(q + 5).is_none_or(|c| !c.is_ascii_alphanumeric()) {
+        // a `gpt-<n>` model name: the prefix, then a listed version digit, then no further alphanumeric
+        let (prefix, versions) = (&tables().credit_gpt_prefix, &tables().credit_gpt_versions);
+        let plen = prefix.chars().count();
+        if ci_starts_with(t, q, prefix)
+            && t.get(q + plen).is_some_and(|c| versions.contains(*c))
+            && t.get(q + plen + 1).is_none_or(|c| !c.is_ascii_alphanumeric())
+        {
             return true;
         }
     }
@@ -307,7 +280,7 @@ fn generated_at(t: &[char], s: usize) -> bool {
     if t.get(p) == Some(&'[') {
         p += 1;
     }
-    for alt in ["claude code", "claude", "chatgpt", "codex", "copilot"] {
+    for alt in &tables().credit_generated_alts {
         if ci_starts_with(t, p, alt) {
             let e = p + alt.len();
             let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
@@ -326,7 +299,7 @@ pub fn credit_regexes(text: &str) -> bool {
 }
 
 fn gh_body_marker(text: &str) -> bool {
-    ci_contains(text, "claude.com/claude-code") || ci_contains(text, "chatgpt.com/codex") || ci_contains(text, "<noreply@anthropic.com>")
+    tables().gh_body_markers.iter().any(|m| ci_contains(text, m))
 }
 
 /// Undo the shell escapes a commit message can carry (`\n`, `\t`, `\\`, ...) so credit lines hidden behind them are still seen.
@@ -364,9 +337,6 @@ pub fn has_self_credit(ctx: &mut Ctx, text: &str) -> bool {
 
 /// Git subcommands that create a commit, which is where self-credit and handover checks apply.
 ///
-/// Mirrors `git-guard.js` `COMMIT_CREATING`.
-pub const COMMIT_CREATING: &[&str] = &["commit", "merge", "rebase", "cherry-pick", "revert", "am", "pull", "commit-tree", "tag"];
-
 /// True when `-c trailer.<key>.key=...` style config remaps a trailer key so a credit trailer would be written under another name.
 ///
 /// Mirrors `git-guard.js` `hasSelfCreditTrailerKeyRemap`.
@@ -516,8 +486,8 @@ pub fn read_file_lossy(path: &str) -> Option<String> {
 /// Mirrors `git-guard.js` `ghSelfCreditMessage`.
 pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
     let words: Vec<&str> = args.iter().map(|a| a.text.as_str()).collect();
-    let guarded_sub = words.iter().any(|w| matches!(*w, "pr" | "issue" | "release"));
-    let guarded_act = words.iter().any(|w| matches!(*w, "create" | "edit" | "comment" | "merge"));
+    let guarded_sub = words.iter().any(|w| tables().gh_subs.has(w));
+    let guarded_act = words.iter().any(|w| tables().gh_actions.has(w));
     if !guarded_sub || !guarded_act {
         return None;
     }
@@ -525,7 +495,7 @@ pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
     let mut i = 0;
     while i < args.len() {
         let w = args[i].text.as_str();
-        if matches!(w, "--body" | "-b" | "--title" | "-t" | "--notes" | "-n" | "--subject") {
+        if tables().gh_value_opts.has(w) {
             if i + 1 < args.len() {
                 vals.push(args[i + 1].text.clone());
                 i += 1;
@@ -534,7 +504,7 @@ pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
             continue;
         }
         let mut handled = false;
-        for p in ["--body=", "--title=", "--notes=", "--subject="] {
+        for p in &tables().gh_value_prefixes {
             if let Some(v) = w.strip_prefix(p) {
                 vals.push(v.to_string());
                 handled = true;
@@ -546,13 +516,13 @@ pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
             continue;
         }
         let mut file_spec: Option<String> = None;
-        if matches!(w, "--body-file" | "-F" | "--notes-file") {
+        if tables().gh_file_opts.has(w) {
             if i + 1 < args.len() {
                 file_spec = Some(args[i + 1].text.clone());
                 i += 1;
             }
         } else {
-            for p in ["--body-file=", "--notes-file="] {
+            for p in &tables().gh_file_prefixes {
                 if let Some(v) = w.strip_prefix(p) {
                     if !v.chars().any(is_line_term) {
                         file_spec = Some(v.to_string());
@@ -578,11 +548,7 @@ pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
         let n = norm_escapes(v);
         for text in [v.as_str(), n.as_str()] {
             if credit_regexes(text) || gh_body_marker(text) {
-                return Some(msg(
-                    "a gh pr/issue/release body or title carries AI/assistant self-credit (\"Generated with\" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.",
-                    "PRs and issues carry no AI attribution.",
-                    "remove it and re-run.",
-                ));
+                return Some(block("msg_gh_credit", &[]));
             }
         }
     }
