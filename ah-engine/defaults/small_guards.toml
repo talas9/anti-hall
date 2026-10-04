@@ -154,3 +154,117 @@ value = "run the tests first, review the discarded side in `git diff`, then push
 [merge_side_pick.fallback_cmd]
 doc = "Text used for the side-pick command when none was recorded."
 value = "a side-pick"
+
+# ---- ship-it-guard (hooks/ship-it-guard.js) ----------------------------------------------------------------
+
+[ship_it.summary]
+doc = "One-line description of the ship-it-guard check in the generated reference."
+value = "Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's phases do not declare (port of ship-it-guard.js)."
+
+[ship_it.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "ship-it-guard"
+
+[ship_it.setting]
+doc = "Where the opt-in switch is read from (guards.shipitGate, default off)."
+value = { section = "guards", key = "shipitGate", env = "ANTIHALL_SHIPIT_GATE", aliases = [], option = "guards_shipit_gate", default = false }
+
+[ship_it.deferred_tools]
+doc = "Tool names whose targets the engine cannot derive exactly (shell writes need the command-guard parser, apply_patch needs the Codex patch parser): with the gate on they defer to the Node guard."
+value = ["Bash", "apply_patch"]
+
+[ship_it.plan_file]
+doc = "Name of the plan file looked for in the working directory."
+value = "PLAN.md"
+
+[ship_it.hard_risk]
+doc = "Regex sources (case-insensitive) of hard-risk paths: CI workflows, migrations, auth, security."
+value = [
+  '(^|[\\/])\.github[\\/]workflows[\\/]',
+  '(^|[\\/])migrations?[\\/]',
+  '(^|[\\/])migrate[\\/]',
+  '[._-]migration[s]?\.[a-z]+$',
+  '(^|[\\/])(auth|authn|authz)[\\/]',
+  '[._-](auth|authn|authz|login|session|password|credential|token|secret)s?\.[a-z]+$',
+  '(^|[\\/])(security|crypto)[\\/]',
+]
+
+[ship_it.non_code_name]
+doc = "Lower-cased base name that is never gated (the plan file itself)."
+value = "plan.md"
+
+[ship_it.non_code_ext]
+doc = "Regex source (case-insensitive), tested on the lower-cased base name, for documentation extensions that are never gated."
+value = '\.(md|mdx|markdown|txt|rst)$'
+
+[ship_it.non_code_test_file]
+doc = "Regex source (case-insensitive), tested on the lower-cased base name, for test file names that are never gated."
+value = '\.(test|spec)\.[a-z0-9]+$'
+
+[ship_it.non_code_test_dir]
+doc = "Regex source (case-insensitive), tested on the whole path, for test directories that are never gated."
+value = '(^|[\\/])(tests?|__tests__|spec)([\\/]|$)'
+
+[ship_it.phases_head]
+doc = "Regex source (case-insensitive) of the line that opens the Phases section of a plan."
+value = '(?:^|\n)##[ \t]+Phases\b'
+
+[ship_it.phases_end]
+doc = "Regex source that finds where the Phases section ends: the next level-two heading."
+value = '\n##[ \t]+\S'
+
+[ship_it.phase_split]
+doc = "Regex source that finds the line break before each phase heading, where the Phases section is split."
+value = '\n###[ \t]+'
+
+[ship_it.phase_head]
+doc = "Regex source a phase section must start with."
+value = '^###[ \t]+'
+
+[ship_it.files_head]
+doc = "Regex source (case-insensitive) of the files field a phase declares, up to where its value starts."
+value = '\n-[ \t]*files:[ \t]*'
+
+[ship_it.files_end]
+doc = "Regex source (case-insensitive) that finds where a files value ends: the next field bullet or phase heading."
+value = '\n-[ \t]*[\w][\w ]*:|\n###[ \t]'
+
+[ship_it.token_separators]
+doc = "Characters that separate path tokens inside a files value, besides white space."
+value = ",`\"'()"
+
+[ship_it.token_trim]
+doc = "Trailing characters stripped from a path token."
+value = ".,;:"
+
+[ship_it.token_ext_max]
+doc = "Longest dotted extension that makes a token without a slash look like a path."
+value = 10
+
+[ship_it.msg_block_what]
+doc = "Block headline; {file} is the first hard-risk file."
+value = "L-risk file {file} edited with no PLAN.md."
+
+[ship_it.msg_block_why]
+doc = "Block reason."
+value = "This path is a hard-risk trigger (migration / auth / CI-workflow / security); per the ship-it skill, L-tier changes go through plan mode and a PLAN.md before code."
+
+[ship_it.msg_block_instead]
+doc = "Block advice."
+value = "create PLAN.md (repo root) first."
+
+[ship_it.msg_block_override]
+doc = "Block override hint."
+value = "if this is genuinely a smaller change, unset ANTIHALL_SHIPIT_GATE or use the documented skip hatch"
+
+[ship_it.msg_adv_what]
+doc = "Advisory headline; {file} is the first target outside the declared files and {plan} the plan path."
+value = "{file} does not appear in any phase's declared \"files:\" list in {plan} (advisory, not a block)."
+
+[ship_it.msg_adv_why]
+doc = "Advisory reason."
+value = "It may be a legitimate shared-file touch (`files:` is free text, so false positives are expected) or scope drift."
+
+[ship_it.msg_adv_instead]
+doc = "Advisory advice."
+value = "if intentional, proceed; if not, update the PLAN.md Blast radius / phase `files:` list, or re-plan this phase."

@@ -138,6 +138,10 @@ Deliberate differences from the Node guard:
   entry).
 - The switch environment is the engine process's, not the hook client's (same limit as the git check); the switch files
   work. A cut of the stored command inside a surrogate pair defers to Node.
+- `ship-it-guard` (opt-in, `guards.shipitGate`): Edit, Write and MultiEdit are decided here (existence gate on hard-risk
+  paths, conformance advisory against a parsed `PLAN.md`). With the gate on, `Bash` (shell-write targets come from the
+  command-guard parser, planned with its port) and `apply_patch` defer to Node, and so does a payload without an absolute
+  `cwd` (Node would use its own process directory).
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 

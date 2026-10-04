@@ -74,6 +74,20 @@ fn switch_chain_env_then_file_then_plugin_option_then_default() {
 }
 
 #[test]
+fn plugin_option_counts_only_when_it_differs_from_the_default() {
+    let h = home("opt");
+    let e = defaults::raw("ship_it.setting");
+    assert!(!get_bool(&st(&h, &[]), e), "the gate is off by default");
+    assert!(get_bool(&st(&h, &[("CLAUDE_PLUGIN_OPTION_GUARDS_SHIPIT_GATE", "true")]), e));
+    assert!(!get_bool(&st(&h, &[("CLAUDE_PLUGIN_OPTION_GUARDS_SHIPIT_GATE", "false")]), e));
+    std::fs::write(format!("{h}/.claude/settings.json"), r#"{"pluginConfigs":{"anti-hall":{"options":{"guards_shipit_gate":true}}}}"#).unwrap();
+    assert!(get_bool(&st(&h, &[]), e), "the host settings file is read");
+    std::fs::write(format!("{h}/.claude/settings.json"), r#"{"pluginConfigs":{"anti-hall@anti-hall":{"guards_shipit_gate":"false"}}}"#).unwrap();
+    std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"shipitGate":true}}"#).unwrap();
+    assert!(get_bool(&st(&h, &[]), e), "settings.json outranks the plugin option");
+}
+
+#[test]
 fn skip_file_covers_named_guards_and_all_but_not_destructive_ones() {
     let h = home("skip");
     let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() + 3_600_000;

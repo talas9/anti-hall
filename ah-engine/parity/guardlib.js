@@ -38,6 +38,9 @@ async function pool(items, n, fn) {
   await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) { const k = i++; await fn(items[k], k); } }));
 }
 
+// Replace the token $HOME in every string of a payload with the ctx home (so a scenario can name files it created).
+const subst = (v, home) => typeof v === 'string' ? v.split('$HOME').join(home) : Array.isArray(v) ? v.map(x => subst(x, home)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, subst(x, home)])) : v;
+
 // Build the home directory a ctx describes.
 function mkHome(tmp, n, ctx) {
   const home = path.join(tmp, 'h' + n);
@@ -62,16 +65,18 @@ async function runParity(o) {
   const stats = { scenarios: 0, steps: 0, compared: 0, same: 0, deferred: 0, unneeded: 0, skipped: 0, mismatch: 0, nodeBlocks: 0, nodeAdvisories: 0 };
   const mism = [];
   const nodeEnv = (home, ctx) => Object.assign({ PATH: basePath, HOME: home, USERPROFILE: home, ANTIHALL_TEST_ISOLATION: '1' }, ctx.env || {});
-  const nodeStep = (step, home, ctx) => {
-    const d = guard.evaluate(JSON.parse(JSON.stringify(step.payload)), nodeEnv(home, ctx), { argv: step.argv || (o.nodeArgv ? o.nodeArgv(step) : []) });
+  const nodeStep = (payload, step, home, ctx) => {
+    const d = guard.evaluate(JSON.parse(JSON.stringify(payload)), nodeEnv(home, ctx), { argv: step.argv || (o.nodeArgv ? o.nodeArgv(step) : []) });
     return norm({ code: d.exitCode === 2 ? 2 : 0, out: d.stdout, err: d.stderr });
   };
   // group scenarios by ctx
   const groups = new Map();
-  for (const sc of o.scenarios) { const k = JSON.stringify(sc.ctx || {}); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(sc); }
+  const NOCTX = {};
+  // grouped by object identity (a ctx can be large); scenarios sharing one ctx object share a home and a daemon
+  for (const sc of o.scenarios) { const k = sc.ctx || NOCTX; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(sc); }
   let gi = 0;
   for (const [k, list] of groups) {
-    const ctx = JSON.parse(k), home = mkHome(tmp, gi++, ctx);
+    const ctx = k, home = mkHome(tmp, gi++, ctx);
     const dir = path.join(tmp, 'e' + gi), rf = path.join(tmp, `rules${gi}.json`);
     const events = o.events || ['PreToolUse', 'PostToolUse'];
     fs.writeFileSync(rf, JSON.stringify({ version: 1, rules: [Object.assign({ id: o.name, events, tools: o.tools || ['Bash'], check: o.check, action: 'deny', options: { plugin_root: PLUGIN_ROOT } }, o.engineRule || {})] }));
@@ -90,10 +95,12 @@ async function runParity(o) {
       for (let si = 0; si < sc.steps.length; si++) {
         const step = sc.steps[si];
         stats.steps++;
-        const n = nodeStep(step, home, ctx);
+        const payload = subst(step.payload, home);
+        const n = nodeStep(payload, step, home, ctx);
         if (n.code === 2) stats.nodeBlocks++; else if (n.out) stats.nodeAdvisories++;
+        if (n.err && n.code !== 2) stats.nodeStderr = (stats.nodeStderr || 0) + 1;
         if (stopped) { stats.skipped++; continue; }
-        const input = JSON.stringify(step.payload);
+        const input = JSON.stringify(payload);
         const cwd = '/tmp';
         const results = {};
         if ((MODE === 'oneshot' || MODE === 'both') && si === 0) {
@@ -107,8 +114,8 @@ async function runParity(o) {
         for (const [mode, r] of Object.entries(results)) {
           stats.compared++;
           if (r === 'same') stats.same++;
-          else if (r === 'deferred') { stats.deferred++; if (!n.out && n.code === 0) stats.unneeded++; if (mode === 'daemon' || MODE === 'oneshot') stopped = true; }
-          else { stats.mismatch++; if (mism.length < 2000) mism.push({ scenario: sc.id, step: si, mode, payload: step.payload, node: n, engine: r }); }
+          else if (r === 'deferred') { stats.deferred++; (stats.deferredIds = stats.deferredIds || new Set()).add(sc.id); if (!n.out && n.code === 0) stats.unneeded++; if (mode === 'daemon' || MODE === 'oneshot') stopped = true; }
+          else { stats.mismatch++; if (mism.length < 2000) mism.push({ scenario: sc.id, step: si, mode, payload, node: n, engine: r }); }
         }
       }
     });
@@ -120,6 +127,7 @@ async function runParity(o) {
   const pc = x => stats.compared ? (100 * x / stats.compared).toFixed(2) + '%' : '-';
   console.log(`${o.name}: scenarios=${stats.scenarios} steps=${stats.steps} node-blocks=${stats.nodeBlocks} node-advisories=${stats.nodeAdvisories} mode=${MODE}`);
   console.log(`  compared=${stats.compared} same=${stats.same} (${pc(stats.same)}) deferred=${stats.deferred} (${pc(stats.deferred)}; unneeded: Node allowed silently = ${stats.unneeded}) skipped-after-defer=${stats.skipped} MISMATCH=${stats.mismatch}`);
+  if (stats.deferredIds && flag('--show-defer')) console.log('  deferred scenarios: ' + [...stats.deferredIds].slice(0, 60).join(' | '));
   fs.writeFileSync(o.out || path.join(os.tmpdir(), `ah-parity-${o.name}-mismatches.json`), JSON.stringify(mism, null, 1));
   for (const m of mism.slice(0, SHOW)) console.log(JSON.stringify({ s: m.scenario, step: m.step, mode: m.mode, cmd: (m.payload.tool_input && (m.payload.tool_input.command || m.payload.tool_input.file_path) || '').slice(0, 160), n: [m.node.code, m.node.out.slice(0, 120), m.node.err.slice(0, 120)], e: [m.engine.code, m.engine.out.slice(0, 120), m.engine.err.slice(0, 120)] }));
   fs.rmSync(tmp, { recursive: true, force: true });

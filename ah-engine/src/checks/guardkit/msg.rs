@@ -66,3 +66,27 @@ pub fn advisory_json(event: &str, text: &str) -> String {
     let t = serde_json::to_string(text).unwrap_or_default();
     format!("{{\"hookSpecificOutput\":{{\"hookEventName\":{ev},\"additionalContext\":{t}}}}}")
 }
+
+/// The message `key` with each `{name}` replaced by its value in one pass, so a value that itself contains `{other}`
+/// is never expanded again (`defaults::render` replaces name by name and would).
+pub fn render(key: &str, args: &[(&str, &str)]) -> String {
+    let t = defaults::text(key);
+    let mut out = String::with_capacity(t.len() + 32);
+    let mut rest = t;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        match args.iter().find(|(n, _)| tail[1..].starts_with(n) && tail[1 + n.len()..].starts_with('}')) {
+            Some((n, v)) => {
+                out.push_str(v);
+                rest = &tail[n.len() + 2..];
+            }
+            None => {
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}

@@ -46,8 +46,8 @@ labelled with how it was measured in the README of `ah-engine/`.
   check instead of a pattern.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name. Today there is one: `git`, a port of the
   git-guard hook with 100 percent agreement with the Node original on every corpus tried (see the README of `ah-engine/`).
-- **Small guard ports.** `merge-side-pick` is the first of five small Bash guards ported from Node (the others follow in
-  the same lane). They share `checks/guardkit`: the switch and skip-file lookup, the message layout, JavaScript-exact regex
+- **Small guard ports.** `merge-side-pick` and `ship-it-guard` are the first two of five small guards ported from Node (the
+  others follow in the same lane). They share `checks/guardkit`: the switch and skip-file lookup, the message layout, JavaScript-exact regex
   translation and a per-session state store that lives in memory until storage is wired in (planned, D22).
 
 ## What works today
@@ -62,6 +62,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Shipped defaults for every tunable, table, message, path, env-var name, limit and timeout | implemented | D17 |
 | Built-in `git` check with exact parity to git-guard | implemented | D29-D31 |
 | Built-in `merge-side-pick` check (advisory on a push after a one-sided conflict resolution) with exact parity | implemented, state in memory | D29-D31, D75 |
+| Built-in `ship-it-guard` check (opt-in plan gate for Edit, Write and MultiEdit; Bash and apply_patch defer to Node) with exact parity | implemented | D29-D31, D75 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |

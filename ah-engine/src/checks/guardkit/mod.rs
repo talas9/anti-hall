@@ -8,6 +8,7 @@
 //! Node original, so a guard module holds only its own decision logic.
 pub mod jsre;
 pub mod msg;
+pub mod paths;
 pub mod settings;
 pub mod state;
 pub mod text;

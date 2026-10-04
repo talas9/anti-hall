@@ -213,7 +213,7 @@ pub fn decide(p: &Value, st: &Settings, store: &dyn SessionState) -> Option<Verd
     if pick.is_empty() {
         return None;
     }
-    let what = defaults::render("merge_side_pick.msg_what", &[("pick", &pick)]);
+    let what = msg::render("merge_side_pick.msg_what", &[("pick", &pick)]);
     let text = msg::message(
         Kind::Warn,
         defaults::text("merge_side_pick.guard_name"),
