@@ -106,7 +106,10 @@ fn a_job_runs_on_time_and_a_restart_never_runs_it_twice() {
     assert!(all.len() > first.len(), "the restarted daemon keeps running it");
     assert!(all[first.len()].1 >= saved_next, "the first run after the restart waits for the saved time");
     for w in all.windows(2) {
-        assert!(w[1].1 - w[0].1 >= 280, "never two runs within one interval, across the restart too: {all:?}");
+        // the schedule (due) is what an interval is measured on: a run's start time also carries thread-start jitter
+        // (45 ms was seen on a CI runner), which can bring two start times closer than the interval
+        assert!(w[1].0 - w[0].0 >= 280, "never two runs within one interval, across the restart too: {all:?}");
+        assert!(w[1].1 >= w[0].2, "and never overlapping: {all:?}");
         assert_ne!(w[0].0, w[1].0, "never two runs for the same due time");
     }
 }
