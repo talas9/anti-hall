@@ -194,7 +194,17 @@ pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Verdict {
     });
     match r {
         Ok(Ok(o)) => o,
-        _ => Verdict::Defer,
+        // The check thread could not start (for example a data-segment limit smaller than its stack): say so in the
+        // event log, because the engine would otherwise defer every command to Node without a visible reason.
+        Err(e) => {
+            crate::health::log_event(
+                "check_spawn_fail",
+                &format!("os{}", e.raw_os_error().unwrap_or(0)),
+                &crate::defaults::render("msg.log_check_spawn", &[("err", &e)]),
+            );
+            Verdict::Defer
+        }
+        Ok(Err(_)) => Verdict::Defer, // the check panicked: Node decides
     }
 }
 

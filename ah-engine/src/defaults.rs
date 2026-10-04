@@ -260,6 +260,14 @@ mod tests {
     }
 
     #[test]
+    fn the_memory_ceiling_leaves_room_for_every_workers_check_stack() {
+        // Linux counts thread stacks against RLIMIT_DATA; a daemon whose limit is smaller than its workers' check
+        // stacks defers every git command to Node (found by CI on Linux, where the limit is enforced).
+        let need = num("daemon.workers") * num("git.stack_mb");
+        assert!(num("daemon.mem_mb") >= need + 64, "daemon.mem_mb {} must exceed workers x git.stack_mb ({need}) plus headroom", num("daemon.mem_mb"));
+    }
+
+    #[test]
     fn render_fills_placeholders() {
         assert_eq!(fill("a {x} b {y}", &[("x", &"1"), ("y", &"2")]), "a 1 b 2");
         assert_eq!(fill("{missing}", &[("x", &"1")]), "{missing}");

@@ -166,8 +166,8 @@ env = "AH_ENGINE_EVAL_BUDGET_US"
 unit = "us"
 
 [daemon.mem_mb]
-doc = "Data-segment limit applied with setrlimit (macOS accepts it but may not enforce it, so the RSS cap is the real guard there); 0 = none."
-value = 64
+doc = "Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS accepts the call but does not enforce it."
+value = 512
 env = "AH_ENGINE_MEM_MB"
 unit = "MB"
 
