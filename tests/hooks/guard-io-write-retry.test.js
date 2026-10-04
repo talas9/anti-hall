@@ -55,3 +55,17 @@ test('writeAll stops retrying EAGAIN after the cap (bounded wait)', () => {
   assert.ok(n > 2 && n < 2000, 'retried a bounded number of times, got ' + n);
   assert.ok(ms < io.WRITE_RETRY_CAP_MS + 2000, 'finished near the cap, took ' + ms + 'ms');
 });
+
+test('writeAll bounds the retry wait by elapsed time even when each sleep oversleeps', () => {
+  // A fake monotonic clock that advances 100 ms per 5 ms sleep (a heavily loaded host).
+  let now = 0n; let n = 0;
+  const realHr = process.hrtime.bigint;
+  const realWait = Atomics.wait;
+  process.hrtime.bigint = () => now;
+  Atomics.wait = () => { now += 100n * 1000000n; return 'timed-out'; };
+  try {
+    withMockedWrite(() => { n++; throw eagain(); }, () => io.writeAll(1, 'x'));
+  } finally { process.hrtime.bigint = realHr; Atomics.wait = realWait; }
+  // 3000 ms cap / 100 ms per sleep = 30 sleeps; the nominal-sum bug would retry ~600 times.
+  assert.ok(n >= 2 && n <= 32, 'stopped on elapsed time, retried ' + n + ' times');
+});

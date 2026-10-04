@@ -53,15 +53,15 @@ function writeAll(fd, s) {
   if (!s) return;
   const buf = Buffer.from(s, 'utf8');
   let off = 0;
-  let waited = 0;
+  // Bound by real elapsed time, not the nominal sleeps: Atomics.wait oversleeps on a loaded host.
+  const deadline = process.hrtime.bigint() + BigInt(WRITE_RETRY_CAP_MS) * 1000000n;
   try {
     while (off < buf.length) {
       try {
         off += fs.writeSync(fd, buf, off, buf.length - off);
       } catch (e) {
-        if (!e || e.code !== 'EAGAIN' || waited >= WRITE_RETRY_CAP_MS) throw e;
+        if (!e || e.code !== 'EAGAIN' || process.hrtime.bigint() >= deadline) throw e;
         sleepMs(WRITE_RETRY_SLEEP_MS);
-        waited += WRITE_RETRY_SLEEP_MS;
       }
     }
   } catch (_) { /* still exit with the decision's code */ }
