@@ -1,0 +1,25 @@
+The fix must be removed, the parser broke the request path.
+The release must be pushed after the serializer corrupts the payload.
+The cache is likely corrupt, I have not confirmed it yet.
+The bundle is probably stale I haven't confirmed it yet.
+The cache is most likely to need a purge because it is serving old bundles.
+The worker is more likely to ask for a restart because the lock is wedged.
+I'll likely check, but the bug is in the parser.
+I will likely inspect the cache, and the daemon is serving stale data.
+I could likely run the test; the allocator is leaking memory.
+The patch must be reviewed, the decoder is dropping frames.
+The change should be tested; the proxy is the culprit.
+The migration must be committed and the lock caused the stall.
+The branch must be rebased since the writer clobbered the index.
+We can likely verify it while the cache is poisoned.
+I would likely ask you, so the root cause is the retry loop.
+The service is most likely to ship a stale build with the broken flag set.
+The job must be run: the queue is wedged.
+The config should be updated -- the parser is rejecting it.
+The worker is most likely to name the parser, which is corrupt.
+I'll likely look at the cache from the daemon side.
+Requirement: the setting must be < 64 KB, so the encoder is at fault.
+AC: the loader must be tested; the allocator leaks.
+The fix must be removed.Probably the parser broke the request path.
+I'll likely run the suite, though the cache is probably stale.
+The tag should be skipped as the lock is contended.

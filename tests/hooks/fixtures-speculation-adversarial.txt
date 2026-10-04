@@ -1,0 +1,67 @@
+Pending review, the crash is likely caused by a stale lock.
+This is a suspected regression, and the worker is probably dropping acknowledgements.
+The trace is not yet tested, but the outage is likely a DNS race.
+[inference] The cache is probably serving the old bundle.
+The parser theory is marked as an inference; the crash is likely caused by malformed UTF-8.
+The first idea is called a hypothesis, and the leak is probably in the connection pool.
+The report flags one guess; the deployment is likely stuck on the stale lease.
+This claim will get a test, but the crash is probably caused by the allocator.
+The diagnosis will receive a check; the queue is likely losing messages.
+The cache theory is pending; therefore the parser is probably corrupting every response.
+The first clause is marked as an assumption; the root cause is likely the retry loop.
+[assumption] The database is likely dropping committed rows.
+The dashboard reading is not checked; the agent is probably using the wrong token.
+The initial theory is labelled a guess; the crash is likely a deadlock.
+The cache must be corrupted by the failed migration.
+The socket should be poisoned by the retry loop.
+The worker must be deadlocked on the queue mutex.
+The parser should be wedged on the malformed frame.
+The bundle must be truncated at the proxy.
+The config should be misconfigured by the bootstrap script.
+The feature flag must be disabled by the stale snapshot.
+The record should be duplicated by the second writer.
+The failure must be caused by the DNS resolver.
+The bad value should be inherited from the parent process.
+The response must be frozen in the serializer.
+The token should be stolen by the other worker.
+The fault must be found in the cache invalidator.
+The corruption should be known to originate in the decoder.
+The bad state must be seen only after failover.
+The latency must be above two seconds because the lock is contended.
+The queue depth should be under ten because the consumer is stalled.
+The payload must be exactly 64 bytes, so the encoder is at fault.
+The retry count should be more than five, proving the loop never resets.
+The memory use must be at least 8 GB, so the leak is in the cache.
+I would likely blame the stale cache for the outage.
+We can likely conclude the parser caused the crash.
+I could likely attribute the data loss to the second writer.
+We would likely diagnose this as a lock-order inversion.
+I will likely call the proxy the root cause.
+The cache is most likely to trigger the crash.
+The proxy is most likely to corrupt the response.
+The writer is more likely to drop committed rows.
+The retry loop is most likely to produce the duplicate send.
+The stale lock is most likely to generate the timeout.
+The likely candidate is a stale cache in the worker.
+The likely candidates are the parser and the proxy.
+The likely approach is the retry loop dropping the final acknowledgment.
+The likely shape is a race between the two writers.
+The likely option is that DNS poisoned the connection.
+The bug will likely involve a stale pointer in the decoder.
+The root cause will likely touch the cache invalidation path.
+The failure will likely require a race between the writers.
+The corruption will likely span both serializer stages.
+The outage will likely need a stale DNS record to reproduce.
+The outage is probably better explained by DNS poisoning.
+The crash is probably simpler to attribute to the stale lock.
+The data loss is probably cleaner to describe as a double write.
+The cache is probably safer to blame than the parser.
+The timeout is probably cheaper to explain as retry exhaustion.
+I think its origin is the stale cache.
+I think its source is the retry loop.
+I think its root cause lies in the proxy.
+I think its trigger comes from the allocator.
+I think its cause is DNS.
+The invariant must be that the cache caused the crash.
+The rule should be that the parser is corrupting requests.
+The expectation should be that the lock caused the timeout.
