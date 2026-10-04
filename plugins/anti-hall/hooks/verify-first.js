@@ -30,6 +30,7 @@
 // on any error: a bug here must never wedge a turn.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const crypto = require('./lib/lazy-node.js').crypto; // lazy: loaded on first hash

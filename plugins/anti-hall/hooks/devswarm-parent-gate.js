@@ -117,6 +117,7 @@
 // Pure Node built-ins. Cross-platform. Fail-open on EVERY error.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 // Cheap no-op exit for a session this hook cannot act on (non-DevSwarm, child,
 // setting off, user skip) BEFORE the heavy requires below — see the lib header.

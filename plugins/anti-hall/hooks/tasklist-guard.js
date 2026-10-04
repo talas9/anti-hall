@@ -30,6 +30,7 @@
 // MAX_BLOCKS cap stops churn-driven loops.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');

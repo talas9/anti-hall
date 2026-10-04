@@ -78,6 +78,7 @@
 //   exit 0 : always (fail-open on ANY error — never slow or block the turn)
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const os = require('os');

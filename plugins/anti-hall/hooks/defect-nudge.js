@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+require('./lib/judge-child-exit');
 // anti-hall :: defect-nudge (SessionStart)
 //
 // Non-blocking, once-per-24h nudge surfacing the file-based defect channel

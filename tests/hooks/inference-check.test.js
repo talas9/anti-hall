@@ -196,7 +196,7 @@ function fakeClaude(dir, behaviour) {
   fs.writeFileSync(bin, '#!/usr/bin/env node\n' +
     "const fs = require('fs');\n" +
     "let input = ''; process.stdin.on('data', (d) => { input += d; }).on('end', () => {\n" +
-    "  fs.writeFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ argv: process.argv.slice(2), child: process.env.ANTIHALL_JUDGE_CHILD, input }));\n" +
+    "  fs.writeFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), child: process.env.ANTIHALL_JUDGE_CHILD, input }));\n" +
     '  ' + behaviour + '\n' +
     '});\n');
   fs.chmodSync(bin, 0o755);

@@ -12,6 +12,7 @@
 // returns null, even when this hook reported available:true.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');

@@ -42,6 +42,7 @@
 //   exit 0 : always (never blocks). Fail-open on any error.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const core = require('./verify-first-core');

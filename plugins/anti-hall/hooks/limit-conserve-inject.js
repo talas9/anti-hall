@@ -17,6 +17,7 @@
 // macOS Node 18/20 (mirrors task-tracker.js / verify-first.js pattern).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const { isConserving } = require('./limit-conserve.js');

@@ -15,6 +15,9 @@
 // Every failure (CLI missing, non-zero exit, timeout, unparseable reply) -> null,
 // and the hook allows (fail-open).
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { spawn } = require('child_process');
 const { scrubSecrets } = require('./secret-scrub.js');
 
@@ -80,17 +83,17 @@ function buildJudgeInput(messageText, evidenceChunks, userRequest) {
   const picked = [];
   let used = 0;
   for (let i = chunks.length - 1; i >= 0 && used < MAX_EVIDENCE; i--) {
-    const c = String(chunks[i] || '').slice(0, Math.max(0, Math.min(1500, MAX_EVIDENCE - used)));
+    const c = scrubSecrets(String(chunks[i] || '')).slice(0, Math.max(0, Math.min(1500, MAX_EVIDENCE - used)));
     if (!c.trim()) continue;
     picked.push(c);
     used += c.length;
   }
   picked.reverse();
   if (picked.length) ev = picked.map((c, i) => '[' + (i + 1) + '] ' + c).join('\n');
-  const req = String(userRequest || '').trim().slice(0, MAX_REQUEST);
-  return 'USER REQUEST:\n' + (req ? scrubSecrets(req) : '(not available)') +
-    '\n\nTOOL EVIDENCE (most recent last):\n' + (ev ? scrubSecrets(ev) : '(none)') +
-    '\n\nMESSAGE to evaluate:\n\n' + scrubSecrets(String(messageText).slice(0, MAX_MESSAGE));
+  const req = scrubSecrets(String(userRequest || '').trim()).slice(0, MAX_REQUEST);
+  return 'USER REQUEST:\n' + (req ? req : '(not available)') +
+    '\n\nTOOL EVIDENCE (most recent last):\n' + (ev ? ev : '(none)') +
+    '\n\nMESSAGE to evaluate:\n\n' + scrubSecrets(String(messageText)).slice(0, MAX_MESSAGE);
 }
 
 // parseDecision(text) -> {decision, claim?} | null
@@ -124,12 +127,21 @@ function runCliJudge(o) {
   const opts = o || {};
   return new Promise((resolve) => {
     let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    // Private empty cwd so a planted CLAUDE.md/.claude in a shared temp dir
+    // cannot steer the judge; removed once the child is done.
+    let ownDir = null;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      if (ownDir) { try { fs.rmSync(ownDir, { recursive: true, force: true }); } catch (_) { /* best effort */ } }
+      resolve(v);
+    };
     let child;
     try {
+      if (!opts.cwd) ownDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-judge-'));
       const env = Object.assign({}, opts.env || process.env, { ANTIHALL_JUDGE_CHILD: '1' });
       child = spawn(opts.bin || 'claude', cliArgs(opts.model || 'claude-haiku-4-5'), {
-        env, cwd: opts.cwd || require('os').tmpdir(), stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
+        env, cwd: opts.cwd || ownDir, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
       });
     } catch (_) {
       return finish(null);

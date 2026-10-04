@@ -32,6 +32,7 @@
 // No external deps; pure Node built-ins. JSON via JSON.stringify.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');

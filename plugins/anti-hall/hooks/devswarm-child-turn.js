@@ -79,6 +79,7 @@
 // async-flush race (mirrors limit-conserve-inject.js / devswarm-child-role.js).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 // Cheap no-op exit for a non-child session BEFORE the heavy requires below (see lib header).
 require('./lib/devswarm-primary-gate.js').exitIfInert(module, { setting: 'childTurn', role: 'child' });

@@ -54,6 +54,7 @@
 //   - NEVER throws: all logic is wrapped in a top-level try/catch -> exit 0.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');

@@ -50,6 +50,7 @@
 //   exit 0 : always (fail-open on ANY error — never slow or block session start).
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs   = require('fs');
 const path = require('path');

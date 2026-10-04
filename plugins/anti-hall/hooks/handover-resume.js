@@ -46,6 +46,7 @@
 //   otherwise (older than 7 days)              -> silent, no injection.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');

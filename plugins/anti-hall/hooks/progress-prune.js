@@ -6,6 +6,7 @@
 // startup stays cheap across projects.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');

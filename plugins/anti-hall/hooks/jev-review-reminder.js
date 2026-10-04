@@ -26,6 +26,7 @@
 //   exit 0 : ALWAYS — fail-open on any error, never blocks session start.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const os = require('os');

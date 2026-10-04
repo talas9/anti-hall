@@ -5,6 +5,7 @@
 // a Fable model is available for workflow routing. No probing, no network.
 
 'use strict';
+require('./lib/judge-child-exit');
 
 const fs = require('fs');
 const path = require('path');
