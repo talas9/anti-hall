@@ -4,12 +4,12 @@
     {
       "label": "first-prompt",
       "status": 0,
-      "text": "TASK-LIST DISCIPLINE: capture EVERY user request as a task (TaskCreate) before starting work, so no request is lost. Assign each task a priority (metadata.priority: P0/P1/P2) and maintain the list sorted highest-priority-first so the most important work is always on top; work tasks in that order. Keep statuses current: in_progress when starting, completed when done, deferred if explicitly deprioritized. Keep the MAIN thread non-blocking - delegate heavy/long work to background subagents and continue. Report progress to the user. Do not finish a turn with silently-dropped requests."
+      "text": "💡 anti-hall · task-tracker: capture EVERY user request as a task (TaskCreate) before starting work, so no request is lost.\nDo instead: give each task a priority (metadata.priority: P0/P1/P2) and keep the list sorted highest first; keep statuses current (in_progress when starting, completed when done, deferred if explicitly deprioritized); keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; report progress; never finish a turn with a silently dropped request."
     },
     {
       "label": "second-prompt",
       "status": 0,
-      "text": "TASK-LIST: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
+      "text": "💡 anti-hall · task-tracker: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
     }
   ]
 }
