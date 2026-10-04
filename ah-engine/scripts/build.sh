@@ -44,10 +44,16 @@ cargo build --release --locked --target "$target"
 bin="$root/target/$target/release/ah-engine"
 [ -f "$bin" ] || { echo "build.sh: missing artifact $bin" >&2; exit 1; }
 
-# The binary must not contain the checkout or cargo home path.
+# The binary must not contain the checkout or cargo home path. Each is matched as a path prefix ("$p/"),
+# so a short root such as /src cannot match unrelated strings; a root under 8 characters is not checked.
 for p in "$root" "$root_phys" "$cargo_home"; do
-  if grep -aqF -- "$p" "$bin"; then
-    echo "build.sh: $bin embeds the path $p" >&2
+  p="${p%/}"
+  if [ "${#p}" -lt 8 ]; then
+    echo "build.sh: skipping the embedded-path check for '$p' (shorter than 8 characters)"
+    continue
+  fi
+  if grep -aqF -- "$p/" "$bin"; then
+    echo "build.sh: $bin embeds the path $p/" >&2
     exit 1
   fi
 done

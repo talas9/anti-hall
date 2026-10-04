@@ -13,6 +13,10 @@ on:
         description: Rebuild even when the fingerprint matches ah-engine.lock
         type: boolean
         default: false
+      base:
+        description: Branch the lock PR targets. Never main (main changes only through PRs from dev).
+        type: string
+        default: dev
   push:
     tags: ['ah-engine-v*']
 
@@ -43,7 +47,11 @@ jobs:
       - id: meta
         env:
           FORCE: ${{ inputs.force }}
+          BASE: ${{ inputs.base }}
         run: |
+          if [ "$BASE" = main ] || [ -z "$BASE" ]; then
+            echo "::error::base must not be main (or empty): the lock PR targets dev, and main changes only through PRs from dev"; exit 1
+          fi
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' ah-engine/Cargo.toml | head -1)"
           fp="$(ah-engine/scripts/fingerprint.sh)"
           locked=""
@@ -155,7 +163,7 @@ jobs:
         run: ah-engine/scripts/update-lock.sh dist ah-engine.lock "$GITHUB_RUN_ID"
       - name: Open PR
         env:
-          BASE: ${{ github.ref_name }}
+          BASE: ${{ inputs.base }}
         run: |
           branch="ah-engine-prepare/v${VERSION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git config user.name "github-actions[bot]"
@@ -164,6 +172,7 @@ jobs:
           git add ah-engine.lock
           git commit -m "chore(ah-engine): lock v${VERSION}"
           git push origin "$branch"
+          [ "$BASE" != main ] || { echo "::error::base must not be main"; exit 1; }
           gh pr create --base "$BASE" --head "$branch" \
             --title "chore(ah-engine): lock v${VERSION}" \
             --body "Prepare run ${GITHUB_RUN_ID}: updates ah-engine.lock with the version, fingerprint and checksums of the built assets. After merge, tag ah-engine-v${VERSION} to publish. See ah-engine/RELEASING.md."
@@ -202,7 +211,7 @@ jobs:
             || { echo "::error::run $run_id is not a successful manual ah-engine-release run"; exit 1; }
           head_sha="$(jq -r .headSha <<<"$info")"
           git cat-file -e "${head_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$head_sha" \
-            || { echo "::error::source commit $head_sha of run $run_id is unavailable"; exit 1; }
+            || { echo "::error::source commit $head_sha of run $run_id is unavailable: it must stay reachable (merged into a branch) until publish; rerun prepare from a branch that will be merged"; exit 1; }
           git worktree add --detach "$RUNNER_TEMP/prepared-src" "$head_sha" >/dev/null
           [ "$("$RUNNER_TEMP/prepared-src/ah-engine/scripts/fingerprint.sh")" = "$(jq -r .fingerprint ah-engine.lock)" ] \
             || { echo "::error::run $run_id built a source whose fingerprint differs from ah-engine.lock"; exit 1; }

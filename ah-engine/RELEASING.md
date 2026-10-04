@@ -22,8 +22,8 @@ ah-engine has its own semver, separate from the plugin. A release is tagged `ah-
 ## Procedure
 
 1. Change the engine and bump `version` in `ah-engine/Cargo.toml`. Prepare skips the build when the fingerprint equals the one in `ah-engine.lock`.
-2. **Prepare.** Run the `ah-engine-release` workflow (workflow_dispatch) on the release branch. For each entry in `targets.json` it builds with `cargo build --release --locked`, packages `ah-engine-vX.Y.Z-<triple>.tar.gz` (binary, LICENSE, README under one top-level directory), then runs `cargo test --release --locked` in a separate target directory. It also builds `ah-engine-vX.Y.Z-src.tar.gz` (sources plus `cargo vendor`). It then opens a PR that updates `ah-engine.lock`. The PR branch is named `ah-engine-prepare/vX.Y.Z-<run id>-<attempt>`, so a re-run does not collide with an earlier one. The `force` input rebuilds an unchanged fingerprint; use it for a re-run after the artifacts expired. PRs opened with the default `GITHUB_TOKEN` do not start other workflows: close and reopen the PR, or push to its branch with a personal token, to run its checks. The repo setting "Allow GitHub Actions to create and approve pull requests" must be on.
-3. Merge the PR.
+2. **Prepare.** Run the `ah-engine-release` workflow (workflow_dispatch) on the release branch. For each entry in `targets.json` it builds with `cargo build --release --locked`, packages `ah-engine-vX.Y.Z-<triple>.tar.gz` (binary, LICENSE, README under one top-level directory), then runs `cargo test --release --locked` in a separate target directory. It also builds `ah-engine-vX.Y.Z-src.tar.gz` (sources plus `cargo vendor`). It then opens a PR that updates `ah-engine.lock`. The PR branch is named `ah-engine-prepare/vX.Y.Z-<run id>-<attempt>`, so a re-run does not collide with an earlier one. The `force` input rebuilds an unchanged fingerprint; use it for a re-run after the artifacts expired. PRs opened with the default `GITHUB_TOKEN` do not start other workflows: close and reopen the PR, or push to its branch with a personal token, to run its checks. The PR targets the `base` input, which defaults to `dev` and is rejected if it is `main` (main changes only through PRs from dev). The repo setting "Allow GitHub Actions to create and approve pull requests" must be on.
+3. Merge the PR. The prepare branch can be deleted afterwards. The prepare run's source commit must stay reachable (merged into a branch) until publish, because publish fetches it to check the fingerprint; if it is gone, rerun prepare.
 4. **Publish.** Push the tag `ah-engine-vX.Y.Z` on the merged commit. The workflow fails unless the tagged commit is on the default branch, `ah-engine.lock` exists, its version equals the tag and `Cargo.toml`, its fingerprint equals the source's, the prepare run was a successful manual run whose source commit has the same fingerprint, the asset names are exactly the `targets.json` triples plus the source tarball for that version, and the prepare run's artifacts match every sha256 in the lock. The release job checks the sums again before creating the release. It then runs build-provenance attestation and creates the GitHub Release with every archive, its `.sha256`, and `SHA256SUMS`. Prepare artifacts expire after the repository's retention period; rerun prepare if they have.
 
 ## `ah-engine.lock`
@@ -59,7 +59,8 @@ cargo build --release --offline --frozen
 ## Verifying release artifacts
 
 ```sh
-shasum -a 256 -c SHA256SUMS --ignore-missing
+shasum -a 256 -c SHA256SUMS --ignore-missing   # macOS
+sha256sum -c --ignore-missing SHA256SUMS       # Linux
 gh attestation verify ah-engine-vX.Y.Z-<triple>.tar.gz --repo talas9/anti-hall
 ```
 
