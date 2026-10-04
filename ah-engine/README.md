@@ -151,6 +151,13 @@ Deliberate differences from the Node guard:
   `classifyBashWork` from command-guard and the hook's `CLAUDE_CODE_ENTRYPOINT`, neither of which the engine has yet, so
   every main-thread call defers to the Node guard, which keeps all of the window's state; the engine keeps none, so the
   two cannot disagree. The window moves in with the command-guard port (planned, D75).
+- `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
+  exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
+  current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both
+  declaration phrasings need. A turn that might declare defers to Node, which owns the phrase analysis and the block; the
+  block (a JSON decision on stdout, the reason on stderr, exit 2) is a shape the engine's reply cannot carry yet, so
+  every block is a deferral. A transcript line serde rejects but JavaScript may accept (lone surrogate escape, extreme
+  nesting or exponent) also defers.
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 

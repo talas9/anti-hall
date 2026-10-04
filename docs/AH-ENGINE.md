@@ -46,9 +46,12 @@ labelled with how it was measured in the README of `ah-engine/`.
   check instead of a pattern.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name. Today there is one: `git`, a port of the
   git-guard hook with 100 percent agreement with the Node original on every corpus tried (see the README of `ah-engine/`).
-- **Small guard ports.** `merge-side-pick`, `ship-it-guard`, `scan-throttle` and `coordinator-work-guard` are four of five
-  small guards ported from Node (the fifth follows in the same lane). They share `checks/guardkit`: the switch and skip-file lookup, the message layout, JavaScript-exact regex
-  translation and a per-session state store that lives in memory until storage is wired in (planned, D22).
+- **Small guard ports.** `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
+  `compact-declaration-guard` are the five small guards ported from Node. They share `checks/guardkit`: the switch and
+  skip-file lookup, the message layout, JavaScript-exact regex translation and a per-session state store that lives in
+  memory until storage is wired in (planned, D22). Where the Node verdict cannot be reproduced exactly (a block whose
+  stdout and stderr the reply cannot carry yet, a regex construct, a classifier that lives in another port) the check
+  defers, so Node decides.
 
 ## What works today
 
@@ -62,6 +65,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Shipped defaults for every tunable, table, message, path, env-var name, limit and timeout | implemented | D17 |
 | Built-in `git` check with exact parity to git-guard | implemented | D29-D31 |
 | Built-in `merge-side-pick` check (advisory on a push after a one-sided conflict resolution) with exact parity | implemented, state in memory | D29-D31, D75 |
+| Built-in `compact-declaration-guard` check: allows new work unless the turn may hold a declaration (the common case, read from the transcript tail); a possible declaration, and so every block, defers to Node | implemented | D29-D31, D75 |
 | Built-in `coordinator-work-guard` check: answers every call the payload proves is not the main thread (88 percent of recorded Bash calls); the window itself defers to Node until the command classifier is ported (planned, D75) | implemented in part | D29-D31, D75 |
 | Built-in `scan-throttle` check (advisory throttle prefix for user-configured heavy scans) with exact parity; patterns it cannot match exactly defer | implemented | D29-D31, D75 |
 | Built-in `ship-it-guard` check (opt-in plan gate for Edit, Write and MultiEdit; Bash and apply_patch defer to Node) with exact parity | implemented | D29-D31, D75 |

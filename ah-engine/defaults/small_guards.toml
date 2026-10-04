@@ -360,3 +360,82 @@ value = ["agent_id", "agent_type"]
 [coordinator_work.codex_markers]
 doc = "Payload fields that, both non-empty strings, identify a Codex payload."
 value = ["turn_id", "model"]
+
+# ---- compact-declaration-guard (hooks/compact-declaration-guard.js, hooks/lib/compact-advice.js) ------------
+
+[compact_decl.summary]
+doc = "One-line description of the compact-declaration-guard check in the generated reference."
+value = "Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks (port of compact-declaration-guard.js)."
+
+[compact_decl.setting]
+doc = "Where the on/off switch is read from (guards.compactDeclarationGuard, default on; it has no environment variable)."
+value = { section = "guards", key = "compactDeclarationGuard", env = "", aliases = [], option = "guards_compact_declaration_guard", default = true }
+
+[compact_decl.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "compact-declaration-guard"
+
+[compact_decl.agent_markers]
+doc = "Payload fields that, present and non-null, prove the call comes from a subagent."
+value = ["agent_id", "agent_type"]
+
+[compact_decl.work_tools]
+doc = "Tools that always start new work (spawns and file edits)."
+value = ["Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit"]
+
+[compact_decl.handover_file]
+doc = "Rust regex source, tested on a resolved path, for a file inside the handovers directory: writing it is the very thing a block tells the agent to do, so it is never new work."
+value = '(?s)(?:^|/)\.anti-hall/handovers/[^/]'
+
+[compact_decl.bash_work_always]
+doc = "Regex sources (case-insensitive) of shell commands that change state wherever they appear in a command with quoted text blanked."
+value = [
+  '\bgit\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\b',
+  '\bgit\s+(?:checkout|switch|restore|clean)\b',
+  '\bsed\s+-i',
+  '\bnpm\s+(?:install|i|ci)\b',
+  '\b(?:pnpm|yarn)\s+(?:add|install)\b',
+  '\bpip\s+install\b',
+  '\bpatch\b',
+]
+
+[compact_decl.bash_work_command_position]
+doc = "Regex source (case-insensitive) of the bare state-changing verbs, which count only at command position (line start, or after a separator, parenthesis, backtick or substitution)."
+value = '(?:\A|[\n\r  ;&|`(]|\$\()\s*(?:rm|cp|mv|tee|mkdir|touch|make|chmod)\b'
+
+[compact_decl.bash_work_extra]
+doc = "Regex source (case-insensitive) of the pushes, tags and pull-request writes this guard counts as work on top of the shared list."
+value = '\bgit\s+(?:push|tag)\b|\bgh\s+pr\s+(?:merge|create)\b'
+
+[compact_decl.tail_bytes]
+doc = "How many bytes from the end of the transcript are read (the Node guard reads the same)."
+value = 1572864
+min = 1024
+
+[compact_decl.safe_word]
+doc = "Word a declaration must contain (compared without regard to ASCII case); a turn without it cannot hold one."
+value = "safe"
+
+[compact_decl.not_typed]
+doc = "Regex source for injected user content that never starts a turn (task notification, local command output, system reminder, shell output)."
+value = '^\s*<(task-notification|local-command-|system-reminder|bash-std(out|err))'
+
+[compact_decl.notify]
+doc = "Regex source for a background task notification."
+value = '^\s*<task-notification>'
+
+[compact_decl.compact_command]
+doc = "Regex source for the compact command line the host writes as a user entry."
+value = '^\s*<command-name>\s*/compact\s*</command-name>'
+
+[compact_decl.reminder_tags]
+doc = "Opening and closing tag of an injected system reminder, which may precede the real prompt."
+value = { open = "<system-reminder>", close = "</system-reminder>" }
+
+[compact_decl.deep_json_depth]
+doc = "Nesting depth beyond which a transcript line the engine cannot parse is deferred to Node (the Node parser has no such limit)."
+value = 100
+
+[compact_decl.codex_text_types]
+doc = "Content block types that carry assistant text in a Codex rollout entry."
+value = ["output_text", "text"]

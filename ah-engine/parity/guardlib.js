@@ -114,6 +114,7 @@ async function runParity(o) {
         for (const [mode, r] of Object.entries(results)) {
           stats.compared++;
           if (r === 'same') stats.same++;
+          else if (r === 'deferred' && o.strictDeferPrefix && String(sc.id).startsWith(o.strictDeferPrefix) && !n.out && n.code === 0) { stats.mismatch++; if (mism.length < 2000) mism.push({ scenario: sc.id, step: si, mode, payload, node: n, engine: { code: 'deferred', out: 'AHDEFER', err: 'engine deferred where Node allowed (classification divergence)' } }); }
           else if (r === 'deferred') { stats.deferred++; (stats.deferredIds = stats.deferredIds || new Set()).add(sc.id); if (!n.out && n.code === 0) stats.unneeded++; if (mode === 'daemon' || MODE === 'oneshot') stopped = true; }
           else { stats.mismatch++; if (mism.length < 2000) mism.push({ scenario: sc.id, step: si, mode, payload, node: n, engine: r }); }
         }
