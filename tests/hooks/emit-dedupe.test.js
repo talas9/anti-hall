@@ -264,7 +264,7 @@ test('on-change key: undelivered queued invocations do not count toward the keep
   } finally { rm(home); }
 });
 
-test('WORKSPACES table: age-only change -> suppressed; unread change -> emitted', () => {
+test('WORKSPACES table: age-only and unread-only changes -> suppressed; status change -> emitted (unread rides the per-turn inbox segments)', () => {
   const home = tmpHome();
   try {
     const tp = mkTranscript(home);
@@ -273,7 +273,7 @@ test('WORKSPACES table: age-only change -> suppressed; unread change -> emitted'
     });
     const t1 = inbox.buildWorkspaceTable([row(2)], T0, false, 0, [], 0);
     const t2 = inbox.buildWorkspaceTable([row(2)], T0 + 5 * MIN, false, 0, [], 0);
-    const t3 = inbox.buildWorkspaceTable([row(3)], T0 + 10 * MIN, false, 0, [], 0);
+    const t3 = inbox.buildWorkspaceTable([{ ...row(3), label: 'stale' }], T0 + 10 * MIN, false, 0, [], 0);
     assert.notStrictEqual(t1, t2, 'precondition: the raw tables differ (age column)');
     assert.ok(t1.startsWith('💡 anti-hall · devswarm-workspaces: (re-sent on change'), 'header no longer claims every turn');
     const b = { home, sessionId: 's1', key: 'parent-inbox-table', keepaliveTurns: 10,
@@ -282,7 +282,10 @@ test('WORKSPACES table: age-only change -> suppressed; unread change -> emitted'
     deliver(tp, T0 + 20, t1);
     assert.strictEqual(emit({ ...b, content: t2, now: T0 + 5 * MIN }), false, 'age-only change suppressed');
     deliver(tp, T0 + 5 * MIN + 20, 'OVERRIDE');
-    assert.strictEqual(emit({ ...b, content: t3, now: T0 + 10 * MIN }), true, 'unread change emitted');
+    assert.strictEqual(emit({ ...b, content: t3, now: T0 + 10 * MIN }), true, 'status change emitted');
+    deliver(tp, T0 + 10 * MIN + 30, t3);
+    const t5 = inbox.buildWorkspaceTable([{ ...row(9), label: 'stale' }], T0 + 12 * MIN, false, 0, [], 0);
+    assert.strictEqual(emit({ ...b, content: t5, now: T0 + 12 * MIN }), false, 'unread-only change suppressed');
   } finally { rm(home); }
 });
 

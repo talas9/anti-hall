@@ -447,8 +447,11 @@ function normalizeTableAges(t) {
   // carries ages too — dropped here so a ticking clock never re-sends the table.
   // A row without a plan never contains this text, so its line is unchanged.
   // The P2 token figure (' · 1.8M tok') rises every sweep and is dropped too.
+  // The unread count is dropped as well: it changes on nearly every busy turn
+  // and the same unread state is already injected per turn by the inbox/urgent
+  // segments, so re-sending the whole table for it only re-paid ~1k chars.
   return String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l)
-    ? l.replace(/\|[^|]*\|\s*$/, '| |').replace(/ · \d+[mhd](?= · (?:progress|no progress))/g, '').replace(/ · progress \d+[mhd] ago/g, '')
+    ? l.replace(/\|[^|]*\|\s*$/, '| |').replace(/\|\s*\d+\s*\|\s*\|\s*$/, '| | |').replace(/ · \d+[mhd](?= · (?:progress|no progress))/g, '').replace(/ · progress \d+[mhd] ago/g, '')
       .replace(/ · [\d.]+[kM]? tok\b/g, '')
     : l)).join('\n');
 }
@@ -2539,11 +2542,11 @@ function main() {
     if (capped) logTableCap(home, activeRows.length, shown.length);
     if (shown.length || archivedHidden) {
       // D3: on-change dedupe (lib/emit-dedupe.js rule b) — re-emitted only when
-      // the table changed beyond relative ages, or as a keepalive every
-      // 10 unchanged DELIVERED turns. Fail-open: emit.
+      // the table changed beyond relative ages and unread counts, or as a keepalive
+      // every guards.injectionRepeatEvery unchanged DELIVERED turns. Fail-open: emit.
       const table = buildWorkspaceTable(shown, now, capped, activeRows.length - shown.length, evicted, archivedHidden);
       if (dedupeEmit(home, sessionId, 'parent-inbox-table', table,
-        { transcriptPath, keepaliveTurns: 10, normalize: normalizeTableAges })) {
+        { transcriptPath, keepaliveTurns: Number.isFinite(overrideRepeat) && overrideRepeat > 0 ? overrideRepeat : 0, normalize: normalizeTableAges })) {
         segments.push(table);
         segments.push(TITLE_INSTRUCTION);
       }

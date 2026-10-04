@@ -10,6 +10,7 @@ the update.
 
 - Fixed the limit-conservation advisory (`limit-conserve-inject.js`, Codex `anti-hall-context-conserve` skill) claiming Sonnet draws on a "SEPARATE weekly bucket" or that a downshift preserves a "flagship weekly bucket". Per-model weekly buckets are not documented, and the usage screen shows only "All models" and "Fable only". The text now says only that Codex has its own limit and that cheaper models or fewer agents use less of the shared Claude pool, and makes no claim about Fable's relation to "All models". A test fails if the advisory ever again calls Sonnet, Opus or Haiku a separate bucket.
 - Removed the Flutter-specific `flutter-debug` skill and agent; anti-hall is language-agnostic. The removed code remains in git history.
+- The DevSwarm workspace table (parent inbox) is no longer re-sent when only a row's unread count changes; unread already arrives per turn in the inbox segments. Status/finish/risk changes still re-send it, and the keepalive now follows `guards.injectionRepeatEvery` instead of a fixed 10. Measured on a 3-workspace fixture over 16 delivered turns: 286 -> 198 injected chars per turn on average (the COMMS OVERRIDE line was already once-per-session plus keepalive).
 
 ## 0.202.0 (2026-10-04)
 
