@@ -33,8 +33,13 @@ function session(home, tp) {
     });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
-    // the model "received" this turn's context -> it lands in the transcript
-    if (c) fs.appendFileSync(tp, attLine(Date.now(), c));
+    // The model "received" this turn's prompt -> a UserPromptSubmit
+    // hook_additional_context attachment lands in the transcript EVERY delivered
+    // turn (other hooks' context when this block is deduped). emit-dedupe counts
+    // a delivered turn from that attachment; without it the keepalive counter
+    // only advanced while the single first-turn attachment was inside the 1 s
+    // timestamp tolerance, so the 12-turn test passed or failed on spawn speed.
+    fs.appendFileSync(tp, attLine(Date.now(), c || 'OTHER HOOK CONTEXT'));
     return c.includes(MARK);
   };
 }

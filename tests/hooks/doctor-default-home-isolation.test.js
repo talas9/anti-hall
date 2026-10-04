@@ -163,7 +163,7 @@ test('functional: FIXED pattern (mkdtemp fallback) never resolves the real machi
     const resolved = spawnWithEnv(Object.assign({
       HOME: fallbackHome, USERPROFILE: fallbackHome,
     }, callerEnv));
-    const realHome = os.homedir();
+    const realHome = os.userInfo().homedir;
     assert.notStrictEqual(resolved, realHome, 'fixed default must NOT resolve to the real machine home');
     assert.ok(
       resolved.startsWith(fs.realpathSync(os.tmpdir())) || resolved.startsWith(os.tmpdir()),
@@ -181,7 +181,8 @@ test('VACUOUS-RED proof: the OLD buggy pattern (HOME: undefined) DOES leak to th
   const callerEnv = {};
   const buggyOverrides = Object.assign({ HOME: undefined, USERPROFILE: undefined }, callerEnv);
   const resolved = spawnWithEnv(buggyOverrides);
-  const realHome = os.homedir();
+  // passwd home: an unset HOME resolves here, and it is immune to the suite running under a temp HOME
+  const realHome = os.userInfo().homedir;
   assert.strictEqual(
     resolved, realHome,
     'documenting the pre-fix bug: an unset HOME resolves os.homedir() to the REAL machine home ('
@@ -190,7 +191,7 @@ test('VACUOUS-RED proof: the OLD buggy pattern (HOME: undefined) DOES leak to th
 });
 
 test('real store untouched: ~/.anti-hall/devswarm/store mtime is unchanged by a FIXED-pattern runDoctor call', () => {
-  const realStoreDir = path.join(os.homedir(), '.anti-hall', 'devswarm', 'store');
+  const realStoreDir = path.join(os.userInfo().homedir, '.anti-hall', 'devswarm', 'store');
   const before = fs.existsSync(realStoreDir) ? fs.statSync(realStoreDir).mtimeMs : null;
 
   const callerEnv = {};

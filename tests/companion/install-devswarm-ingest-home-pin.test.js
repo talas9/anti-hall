@@ -129,6 +129,6 @@ test('(b) ANTIHALL_INGEST_ALLOW_TMP_HOME=1 suppresses the tmp-home guard\'s own 
 });
 
 test('(b) a normal (non-tmp) HOME never trips the tmp-home guard', () => {
-  const home = path.join(os.homedir(), '.__anti-hall-nonexistent-probe__');
-  assert.strictEqual(m.homeIsUnderTmpdir(os.homedir()), false, 'the real machine home must never read as a tmp home');
+  const home = path.join(os.userInfo().homedir, '.__anti-hall-nonexistent-probe__');
+  assert.strictEqual(m.homeIsUnderTmpdir(os.userInfo().homedir), false, 'the real machine home must never read as a tmp home');
 });
