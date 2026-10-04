@@ -456,7 +456,10 @@ function main() {
     what = 'stop blocked: ' + workCount + ' file-changing actions but ' + progressPath + ' is missing or stale.';
     why = 'The progress file must track what was done.';
   }
-  const instead = (hasStaleInProgress && sawTaskActivity
+  const instead = (!sawTaskActivity && taskStoreReset
+      ? (codexHost ? 'recreate the open tasks in your task list (see the progress file / handover), then continue. ' : 'recreate the open tasks with TaskCreate (see the progress file / handover), then continue. ')
+      : '') +
+    (hasStaleInProgress && sawTaskActivity
       ? 'dispatch a background agent for EACH now (do not serialize to one), or set idle ones back to pending; start the highest-priority task\'s agent first but keep the rest running. '
       : '') +
     (codexHost

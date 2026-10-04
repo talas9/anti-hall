@@ -172,7 +172,7 @@ test('SPAWN reason: names `inbox pull` + kill-switch, and does NOT echo the path
   assert.strictEqual(r.status, 2);
   assert.ok(/inbox pull/.test(r.json.reason), 'reason redirects to `devswarm.js inbox pull`');
   assert.ok(/DISABLE_ANTIHALL_DEVSWARM=1/.test(r.json.reason), 'reason names the kill-switch');
-  assert.ok(/CURSOR DESYNC/.test(r.json.reason) && /does NOT drain the queue/.test(r.json.reason),
+  assert.ok(/bypasses the durable cursor/.test(r.json.reason) && /does not drain the queue/.test(r.json.reason),
     'reason uses the accurate cursor-desync harm model');
   assert.ok(!r.stdout.includes('x.ndjson'), 'reason must not echo the read path');
 });

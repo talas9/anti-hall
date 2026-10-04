@@ -641,7 +641,7 @@ test('P1-a: duplicate-text boundary — current hook regex verdict + stored hash
 
     assert.ok(isBlock(rOld), `pre-3e72bf3 hook expected to block; stdout: ${rOld.stdout}`);
     assert.strictEqual(isBlock(rNew), isBlock(rOld), 'current hook verdict must match the pre-3e72bf3 hook');
-    assert.deepStrictEqual(rNew.json, rOld.json, 'block reason must match byte-for-byte');
+    assert.strictEqual(rNew.json.decision, rOld.json.decision, 'block decision must match (the reason wording is the shared shape now)');
 
     const stOld = readState(hOld.home);
     const stNew = readState(hNew.home);

@@ -1036,7 +1036,7 @@ test('DEVSWARM FILE-READ BLOCK: cat of the raw inbox ndjson', () => {
   const r = runDevswarmFileRead((root) => `cat ${pathx.join(root, 'inbox', 'x.ndjson')}`);
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
   assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
-  assert.ok(/CURSOR DESYNC/.test(r.json.reason) && /does NOT drain the queue/.test(r.json.reason),
+  assert.ok(/bypasses the durable cursor/.test(r.json.reason) && /does not drain the queue/.test(r.json.reason),
     'reason must use the accurate cursor-desync harm model (append-only, not a drain)');
 });
 
@@ -1182,17 +1182,15 @@ const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-x' }; // no SOURCE_BRANCH -> Prima
 const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' };
 
 // The exact pre-fix baseline reason (npm run build -> verb npm).
-const BASELINE_REASON =
-  'To capture READ-ONLY output yourself: write the command to a scratchpad script and run it with run_in_background (then read its output); each script run is counted as main-thread work. ' +
-  'State changes (commit, push, patch apply, gh mutations, repo edits) and test runs go to a subagent. ' +
-  'Also OK: an executable scratchpad path, in the background; no VAR=… prefix; literal absolute path, not $VAR; chain only wc/head/tail/grep -c/grep -m N. A script piped to tail is STILL blocked in the foreground. ' +
-  'COMMAND-DELEGATION RULE: heavy/long/state-changing commands never run inline in ' +
-  'the main coordinator context (raw output floods the main thread). Otherwise ' +
-  'DELEGATE to a subagent (cheap model: Haiku or similar): pass the command, let it ' +
-  'run and return only a tight summary. Heavy command detected (verb: npm) — ' +
-  'Inline-allowed ONLY when piped to tail/head/wc/grep -c/grep -m N: `python3 -m pytest -q <one file>`, ' +
-  '`node --test <1-2 files>`, `[npx] vitest run|jest <1-2 *.test|spec files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, `git clone --depth 1 <https-url> <scratch/tmp dir>`, ' +
-  'a non-heavy command with --check/--dry-run/--list, or `<python3|node|ruby|perl|php> <existing script> --check`.';
+// The baseline (non-Primary) heavy-command reason in the shared shape: no workspace
+// redirect, no DevSwarm text, scratchpad path first, inline-allowed shapes named.
+function assertBaselineReason(reason) {
+  assert.match(reason, /^\u26D4 anti-hall \u00B7 command-guard: heavy command \(verb: npm\) blocked in the main thread\./);
+  assert.match(reason, /Do instead: To read output yourself: put a READ-ONLY command in a scratchpad script and run it with run_in_background/);
+  assert.match(reason, /Otherwise delegate to a subagent \(cheap model: Haiku or similar\)/);
+  assert.match(reason, /Allowed here: Inline-allowed ONLY when piped to tail\/head\/wc\/grep -c\/grep -m N: `python3 -m pytest -q <one file>`/);
+  assert.ok(!/workspace-scale|devswarm\.js spawn/.test(reason), reason);
+}
 
 test('DEVSWARM PRIMARY in a repo whose CLAUDE.md forbids workspaces: BLOCKED, reason does NOT name `devswarm.js spawn`', () => {
   const h = makeHome();
@@ -1216,10 +1214,10 @@ test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js s
     `Primary reason must name devswarm.js spawn: ${reason}`);
   assert.ok(/workspace-scale/i.test(reason), `Primary reason must state the choice rule: ${reason}`);
   // Measured from the rule text: the leading scratchpad hint names a subagent for state changes.
-  const rule = reason.indexOf('DEVSWARM COMMAND-DELEGATION RULE');
+  const rule = reason.indexOf('Otherwise');
   assert.ok(rule > 0 && reason.indexOf('devswarm.js spawn', rule) < reason.indexOf('subagent', rule),
     `workspace exit must precede the subagent alternative: ${reason}`);
-  assert.ok(/Do NOT hand a workspace-scale matter to a subagent/.test(reason),
+  assert.ok(/Never hand a workspace-scale matter to a subagent/.test(reason),
     `Primary reason must forbid subagent-for-workspace-scale: ${reason}`);
   // Classification detail is still carried through unchanged.
   assert.ok(/\(verb: npm\)/.test(reason), `heavy classification must survive: ${reason}`);
@@ -1228,13 +1226,13 @@ test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js s
 test('DEVSWARM CHILD heavy command: reason is byte-for-byte the baseline (no workspace redirect)', () => {
   const r = runHeavy('npm run build', CHILD_ENV);
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-  assert.strictEqual(r.json.reason, BASELINE_REASON);
+  assertBaselineReason(r.json.reason);
 });
 
 test('NON-DEVSWARM heavy command: reason is byte-for-byte the baseline (no DevSwarm text)', () => {
   const r = runHeavy('npm run build');
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-  assert.strictEqual(r.json.reason, BASELINE_REASON);
+  assertBaselineReason(r.json.reason);
   assert.ok(!/devswarm/i.test(r.stdout), 'non-DevSwarm output must not mention DevSwarm');
 });
 
@@ -1512,8 +1510,8 @@ test('state-changing remote op (gh pr create): still BLOCKED, reason names the r
     const r = runHeavy('gh pr create -R owner/repo --base staging --head develop --title "x" --body-file /tmp/pr.md 2>&1 | tail -2', env);
     assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
     const reason = r.json.reason;
-    assert.ok(/State-changing remote operation detected — /.test(reason), reason);
-    assert.ok(!/Heavy command detected/.test(reason), reason);
+    assert.ok(/state-changing remote command blocked/.test(reason), reason);
+    assert.ok(!/anti-hall \u00B7 command-guard: heavy command/.test(reason), reason);
     assert.ok(!/heavy-pattern/.test(reason), reason);
   }
 });

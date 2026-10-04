@@ -40,9 +40,9 @@ test('edit-guard Primary, no-workspace repo: workspace advice dropped, subagent 
   const r = edit(mkCwd(true), PRIMARY);
   assert.strictEqual(r.status, 2, r.stdout);
   assert.ok(!WS.test(r.json.reason), r.json.reason);
-  assert.match(r.json.reason, /primary\/main orchestrator does not touch files directly — spawn a subagent/);
+  assert.match(r.json.reason, /orchestrator does not touch files directly[\s\S]*spawn a subagent/);
   assert.match(r.json.reason, /skip edit-guard/);
-  assert.match(r.json.reason, /\(tool: Edit\)$/);
+  assert.match(r.json.reason, /Edit blocked/);
 });
 
 test('edit-guard: devswarm.dispatchTierText off (env) drops the workspace advice too', () => {
@@ -56,7 +56,7 @@ test('edit-guard child wording is byte-identical in both repo kinds', () => {
   const b = edit(mkCwd(true), CHILD);
   assert.strictEqual(a.status, 2);
   assert.strictEqual(a.json.reason, b.json.reason);
-  assert.match(a.json.reason, /sub-orchestrator does not touch files directly in its workspace/);
+  assert.match(a.json.reason, /orchestrator does not touch files directly/);
 });
 
 test('command-guard Primary, ordinary repo: workspace advice present', () => {
@@ -69,7 +69,7 @@ test('command-guard Primary, no-workspace repo: workspace advice dropped, subage
   const r = cmd(mkCwd(true), PRIMARY);
   assert.strictEqual(r.status, 2, r.stdout);
   assert.ok(!WS.test(r.json.reason), r.json.reason);
-  assert.match(r.json.reason, /DELEGATE to a subagent/);
+  assert.match(r.json.reason, /delegate to a subagent/);
   assert.match(r.json.reason, /\(verb: npm\)/);
   assert.match(r.json.reason, /Inline-allowed ONLY/);
 });

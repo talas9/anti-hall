@@ -25,7 +25,7 @@ const ENVS = [
   { DEVSWARM_REPO_ID: 'r' },
   { DEVSWARM_REPO_ID: 'r' },
 ];
-const FIRST_LINE = 'To capture READ-ONLY output yourself: write the command to a scratchpad script and run it with run_in_background (then read its output); each script run is counted as main-thread work. State changes (commit, push, patch apply, gh mutations, repo edits) and test runs go to a subagent.';
+const FIRST_LINE = 'Do instead: To read output yourself: put a READ-ONLY command in a scratchpad script and run it with run_in_background';
 
 // Each row: [command, statuses] ordered env0-fg, env0-bg, env1-fg, env1-bg, ...
 const ROWS = [
@@ -118,8 +118,9 @@ test('every blocked variant leads with the working path, before the rule text', 
     for (const c of [REPORTED, 'npm run build']) {
       const r = run(c, env, false);
       assert.strictEqual(r.status, 2, `${c} env ${env}`);
-      assert.ok(r.json.reason.startsWith(FIRST_LINE), `env ${env}: ${r.json.reason.slice(0, 200)}`);
-      assert.ok(r.json.reason.indexOf('COMMAND-DELEGATION RULE') > FIRST_LINE.length, `env ${env}`);
+      const lines = r.json.reason.split('\n');
+      assert.ok(lines[2].startsWith(FIRST_LINE), `env ${env}: ${r.json.reason.slice(0, 300)}`);
+      assert.ok(lines[2].indexOf('Otherwise delegate to') > FIRST_LINE.length, `env ${env}`);
       assert.match(r.json.reason, /Inline-allowed ONLY/);
     }
   }

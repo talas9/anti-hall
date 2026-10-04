@@ -4503,9 +4503,9 @@ function main() {
     guard: 'command-guard',
     what: heavyWhat,
     why: 'Raw output floods the main thread; a worker returns a tight summary instead.',
-    instead: devswarmPrimary && tierText
-      ? 'workspace-scale matter (feature/fix/deploy, own branch + review): `node scripts/devswarm.js spawn <branch> -p "<brief>"` (guard-exempt, run inline). One command or scoped check: ' + delegateTo + '. Never hand a workspace-scale matter to ' + SUB + '.'
-      : delegateTo + '. ' + howToRead + cdJoinHint,
+    instead: howToRead + ' Otherwise ' + (devswarmPrimary && tierText
+      ? 'workspace-scale matter (feature/fix/deploy, own branch + review): `node scripts/devswarm.js spawn <branch> -p "<brief>"` (guard-exempt, run inline); one command or scoped check: ' + delegateTo + '. Never hand a workspace-scale matter to ' + SUB + '.'
+      : delegateTo + '.') + cdJoinHint,
     allowed: codexHost ? INLINE_ALLOWED_HINT.replace('<scratch/tmp dir>', '<tmp dir>') : INLINE_ALLOWED_HINT,
   });
   emitBlock(reason);

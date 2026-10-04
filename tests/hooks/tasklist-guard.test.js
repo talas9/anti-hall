@@ -166,7 +166,7 @@ test('BLOCK: no tasklist (4 edits, no task activity, no progress file)', () => {
     const tp = h.writeTranscript(edits(4));
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /tracked\s+NO\s+tasks/i);
+    assert.match(r.json.reason, /NO tasks tracked/);
   } finally { h.cleanup(); }
 });
 
@@ -263,7 +263,7 @@ test('BLOCK wording: a TaskGet "Task not found" result explains a reset task sto
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
     assert.match(r.json.reason, /task store was reset \(session restore\)/i);
     assert.match(r.json.reason, /recreate the open tasks with TaskCreate/i);
-    assert.ok(!/tracked\s+NO\s+tasks\./i.test(r.json.reason), `must not ALSO emit the generic wording; reason: ${r.json.reason}`);
+    assert.ok(!/NO tasks tracked\./.test(r.json.reason), `must not ALSO emit the generic wording; reason: ${r.json.reason}`);
   } finally { h.cleanup(); }
 });
 
@@ -279,7 +279,7 @@ test('quoted-text audit: a TaskGet result that merely QUOTES "Task not found" mi
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
     assert.ok(!/task store was reset/i.test(r.json.reason), `quoted phrase must not claim a reset; reason: ${r.json.reason}`);
-    assert.match(r.json.reason, /tracked\s+NO\s+tasks\./i);
+    assert.match(r.json.reason, /NO tasks tracked\./);
   } finally { h.cleanup(); }
 });
 
@@ -289,7 +289,7 @@ test('BLOCK wording: unchanged (generic "tracked NO tasks") when there is no res
     const tp = h.writeTranscript(edits(4));
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /tracked\s+NO\s+tasks\./i);
+    assert.match(r.json.reason, /NO tasks tracked\./);
     assert.ok(!/task store was reset/i.test(r.json.reason), `must not claim a reset with no evidence; reason: ${r.json.reason}`);
   } finally { h.cleanup(); }
 });
@@ -968,7 +968,7 @@ test('THREAD 5 ADVISORY: blocking session + no handover dir -> advisory appended
     const tp = h.writeTranscript(edits(4));
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /significant work this session and no handover exists/);
+    assert.match(r.json.reason, /No handover exists yet after significant work/);
     assert.match(r.json.reason, /consider \/anti-hall:handover before ending/);
   } finally { h.cleanup(); }
 });
@@ -1040,7 +1040,7 @@ test('THREAD 7b STALENESS: handover older than the transcript -> stale advisory 
     const tp = h.writeTranscript(edits(4)); // written now -> newer than the handover
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /handover is STALE/);
+    assert.match(r.json.reason, /The handover is stale/);
     assert.match(r.json.reason, /refresh it before the user compacts/);
   } finally { h.cleanup(); }
 });
@@ -1056,7 +1056,7 @@ test('THREAD 7b STALENESS: handover newer than the transcript -> NOT stale, no a
     fs.writeFileSync(path.join(hdir, 'HANDOVER.md'), '# handover\n', 'utf8'); // written after -> newer
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.doesNotMatch(r.json.reason, /handover is STALE/);
+    assert.doesNotMatch(r.json.reason, /The handover is stale/);
   } finally { h.cleanup(); }
 });
 
@@ -1083,7 +1083,7 @@ test('THREAD 7b STALENESS: transcript entries WITHOUT timestamps -> silent (neve
     const tp = h.writeTranscript(noTs);
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.doesNotMatch(r.json.reason, /handover is STALE/);
+    assert.doesNotMatch(r.json.reason, /The handover is stale/);
   } finally { h.cleanup(); }
 });
 
@@ -1102,12 +1102,12 @@ test('THREAD 7b STALENESS: capped — does not repeat once already warned this s
     const tp1 = h.writeTranscript(edits(4));
     const r1 = testHook(HOOK, stopPayload(tp1, h.home, session), { home: h.home });
     assert.ok(isBlock(r1), `first block expected; stdout: ${r1.stdout}`);
-    assert.match(r1.json.reason, /handover is STALE/);
+    assert.match(r1.json.reason, /The handover is stale/);
 
     const tp2 = h.writeTranscript(edits(7)); // different workBucket (floor(n/3)) -> new dedup signal // new signal -> re-blocks
     const r2 = testHook(HOOK, stopPayload(tp2, h.home, session), { home: h.home });
     assert.ok(isBlock(r2), `second block expected on a new signal; stdout: ${r2.stdout}`);
-    assert.doesNotMatch(r2.json.reason, /handover is STALE/,
+    assert.doesNotMatch(r2.json.reason, /The handover is stale/,
       'staleness advisory must not repeat once already warned this session');
   } finally { h.cleanup(); }
 });
@@ -1554,7 +1554,7 @@ test('SIGNATURE-ACK: acking the exact hash signature silences it even when re-de
 
     const r1 = testHook(HOOK, p, { home: h.home });
     assert.ok(isBlock(r1), `1st should block; stdout: ${r1.stdout}`);
-    assert.match(r1.json.reason, /ack it for the rest of this session/, 'reason must carry the ack hint');
+    assert.match(r1.json.reason, /Override \(only if the user explicitly confirmed/, 'reason must carry the ack hint');
 
     const stateFile = path.join(h.home, '.anti-hall', 'tasklist-guard-state-t.json');
     const hash = JSON.parse(fs.readFileSync(stateFile, 'utf8')).hash;
@@ -1706,7 +1706,7 @@ test('BLOCK text: history ledger is append-only via Edit or >>, never Write, exa
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
     assert.ok(r.json.reason.includes(historyPath(h.home)), 'names the exact history file');
-    assert.match(r.json.reason, /APPEND with the Edit tool or a one-line `>>`, NEVER the Write tool/);
+    assert.match(r.json.reason, /append with the Edit tool or a one-line `>>`, never the Write tool/);
   } finally { h.cleanup(); }
 });
 

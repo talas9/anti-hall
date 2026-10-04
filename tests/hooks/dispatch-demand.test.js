@@ -427,6 +427,6 @@ test('owner set -> attended (unchanged); both messages carry the owner hint', ()
     assert.match(ctx(testHook(TRACKER, trackerPayload(tp), { home: h2.home, env: MATCH_ENV })), /set the task's owner to it \(TaskUpdate owner\)/);
     const r = testHook(GUARD, stopPayload(tp), { home: h2.home, env: MATCH_ENV });
     assert.ok(isIdleNeglect(r));
-    assert.match(r.json.reason, /set the task's owner to it \(TaskUpdate owner\)/);
+    assert.match(r.json.reason, /set the task owner to it \(TaskUpdate owner\)/);
   } finally { h2.cleanup(); }
 });

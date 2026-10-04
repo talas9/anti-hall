@@ -157,7 +157,7 @@ test('a scratchpad python script piped to tail stays blocked in the foreground (
     fs.writeFileSync(path.join(dir, 's.py'), 'print(1)\n');
     const res = run(`python3 ${dir}/s.py 2>&1 | tail -3`, dir);
     assert.strictEqual(res.status, 2);
-    assert.match(res.stdout, /STILL blocked in the foreground/);
+    assert.match(res.stdout, /still blocked in the foreground/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

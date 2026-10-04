@@ -340,7 +340,7 @@ function main() {
       what: 'stop blocked: ' + demand.dispatch.length + ' non-blocked, unassigned task(s) have no in-flight agent: ' + list + more + '.',
       why: 'Dispatchable work is sitting idle.',
       instead: 'dispatch them now in parallel (one background agent each, cap ' + (demand.cap || '~min(16, cores-2)') + '), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy (' + UPD + ' addBlockedBy). A running agent already covers a task: set the task owner to it (' + UPD + ' owner) and it counts as attended.' +
-        (anyLiveDevswarmChildren() ? ' Delegated to a DevSwarm workspace: set owner to its id, branch or title.' : ''),
+        (anyLiveDevswarmChildren() ? ' Delegated to a DevSwarm workspace: set the task owner (' + UPD + ' owner) to the workspace id, branch or title.' : ''),
       allowed: 'a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:\'owner\' (or \'user\'/\'human\'/\'external\'), or give it an "OWNER:" / "OWNER DECISION" subject prefix. Never a fake blockedBy dependency.',
     });
   } else {

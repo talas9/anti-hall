@@ -404,10 +404,10 @@ test('Pre verdicts are capped at 20 per session (oldest dropped)', () => {
 
 test('NUDGE: the block clause is dropped when blockAt <= 0', () => {
   const L = lib();
-  assert.match(L.NUDGE(4, CFG), /the 7th within the window is blocked/);
+  assert.match(L.NUDGE(4, CFG), /call 7 in the window is blocked/);
   for (const blockAt of [0, -1]) {
     const t = L.NUDGE(4, Object.assign({}, CFG, { blockAt }));
     assert.doesNotMatch(t, /blocked|\b0th\b/);
-    assert.match(t, /Delegate the rest to a subagent now\.$/);
+    assert.match(t, /delegate the rest to a subagent now\.$/);
   }
 });
