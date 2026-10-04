@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const BIN: &str = env!("CARGO_BIN_EXE_engine");
+const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 const RULES: &str = r#"{"version":1,"rules":[{"id":"force","events":["PreToolUse"],"tools":["Bash"],"field":"command","pattern":"git push --force","action":"deny","message":"blocked"}]}"#;
 const DENY_IN: &str = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
 
@@ -23,10 +23,10 @@ impl Env {
     fn cmd(&self, version: &str) -> Command {
         let mut c = Command::new(BIN);
         c.env("HOME", self.dir.join("home"))
-            .env("ANTIHALL_ENGINE_DIR", self.dir.join("eng"))
-            .env("ANTIHALL_ENGINE_RULES", self.dir.join("rules.json"))
-            .env("ANTIHALL_ENGINE_VERSION", version)
-            .env_remove("ANTIHALL_ENGINE_NOSPAWN");
+            .env("AH_ENGINE_DIR", self.dir.join("eng"))
+            .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
+            .env("AH_ENGINE_VERSION", version)
+            .env_remove("AH_ENGINE_NOSPAWN");
         c
     }
     fn hook(&self, version: &str, input: &str) -> (String, i32) {
@@ -175,14 +175,14 @@ fn fail_open_everywhere() {
         assert_eq!((out.as_str(), code), ("", 0), "{input:?}");
     }
     let mut c = e.cmd("0.1.0");
-    c.env("ANTIHALL_ENGINE_NOSPAWN", "1").env("ANTIHALL_ENGINE_DIR", "/nonexistent/x");
+    c.env("AH_ENGINE_NOSPAWN", "1").env("AH_ENGINE_DIR", "/nonexistent/x");
     let mut ch = c.arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();
     assert!(o.status.success() && o.stdout.is_empty() && o.stderr.is_empty());
     // unwritable engine dir WITH spawning enabled: the daemon cannot start, the client must still fail open
     let mut c = e.cmd("0.1.0");
-    c.env("ANTIHALL_ENGINE_DIR", "/proc/none/x").env("TMPDIR", "/nonexistent");
+    c.env("AH_ENGINE_DIR", "/proc/none/x").env("TMPDIR", "/nonexistent");
     let mut ch = c.arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();

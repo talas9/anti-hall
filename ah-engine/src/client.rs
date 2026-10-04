@@ -4,7 +4,7 @@
 //!  1. ask the daemon (2 s overall deadline, framed reply, size-capped input);
 //!  2. a complete OK frame is the answer (its body may be empty = nothing to say);
 //!  3. anything else (no daemon, BUSY, ERR, timeout, truncated/corrupt frame, breaker open, crash-loop
-//!     stop) runs the Node hook given by `--fallback` / `ANTIHALL_ENGINE_FALLBACK`, whose stdout and exit
+//!     stop) runs the Node hook given by `--fallback` / `AH_ENGINE_FALLBACK`, whose stdout and exit
 //!     code are passed through;
 //!  4. only when there is no usable fallback does the client print nothing and exit 0.
 //! The fallback command is chosen by the caller (argument or env), never by anything in the payload.
@@ -111,7 +111,7 @@ pub fn status() -> String {
 }
 
 fn spawn_daemon() -> Option<std::process::Child> {
-    if std::env::var_os("ANTIHALL_ENGINE_NOSPAWN").is_some() {
+    if std::env::var_os("AH_ENGINE_NOSPAWN").is_some() {
         return None;
     }
     Command::new(std::env::current_exe().ok()?)
@@ -180,7 +180,7 @@ fn engine_attempt(raw: &str, cfg: &ClientConfig, have_fallback: bool) -> Option<
 /// Run the Node hook: stdin = the payload; stdout and exit code are returned; stderr is inherited.
 /// `None` when it cannot run or does not finish in time (= the fallback is unavailable).
 fn run_fallback(raw: &str, path: &Path, cfg: &ClientConfig) -> Option<Outcome> {
-    let node = std::env::var_os("ANTIHALL_ENGINE_NODE").unwrap_or_else(|| "node".into());
+    let node = std::env::var_os("AH_ENGINE_NODE").unwrap_or_else(|| "node".into());
     let mut child = Command::new(node).arg(path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().ok()?;
     let mut stdin = child.stdin.take()?;
     let data = raw.as_bytes().to_vec();
@@ -240,7 +240,7 @@ pub fn run(raw: &str, fallback: Option<&Path>) -> Outcome {
 }
 
 fn fallback_arg(args: &[String]) -> Option<PathBuf> {
-    args.iter().position(|a| a == "--fallback").and_then(|i| args.get(i + 1)).map(PathBuf::from).or_else(|| std::env::var_os("ANTIHALL_ENGINE_FALLBACK").map(PathBuf::from))
+    args.iter().position(|a| a == "--fallback").and_then(|i| args.get(i + 1)).map(PathBuf::from).or_else(|| std::env::var_os("AH_ENGINE_FALLBACK").map(PathBuf::from))
 }
 
 /// `engine hook`: read stdin, print the result, exit with the Node hook's code (0 when the engine answered).

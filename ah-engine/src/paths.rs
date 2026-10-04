@@ -1,5 +1,5 @@
 //! Socket / lock / rules locations. Unix sockets are capped at 104 bytes on macOS (108 on Linux), so
-//! the default `~/.anti-hall/engine/e.sock` falls back to `<TMPDIR|/tmp>/anti-hall-<uid>/<hash>.sock`
+//! the default `~/.anti-hall/ah-engine/e.sock` falls back to `<TMPDIR|/tmp>/anti-hall-<uid>/<hash>.sock`
 //! (a private 0700 directory the daemon creates and owner-checks) when too long.
 use std::path::PathBuf;
 
@@ -9,13 +9,13 @@ pub fn uid() -> u32 {
     crate::limits::uid()
 }
 
-/// State dir: `$ANTIHALL_ENGINE_DIR` or `~/.anti-hall/engine`.
+/// State dir: `$AH_ENGINE_DIR` or `~/.anti-hall/ah-engine`.
 pub fn dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("ANTIHALL_ENGINE_DIR") {
+    if let Some(d) = std::env::var_os("AH_ENGINE_DIR") {
         return PathBuf::from(d);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".anti-hall").join("engine")
+    home.join(".anti-hall").join("ah-engine")
 }
 
 pub fn socket() -> PathBuf {
@@ -44,7 +44,7 @@ pub fn lock_for(sock: &std::path::Path) -> PathBuf {
 }
 
 pub fn rules_file() -> PathBuf {
-    std::env::var_os("ANTIHALL_ENGINE_RULES").map(PathBuf::from).unwrap_or_else(|| dir().join("rules.json"))
+    std::env::var_os("AH_ENGINE_RULES").map(PathBuf::from).unwrap_or_else(|| dir().join("rules.json"))
 }
 
 #[cfg(test)]
@@ -52,11 +52,11 @@ mod tests {
     use super::*;
     #[test]
     fn long_dir_falls_back_under_limit_in_a_private_dir() {
-        // single-threaded env mutation is fine: only this test touches ANTIHALL_ENGINE_DIR in-process
-        std::env::set_var("ANTIHALL_ENGINE_DIR", format!("/tmp/{}", "x".repeat(120)));
+        // single-threaded env mutation is fine: only this test touches AH_ENGINE_DIR in-process
+        std::env::set_var("AH_ENGINE_DIR", format!("/tmp/{}", "x".repeat(120)));
         let s = socket();
         let s2 = socket();
-        std::env::remove_var("ANTIHALL_ENGINE_DIR");
+        std::env::remove_var("AH_ENGINE_DIR");
         assert!(s.as_os_str().len() <= MAX_SOCK, "{:?}", s);
         assert_eq!(s, s2, "deterministic");
         assert!(s.to_string_lossy().contains(&format!("anti-hall-{}/", uid())), "{s:?}");

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const BIN: &str = env!("CARGO_BIN_EXE_engine");
+const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 const P: &str = "pu\x73h";
 
 struct Env {
@@ -25,10 +25,10 @@ impl Env {
     fn cmd(&self) -> Command {
         let mut c = Command::new(BIN);
         c.env("HOME", self.dir.join("home"))
-            .env("ANTIHALL_ENGINE_DIR", self.dir.join("eng"))
-            .env("ANTIHALL_ENGINE_RULES", self.dir.join("rules.json"))
-            .env("ANTIHALL_ENGINE_VERSION", "0.1.0")
-            .env_remove("ANTIHALL_ENGINE_NOSPAWN");
+            .env("AH_ENGINE_DIR", self.dir.join("eng"))
+            .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
+            .env("AH_ENGINE_VERSION", "0.1.0")
+            .env_remove("AH_ENGINE_NOSPAWN");
         c
     }
 

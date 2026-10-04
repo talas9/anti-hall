@@ -1,5 +1,5 @@
 //! Reliability e2e: real binary, real daemon, isolated HOME + engine dir under /tmp (short socket paths).
-//! The Node fallback is simulated with `/bin/sh <script>` via ANTIHALL_ENGINE_NODE.
+//! The Node fallback is simulated with `/bin/sh <script>` via AH_ENGINE_NODE.
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const BIN: &str = env!("CARGO_BIN_EXE_engine");
+const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 const RULES: &str = r#"{"version":1,"rules":[{"id":"force","events":["PreToolUse"],"tools":["Bash"],"field":"command","pattern":"git push --force","action":"deny","message":"engine-blocked"}]}"#;
 const DENY_IN: &str = r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
 
@@ -32,11 +32,11 @@ impl Env {
     fn cmd(&self) -> Command {
         let mut c = Command::new(BIN);
         c.env("HOME", self.dir.join("home"))
-            .env("ANTIHALL_ENGINE_DIR", self.eng())
-            .env("ANTIHALL_ENGINE_RULES", self.dir.join("rules.json"))
-            .env("ANTIHALL_ENGINE_VERSION", "0.1.0")
-            .env("ANTIHALL_ENGINE_TEST_HOOKS", "1")
-            .env_remove("ANTIHALL_ENGINE_NOSPAWN");
+            .env("AH_ENGINE_DIR", self.eng())
+            .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
+            .env("AH_ENGINE_VERSION", "0.1.0")
+            .env("AH_ENGINE_TEST_HOOKS", "1")
+            .env_remove("AH_ENGINE_NOSPAWN");
         for (k, v) in &self.extra {
             c.env(k, v);
         }
@@ -47,7 +47,7 @@ impl Env {
         let mut c = self.cmd();
         c.arg("hook");
         if fallback {
-            c.env("ANTIHALL_ENGINE_NODE", "/bin/sh").arg("--fallback").arg(self.dir.join("fb.sh"));
+            c.env("AH_ENGINE_NODE", "/bin/sh").arg("--fallback").arg(self.dir.join("fb.sh"));
         }
         let t = Instant::now();
         let mut ch = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -132,7 +132,7 @@ fn fake_server(e: &Env, reply: impl Fn() -> Option<Vec<u8>> + Send + 'static) {
 
 #[test]
 fn bad_replies_run_the_node_fallback_never_allow() {
-    use engine::frame::{encode, Kind};
+    use ah_engine::frame::{encode, Kind};
     let good = encode(Kind::Ok, r#"{"decision":"block","reason":"x"}"#);
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("empty", vec![]),
@@ -144,7 +144,7 @@ fn bad_replies_run_the_node_fallback_never_allow() {
         ("corrupt", { let mut g = good.clone(); let n = g.len() - 12; g[n] ^= 0x20; g }),
     ];
     for (name, reply) in cases {
-        let e = Env::new("bad", &[("ANTIHALL_ENGINE_NOSPAWN", "1")]);
+        let e = Env::new("bad", &[("AH_ENGINE_NOSPAWN", "1")]);
         fake_server(&e, move || Some(reply.clone()));
         let (out, code, _) = e.hook(DENY_IN, true);
         assert_eq!((out.as_str(), code), ("NODE-FALLBACK", 2), "case {name}");
@@ -153,13 +153,13 @@ fn bad_replies_run_the_node_fallback_never_allow() {
 
 #[test]
 fn engine_down_runs_fallback_and_plain_allow_only_without_one() {
-    let e = Env::new("down", &[("ANTIHALL_ENGINE_NOSPAWN", "1")]);
+    let e = Env::new("down", &[("AH_ENGINE_NOSPAWN", "1")]);
     assert_eq!(e.hook(DENY_IN, true).0, "NODE-FALLBACK");
     let (out, code, _) = e.hook(DENY_IN, false);
     assert_eq!((out.as_str(), code), ("", 0), "no engine AND no fallback = plain allow");
     // fallback unavailable (node missing) is the same plain allow
     let mut c = e.cmd();
-    c.env("ANTIHALL_ENGINE_NODE", "/nonexistent/node").args(["hook", "--fallback"]).arg(e.dir.join("fb.sh"));
+    c.env("AH_ENGINE_NODE", "/nonexistent/node").args(["hook", "--fallback"]).arg(e.dir.join("fb.sh"));
     let mut ch = c.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();
@@ -182,7 +182,7 @@ fn healthy_engine_answers_and_fallback_is_not_run() {
 
 #[test]
 fn hung_engine_times_out_then_falls_back() {
-    let e = Env::new("hang", &[("ANTIHALL_ENGINE_NOSPAWN", "1"), ("ANTIHALL_ENGINE_DEADLINE_MS", "400")]);
+    let e = Env::new("hang", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "400")]);
     fake_server(&e, || None);
     let (out, code, dt) = e.hook(DENY_IN, true);
     assert_eq!((out.as_str(), code), ("NODE-FALLBACK", 2));
@@ -191,7 +191,7 @@ fn hung_engine_times_out_then_falls_back() {
 
 #[test]
 fn default_client_deadline_is_about_two_seconds() {
-    let e = Env::new("hang2", &[("ANTIHALL_ENGINE_NOSPAWN", "1")]);
+    let e = Env::new("hang2", &[("AH_ENGINE_NOSPAWN", "1")]);
     fake_server(&e, || None);
     let (out, _, dt) = e.hook(DENY_IN, true);
     assert_eq!(out, "NODE-FALLBACK");
@@ -205,14 +205,14 @@ fn oversize_input_skips_engine_and_daemon_rejects_oversize_requests() {
     let big = format!(r#"{{"hook_event_name":"PreToolUse","tool_input":{{"command":"{}"}}}}"#, "a".repeat(1_100_000));
     assert_eq!(e.hook(&big, true).0, "NODE-FALLBACK", "client never ships > 1 MiB to the engine");
     let reply = raw_exchange(&e, &vec![b'x'; 1_200_000]);
-    let (k, _) = engine::frame::decode(&reply).unwrap();
-    assert_eq!(k, engine::frame::Kind::Err, "daemon refuses oversize requests");
+    let (k, _) = ah_engine::frame::decode(&reply).unwrap();
+    assert_eq!(k, ah_engine::frame::Kind::Err, "daemon refuses oversize requests");
     assert!(e.pid().is_some(), "and survives them");
 }
 
 #[test]
 fn slow_sender_cannot_wedge_the_daemon() {
-    let e = Env::new("slow", &[("ANTIHALL_ENGINE_READ_MS", "300")]);
+    let e = Env::new("slow", &[("AH_ENGINE_READ_MS", "300")]);
     e.warm();
     let mut s = std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")).unwrap();
     s.write_all(b"V 0.1.0\n{").unwrap(); // never finishes, never closes
@@ -221,7 +221,7 @@ fn slow_sender_cannot_wedge_the_daemon() {
     s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
     let _ = s.read_to_end(&mut b);
     assert!(t.elapsed() < Duration::from_millis(1500), "read deadline not enforced: {:?}", t.elapsed());
-    assert!(engine::frame::decode(&b).is_ok(), "slow sender still gets a well-formed ERR frame");
+    assert!(ah_engine::frame::decode(&b).is_ok(), "slow sender still gets a well-formed ERR frame");
     assert!(e.hook(DENY_IN, false).0.contains("engine-blocked"), "daemon still serves");
 }
 
@@ -229,19 +229,19 @@ fn slow_sender_cannot_wedge_the_daemon() {
 
 #[test]
 fn stalled_loop_triggers_clean_exit_and_next_client_respawns() {
-    let e = Env::new("stall", &[("ANTIHALL_ENGINE_STALL_MS", "500"), ("ANTIHALL_ENGINE_WATCHDOG_TICK_MS", "100")]);
+    let e = Env::new("stall", &[("AH_ENGINE_STALL_MS", "500"), ("AH_ENGINE_WATCHDOG_TICK_MS", "100")]);
     e.warm();
     let old = e.pid().unwrap();
     let _ = e.ctl("stall 3000"); // wedges the accept loop for 3 s
     assert!(wait_for(|| !alive(old)), "watchdog must end the stalled daemon");
-    assert!(std::fs::read_to_string(e.eng().join("engine.log")).unwrap().contains("watchdog"));
+    assert!(std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap().contains("watchdog"));
     e.warm(); // next client respawns
     assert_ne!(e.pid().unwrap(), old);
 }
 
 #[test]
 fn stuck_worker_triggers_exit() {
-    let e = Env::new("stuck", &[("ANTIHALL_ENGINE_STUCK_MS", "400"), ("ANTIHALL_ENGINE_WATCHDOG_TICK_MS", "100")]);
+    let e = Env::new("stuck", &[("AH_ENGINE_STUCK_MS", "400"), ("AH_ENGINE_WATCHDOG_TICK_MS", "100")]);
     e.warm();
     let old = e.pid().unwrap();
     let h = std::thread::spawn({
@@ -257,7 +257,7 @@ fn stuck_worker_triggers_exit() {
 
 #[test]
 fn breaker_opens_after_repeated_failures_and_skips_engine() {
-    let e = Env::new("brk", &[("ANTIHALL_ENGINE_NOSPAWN", "1"), ("ANTIHALL_ENGINE_DEADLINE_MS", "150"), ("ANTIHALL_ENGINE_BREAKER_N", "3")]);
+    let e = Env::new("brk", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "150"), ("AH_ENGINE_BREAKER_N", "3")]);
     fake_server(&e, || None);
     for _ in 0..3 {
         assert_eq!(e.hook(DENY_IN, true).0, "NODE-FALLBACK");
@@ -274,7 +274,7 @@ fn breaker_opens_after_repeated_failures_and_skips_engine() {
 
 #[test]
 fn crash_loop_stops_respawning_records_reason_and_advises_once() {
-    let e = Env::new("loop", &[("ANTIHALL_ENGINE_CRASH_N", "3")]);
+    let e = Env::new("loop", &[("AH_ENGINE_CRASH_N", "3")]);
     for i in 0..3 {
         e.warm();
         let pid = e.pid().unwrap_or_else(|| panic!("no daemon on round {i}"));
@@ -312,10 +312,10 @@ fn environment_failure_gets_a_plain_hint_not_an_issue_request() {
     // state dir itself is unusable, so record in a sibling dir the client can read: use a fresh good dir
     let f = Env::new("envg", &[]);
     std::fs::create_dir_all(f.eng()).unwrap();
-    std::fs::write(f.eng().join("failure.json"), format!(r#"{{"ts":{},"class":"env","kind":"start_fail","code":"os28","hint":"the disk is full (no space left); free some space, then it recovers by itself","reason":"x"}}"#, engine::health::now_ms())).unwrap();
+    std::fs::write(f.eng().join("failure.json"), format!(r#"{{"ts":{},"class":"env","kind":"start_fail","code":"os28","hint":"the disk is full (no space left); free some space, then it recovers by itself","reason":"x"}}"#, ah_engine::health::now_ms())).unwrap();
     std::fs::write(f.dir.join("fb.sh"), "cat >/dev/null\necho '{}'\n").unwrap();
     let mut c = f.cmd();
-    c.env("ANTIHALL_ENGINE_NOSPAWN", "1").env("ANTIHALL_ENGINE_NODE", "/bin/sh").args(["hook", "--fallback"]).arg(f.dir.join("fb.sh"));
+    c.env("AH_ENGINE_NOSPAWN", "1").env("AH_ENGINE_NODE", "/bin/sh").args(["hook", "--fallback"]).arg(f.dir.join("fb.sh"));
     let mut ch = c.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
     let out = String::from_utf8_lossy(&ch.wait_with_output().unwrap().stdout).to_string();
@@ -382,7 +382,7 @@ fn non_socket_at_socket_path_is_never_deleted() {
 
 #[test]
 fn queue_overflow_answers_busy_and_clients_fall_back() {
-    let e = Env::new("busy", &[("ANTIHALL_ENGINE_WORKERS", "1"), ("ANTIHALL_ENGINE_QUEUE", "1"), ("ANTIHALL_ENGINE_STUCK_MS", "60000")]);
+    let e = Env::new("busy", &[("AH_ENGINE_WORKERS", "1"), ("AH_ENGINE_QUEUE", "1"), ("AH_ENGINE_STUCK_MS", "60000")]);
     e.warm();
     let sleepers: Vec<_> = (0..3)
         .map(|_| {
@@ -404,7 +404,7 @@ fn queue_overflow_answers_busy_and_clients_fall_back() {
 
 #[test]
 fn rate_limited_session_gets_busy_so_it_falls_back() {
-    let e = Env::new("rate", &[("ANTIHALL_ENGINE_SESSION_RPS", "1"), ("ANTIHALL_ENGINE_SESSION_BURST", "2")]);
+    let e = Env::new("rate", &[("AH_ENGINE_SESSION_RPS", "1"), ("AH_ENGINE_SESSION_BURST", "2")]);
     e.warm(); // consumes some of s1's burst
     let mut fell_back = false;
     for _ in 0..6 {
@@ -419,7 +419,7 @@ fn rate_limited_session_gets_busy_so_it_falls_back() {
 
 #[test]
 fn cpu_budget_trips_to_fallback() {
-    let e = Env::new("cpu", &[("ANTIHALL_ENGINE_EVAL_BUDGET_US", "1")]);
+    let e = Env::new("cpu", &[("AH_ENGINE_EVAL_BUDGET_US", "1")]);
     // a heavy-ish rule set so evaluation takes > 1 us of thread CPU
     let rules: Vec<String> = (0..200).map(|i| format!(r#"{{"pattern":"zzz{i}[a-z]+q","action":"warn","message":"m"}}"#)).collect();
     std::fs::write(e.dir.join("rules.json"), format!(r#"{{"version":1,"rules":[{}]}}"#, rules.join(","))).unwrap();
@@ -437,17 +437,17 @@ impl Env {
 
 #[test]
 fn rss_over_cap_restarts_cleanly_and_next_client_respawns() {
-    let e = Env::new("rss", &[("ANTIHALL_ENGINE_RSS_CAP_KB", "64"), ("ANTIHALL_ENGINE_RSS_CHECK_MS", "200"), ("ANTIHALL_ENGINE_WATCHDOG_TICK_MS", "100")]);
+    let e = Env::new("rss", &[("AH_ENGINE_RSS_CAP_KB", "64"), ("AH_ENGINE_RSS_CHECK_MS", "200"), ("AH_ENGINE_WATCHDOG_TICK_MS", "100")]);
     e.warm();
     let old = e.pid().unwrap();
     assert!(wait_for(|| !alive(old)), "daemon above its RSS cap must exit");
-    assert!(std::fs::read_to_string(e.eng().join("engine.log")).unwrap().contains("rss"));
+    assert!(std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap().contains("rss"));
     assert!(wait_for(|| e.pid().map_or(false, |p| p != old)) || e.hook(DENY_IN, true).0.len() > 0);
 }
 
 #[test]
 fn memory_limit_and_nice_are_applied_and_reported() {
-    let e = Env::new("mem", &[("ANTIHALL_ENGINE_MEM_MB", "64"), ("ANTIHALL_ENGINE_NICE", "7")]);
+    let e = Env::new("mem", &[("AH_ENGINE_MEM_MB", "64"), ("AH_ENGINE_NICE", "7")]);
     e.warm();
     let st = e.status();
     assert!(st["mem_limit"].as_str().unwrap().starts_with("ok:64") || st["mem_limit"].as_str().unwrap().starts_with("err:"), "{st}");
@@ -457,7 +457,9 @@ fn memory_limit_and_nice_are_applied_and_reported() {
     }
     let pid = e.pid().unwrap();
     let nice = Command::new("ps").args(["-o", "nice=", "-p", &pid.to_string()]).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&nice.stdout).trim(), "7");
+    // an unprivileged process can only raise its niceness, so a test runner already niced above 7 keeps its own value
+    let inherited = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    assert_eq!(String::from_utf8_lossy(&nice.stdout).trim(), inherited.max(7).to_string());
 }
 
 // ---- 7. safety --------------------------------------------------------------------------------
@@ -474,7 +476,7 @@ fn socket_is_0600_and_state_dir_0700() {
 #[test]
 fn long_path_socket_dir_is_private_and_owner_checked() {
     let long = format!("/tmp/ah-r-long-{}/{}", std::process::id(), "d".repeat(100));
-    let e = Env::new("longp", &[("ANTIHALL_ENGINE_DIR", &long)]);
+    let e = Env::new("longp", &[("AH_ENGINE_DIR", &long)]);
     e.warm();
     let sock = engine_socket_for(&long);
     let d = sock.parent().unwrap();
@@ -486,8 +488,8 @@ fn long_path_socket_dir_is_private_and_owner_checked() {
 
 fn engine_socket_for(dir: &str) -> PathBuf {
     // mirror of paths::socket for a given dir, computed in-process (TMPDIR is inherited by the daemon)
-    let name = format!("{:012x}.sock", engine::health::fnv(dir) & 0xffff_ffff_ffff);
-    let private = format!("anti-hall-{}", engine::limits::uid());
+    let name = format!("{:012x}.sock", ah_engine::health::fnv(dir) & 0xffff_ffff_ffff);
+    let private = format!("anti-hall-{}", ah_engine::limits::uid());
     if let Some(t) = std::env::var_os("TMPDIR") {
         let p = PathBuf::from(t).join(&private).join(&name);
         if p.as_os_str().len() <= 100 {
@@ -548,7 +550,7 @@ fn status_reports_all_required_fields() {
     assert!(st["rules"]["version"] == 1 && st["rules"]["fingerprint"].as_str().unwrap().len() == 16);
     assert!(st["rss_kb"].as_u64().unwrap() > 0);
     assert_eq!(st["breaker"], "closed");
-    let down = Env::new("stat2", &[("ANTIHALL_ENGINE_NOSPAWN", "1")]);
+    let down = Env::new("stat2", &[("AH_ENGINE_NOSPAWN", "1")]);
     let o = down.cmd().arg("status").output().unwrap();
     assert!(String::from_utf8_lossy(&o.stdout).contains(r#""running":false"#));
 }

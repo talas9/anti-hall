@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const LOG: &str = "engine.log";
+pub const LOG: &str = "ah-engine.log";
 const LOG_CAP: u64 = 64 * 1024;
 /// Event kinds that count toward the crash-loop threshold.
 const CRASHY: &[&str] = &["crash", "panic", "start_fail", "watchdog", "rss"];
@@ -79,10 +79,10 @@ pub enum Class {
 pub fn classify(code: &str) -> (Class, &'static str) {
     match code {
         "os28" => (Class::Env, "the disk is full (no space left); free some space, then it recovers by itself"),
-        "os13" | "os1" | "unsafe_dir" => (Class::Env, "the engine's state directory is not writable or not private; fix its ownership (chown to yourself) and permissions (chmod 700 ~/.anti-hall/engine), or set ANTIHALL_ENGINE_DIR to a directory you own"),
-        "os36" | "os22" | "path_too_long" => (Class::Env, "the socket path is too long; set ANTIHALL_ENGINE_DIR to a shorter path (e.g. /tmp/ah)"),
+        "os13" | "os1" | "unsafe_dir" => (Class::Env, "the engine's state directory is not writable or not private; fix its ownership (chown to yourself) and permissions (chmod 700 ~/.anti-hall/ah-engine), or set AH_ENGINE_DIR to a directory you own"),
+        "os36" | "os22" | "path_too_long" => (Class::Env, "the socket path is too long; set AH_ENGINE_DIR to a shorter path (e.g. /tmp/ah)"),
         "os24" | "os23" => (Class::Env, "the process ran out of file descriptors; raise `ulimit -n` or close other programs"),
-        "os12" | "sig9" => (Class::Env, "the OS killed or starved the engine (low memory); close other programs or lower ANTIHALL_ENGINE_MEM_MB"),
+        "os12" | "sig9" => (Class::Env, "the OS killed or starved the engine (low memory); close other programs or lower AH_ENGINE_MEM_MB"),
         _ => (Class::Permanent, ""),
     }
 }

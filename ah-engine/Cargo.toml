@@ -1,5 +1,5 @@
 [package]
-name = "engine"
+name = "ah-engine"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,3 +15,6 @@ lto = true
 strip = true
 codegen-units = 1
 # panic stays "unwind": the client wraps everything in catch_unwind so a bug fails open (exit 0), never SIGABRT.
+
+# Self-contained: this directory is its own Cargo workspace (never a submodule, D69), so it can move to its own repo unchanged.
+[workspace]

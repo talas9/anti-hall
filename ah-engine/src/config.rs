@@ -1,4 +1,4 @@
-//! Tunables, all overridable by `ANTIHALL_ENGINE_*` env vars (tests shrink them to exercise limits fast).
+//! Tunables, all overridable by `AH_ENGINE_*` env vars (tests shrink them to exercise limits fast).
 use std::time::Duration;
 
 fn num(name: &str, default: u64) -> u64 {
@@ -43,24 +43,24 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Config {
         Config {
-            workers: num("ANTIHALL_ENGINE_WORKERS", 4).clamp(1, 32) as usize,
-            queue: num("ANTIHALL_ENGINE_QUEUE", 16).clamp(1, 1024) as usize,
-            max_request: num("ANTIHALL_ENGINE_MAX_REQUEST", MAX_REQUEST),
-            read_deadline: Duration::from_millis(num("ANTIHALL_ENGINE_READ_MS", 1000)),
-            write_deadline: Duration::from_millis(num("ANTIHALL_ENGINE_WRITE_MS", 1000)),
-            eval_budget_us: num("ANTIHALL_ENGINE_EVAL_BUDGET_US", 200_000),
-            mem_mb: num("ANTIHALL_ENGINE_MEM_MB", 64),
-            rss_cap_kb: num("ANTIHALL_ENGINE_RSS_CAP_KB", 48 * 1024),
-            rss_check: Duration::from_millis(num("ANTIHALL_ENGINE_RSS_CHECK_MS", 10_000)),
-            stuck: Duration::from_millis(num("ANTIHALL_ENGINE_STUCK_MS", 8000)),
-            stall: Duration::from_millis(num("ANTIHALL_ENGINE_STALL_MS", 5000)),
-            watchdog_tick: Duration::from_millis(num("ANTIHALL_ENGINE_WATCHDOG_TICK_MS", 250)),
-            nice: num("ANTIHALL_ENGINE_NICE", 5).min(19) as i32,
-            session_rps: num("ANTIHALL_ENGINE_SESSION_RPS", 50) as f64,
-            session_burst: num("ANTIHALL_ENGINE_SESSION_BURST", 200) as f64,
-            project_rps: num("ANTIHALL_ENGINE_PROJECT_RPS", 100) as f64,
-            project_burst: num("ANTIHALL_ENGINE_PROJECT_BURST", 400) as f64,
-            test_hooks: std::env::var_os("ANTIHALL_ENGINE_TEST_HOOKS").is_some(),
+            workers: num("AH_ENGINE_WORKERS", 4).clamp(1, 32) as usize,
+            queue: num("AH_ENGINE_QUEUE", 16).clamp(1, 1024) as usize,
+            max_request: num("AH_ENGINE_MAX_REQUEST", MAX_REQUEST),
+            read_deadline: Duration::from_millis(num("AH_ENGINE_READ_MS", 1000)),
+            write_deadline: Duration::from_millis(num("AH_ENGINE_WRITE_MS", 1000)),
+            eval_budget_us: num("AH_ENGINE_EVAL_BUDGET_US", 200_000),
+            mem_mb: num("AH_ENGINE_MEM_MB", 64),
+            rss_cap_kb: num("AH_ENGINE_RSS_CAP_KB", 48 * 1024),
+            rss_check: Duration::from_millis(num("AH_ENGINE_RSS_CHECK_MS", 10_000)),
+            stuck: Duration::from_millis(num("AH_ENGINE_STUCK_MS", 8000)),
+            stall: Duration::from_millis(num("AH_ENGINE_STALL_MS", 5000)),
+            watchdog_tick: Duration::from_millis(num("AH_ENGINE_WATCHDOG_TICK_MS", 250)),
+            nice: num("AH_ENGINE_NICE", 5).min(19) as i32,
+            session_rps: num("AH_ENGINE_SESSION_RPS", 50) as f64,
+            session_burst: num("AH_ENGINE_SESSION_BURST", 200) as f64,
+            project_rps: num("AH_ENGINE_PROJECT_RPS", 100) as f64,
+            project_burst: num("AH_ENGINE_PROJECT_BURST", 400) as f64,
+            test_hooks: std::env::var_os("AH_ENGINE_TEST_HOOKS").is_some(),
         }
     }
 }
@@ -89,14 +89,14 @@ impl ClientConfig {
     pub fn from_env() -> ClientConfig {
         let s = |n: &str, d: u64| Duration::from_secs(num(n, d));
         ClientConfig {
-            deadline: Duration::from_millis(num("ANTIHALL_ENGINE_DEADLINE_MS", 2000)),
-            breaker_n: num("ANTIHALL_ENGINE_BREAKER_N", 5).max(1) as usize,
-            breaker_window: s("ANTIHALL_ENGINE_BREAKER_WINDOW_S", 60),
-            breaker_cooldown: s("ANTIHALL_ENGINE_BREAKER_COOLDOWN_S", 60),
-            crash_n: num("ANTIHALL_ENGINE_CRASH_N", 4).max(1) as usize,
-            crash_window: s("ANTIHALL_ENGINE_CRASH_WINDOW_S", 600),
-            crash_cooldown: s("ANTIHALL_ENGINE_CRASH_COOLDOWN_S", 1800),
-            fallback_timeout: Duration::from_millis(num("ANTIHALL_ENGINE_FALLBACK_MS", 8000)),
+            deadline: Duration::from_millis(num("AH_ENGINE_DEADLINE_MS", 2000)),
+            breaker_n: num("AH_ENGINE_BREAKER_N", 5).max(1) as usize,
+            breaker_window: s("AH_ENGINE_BREAKER_WINDOW_S", 60),
+            breaker_cooldown: s("AH_ENGINE_BREAKER_COOLDOWN_S", 60),
+            crash_n: num("AH_ENGINE_CRASH_N", 4).max(1) as usize,
+            crash_window: s("AH_ENGINE_CRASH_WINDOW_S", 600),
+            crash_cooldown: s("AH_ENGINE_CRASH_COOLDOWN_S", 1800),
+            fallback_timeout: Duration::from_millis(num("AH_ENGINE_FALLBACK_MS", 8000)),
         }
     }
 }

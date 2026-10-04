@@ -1,0 +1,35 @@
+name: ah-engine
+
+# Self-contained CI for the Rust engine in ah-engine/ (D69): fmt, clippy, tests and docs on the supported unix targets.
+on:
+  push:
+    branches: [engine-proto]
+    paths: ['ah-engine/**', '.github/workflows/ah-engine.yml']
+  pull_request:
+    paths: ['ah-engine/**', '.github/workflows/ah-engine.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

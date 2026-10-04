@@ -226,7 +226,7 @@ pub fn cli_main() -> i32 {
     };
     let Some(cmd) = p.pointer("/tool_input/command").and_then(|v| v.as_str()) else { return 0 };
     let cwd = p.get("cwd").and_then(|v| v.as_str());
-    let root = std::env::var("ANTIHALL_ENGINE_PLUGIN_ROOT").unwrap_or_default();
+    let root = std::env::var("AH_ENGINE_PLUGIN_ROOT").unwrap_or_default();
     match check_bash(cmd, cwd, &root) {
         Outcome::Allow => 0,
         Outcome::Block(m) => {

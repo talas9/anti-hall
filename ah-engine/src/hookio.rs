@@ -115,7 +115,7 @@ fn builtin(rule: &crate::rules::Rule, s: &Subject) -> Option<Outcome> {
                 return None;
             }
             let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
-            let root = rule.options.get("plugin_root").and_then(Value::as_str).map(|x| x.to_string()).or_else(|| std::env::var("ANTIHALL_ENGINE_PLUGIN_ROOT").ok()).unwrap_or_default();
+            let root = rule.options.get("plugin_root").and_then(Value::as_str).map(|x| x.to_string()).or_else(|| std::env::var("AH_ENGINE_PLUGIN_ROOT").ok()).unwrap_or_default();
             Some(gitguard::check_bash(cmd, s.cwd, &root))
         }
         _ => None,

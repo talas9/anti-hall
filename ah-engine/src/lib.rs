@@ -11,10 +11,10 @@ pub mod paths;
 pub mod rules;
 pub mod store;
 
-/// Version this build reports and compares for handoff. `ANTIHALL_ENGINE_VERSION` overrides it (plugin
+/// Version this build reports and compares for handoff. `AH_ENGINE_VERSION` overrides it (plugin
 /// version in production, arbitrary in tests).
 pub fn version() -> String {
-    std::env::var("ANTIHALL_ENGINE_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+    std::env::var("AH_ENGINE_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
 }
 
 /// Numeric dotted-version compare ("0.10.0" > "0.9.0"); non-numeric parts count as 0, a pre-release

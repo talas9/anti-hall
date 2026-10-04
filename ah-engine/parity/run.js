@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Parity harness: run each corpus command through the Node hook AND the engine, diff decision + message.
-//   node run.js --engine ../target/release/engine --hooks <repo>/plugins/anti-hall/hooks --corpus corpus.jsonl [--rules ../rules.json] [--limit N] [--show 15]
+//   node run.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks --corpus corpus.jsonl [--rules ../rules.json] [--limit N] [--show 15]
 // Node side: `git-guard.js` for the two git rules; `command-guard.js` for rm -rf (it has no rm -rf rule: example only).
 // Everything runs under a temp HOME and a temp engine dir; nothing touches the real home.
 const fs = require('fs'), os = require('os'), path = require('path'), cp = require('child_process');
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
-const ENGINE = path.resolve(arg('--engine', '../target/release/engine'));
+const ENGINE = path.resolve(arg('--engine', '../target/release/ah-engine'));
 const HOOKS = path.resolve(arg('--hooks'));
 const RULES = JSON.parse(fs.readFileSync(path.resolve(arg('--rules', path.join(__dirname, '..', 'rules.json'))), 'utf8'));
 const LIMIT = +arg('--limit', 1e9), SHOW = +arg('--show', 15);
@@ -40,7 +40,7 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
     const [rid, hook] = MAP[rule];
     const dir = path.join(tmp, 'e-' + rule), rf = path.join(tmp, rule + '.json');
     fs.writeFileSync(rf, JSON.stringify({ version: 1, rules: RULES.rules.filter(r => r.id === rid) }));
-    const env = { ANTIHALL_ENGINE_DIR: dir, ANTIHALL_ENGINE_RULES: rf, ANTIHALL_ENGINE_SESSION_RPS: '0', ANTIHALL_ENGINE_PROJECT_RPS: '0', ANTIHALL_ENGINE_VERSION: 'parity' };
+    const env = { AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity' };
     await run(ENGINE, ['hook'], payload('echo warm'), env);
     for (let i = 0; i < 100; i++) { const r = await run(ENGINE, ['ctl', 'ping'], '', env); if (r.code === 0) break; await new Promise(r => setTimeout(r, 50)); }
     const items = corpus.filter(c => c.rule === rule);

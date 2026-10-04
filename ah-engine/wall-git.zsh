@@ -2,10 +2,10 @@
 # Wall time and peak RSS of the git check through the warm daemon vs the Node git-guard, same payloads.
 # Isolated HOME + engine dir; never touches ~/.anti-hall.
 zmodload zsh/datetime
-E=$PWD/target/release/engine
+E=$PWD/target/release/ah-engine
 NODE_HOOK=${1:?path to git-guard.js}
 D=/tmp/ah-gbench-$$
-export ANTIHALL_ENGINE_DIR=$D/eng HOME=$D/home ANTIHALL_ENGINE_RULES=$D/rules.json ANTIHALL_ENGINE_VERSION=bench
+export AH_ENGINE_DIR=$D/eng HOME=$D/home AH_ENGINE_RULES=$D/rules.json AH_ENGINE_VERSION=bench
 mkdir -p $HOME
 echo '{"version":1,"rules":[{"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny","options":{"plugin_root":"'${NODE_HOOK:h:h}'"}}]}' > $D/rules.json
 P1='{"session_id":"s","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}'

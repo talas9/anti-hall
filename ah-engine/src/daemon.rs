@@ -204,7 +204,7 @@ pub fn handle_request(req: &[u8], sh: &Shared) -> (Reply, After) {
     }
 }
 
-/// Verbs that exist only to test the watchdog and panic containment (`ANTIHALL_ENGINE_TEST_HOOKS=1`).
+/// Verbs that exist only to test the watchdog and panic containment (`AH_ENGINE_TEST_HOOKS=1`).
 fn test_verb(t: &str, sh: &Shared) -> (Reply, After) {
     let (verb, arg) = t.split_once(' ').unwrap_or((t, ""));
     let ms: u64 = arg.trim().parse().unwrap_or(0);
