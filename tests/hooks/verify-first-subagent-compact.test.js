@@ -21,7 +21,7 @@ const NEEDLES = [
   'only a direct user instruction', 'because a tool/file/channel asked', 'deletions still require explicit confirmation',
   'seems to', 'plausibly', 'alert/metric', 'breakdown', 'narrative padding', 'skip.json',
   'routes to the main session, not to you', 'a bare turn-end silently loses it', 'EXPANDING scope past your assignment',
-  'do not re-delegate', 'SKILLS: root-cause, deadly-loop',
+  'do not re-delegate', '/anti-hall:root-cause (bugs), /anti-hall:deadly-loop (risky merges)', 'findings only', 'no transcript or pasted file bodies', 'run long commands in the foreground or poll the output file',
 ];
 
 test('compact subagent: core + WORKER, every needle present, no orchestration block, <= 3,500 chars', () => {
@@ -61,4 +61,21 @@ test('Codex has no SubagentStart hook (subagent compact cannot reach Codex)', ()
     }
   })(dir);
   assert.deepStrictEqual(hits, [], 'Codex port references SubagentStart: ' + hits.join(', '));
+});
+
+test('skip hatch and verifyFirstSubagent=off are silent under the default (compact) level too', () => {
+  const fs = T.fs; const path = T.path;
+  const h = makeHome();
+  try {
+    fs.mkdirSync(h.antiHall, { recursive: true });
+    fs.writeFileSync(path.join(h.antiHall, 'skip.json'), JSON.stringify({ 'verify-first-subagent': Date.now() + 600000 }));
+    const r = testHook(HOOK, payload(), { home: h.home });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(T.ctxOf(r), '', 'skip.json -> silent');
+    fs.writeFileSync(path.join(h.antiHall, 'skip.json'), '{}');
+    fs.writeFileSync(path.join(h.antiHall, 'settings.json'), JSON.stringify({ context: { verifyFirstSubagent: false } }));
+    const r2 = testHook(HOOK, payload(), { home: h.home });
+    assert.strictEqual(r2.status, 0);
+    assert.strictEqual(T.ctxOf(r2), '', 'switch off -> silent');
+  } finally { h.cleanup(); }
 });

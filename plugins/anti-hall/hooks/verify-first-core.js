@@ -166,7 +166,7 @@ const CORE_COMPACT_BODY = [
 const CORE_COMPACT_FIRST = 'ANTI-HALL VERIFY-FIRST. Full protocol: <abs>/PROTOCOL.md - Read it when a rule is unclear.';
 const CORE_COMPACT_SESSION_FIRST = 'ANTI-HALL VERIFY-FIRST (re-sent after compaction). Full protocol: <abs>/PROTOCOL.md - Read it when a rule is unclear.';
 const SESSION_SKILLS_LINE = 'SKILLS (invoke when they match): root-cause (debugging), deadly-loop (harden risky changes before merge), ship-it (ship a change right), orchestration (swarm playbook), system-briefing (operator guide; Codex: anti-hall-system-briefing).';
-const SUBAGENT_SKILLS_LINE = 'SKILLS: root-cause, deadly-loop';
+const SUBAGENT_SKILLS_LINE = 'SKILLS: /anti-hall:root-cause (bugs), /anti-hall:deadly-loop (risky merges)';
 
 const ORCH_COMPACT_FIRST = 'ORCHESTRATION (main thread = coordinator; letters match the full rules A-N in <abs>/PROTOCOL.md#orchestration<delivery>):';
 const ORCH_COMPACT_BODY = [
@@ -182,7 +182,7 @@ const ORCH_COMPACT_BODY = [
 const ORCH_MN_LINE = ORCH_COMPACT_BODY.find((l) => l.startsWith('M/N.'));
 const ORCH_DELIVERY_SPAWN = '; sent in full on your first spawn';
 
-const WORKER = 'WORKER: do the task yourself; do not re-delegate unless told to. Your assignment is your authorization: run it to verified done; EXPANDING scope past your assignment still needs confirmation. Return a tight, scannable summary (findings only, no transcript). Background/teammate agent: SendMessage the report before finishing - a bare turn-end silently loses it; never end a turn waiting on a background task (its completion notification routes to the main session, not to you).';
+const WORKER = 'WORKER: do the task yourself; do not re-delegate unless told to. Your assignment is your authorization: run it to verified done; EXPANDING scope past your assignment still needs confirmation. Return a tight, scannable summary (findings only, no transcript or pasted file bodies). Background/teammate agent: SendMessage the report before finishing - a bare turn-end silently loses it; never end a turn waiting on a background task (its completion notification routes to the main session, not to you): run long commands in the foreground or poll the output file.';
 
 function withRoot(text, root) { return String(text).split('<abs>').join(root || PLUGIN_ROOT); }
 
