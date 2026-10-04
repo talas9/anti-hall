@@ -176,7 +176,7 @@ quota/rate-limit exhaustion seen in a `codex:codex-rescue` result so other
 sessions stop rediscovering it independently, default on;
 `guards.coordinatorWorkWindowMinutes` (default 10, 0 = off; main-thread state-changing Bash calls counted over that many minutes — in a non-git project only coordinator-writable or fresh scripts count),
 `guards.coordinatorWorkNudgeAt` (default 4, 0 = no nudge), `guards.coordinatorWorkBlockAt` (default 7, 0 = no block; recovery commands and loosely matched inline code are never blocked),
-`guards.coordinatorWorkMaxEntries` (default 50, min 1) `guards.bashEditParity` (default on — command-guard applies edit-guard's verdict to Bash writes into repo files in the main thread) and `guards.shellWriteChecks` (default on — api-guard and ship-it-guard also check Bash file writes)),
+`guards.coordinatorWorkMaxEntries` (default 50, min 1), `guards.bashEditParity` (default on — command-guard applies edit-guard's verdict to Bash writes into repo files in the main thread), `guards.shellWriteChecks` (default on — api-guard and ship-it-guard also check Bash file writes) and `guards.gitGuardHeredocData` (default on — git-guard does not scan a heredoc body that only feeds a prose file, a commit message or a PR body; off = scan every body as shell)),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
 parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin;
 `dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` (independent of it) the once-per-session

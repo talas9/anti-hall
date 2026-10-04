@@ -386,6 +386,10 @@ function splitSegments(cmd) {
     // Subshell / grouping / command-substitution boundaries: treat as splits so
     // `(git push --force)` and `$(...)` / `{ ...; }` bodies are scanned as their
     // own segments. We drop the bracket char itself.
+    // A bare `{}` (no space inside) is a literal word - the xargs -I / find
+    // placeholder - never a `{ ...; }` group; splitting there cut `xargs
+    // -I{} git ... {}` in two and hid xargs from its own check.
+    if (c === '{' && c2 === '}') { cur += '{}'; i += 2; continue; }
     if (c === ')' || c === '{' || c === '}') { flush(); i++; continue; }
     // `(` opens a plain subshell (its own command), while `$(` and backtick open
     // a command substitution whose stdout is spliced into the SURROUNDING
@@ -1101,53 +1105,79 @@ function extractEnvSPayload(segment) {
   return '';
 }
 
-// A1-5 (0.117.2 follow-up): `xargs`' own leading flags, mapped to whether they
-// consume a separate value token. Anything else starting with `-` (e.g. `-0`,
-// `-r`, `-t`, `-x`, `-p`, `-o`) is value-less.
-const XARGS_VAL_FLAGS = new Set([
-  '-I', '-i', '-L', '-l', '-n', '-P', '-s', '-a', '-d', '-E',
-  '--replace', '--max-lines', '--max-args', '--max-procs', '--max-chars',
-  '--arg-file', '--delimiter', '--eof',
-]);
+// `xargs`' own leading options, parsed the way getopt does (GNU and BSD
+// option sets merged). A required-value short option takes the rest of its
+// cluster or else the NEXT word, whatever it looks like (`-n 1`, `-I {}`,
+// `-d '\n'`, `-0n1`). GNU -i / -l / -e take only an ATTACHED optional value
+// (`-i{}`, `-l1`), so `xargs -i git ...` runs git. Long options take
+// `=value` or (required-value ones, abbreviations included) the next word.
+const XARGS_SHORT_REQ = new Set(['a', 'd', 'E', 'I', 'L', 'n', 'P', 's', 'J', 'R', 'S']);
+const XARGS_SHORT_OPT = new Set(['e', 'i', 'l']);
+const XARGS_LONG_REQ = ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var'];
+const XARGS_LONG_OTHER = ['null', 'eof', 'replace', 'max-lines', 'interactive', 'no-run-if-empty',
+  'verbose', 'exit', 'open-tty', 'show-limits', 'help', 'version'];
 
-// Skip xargs' OWN leading flags (and their values) and return the token list
-// for the COMMAND xargs will run (e.g. `git push origin main` in `xargs -0
-// git push origin main`).
+// Skip xargs' OWN leading options (and their values) and return the token
+// list for the COMMAND xargs will run (e.g. `git log` in `xargs -0 git log`).
 function xargsCommandTokens(args) {
   let i = 0;
   while (i < args.length) {
-    const t = args[i];
-    if (t.quotedOnly) break;
-    const w = t.text;
+    const w = args[i].text;
     if (w === '--') { i++; break; }
-    if (!w.startsWith('-')) break;
+    if (w === '-' || !w.startsWith('-')) break;
     i++;
-    if (XARGS_VAL_FLAGS.has(w) && i < args.length && !args[i].quotedOnly && !args[i].text.startsWith('-')) i++;
+    if (w.startsWith('--')) {
+      if (w.indexOf('=') >= 0) continue;
+      const name = w.slice(2);
+      if (XARGS_LONG_OTHER.includes(name) || XARGS_LONG_REQ.includes(name)) {
+        if (XARGS_LONG_REQ.includes(name)) i++;
+        continue;
+      }
+      // getopt_long accepts an unambiguous prefix (`--max-a 1`).
+      if (XARGS_LONG_REQ.some((o) => o.startsWith(name)) && !XARGS_LONG_OTHER.some((o) => o.startsWith(name))) i++;
+      continue;
+    }
+    for (let k = 1; k < w.length; k++) {
+      const ch = w[k];
+      if (XARGS_SHORT_OPT.has(ch)) break; // rest of the cluster is its value
+      if (XARGS_SHORT_REQ.has(ch)) {
+        if (k === w.length - 1) i++; // value is the next word
+        break;
+      }
+    }
   }
   return args.slice(i);
 }
 
-// A1-5 (0.117.2 follow-up): xargs appends words it reads from STDIN as
-// trailing arguments to the command it runs (unless `-I`/`-i` places them
-// elsewhere) - a hidden `-f`/`--force` can ride in on stdin that the static
-// tokenizer can never see. So ANY `xargs`-run `git push` is treated
-// conservatively as a force push, regardless of whether the visible argv
-// already carries one; other xargs-run git subcommands still get the normal
-// gitVerdict rules (self-credit, command-substitution args, etc).
+// xargs appends words it reads from STDIN as trailing arguments to the
+// command it runs (unless -I/-i places them elsewhere) - a hidden -f/--force
+// can ride in on stdin that the static tokenizer can never see. So ANY
+// xargs-run push is treated conservatively as a force push. Every other
+// command xargs runs gets the checks it would get run directly: git verdicts
+// for git, and a nested `xargs`, `sh -c '...'` or `eval ...` is re-scanned as
+// a command line (depth-bounded like the eval / `bash -c` unwrapping).
 function xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
   const cmdTokens = xargsCommandTokens(ev.args);
   if (!cmdTokens.length) return null;
   const innerEv = effectiveVerb(cmdTokens);
-  if (!innerEv || innerEv.verb !== 'git') return null;
-  const { sub } = gitSubcommand(innerEv.args);
-  if (sub === 'push') {
-    return gm({
-      what: 'force push via `xargs git push` is blocked.',
-      why: 'xargs appends words from stdin, so the full argv (and any hidden --force/-f) cannot be verified statically.',
-      instead: 'run `git push` directly with explicit arguments.',
-    });
+  if (!innerEv) return null;
+  if (innerEv.verb === 'git') {
+    const { sub } = gitSubcommand(innerEv.args);
+    if (sub === 'push') {
+      return gm({
+        what: 'force push via `xargs git push` is blocked.',
+        why: 'xargs appends words from stdin, so the full argv (and any hidden --force/-f) cannot be verified statically.',
+        instead: 'run `git push` directly with explicit arguments.',
+      });
+    }
+    return gitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   }
-  return gitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
+  if (innerEv.verb === 'xargs') return xargsGitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
+  if (d < 3 && (innerEv.verb === 'eval' || SHELL_VERBS.has(innerEv.verb.toLowerCase()))) {
+    const text = cmdTokens.map((t) => (typeof t.raw === 'string' ? t.raw : t.text)).join(' ');
+    return scanCommand(text, d + 1, cwd);
+  }
+  return null;
 }
 
 // A1-5 (0.117.2 follow-up): a literal `echo "TEXT" | bash` (or printf; bash/
@@ -1258,6 +1288,463 @@ function extractHeredocBodies(cmd) {
     i++;
   }
   return bodies;
+}
+
+// ---------------------------------------------------------------------------
+// HEREDOC DATA BODIES (guards.gitGuardHeredocData). A heredoc whose consumer
+// is not a shell or interpreter is data: `cat <<EOF > notes.md`, `tee f
+// <<EOF`, `git commit -F - <<EOF`, `gh pr create --body-file - <<EOF`,
+// `git commit -m "$(cat <<EOF ... EOF)"`. The shell never runs its lines, so
+// scanning them as commands only produced false blocks on notes, commit
+// messages and PR bodies that mention a push. maskDataHeredocs returns the
+// command with every body blanked (bodies removed, opener and terminator
+// lines kept) for the segment, call-literal and backstop scans. Credit and
+// config-line scans keep reading the RAW command and raw bodies, so a
+// trailer in a commit-message heredoc still blocks whatever its consumer.
+//
+// All-or-nothing and fail-closed: ANY doubt returns `cmd` unchanged (every
+// body scanned as before). Bodies are masked only when ALL of these hold:
+//  - every heredoc is terminated, alone on its opener line, its opener line
+//    has no open quote or backslash-newline, and no body line starts with
+//    the delimiter word (a parser/bash disagreement about where it ends);
+//  - an unquoted-delimiter body has no `$(`, backtick or `$[` (those run);
+//  - outside the bodies there is no process substitution, `${`, `$'`,
+//    backslash-newline, CR/NUL, unbalanced quote or substitution, and no
+//    piece of it (cut quote-blind like the git backstop) starts with a
+//    shell, interpreter or runner word, a path or a variable;
+//  - every command in the line (each `$( )`/backtick level included) is
+//    on a short allowlist (cat, tee, git, gh, echo, printf, cd, mkdir, wc,
+//    ...) with no leading VAR=value; a git or gh that READS a heredoc must
+//    be a message-taking subcommand;
+//  - every write target (`>`, `>>`, `>|`, `&>`, tee operand) is a literal
+//    path outside .git/.husky/.githooks/hooks/.anti-hall, not a git hook
+//    name or a `.git*` file, and not an existing symlink.
+// So a body fed to bash/sh/zsh/eval/source/./xargs/python..., piped into a
+// shell, written to a file the same line executes, or teed into `>( )`
+// stays scanned.
+const HEREDOC_SAFE_VERBS = new Set([
+  'cat', 'tee', 'git', 'gh', 'echo', 'printf', 'cd', 'pushd', 'popd', 'mkdir',
+  'wc', 'head', 'tail', 'ls', 'pwd', 'true', ':', 'date', 'stat', 'test', '[',
+]);
+const HEREDOC_GIT_MSG_SUBS = new Set(['commit', 'tag', 'notes', 'merge']);
+// git subcommands allowed anywhere beside a data heredoc. Anything that can
+// run a configured or given command (config, rebase -x, bisect run, hook,
+// submodule foreach, difftool, filter-branch, ...) is left out, and so are
+// the global -c / --config-env / --exec-path options.
+const HEREDOC_GIT_SUBS = new Set([
+  'add', 'commit', 'tag', 'notes', 'merge', 'status', 'log', 'diff', 'show', 'rev-parse',
+  'branch', 'push', 'fetch', 'switch', 'checkout', 'restore', 'ls-files', 'describe', 'reset', 'rm', 'mv',
+]);
+const HEREDOC_GH_GROUPS = new Set(['pr', 'issue', 'release', 'gist', 'label', 'repo', 'api', 'run', 'workflow', 'search', 'status']);
+const HEREDOC_GH_MSG_ACTS = new Set(['create', 'edit', 'comment', 'review', 'merge', 'close', 'reopen']);
+// Quote-blind backstop over the text outside the bodies: the first word of
+// every piece cut at ; & | ( ) newline $( backtick (backstopPieces) must not
+// be a shell, interpreter or runner, or a path / variable used as a command.
+const HEREDOC_DENY_FIRST = new Set([
+  'bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'csh', 'tcsh', 'busybox',
+  'eval', 'source', '.', 'exec', 'xargs', 'env', 'sudo', 'su', 'doas', 'command', 'builtin',
+  'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'expect',
+  'osascript', 'pwsh', 'powershell', 'rscript', 'ssh', 'at', 'batch', 'crontab', 'watch',
+  'parallel', 'find', 'awk', 'gawk', 'sed', 'make', 'npm', 'npx', 'pnpm', 'yarn', 'docker',
+  'kubectl', 'script', 'nohup', 'setsid', 'time', 'timeout', 'nice', 'coproc',
+]);
+function hdDeniedFirstWord(skel) {
+  for (const piece of backstopPieces(skel)) {
+    const w = piece.replace(/^[\s{}!"'(]+/, '').split(/[\s"']/, 1)[0];
+    if (!w) continue;
+    if (/[\/$~`]/.test(w)) return true;
+    const lw = w.toLowerCase();
+    if (HEREDOC_DENY_FIRST.has(lw) || /^(?:python|pypy)[0-9.]*$/.test(lw)) return true;
+  }
+  return false;
+}
+// Write-target directories whose files a tool runs or reads as config
+// (git hooks, ssh ProxyCommand, agent/hook settings). The launcher dir
+// (.anti-hall/bin) is refused by hdBadPath; the rest of .anti-hall (handovers,
+// notes) is ordinary data.
+const HEREDOC_BAD_DIRS = new Set(['.git', '.husky', '.githooks', 'hooks',
+  '.ssh', '.config', '.claude', '.codex', '.local', '.gnupg']);
+function hdBadPath(p) {
+  const segs = String(p).split(/[\/]+/).map((x) => x.toLowerCase());
+  return segs.some((x, k) => HEREDOC_BAD_DIRS.has(x) || (x === '.anti-hall' && segs[k + 1] === 'bin'));
+}
+const GIT_HOOK_NAMES = new Set([
+  'applypatch-msg', 'pre-applypatch', 'post-applypatch', 'pre-commit', 'pre-merge-commit',
+  'prepare-commit-msg', 'commit-msg', 'post-commit', 'pre-rebase', 'post-checkout', 'post-merge',
+  'pre-push', 'pre-receive', 'update', 'proc-receive', 'post-receive', 'post-update',
+  'reference-transaction', 'push-to-checkout', 'pre-auto-gc', 'post-rewrite',
+  'sendemail-validate', 'fsmonitor-watchman', 'post-index-change',
+]);
+
+let heredocDataOn = null; // guards.gitGuardHeredocData, read once per invocation
+function heredocDataEnabled() {
+  if (heredocDataOn === null) {
+    try { heredocDataOn = require('./lib/settings.js').enabled('guards', 'gitGuardHeredocData') !== false; } catch (_) { heredocDataOn = true; }
+  }
+  return heredocDataOn;
+}
+
+// Index just past a `'...'` / `"..."` span starting at i (s[i] is the quote),
+// or -1 when unterminated. Double quotes track `$( )` and backticks.
+function hdSkipQuote(s, i) {
+  if (s[i] === "'") { const j = s.indexOf("'", i + 1); return j < 0 ? -1 : j + 1; }
+  let k = i + 1;
+  while (k < s.length) {
+    const c = s[k];
+    if (c === '\\') { k += 2; continue; }
+    if (c === '"') return k + 1;
+    if (c === '$' && s[k + 1] === '(') { const e = hdSubstEnd(s, k + 2, ')'); if (e < 0) return -1; k = e + 1; continue; }
+    if (c === '`') { const e = hdSubstEnd(s, k + 1, '`'); if (e < 0) return -1; k = e + 1; continue; }
+    k++;
+  }
+  return -1;
+}
+
+// Index of the closer of a `$( )` (closer ')') or backtick (closer '`') whose
+// body starts at i, or -1. Used on the skeleton (bodies already removed).
+function hdSubstEnd(s, i, closer) {
+  let depth = 0;
+  let wordStart = true;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === closer && (closer === '`' || depth === 0)) return i;
+    if (c === '\\') { i += 2; wordStart = false; continue; }
+    if (c === "'" || c === '"') { const j = hdSkipQuote(s, i); if (j < 0) return -1; i = j; wordStart = false; continue; }
+    if (c === '$' && s[i + 1] === '(') { const e = hdSubstEnd(s, i + 2, ')'); if (e < 0) return -1; i = e + 1; continue; }
+    if (c === '`' && closer !== '`') { const e = hdSubstEnd(s, i + 1, '`'); if (e < 0) return -1; i = e + 1; continue; }
+    if (c === '#' && wordStart) { const nl = s.indexOf('\n', i); if (nl < 0) return -1; i = nl; continue; }
+    if (closer === ')' && c === '(') depth++;
+    else if (closer === ')' && c === ')') depth--;
+    wordStart = /[\s;&|()]/.test(c);
+    i++;
+  }
+  return -1;
+}
+
+// Phase 1: find every real heredoc in `cmd` (outside quotes and comments,
+// including inside `$( )`/backticks within double quotes) and build the
+// skeleton: each `<<WORD` replaced by a marker word, each body + terminator
+// line removed. Returns null on anything it cannot model exactly.
+function hdSkeleton(cmd) {
+  const docs = [];
+  let out = '';
+  let i = 0;
+  const n = cmd.length;
+  const stack = []; // 'D' double quote, 'C' $( ), 'B' backtick, 'P' paren
+  let pending = null; // heredoc whose body starts after the current line
+  let wordStart = true;
+  while (i < n) {
+    const c = cmd[i];
+    const top = stack[stack.length - 1];
+    if (c === '\n') {
+      if (top === 'D') return null; // open quote across the opener line
+      out += c;
+      i++;
+      wordStart = true;
+      if (pending) {
+        if (pending.lineEnd !== i - 1) return null;
+        docs.push(pending);
+        i = pending.end;
+        pending = null;
+      }
+      continue;
+    }
+    if (top === 'D') {
+      if (c === '\\') { out += cmd.slice(i, i + 2); i += 2; continue; }
+      if (c === '"') { stack.pop(); out += c; i++; continue; }
+      if (c === '$' && cmd[i + 1] === '(') { stack.push('C'); out += '$('; i += 2; wordStart = true; continue; }
+      if (c === '`') { stack.push('B'); out += c; i++; wordStart = true; continue; }
+      out += c; i++;
+      continue;
+    }
+    if (c === '\\') { if (cmd[i + 1] === '\n') return null; out += cmd.slice(i, i + 2); i += 2; wordStart = false; continue; }
+    if (c === "'") {
+      const j = cmd.indexOf("'", i + 1);
+      if (j < 0 || cmd.slice(i, j).indexOf('\n') >= 0) return null;
+      out += cmd.slice(i, j + 1); i = j + 1; wordStart = false;
+      continue;
+    }
+    if (c === '"') { stack.push('D'); out += c; i++; wordStart = false; continue; }
+    if (c === '#' && wordStart) {
+      const nl = cmd.indexOf('\n', i);
+      const end = nl < 0 ? n : nl;
+      if (cmd.slice(i, end).indexOf('<<') >= 0 && pending) return null;
+      out += cmd.slice(i, end); i = end;
+      continue;
+    }
+    if (c === '$' && cmd[i + 1] === '(') { stack.push('C'); out += '$('; i += 2; wordStart = true; continue; }
+    if (c === '`') {
+      if (top === 'B') stack.pop(); else stack.push('B');
+      out += c; i++; wordStart = true;
+      continue;
+    }
+    if (c === '(') { stack.push('P'); out += c; i++; wordStart = true; continue; }
+    if (c === ')') {
+      if (top === 'C' || top === 'P') stack.pop();
+      else return null;
+      out += c; i++; wordStart = true;
+      continue;
+    }
+    if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<' && cmd[i - 1] !== '<') {
+      if (pending) return null; // two heredocs on one line
+      const p = parseHeredocAt(cmd, i);
+      if (!p || !p.terminated || typeof p.lineEnd !== 'number') return null;
+      // Bash reads the body after the opener LINE; the rest of that line
+      // (`> notes.md`, `)"`, `| tee x`) stays in the skeleton.
+      const bodyStart = p.lineEnd + 1;
+      const termLines = cmd.slice(bodyStart, p.end).split('\n');
+      if (termLines[termLines.length - 1] === '') termLines.pop();
+      termLines.pop(); // the terminator line itself
+      for (const ln of termLines) {
+        if (ln.replace(/^[ \t]+/, '').startsWith(p.word)) return null;
+      }
+      if (!p.quoted && /\$\(|`|\$\[|\\\n/.test(p.body)) return null;
+      const id = docs.length;
+      pending = { id, word: p.word, quoted: p.quoted, lineEnd: p.lineEnd, end: p.end };
+      out += ' __AHDOC' + id + '__ ';
+      i = p.openerEnd;
+      wordStart = false;
+      continue;
+    }
+    wordStart = /[\s;&|<>]/.test(c);
+    out += c;
+    i++;
+  }
+  if (pending || stack.length) return null;
+  return { skeleton: out, docs };
+}
+
+// Phase 2 helpers: split one level of the skeleton into its own text (each
+// top-level `$( )`/backtick replaced by a numbered placeholder word) plus the
+// inner texts, so every command at every level is checked and an inner
+// level knows which outer command receives its output.
+function hdLevels(text, out, depth, ownId) {
+  if (depth > 6) return false;
+  let flat = '';
+  let i = 0;
+  const inner = [];
+  const lift = (start, end) => {
+    const id = out.nextId++;
+    inner.push({ text: text.slice(start, end), id });
+    flat += ' __AHSUB' + id + '__ ';
+  };
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '\\') { flat += text.slice(i, i + 2); i += 2; continue; }
+    if (c === "'") { const j = text.indexOf("'", i + 1); if (j < 0) return false; flat += text.slice(i, j + 1); i = j + 1; continue; }
+    if (c === '$' && text[i + 1] === '(') {
+      const e = hdSubstEnd(text, i + 2, ')');
+      if (e < 0) return false;
+      lift(i + 2, e); i = e + 1;
+      continue;
+    }
+    if (c === '`') {
+      const e = hdSubstEnd(text, i + 1, '`');
+      if (e < 0) return false;
+      lift(i + 1, e); i = e + 1;
+      continue;
+    }
+    if (c === '"') {
+      // Keep the quoted span but lift substitutions out of it.
+      flat += c; i++;
+      while (i < text.length && text[i] !== '"') {
+        const d = text[i];
+        if (d === '\\') { flat += text.slice(i, i + 2); i += 2; continue; }
+        if (d === '$' && text[i + 1] === '(') {
+          const e = hdSubstEnd(text, i + 2, ')');
+          if (e < 0) return false;
+          lift(i + 2, e); i = e + 1;
+          continue;
+        }
+        if (d === '`') {
+          const e = hdSubstEnd(text, i + 1, '`');
+          if (e < 0) return false;
+          lift(i + 1, e); i = e + 1;
+          continue;
+        }
+        flat += d; i++;
+      }
+      if (i >= text.length) return false;
+      flat += '"'; i++;
+      continue;
+    }
+    flat += c; i++;
+  }
+  out.levels.push({ text: flat, id: ownId });
+  for (const t of inner) if (!hdLevels(t.text, out, depth + 1, t.id)) return false;
+  return true;
+}
+
+// Extensions of plain prose/data files. A consumer that writes a body
+// anywhere else (a script, a Makefile, an extensionless file, a dotfile)
+// keeps the body scanned: that text may be run later.
+const HEREDOC_DATA_EXT = new Set(['md', 'markdown', 'mdx', 'txt', 'text', 'rst', 'adoc', 'asciidoc', 'org', 'log', 'csv', 'tsv']);
+function hdIsDataSink(t) {
+  if (/^\/dev\/(?:null|stdout|stderr)$/.test(t)) return true;
+  const base = t.split('/').pop() || '';
+  const dot = base.lastIndexOf('.');
+  return dot > 0 && HEREDOC_DATA_EXT.has(base.slice(dot + 1).toLowerCase());
+}
+
+// One write target (redirect or tee operand) of a command beside a data
+// heredoc: a literal path outside the dirs tools run or read config from,
+// not a git hook name or dotfile, and not an existing symlink.
+function hdTargetOk(t, dirs) {
+  if (!t) return false;
+  if (/^\/dev\/(?:null|stdout|stderr|fd\/[12])$/.test(t)) return true;
+  if (!/^[A-Za-z0-9_.\/~+@%:,=-]+$/.test(t) || t.indexOf('__AH') >= 0) return false;
+  if (hdBadPath(t)) return false;
+  const base = t.split('/').pop();
+  if (!base || base.startsWith('.')) return false; // dotfiles: shell rc, .gitconfig, .envrc, ...
+  if (GIT_HOOK_NAMES.has(base.replace(/\.[^.]*$/, '').toLowerCase()) || GIT_HOOK_NAMES.has(base.toLowerCase())) return false;
+  const home = safeHomedir();
+  for (const dir of dirs) {
+    try {
+      const abs = path.resolve(dir || process.cwd(), t.startsWith('~/') && home ? path.join(home, t.slice(2)) : t);
+      try { if (fs.lstatSync(abs).isSymbolicLink()) return false; } catch (e) { if (!e || e.code !== 'ENOENT') return false; }
+      let real = path.dirname(abs);
+      try { real = fs.realpathSync(real); } catch (e) { if (!e || e.code !== 'ENOENT') return false; }
+      if (hdBadPath(real) || hdBadPath(abs)) return false;
+    } catch (_) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Write targets of one tokenized segment: [{ t, stdout }] for each redirect
+// word and tee operand (`stdout` = it receives the command's stdout). null =
+// a target we cannot read (process substitution, fd dup to a file, dangling
+// `>`, a substitution as the path).
+function hdWriteTargets(tokens, ev) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.quotedOnly) continue;
+    const m = /^([0-9]*|&)(>>?|>\|)(.*)$/s.exec(t.text);
+    if (!m) { if (t.text.indexOf('>') >= 0) return null; continue; }
+    let w = m[3];
+    if (w.startsWith('&')) { if (/^&[0-9-]?$/.test(w)) continue; return null; }
+    if (w.startsWith('(')) return null;
+    if (!w) { w = tokens[i + 1] ? tokens[i + 1].text : ''; i++; }
+    out.push({ t: w, stdout: m[1] === '' || m[1] === '1' || m[1] === '&' });
+  }
+  if (ev && ev.verb === 'tee') {
+    for (let k = 0; k < ev.args.length; k++) {
+      const a = ev.args[k].text;
+      if (/^(?:[0-9]*|&)>/.test(a)) { if (/^(?:[0-9]*|&)>>?\|?$/.test(a)) k++; continue; }
+      if (a.startsWith('-') || /^__AHDOC[0-9]+__$/.test(a)) continue;
+      out.push({ t: a, stdout: true });
+    }
+  }
+  return out.some((w) => w.t.indexOf('__AH') >= 0) ? null : out;
+}
+
+function hdMarkers(tokens, re) {
+  const ids = [];
+  for (const t of tokens) {
+    let m;
+    const g = new RegExp(re.source, 'g');
+    while ((m = g.exec(t.text)) !== null) ids.push(Number(m[1]));
+  }
+  return ids;
+}
+
+// A git or gh command that takes a heredoc (stdin, or a `$( )` argument) as a
+// commit / tag / PR / issue message.
+function hdMessageTaker(ev) {
+  if (ev.verb === 'git') return HEREDOC_GIT_MSG_SUBS.has(gitSubcommand(ev.args).sub);
+  if (ev.verb === 'gh') {
+    const words = ev.args.filter((a) => !a.text.startsWith('-')).map((a) => a.text);
+    return words.length > 1 && (words[0] === 'pr' || words[0] === 'issue' || words[0] === 'release') && HEREDOC_GH_MSG_ACTS.has(words[1]);
+  }
+  return false;
+}
+
+function maskDataHeredocs(cmd, baseCwd) {
+  try {
+    if (typeof cmd !== 'string' || cmd.indexOf('<<') === -1) return cmd;
+    if (/[\r\0]/.test(cmd)) return cmd;
+    if (!heredocDataEnabled()) return cmd;
+    const sk = hdSkeleton(cmd);
+    if (!sk || !sk.docs.length) return cmd;
+    const skel = sk.skeleton;
+    if (/[<>]\(|\$\{|\$'|\\\n/.test(skel)) return cmd;
+    if (hdDeniedFirstWord(skel)) return cmd;
+    const lv = { levels: [], nextId: 0 };
+    if (!hdLevels(skel, lv, 0, null)) return cmd;
+    const dirs = [(typeof baseCwd === 'string' && baseCwd) ? baseCwd : process.cwd()];
+    if (hdBadPath(dirs[0])) return cmd;
+    const outerOf = new Map(); // substitution id -> the command whose argv receives it
+    const consumers = []; // { ev, targets, levelId }
+    const seenDocs = new Set();
+    for (const lvl of lv.levels) {
+      for (const seg of splitSegments(lvl.text)) {
+        const tokens = tokenize(seg);
+        if (!tokens.length) continue;
+        if (!tokens[0].quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].text)) return cmd;
+        const ev = effectiveVerb(tokens);
+        // The verb is the bare first word: no wrapper, path or quoting.
+        if (!ev || !HEREDOC_SAFE_VERBS.has(ev.verb) || tokens[0].quotedOnly || tokens[0].text !== ev.verb) return cmd;
+        if (ev.verb === 'gh') {
+          const words = ev.args.filter((a) => !a.text.startsWith('-')).map((a) => a.text);
+          if (!words.length || !HEREDOC_GH_GROUPS.has(words[0])) return cmd;
+        }
+        if (ev.verb === 'git') {
+          if (ev.args.some((a) => a.text === '-c' || /^--(?:config-env|exec-path)/.test(a.text))) return cmd;
+          if (!HEREDOC_GIT_SUBS.has(gitSubcommand(ev.args).sub)) return cmd;
+        }
+        if (ev.verb === 'cd' || ev.verb === 'pushd') {
+          const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
+          if (dirTok) {
+            if (!/^[A-Za-z0-9_.\/~+@%:,=-]+$/.test(dirTok.text) || dirTok.text.indexOf('__AH') >= 0) return cmd;
+            const home = safeHomedir();
+            const next = path.resolve(dirs[dirs.length - 1], dirTok.text.startsWith('~/') && home ? path.join(home, dirTok.text.slice(2)) : dirTok.text);
+            if (hdBadPath(next)) return cmd;
+            dirs.push(next);
+          }
+        }
+        const targets = hdWriteTargets(tokens, ev);
+        if (targets === null) return cmd;
+        for (const w of targets) if (!hdTargetOk(w.t, dirs)) return cmd;
+        for (const id of hdMarkers(tokens, /__AHSUB(\d+)__/)) outerOf.set(id, ev);
+        const docIds = hdMarkers(tokens, /__AHDOC(\d+)__/);
+        if (docIds.length) {
+          for (const id of docIds) seenDocs.add(id);
+          consumers.push({ ev, targets, levelId: lvl.id });
+        }
+      }
+    }
+    // Every heredoc must have been seen in a checked command, and each one's
+    // text must end in a data sink: a git/gh message, a prose/data file via
+    // a stdout redirect or tee, or a `$( )` argument of a git/gh message.
+    for (const d of sk.docs) if (!seenDocs.has(d.id)) return cmd;
+    for (const c of consumers) {
+      if (c.ev.verb === 'git' || c.ev.verb === 'gh') {
+        if (!hdMessageTaker(c.ev)) return cmd;
+        continue;
+      }
+      const sinks = c.targets.filter((w) => w.stdout);
+      if (sinks.length) {
+        if (!sinks.every((w) => hdIsDataSink(w.t))) return cmd;
+        continue;
+      }
+      const outer = c.levelId === null ? null : outerOf.get(c.levelId);
+      if (!outer || !hdMessageTaker(outer)) return cmd;
+    }
+    // Drop each body + terminator line; the opener line and every following
+    // command stay. (Not blanked to spaces: a long whitespace run makes the
+    // backstop's piped-echo regex backtrack quadratically.)
+    let out = '';
+    let last = 0;
+    for (const d of sk.docs) {
+      out += cmd.slice(last, d.lineEnd + 1);
+      last = d.end;
+    }
+    return out + cmd.slice(last);
+  } catch (_) {
+    return cmd; // fail closed: scan the raw text
+  }
 }
 
 // A1-4: every single/double-QUOTED string literal appearing anywhere in the
@@ -2049,7 +2536,12 @@ function handoverCommitVerdict(ev, lastCdDir) {
 function scanCommand(cmd, depth, baseCwd) {
   const d = typeof depth === 'number' ? depth : 0;
   if (d === 0) launcherCmdText = cmd;
-  const segments = splitSegments(cmd);
+  // Heredoc bodies whose consumer is not a shell are data (see
+  // maskDataHeredocs): blanked for the segment, call-literal and backstop
+  // scans. `cmd` itself (raw) still feeds the heredoc-body config scan, the
+  // `-F -` stdin message scan and the whole-command credit scan.
+  const scanText = maskDataHeredocs(cmd, baseCwd);
+  const segments = splitSegments(scanText);
 
   // Additive side-channel data for the `-F`/`--file` commit-message scan
   // (see fileCommitMessages/extractHeredocBodies above): every heredoc body
@@ -2065,7 +2557,7 @@ function scanCommand(cmd, depth, baseCwd) {
   let lastCdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
 
   if (d < 3) {
-    for (const lit of callLiteralCommands(cmd)) {
+    for (const lit of callLiteralCommands(scanText)) {
       const hit = scanCommand(lit, d + 1, baseCwd);
       if (hit) return hit;
     }
@@ -2209,10 +2701,10 @@ function scanCommand(cmd, depth, baseCwd) {
     if (hv) return hv;
   }
   if (d === 0) {
-    const lb = launcherBackstop(cmd, baseCwd);
+    const lb = launcherBackstop(scanText, baseCwd);
     if (lb) return lb;
   }
-  return gitBackstop(cmd, d, heredocBodies, baseCwd);
+  return gitBackstop(scanText, d, heredocBodies, baseCwd);
 }
 
 // Quote-blind launcher-dir write scan. The quote-aware pass above loses sync

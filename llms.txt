@@ -242,6 +242,7 @@ Codex: no `/config`, use the skill.
 | guards.outputVerifyGuard / failureRootCauseNudge / repoSelfDrift / emitDedupe | true | `ANTIHALL_OUTPUT_VERIFY_GUARD`, … |
 | guards.stashGuard (safety: --confirmed) | false | `ANTIHALL_STASH_GUARD` |
 | guards.handoverCommitGuard | true | `ANTIHALL_HANDOVER_COMMIT_GUARD` |
+| guards.gitGuardHeredocData | true | `ANTIHALL_GIT_GUARD_HEREDOC_DATA` |
 | guards.modelRouting | strict (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` |
 | guards.noBlockingQuestions | off (off/advise/block) | `ANTIHALL_NO_BLOCKING_QUESTIONS` |
 | guards.questionAgentsNote | true | `ANTIHALL_QUESTION_AGENTS_NOTE` |

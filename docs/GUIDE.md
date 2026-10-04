@@ -247,15 +247,29 @@ flags (`git push "--force"`), bundled `-f`, `+refspec` pushes, and a trailing
 `sh -c` / `zsh -c` / `dash -c` / `ksh -c` / `ash -c` shell wrappers and re-inspects
 the payload, so `bash -c "git push --force"` and `bash -c '...Co-Authored-By:
 Claude...'` cannot smuggle either block past it that way.
-**Known limitation:** text inside a heredoc is scanned as if it were shell, even
-when the consumer is python, node or `cat` and the text is only data. A script or
-note that merely MENTIONS `git push` with backticks or `$(...)` can therefore be
-blocked as "argument produced by a command substitution". This is deliberate
-(a static scanner cannot tell prose from a shell-exec string inside an
-interpreter body, and several exemptions were bypassed in review); the
-workaround is to write the content with the Write tool, then run or reference
-the file. `tests/hooks/git-guard-heredoc-bypass.test.js` pins the forms that
-must stay blocked.
+**Heredoc bodies that are data** (`guards.gitGuardHeredocData`, default on): a
+heredoc whose consumer is not a shell is not scanned as commands, so a note,
+commit message or PR body that mentions `git push --force` is not blocked:
+`cat <<EOF > notes.md`, `tee notes.txt <<EOF`, `git commit -F - <<EOF`,
+`git commit -m "$(cat <<EOF ... EOF)"`, `gh pr create --body-file - <<EOF`. The
+rule is all-or-nothing and fails closed: it applies only when every heredoc in
+the command ends in a prose/data file (`.md`, `.txt`, `.rst`, `.log`, ...)
+through cat/tee or in a git commit/tag/notes/merge or gh pr/issue/release
+message; every other command in the line is on a short allowlist (cat, tee,
+git, gh, echo, printf, cd, mkdir, wc, head, tail, ls, ...); no write target is a
+script, an extensionless file, a dotfile, a git hook name or a `.git`,
+`.husky`, `.githooks`, `hooks`, `.ssh`, `.config`, `.claude`, `.codex` or
+`.anti-hall/bin` path; an unquoted-delimiter body has no `$(` or backtick; and
+the parse has no open quote, line continuation or process substitution around
+the opener. Everything else still scans every body as shell: a heredoc fed to
+bash/sh/zsh/eval/source/`.`/xargs/python/node/..., piped into a shell, teed into
+`>( )`, or written to a file that the same command line then runs (`bash
+f.md`, `. f.md`, `git -c core.pager='sh f.md' log`). Commit and PR credit
+trailers and `key = value` git-config lines in a body are checked whatever the
+consumer. A script written by a heredoc (`cat > x.sh <<EOF`) is still scanned,
+because it may be run later; write it with the Write tool.
+`tests/hooks/git-guard-heredoc-bypass.test.js` pins the forms that must stay
+blocked, `tests/hooks/git-guard-heredoc-data.test.js` the ones that are data.
 It scans commit messages both INLINE (`-m` / `--message` / `--trailer`) and via
 `-F -` / `--file=-` / `-F /dev/stdin` fed by a heredoc on the same command
 line, or via `-F <path>` naming a real, readable file (a relative path
@@ -270,8 +284,14 @@ after any commit-creating command and tells the agent to reword one that
 carries a trailer added OFF the command line (a repo `commit-msg` /
 `prepare-commit-msg` hook, a template, an editor, a cherry-pick). **Documented
 fail-open scope:** the audit is advisory (PostToolUse cannot un-run a commit),
-a commit made inside a script file is not seen by the command-text scan, and `xargs`
-can still bypass the force-push block. These are
+a commit made inside a script file is not seen by the command-text scan, and
+a shell alias or function defined in your shell profile (not in the command)
+is not seen through (see **Aliases** below). `xargs` is covered:
+`... | xargs [options] git ...` gets the same git checks as a direct run (any
+xargs-run `git push` is blocked, since stdin can append `--force`), with
+xargs' GNU and BSD options parsed the way getopt does (`-I {}`, `-I{}`,
+`-i`/`-l`/`-e` with attached values only, `-n1`, `-0n1`, `-d '\n'`, `-J %`,
+`--max-args 1`), and an xargs-run `sh -c`/`eval`/nested `xargs` is re-scanned. These are
 documented boundaries, not silent gaps.
 
 **Aliases** (`guards.gitAliasResolve`, safety, default on). `git <name>` where
@@ -1152,6 +1172,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
 | `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
 | `guards.handoverCommitGuard` | `true` | `ANTIHALL_HANDOVER_COMMIT_GUARD` | git-guard: block a `git commit` whose paths include a session handover (`.anti-hall/handovers/**` at any depth, or `HANDOVER*.md`, `CONTINUE-HERE.md`, `*.continue-here.md` at the repo root). Handovers are local session state and are never committed; `git add` is never blocked, but `git add ... && git commit` in one command is checked (an ignored `.anti-hall/` is not a hit); removing a tracked handover and concluding a merge/cherry-pick/rebase are allowed; fails open if git cannot be queried, and says so when a command has too many commits to check. |
+| `guards.gitGuardHeredocData` adv | `true` | `ANTIHALL_GIT_GUARD_HEREDOC_DATA` | git-guard: a heredoc whose consumer is not a shell is data, so its body is not scanned as commands - `cat <<EOF > notes.md`, `tee notes.txt <<EOF`, `git commit -F - <<EOF`, `git commit -m "$(cat <<EOF ...)"`, `gh pr create --body-file - <<EOF`. Applies only when every heredoc ends in a prose/data file (`.md`, `.txt`, `.rst`, `.log`, ...) or a git/gh message, every other command in the line is on a short allowlist (cat, tee, git, gh, echo, printf, cd, mkdir, wc, ...), and no write target is a script, extensionless file, dotfile, git hook or `.git`/`.husky`/`.ssh`/`.config` path. A body fed to bash/sh/eval/source/xargs/python/..., piped into a shell, or written to a file the same line runs stays scanned. Credit trailers are checked either way. `false` = scan every body as shell. |
 | `guards.gitignoreHint` | `true` | `ANTIHALL_GITIGNORE_HINT` | One-time (per project, every 7 days) SessionStart reminder to git-ignore `.anti-hall/` when it exists in a git repo and is not ignored; doctor always reports it. |
 | `guards.allowAnthropicEnvKey` adv safety | `false` | — | SAFETY, home-settings only (no env or project override). Opt-in: let the speculation judge and Jev triage read `ANTHROPIC_API_KEY` from the environment. Default off: only the `anthropic_api_key` plugin option is used. |
 | `guards.emitDedupe` | `true` | `ANTIHALL_EMIT_DEDUPE` | Deduplicate repeated hook-emit output. |
@@ -1410,7 +1431,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 - **Statusline didn't apply?** It is opt-in — run the installer above. If it reports
   "not found", run `/plugin install` first, then re-run, or locate the dir via `/plugin`.
 - **git-guard let a force-push through?** Check the documented fail-open scope above
-  (`xargs` / aliases / interactive-editor commits with no `-m`/`-F` are out of scope
+  (aliases / interactive-editor commits with no `-m`/`-F` are out of scope
   by design; `bash -c`/`sh -c`
   wrappers are unwrapped and inspected, not a bypass).
 - **Guard blocking something legitimate?** Most guards fail open and have a skip hatch
