@@ -10,11 +10,7 @@ use serde_json::{json, Map, Value};
 
 /// Registered impact kinds, from `impact.*` in the defaults (excluding the price table and method entries).
 pub fn kinds() -> Vec<String> {
-    defaults::all()
-        .into_iter()
-        .filter(|e| e.key.starts_with("impact.") && e.value.get("counted").is_some())
-        .map(|e| e.key["impact.".len()..].to_string())
-        .collect()
+    defaults::all().iter().filter(|e| e.key.starts_with("impact.") && e.value.get("counted").is_some()).map(|e| e.key["impact.".len()..].to_string()).collect()
 }
 
 /// True when `kind` is a registered impact kind.
@@ -67,7 +63,7 @@ pub fn summary(store: &dyn Store, filter: &ImpactFilter, recent: usize) -> Value
                 "status": defaults::text("msg.impact_no_routing"),
                 "estimated_usd": null,
                 "method": defaults::text("impact.savings_method"),
-                "price_table": {"date": table.get("date"), "source": table.get("source")},
+                "price_table": {"date": table.str_field("date"), "source": table.str_field("source")},
             },
             "measured_benchmarks": [],
         },

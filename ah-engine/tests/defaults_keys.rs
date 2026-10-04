@@ -44,7 +44,7 @@ fn keys_after(text: &str, callers: &[&str]) -> BTreeSet<String> {
 fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     let mut files = Vec::new();
     rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
-    let shipped: BTreeSet<String> = ah_engine::defaults::all().into_iter().map(|e| e.key).collect();
+    let shipped: BTreeSet<String> = ah_engine::defaults::all().iter().map(|e| e.key.to_string()).collect();
     let mut used: BTreeSet<String> = BTreeSet::new();
     let dotted = [
         "defaults::num",

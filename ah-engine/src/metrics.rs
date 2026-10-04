@@ -67,6 +67,11 @@ fn series(name: &str, labels: &[(&str, &str)]) -> String {
     k
 }
 
+/// The latency histogram bucket bounds (`telemetry.latency_buckets_us`).
+fn bucket_bounds() -> Vec<u64> {
+    defaults::raw("telemetry.latency_buckets_us").as_array().unwrap_or_default().iter().filter_map(defaults::V::as_integer).map(|v| v.max(0) as u64).collect()
+}
+
 /// True when `name` is a registered metric.
 pub fn is_registered(name: &str) -> bool {
     defaults::has(&format!("metric.{name}"))
@@ -108,10 +113,7 @@ impl Metrics {
 
     /// Record one observation (microseconds) in a histogram.
     pub fn observe(&mut self, name: &str, labels: &[(&str, &str)], micros: u64) {
-        let bounds: Vec<u64> = defaults::raw("telemetry.latency_buckets_us")
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_integer()).map(|v| v.max(0) as u64).collect())
-            .unwrap_or_default();
+        let bounds: Vec<u64> = bucket_bounds();
         let exists = self.hists.contains_key(&series(name, labels));
         let k = self.key(name, labels, exists);
         self.hists.entry(k).or_default().observe(&bounds, micros);
@@ -130,10 +132,7 @@ impl Metrics {
 
     /// Everything as JSON, optionally only series whose `check` label equals `check`.
     pub fn snapshot(&self, check: &str) -> Value {
-        let bounds: Vec<u64> = defaults::raw("telemetry.latency_buckets_us")
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_integer()).map(|v| v.max(0) as u64).collect())
-            .unwrap_or_default();
+        let bounds: Vec<u64> = bucket_bounds();
         let wanted = |k: &str| check.is_empty() || k.contains(&format!("|check={check}"));
         let parse = |k: &str| -> (String, Map<String, Value>) {
             let mut it = k.split('|');

@@ -56,18 +56,14 @@ fn handlers() -> &'static [(&'static str, Handler)] {
 /// Every command in the shipped registry data, in file order.
 pub fn commands() -> Vec<CommandInfo> {
     defaults::all()
-        .into_iter()
+        .iter()
         .filter(|e| e.key.starts_with("cmd."))
-        .map(|e| {
-            let t = e.value.as_table().cloned().unwrap_or_default();
-            let get = |k: &str| t.get(k).and_then(toml::Value::as_str).unwrap_or("").to_string();
-            CommandInfo {
-                name: e.key["cmd.".len()..].to_string(),
-                args: get("args"),
-                read_only: t.get("read_only").and_then(toml::Value::as_bool).unwrap_or(false),
-                status: get("status"),
-                doc: e.doc,
-            }
+        .map(|e| CommandInfo {
+            name: e.key["cmd.".len()..].to_string(),
+            args: e.value.str_field("args").to_string(),
+            read_only: e.value.get("read_only").and_then(defaults::V::as_bool).unwrap_or(false),
+            status: e.value.str_field("status").to_string(),
+            doc: e.doc.to_string(),
         })
         .collect()
 }

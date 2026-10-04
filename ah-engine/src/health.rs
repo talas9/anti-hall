@@ -99,14 +99,13 @@ pub enum Class {
 /// The code groups, their class and the hint message keys come from `health.error_codes` in the defaults; a code
 /// that is not listed is a permanent failure with no hint.
 pub fn classify(code: &str) -> (Class, String) {
-    let table = defaults::raw("health.error_codes").as_array().cloned().unwrap_or_default();
-    for group in &table {
-        let listed = group.get("codes").and_then(|c| c.as_array()).is_some_and(|c| c.iter().any(|x| x.as_str() == Some(code)));
+    for group in defaults::raw("health.error_codes").as_array().unwrap_or_default() {
+        let listed = group.get("codes").is_some_and(|c| c.strings().contains(&code));
         if !listed {
             continue;
         }
-        let class = if group.get("class").and_then(|c| c.as_str()) == Some("env") { Class::Env } else { Class::Permanent };
-        let key = group.get("hint").and_then(|h| h.as_str()).unwrap_or("");
+        let class = if group.str_field("class") == "env" { Class::Env } else { Class::Permanent };
+        let key = group.str_field("hint");
         return (class, if key.is_empty() { String::new() } else { hint_text(key) });
     }
     (Class::Permanent, String::new())
@@ -269,8 +268,12 @@ pub fn scrub(s: &str) -> String {
     if let Some(h) = defaults::env_var("home").filter(|h| h.len() > 1) {
         out = out.replace(&h, "~");
     }
-    for pair in defaults::raw("health.scrub_patterns").as_array().map(Vec::as_slice).unwrap_or_default() {
-        let (Some(re), Some(rep)) = (pair.get(0).and_then(|v| v.as_str()), pair.get(1).and_then(|v| v.as_str())) else { continue };
+    for pair in defaults::raw("health.scrub_patterns").as_array().unwrap_or_default() {
+        let (Some(re), Some(rep)) =
+            (pair.as_array().and_then(|p| p.first()).and_then(defaults::V::as_str), pair.as_array().and_then(|p| p.get(1)).and_then(defaults::V::as_str))
+        else {
+            continue;
+        };
         if let Ok(r) = Regex::new(re) {
             out = r.replace_all(&out, rep).to_string();
         }

@@ -4,9 +4,9 @@
 //! loops (is this word a wrapper? is this option a value option?), so each table is turned into a set or a typed
 //! value on first use and shared for the life of the process. The text of the tables lives only in the TOML file.
 use crate::defaults;
+use crate::defaults::V;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use toml::Value;
 
 /// An ordered list of words with constant-time membership tests.
 #[derive(Debug, Default, Clone)]
@@ -309,22 +309,22 @@ fn set(s: &str) -> HashSet<String> {
     s.split_whitespace().map(str::to_string).collect()
 }
 
-fn field(t: &toml::Table, k: &str) -> String {
-    t.get(k).and_then(Value::as_str).unwrap_or("").to_string()
+fn field(t: &V, k: &str) -> String {
+    t.str_field(k).to_string()
 }
 
-fn str_list(t: &toml::Table, k: &str) -> Vec<String> {
-    t.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default()
+fn str_list(t: &V, k: &str) -> Vec<String> {
+    t.get(k).map(|v| v.strings().into_iter().map(str::to_string).collect()).unwrap_or_default()
 }
 
 fn switch(name: &str) -> Switch {
-    let t = defaults::raw(&key(name)).as_table().cloned().unwrap_or_default();
-    Switch { section: field(&t, "section"), key: field(&t, "key"), env: field(&t, "env"), option: field(&t, "option") }
+    let t = defaults::raw(&key(name));
+    Switch { section: field(t, "section"), key: field(t, "key"), env: field(t, "env"), option: field(t, "option") }
 }
 
 /// Build a `Spec` from a `hd_specs` entry, adding the shared read-only option sets when it asks for them.
-fn spec_from(t: &toml::Table, read: &(String, String, String)) -> Spec {
-    let wants_read = t.get("read").and_then(Value::as_bool).unwrap_or(false);
+fn spec_from(t: &V, read: &(String, String, String)) -> Spec {
+    let wants_read = t.get("read").and_then(V::as_bool).unwrap_or(false);
     let mut l = field(t, "l");
     let (mut big_l, mut big_o) = (field(t, "big_l"), field(t, "big_o"));
     if wants_read {
@@ -343,50 +343,41 @@ fn spec_from(t: &toml::Table, read: &(String, String, String)) -> Spec {
         l: set(&l),
         big_l: set(&big_l),
         big_o: set(&big_o),
-        num: t.get("num").and_then(Value::as_bool).unwrap_or(false),
-        strict: t.get("strict").and_then(Value::as_bool).unwrap_or(false),
+        num: t.get("num").and_then(V::as_bool).unwrap_or(false),
+        strict: t.get("strict").and_then(V::as_bool).unwrap_or(false),
     }
 }
 
 fn build() -> Tables {
     let read = (strings("hd_read_long").join(" "), strings("hd_read_val").join(" "), strings("hd_read_opt").join(" "));
-    let hd_specs = defaults::raw(&key("hd_specs"))
-        .as_table()
-        .map(|t| t.iter().filter_map(|(k, v)| Some((k.clone(), spec_from(v.as_table()?, &read)))).collect())
-        .unwrap_or_default();
+    let hd_specs =
+        defaults::raw(&key("hd_specs")).as_table().map(|t| t.iter().map(|(k, v)| (k.to_string(), spec_from(v, &read))).collect()).unwrap_or_default();
     let opt_wrappers = defaults::raw(&key("opt_wrappers"))
         .as_table()
         .map(|t| {
             t.iter()
-                .filter_map(|(k, v)| {
-                    let v = v.as_table()?;
-                    Some((
-                        k.clone(),
+                .map(|(k, v)| {
+                    (
+                        k.to_string(),
                         OptWrapper {
                             s: field(v, "s"),
                             v: field(v, "v"),
                             l: str_list(v, "l"),
                             big_l: str_list(v, "big_l"),
-                            ops: v.get("ops").and_then(Value::as_integer).unwrap_or(0) as usize,
+                            ops: v.get("ops").and_then(V::as_integer).unwrap_or(0) as usize,
                         },
-                    ))
+                    )
                 })
                 .collect()
         })
         .unwrap_or_default();
-    let jev_t = defaults::raw(&key("jev_settings")).as_table().cloned().unwrap_or_default();
-    let gpt = defaults::raw(&key("credit_gpt")).as_table().cloned().unwrap_or_default();
+    let jev_t = defaults::raw(&key("jev_settings"));
+    let gpt = defaults::raw(&key("credit_gpt"));
     Tables {
         wrappers: words("wrappers"),
         wrapper_value_opts: defaults::raw(&key("wrapper_value_opts"))
             .as_table()
-            .map(|t| {
-                t.iter()
-                    .map(|(k, v)| {
-                        (k.clone(), Words::new(v.as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default()))
-                    })
-                    .collect()
-            })
+            .map(|t| t.iter().map(|(k, v)| (k.to_string(), Words::new(v.strings().into_iter().map(str::to_string).collect()))).collect())
             .unwrap_or_default(),
         shell_verbs: words("shell_verbs"),
         opt_wrappers,
@@ -413,8 +404,8 @@ fn build() -> Tables {
         forward_config_indexed: strings("forward_config_indexed"),
         noop_editors: words("noop_editors"),
         credit_coauthor_alts: strings("credit_coauthor_alts"),
-        credit_gpt_prefix: field(&gpt, "prefix"),
-        credit_gpt_versions: field(&gpt, "versions"),
+        credit_gpt_prefix: field(gpt, "prefix"),
+        credit_gpt_versions: field(gpt, "versions"),
         credit_generated_alts: strings("credit_generated_alts"),
         gh_body_markers: strings("gh_body_markers"),
         gh_subs: words("gh_subs"),
@@ -435,7 +426,7 @@ fn build() -> Tables {
         hd_sinks_basic: words("hd_sinks_basic"),
         hd_sinks_fd: words("hd_sinks_fd"),
         hd_specs,
-        hd_gh_spec: spec_from(defaults::raw(&key("hd_gh_spec")).as_table().unwrap_or(&toml::Table::new()), &read),
+        hd_gh_spec: spec_from(defaults::raw(&key("hd_gh_spec")), &read),
         max_chain: num("max_chain") as usize,
         alias_depth: num("alias_depth") as usize,
         max_nest: num("max_nest") as usize,
@@ -463,14 +454,14 @@ fn build() -> Tables {
         setting_reused_message: switch("setting_reused_message"),
         setting_handover_guard: switch("setting_handover_guard"),
         jev: JevNames {
-            env_enabled: field(&jev_t, "env_enabled"),
-            env_integration: field(&jev_t, "env_integration"),
-            integration: field(&jev_t, "integration"),
-            mode_on: field(&jev_t, "mode_on"),
-            section: field(&jev_t, "section"),
-            enabled_key: field(&jev_t, "enabled_key"),
-            integrations_key: field(&jev_t, "integrations_key"),
-            jev_json_integrations: field(&jev_t, "jev_json_integrations"),
+            env_enabled: field(jev_t, "env_enabled"),
+            env_integration: field(jev_t, "env_integration"),
+            integration: field(jev_t, "integration"),
+            mode_on: field(jev_t, "mode_on"),
+            section: field(jev_t, "section"),
+            enabled_key: field(jev_t, "enabled_key"),
+            integrations_key: field(jev_t, "integrations_key"),
+            jev_json_integrations: field(jev_t, "jev_json_integrations"),
         },
         launcher_dir_pattern: text("launcher_dir_pattern"),
         skip_command: text("skip_command"),
@@ -511,8 +502,8 @@ pub fn plain(name: &str) -> &'static str {
 /// The block message `git.<name>` rendered with `args`, laid out like the Node guard's block message
 /// (what, why, do instead, allowed, override).
 pub fn block(name: &str, args: &[(&str, &dyn std::fmt::Display)]) -> String {
-    let t = defaults::raw(&key(name)).as_table().cloned().unwrap_or_default();
-    let get = |k: &str| defaults::fill(t.get(k).and_then(Value::as_str).unwrap_or(""), args);
+    let t = defaults::raw(&key(name));
+    let get = |k: &str| defaults::fill(t.str_field(k), args);
     super::util::gm(super::util::Msg { what: &get("what"), why: &get("why"), instead: &get("instead"), allowed: "", override_: &get("override") })
 }
 
@@ -536,10 +527,10 @@ mod tests {
 
     #[test]
     fn every_block_message_has_a_what_why_and_instead() {
-        for e in defaults::all().into_iter().filter(|e| e.key.starts_with("git.msg_")) {
-            let t = e.value.as_table().unwrap_or_else(|| panic!("{} is not a table", e.key));
+        for e in defaults::all().iter().filter(|e| e.key.starts_with("git.msg_")) {
+            assert!(e.value.as_table().is_some(), "{} is not a table", e.key);
             for k in ["what", "why", "instead"] {
-                assert!(t.get(k).and_then(Value::as_str).is_some_and(|s| !s.is_empty()), "{} lacks {k}", e.key);
+                assert!(!e.value.str_field(k).is_empty(), "{} lacks {k}", e.key);
             }
         }
     }
