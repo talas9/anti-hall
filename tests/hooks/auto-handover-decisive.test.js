@@ -184,7 +184,7 @@ test('decisive: autoHandover.decisivePrompt=false -> old plain pause-nag text, n
     assert.ok(reason, 'expected the plain nag');
     assert.doesNotMatch(reason, /GOOD POINT/);
     assert.doesNotMatch(reason, /handover is stale/);
-    assert.match(reason, /Good stopping point/);
+    assert.match(reason, /good stopping point/);
   } finally { s.h.cleanup(); }
 });
 
@@ -195,7 +195,7 @@ test('decisive: no handover file yet -> no decisive line at all (fire directive 
     fs.writeFileSync(tp, assistantUsageLine(pctToTokens(90)) + '\n', 'utf8');
     const r = testHook(HOOK, { hook_event_name: 'Stop', session_id: SID, cwd: s.cwd, transcript_path: tp }, { home: s.h.home, env: KNOWN_WINDOW, expectJson: true });
     const reason = decision(r);
-    assert.match(reason, /AUTO-HANDOVER REQUIRED/);
+    assert.match(reason, /write a handover now/);
     assert.doesNotMatch(reason, /GOOD POINT/);
     assert.doesNotMatch(reason, /handover is stale/);
   } finally { s.h.cleanup(); }

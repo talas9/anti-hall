@@ -571,7 +571,7 @@ test('verify-first hook: guards.injectionRepeatEvery wires a real once-per-N-tur
 
 test('task-tracker hook: 5 queued prompts -> 1 TASK-LIST block, emits again after delivery; vacuity off -> 5', () => {
   const p = () => ({ hook_event_name: 'UserPromptSubmit', session_id: 'burst', prompt: 'tick', cwd: process.cwd() });
-  const m = (c) => c.startsWith('TASK-LIST');
+  const m = (c) => c.includes('task-tracker: capture');
   assert.deepStrictEqual(burst('task-tracker.js', 5, ON, p, m), [1, 1]);
   assert.deepStrictEqual(burst('task-tracker.js', 5, OFF, p, m), [5, 1]);
 });

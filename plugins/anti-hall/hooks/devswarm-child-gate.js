@@ -549,6 +549,8 @@ function emitBlock(text) {
   const reason = require('./lib/block-message.js').frame({
     guard: 'devswarm-child-gate',
     headline: 'Stop held: finish this DevSwarm workspace duty first.',
+    why: 'Your parent orchestrator relies on your heartbeat and a drained inbox.',
+    override: require('./lib/skip-cmd.js').skipCommand('devswarm-child-gate') + ' (15-min TTL)',
     body: text,
   });
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}

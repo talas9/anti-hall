@@ -61,7 +61,7 @@ test('limit-conserve: 4 queued prompts -> 1 LIMIT CONSERVATION block; emitted ag
 
 test('task-tracker as DevSwarm PRIMARY: 4 queued prompts -> 1 TASK-LIST and 1 DISPATCH TIER; again after delivery', () => {
   const r = burst('task-tracker.js', 4, { env: { DEVSWARM_REPO_ID: 'repo-x' } },
-    [(c) => c.includes('TASK-LIST'), (c) => c.includes('DEVSWARM PRIMARY — DISPATCH TIER')]);
+    [(c) => c.includes('task-tracker: capture'), (c) => c.includes('task-tracker: Primary dispatch tier')]);
   assert.deepStrictEqual(r.counts, [1, 1]);
   // TASK-LIST is burst-collapse only (re-emitted after delivery); the PRIMARY block is a keepalive key (quiet).
   assert.deepStrictEqual(r.after, [1, 0]);

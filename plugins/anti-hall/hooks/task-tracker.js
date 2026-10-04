@@ -40,31 +40,34 @@ const crypto = require('crypto');
 const DD = require('./lib/dispatch-demand.js');
 const { reconstructTasks, classifyOpen, openOf, unknownNote } = require('./lib/task-state.js');
 
-const FULL_TODAY =
-  'TASK-LIST DISCIPLINE: capture EVERY user request as a task (TaskCreate) ' +
-  'before starting work, so no request is lost. Assign each task a priority ' +
-  '(metadata.priority: P0/P1/P2) and maintain the list sorted ' +
-  'highest-priority-first so the most important work is always on top; work ' +
-  'tasks in that order. Keep statuses current: in_progress when starting, ' +
-  'completed when done, deferred if explicitly deprioritized. Keep the MAIN ' +
-  'thread non-blocking - delegate heavy/long work to background subagents and ' +
-  'continue. Report progress to the user. Do not finish a turn with ' +
-  'silently-dropped requests.';
+const BM = require('./lib/block-message.js');
+const NON_BLOCKING = 'keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; ';
+function fullMessage(withNonBlocking) {
+  return BM.message({
+    kind: 'tip',
+    guard: 'task-tracker',
+    what: 'capture EVERY user request as a task (TaskCreate) before starting work, so no request is lost.',
+    instead: 'give each task a priority (metadata.priority: P0/P1/P2) and keep the list sorted highest first; keep statuses current (in_progress when starting, completed when done, deferred if explicitly deprioritized); ' +
+      (withNonBlocking ? NON_BLOCKING : '') + 'report progress; never finish a turn with a silently dropped request.',
+  });
+}
+const FULL_TODAY = fullMessage(true);
 
-// Compact level (default): drops only the "keep the MAIN thread non-blocking - delegate
-// heavy/long work" sentence, which the session core and orchestration rule B already carry
-// every session. protocolLevel=full (and any settings failure) keeps FULL_TODAY byte for byte.
-const FULL_COMPACT = FULL_TODAY.replace(
-  'Keep the MAIN thread non-blocking - delegate heavy/long work to background subagents and continue. ', '');
+// Compact level (default): drops only the "keep the MAIN thread non-blocking - delegate heavy/long
+// work" clause, which the session core and orchestration rule B already carry every session.
+// protocolLevel=full (and any settings failure) keeps FULL_TODAY.
+const FULL_COMPACT = fullMessage(false);
 function fullText() {
   try {
     return require('./verify-first-core.js').protocolLevel() === 'compact' ? FULL_COMPACT : FULL_TODAY;
   } catch (_) { return FULL_TODAY; }
 }
 
-const SHORT =
-  'TASK-LIST: capture every request as a priority-sorted task; keep statuses ' +
-  'current; delegate heavy work; drop nothing.';
+const SHORT = BM.message({
+  kind: 'tip',
+  guard: 'task-tracker',
+  what: 'capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.',
+});
 
 // DevSwarm PRIMARY ONLY. FULL/SHORT above — and the ACTIONABLE-NOW dispatch line in
 // freshnessNote() — say "delegate to a background subagent", which is the WRONG
@@ -73,13 +76,12 @@ const SHORT =
 // (DEVSWARM_REPO_ID set AND DEVSWARM_SOURCE_BRANCH empty). Outside DevSwarm, and in
 // a CHILD workspace, the injected text is byte-for-byte unchanged. Mirrors rule W in
 // verify-first-full.js.
-const DEVSWARM_PRIMARY =
-  'DEVSWARM PRIMARY — DISPATCH TIER: for each task, CLASSIFY before you dispatch. A ' +
-  'workspace-scale MATTER (a feature/fix/deploy — multi-step, own branch, own review) is ' +
-  'spun as its own CHILD WORKSPACE: `node scripts/devswarm.js spawn <branch> -p "<brief>"`. ' +
-  'Only finer-grained work (a lookup, a single command, a scoped investigation, a review ' +
-  'pass) goes to a background subagent. A workspace-scale task handed to a subagent is the ' +
-  'same failure as leaving it idle.';
+const DEVSWARM_PRIMARY = BM.message({
+  kind: 'tip',
+  guard: 'task-tracker',
+  what: 'Primary dispatch tier: classify each task before you dispatch it.',
+  instead: 'a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, own review) gets its own CHILD WORKSPACE: `node scripts/devswarm.js spawn <branch> -p "<brief>"`. Only finer-grained work (a lookup, a single command, a scoped investigation, a review pass) goes to a background subagent. Handing a workspace-scale task to a subagent is the same failure as leaving it idle.',
+});
 
 // isDevswarmPrimary(env, cwd) — the shared gate (hooks/lib/primary-tier.js): DevSwarm Primary, devswarm.dispatchTierText on,
 // and not a repo that forbids workspaces. Fail-open to FALSE => the baseline text only.

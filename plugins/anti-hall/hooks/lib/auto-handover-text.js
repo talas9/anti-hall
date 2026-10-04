@@ -130,69 +130,50 @@ function buildFireDirective(result, via, payload, maxTokens) {
   const platform = detectPlatform(payload);
   const w = WORDS[platform];
   const hp = expectedHandoverPath(payload);
+  const bm = require('./block-message.js');
+  let what;
   if (via === 'tokens') {
-    // A token-ceiling fire is only possible when the user explicitly opted
-    // into autoHandover.maxTokens (default 0 = off) — lead with the ceiling
-    // that actually fired, never the "CONTEXT AT ~X%" pct framing (which
-    // reads as confusingly small/unrelated next to "REQUIRED" when the
-    // session is nowhere near the pct threshold).
+    // A token-ceiling fire is only possible when the user explicitly opted into
+    // autoHandover.maxTokens (default 0 = off): lead with the ceiling that fired.
     const usedK = Math.round((result.used || 0) / 1000);
     const ceilingK = Number.isFinite(maxTokens) && maxTokens > 0 ? Math.round(maxTokens / 1000) : null;
-    return (
-      'CONTEXT: ~' + usedK + 'K tokens ≥ your configured autoHandover.maxTokens ceiling' +
-      (ceilingK != null ? ' (' + ceilingK + 'K)' : '') +
-      ' — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
-      '(1) immediately WRITE an anti-hall session handover YOURSELF, following the contract of ' + w.skill + ' ' +
-      'exactly (self-write mandate — never delegate this to a subagent; it never lived ' +
-      'this session and would lose decision/trial fidelity; use the Write/Edit tool for every ' +
-      'handover file, never a Bash heredoc — its body is scanned as shell by git-guard.js)' +
-      (hp ? '; by the skill\'s own date/sequence rules its main file is ' + hp : '') + '; ' +
-      '(2) then TELL the user this was done, to preserve the session\'s work against auto-compact (or ' +
-      'anything they might otherwise forget), and LIST every path you just saved under .anti-hall/handovers/**; ' +
-      (platform === 'codex'
-        ? '(3) URGE them to run /compact (or /new for a fresh chat) soon — Codex re-points the ' +
-          'post-compaction context at the handover through the anti-hall SessionStart hook (source ' +
-          '"compact"), so a plain `/compact` is enough — and ASK '
-        : '(3) URGE them to compact (or /clear) soon and give them this exact command to paste: `' +
-          compactCommand(hp, platform) + '` (substitute the real path if you wrote the handover elsewhere), and ASK ') +
-      'whether they would like to reach a good stopping point first before they do. ' + BLOAT_SENTENCE + ' ' +
-      'This fires once per session at this threshold; you will get brief follow-up reminders as context ' +
-      'keeps growing, not a repeat of this whole message.'
-    );
+    what = 'context is ~' + usedK + 'K tokens, past your autoHandover.maxTokens ceiling' +
+      (ceilingK != null ? ' (' + ceilingK + 'K)' : '') + ': write a handover now.';
+  } else {
+    let label = '';
+    if (result.estimated) {
+      label = result.windowLabel === 'inferred-1m'
+        ? ' (inferred 1M window: observed usage already exceeded the standard 200k, so this session is estimated against 1,000,000 tokens)'
+        : ' (ESTIMATED, assuming a standard 200k window; for a 1M-context session set ANTIHALL_CONTEXT_WINDOW_TOKENS or install the anti-hall statusline for an exact reading)';
+    }
+    what = 'context is at ~' + Math.round(pct) + '%' + label + ': write a handover now.';
   }
-  let label = '';
-  if (result.estimated) {
-    label = result.windowLabel === 'inferred-1m'
-      ? ' (inferred 1M window — observed usage already exceeded the standard 200k, so this session is estimated against a 1,000,000-token window)'
-      : ' (ESTIMATED — assuming a standard 200k context window; if this is a 1M-context session, set ANTIHALL_CONTEXT_WINDOW_TOKENS or install the anti-hall statusline for an exact reading)';
-  }
-  return (
-    'CONTEXT AT ~' + Math.round(pct) + '%' + label + ' — AUTO-HANDOVER REQUIRED. Without asking the user first: ' +
-    '(1) immediately WRITE an anti-hall session handover YOURSELF, following the contract of ' + w.skill + ' ' +
-    'exactly (self-write mandate — never delegate this to a subagent; it never lived ' +
-    'this session and would lose decision/trial fidelity; use the Write/Edit tool for every ' +
-    'handover file, never a Bash heredoc — its body is scanned as shell by git-guard.js)' +
-    (hp ? '; by the skill\'s own date/sequence rules its main file is ' + hp : '') + '; ' +
-    '(2) then TELL the user this was done, to preserve the session\'s work against auto-compact (or ' +
-    'anything they might otherwise forget), and LIST every path you just saved under .anti-hall/handovers/**; ' +
-    (platform === 'codex'
-      ? '(3) URGE them to run /compact (or /new for a fresh chat) soon — Codex re-points the ' +
-        'post-compaction context at the handover through the anti-hall SessionStart hook (source ' +
-        '"compact"), so a plain `/compact` is enough — and ASK '
-      : '(3) URGE them to compact (or /clear) soon and give them this exact command to paste: `' +
-        compactCommand(hp, platform) + '` (substitute the real path if you wrote the handover elsewhere), and ASK ') +
-    'whether they would like to reach a good stopping point first before they do. ' + BLOAT_SENTENCE + ' ' +
-    'This fires once per session at this threshold; you will get brief follow-up reminders as context ' +
-    'keeps growing, not a repeat of this whole message.'
-  );
+  const step3 = platform === 'codex'
+    ? '(3) urge them to run /compact (or /new for a fresh chat) soon (Codex re-points the post-compaction context at the handover through the anti-hall SessionStart hook, source "compact", so a plain `/compact` is enough) and ask '
+    : '(3) urge them to compact (or /clear) soon and give them this exact command to paste: `' +
+      compactCommand(hp, platform) + '` (substitute the real path if you wrote the handover elsewhere), and ask ';
+  return bm.message({
+    kind: 'warn',
+    guard: 'auto-handover',
+    what,
+    why: 'It preserves the session\'s work against auto-compact. Do it without asking the user first.',
+    instead: '(1) write an anti-hall session handover YOURSELF, following the contract of ' + w.skill +
+      ' exactly (self-write mandate: never delegate it to a subagent, which never lived this session; use the Write/Edit tool for every handover file, never a Bash heredoc, since git-guard scans its body as shell)' +
+      (hp ? '; by the skill\'s own date/sequence rules its main file is ' + hp : '') +
+      '; (2) tell the user it was done and list every path you saved under .anti-hall/handovers/**; ' + step3 +
+      'whether they would like to reach a good stopping point first. ' + BLOAT_SENTENCE +
+      ' This fires once per session at this threshold; later reminders are brief.',
+  });
 }
 
 function buildMilestoneNag(pct, payload) {
   const w = WORDS[detectPlatform(payload)];
-  return (
-    'CONTEXT NOW ~' + Math.round(pct) + '% (handover already saved earlier this session) — ' +
-    BLOAT_SENTENCE + ' Mention ' + w.reset + ' to the user again when convenient.'
-  );
+  return require('./block-message.js').message({
+    kind: 'tip',
+    guard: 'auto-handover',
+    what: 'context is now ~' + Math.round(pct) + '% (handover already saved earlier this session).',
+    instead: BLOAT_SENTENCE + ' Mention ' + w.reset + ' to the user again when convenient.',
+  });
 }
 
 // buildSoftAdvisory: used ONLY when the estimate's window size is genuinely
@@ -202,11 +183,13 @@ function buildMilestoneNag(pct, payload) {
 // not a command. Fires once per arm (latch.softFired), same as the mandatory
 // directive fires once per arm — never both for the same crossing.
 function buildSoftAdvisory(pct) {
-  return (
-    'Context looks high (~' + Math.round(pct) + '%, ESTIMATED — this session\'s exact context window ' +
-    'could not be determined, so treat this as a soft heads-up, not a command). Consider checking with ' +
-    'the user about writing a handover and compacting/clearing soon. ' + BLOAT_SENTENCE
-  );
+  return require('./block-message.js').message({
+    kind: 'tip',
+    guard: 'auto-handover',
+    what: 'context looks high (~' + Math.round(pct) + '%, ESTIMATED).',
+    why: 'This session\'s exact context window could not be determined, so treat this as a soft heads-up, not a command.',
+    instead: 'consider checking with the user about writing a handover and compacting/clearing soon. ' + BLOAT_SENTENCE,
+  });
 }
 
 // buildDecisiveSuffix(payload, handoverPath, freshness, taskComplete) —
@@ -256,10 +239,12 @@ function goodPointLine(path, clearCmd, taskComplete) {
 
 function buildPauseNag(pct, payload) {
   const w = WORDS[detectPlatform(payload)];
-  return (
-    'Good stopping point: context is still ~' + Math.round(pct) + '% and a handover is already saved. ' +
-    BLOAT_SENTENCE + ' Mention ' + w.reset + ' to the user now.'
-  );
+  return require('./block-message.js').message({
+    kind: 'tip',
+    guard: 'auto-handover',
+    what: 'good stopping point: context is still ~' + Math.round(pct) + '% and a handover is already saved.',
+    instead: BLOAT_SENTENCE + ' Mention ' + w.reset + ' to the user now.',
+  });
 }
 
 // budgetLabel(budgetPct, max) -> '~5% of the context window (~10K tokens)'.
@@ -277,15 +262,15 @@ function buildGateDirective(result, latch, cfg, payload) {
   const ask = platform === 'codex'
     ? 'ask the user to choose between two options'
     : 'ask the user with AskUserQuestion (two options)';
-  return (
-    'POST-HANDOVER NEW-WORK GATE (context ~' + Math.round(result.pct) + '%, handover saved at ~' +
-    Math.round(latch.handoverPct) + '%; budget ' + budgetLabel(cfg.gateBudgetPct, result.max) + '). ' +
-    'BEFORE starting this request, judge YOURSELF whether it needs more than that budget. ' +
-    'No gate for: a quick question, finishing the in-flight task the handover names, or spawning a ' +
-    'DevSwarm workspace (it runs in its own context). If it is bigger than the budget, do not start it — ' +
-    ask + ': (a) add it to the task list and the handover, then start it after ' + w.reset + '; ' +
-    '(b) proceed now anyway. If the user has explicitly insisted on proceeding, that overrides this gate — proceed.'
-  );
+  return require('./block-message.js').message({
+    kind: 'warn',
+    guard: 'auto-handover',
+    what: 'post-handover new-work gate (context ~' + Math.round(result.pct) + '%, handover saved at ~' + Math.round(latch.handoverPct) + '%; budget ' + budgetLabel(cfg.gateBudgetPct, result.max) + ').',
+    why: 'Before starting this request, judge YOURSELF whether it needs more than that budget.',
+    instead: 'if it is bigger than the budget, do not start it; ' + ask + ': (a) add it to the task list and the handover, then start it after ' + w.reset + '; (b) proceed now anyway.',
+    allowed: 'a quick question, finishing the in-flight task the handover names, or spawning a DevSwarm workspace (it runs in its own context).',
+    override: 'if the user has explicitly insisted on proceeding, proceed',
+  });
 }
 
 // buildGateBackstop(pct, latch, cfg, payload) — the ONE measured reminder
@@ -293,13 +278,12 @@ function buildGateDirective(result, latch, cfg, payload) {
 function buildGateBackstop(pct, latch, cfg, payload) {
   const platform = detectPlatform(payload);
   const w = WORDS[platform];
-  return (
-    'POST-HANDOVER BUDGET EXCEEDED: context is ~' + Math.round(pct) + '%, more than ' + cfg.gateBudgetPct +
-    ' points past the ~' + Math.round(latch.handoverPct) + '% at which the handover was saved. ' +
-    'REFRESH the handover now (' + w.skill + ' — write the next HANDOVER-<n>.md) so it covers the work done ' +
-    'since, then offer the user to park the rest of the work in the task list + handover and continue after ' +
-    w.reset + '. This reminder fires once per handover.'
-  );
+  return require('./block-message.js').message({
+    kind: 'warn',
+    guard: 'auto-handover',
+    what: 'post-handover budget exceeded: context is ~' + Math.round(pct) + '%, more than ' + cfg.gateBudgetPct + ' points past the ~' + Math.round(latch.handoverPct) + '% at which the handover was saved.',
+    instead: 'refresh the handover now (' + w.skill + ': write the next HANDOVER-<n>.md) so it covers the work since, then offer the user to park the rest in the task list + handover and continue after ' + w.reset + '. This reminder fires once per handover.',
+  });
 }
 
 module.exports = {

@@ -4493,20 +4493,19 @@ function main() {
   // Codex variant: no scratchpad-script path (no scratchpad dir, no
   // run_in_background on Codex Bash), Codex sub-agent + cheap-tier wording.
   const SUB = codexHost ? H.CODEX_SUBAGENT : 'a subagent';
-  const delegateTo = codexHost
-    ? 'delegate to ' + H.CODEX_CHEAP + ' that returns only a tight summary'
-    : 'delegate to a subagent (cheap model: Haiku or similar) that returns only a tight summary';
-  const howToRead = codexHost
-    ? 'Commits, pushes, patch applies, gh mutations, repo edits and test runs go to ' + SUB + '.'
-    : SCRATCHPAD_SCRIPT_HINT.trim();
+  const delegateTo = 'delegate to ' + SUB + ' (it returns a short summary)';
+  // Compact allowed list: exactly the shapes isQualifyingSingleTargetCheck accepts
+  // (piped to tail/head/wc/grep -c/grep -m N) plus the scratchpad read-only script.
+  const allowedShapes = 'piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, --check/--dry-run/--list forms' +
+    (codexHost ? '.' : '; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background.');
   const reason = bm().blockMessage({
     guard: 'command-guard',
     what: heavyWhat,
-    why: 'Raw output floods the main thread; a worker returns a tight summary instead.',
-    instead: howToRead + ' Otherwise ' + (devswarmPrimary && tierText
-      ? 'workspace-scale matter (feature/fix/deploy, own branch + review): `node scripts/devswarm.js spawn <branch> -p "<brief>"` (guard-exempt, run inline); one command or scoped check: ' + delegateTo + '. Never hand a workspace-scale matter to ' + SUB + '.'
+    why: 'Raw output floods the main thread.',
+    instead: (devswarmPrimary && tierText
+      ? 'workspace-scale matter (feature/fix/deploy): `node scripts/devswarm.js spawn <branch> -p "<brief>"` (guard-exempt, run inline); a single command: ' + delegateTo + '. Never hand a workspace-scale matter to ' + SUB + '.'
       : delegateTo + '.') + cdJoinHint,
-    allowed: codexHost ? INLINE_ALLOWED_HINT.replace('<scratch/tmp dir>', '<tmp dir>') : INLINE_ALLOWED_HINT,
+    allowed: allowedShapes,
   });
   emitBlock(reason);
 }

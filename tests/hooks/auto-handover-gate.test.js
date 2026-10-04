@@ -62,8 +62,8 @@ function setup() {
   return { h, cwd, prompt, latch };
 }
 
-const GATE_RE = /POST-HANDOVER NEW-WORK GATE/;
-const BACKSTOP_RE = /POST-HANDOVER BUDGET EXCEEDED/;
+const GATE_RE = /post-handover new-work gate/;
+const BACKSTOP_RE = /post-handover budget exceeded/;
 
 test('gate: off below the threshold, even with a handover on disk', () => {
   const s = setup();
@@ -79,7 +79,7 @@ test('gate: off when over threshold but no handover has been written yet', () =>
   const s = setup();
   try {
     const r1 = s.prompt(86);
-    assert.match(ctx(r1), /AUTO-HANDOVER REQUIRED/);
+    assert.match(ctx(r1), /write a handover now/);
     assert.doesNotMatch(ctx(r1), GATE_RE);
     const r2 = s.prompt(87);
     assert.doesNotMatch(ctx(r2), GATE_RE, 'no handover file -> no gate: ' + ctx(r2));
@@ -105,7 +105,7 @@ test('gate: on after the handover is written — directive + recorded baseline p
     const t = ctx(r);
     assert.match(t, GATE_RE);
     assert.match(t, /AskUserQuestion/);
-    assert.match(t, /BEFORE/);
+    assert.match(t, /Before starting this request/);
     assert.match(t, /\(a\)/);
     assert.match(t, /\(b\)/);
     assert.match(t, /insist/i);
@@ -156,7 +156,7 @@ test('backstop: fires once past the budget, is capped, and re-baselines on a ref
     assert.match(ctx(over), BACKSTOP_RE);
     assert.match(ctx(over), /refresh/i);
     assert.match(ctx(over), /park/i);
-    assert.doesNotMatch(ctx(over), /CONTEXT NOW ~/, 'milestone nag folded into the backstop, not doubled');
+    assert.doesNotMatch(ctx(over), /context is now ~/, 'milestone nag folded into the backstop, not doubled');
     const again = s.prompt(97);
     assert.doesNotMatch(ctx(again), BACKSTOP_RE, 'capped: once per handover baseline');
     assert.match(ctx(again), GATE_RE, 'gate directive itself stays on');

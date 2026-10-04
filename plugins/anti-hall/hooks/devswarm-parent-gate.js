@@ -2512,6 +2512,8 @@ function main() {
   const reason = require('./lib/block-message.js').frame({
     guard: 'devswarm-parent-gate',
     headline: 'Primary turn held: DevSwarm workspaces or messages need attention first.',
+    why: 'Unanswered questions or unread mail would be dropped if this turn ended now.',
+    override: require('./lib/skip-cmd.js').skipCommand('devswarm-parent-gate') + ' (15-min TTL)',
     body: base + (parkedSegment ? '\n\n' + parkedSegment : '') + wakeLine,
   });
 

@@ -13,8 +13,8 @@ const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'task-tracker.js';
 const STATE_FILE = 'task-tracker-t.json';
-const FULL_MARKER = 'TASK-LIST DISCIPLINE:';
-const SHORT_MARKER = 'TASK-LIST: capture every request';
+const FULL_MARKER = 'task-tracker: capture EVERY user request';
+const SHORT_MARKER = 'task-tracker: capture every request';
 // These tests exercise FULL/SHORT window logic with back-to-back same-session
 // runs, which lib/emit-dedupe.js deliberately collapses as a queued-prompt
 // burst (covered in emit-dedupe.test.js) — disable it here.
@@ -36,7 +36,7 @@ test('FIRST turn (empty HOME) -> FULL directive', () => {
   try {
     const r = testHook(HOOK, promptPayload(), { home: h.home });
     assert.strictEqual(r.status, 0);
-    assert.ok(ctx(r).startsWith(FULL_MARKER), `expected FULL; got: ${ctx(r).slice(0, 60)}`);
+    assert.ok(ctx(r).includes(FULL_MARKER), `expected FULL; got: ${ctx(r).slice(0, 60)}`);
   } finally {
     h.cleanup();
   }
@@ -46,9 +46,9 @@ test('Immediate second run (state present) -> SHORT line', () => {
   const h = makeHome();
   try {
     const r1 = testHook(HOOK, promptPayload(), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r1).startsWith(FULL_MARKER));
+    assert.ok(ctx(r1).includes(FULL_MARKER));
     const r2 = testHook(HOOK, promptPayload(), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r2).startsWith(SHORT_MARKER), `expected SHORT; got: ${ctx(r2).slice(0, 60)}`);
+    assert.ok(ctx(r2).includes(SHORT_MARKER), `expected SHORT; got: ${ctx(r2).slice(0, 60)}`);
   } finally {
     h.cleanup();
   }
@@ -62,7 +62,7 @@ test('Self-heal: FUTURE lastFull -> FULL again and state rewritten to ~now', () 
     const before = Date.now();
     const r = testHook(HOOK, promptPayload(), { home: h.home });
     const after = Date.now();
-    assert.ok(ctx(r).startsWith(FULL_MARKER), 'future timestamp must self-heal to FULL');
+    assert.ok(ctx(r).includes(FULL_MARKER), 'future timestamp must self-heal to FULL');
     const written = JSON.parse(fs.readFileSync(path.join(h.antiHall, STATE_FILE), 'utf8'));
     assert.ok(
       written.lastFull <= after + 5 * 60 * 1000 && written.lastFull >= before - 1000,
@@ -78,7 +78,7 @@ test('Garbage lastFull -> FULL', () => {
   try {
     h.writeState(STATE_FILE, { lastFull: 'not-a-number' });
     const r = testHook(HOOK, promptPayload(), { home: h.home });
-    assert.ok(ctx(r).startsWith(FULL_MARKER), 'garbage timestamp must yield FULL');
+    assert.ok(ctx(r).includes(FULL_MARKER), 'garbage timestamp must yield FULL');
   } finally {
     h.cleanup();
   }
@@ -103,7 +103,7 @@ test('Size trigger: transcript grows past threshold within window -> FULL again,
     // Turn 1: first turn of the session -> FULL, records lastFull + lastFullSize
     // (the transcript's small size at this point).
     const r1 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r1).startsWith(FULL_MARKER), `expected FULL on turn 1; got: ${ctx(r1).slice(0, 60)}`);
+    assert.ok(ctx(r1).includes(FULL_MARKER), `expected FULL on turn 1; got: ${ctx(r1).slice(0, 60)}`);
     const stateAfter1 = JSON.parse(fs.readFileSync(path.join(h.antiHall, STATE_FILE), 'utf8'));
     assert.ok(Number.isFinite(stateAfter1.lastFullSize), 'lastFullSize must be recorded');
 
@@ -113,14 +113,14 @@ test('Size trigger: transcript grows past threshold within window -> FULL again,
 
     // Turn 2: same session, no time has passed -> growth trigger must fire FULL.
     const r2 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r2).startsWith(FULL_MARKER), `expected FULL on growth; got: ${ctx(r2).slice(0, 60)}`);
+    assert.ok(ctx(r2).includes(FULL_MARKER), `expected FULL on growth; got: ${ctx(r2).slice(0, 60)}`);
 
     const stateAfter2 = JSON.parse(fs.readFileSync(path.join(h.antiHall, STATE_FILE), 'utf8'));
     assert.ok(stateAfter2.lastFullSize > stateAfter1.lastFullSize, 'baseline must be rewritten to the new (larger) size');
 
     // Turn 3: immediately after, no further growth -> back to SHORT.
     const r3 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r3).startsWith(SHORT_MARKER), `expected SHORT once growth baseline is caught up; got: ${ctx(r3).slice(0, 60)}`);
+    assert.ok(ctx(r3).includes(SHORT_MARKER), `expected SHORT once growth baseline is caught up; got: ${ctx(r3).slice(0, 60)}`);
   } finally {
     h.cleanup();
   }
@@ -131,13 +131,13 @@ test('Size trigger: sub-threshold growth within window -> stays SHORT', () => {
   try {
     const tp = h.writeTranscript([{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } }]);
     const r1 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r1).startsWith(FULL_MARKER));
+    assert.ok(ctx(r1).includes(FULL_MARKER));
 
     // Grow by far LESS than GROWTH_BYTES.
     fs.appendFileSync(tp, 'x'.repeat(1024) + '\n', 'utf8');
 
     const r2 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r2).startsWith(SHORT_MARKER), `sub-threshold growth must not trigger FULL; got: ${ctx(r2).slice(0, 60)}`);
+    assert.ok(ctx(r2).includes(SHORT_MARKER), `sub-threshold growth must not trigger FULL; got: ${ctx(r2).slice(0, 60)}`);
   } finally {
     h.cleanup();
   }
@@ -147,9 +147,9 @@ test('Size trigger: no transcript_path (unknown size) -> growth trigger inert, w
   const h = makeHome();
   try {
     const r1 = testHook(HOOK, promptPayload(), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r1).startsWith(FULL_MARKER));
+    assert.ok(ctx(r1).includes(FULL_MARKER));
     const r2 = testHook(HOOK, promptPayload(), { home: h.home, env: NO_DEDUPE });
-    assert.ok(ctx(r2).startsWith(SHORT_MARKER), `no transcript_path must not spuriously trigger FULL; got: ${ctx(r2).slice(0, 60)}`);
+    assert.ok(ctx(r2).includes(SHORT_MARKER), `no transcript_path must not spuriously trigger FULL; got: ${ctx(r2).slice(0, 60)}`);
   } finally {
     h.cleanup();
   }
@@ -254,7 +254,7 @@ test('ACTIONABLE-NOW: 0 actionable (all completed) -> generic only, no review li
     const c = ctx(r);
     assert.doesNotMatch(c, /DISPATCH NOW/, c);
     // Generic discipline text still present (FIRST turn -> FULL).
-    assert.ok(c.startsWith(FULL_MARKER), c);
+    assert.ok(c.includes(FULL_MARKER), c);
   } finally {
     h.cleanup();
   }
@@ -341,7 +341,7 @@ test('FAIL-OPEN: malformed transcript JSON lines -> no throw, generic context', 
     fsm.writeFileSync(tp, '{not json\n}}}garbage\n', 'utf8');
     const r = testHook(HOOK, turnPayload(tp), { home: h.home });
     assert.strictEqual(r.status, 0);
-    assert.ok(ctx(r).startsWith(FULL_MARKER), ctx(r));
+    assert.ok(ctx(r).includes(FULL_MARKER), ctx(r));
     assert.doesNotMatch(ctx(r), /DISPATCH NOW/, ctx(r));
   } finally {
     h.cleanup();
@@ -366,7 +366,7 @@ test('FAIL-OPEN: malformed JSON stdin -> FULL (never weaken discipline)', () => 
     const { testHookRaw } = require('../helpers/spawn-hook.js');
     const r = testHookRaw(HOOK, '{bad', { home: h.home });
     assert.strictEqual(r.status, 0);
-    assert.ok(ctx(r).startsWith(FULL_MARKER));
+    assert.ok(ctx(r).includes(FULL_MARKER));
   } finally {
     h.cleanup();
   }
@@ -385,10 +385,10 @@ test('DEVSWARM PRIMARY: directive appends the workspace-tier dispatch rule', () 
   const h = makeHome();
   try {
     const c = ctx(testHook(HOOK, promptPayload(), { home: h.home, env: PRIMARY_ENV }));
-    assert.ok(c.startsWith(FULL_MARKER), `expected FULL; got: ${c.slice(0, 60)}`);
-    assert.ok(c.includes('DEVSWARM PRIMARY — DISPATCH TIER'), `missing workspace-tier dispatch rule: ${c}`);
+    assert.ok(c.includes(FULL_MARKER), `expected FULL; got: ${c.slice(0, 60)}`);
+    assert.ok(c.includes('task-tracker: Primary dispatch tier'), `missing workspace-tier dispatch rule: ${c}`);
     assert.ok(c.includes('devswarm.js spawn <branch> -p'), `must name the spawn command: ${c}`);
-    assert.ok(/workspace-scale task handed to a subagent is the\s+same failure|workspace-scale task handed to a subagent is the same failure/.test(c),
+    assert.ok(/Handing a workspace-scale task to a subagent is the same failure/.test(c),
       `must forbid subagent-for-workspace-scale: ${c}`);
   } finally {
     h.cleanup();

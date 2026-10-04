@@ -42,12 +42,21 @@ function message(o) {
   return lines.join('\n');
 }
 
-// frame({ kind, guard, headline, body }) -> the shared first line followed by an
-// already-assembled multi-segment body (the DevSwarm gates build theirs from many
-// conditional segments). Body lines are kept as-is.
+// frame({ kind, guard, headline, why, body, override }) -> the shared shape for the
+// DevSwarm gates, whose "Do instead" is assembled from many conditional segments:
+// the first paragraph rides the "Do instead:" line, later paragraphs follow as
+// two-space-indented continuation lines.
 function frame(o) {
   const icon = ICONS[o.kind] || ICONS.block;
-  return icon + ' anti-hall \u00B7 ' + clean(o.guard) + ': ' + clean(o.headline) + '\n' + String(o.body == null ? '' : o.body).trim();
+  const lines = [icon + ' anti-hall \u00B7 ' + clean(o.guard) + ': ' + clean(o.headline)];
+  if (o.why) lines.push('Why: ' + clean(o.why));
+  const paras = String(o.body == null ? '' : o.body).split(/\n{2,}/).map(clean).filter(Boolean);
+  if (paras.length) {
+    lines.push('Do instead: ' + paras[0]);
+    for (const p of paras.slice(1)) lines.push('  ' + p);
+  }
+  if (o.override) lines.push(OVERRIDE_LABEL + ': ' + clean(o.override));
+  return lines.join('\n');
 }
 
 const blockMessage = (o) => message(Object.assign({}, o, { kind: 'block' }));

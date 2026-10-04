@@ -26,7 +26,7 @@ function mkCwd(doctrine) {
 const ctx = (r) => (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 
 const HOOKS = [
-  { hook: 'task-tracker.js', marker: 'DEVSWARM PRIMARY — DISPATCH TIER', payload: (cwd) => ({ hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd }) },
+  { hook: 'task-tracker.js', marker: 'task-tracker: Primary dispatch tier', payload: (cwd) => ({ hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd }) },
   { hook: 'verify-first.js', marker: 'DEVSWARM PRIMARY: the workspace is your TOP fan-out tier', payload: (cwd) => ({ hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'do a thing', cwd }) },
   { hook: 'verify-first-orch.js', marker: 'W. DEVSWARM PRIMARY', payload: (cwd) => ({ hook_event_name: 'SessionStart', source: 'startup', session_id: 't', cwd }) },
 ];
