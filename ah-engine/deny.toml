@@ -1,0 +1,33 @@
+# cargo-deny policy for ah-engine (D84). The engine ships as MIT, so every dependency must carry a licence that can be
+# redistributed inside an MIT-licensed binary. Run: `cargo deny check` from this directory.
+
+[graph]
+# The engine is built for unix only (macOS and Linux).
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+]
+
+[licenses]
+# Permissive licences only; no copyleft (GPL/LGPL/AGPL/MPL) may enter the binary. Add a licence here only when a new
+# dependency needs it, after checking that it can be redistributed inside an MIT binary (BSD-*, ISC and 0BSD are fine).
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "Unlicense"]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[advisories]
+# Fail on any RustSec advisory, including unmaintained and yanked crates.
+yanked = "deny"
+unmaintained = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
