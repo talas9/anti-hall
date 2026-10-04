@@ -1,5 +1,7 @@
 # ah-engine (phase 3a: git-guard port)
 
+
+Design decisions (D1-D70, versioned, updated with every design change): [DECISIONS.md](DECISIONS.md).
 **Off by default.** `engine.enabled` stays off; nothing in the plugin starts or calls this binary unless an owner turns it on. This branch is a prototype.
 
 One binary, two roles: `ah-engine serve` (resident daemon, one per socket) and `ah-engine hook` (the hook client:
