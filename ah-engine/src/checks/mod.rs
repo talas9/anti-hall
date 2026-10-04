@@ -9,6 +9,7 @@
 pub mod git;
 pub mod guardkit;
 pub mod merge_side_pick;
+pub mod scan_throttle;
 pub mod ship_it;
 
 use crate::rules::Subject;
@@ -56,7 +57,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 3] = [&git::GitGuard, &merge_side_pick::MergeSidePick, &ship_it::ShipItGuard];
+    static ALL: [&dyn Check; 4] = [&git::GitGuard, &merge_side_pick::MergeSidePick, &ship_it::ShipItGuard, &scan_throttle::ScanThrottle];
     &ALL
 }
 

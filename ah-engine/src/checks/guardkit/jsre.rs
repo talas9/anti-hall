@@ -36,7 +36,9 @@ pub fn translate(src: &str, ci: bool) -> String {
                 ('B', false) => out.push_str("(?-u:\\B)"),
                 ('d', false) => out.push_str("[0-9]"),
                 ('d', true) => out.push_str("0-9"),
+                ('D', false) => out.push_str("[^0-9]"),
                 ('w', false) => out.push_str("[A-Za-z0-9_]"),
+                ('W', false) => out.push_str("[^A-Za-z0-9_]"),
                 ('w', true) => out.push_str("A-Za-z0-9_"),
                 _ => {
                     out.push('\\');
@@ -103,4 +105,9 @@ fn swap_case(c: char) -> char {
 /// Compile a JavaScript regex source (no flags beyond `i`).
 pub fn compile(src: &str, ci: bool) -> Regex {
     lit_re(&translate(src, ci))
+}
+
+/// Like [`compile`] but `None` when the translated source is not a valid Rust regex (a user-supplied pattern).
+pub fn try_compile(src: &str, ci: bool) -> Option<Regex> {
+    Regex::new(&translate(src, ci)).ok()
 }

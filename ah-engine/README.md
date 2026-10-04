@@ -142,6 +142,10 @@ Deliberate differences from the Node guard:
   paths, conformance advisory against a parsed `PLAN.md`). With the gate on, `Bash` (shell-write targets come from the
   command-guard parser, planned with its port) and `apply_patch` defer to Node, and so does a payload without an absolute
   `cwd` (Node would use its own process directory).
+- `scan-throttle` (advisory; matches nothing unless `ANTI_HALL_THROTTLE_PATTERNS` is set): the patterns are JavaScript
+  regexes, and the engine matches only a plain subset itself (literals, `.`, groups, alternation, quantifiers, simple
+  classes, `^`/`$`, `\s \d \w \b`, escaped punctuation). Lookaround, back-references, counted repeats, Unicode escapes and
+  non-ASCII patterns defer to Node. Its state (none) and its tool probe read the engine process's `PATH`.
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 

@@ -268,3 +268,81 @@ value = "It may be a legitimate shared-file touch (`files:` is free text, so fal
 [ship_it.msg_adv_instead]
 doc = "Advisory advice."
 value = "if intentional, proceed; if not, update the PLAN.md Blast radius / phase `files:` list, or re-plan this phase."
+
+# ---- scan-throttle (hooks/scan-throttle.js) ----------------------------------------------------------------
+
+[scan_throttle.summary]
+doc = "One-line description of the scan-throttle check in the generated reference."
+value = "Advisory: recommends the background-throttled form of a user-configured heavy scan command (port of scan-throttle.js)."
+
+[scan_throttle.guard_name]
+doc = "The guard id this check answers to in messages."
+value = "scan-throttle"
+
+[scan_throttle.setting]
+doc = "Where the on/off switch is read from (guards.scanThrottle, default on; the old ANTI_HALL_SCAN_THROTTLE name is an alias)."
+value = { section = "guards", key = "scanThrottle", env = "ANTIHALL_SCAN_THROTTLE", aliases = ["ANTI_HALL_SCAN_THROTTLE"], option = "guards_scan_throttle", default = true }
+
+[scan_throttle.patterns_env]
+doc = "Environment variable holding the comma-separated regex sources of the scan commands to advise on; with none set the check matches nothing."
+value = "ANTI_HALL_THROTTLE_PATTERNS"
+
+[scan_throttle.known_prefixes]
+doc = "Every throttle prefix this check itself generates; a command that already starts with one is left alone."
+value = ["taskpolicy -c utility nice -n 19 ", "ionice -c 3 nice -n 19 ", "nice -n 19 "]
+
+[scan_throttle.darwin]
+doc = "The macOS throttle tool that must exist on PATH, and the prefix it gives."
+value = { tool = "taskpolicy", prefix = "taskpolicy -c utility nice -n 19 " }
+
+[scan_throttle.linux]
+doc = "The Linux throttle tool that must exist on PATH, the prefix it gives, and the optional I/O tool with its own prefix."
+value = { tool = "nice", prefix = "nice -n 19 ", io_tool = "ionice", io_prefix = "ionice -c 3 " }
+
+[scan_throttle.path_separator]
+doc = "Separator of the entries of the PATH variable."
+value = ":"
+
+[scan_throttle.path_var]
+doc = "Name of the variable that holds the executable search path."
+value = "PATH"
+
+[scan_throttle.assign_one]
+doc = "Regex source of one leading NAME=value assignment (quoted or unquoted value)."
+value = '^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|[^\s]*)'
+
+[scan_throttle.unsafe_start_chars]
+doc = "Characters that, as the first character where the prefix would go, make the position unsafe (subshell, group, separator, backtick)."
+value = ")(;{}|&`"
+
+[scan_throttle.unsafe_start_subst]
+doc = "Text that, at the position where the prefix would go, starts a command substitution and makes the position unsafe."
+value = "$("
+
+[scan_throttle.pattern_literal_chars]
+doc = "ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority."
+value = " !#%&',-/:;<=>@_\"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+[scan_throttle.pattern_escapes]
+doc = "Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab)."
+value = ".-/\\()[]*+?|^$sSdDwWbBnt{}"
+
+[scan_throttle.msg_group_what]
+doc = "Advisory headline when the scan is not the first simple command."
+value = "a repo-wide scan command was detected in a compound or grouped command (not the first simple command); it was NOT modified."
+
+[scan_throttle.msg_group_instead]
+doc = "Advice when the scan is not the first simple command; {prefix} is the throttle prefix without its trailing space."
+value = "consider running the scan background-throttled, e.g. `{prefix} <that command>`."
+
+[scan_throttle.msg_first_what]
+doc = "Advisory headline when the scan is the first simple command."
+value = "this is a heavy repo-wide scan; the command was NOT modified."
+
+[scan_throttle.msg_first_why]
+doc = "Advisory reason when the scan is the first simple command."
+value = "To keep the machine responsive."
+
+[scan_throttle.msg_first_instead]
+doc = "Advice when the scan is the first simple command; {throttled} is the command with the prefix in place."
+value = "re-run it background-throttled: `{throttled}`."
