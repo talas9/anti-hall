@@ -393,11 +393,13 @@ fn a_git_that_cannot_finish_is_an_error_and_is_not_cached() {
     let d = fx.init("repo");
     fx.commit(&d, "a.txt", "one");
     let mut l = limits();
-    l.timeout = Duration::from_millis(1);
+    // A zero timeout: the runner's first check after the spawn already finds the budget spent and kills the run. (A
+    // 1 ms timeout was not enough: the poll sleep overshoots, and on a fast CI runner git had already exited 0.)
+    l.timeout = Duration::ZERO;
     l.poll = Duration::from_millis(1);
     let cache = GitCache::with_limits(l);
     let r = cache.repo(&d, &fx.env).unwrap();
-    // 1 ms is far below git's start-up time, so every run times out; none of them may be remembered
+    // every run times out; none of them may be remembered
     let first = r.head();
     assert!(matches!(first, Err(GitCacheError::Run { .. })), "{first:?}");
     assert!(matches!(r.head(), Err(GitCacheError::Run { .. })));
