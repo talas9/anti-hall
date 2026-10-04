@@ -270,10 +270,10 @@ pub fn stdin_script_verdict(ctx: &mut Ctx, cmd: &str, d: usize, cwd: Option<&str
         texts.push(m.get(1).or_else(|| m.get(2)).map(|x| x.as_str().to_string()).unwrap_or_default());
     }
     for seg in split_segments(cmd) {
-        if let Some(ev) = effective_verb(&tokenize(&seg)) {
-            if ev.verb == "echo" || ev.verb == "printf" {
-                texts.push(ev.args.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" "));
-            }
+        if let Some(ev) = effective_verb(&tokenize(&seg))
+            && (ev.verb == "echo" || ev.verb == "printf")
+        {
+            texts.push(ev.args.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" "));
         }
     }
     for t in texts {

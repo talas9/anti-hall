@@ -15,8 +15,8 @@ targets = [
 [licenses]
 # Permissive licences only; no copyleft (GPL/LGPL/AGPL/MPL) may enter the binary. Add a licence here only when a new
 # dependency needs it, after checking that it can be redistributed inside an MIT binary (BSD-*, ISC and 0BSD are fine).
-# CDLA-Permissive-2.0 is the licence of the webpki-roots certificate data, pulled in by ureq for the Jev lane (D34).
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "Unlicense", "CDLA-Permissive-2.0"]
+# Added with the Jev lane (D34): ISC and BSD-3-Clause (ring, rustls, untrusted), CDLA-Permissive-2.0 (the webpki-roots certificate data); all permissive.
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "Unlicense", "ISC", "BSD-3-Clause", "CDLA-Permissive-2.0"]
 confidence-threshold = 0.9
 
 [bans]

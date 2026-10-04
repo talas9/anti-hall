@@ -103,10 +103,10 @@ impl Telemetry {
     /// Record a model-routing decision (D77): the event, plus an impact event of kind `route` whose reason is what the
     /// check did, so the ledger counts decisions in both directions.
     pub fn route(&self, ev: Event, project: &str) {
-        if let event::Extras::Route(r) = &ev.extras {
-            if self.rec.enabled() {
-                self.impact("route", ev.h.as_str(), r.outcome.name(), project);
-            }
+        if let event::Extras::Route(r) = &ev.extras
+            && self.rec.enabled()
+        {
+            self.impact("route", ev.h.as_str(), r.outcome.name(), project);
         }
         self.rec.event(ev);
     }

@@ -177,10 +177,10 @@ fn hd_denied_first_word(skel: &str) -> bool {
             return true;
         }
         let rest = lw.strip_prefix("python").or_else(|| lw.strip_prefix("pypy"));
-        if let Some(r) = rest {
-            if r.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                return true;
-            }
+        if let Some(r) = rest
+            && r.chars().all(|c| c.is_ascii_digit() || c == '.')
+        {
+            return true;
         }
     }
     false
@@ -816,19 +816,19 @@ fn mask_inner(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> Option<String
             if ev.verb == "git" && !hd_git_ok(&ev.args) {
                 return None;
             }
-            if ev.verb == "cd" || ev.verb == "pushd" {
-                if let Some(dt) = ev.args.iter().find(|t| !t.text.starts_with('-')) {
-                    if !safe_path_word(&dt.text) || dt.text.contains("__AH") {
-                        return None;
-                    }
-                    let home = ctx.home.as_str();
-                    let rel = if dt.text.starts_with("~/") && !home.is_empty() { path_join(home, &dt.text[2..]) } else { dt.text.clone() };
-                    let next = resolve(dirs.last()?, &rel, &ctx.proc_cwd); // dirs always holds the starting directory
-                    if hd_bad_path(&next) {
-                        return None;
-                    }
-                    dirs.push(next);
+            if (ev.verb == "cd" || ev.verb == "pushd")
+                && let Some(dt) = ev.args.iter().find(|t| !t.text.starts_with('-'))
+            {
+                if !safe_path_word(&dt.text) || dt.text.contains("__AH") {
+                    return None;
                 }
+                let home = ctx.home.as_str();
+                let rel = if dt.text.starts_with("~/") && !home.is_empty() { path_join(home, &dt.text[2..]) } else { dt.text.clone() };
+                let next = resolve(dirs.last()?, &rel, &ctx.proc_cwd); // dirs always holds the starting directory
+                if hd_bad_path(&next) {
+                    return None;
+                }
+                dirs.push(next);
             }
             let targets = hd_write_targets(&tokens, &ev)?;
             for w in &targets {

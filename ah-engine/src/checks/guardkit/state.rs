@@ -52,10 +52,10 @@ impl SessionState for MemoryState {
             let seq = g.seq;
             g.map.insert(key, (v, seq));
             let cap = defaults::num("guardkit.state_cap") as usize;
-            if g.map.len() > cap {
-                if let Some(oldest) = g.map.iter().min_by_key(|(_, (_, s))| *s).map(|(k, _)| k.clone()) {
-                    g.map.remove(&oldest);
-                }
+            if g.map.len() > cap
+                && let Some(oldest) = g.map.iter().min_by_key(|(_, (_, s))| *s).map(|(k, _)| k.clone())
+            {
+                g.map.remove(&oldest);
             }
         }
     }

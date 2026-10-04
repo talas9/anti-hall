@@ -282,12 +282,12 @@ fn collect_text(node: &Value, dedup: bool) -> String {
         }
         _ => {}
     }
-    if let Some(m @ Value::Object(_)) = msg {
-        if !dedup || truthy(obj.get("content")) {
-            let sub = collect_text(m, dedup);
-            if !sub.is_empty() {
-                parts.push(sub);
-            }
+    if let Some(m @ Value::Object(_)) = msg
+        && (!dedup || truthy(obj.get("content")))
+    {
+        let sub = collect_text(m, dedup);
+        if !sub.is_empty() {
+            parts.push(sub);
         }
     }
     parts.join(" ")
@@ -337,10 +337,10 @@ fn notification_texts(e: &Value) -> Vec<(Shape, String)> {
             Some(Value::String(s)) => out.push((Shape::User, s.clone())),
             Some(Value::Array(a)) => {
                 for b in a {
-                    if str_of(b, "type") == Some("text") {
-                        if let Some(t) = str_of(b, "text") {
-                            out.push((Shape::User, t.to_string()));
-                        }
+                    if str_of(b, "type") == Some("text")
+                        && let Some(t) = str_of(b, "text")
+                    {
+                        out.push((Shape::User, t.to_string()));
                     }
                 }
             }
@@ -422,14 +422,12 @@ fn notifications_of(e: &Value, seq: u64, ts_ms: Option<i64>) -> Vec<Notification
 
 /// `inference-check.js` `lastUserPrompt`, one entry: the typed prompt this entry holds, if any.
 fn prompt_of(e: &Value) -> Option<String> {
-    if str_of(e, "type") == Some("event_msg") {
-        if let Some(p) = e.get("payload") {
-            if str_of(p, "type") == Some("user_message") {
-                if let Some(m) = str_of(p, "message") {
-                    return Some(m.to_string());
-                }
-            }
-        }
+    if str_of(e, "type") == Some("event_msg")
+        && let Some(p) = e.get("payload")
+        && str_of(p, "type") == Some("user_message")
+        && let Some(m) = str_of(p, "message")
+    {
+        return Some(m.to_string());
     }
     if truthy(e.get("isMeta")) {
         return None;
@@ -504,35 +502,34 @@ pub fn parse_line(line: &str, seq: u64, input_cap: usize, task_input_cap: usize)
             ts_ms: r.ts_ms,
         });
     }
-    if str_of(&e, "type") == Some("user") {
-        if let Some(Value::Array(c)) = e.get("message").and_then(|m| m.get("content")) {
-            for it in c {
-                if str_of(it, "type") == Some("tool_result") {
-                    if let Some(id) = str_of(it, "tool_use_id") {
-                        r.tool_results.push((id.to_string(), it.get("content").and_then(Value::as_str).unwrap_or("").to_string()));
-                    }
-                }
+    if str_of(&e, "type") == Some("user")
+        && let Some(Value::Array(c)) = e.get("message").and_then(|m| m.get("content"))
+    {
+        for it in c {
+            if str_of(it, "type") == Some("tool_result")
+                && let Some(id) = str_of(it, "tool_use_id")
+            {
+                r.tool_results.push((id.to_string(), it.get("content").and_then(Value::as_str).unwrap_or("").to_string()));
             }
         }
     }
     r.notifications = notifications_of(&e, seq, r.ts_ms);
-    if let Some(att) = e.get("attachment") {
-        if str_of(att, "type") == Some("task_status") {
-            if let Some(id) = str_of(att, "taskId").filter(|i| !i.is_empty()) {
-                r.task_status = Some(TaskStatus {
-                    seq,
-                    task_id: id.to_string(),
-                    status: match att.get("status") {
-                        Some(Value::String(s)) => s.clone(),
-                        Some(Value::Null) | None => "undefined".to_string(),
-                        Some(v) => v.to_string(),
-                    },
-                    output_file: str_of(att, "outputFilePath").unwrap_or_default().to_string(),
-                    description: str_of(att, "description").unwrap_or_default().to_string(),
-                    ts_ms: r.ts_ms.or_else(|| str_of(att, "timestamp").and_then(parse_ts_ms)),
-                });
-            }
-        }
+    if let Some(att) = e.get("attachment")
+        && str_of(att, "type") == Some("task_status")
+        && let Some(id) = str_of(att, "taskId").filter(|i| !i.is_empty())
+    {
+        r.task_status = Some(TaskStatus {
+            seq,
+            task_id: id.to_string(),
+            status: match att.get("status") {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Null) | None => "undefined".to_string(),
+                Some(v) => v.to_string(),
+            },
+            output_file: str_of(att, "outputFilePath").unwrap_or_default().to_string(),
+            description: str_of(att, "description").unwrap_or_default().to_string(),
+            ts_ms: r.ts_ms.or_else(|| str_of(att, "timestamp").and_then(parse_ts_ms)),
+        });
     }
     r.prompt = prompt_of(&e);
     r

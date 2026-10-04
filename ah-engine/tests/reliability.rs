@@ -79,10 +79,11 @@ impl Drop for Env {
         common::reap(&state, || {
             let _ = self.ctl("stop");
         });
-        if let Some(p) = std::fs::read_to_string(self.eng().join("e.sock.lock")).ok().and_then(|t| t.trim().parse::<i32>().ok()) {
-            if p > 1 && common::alive(p) {
-                unsafe { libc::kill(p, libc::SIGKILL) };
-            }
+        if let Some(p) = std::fs::read_to_string(self.eng().join("e.sock.lock")).ok().and_then(|t| t.trim().parse::<i32>().ok())
+            && p > 1
+            && common::alive(p)
+        {
+            unsafe { libc::kill(p, libc::SIGKILL) };
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }

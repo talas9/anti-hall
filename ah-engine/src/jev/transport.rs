@@ -211,10 +211,8 @@ pub fn endpoint_for(settings: &JevSettings, vendor: super::settings::Vendor, pri
     if let Some(per) = &settings.endpoint_overrides[idx] {
         return per.clone();
     }
-    if primary {
-        if let Some(generic) = &settings.endpoint_override {
-            return generic.clone();
-        }
+    if primary && let Some(generic) = &settings.endpoint_override {
+        return generic.clone();
     }
     match vendor {
         Vendor::Vercel => defaults::text("jev.endpoint_vercel").to_string(),

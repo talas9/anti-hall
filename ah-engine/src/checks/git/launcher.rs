@@ -41,13 +41,12 @@ pub fn normalize_guard_path(ctx: &Ctx, raw: &str, cd_dir: Option<&str>) -> Strin
     }
     let home = ctx.home.as_str();
     let mut base = expand_tilde(&raw.replace('\\', "/"), home);
-    if !base.starts_with('/') {
-        if let Some(cd) = cd_dir {
-            if !cd.is_empty() {
-                let dir = expand_tilde(&cd.replace('\\', "/"), home);
-                base = format!("{}/{}", dir.trim_end_matches('/'), base);
-            }
-        }
+    if !base.starts_with('/')
+        && let Some(cd) = cd_dir
+        && !cd.is_empty()
+    {
+        let dir = expand_tilde(&cd.replace('\\', "/"), home);
+        base = format!("{}/{}", dir.trim_end_matches('/'), base);
     }
     posix_normalize(&base)
 }
@@ -414,10 +413,10 @@ pub fn writes_launcher_dir(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, cd_dir: Optio
             }
             k = tc[kk + 1..].iter().position(|&c| c == '>').map(|p| p + kk + 1);
         }
-        if let Some(raw) = &t.raw {
-            if raw.contains('>') {
-                targets.extend(redirect_words(raw));
-            }
+        if let Some(raw) = &t.raw
+            && raw.contains('>')
+        {
+            targets.extend(redirect_words(raw));
         }
     }
     let ops: Vec<String> = ev.args.iter().map(|a| a.text.clone()).collect();

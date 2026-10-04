@@ -579,13 +579,12 @@ impl Snapshot {
         let mut pending = Vec::new();
         if let Some(prev) = prev {
             for (k, r) in effective.map.iter_mut() {
-                if restart_only(k) {
-                    if let Some(old) = prev.effective.get(k) {
-                        if old.value != r.value {
-                            pending.push(k.to_string());
-                            *r = old.clone();
-                        }
-                    }
+                if restart_only(k)
+                    && let Some(old) = prev.effective.get(k)
+                    && old.value != r.value
+                {
+                    pending.push(k.to_string());
+                    *r = old.clone();
                 }
             }
         }

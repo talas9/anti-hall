@@ -195,10 +195,10 @@ pub fn tokenize(segment: &str) -> Vec<Tok> {
 /// Mirrors `git-guard.js` `isBraceGroupWord`.
 fn is_brace_group_word(cur: &[char], c: char, c2: Option<char>) -> bool {
     let cur_blank = cur.iter().all(|&x| is_js_space(x));
-    if let Some(c2v) = c2 {
-        if !is_js_space(c2v) {
-            return c == '}' && cur_blank && ";&|<>)".contains(c2v);
-        }
+    if let Some(c2v) = c2
+        && !is_js_space(c2v)
+    {
+        return c == '}' && cur_blank && ";&|<>)".contains(c2v);
     }
     if c == '}' { cur_blank } else { cur.is_empty() || cur.last().is_some_and(|&x| is_js_space(x)) }
 }
@@ -234,13 +234,13 @@ pub fn split_segments(cmd: &str) -> Vec<String> {
             continue;
         }
         if in_double {
-            if c == '\\' {
-                if let Some(c2v) = c2 {
-                    cur.push(c);
-                    cur.push(c2v);
-                    i += 2;
-                    continue;
-                }
+            if c == '\\'
+                && let Some(c2v) = c2
+            {
+                cur.push(c);
+                cur.push(c2v);
+                i += 2;
+                continue;
             }
             if (c == '$' && c2 == Some('(')) || c == '`' {
                 cur.extend_from_slice(&sentinel);
@@ -271,13 +271,13 @@ pub fn split_segments(cmd: &str) -> Vec<String> {
             i += if c2 == Some('\r') { 3 } else { 2 };
             continue;
         }
-        if c == '\\' {
-            if let Some(c2v) = c2 {
-                cur.push(c);
-                cur.push(c2v);
-                i += 2;
-                continue;
-            }
+        if c == '\\'
+            && let Some(c2v) = c2
+        {
+            cur.push(c);
+            cur.push(c2v);
+            i += 2;
+            continue;
         }
         if c == '&' && c2 == Some('&') {
             flush(&mut cur, &mut segments);
@@ -498,15 +498,15 @@ pub fn effective_verb(tokens: &[Tok]) -> Option<Ev> {
     while idx < tokens.len() {
         let t = &tokens[idx];
         let word = t.text.as_str();
-        if !t.quoted_only {
-            if let Some(g) = tables().opt_wrappers.get(word) {
-                let fc = if word == "flock" { flock_command(tokens, idx + 1) } else { None };
-                if let Some(fc) = fc {
-                    return Some(Ev { verb: "sh".into(), args: vec![Tok::plain("-c"), fc], env: Default::default() });
-                }
-                idx = skip_opt_wrapper(tokens, idx + 1, g);
-                continue;
+        if !t.quoted_only
+            && let Some(g) = tables().opt_wrappers.get(word)
+        {
+            let fc = if word == "flock" { flock_command(tokens, idx + 1) } else { None };
+            if let Some(fc) = fc {
+                return Some(Ev { verb: "sh".into(), args: vec![Tok::plain("-c"), fc], env: Default::default() });
             }
+            idx = skip_opt_wrapper(tokens, idx + 1, g);
+            continue;
         }
         if !t.quoted_only && tables().wrappers.has(word) {
             idx += 1;
@@ -634,15 +634,15 @@ pub fn in_arithmetic_at(cmd: &[char], pos: usize, st: &mut ArithScan) -> bool {
         *st = ArithScan::new();
     }
     while st.j < pos {
-        if let Some(sf) = st.skip_from {
-            if st.j >= sf {
-                if st.skip_to > pos {
-                    return false;
-                }
-                st.j = st.skip_to;
-                st.skip_from = None;
-                continue;
+        if let Some(sf) = st.skip_from
+            && st.j >= sf
+        {
+            if st.skip_to > pos {
+                return false;
             }
+            st.j = st.skip_to;
+            st.skip_from = None;
+            continue;
         }
         let j = st.j;
         let c = cmd[j];
@@ -933,15 +933,16 @@ pub fn extract_heredoc_bodies(cmd: &str) -> Vec<HeredocBody> {
             i += 1;
             continue;
         }
-        if c == '<' && c2 == Some('<') {
-            if let Some(p) = parse_heredoc_at(&s, i, &mut st) {
-                bodies.push(HeredocBody { word: p.word.clone(), quoted: p.quoted, body: p.body.clone() });
-                i = p.end;
-                if !p.terminated {
-                    break;
-                }
-                continue;
+        if c == '<'
+            && c2 == Some('<')
+            && let Some(p) = parse_heredoc_at(&s, i, &mut st)
+        {
+            bodies.push(HeredocBody { word: p.word.clone(), quoted: p.quoted, body: p.body.clone() });
+            i = p.end;
+            if !p.terminated {
+                break;
             }
+            continue;
         }
         i += 1;
     }
@@ -1055,11 +1056,11 @@ pub fn backstop_pieces(cmd: &str) -> Vec<String> {
         let (entering_dq, entering_sq) = (dq_par, sq_par);
         dq_par ^= dq;
         sq_par ^= sq;
-        if let Some((_, pl)) = &pending {
-            if p.line != *pl {
-                let (parts, _) = pending.take().unwrap_or_default(); // checked Some just above
-                out.extend(parts);
-            }
+        if let Some((_, pl)) = &pending
+            && p.line != *pl
+        {
+            let (parts, _) = pending.take().unwrap_or_default(); // checked Some just above
+            out.extend(parts);
         }
         if let Some((parts, _)) = pending.as_mut() {
             parts.push(p.text.clone());

@@ -434,10 +434,10 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
         }
         Op::Telemetry(t) => crate::telemetry::persist::apply(c, t),
         Op::Proj { project, write_id, verb } => {
-            if !write_id.is_empty() {
-                if let Some(r) = c.prepare_cached(sql::APPLIED_GET)?.query_row(params![write_id], |r| r.get::<_, String>(0)).optional()? {
-                    return Ok(r); // already applied: same answer, no change
-                }
+            if !write_id.is_empty()
+                && let Some(r) = c.prepare_cached(sql::APPLIED_GET)?.query_row(params![write_id], |r| r.get::<_, String>(0)).optional()?
+            {
+                return Ok(r); // already applied: same answer, no change
             }
             let now = crate::health::now_ms() as i64;
             let r = proj_apply(c, project, verb, now)?;

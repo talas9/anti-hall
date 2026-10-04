@@ -150,12 +150,12 @@ pub fn extract_usage(json: &Value) -> Usage {
         return u;
     }
     u.cost = finite(json.get("total_cost")).or_else(|| finite(json.get("gateway_cost"))).or_else(|| finite(json.get("market_cost")));
-    if u.cost.is_none() {
-        if let Some(gw) = json.get("provider_metadata").and_then(|m| m.get("gateway")).filter(|g| g.is_object()) {
-            u.cost = number_or_numeric_string(gw.get("cost"))
-                .or_else(|| number_or_numeric_string(gw.get("gatewayCost")))
-                .or_else(|| number_or_numeric_string(gw.get("marketCost")));
-        }
+    if u.cost.is_none()
+        && let Some(gw) = json.get("provider_metadata").and_then(|m| m.get("gateway")).filter(|g| g.is_object())
+    {
+        u.cost = number_or_numeric_string(gw.get("cost"))
+            .or_else(|| number_or_numeric_string(gw.get("gatewayCost")))
+            .or_else(|| number_or_numeric_string(gw.get("marketCost")));
     }
     u.tokens_in = finite(json.get("tokens_prompt"));
     u.tokens_out = finite(json.get("tokens_completion"));

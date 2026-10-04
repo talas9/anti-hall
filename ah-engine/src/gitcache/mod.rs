@@ -213,10 +213,11 @@ impl GitCache {
         let entry = {
             let mut map = lock(&self.repos);
             map.retain(|_, e| now.duration_since(lock(e).last_used) <= self.limits.idle_ttl);
-            if !map.contains_key(&key) && map.len() >= self.limits.max_repos {
-                if let Some(old) = map.iter().min_by_key(|(_, e)| lock(e).last_used).map(|(k, _)| k.clone()) {
-                    map.remove(&old);
-                }
+            if !map.contains_key(&key)
+                && map.len() >= self.limits.max_repos
+                && let Some(old) = map.iter().min_by_key(|(_, e)| lock(e).last_used).map(|(k, _)| k.clone())
+            {
+                map.remove(&old);
             }
             map.entry(key)
                 .or_insert_with(|| Arc::new(Mutex::new(Entry { base: Vec::new(), layout: lay.clone(), facts: Facts::default(), last_used: now })))
@@ -288,11 +289,12 @@ impl Repo<'_> {
         }
         let extra_sig = if extra == Extra::RemoteRefs { e.layout.remote_ref_signature(lim.max_ref_dirs) } else { Vec::new() };
         let ttl = if life == Life::Dirty { lim.dirty_ttl } else { lim.ttl };
-        if let Some(m) = sel(&mut e.facts) {
-            if m.extra == extra_sig && now.duration_since(m.at) < ttl {
-                self.cache.hits.fetch_add(1, Relaxed);
-                return Ok(m.value.clone());
-            }
+        if let Some(m) = sel(&mut e.facts)
+            && m.extra == extra_sig
+            && now.duration_since(m.at) < ttl
+        {
+            self.cache.hits.fetch_add(1, Relaxed);
+            return Ok(m.value.clone());
         }
         self.cache.misses.fetch_add(1, Relaxed);
         let runner = run::Runner::new(&e.layout, &self.env, lim);

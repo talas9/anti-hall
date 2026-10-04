@@ -106,11 +106,11 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
         self.bytes += size;
         while self.bytes > self.budget {
             let Some((&t, _)) = self.order.iter().next() else { break };
-            if let Some(victim) = self.order.remove(&t) {
-                if let Some(s) = self.map.remove(&victim) {
-                    self.bytes -= s.size;
-                    self.evictions += 1;
-                }
+            if let Some(victim) = self.order.remove(&t)
+                && let Some(s) = self.map.remove(&victim)
+            {
+                self.bytes -= s.size;
+                self.evictions += 1;
             }
         }
     }

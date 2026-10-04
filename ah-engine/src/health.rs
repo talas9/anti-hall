@@ -56,11 +56,11 @@ pub struct Event {
 /// Append `ts<TAB>kind<TAB>code<TAB>detail`. The log is trimmed to its last half when it passes 64 KiB.
 pub fn log_event(kind: &str, code: &str, detail: &str) {
     let p = file(log_name());
-    if std::fs::metadata(&p).map(|m| m.len() > defaults::num("health.log_cap")).unwrap_or(false) {
-        if let Ok(t) = std::fs::read_to_string(&p) {
-            let keep: Vec<&str> = t.lines().rev().take(defaults::num("health.log_keep_lines") as usize).collect::<Vec<_>>().into_iter().rev().collect();
-            let _ = std::fs::write(&p, keep.join("\n") + "\n");
-        }
+    if std::fs::metadata(&p).map(|m| m.len() > defaults::num("health.log_cap")).unwrap_or(false)
+        && let Ok(t) = std::fs::read_to_string(&p)
+    {
+        let keep: Vec<&str> = t.lines().rev().take(defaults::num("health.log_keep_lines") as usize).collect::<Vec<_>>().into_iter().rev().collect();
+        let _ = std::fs::write(&p, keep.join("\n") + "\n");
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
         let _ = f.write_all(format!("{}\t{}\t{}\t{}\n", now_ms(), clean(kind), clean(code), clean(detail)).as_bytes());

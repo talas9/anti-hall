@@ -193,8 +193,8 @@ mod tests {
     fn bodies(p: &Path) -> Vec<String> {
         let c = Connection::open(p).unwrap();
         let mut st = c.prepare("SELECT body FROM mailbox ORDER BY id").unwrap();
-        let v = st.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
-        v
+
+        st.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
     }
 
     #[test]

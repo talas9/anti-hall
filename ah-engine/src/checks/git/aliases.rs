@@ -107,10 +107,11 @@ pub fn segment_env(tokens: &[Tok]) -> (Env, Env) {
 
 /// Mirrors `lib/git-alias-scan.js` `spawnCwd`.
 fn spawn_cwd(ctx: &Ctx, dir: Option<&str>) -> String {
-    if let Some(d) = dir {
-        if !d.is_empty() && std::fs::metadata(d).map(|m| m.is_dir()).unwrap_or(false) {
-            return d.to_string();
-        }
+    if let Some(d) = dir
+        && !d.is_empty()
+        && std::fs::metadata(d).map(|m| m.is_dir()).unwrap_or(false)
+    {
+        return d.to_string();
     }
     ctx.proc_cwd.clone()
 }
@@ -185,10 +186,10 @@ fn first_word(v: &str) -> (String, String) {
         return (String::new(), String::new());
     }
     for q in ['"', '\''] {
-        if let Some(rest) = t.strip_prefix(q) {
-            if let Some(p) = rest.find(q) {
-                return (rest[..p].to_string(), rest[p + 1..].to_string());
-            }
+        if let Some(rest) = t.strip_prefix(q)
+            && let Some(p) = rest.find(q)
+        {
+            return (rest[..p].to_string(), rest[p + 1..].to_string());
         }
     }
     let end = t.find(is_js_space).unwrap_or(t.len());
@@ -263,11 +264,12 @@ fn expand_alias(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: &[Tok], di
 /// Mirrors `lib/git-alias-scan.js` `annotate`.
 fn annotate(m: &str, note: &str) -> String {
     let mark = tables().block_mark.as_str();
-    if let Some(sp) = m.find(|c: char| is_js_space(c)) {
-        if sp > 0 && m[sp..].starts_with(mark) {
-            let cut = sp + mark.len();
-            return format!("{}{} {}", &m[..cut], note, &m[cut..]);
-        }
+    if let Some(sp) = m.find(|c: char| is_js_space(c))
+        && sp > 0
+        && m[sp..].starts_with(mark)
+    {
+        let cut = sp + mark.len();
+        return format!("{}{} {}", &m[..cut], note, &m[cut..]);
     }
     m.to_string()
 }
@@ -300,14 +302,14 @@ fn git_definition_verdict(ctx: &mut Ctx, args: &[Tok], sub: Option<&str>, rest: 
             // /^alias\.([^=]+)=([\s\S]*)$/i
             if v.get(..6).is_some_and(|x| x.eq_ignore_ascii_case("alias.")) {
                 let rest_v = &v[6..];
-                if let Some(eq) = rest_v.find('=') {
-                    if eq >= 1 {
-                        let name = &rest_v[..eq];
-                        let body = &rest_v[eq + 1..];
-                        let note = note("note_git_alias_def", &[("name", &name)]);
-                        if let Some(h) = scan_body(ctx, alias_body_command(body), &note, d, dir) {
-                            return Some(h);
-                        }
+                if let Some(eq) = rest_v.find('=')
+                    && eq >= 1
+                {
+                    let name = &rest_v[..eq];
+                    let body = &rest_v[eq + 1..];
+                    let note = note("note_git_alias_def", &[("name", &name)]);
+                    if let Some(h) = scan_body(ctx, alias_body_command(body), &note, d, dir) {
+                        return Some(h);
                     }
                 }
             }
@@ -559,13 +561,12 @@ pub fn alias_git_verdict(ctx: &mut Ctx, args: &[Tok], sub: &str, rest: &[Tok], d
         if let Some(def) = git_definition_verdict(ctx, args, Some(sub), rest, depth, dir) {
             return Some(def);
         }
-        if depth < tables().alias_depth {
-            if let Some(ex) = expand_alias(ctx, args, Some(sub), rest, dir, env) {
-                if let Some(hit) = scan_command(ctx, &ex.command, depth + 1, dir) {
-                    let note = note("note_git_alias_use", &[("chain", &ex.chain.join(&tables().chain_joiner))]);
-                    return Some(annotate(&hit, &note));
-                }
-            }
+        if depth < tables().alias_depth
+            && let Some(ex) = expand_alias(ctx, args, Some(sub), rest, dir, env)
+            && let Some(hit) = scan_command(ctx, &ex.command, depth + 1, dir)
+        {
+            let note = note("note_git_alias_use", &[("chain", &ex.chain.join(&tables().chain_joiner))]);
+            return Some(annotate(&hit, &note));
         }
     }
     if sub == "commit" {
@@ -639,10 +640,10 @@ fn shell_defs(ctx: &mut Ctx) -> std::rc::Rc<HashMap<String, ShellDef>> {
         if !fn_paren.is_match(whole.as_str()) && !fn_kw.is_match(whole.as_str()) {
             continue;
         }
-        if let Some(close) = matching_close(raw, open) {
-            if close > open {
-                defs.insert(m[1].to_string(), ShellDef { is_alias: false, body: raw[open + 1..close].to_string() });
-            }
+        if let Some(close) = matching_close(raw, open)
+            && close > open
+        {
+            defs.insert(m[1].to_string(), ShellDef { is_alias: false, body: raw[open + 1..close].to_string() });
         }
     }
     let rc = std::rc::Rc::new(defs);

@@ -114,10 +114,10 @@ fn extract_path_tokens(text: &str) -> Vec<String> {
     for raw in cleaned.split(|c: char| is_js_space(c) || seps.contains(c)).filter(|s| !s.is_empty()) {
         let mut t = raw;
         // .replace(/^\.\/+/, '')
-        if let Some(rest) = t.strip_prefix('.') {
-            if rest.starts_with('/') {
-                t = rest.trim_start_matches('/');
-            }
+        if let Some(rest) = t.strip_prefix('.')
+            && rest.starts_with('/')
+        {
+            t = rest.trim_start_matches('/');
         }
         // .replace(/[.,;:]+$/, '')
         let t = t.trim_end_matches(|c: char| trim.contains(c));
