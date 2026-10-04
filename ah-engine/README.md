@@ -163,6 +163,37 @@ TOML at every start; measured by alternating the two builds in the same minute, 
 with the parse and 1.9 to 2.1 ms with the compiled-in data (a plain `true` takes 1.2 ms on this machine), so the parse
 nearly doubled the client's start-up and was replaced.
 
+### Storage phase (D19-D27, D51, D52)
+
+Measured 2026-10-05 on the same machine (macOS, M4 Max, brew rust 1.99, release build), **under heavy load**: other
+lanes were compiling in parallel and the load average was 167-177 throughout, so absolute times are upper bounds. To make
+the comparison fair, the build before storage (087b7f5, in-memory project state) and this build were run alternately,
+three rounds each, with the same script (`scripts/measure-storage.py`: isolated HOME and state dir, a daemon started by a hook
+call, empty rules). Values are the median of the three rounds; CLI times are each the median of 40 calls.
+
+| | before storage (087b7f5) | this build | D73 bench (for reference) |
+|---|---|---|---|
+| CLI write, `proj <cwd> set k v` (wall, process spawn included) | 7.9 ms | 10.8 ms | n/a |
+| CLI read, `proj <cwd> get k` | 8.8 ms | 8.6 ms | n/a |
+| CLI `version` (no daemon involved: the spawn cost under this load) | 7.8 ms | 7.2 ms | n/a |
+| acknowledged writes over the socket, one sequential client | 1,482 ops/s (memory, nothing synced) | 614 ops/s (each committed with `synchronous=FULL`) | 43k commits/s in-process, FULL |
+| daemon RSS, idle | 2.6 MB | 4.2 MB | SQLite 7.3 MB at default caches |
+| daemon RSS after 10k acknowledged writes | 2.8 MB | 5.2 MB | |
+| `hot.db` / its WAL after 10k writes | n/a | 268 KB / 4.0 MB (the WAL auto-checkpoints at 1000 pages) | |
+| after `ah-engine maintain` (16 ms) | n/a | `hot.db` 252 KB, WAL 4 KB, `archive.db` 20 KB | |
+| binary size | 1,573,424 bytes | 2,663,328 bytes (+1.04 MiB) | SQLite +1.8 MB, redb +0.7 MB |
+
+Reading it: under this load the CLI's cost is dominated by process start-up (the `version` row), so a durable write
+costs about 1 to 3 ms more than the in-memory one and a read (served from the memory layer) costs the same. Over the
+socket, the transport alone allows about 1.5k requests per second here; durability brings that to about 600, about 1 ms
+per acknowledged write, which includes the full sync before each reply. That is far below D73's 43k in-process commits per
+second because each request here is a new connection, a thread handoff and one commit per write (a single sequential
+client cannot share a group commit: `db_commits` equalled `db_writes` at 10,040). The daemon stays within about a third of
+the D25 target of 16 MB after 10k writes; the page cache is capped at 512 KB per connection (`storage.cache_kb`) and mmap is
+off, which is why it is below D73's 7.3 MB. The binary grows by 1.04 MiB for the bundled SQLite, less than the 1.8 MB D73
+measured (that bench used default features and no `opt-level = "z"`). A quiet-machine re-run is part of the benchmark
+wave (D75, wave 4).
+
 ## Background process disclosure
 
 When enabled, the first hook call starts `ah-engine serve` as a detached background process (no launchd or systemd unit).
@@ -186,4 +217,5 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Size control and retention, `ah-engine maintain` (D26)
 - [x] Backup and restore (D27)
 - [x] Metrics and impact persisted through the SQLite `Store` (D51, D52)
+- [x] Storage phase measured (README, Measurements)
 - [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases
