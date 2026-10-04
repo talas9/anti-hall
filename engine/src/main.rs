@@ -21,6 +21,7 @@ fn main() {
             Some(r) => println!("{r}"),
             None => std::process::exit(1),
         },
+        Some("gitguard") => std::process::exit(engine::gitguard::cli_main()),
         Some("version") => println!("{}", engine::version()),
         _ => eprintln!("usage: engine serve|hook [--fallback <hook.js>]|ctl <ping|reload|stop|status>|status|reset|proj <cwd> <verb> [args]|version"),
     }

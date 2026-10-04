@@ -236,6 +236,7 @@ fn hook(body: &str, sh: &Shared) -> Reply {
     let (start, budget) = (limits::thread_cpu_us(), sh.cfg.eval_budget_us);
     let over = move || budget > 0 && limits::thread_cpu_us().saturating_sub(start) > budget;
     match crate::hookio::respond_value(&p, &rules, &over) {
+        Ok(out) if out == crate::hookio::FALLBACK => Reply::Err("built-in check defers to the Node hook".into()),
         Ok(out) => Reply::Ok(out),
         Err(_) => {
             sh.stats.budget_trips.fetch_add(1, SeqCst);

@@ -32,8 +32,13 @@ struct RawRule {
     tools: Vec<String>,
     #[serde(default)]
     field: Option<String>,
+    #[serde(default)]
     pattern: String,
     action: String,
+    #[serde(default)]
+    check: Option<String>,
+    #[serde(default)]
+    options: Value,
     #[serde(default)]
     message: String,
     #[serde(default)]
@@ -57,6 +62,9 @@ pub struct Rule {
     pub action: Action,
     pub message: String,
     paths: Vec<String>,
+    /// Built-in check (`"git"`): real logic instead of a regex; `pattern`/`message` are ignored.
+    pub check: Option<String>,
+    pub options: Value,
 }
 
 #[derive(Debug, Default)]
@@ -93,8 +101,13 @@ impl RuleSet {
                 "context" => Action::Context,
                 a => return Err(format!("rule {i}: unknown action {a:?}")),
             };
+            if let Some(c) = &r.check {
+                if c != "git" {
+                    return Err(format!("rule {i}: unknown check {c:?}"));
+                }
+            }
             let re = Regex::new(&r.pattern).map_err(|e| format!("rule {i} ({}): {e}", r.id))?;
-            rules.push(Rule { id: r.id, events: r.events, tools: r.tools, field: r.field, re, action, message: r.message, paths: r.paths });
+            rules.push(Rule { id: r.id, events: r.events, tools: r.tools, field: r.field, re, action, message: r.message, paths: r.paths, check: r.check, options: r.options });
         }
         Ok(RuleSet { rules, version: f.version })
     }
@@ -128,7 +141,7 @@ impl RuleSet {
     pub fn fingerprint(&self) -> u64 {
         let mut all = String::new();
         for r in &self.rules {
-            all.push_str(&format!("{}|{}|{:?}|{}\n", r.id, r.re.as_str(), r.action, r.message));
+            all.push_str(&format!("{}|{}|{:?}|{}|{}\n", r.id, r.re.as_str(), r.action, r.message, r.check.as_deref().unwrap_or("")));
         }
         crate::health::fnv(&all)
     }
@@ -165,11 +178,16 @@ fn natural(ti: &Value) -> String {
 }
 
 impl Rule {
-    fn matches(&self, s: &Subject) -> bool {
+    /// Event / tool / project-path scope only (shared by regex rules and built-in checks).
+    pub fn in_scope(&self, s: &Subject) -> bool {
         if !listed(&self.events, Some(s.event)) || !listed(&self.tools, s.tool) {
             return false;
         }
-        if !self.paths.is_empty() && !s.cwd.map_or(false, |c| self.paths.iter().any(|p| under(c, p))) {
+        !(!self.paths.is_empty() && !s.cwd.map_or(false, |c| self.paths.iter().any(|p| under(c, p))))
+    }
+
+    fn matches(&self, s: &Subject) -> bool {
+        if self.check.is_some() || !self.in_scope(s) {
             return false;
         }
         let text = match self.field.as_deref() {

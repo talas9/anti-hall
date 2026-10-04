@@ -3,6 +3,7 @@ pub mod client;
 pub mod config;
 pub mod daemon;
 pub mod frame;
+pub mod gitguard;
 pub mod health;
 pub mod hookio;
 pub mod limits;

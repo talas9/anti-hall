@@ -129,6 +129,8 @@ fn spawn_daemon() -> Option<std::process::Child> {
 pub struct Outcome {
     pub out: String,
     pub code: i32,
+    /// Text for stderr (a built-in check that blocks the way the Node guards do: exit 2 + reason on stderr).
+    pub err: String,
 }
 
 /// Ask the engine. `None` = use the fallback.
@@ -206,19 +208,22 @@ fn run_fallback(raw: &str, path: &Path, cfg: &ClientConfig) -> Option<Outcome> {
         }
     };
     let bytes = rx.recv_timeout(Duration::from_millis(500)).unwrap_or_default();
-    Some(Outcome { out: String::from_utf8_lossy(&bytes).to_string(), code: status.code().unwrap_or(0) })
+    Some(Outcome { out: String::from_utf8_lossy(&bytes).to_string(), code: status.code().unwrap_or(0), err: String::new() })
 }
 
 /// Core of `engine hook`. Pure of process exit.
 pub fn run(raw: &str, fallback: Option<&Path>) -> Outcome {
     if raw.trim().is_empty() {
-        return Outcome { out: String::new(), code: 0 };
+        return Outcome { out: String::new(), code: 0, err: String::new() };
     }
     let cfg = ClientConfig::from_env();
     if let Some(out) = engine_attempt(raw, &cfg, fallback.is_some()) {
-        return Outcome { out, code: 0 };
+        if let Some(reason) = out.strip_prefix(crate::hookio::EXIT2) {
+            return Outcome { out: String::new(), code: 2, err: reason.to_string() };
+        }
+        return Outcome { out, code: 0, err: String::new() };
     }
-    let mut o = fallback.and_then(|p| run_fallback(raw, p, &cfg)).unwrap_or(Outcome { out: String::new(), code: 0 });
+    let mut o = fallback.and_then(|p| run_fallback(raw, p, &cfg)).unwrap_or(Outcome { out: String::new(), code: 0, err: String::new() });
     // We are running on the built-in checks: tell the agent once per session if the engine is in a known-bad state.
     if o.code == 0 && paths::dir().join("failure.json").exists() {
         if let Ok(p) = serde_json::from_str::<serde_json::Value>(raw) {
@@ -244,6 +249,11 @@ pub fn hook_main(args: &[String]) -> i32 {
         let mut raw = String::new();
         let _ = std::io::stdin().take(8 * 1024 * 1024).read_to_string(&mut raw);
         let o = run(&raw, fallback_arg(args).as_deref());
+        if !o.err.is_empty() {
+            let mut se = std::io::stderr();
+            let _ = se.write_all(o.err.as_bytes());
+            let _ = se.flush();
+        }
         if !o.out.is_empty() {
             let mut so = std::io::stdout();
             let _ = so.write_all(o.out.as_bytes());

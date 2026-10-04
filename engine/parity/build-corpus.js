@@ -5,6 +5,7 @@
 const fs = require('fs'), path = require('path'), readline = require('readline');
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
 const CAP = +arg('--cap', 250);
+const MAXLEN = +arg('--maxlen', 400); // 0 = no length limit (the harder, uncapped corpus)
 const RULES = {
   'git-force-push': { rel: /\bgit\b[^\n|;&]*\bpush\b[^\n|;&]*(--force|\s-[a-zA-Z]*f|\s\+\S)/, benign: /^\s*git\s+push\b/ },
   'git-ai-credit': { rel: /\bgit\b[^\n]*\bcommit\b[\s\S]*(co-authored-by|generated with)/i, benign: /^\s*git\s+commit\b/ },
@@ -14,7 +15,7 @@ const out = {}, seen = new Set();
 for (const r of Object.keys(RULES)) out[r] = { hit: [], benign: [] };
 const add = (rule, kind, command, source) => {
   const b = out[rule][kind];
-  if (command.length > 400 || seen.has(rule + kind + command)) return;
+  if ((MAXLEN && command.length > MAXLEN) || seen.has(rule + kind + command)) return;
   seen.add(rule + kind + command);
   if (b.length < CAP) b.push({ rule, command, source, expect_relevant: kind === 'hit' });
 };

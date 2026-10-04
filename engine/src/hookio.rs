@@ -11,8 +11,15 @@
 //! | UserPromptSubmit | `{"decision":"block","reason"}`                         | `hookSpecificOutput.additionalContext`  |
 //! | Stop             | `{"decision":"block","reason"}` (never if `stop_hook_active`) | `{"systemMessage"}`               |
 //! | SessionStart / SubagentStart | n/a (treated as context)                    | `hookSpecificOutput.additionalContext`  |
+use crate::gitguard::{self, Outcome};
 use crate::rules::{Action, Budget, RuleSet, Subject};
 use serde_json::{json, Value};
+
+/// Reply-body prefix for a built-in check that blocks the way the Node guards do (exit 2, reason on stderr);
+/// the rest of the body is the stderr text. JSON bodies start with `{`, so the two cannot be confused.
+pub const EXIT2: &str = "AHEXIT 2\n";
+/// Reply body of a built-in check that must defer to the Node hook (the daemon turns it into an ERR frame).
+pub const FALLBACK: &str = "AHFALLBACK";
 
 /// Event name from the payload; `None` when absent.
 fn event_of(p: &Value) -> Option<&str> {
@@ -45,9 +52,26 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),
     };
+    let mut advisory: Option<String> = None;
+    for rule in rules.rules.iter().filter(|x| x.check.is_some()) {
+        if over() {
+            return Err(Budget);
+        }
+        if !rule.in_scope(&subject) {
+            continue;
+        }
+        if let Some(o) = builtin(rule, &subject) {
+            match o {
+                Outcome::Block(m) => return r(format!("{EXIT2}{m}\n")),
+                Outcome::Advisory(j) => advisory = Some(j),
+                Outcome::Fallback => return r(FALLBACK.to_string()),
+                Outcome::Allow => {}
+            }
+        }
+    }
     let hits = rules.matching_budget(&subject, over)?;
     if hits.is_empty() {
-        return none;
+        return Ok(advisory);
     }
     let denies: Vec<&str> = hits.iter().filter(|r| r.action == Action::Deny).map(|r| r.message.as_str()).collect();
     let notes: Vec<String> = hits
@@ -81,6 +105,21 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<
         _ => return none,
     };
     r(out.to_string())
+}
+
+/// Run a built-in check; `None` when it does not apply to this payload.
+fn builtin(rule: &crate::rules::Rule, s: &Subject) -> Option<Outcome> {
+    match rule.check.as_deref()? {
+        "git" => {
+            if s.event != "PreToolUse" || s.tool != Some("Bash") {
+                return None;
+            }
+            let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
+            let root = rule.options.get("plugin_root").and_then(Value::as_str).map(|x| x.to_string()).or_else(|| std::env::var("ANTIHALL_ENGINE_PLUGIN_ROOT").ok()).unwrap_or_default();
+            Some(gitguard::check_bash(cmd, s.cwd, &root))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

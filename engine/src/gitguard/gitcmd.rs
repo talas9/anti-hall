@@ -1,0 +1,578 @@
+//! git argument analysis ported from git-guard.js: subcommand resolution (with inline aliases), push force /
+//! delete detection, command-substitution args, self-credit matching and commit-message extraction.
+use super::shell::*;
+use super::util::*;
+use super::Ctx;
+use std::collections::HashMap;
+
+const GIT_OPTS_WITH_VALUE: &[&str] = &["-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"];
+
+fn is_sep_char(c: char) -> bool {
+    is_js_space(c) || ";&|()\"'{}`".contains(c)
+}
+
+/// JS `val.split(/[\s;&|()"'{}`]+/)`: pieces including a possibly empty first and last one.
+fn js_split_seps(val: &str) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut cur = String::new();
+    let mut in_sep = false;
+    for c in val.chars() {
+        if is_sep_char(c) {
+            if !in_sep {
+                pieces.push(std::mem::take(&mut cur));
+                in_sep = true;
+            }
+        } else {
+            in_sep = false;
+            cur.push(c);
+        }
+    }
+    pieces.push(cur);
+    pieces
+}
+
+pub fn git_subcommand(args: &[Tok]) -> (Option<String>, Vec<Tok>) {
+    for j in 0..args.len() {
+        let a = args[j].text.as_str();
+        let cfg_val: Option<String> = if a == "--config-env" {
+            Some(if j + 1 < args.len() { args[j + 1].text.clone() } else { String::new() })
+        } else {
+            a.strip_prefix("--config-env=").map(|s| s.to_string())
+        };
+        if let Some(v) = cfg_val {
+            if v.get(..6).map_or(false, |x| x.eq_ignore_ascii_case("alias.")) {
+                return (Some("push".into()), vec![Tok::plain("--force")]);
+            }
+        }
+    }
+    let mut alias_map: HashMap<String, String> = HashMap::new();
+    let mut alias_body: HashMap<String, Vec<Tok>> = HashMap::new();
+    let mut j = 0;
+    while j + 1 < args.len() {
+        if args[j].text == "-c" {
+            let cfg = &args[j + 1].text;
+            if let Some(rest) = cfg.strip_prefix("alias.") {
+                if let Some(eq) = rest.find('=') {
+                    if eq >= 1 {
+                        let name = &rest[..eq];
+                        let val = js_trim(&rest[eq + 1..]);
+                        let first_word: String = if val.starts_with('!') { "!".into() } else { val.split(is_js_space).next().unwrap_or("").to_string() };
+                        alias_map.insert(name.to_string(), first_word.clone());
+                        let mut parts: Vec<String> = js_split_seps(val).into_iter().skip(1).filter(|p| !p.is_empty()).collect();
+                        if first_word == "!" {
+                            parts.retain(|p| p != "--");
+                        }
+                        alias_body.insert(name.to_string(), parts.iter().map(|p| Tok::plain(p)).collect());
+                    }
+                }
+            }
+        }
+        j += 1;
+    }
+    let mut i = 0;
+    while i < args.len() {
+        let w = args[i].text.as_str();
+        if GIT_OPTS_WITH_VALUE.contains(&w) {
+            i += 2;
+            continue;
+        }
+        if w.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        let rest: Vec<Tok> = args[i + 1..].to_vec();
+        if let Some(expanded) = alias_map.get(w) {
+            if expanded == "push" || expanded == "!" {
+                let mut body = alias_body.get(w).cloned().unwrap_or_default();
+                body.extend(rest);
+                return (Some("push".into()), body);
+            }
+            let sub = if expanded.is_empty() { w.to_string() } else { expanded.clone() };
+            return (Some(sub), rest);
+        }
+        return (Some(w.to_string()), rest);
+    }
+    (None, Vec::new())
+}
+
+const PUSH_LONG_OPTS: &[&str] = &[
+    "all", "branches", "mirror", "tags", "follow-tags", "delete", "prune", "force", "force-with-lease", "force-if-includes", "atomic", "dry-run", "porcelain", "verbose", "quiet", "progress", "verify",
+    "set-upstream", "signed", "push-option", "repo", "receive-pack", "exec", "thin", "recurse-submodules", "ipv4", "ipv6",
+];
+
+fn expand_push_options(rest: &[Tok]) -> Vec<Tok> {
+    let mut out = Vec::new();
+    let mut end_of_options = false;
+    for t in rest {
+        let w = t.text.as_str();
+        if end_of_options || !w.starts_with("--") || w.starts_with("--no-") {
+            if w == "--" {
+                end_of_options = true;
+            }
+            out.push(t.clone());
+            continue;
+        }
+        let (name, val) = match w.find('=') {
+            None => (&w[2..], ""),
+            Some(eq) => (&w[2..eq], &w[eq..]),
+        };
+        if name.is_empty() || PUSH_LONG_OPTS.contains(&name) {
+            out.push(t.clone());
+            continue;
+        }
+        let cands: Vec<&&str> = PUSH_LONG_OPTS.iter().filter(|o| o.starts_with(name)).collect();
+        if cands.is_empty() {
+            out.push(t.clone());
+            continue;
+        }
+        for c in cands {
+            let mut nt = t.clone();
+            nt.text = format!("--{c}{val}");
+            out.push(nt);
+        }
+    }
+    out
+}
+
+fn is_short_cluster(w: &str) -> bool {
+    w.len() >= 2 && w.starts_with('-') && w[1..].chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+pub fn is_force_push(rest: &[Tok]) -> bool {
+    let rest = expand_push_options(rest);
+    let mut end_of_options = false;
+    for t in &rest {
+        let w = t.text.as_str();
+        if !end_of_options && w == "--" {
+            end_of_options = true;
+            continue;
+        }
+        if end_of_options {
+            if w.starts_with('+') && w.chars().count() > 1 {
+                return true;
+            }
+            continue;
+        }
+        if w == "--force" || w == "--force-with-lease" {
+            return true;
+        }
+        if w.starts_with("--force-with-lease=") {
+            return true;
+        }
+        if w == "--mirror" {
+            return true;
+        }
+        if is_short_cluster(w) && w.contains('f') {
+            return true;
+        }
+        if w.starts_with('+') && w.chars().count() > 1 {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn is_delete_ref_push(rest: &[Tok]) -> bool {
+    let rest = expand_push_options(rest);
+    let mut end_of_options = false;
+    for t in &rest {
+        let w = t.text.as_str();
+        if !end_of_options && w == "--" {
+            end_of_options = true;
+            continue;
+        }
+        if !end_of_options {
+            if w == "--delete" || w == "--prune" {
+                return true;
+            }
+            if is_short_cluster(w) && w.contains('d') {
+                return true;
+            }
+        }
+        if w.chars().count() > 1 && w.starts_with(':') {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn has_cmd_subst_arg(rest: &[Tok]) -> bool {
+    rest.iter().any(|t| t.text.contains(CMDSUBST))
+}
+
+// ---------------------------------------------------------------------------------------------------
+// self-credit
+
+fn line_starts(t: &[char]) -> Vec<usize> {
+    let mut v = vec![0usize];
+    for (i, &c) in t.iter().enumerate() {
+        if c == '\n' || c == '\r' || c == '\u{2028}' || c == '\u{2029}' {
+            v.push(i + 1);
+        }
+    }
+    v
+}
+
+fn skip_ht(t: &[char], mut p: usize) -> usize {
+    while p < t.len() && (t[p] == ' ' || t[p] == '\t') {
+        p += 1;
+    }
+    p
+}
+
+fn coauthor_at(t: &[char], s: usize) -> bool {
+    let mut p = skip_ht(t, s);
+    if !ci_starts_with(t, p, "co-authored-by") {
+        return false;
+    }
+    p += "co-authored-by".len();
+    p = skip_ht(t, p);
+    if p >= t.len() || (t[p] != ':' && t[p] != '=') {
+        return false;
+    }
+    p += 1;
+    let eol = t[p..].iter().position(|&c| c == '\n').map_or(t.len(), |x| x + p);
+    for q in p..eol {
+        for alt in ["claude", "anthropic.com", "@openai.com", "chatgpt", "codex <", "cursor <", "github copilot"] {
+            if ci_starts_with(t, q, alt) {
+                return true;
+            }
+        }
+        if ci_starts_with(t, q, "gpt-") && q + 4 < t.len() && (t[q + 4] == '4' || t[q + 4] == '5') && t.get(q + 5).map_or(true, |c| !c.is_ascii_alphanumeric()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn generated_at(t: &[char], s: usize) -> bool {
+    let mut p = skip_ht(t, s);
+    let mut units = 0usize;
+    while p < t.len() {
+        let c = t[p];
+        if c.is_ascii_alphanumeric() || c == ' ' || c == '\t' {
+            break;
+        }
+        if units + c.len_utf16() > 2 {
+            break;
+        }
+        units += c.len_utf16();
+        p += 1;
+    }
+    p = skip_ht(t, p);
+    if !ci_starts_with(t, p, "generated with ") {
+        return false;
+    }
+    p += "generated with ".len();
+    if t.get(p) == Some(&'[') {
+        p += 1;
+    }
+    for alt in ["claude code", "claude", "chatgpt", "codex", "copilot"] {
+        if ci_starts_with(t, p, alt) {
+            let e = p + alt.len();
+            let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            if t.get(e).map_or(true, |&c| !word(c)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// SELF_CREDIT_COAUTHOR or SELF_CREDIT_GENERATED matches somewhere in `text` (line-anchored, like /im).
+pub fn credit_regexes(text: &str) -> bool {
+    let t: Vec<char> = text.chars().collect();
+    line_starts(&t).into_iter().any(|s| coauthor_at(&t, s) || generated_at(&t, s))
+}
+
+fn gh_body_marker(text: &str) -> bool {
+    ci_contains(text, "claude.com/claude-code") || ci_contains(text, "chatgpt.com/codex") || ci_contains(text, "<noreply@anthropic.com>")
+}
+
+pub fn norm_escapes(s: &str) -> String {
+    s.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+}
+
+/// `has_self_credit(currentRawCommand)`, computed once per request.
+pub fn raw_has_credit(ctx: &mut Ctx) -> bool {
+    if let Some(v) = ctx.raw_credit {
+        return v;
+    }
+    let raw = std::mem::take(&mut ctx.raw_cmd);
+    let v = has_self_credit(ctx, &raw);
+    ctx.raw_cmd = raw;
+    ctx.raw_credit = Some(v);
+    v
+}
+
+pub fn has_self_credit(ctx: &mut Ctx, text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    if let Some(&v) = ctx.self_credit_cache.get(text) {
+        return v;
+    }
+    let normalized = norm_escapes(text);
+    let result = credit_regexes(text) || credit_regexes(&normalized);
+    ctx.self_credit_cache.insert(text.to_string(), result);
+    result
+}
+
+pub const COMMIT_CREATING: &[&str] = &["commit", "merge", "rebase", "cherry-pick", "revert", "am", "pull", "commit-tree", "tag"];
+
+pub fn has_self_credit_trailer_key_remap(args: &[Tok]) -> bool {
+    let key_ok = |v: &str| {
+        let l = js_trim(v).to_lowercase();
+        l == "co-authored-by" || l == "generated-with" || l == "generated with"
+    };
+    for j in 0..args.len() {
+        if args[j].text != "-c" {
+            continue;
+        }
+        let cfg = if j + 1 < args.len() { args[j + 1].text.as_str() } else { "" };
+        // Form A: ^trailer\.[^=]*\.key=(.*)$  (is: case-insensitive, dotall)
+        let lc = cfg.to_ascii_lowercase();
+        if let Some(rest) = lc.strip_prefix("trailer.") {
+            if let Some(eq) = rest.find('=') {
+                let name_part = &rest[..eq];
+                if name_part.ends_with(".key") {
+                    let val_start = "trailer.".len() + eq + 1;
+                    if key_ok(&cfg[val_start..]) {
+                        return true;
+                    }
+                    continue;
+                }
+            }
+            // Form B: ^trailer\.[^=]*\.key$
+            if !rest.contains('=') && rest.ends_with(".key") {
+                let val = if j + 2 < args.len() { args[j + 2].text.as_str() } else { "" };
+                if key_ok(val) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn is_line_term(c: char) -> bool {
+    c == '\n' || c == '\r' || c == '\u{2028}' || c == '\u{2029}'
+}
+
+/// `^-[A-Za-z]*X$` / `^-[A-Za-z]*X.`: returns (ends_with_x, inline_value_after_first_x).
+fn short_cluster_flag(w: &str, flag: char) -> (bool, Option<String>) {
+    let c: Vec<char> = w.chars().collect();
+    if c.first() != Some(&'-') {
+        return (false, None);
+    }
+    let mut exact = false;
+    let mut k = 1;
+    // letters run
+    let mut run_end = 1;
+    while run_end < c.len() && c[run_end].is_ascii_alphabetic() {
+        run_end += 1;
+    }
+    if run_end == c.len() && c.len() >= 2 && c[c.len() - 1] == flag {
+        exact = true;
+    }
+    let mut inline = None;
+    while k < run_end {
+        if c[k] == flag && k + 1 < c.len() && !is_line_term(c[k + 1]) {
+            let first = c[1..].iter().position(|&x| x == flag).map(|p| p + 1).unwrap();
+            inline = Some(c[first + 1..].iter().collect());
+            break;
+        }
+        k += 1;
+    }
+    (exact, inline)
+}
+
+pub fn inline_commit_messages(rest: &[Tok]) -> Vec<String> {
+    let mut msgs = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let w = rest[i].text.as_str();
+        if w == "--message" {
+            if i + 1 < rest.len() {
+                msgs.push(rest[i + 1].text.clone());
+                i += 1;
+            }
+        } else if let Some(v) = w.strip_prefix("--message=") {
+            msgs.push(v.to_string());
+        } else {
+            let (exact, inline) = short_cluster_flag(w, 'm');
+            if exact {
+                if i + 1 < rest.len() {
+                    msgs.push(rest[i + 1].text.clone());
+                    i += 1;
+                }
+            } else if let Some(v) = inline {
+                msgs.push(v);
+            } else if w == "--trailer" {
+                if i + 1 < rest.len() {
+                    msgs.push(rest[i + 1].text.clone());
+                    i += 1;
+                }
+            } else if let Some(v) = w.strip_prefix("--trailer=") {
+                msgs.push(v.to_string());
+            }
+        }
+        i += 1;
+    }
+    msgs
+}
+
+pub fn file_commit_messages(rest: &[Tok]) -> Vec<String> {
+    let mut specs = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let w = rest[i].text.as_str();
+        if w == "--file" {
+            if i + 1 < rest.len() {
+                specs.push(rest[i + 1].text.clone());
+                i += 1;
+            }
+        } else if let Some(v) = w.strip_prefix("--file=") {
+            specs.push(v.to_string());
+        } else {
+            let (exact, inline) = short_cluster_flag(w, 'F');
+            if exact {
+                if i + 1 < rest.len() {
+                    specs.push(rest[i + 1].text.clone());
+                    i += 1;
+                }
+            } else if let Some(v) = inline {
+                specs.push(v);
+            }
+        }
+        i += 1;
+    }
+    specs
+}
+
+pub fn read_file_lossy(path: &str) -> Option<String> {
+    std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).to_string())
+}
+
+pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
+    let words: Vec<&str> = args.iter().map(|a| a.text.as_str()).collect();
+    let guarded_sub = words.iter().any(|w| matches!(*w, "pr" | "issue" | "release"));
+    let guarded_act = words.iter().any(|w| matches!(*w, "create" | "edit" | "comment" | "merge"));
+    if !guarded_sub || !guarded_act {
+        return None;
+    }
+    let mut vals: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let w = args[i].text.as_str();
+        if matches!(w, "--body" | "-b" | "--title" | "-t" | "--notes" | "-n" | "--subject") {
+            if i + 1 < args.len() {
+                vals.push(args[i + 1].text.clone());
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        let mut handled = false;
+        for p in ["--body=", "--title=", "--notes=", "--subject="] {
+            if let Some(v) = w.strip_prefix(p) {
+                vals.push(v.to_string());
+                handled = true;
+                break;
+            }
+        }
+        if handled {
+            i += 1;
+            continue;
+        }
+        let mut file_spec: Option<String> = None;
+        if matches!(w, "--body-file" | "-F" | "--notes-file") {
+            if i + 1 < args.len() {
+                file_spec = Some(args[i + 1].text.clone());
+                i += 1;
+            }
+        } else {
+            for p in ["--body-file=", "--notes-file="] {
+                if let Some(v) = w.strip_prefix(p) {
+                    if !v.chars().any(is_line_term) {
+                        file_spec = Some(v.to_string());
+                    }
+                    break;
+                }
+            }
+        }
+        if let Some(fs_) = file_spec {
+            if !fs_.is_empty() && fs_ != "-" {
+                let p = ctx.abs_from_cwd(&fs_);
+                if let Some(t) = read_file_lossy(&p) {
+                    vals.push(t);
+                }
+            }
+        }
+        i += 1;
+    }
+    if raw_has_credit(ctx) {
+        vals.push(ctx.raw_cmd.clone());
+    }
+    for v in &vals {
+        let n = norm_escapes(v);
+        for text in [v.as_str(), n.as_str()] {
+            if credit_regexes(text) || gh_body_marker(text) {
+                return Some(msg(
+                    "a gh pr/issue/release body or title carries AI/assistant self-credit (\"Generated with\" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.",
+                    "PRs and issues carry no AI attribution.",
+                    "remove it and re-run.",
+                ));
+            }
+        }
+    }
+    if vals.iter().any(|v| !v.is_empty()) {
+        ctx.jev_wanted = true;
+    }
+    None
+}
+
+/// Heredoc bodies of one command text, plus a cache of the `-F -` stdin candidate text per command string
+/// (the Node guard memoizes it on the (cmd, bodies) pair; without it a command made of N `-F -` segments is
+/// quadratic). Cache keys are the address and length of a string that outlives the Hb (the scan frame owns both).
+pub struct Hb {
+    pub bodies: Vec<HeredocBody>,
+    cache: std::cell::RefCell<Vec<(usize, usize, Option<String>, bool)>>,
+}
+
+impl Hb {
+    pub fn new(bodies: Vec<HeredocBody>) -> Hb {
+        Hb { bodies, cache: Default::default() }
+    }
+
+    /// (joined heredoc bodies + quoted literals of `cmd` or None when there are no candidates, credit verdict).
+    pub fn stdin_candidate(&self, cmd: &str) -> (Option<String>, bool) {
+        let key = (cmd.as_ptr() as usize, cmd.len());
+        if let Some(e) = self.cache.borrow().iter().find(|e| (e.0, e.1) == key) {
+            return (e.2.clone(), e.3);
+        }
+        let mut cands: Vec<String> = self.bodies.iter().map(|h| h.body.clone()).collect();
+        cands.extend(extract_quoted_literals(cmd));
+        let text = if cands.is_empty() { None } else { Some(cands.join("\n")) };
+        let cred = text.as_deref().map_or(false, credit_regexes);
+        self.cache.borrow_mut().push((key.0, key.1, text.clone(), cred));
+        (text, cred)
+    }
+}
+
+pub fn extract_quoted_literals(cmd: &str) -> Vec<String> {
+    let cs: Vec<char> = cmd.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        if c == '\'' || c == '"' {
+            let Some(j) = cs[i + 1..].iter().position(|&x| x == c).map(|p| p + i + 1) else { break };
+            out.push(cs[i + 1..j].iter().collect());
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
