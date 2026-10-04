@@ -2,6 +2,7 @@
 # Vendored source tarball ah-engine-v<version>-src.tar.gz (D67), buildable offline:
 #   tar xzf ah-engine-v<version>-src.tar.gz && cd ah-engine-v<version>-src && cargo build --release --offline --frozen
 # usage: package-src.sh <out-dir>
+# The tar layout is deterministic; the gzip bytes can differ across zlib builds, so ah-engine.lock pins the prepare run's bytes.
 # Contents: the ah-engine/ tree (without target/, scripts, tests), vendor/ from `cargo vendor`, and .cargo/config.toml.
 set -euo pipefail
 

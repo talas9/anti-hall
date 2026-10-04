@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Package a built binary as ah-engine-v<version>-<triple>.tar.gz (D67) and write its .sha256.
 # usage: package.sh <triple> <out-dir>
-# The archive is deterministic (sorted entries, mtime 0, uid/gid 0, no gzip name/time) so equal inputs give equal bytes.
+# The archive is deterministic (sorted entries, mtime 0, uid/gid 0, no gzip name/time) so the archive layout does not depend on mtimes or ownership. The gzip bytes can differ across zlib builds; ah-engine.lock pins the bytes the prepare run produced.
 set -euo pipefail
 
 [ $# -eq 2 ] || { echo "usage: package.sh <triple> <out-dir>" >&2; exit 2; }

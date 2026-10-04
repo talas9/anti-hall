@@ -38,6 +38,8 @@ jobs:
       matrix: ${{ steps.meta.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: meta
         env:
           FORCE: ${{ inputs.force }}
@@ -71,6 +73,8 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: System packages
         if: matrix.apt != ''
         env:
@@ -91,16 +95,18 @@ jobs:
           TRIPLE: ${{ matrix.triple }}
         working-directory: ah-engine
         run: scripts/build.sh --target "$TRIPLE"
-      - name: Test
-        env:
-          TRIPLE: ${{ matrix.triple }}
-        working-directory: ah-engine
-        run: cargo test --release --locked --target "$TRIPLE"
       - name: Package
         env:
           TRIPLE: ${{ matrix.triple }}
         working-directory: ah-engine
         run: scripts/package.sh "$TRIPLE" "$GITHUB_WORKSPACE/dist"
+      # Tests build their own binary, so they get a separate target directory and cannot replace the packaged one.
+      - name: Test
+        env:
+          TRIPLE: ${{ matrix.triple }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/ah-engine/target-test
+        working-directory: ah-engine
+        run: cargo test --release --locked --target "$TRIPLE"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-${{ matrix.triple }}
@@ -115,6 +121,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        working-directory: ah-engine
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
       - name: Vendored source tarball
         working-directory: ah-engine
         run: scripts/package-src.sh "$GITHUB_WORKSPACE/dist"
@@ -146,7 +157,7 @@ jobs:
         env:
           BASE: ${{ github.ref_name }}
         run: |
-          branch="ah-engine-prepare/v${VERSION}"
+          branch="ah-engine-prepare/v${VERSION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
@@ -169,9 +180,15 @@ jobs:
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Check the lock matches this tag and source
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           [ -f ah-engine.lock ] || { echo "::error::ah-engine.lock is missing: run the prepare workflow and merge its PR before tagging"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/${DEFAULT_BRANCH}" || { echo "::error::tag $TAG is not on ${DEFAULT_BRANCH}: tag the merged commit"; exit 1; }
           version="${TAG#ah-engine-v}"
           [ "$(jq -r .version ah-engine.lock)" = "$version" ] || { echo "::error::ah-engine.lock version does not match tag $TAG"; exit 1; }
           [ "$(sed -n 's/^version = "\(.*\)"/\1/p' ah-engine/Cargo.toml | head -1)" = "$version" ] || { echo "::error::ah-engine/Cargo.toml version does not match tag $TAG"; exit 1; }
@@ -180,17 +197,26 @@ jobs:
       - name: Fetch prepare artifacts
         run: |
           run_id="$(jq -r .prepare_run ah-engine.lock)"
-          [ "$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json workflowName,conclusion --jq '.workflowName + "/" + .conclusion')" = "ah-engine-release/success" ] \
-            || { echo "::error::run $run_id is not a successful ah-engine-release run"; exit 1; }
+          info="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json workflowName,conclusion,event,headSha)"
+          [ "$(jq -r '.workflowName + "/" + .conclusion + "/" + .event' <<<"$info")" = "ah-engine-release/success/workflow_dispatch" ] \
+            || { echo "::error::run $run_id is not a successful manual ah-engine-release run"; exit 1; }
+          head_sha="$(jq -r .headSha <<<"$info")"
+          git cat-file -e "${head_sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$head_sha" \
+            || { echo "::error::source commit $head_sha of run $run_id is unavailable"; exit 1; }
+          git worktree add --detach "$RUNNER_TEMP/prepared-src" "$head_sha" >/dev/null
+          [ "$("$RUNNER_TEMP/prepared-src/ah-engine/scripts/fingerprint.sh")" = "$(jq -r .fingerprint ah-engine.lock)" ] \
+            || { echo "::error::run $run_id built a source whose fingerprint differs from ah-engine.lock"; exit 1; }
           gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --pattern 'dist-*' --dir fetched \
             || { echo "::error::artifacts of run $run_id are unavailable (expired?): rerun prepare"; exit 1; }
           mkdir dist
           find fetched -type f -name '*.tar.gz' -exec mv {} dist/ \;
       - name: Verify against the committed checksums
         run: |
+          version="${TAG#ah-engine-v}"
+          expected="$(jq -r --arg v "$version" '([.[].triple | "ah-engine-v\($v)-\(.).tar.gz"] + ["ah-engine-v\($v)-src.tar.gz"])[]' ah-engine/targets.json | LC_ALL=C sort)"
+          [ "$(jq -r '.assets | keys[]' ah-engine.lock | LC_ALL=C sort)" = "$expected" ] || { echo "::error::ah-engine.lock assets differ from the expected set (targets.json x version, plus src)"; exit 1; }
+          [ "$(find dist -type f | sed 's|^dist/||' | LC_ALL=C sort)" = "$expected" ] || { echo "::error::downloaded assets differ from the expected set"; exit 1; }
           jq -r '.assets | to_entries | sort_by(.key)[] | "\(.value)  \(.key)"' ah-engine.lock > dist/SHA256SUMS
-          [ "$(find dist -type f ! -name SHA256SUMS | wc -l | tr -d ' ')" = "$(jq '.assets | length' ah-engine.lock)" ] \
-            || { echo "::error::asset set differs from ah-engine.lock"; exit 1; }
           (cd dist && shasum -a 256 -c SHA256SUMS)
           (cd dist && for f in *.tar.gz; do shasum -a 256 "$f" > "$f.sha256"; done)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -214,6 +240,8 @@ jobs:
         with:
           name: verified-dist
           path: dist
+      - name: Re-check the checksums
+        run: cd dist && shasum -a 256 -c SHA256SUMS
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*.tar.gz
