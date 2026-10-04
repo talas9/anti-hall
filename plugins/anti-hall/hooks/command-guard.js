@@ -44,6 +44,7 @@ const {
   dequoteSegment,
   extractSubstitutions,
   SHELL_VERBS,
+  segmentHeredocBodies,
 } = require('./lib/shell-scan.js');
 // v0.108.0 unified settings (env > ~/.anti-hall/settings.json > default);
 // fail-open to `undefined` (never the value that would arm/allow a guard).
@@ -4008,9 +4009,9 @@ const INLINE_WRITE_NONLIT_RE = /(?:(?:write|append)File(?:Sync)?|(?:File|IO)\.wr
 const INLINE_REDIRECT_RE = /['"][^'"]*\s>>?\s*([\w./~-]+)/;
 const isWriteMode = (m) => /^[rwaxbt+]{1,4}$/.test(m) && /[wax+]/.test(m);
 
-// inlineCodeWork(segment, ctx, payload, rootOf) -> null | { precise } for
-// `python|python3 -c` / `perl|ruby|node -e|-E` bodies (Decision 3, never executed).
-function inlineCodeWork(segment, ctx, payload, rootOf) {
+// inlineCodeBody(segment) -> the `python|python3 -c` / `perl|ruby|node -e|-E`
+// code string, or null when the segment carries none.
+function inlineCodeBody(segment) {
   const verb = effectiveVerb(segment).replace(/["']/g, '');
   if (!INLINE_VERBS.has(verb)) return null;
   const toks = tokenizeQuoted(segment);
@@ -4018,7 +4019,27 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
   const flags = verb.startsWith('python') ? ['-c'] : ['-e', '-E'];
   const fi = toks.findIndex((t, k) => k > vi && flags.includes(t));
   if (vi === -1 || fi === -1 || typeof toks[fi + 1] !== 'string') return null;
-  const body = toks[fi + 1];
+  return toks[fi + 1];
+}
+
+// inlineWriteLiterals(segment) -> literal paths inline code writes: open(<lit>,
+// <write mode>), (write|append)File[Sync](<lit>), File/IO.write(<lit>). A
+// non-literal target is not returned (unknowable, fail open).
+function inlineWriteLiterals(segment) {
+  const body = inlineCodeBody(segment);
+  if (body === null) return [];
+  const literals = [];
+  for (const m of body.matchAll(INLINE_OPEN_RE)) if (isWriteMode(m[4])) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_WRITEFILE_RE)) literals.push(m[2]);
+  for (const m of body.matchAll(INLINE_FILE_WRITE_RE)) literals.push(m[2]);
+  return literals;
+}
+
+// inlineCodeWork(segment, ctx, payload, rootOf) -> null | { precise } for
+// `python|python3 -c` / `perl|ruby|node -e|-E` bodies (Decision 3, never executed).
+function inlineCodeWork(segment, ctx, payload, rootOf) {
+  const body = inlineCodeBody(segment);
+  if (body === null) return null;
   const exec = INLINE_EXEC_RE.test(body);
   if (exec) {
     const cmds = [];
@@ -4042,10 +4063,7 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
     if (!sp.isInsideDir(abs, r.base)) return 'outside';
     return require('./edit-guard.js').isNotesTarget(abs, r.base, Object.assign({}, payload, { cwd: r.base })) ? 'notes' : 'repo';
   };
-  const literals = [];
-  for (const m of body.matchAll(INLINE_OPEN_RE)) if (isWriteMode(m[4])) literals.push(m[2]);
-  for (const m of body.matchAll(INLINE_WRITEFILE_RE)) literals.push(m[2]);
-  for (const m of body.matchAll(INLINE_FILE_WRITE_RE)) literals.push(m[2]);
+  const literals = inlineWriteLiterals(segment);
   let loose = false;
   for (const t of literals) {
     const k = targetKind(t);
@@ -4062,6 +4080,95 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
 
 const MAX_CLASSIFY_LEN = 65536;
 
+// resolveWriteTarget(t, ctx, payload, rootOf) -> null (an expansion, glob, `~`
+// or a relative path under an unknown cwd: unknowable, fail open) or
+// { abs, base, toplevel, inBase, scratch }. abs has its directory part
+// realpath'd (/tmp -> /private/tmp) and its last component kept, so edit-guard
+// still sees a symlink. scratch = this session's own scratchpad, or a tmp root
+// outside a git work tree (a repo that lives under /tmp is still a repo).
+// base = the cwd's git toplevel, else the session's project base (rootOf).
+function resolveWriteTarget(t, ctx, payload, rootOf) {
+  if (typeof t !== 'string' || !t || /[$`*?[\]{}]/.test(t) || t.startsWith('~')) return null;
+  if (ctx.cwdUnknown && !path.isAbsolute(t)) return null;
+  const sp = require('./lib/scratchpad.js');
+  const resolved = path.resolve(ctx.cwd, t);
+  const abs = path.join(sp.realpathOrSelf(path.dirname(resolved)), path.basename(resolved));
+  const r = rootOf(ctx.cwd);
+  const inTop = !!r.toplevel && sp.isInsideDir(abs, r.toplevel);
+  const scratch = isScratchpadOrTmpPath(abs, { payload, ownOnly: true })
+    || (!inTop && isScratchpadOrTmpPath(abs, { payload }));
+  return { abs, base: r.base, toplevel: r.toplevel, inBase: sp.isInsideDir(abs, r.base), scratch };
+}
+
+// projectRootResolver(payload) -> rootOf(cwd) -> { toplevel, base }, memoised.
+// base = the cwd's git toplevel; with none, the SESSION's project base (the
+// payload cwd's toplevel, or the payload cwd itself). A `cd` into a non-git
+// dir (e.g. ~/.claude/projects/<slug>/memory) does not make that dir a
+// project root: its files are judged against the session project, as an
+// Edit-tool write to the same file would be.
+function projectRootResolver(payload) {
+  const sp = require('./lib/scratchpad.js');
+  const p = payload || {};
+  const roots = new Map();
+  const startCwd = sp.realpathOrSelf(path.resolve((typeof p.cwd === 'string' && p.cwd) || process.cwd()));
+  const rootOf = (cwd) => {
+    if (!roots.has(cwd)) {
+      let toplevel = null;
+      try { toplevel = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { toplevel = null; }
+      if (toplevel) toplevel = sp.realpathOrSelf(toplevel);
+      const base = toplevel || (cwd === startCwd ? cwd : rootOf(startCwd).base);
+      roots.set(cwd, { toplevel, base });
+    }
+    return roots.get(cwd);
+  };
+  return rootOf;
+}
+
+// shellRunPayloads(segments, text) -> the command strings these segments run
+// inline: `sh -c '<cmd>'`, `eval <cmd>`, and a heredoc fed to a shell
+// (`bash <<EOF` with no -c: the body is a script, not data).
+// withIndex: return [{ cmd, i }] (i = the segment that runs it) instead.
+function shellRunPayloads(segments, text, withIndex) {
+  const out = [];
+  let bodies = null;
+  const add = (cmd, i) => out.push(withIndex ? { cmd, i } : cmd);
+  segments.forEach((seg, i) => {
+    const c = extractShellCPayload(seg);
+    if (c) add(c, i);
+    const e = extractEvalPayload(seg);
+    if (e) add(e, i);
+    if (!c && SHELL_VERBS.has(effectiveVerb(seg)) && seg.includes('<<')) {
+      if (!bodies) bodies = segmentHeredocBodies(segments, text);
+      const b = bodies[i] || [];
+      if (b.length && b[b.length - 1]) add(b[b.length - 1], i);
+    }
+  });
+  return out;
+}
+
+// forEachShellSegment(command, payload, fn) -> calls fn(seg, ctxs, segments,
+// delims, i) for every segment of `command` and, up to depth 3, of the
+// commands it runs inline (`sh -c`, eval, `$(…)`, backticks, `>(…)`). ctxs =
+// the cd-aware cwds the segment may run in. The same walk classifyBashWork
+// does; used by lib/shell-writes.js. No-op on non-string / oversized input.
+function forEachShellSegment(command, payload, fn, depth = 0) {
+  if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return;
+  const p = payload || {};
+  const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
+  masked.text = blankTestOperators(masked.text);
+  const { segments, delims } = splitSegmentsDetailed(masked.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?![A-Za-z0-9_])/g, '$$$1'));
+  const ctxs = cdAwareContexts(segments, delims, p);
+  segments.forEach((seg, i) => fn(seg, ctxs[i], segments, delims, i, masked.text));
+  if (depth >= 3) return;
+  // An inline command runs in its segment's cwd: recurse with that cwd when it
+  // is the one known cwd, else skip it (its relative targets are unknowable).
+  for (const { cmd, i } of shellRunPayloads(segments, masked.text, true)) {
+    const c = ctxs[i] || [];
+    if (c.length === 1 && !c[0].cwdUnknown) forEachShellSegment(cmd, Object.assign({}, p, { cwd: c[0].cwd }), fn, depth + 1);
+  }
+  for (const sub of extractSubstitutions(masked.text).concat(masked.inners)) forEachShellSegment(sub, payload, fn, depth + 1);
+}
+
 function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null) {
   const res = { work: false, blockable: false, labels: new Set(), editBlocks: [] };
   if (typeof command !== 'string' || !command.trim() || command.length > MAX_CLASSIFY_LEN) return res;
@@ -4074,25 +4181,9 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
     }
     return sh.trusted;
   };
-  const sp = require('./lib/scratchpad.js');
   const eg = require('./edit-guard.js');
-  const roots = new Map();
-  const startCwd = sp.realpathOrSelf(path.resolve((typeof p.cwd === 'string' && p.cwd) || process.cwd()));
-  // base = the cwd's git toplevel; with none, the SESSION's project base (the
-  // payload cwd's toplevel, or the payload cwd itself). A `cd` into a non-git
-  // dir (e.g. ~/.claude/projects/<slug>/memory) does not make that dir a
-  // project root: its files are judged against the session project, as an
-  // Edit-tool write to the same file would be.
-  const rootOf = (cwd) => {
-    if (!roots.has(cwd)) {
-      let toplevel = null;
-      try { toplevel = require('../companion/lib/identity.js').resolveContext(cwd, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { toplevel = null; }
-      if (toplevel) toplevel = sp.realpathOrSelf(toplevel);
-      const base = toplevel || (cwd === startCwd ? cwd : rootOf(startCwd).base);
-      roots.set(cwd, { toplevel, base });
-    }
-    return roots.get(cwd);
-  };
+  // Session project roots (see projectRootResolver).
+  const rootOf = projectRootResolver(p);
   const blocks = new Set();
 
   const masked = /[<>]\(/.test(command) ? maskProcessSubstitutions(command) : { text: command, inners: [] };
@@ -4120,26 +4211,19 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
         res.labels.add('inline');
         if (inl.precise) segWork = true;
       }
-      for (const t of bashWriteTargets(seg, ctx.cwd)) {
-        if (/[$`*?[\]{}]/.test(t) || t.startsWith('~')) continue;
-        if (ctx.cwdUnknown && !path.isAbsolute(t)) continue;
-        const resolved = path.resolve(ctx.cwd, t);
-        // Directory part realpath'd (/tmp -> /private/tmp), last component kept so edit-guard sees a symlink.
-        const abs = path.join(sp.realpathOrSelf(path.dirname(resolved)), path.basename(resolved));
-        const r = rootOf(ctx.cwd);
-        const inTop = !!r.toplevel && sp.isInsideDir(abs, r.toplevel);
-        // Own scratchpad always skipped; a tmp root only outside a git work tree
-        // (a repo that lives under /tmp is still a repo).
-        if (isScratchpadOrTmpPath(abs, { payload: p, ownOnly: true })) continue;
-        if (!inTop && isScratchpadOrTmpPath(abs, { payload: p })) continue;
-        const egPayload = Object.assign({}, p, { cwd: r.base });
-        // F3 judges writes into the session project only ("into repo files").
-        if (!sp.isInsideDir(abs, r.base)) continue;
-        if (!eg.isNotesTarget(abs, r.base, egPayload)) {
+      // Inline-code literal targets (python -c open(..,'w')) only feed the
+      // edit block; their WORK count already comes from inlineCodeWork above.
+      const targets = bashWriteTargets(seg, ctx.cwd).map((t) => [t, true])
+        .concat(inlineWriteLiterals(seg).map((t) => [t, false]));
+      for (const [t, countsAsWork] of targets) {
+        const w = resolveWriteTarget(t, ctx, p, rootOf);
+        if (!w || w.scratch || !w.inBase) continue; // F3 judges writes into the session project only
+        const egPayload = Object.assign({}, p, { cwd: w.base });
+        if (countsAsWork && !eg.isNotesTarget(w.abs, w.base, egPayload)) {
           segWork = true;
           res.labels.add('repo-write');
         }
-        if (!isGit && eg.editVerdict(abs, r.base, egPayload) !== 'allow') blocks.add(abs);
+        if (!isGit && eg.editVerdict(w.abs, w.base, egPayload) !== 'allow') blocks.add(w.abs);
       }
     }
     if (segWork) {
@@ -4149,13 +4233,7 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
   });
 
   if (depth < 3) {
-    const inner = [];
-    for (const seg of segments) {
-      const c = extractShellCPayload(seg);
-      if (c) inner.push(c);
-      const e = extractEvalPayload(seg);
-      if (e) inner.push(e);
-    }
+    const inner = shellRunPayloads(segments, masked.text);
     inner.push(...extractSubstitutions(masked.text), ...masked.inners);
     for (const sub of inner) {
       const r = classifyBashWork(sub, payload, o, depth + 1, sh);
@@ -4332,7 +4410,8 @@ function main() {
   }
 
   // Bash edit parity (F3): a main-thread Bash write (sed -i/perl -i/tee/cp/mv/
-  // redirect) into a file edit-guard would block for the Edit tool gets the
+  // redirect, a literal open-for-write path in python -c / node -e, and the same
+  // inside sh -c, eval, $(…) or a heredoc fed to a shell) into a file edit-guard would block for the Edit tool gets the
   // same delegation block. Off with guards.bashEditParity, safety.editGuard or
   // an edit-guard skip; a trusted (redirect-free) project command-allow match
   // passes. Both hosts (a Codex main thread is detected). Fail-open.
@@ -4342,7 +4421,7 @@ function main() {
       && !isSkipped('edit-guard')
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
       if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
-        const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect)', payload.cwd, payload);
+        const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload);
         emitBlock(reason);
       }
     }
@@ -4532,4 +4611,9 @@ module.exports = {
   isScratchpadOrTmpPath,
   splitSegmentsDetailed,
   effectiveVerb,
+  argvWithoutRedirects,
+  inlineWriteLiterals,
+  resolveWriteTarget,
+  projectRootResolver,
+  forEachShellSegment,
 };

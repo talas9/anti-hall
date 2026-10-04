@@ -282,7 +282,7 @@ Compliance: **format > content > stylistic**. Compound multi-clause rules underp
 - **Disabling/timeout-ing a failing safety check** (leaks enforcement; fix the prerequisite).
 - **Trusting high token-probability** as factual confidence.
 
-**Cross-tool note:** both Claude and Codex `PreToolUse` support `additionalContext` (Codex since rust-v0.129.0, see §5.2), but Codex doesn't intercept all shell calls, and its edit hooks see only `apply_patch` (shell writes bypass them) — treat Codex hooks as guardrails, not airtight gates.
+**Cross-tool note:** both Claude and Codex `PreToolUse` support `additionalContext` (Codex since rust-v0.129.0, see §5.2), but Codex doesn't intercept all shell calls, and its edit hooks see `apply_patch` plus shell writes whose target is literal in the command — treat Codex hooks as guardrails, not airtight gates.
 
 ---
 

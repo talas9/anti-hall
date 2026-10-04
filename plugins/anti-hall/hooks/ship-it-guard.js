@@ -43,10 +43,14 @@
 //      above) goes one step further — checking declared SCOPE, not just
 //      existence — but is advisory-only precisely because `files:` is prose, not
 //      a schema.
-//   2. BYPASSABLE — PreToolUse fires on Edit|Write|MultiEdit only. An agent can
-//      route the same write through `Bash` (e.g. a heredoc `cat > file`), which
-//      this hook does not see. It is a speed-bump for the honest path, not a
-//      sandbox.
+//   2. SHELL WRITES — also registered on Bash (both hosts; guards.shellWriteChecks):
+//      the files a shell write targets (`cat >`/`>>`, echo/printf redirects, tee,
+//      sed -i, perl -i, cp/mv destinations, python -c open(...,'w'), `> f`) go
+//      through the same existence gate (lib/shell-writes.js). Writes into the
+//      session scratchpad or a tmp root outside a repo are not gated. A target the
+//      parser cannot know (a variable, a glob, dd/install/rsync, a script that
+//      writes files when run) is not seen: it is a speed-bump for the honest
+//      path, not a sandbox. The conformance advisory stays on Edit/Write only.
 //   3. DEFAULT-OFF — with the env unset it is a pure no-op (exit 0), so it can
 //      never disrupt an unsuspecting user. You must opt in.
 //   4. CONSERVATIVE — the BLOCK path ONLY fires on hard-risk paths, never on
@@ -264,8 +268,22 @@ function main() {
   // Codex apply_patch: every Add/Update/Delete path + Move-to destination. A
   // patch the parser rejects yields no paths -> fail open (Codex rejects it too).
   const codexPatch = !!payload && payload.tool_name === 'apply_patch';
+  const shellWrite = !!payload && payload.tool_name === 'Bash';
   let files;
-  if (codexPatch) {
+  if (shellWrite) {
+    // Existence gate only, over the shell write's targets (header limit 2).
+    let on = true;
+    try { on = require('./lib/settings.js').get('guards', 'shellWriteChecks') !== false; } catch (_) { on = true; }
+    if (!on) process.exit(0);
+    const command = payload.tool_input && payload.tool_input.command;
+    const realCwd = require('./lib/scratchpad.js').realpathOrSelf(cwd);
+    files = require('./lib/shell-writes.js').shellWrites(command, payload)
+      .filter((w) => !w.scratch)
+      .map((w) => {
+        const rel = path.relative(realCwd, w.abs);
+        return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : w.abs;
+      });
+  } else if (codexPatch) {
     const { parseApplyPatch, patchTargetPaths } = require('./lib/codex-apply-patch.js');
     const parsed = parseApplyPatch(payload.tool_input && payload.tool_input.command);
     files = parsed.ok ? patchTargetPaths(parsed.files, cwd) : [];
@@ -305,7 +323,7 @@ function main() {
   //    `# Plan` (as used by the existence-gate tests) has nothing to compare
   //    against, so it's skipped (fail-open), not treated as "everything is out
   //    of scope."
-  if (planPath && !codexPatch) { // conformance is Claude-only by design (header)
+  if (planPath && !codexPatch && !shellWrite) { // conformance: Claude Edit/Write only (header)
     let planContent = '';
     try { planContent = fs.readFileSync(planPath, 'utf8'); } catch (_) { planContent = ''; }
     const declared = parsePlanDeclaredFiles(planContent);

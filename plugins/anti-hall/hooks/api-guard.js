@@ -3,7 +3,10 @@
 // api-guard.js — PreToolUse hook on Write/Edit/MultiEdit (Claude) and
 // apply_patch (Codex; only the patch's added lines are checked, so an import that
 // sits outside the changed hunk is not seen — same fragment limit as an Edit's
-// new_string).
+// new_string). Also Bash on both hosts (guards.shellWriteChecks): the text a
+// shell write puts in a .py/.js/.ts file, where the command shows it (heredoc
+// into cat/tee, echo/printf), per lib/shell-writes.js. A shell write whose text
+// is not visible (cp, sed -i, python -c, a variable) is not checked.
 //
 // THE MECHANICAL ANSWER TO API HALLUCINATION. The benchmark in the eval/ directory showed the
 // verify-first *prompt* does not reliably stop a model inventing non-existent
@@ -113,6 +116,14 @@ function isPathSpec(mod) {
   return /^[.\/\\]/.test(mod) || /^[A-Za-z]:[\\/]/.test(mod) || mod.indexOf('..') !== -1 || mod.indexOf('\\') !== -1;
 }
 
+// guards.shellWriteChecks (default on): run on Bash writes too. Fail-open to on.
+function shellWriteChecksOn() {
+  try { return require('./lib/settings.js').get('guards', 'shellWriteChecks') !== false; } catch (_) { return true; }
+}
+// A Bash command naming no file langFor() checks has nothing to verify: skip
+// parsing it (most Bash calls end here).
+const SHELL_CODE_EXT_RE = /\.(?:py|pyi|js|mjs|cjs|ts|tsx|jsx)\b/i;
+
 // ---------------------------------------------------------------------------
 function newCodeChunks(payload) {
   const tn = payload && payload.tool_name;
@@ -127,6 +138,13 @@ function newCodeChunks(payload) {
     const edits = Array.isArray(ti.edits) ? ti.edits : [];
     for (const e of edits) {
       if (e && typeof e.new_string === 'string') out.push({ file_path: fp, code: e.new_string });
+    }
+  } else if (tn === 'Bash') {
+    const sw = require('./lib/shell-writes.js');
+    if (shellWriteChecksOn() && sw.mayWrite(ti.command) && SHELL_CODE_EXT_RE.test(ti.command)) {
+      for (const w of sw.shellWrites(ti.command, payload)) {
+        if (typeof w.content === 'string') out.push({ file_path: w.abs, code: w.content });
+      }
     }
   } else if (tn === 'apply_patch') {
     // Codex: one chunk per added/updated file = its "+" lines only (context and
@@ -504,7 +522,7 @@ function main() {
   fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   // Codex honors exit 2 only with the reason on stderr (it reads stdout JSON on
   // exit 0 only); Claude output is unchanged.
-  if (payload.tool_name === 'apply_patch') fs.writeSync(2, reason + '\n');
+  if (payload.tool_name === 'apply_patch' || payload.tool_name === 'Bash') fs.writeSync(2, reason + '\n');
   process.exit(2);
 }
 
