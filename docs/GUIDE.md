@@ -350,8 +350,15 @@ xargs' GNU and BSD options parsed the way getopt does (`-I {}`, `-I{}`,
 for CMD, and a `find -exec git push ... {}` is blocked (a file name can be a
 `+ref` force refspec). Wrapper commands are unwrapped with their own option
 grammars, directly and under xargs/find: env, command, exec, sudo, doas, nice,
-nohup, time, timeout, stdbuf, caffeinate, ionice, flock (`flock FILE -c 'cmd'`
-is scanned as `sh -c`), setsid, chrt and taskset. A `sh -c` / `bash -c` script
+nohup, time, timeout, stdbuf, caffeinate, ionice, flock (`-c`/`--command`
+before or after FILE is scanned as `sh -c`), setsid, chrt and taskset. GNU
+`parallel` is a runner like xargs: the command before `:::`/`::::` gets the
+same checks with the `:::` words appended (a parallel-run `git push` is
+blocked), and `parallel ::: 'cmd'` scans each input as a command. When a
+replacement string (`xargs -I`/`-i`/`-J`, find's `{}`, parallel's `{}`/`-I`) is
+the command word, the git subcommand or an argument before it, the command is
+unknown and is blocked if a force or remote-delete flag is visible
+(`xargs -I{} git {} --force`). A `sh -c` / `bash -c` script
 that forwards its positional args (`sh -c '$0 "$@"' git ...`, `bash -c '"$@"' _
 git ...`) is scanned with those args spliced in. These are
 documented boundaries, not silent gaps.

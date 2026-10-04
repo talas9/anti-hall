@@ -58,6 +58,10 @@ let currentSessionId = null;
 // eval / `bash -c` level, so `M="...trailer..."; bash -c 'git commit -m "$M"'`
 // is still seen.
 let currentRawCommand = '';
+// activeRepls — replacement strings (xargs -I, find `{}`, parallel `{}`...)
+// of the runners the scan is currently inside; set by runnerVerdict for its
+// nested scans.
+let activeRepls = [];
 // launcherFsWalkBudget — a per-invocation cap (R4A1-3) on the number of
 // EXPENSIVE fs-walking targetResolvesIntoLauncherDir() calls (realpathSync/
 // lstatSync chains) writesLauncherDir() will spend on any one command. A
@@ -469,6 +473,39 @@ function skipOptWrapper(tokens, idx, g) {
   return idx + g.ops;
 }
 
+// The command token flock gives to `sh -c`, or null: `-c CMD` /
+// `--command[=]CMD` (getopt also takes `-nc CMD`, `-cCMD` and an unambiguous
+// `--comm` prefix) among the options before FILE, or right after FILE.
+function flockCommand(tokens, i) {
+  const g = OPT_WRAPPERS.get('flock');
+  const isCmd = (n) => n.length >= 3 && 'command'.startsWith(n);
+  const attached = (text) => ({ text, quotedOnly: false });
+  let afterFile = false;
+  for (; i < tokens.length; i++) {
+    const w = tokens[i].text;
+    if (afterFile) {
+      if (w === '-c') return tokens[i + 1] || null;
+      const m = /^--([^=]*)(=([\s\S]*))?$/.exec(w);
+      if (m && isCmd(m[1])) return m[2] ? attached(m[3]) : (tokens[i + 1] || null);
+      return null;
+    }
+    if (w === '--') { i++; afterFile = true; continue; }
+    if (!w.startsWith('-') || w === '-') { afterFile = true; continue; }
+    if (w.startsWith('--')) {
+      const eq = w.indexOf('=');
+      const name = eq < 0 ? w.slice(2) : w.slice(2, eq);
+      if (isCmd(name)) return eq < 0 ? (tokens[i + 1] || null) : attached(w.slice(eq + 1));
+      if (eq < 0 && g.L.includes(name)) i++;
+      continue;
+    }
+    for (let k = 1; k < w.length; k++) {
+      if (w[k] === 'c') return k < w.length - 1 ? attached(w.slice(k + 1)) : (tokens[i + 1] || null);
+      if (g.v.includes(w[k])) { if (k === w.length - 1) i++; break; }
+    }
+  }
+  return null;
+}
+
 function effectiveVerb(tokens) {
   let idx = 0;
   // Skip leading VAR=value assignments (only when the token came from unquoted
@@ -486,13 +523,11 @@ function effectiveVerb(tokens) {
     const t = tokens[idx];
     const word = t.text;
     if (!t.quotedOnly && OPT_WRAPPERS.has(word)) {
-      idx = skipOptWrapper(tokens, idx + 1, OPT_WRAPPERS.get(word));
-      // `flock FILE -c 'cmd'` hands cmd to `sh -c`: report it as that, so
+      // `flock ... -c 'cmd'` hands cmd to `sh -c`: report it as that, so
       // the shell -c payload scan picks it up.
-      if (word === 'flock' && idx < tokens.length && !tokens[idx].quotedOnly &&
-          (tokens[idx].text === '-c' || tokens[idx].text === '--command')) {
-        return { verb: 'sh', args: [{ text: '-c', quotedOnly: false }].concat(tokens.slice(idx + 1, idx + 2)) };
-      }
+      const fc = word === 'flock' ? flockCommand(tokens, idx + 1) : null;
+      if (fc) return { verb: 'sh', args: [{ text: '-c', quotedOnly: false }, fc] };
+      idx = skipOptWrapper(tokens, idx + 1, OPT_WRAPPERS.get(word));
       continue;
     }
     if (!t.quotedOnly && WRAPPERS.has(word)) {
@@ -1184,15 +1219,18 @@ const XARGS_LONG_OTHER = ['null', 'eof', 'replace', 'max-lines', 'interactive', 
   'verbose', 'exit', 'open-tty', 'show-limits', 'help', 'version'];
 
 // Skip xargs' OWN leading options (and their values) and return the token
-// list for the COMMAND xargs will run (e.g. `git log` in `xargs -0 git log`).
+// list for the COMMAND xargs will run (e.g. `git log` in `xargs -0 git log`)
+// plus the replacement strings its -I / -i / --replace / -J options set.
 function xargsCommandTokens(args) {
   let i = 0;
+  const repls = [];
   while (i < args.length) {
     const w = args[i].text;
     if (w === '--') { i++; break; }
     if (w === '-' || !w.startsWith('-')) break;
     i++;
     if (w.startsWith('--')) {
+      if (w.startsWith('--replace')) repls.push(w.startsWith('--replace=') ? w.slice(10) : '{}');
       if (w.indexOf('=') >= 0) continue;
       const name = w.slice(2);
       if (XARGS_LONG_OTHER.includes(name) || XARGS_LONG_REQ.includes(name)) {
@@ -1205,14 +1243,19 @@ function xargsCommandTokens(args) {
     }
     for (let k = 1; k < w.length; k++) {
       const ch = w[k];
-      if (XARGS_SHORT_OPT.has(ch)) break; // rest of the cluster is its value
+      if (XARGS_SHORT_OPT.has(ch)) { // rest of the cluster is its value
+        if (ch === 'i') repls.push(w.slice(k + 1) || '{}');
+        break;
+      }
       if (XARGS_SHORT_REQ.has(ch)) {
+        const val = k < w.length - 1 ? w.slice(k + 1) : (args[i] ? args[i].text : '');
         if (k === w.length - 1) i++; // value is the next word
+        if ((ch === 'I' || ch === 'J') && val) repls.push(val);
         break;
       }
     }
   }
-  return args.slice(i);
+  return { tokens: args.slice(i), repls };
 }
 
 // xargs appends words it reads from STDIN as trailing arguments to the
@@ -1225,7 +1268,8 @@ function xargsCommandTokens(args) {
 // `sh -c '...'` or `eval ...` is re-scanned as a command line (depth-bounded
 // like the eval / `bash -c` unwrapping).
 function xargsGitVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
-  return runnerVerdict(xargsCommandTokens(ev.args), 'xargs', d, cmd, heredocBodies, cwd, useJev);
+  const x = xargsCommandTokens(ev.args);
+  return runnerVerdict(x.tokens, 'xargs', d, cmd, heredocBodies, cwd, useJev, x.repls);
 }
 
 // `find ... -exec CMD ... ;` (also `+`, -execdir, -ok, -okdir) runs CMD once
@@ -1240,23 +1284,104 @@ function findExecVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
     let j = i + 1;
     while (j < args.length && args[j].text !== ';' && args[j].text !== '\\;' &&
       !(args[j].text === '+' && j > i + 1 && args[j - 1].text === '{}')) j++;
-    const hit = runnerVerdict(args.slice(i + 1, j), 'find', d, cmd, heredocBodies, cwd, useJev);
+    const hit = runnerVerdict(args.slice(i + 1, j), 'find', d, cmd, heredocBodies, cwd, useJev, ['{}']);
     if (hit) return hit;
     i = j;
   }
   return null;
 }
 
-function runnerVerdict(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev) {
+// GNU parallel runs the command before `:::` / `::::` (or `:::+` / `::::+`)
+// once per input, appending the input words unless a replacement string
+// (`{}`, `{.}`, `{/}`, `{#}`, `{1}`, `{= perl =}`, an -I string) places
+// them. Its options are too many to parse, so each word before the separator
+// that could start the command (up to the first one no option word precedes)
+// is tried as the command, with the `:::` words appended. When no word is
+// certainly the command, the `:::` words may be the commands
+// (`parallel ::: 'cmd'`), so each is scanned as a command line too.
+const PARALLEL_SEP = new Set([':::', '::::', ':::+', '::::+']);
+function parallelVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
+  const args = ev.args;
+  const s = args.findIndex((t) => PARALLEL_SEP.has(t.text));
+  const head = s < 0 ? args : args.slice(0, s);
+  const inputs = s < 0 ? [] : args.slice(s).filter((t) => !PARALLEL_SEP.has(t.text));
+  const repls = [/\{[^\s{}]*\}/, '{='];
+  for (let k = 0; k < head.length; k++) {
+    const w = head[k].text;
+    if (w === '-I' && head[k + 1]) repls.push(head[k + 1].text);
+    else if (w.length > 2 && w.startsWith('-I')) repls.push(w.slice(2));
+    else if (w.startsWith('--replace=') && w.length > 10) repls.push(w.slice(10));
+  }
+  let certain = false;
+  for (let k = 0; k < head.length && !certain; k++) {
+    if (head[k].text.startsWith('-')) continue;
+    certain = k === 0 || !head[k - 1].text.startsWith('-');
+    let hit = runnerVerdict(head.slice(k).concat(inputs), 'parallel', d, cmd, heredocBodies, cwd, useJev, repls);
+    // parallel joins the command words with spaces and runs the line with a
+    // shell, so `parallel 'git push -f' ::: a` runs git: scan that line too.
+    for (const seg of hit ? [] : splitSegments(head.slice(k).map((t) => t.text).join(' '))) {
+      hit = runnerVerdict(tokenize(seg).concat(inputs), 'parallel', d, cmd, heredocBodies, cwd, useJev, repls);
+      if (hit) break;
+    }
+    if (hit) return hit;
+  }
+  if (!certain && d < 3) {
+    for (const t of inputs) {
+      const hit = scanCommand(t.text, d + 1, cwd);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+// xargs -I / -i / -J, find -exec and parallel put input words where a
+// replacement string stands. In the command word, or in the git subcommand or
+// an argument before it, the command that runs is unknown (the input may be
+// `push`): block it when the visible arguments carry a force or remote-delete
+// flag, as for `xargs git push`.
+function hasRepl(w, repls) {
+  return repls.some((r) => (typeof r === 'string' ? w.indexOf(r) >= 0 : r.test(w)));
+}
+function placeholderVerdict(ev, repls) {
+  if (!repls.length) return null;
+  let unknown = hasRepl(ev.verb, repls);
+  if (!unknown && ev.verb === 'git') {
+    const { sub, rest } = gitSubcommand(ev.args);
+    const n = ev.args.length - rest.length;
+    const pre = n >= 0 && (!rest.length || rest[0] === ev.args[n]) ? ev.args.slice(0, n) : ev.args;
+    unknown = (sub !== null && hasRepl(sub, repls)) || pre.some((t) => hasRepl(t.text, repls));
+  }
+  if (!unknown || !(isForcePush(ev.args) || isDeleteRefPush(ev.args))) return null;
+  return gm({
+    what: 'a command whose name or git subcommand is an xargs / find / parallel placeholder, with a force or delete flag, is blocked.',
+    why: 'The placeholder is filled from input at run time, so the command may be `git push`.',
+    instead: 'run the git command directly with an explicit subcommand and arguments.',
+  });
+}
+
+function runnerVerdict(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev, repls) {
+  const saved = activeRepls;
+  activeRepls = repls && repls.length ? saved.concat(repls) : saved;
+  try {
+    return runnerVerdictIn(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev);
+  } finally {
+    activeRepls = saved;
+  }
+}
+
+function runnerVerdictIn(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev) {
   if (!cmdTokens.length) return null;
   const innerEv = effectiveVerb(cmdTokens);
   if (!innerEv) return null;
+  const pv = placeholderVerdict(innerEv, activeRepls);
+  if (pv) return pv;
+  const appends = runner === 'xargs' || runner === 'parallel';
   if (innerEv.verb === 'git') {
     const { sub } = gitSubcommand(innerEv.args);
-    if (sub === 'push' && runner === 'xargs') {
+    if (sub === 'push' && appends) {
       return gm({
-        what: 'force push via `xargs git push` is blocked.',
-        why: 'xargs appends words from stdin, so the full argv (and any hidden --force/-f) cannot be verified statically.',
+        what: `force push via \`${runner} git push\` is blocked.`,
+        why: `${runner} appends input words to the command, so the full argv (and any hidden --force/-f) cannot be verified statically.`,
         instead: 'run `git push` directly with explicit arguments.',
       });
     }
@@ -1271,9 +1396,10 @@ function runnerVerdict(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev) {
   }
   if (innerEv.verb === 'xargs') return xargsGitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (innerEv.verb === 'find') return findExecVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
+  if (innerEv.verb === 'parallel') return parallelVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (d < 3 && (innerEv.verb === 'eval' || SHELL_VERBS.has(innerEv.verb.toLowerCase()))) {
     let text = cmdTokens.map((t) => (typeof t.raw === 'string' ? t.raw : t.text)).join(' ');
-    if (runner === 'xargs') text += ' --force';
+    if (appends) text += ' --force';
     return scanCommand(text, d + 1, cwd);
   }
   return null;
@@ -1445,9 +1571,12 @@ const HD_GIT_READ_LONG = 'stat shortstat numstat name-only name-status summary p
   'no-color no-ext-diff no-textconv no-renames check exit-code quiet ignore-all-space ignore-space-change ' +
   'oneline graph all reverse first-parent no-merges merges abbrev-commit follow decorate no-decorate ' +
   'full-history source date-order topo-order';
-const HD_GIT_READ_VAL = 'max-count skip since until after before author committer grep format pretty date ' +
-  'unified diff-filter abbrev';
-const HD_GIT_READ_OPT = 'color word-diff decorate pretty find-renames find-copies relative';
+// Value lists checked against git 2.54 (a following `--zz` word is consumed
+// as the value, not parsed as a flag): every L entry takes the next word.
+// --format / --pretty / --unified / --abbrev and -U take only an attached
+// value, so the word after them is a flag and must be checked as one.
+const HD_GIT_READ_VAL = 'max-count skip since until after before author committer grep date diff-filter';
+const HD_GIT_READ_OPT = 'color word-diff decorate format pretty unified abbrev find-renames find-copies relative';
 const HD_GIT_FLAGS = new Map([
   ['commit', hdSpec({ s: 'aqvsnei', v: 'mFCct', o: 'uS',
     l: 'all amend no-edit edit no-verify verify signoff no-signoff quiet verbose dry-run allow-empty ' +
@@ -1456,7 +1585,7 @@ const HD_GIT_FLAGS = new Map([
     O: 'untracked-files gpg-sign' })],
   ['tag', hdSpec({ s: 'asfdlv', v: 'mFu', o: 'n',
     l: 'annotate sign no-sign force delete list no-edit edit',
-    L: 'message file local-user cleanup', O: 'contains points-at sort format' })],
+    L: 'message file local-user cleanup points-at sort format', O: 'contains' })],
   ['notes', hdSpec({ s: 'f', v: 'mFCc',
     l: 'force allow-empty', L: 'message file reuse-message reedit-message ref' })],
   ['merge', hdSpec({ s: 'nqv', v: 'mF',
@@ -1466,9 +1595,9 @@ const HD_GIT_FLAGS = new Map([
   ['status', hdSpec({ s: 'sbvz', o: 'u',
     l: 'short branch long verbose show-stash ahead-behind no-ahead-behind null no-renames',
     O: 'porcelain untracked-files ignored column' })],
-  ['log', hdSpec({ s: 'pqw', v: 'n', o: 'MC', num: true, l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
-  ['diff', hdSpec({ s: 'pqwb', v: 'U', o: 'MC', l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
-  ['show', hdSpec({ s: 'pqws', v: 'nU', o: 'MC', num: true, l: HD_GIT_READ_LONG + ' no-patch', L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['log', hdSpec({ s: 'pqw', v: 'n', o: 'MCU', num: true, l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['diff', hdSpec({ s: 'pqwb', o: 'MCU', l: HD_GIT_READ_LONG, L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
+  ['show', hdSpec({ s: 'pqws', v: 'n', o: 'MCU', num: true, l: HD_GIT_READ_LONG + ' no-patch', L: HD_GIT_READ_VAL, O: HD_GIT_READ_OPT })],
   ['add', hdSpec({ s: 'Aunvf', l: 'all update dry-run verbose force no-all intent-to-add ignore-removal' })],
   ['rev-parse', hdSpec({ s: 'q', l: 'show-toplevel abbrev-ref verify quiet git-dir is-inside-work-tree show-prefix symbolic-full-name',
     O: 'short' })],
@@ -2790,6 +2919,10 @@ function scanCommand(cmd, depth, baseCwd) {
     const aliasDef = aliasScan().shellDefinitionVerdict(tokens, ev, (c) => scanCommand(c, d + 1, lastCdDir), d, currentRawCommand);
     if (aliasDef) return aliasDef;
 
+    // Inside an xargs / find / parallel `sh -c` script: placeholders.
+    const pv = placeholderVerdict(ev, activeRepls);
+    if (pv) return pv;
+
     if (writesLauncherDir(tokens, ev, lastCdDir)) {
       return LAUNCHER_BLOCK_MSG;
     }
@@ -2882,6 +3015,11 @@ function scanCommand(cmd, depth, baseCwd) {
     if (ev.verb === 'find') {
       const fv = findExecVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
       if (fv) return fv;
+      continue;
+    }
+    if (ev.verb === 'parallel') {
+      const pa = parallelVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
+      if (pa) return pa;
       continue;
     }
 
@@ -3307,6 +3445,11 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
       if (ev.verb === 'find') {
         const fv = findExecVerdict(ev, d, cmd, heredocBodies, cwd, false);
         if (fv) return fv;
+        continue;
+      }
+      if (ev.verb === 'parallel') {
+        const pa = parallelVerdict(ev, d, cmd, heredocBodies, cwd, false);
+        if (pa) return pa;
         continue;
       }
       if (ev.verb !== 'git') continue;

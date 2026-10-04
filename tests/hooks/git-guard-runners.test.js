@@ -113,3 +113,52 @@ allow('find -exec grep', "find . -name '*.md' -exec grep -l push {} \\;");
 allow('find -exec git log -- {}', 'find . -maxdepth 1 -exec git log -1 -- {} \\;');
 allow('find -exec node --check', "find . -name '*.js' -exec node --check {} \\;");
 allow('find -exec ls -l {} +', 'find . -type f -exec ls -l {} +');
+
+// ---- 4. a replacement string as the command or git subcommand -------------
+// The input fills it at run time, so the command may be a push: blocked when
+// a force or remote-delete flag is visible.
+block('xargs -I{} git {} --force', `xargs -I{} git {} ${F} o m`);
+block('xargs -I% git % --force', `echo ${P} | xargs -I% git % ${F}`);
+block("xargs -I{} sh -c 'git {} --force'", `xargs -I{} sh -c 'git {} ${F}'`);
+block('xargs -I{} env git {} -f', 'xargs -I{} env git {} -f');
+block('find -exec git {} --force', `find . -exec git {} ${F} o m \\;`);
+block('xargs -i git {} --force', `xargs -i git {} ${F}`);
+block('xargs --replace git {} -f', 'xargs --replace git {} -f');
+block('xargs -I XX git XX --force', `xargs -I XX git XX ${F}`);
+block('xargs -J % git % --force (BSD)', `xargs -J % git % ${F}`);
+block('xargs -0I{} git {} -f', 'xargs -0I{} git {} -f');
+block('xargs -I{} git -C {} --force (before the subcommand)', `xargs -I{} git -C {} ${F} o`);
+block('xargs -I{} {} push --force (placeholder command)', `xargs -I{} {} ${P} ${F}`);
+block('xargs -I{} git {} --delete', 'xargs -I{} git {} --delete o m');
+block('xargs -I{} nested xargs git {} -f', 'xargs -I{} xargs git {} -f');
+block('xargs -I{} git push origin {} (any xargs push)', `xargs -I{} git ${P} origin {}`);
+allow('xargs -I{} git log {}', 'xargs -I{} git log {}');
+allow('xargs -I{} rm -f {}', 'xargs -I{} rm -f {}');
+allow("xargs -I{} sh -c 'rm -f {}'", "xargs -I{} sh -c 'rm -f {}'");
+allow('find -exec rm -f {}', 'find . -exec rm -f {} \\;');
+allow('find -exec git add {} +', "find . -name '*.md' -exec git add {} +");
+
+// ---- 5. flock -c / --command anywhere among flock's args ------------------
+block('flock -c CMD FILE', `flock -c '${FP}' /tmp/l`);
+block('flock --command CMD FILE', `flock --command '${FP}' /tmp/l`);
+block('flock --command=CMD FILE', `flock --command='${FP}' /tmp/l`);
+block('flock FILE --command=CMD', `flock /tmp/l --command='${FP}'`);
+block('flock -nc CMD FILE', `flock -nc '${FP}' /tmp/l`);
+block('flock -w 3 -c CMD FILE', `flock -w 3 -c '${FP}' /tmp/l`);
+block('flock --comm CMD FILE (prefix)', `flock --comm '${FP}' /tmp/l`);
+allow('flock -c git status FILE', "flock -c 'git status' /tmp/l");
+allow('flock FILE git commit -c HEAD', 'flock /tmp/l git commit -c HEAD');
+
+// ---- 6. GNU parallel ------------------------------------------------------
+block('parallel git push --force ::: a', `parallel ${FP} ::: a`);
+block('parallel -j 4 git push', `parallel -j 4 git ${P} origin ::: main`);
+block('parallel git {} --force ::: push', `parallel git {} ${F} ::: ${P}`);
+block('parallel -I@@ git @@ -f', `parallel -I@@ git @@ -f ::: ${P}`);
+block("parallel 'git {} --force' (one shell line)", `parallel 'git {} ${F}' ::: ${P}`);
+block('parallel git ::: push ::: --force (input words appended)', `parallel git ::: ${P} ::: ${F}`);
+block("parallel ::: 'git push --force' (inputs are commands)", `parallel ::: '${FP}'`);
+block("parallel -j 4 ::: 'git push --force'", `parallel -j 4 ::: '${FP}'`);
+block('xargs parallel git push', `echo x | xargs parallel ${FP} :::`);
+allow('parallel gzip ::: a b', 'parallel gzip ::: a b');
+allow('parallel -j4 git log {} ::: a b', 'parallel -j4 git log --oneline {} ::: a b');
+allow("parallel echo ::: 'git push --force' (echo is the command)", `parallel echo ::: '${FP}'`);

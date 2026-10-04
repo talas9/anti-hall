@@ -194,3 +194,19 @@ allow('git tag -a -F - then log -1 --format', `git tag -a v1 -F - <<'EOF'\n${NOT
 allow('git notes add -F - HEAD', `git notes add -F - HEAD <<'EOF'\n${NOTE}EOF`);
 allow('cat, then status/diff/log read-only flags', `cat <<'EOF' > n.md\n${NOTE}EOF\ngit status --short && git diff --stat && git log --oneline -5`);
 allow('cat, then add -A and commit --amend --no-edit', `cat > n.md <<'EOF'\n${NOTE}EOF\ngit add -A && git commit --amend --no-edit`);
+
+// --format / --pretty / --unified / --abbrev and -U take only an attached
+// value in git, so the word after them is a flag (an unlisted one keeps the
+// bodies scanned); the value lists match git's own grammar.
+const CDOC = `git commit -F - <<'EOF'\n${FP}\nEOF\n`;
+block('log --abbrev --output=x', CDOC + 'git log -1 --abbrev --output=x');
+block('log --pretty --output=x', CDOC + 'git log -1 --pretty --output=x');
+block('show --format --output=x', CDOC + 'git show --format --output=x');
+block('diff --abbrev --ext-diff', CDOC + 'git diff --abbrev --ext-diff');
+block('diff --unified --ext-diff', CDOC + 'git diff --unified --ext-diff');
+block('diff -U --ext-diff', CDOC + 'git diff -U --ext-diff');
+block('show -U --output=x', CDOC + 'git show -U --output=x');
+allow('log --abbrev=8 --pretty=format:%h -U3', CDOC + 'git log -1 --abbrev=8 --pretty=format:%h -U3');
+allow('diff --stat -U5 --unified=3', CDOC + 'git diff --stat -U5 --unified=3');
+allow('log --date iso -n 2 --author me --diff-filter M', CDOC + 'git log --date iso -n 2 --author me --diff-filter M');
+allow('tag -l --sort --format (both take the next word)', CDOC + "git tag -l --sort -v:refname --format '%(refname)'");
