@@ -1,0 +1,1 @@
+{"session_id":"00000000-0000-0000-0000-000000000000","turn_id":"turn-1","transcript_path":"{{HOME}}/.codex/sessions/2026/01/01/rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000000.jsonl","cwd":"{{CWD}}","hook_event_name":"PreToolUse","tool_name":"collaborationspawn_agent","tool_input":{"message":"placeholder"}}

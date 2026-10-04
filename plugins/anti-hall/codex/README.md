@@ -89,7 +89,7 @@ catalog at the time you act — never a slug pinned in this doc. See
   confidence, omit `-m` and let the CLI use its configured default.
 
 
-Codex injected text: on a Codex session the SessionStart/UserPromptSubmit hooks send Codex wording (task/plan list instead of `TaskCreate`, `spawn_agent` instead of `run_in_background`, gpt-5.6 frontier/workhorse/fast tiers instead of Claude model names). The orchestration rules arrive in full by default; to roll back to the full foundation text set `context.protocolLevel` to `full` (`ANTIHALL_PROTOCOL_LEVEL=full`), which restores the long-form protocol (Codex wording is still used), or `compact` (the default) for the shorter core.
+Codex injected text: on a Codex session the SessionStart/UserPromptSubmit hooks send Codex wording (task/plan list instead of `TaskCreate`, `spawn_agent` instead of `run_in_background`, gpt-5.6 frontier/workhorse/fast tiers instead of Claude model names). The orchestration rules arrive in full at SessionStart by default (experimental opt-in `context.codexOrchFullOn=spawn`: compact lines at SessionStart and the full rules once per context epoch on the first `spawn_agent` call; Codex >= 0.129, hook trust required, `orch-on-spawn.js` is registered on the `^(?:collaboration)?spawn_agent$` matcher); to roll back to the full foundation text set `context.protocolLevel` to `full` (`ANTIHALL_PROTOCOL_LEVEL=full`), which restores the long-form protocol (Codex wording is still used), or `compact` (the default) for the shorter core.
 
 ## Ported Codex skills
 

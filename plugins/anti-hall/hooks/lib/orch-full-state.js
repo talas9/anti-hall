@@ -91,7 +91,8 @@ function claimAt(file) {
 }
 
 // seen(transcriptPath, epochId, sentAt) -> true | false | null.
-//   true  = a delivered copy exists: a `hook_additional_context` attachment (the delivered form; the
+//   true  = a delivered copy exists: a `hook_additional_context` attachment (Claude) or a developer-role
+//           response_item message (Codex rollout) (the delivered form; the
 //           `hook_success` record of the raw stdout does not count) holding this epoch's token with a
 //           timestamp >= sentAt;
 //   false = CONCLUSIVELY absent: the scanned window reaches back to sentAt (its first timestamp is
@@ -124,8 +125,11 @@ function seen(transcriptPath, epochId, sentAt) {
         if (line.indexOf(token) === -1) continue;
         let e = null;
         try { e = JSON.parse(line); } catch (_) { continue; }
+        // Codex rollout shape: a developer-role response_item message whose input_text holds the token.
+        const cp = e && e.type === 'response_item' ? e.payload : null;
+        const codexHit = !!(cp && cp.type === 'message' && cp.role === 'developer');
         const a = e && e.type === 'attachment' ? e.attachment : null;
-        if (!a || a.type !== 'hook_additional_context') continue;
+        if (!codexHit && (!a || a.type !== 'hook_additional_context')) continue;
         const ts = Date.parse(e.timestamp);
         if (Number.isFinite(ts) && ts >= sentAt) return true;
       }

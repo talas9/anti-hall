@@ -11,10 +11,12 @@ the update.
 ### Added
 
 - **merge-side-pick advisory** (`hooks/merge-side-pick.js`, PostToolUse + PreToolUse Bash, Claude and Codex): after a conflict is resolved by taking one side wholesale (`git checkout|restore --ours|--theirs`, `git merge|pull|rebase -X ours|theirs`, `git merge -s ours`), a push with no test run since (npm/pnpm/yarn test, `node --test`, pytest, go/cargo/flutter/dart test, mvn/gradle test, make test, ...) gets one advisory line in the shared message shape. Never blocks; per-session state in `~/.anti-hall/merge-side-pick-<session>.json`, pruned after 7 days. Setting `guards.mergeSidePickAdvisory` (default on, env `ANTIHALL_MERGE_SIDE_PICK_ADVISORY`). On Codex the advisory is shown only by Codex builds that support PreToolUse additionalContext (rust-v0.129.0 and later, docs/KB-claude-codex.md section 5.2); older builds ignore it and the recorder stays harmless. Designed from the owner-decisions description; the original report text was not found.
+- **Experimental, opt-in: Codex spawn-time delivery of the orchestration rules** (`context.codexOrchFullOn=spawn`, env `ANTIHALL_CODEX_ORCH_FULL_ON`; default `session` = today, byte for byte). Needs Codex >= 0.129 with hooks trusted. On a positively identified Codex session SessionStart sends the compact core plus the compact orchestration lines, and the full Codex-worded rules arrive once per context epoch on the first `spawn_agent` call through `orch-on-spawn.js` (same marker + O_EXCL claim as Claude; the retry scan also recognises Codex rollout developer messages). `orch-on-spawn.js` is now registered in the Codex port on the `^(?:collaboration)?spawn_agent$` matcher only (silent unless the marker is pending). Codex 0.160 surfaces PreToolUse `additionalContext` to the model (live probe 2026-10-04: tool_name `collaborationspawn_agent`, hook fires, context reaches the parent). Codex SessionStart chars in spawn mode are measured with `evals/anti-hall/injection-profile.js`.
 
 ### Fixed
 
 - Jev triage: the per-hash claim and the arrival drain lock now use the single lock primitive (`companion/lib/lock.js`) instead of hand-rolled O_EXCL markers; the lock gained `adopt(path, token)` so the detached drain worker takes over the lock its spawning hook acquired. Behaviour unchanged; the hygiene allowlist entry is gone.
+
 ### Changed
 
 - **tasklist-guard reduced nag (`guards.tasklistNoTaskTools`, default `reduced`).** A session that is positively known to lack task tools (today: a Codex session whose transcript shows no task-tool evidence) gets a short nag (no TaskCreate demand: list the tasks in the reply, with the progress and history paths) that blocks at most once per session. A Claude session with no evidence keeps today's full TaskCreate demand: under `claude -p` the task tools are listed but deferred, so the tool list proves nothing. Evidence is read structurally from the transcript (a TaskCreate/TaskUpdate/TodoWrite tool_use, a `deferred_tools*` attachment naming TaskCreate, or a `task_reminder` attachment), never by substring, so the guard's own text cannot confirm itself. Values `full` (today's nag) and `skip`. Unset, `context.protocolLevel=full` makes the default `full`.
@@ -80,6 +82,7 @@ the update.
 - Docs: a GitHub Pages site built from `README.md` and `docs/*.md` by the dependency-free `tools/build-site.js`; `.github/workflows/pages.yml` deploys it on pushes to `main` only (needs Settings → Pages → Source: GitHub Actions once). The site root also serves `llms.txt`, `sitemap.xml` and `robots.txt`.
 - **Benchmark tooling (`evals/anti-hall/`).** `injection-profile.js` is a deterministic injection-size profile (synthetic payloads, fixed root) that compares two plugin trees per channel (session start, skill listing, subagent start, Stop nags) and gates the cost-trim ratios; frozen normalised hook-output goldens (`tests/fixtures/cost-trim/goldens/`) with a privacy gate for the fixtures. A strength-study harness (arms, interleaving, global spend cap, trace metrics, study analysis, compaction ladder, probes) for the B0-B4 studies. Tooling only; nothing ships in the hook path.
 
+
 ### Changed
 
 - **The SessionStart verify-first core is now compact by default** (`context.protocolLevel=compact`). It keeps every load-bearing clause inline (Iron Law, rationalization table, the seven rules incl. the done/hedge/merge block, scope and autonomy, the skip-guard clause) and points at the new generated `PROTOCOL.md` for the full wording. The orchestration rules A-N still arrive in full at SessionStart. Method and figures (deterministic injection profile, `evals/anti-hall/injection-profile.js`, synthetic payloads, 64-char root; a size measure, not a per-run saving): the SessionStart hooks (Claude and Codex alike) send 10,740 chars instead of 16,562 (64.8%); the core hook alone goes from 8,947 to 3,125 chars. The skill-listing trim (previous entry) adds to the per-epoch total. The SubagentStart text is compact too: the same core (subagent header, `SKILLS: root-cause, deadly-loop`) plus a short `WORKER` block (no re-delegation, the assignment is the authorization, tight summary, SendMessage before finishing) instead of the DISCIPLINES block and teammate note: 7,701 to 3,371 chars in a normal spawn (43.8%), 7,947 to 3,617 in a DevSwarm child workspace (child mailbox note unchanged). Same method as above (a size measure, not a per-run saving). `context.protocolLevel=full` restores today's subagent text byte for byte. Codex has no SubagentStart hook and is unaffected.
@@ -143,6 +146,7 @@ the update.
 
 - **Shared-tree agent note:** the new setting `guards.sharedTreeAgentNote` (default on; env `ANTIHALL_SHARED_TREE_AGENT_NOTE`; settings file and env only) makes `swarm-guard` add one advisory sentence when a write-capable subagent is spawned without `isolation: "worktree"` while another write-capable agent is still running in the same working tree (two such agents can commit each other's uncommitted changes). Read-only agent types, isolated spawns and unknown agent state stay silent. Never blocks.
 
+
 ### Changed
 
 - **command-guard "allow plain push" accepts `-u` / `--set-upstream`.** A session pushing its own branch with `git push -u origin <branch> [2>&1 | tail -N]` was blocked only because of the upstream flag. The flag is the single allowed flag slot (never combined with `-q` or any other flag) and requires an explicit remote AND ref; remote/ref vetting, the output-sink rules and the chain allow-list are unchanged (`rev-parse`/`ls-remote`/`node`/`echo` after a push stay blocked). `git-guard.js` is untouched.
@@ -171,6 +175,7 @@ the update.
 - **Pending child questions are harder to miss:** when a Primary has unanswered child questions, the per-prompt "own inbox" notice now starts with one line, `QUESTIONS AWAITING YOUR REPLY: N (oldest Xm) — <workspace title>: <first 80 characters of the question>`. The preview is cleaned of control characters and has secrets redacted; it is left out when the stored summary has no question text yet.
 - **`devswarm.js spawn` note:** when `--source` names a branch other than the default branch and the DevSwarm app already has a workspace (active or archived) on it, the result carries one line in `warnings` saying the app may show the new workspace nested under it. Output only; nothing else changes, and a failed lookup stays silent.
 - **Stale-agent stop note:** the new hook `stale-agent-stop-note` (PreToolUse `TaskStop`, advisory, never blocks) adds one line when TaskStop names an agent that was messaged or resumed after its last report and has not reported since. Setting `guards.staleAgentStopNote` (default on; env `ANTIHALL_STALE_AGENT_STOP_NOTE`; settings file and env only, no plugin option).
+
 
 ### Changed
 
@@ -225,6 +230,7 @@ the update.
 
 ## 0.121.7 (2026-10-03)
 
+
 ### Changed
 
 - `devswarm.js roster` prints a compact table of live workspaces with a "+N archived" line; `--all` lists archived ones and `--json` gives the full data as before.
@@ -255,6 +261,7 @@ the update.
 - **Handovers are never committed:** git-guard blocks a commit that includes a handover (setting `guards.handoverCommitGuard`, on by default). Doctor lists tracked or out-of-format handovers, and the archived-workspace message names the exact handover path.
 - The manifest declares the plugin icon. A code-owners file.
 
+
 ### Changed
 
 - New files named `CONTINUE-HERE.md` are blocked (existing ones stay editable). The deadly-loop state record moves under `.anti-hall/`.
@@ -269,6 +276,7 @@ the update.
 - **speculation-judge reads the reply being stopped:** the opt-in judge now sends the Stop payload's `last_assistant_message` to the model, not the previous transcript message. The transcript is only the fallback.
 - **claim-ledger judges the right message:** when the transcript is one message behind the Stop payload, the payload text is the reply, the transcript's last message counts as evidence, and `tools_this_turn` is the running tool count for this turn. The last message of a session is now judged too. When the transcript is up to date the record and its hash are unchanged.
 - **Jev turn pointer:** `speculation-guard` and `claim-ledger` no longer log a `turnRef` when the judged text came from the Stop payload, because the transcript's last line may be the previous turn. Nothing reads `turnRef` programmatically.
+
 
 ### Changed
 
@@ -285,6 +293,7 @@ the update.
 - **Speculation check:** it now judges the reply actually being sent rather than the previous message. That mix-up caused false blocks and let the real reply go unchecked. If the helper that reads the reply cannot load, the check falls back to reading the transcript instead of allowing silently.
 - **Mailbox watcher handoff line:** the "handed off to <version>" line now says when that version is only cached and not yet registered.
 
+
 ### Changed
 
 - **Plugin icon:** it is now 512x512 (under 256 KiB), so every shipped file is under the 256 KiB per-file limit.
@@ -298,6 +307,7 @@ the update.
 - **Stop-time open-task message:** it now names tasks that were created long before, which previously showed as "(subject unknown)". The name is recovered only from a real, paired task-creation record; otherwise it still shows "(subject unknown)".
 
 ## 0.121.2 (2026-10-02)
+
 
 ### Changed
 
@@ -316,6 +326,7 @@ the update.
 - **jev-setup `enable --fallback`.**
 - **Jev reporting:** every decision records the vendor that served it, and whether the backup was used. The report and the weekly scorecard break down per vendor. The Vercel per-request cost is read.
 
+
 ### Changed
 
 - **Jev keys are vendor-bound:** `jev_vercel_api_key` and `jev_typesafe_api_key`. The legacy `jev_api_key` is bound to the vendor in the home-only setting `jev.genericKeyVendor` (default vercel), which is changed with `jev-setup bind-generic-key`. A key is never sent to a vendor it was not entered for. **Behaviour change:** a generic key used with the typesafe transport is no longer sent until it is bound, or re-entered as the vendor key.
@@ -327,6 +338,7 @@ the update.
 - **Silent-agent warning:** agents launched far back in a long transcript are now seen. A queued follow-up message no longer counts as the agent having finished. A resumed agent is tracked from the time of the resume.
 
 ## 0.121.0 (2026-10-02)
+
 
 ### Changed
 
@@ -353,6 +365,7 @@ the update.
 - **git-guard.** No verdict changes. 181 heredoc-scanning bypass forms are pinned as must-stay-blocked. The substitution block message now explains that heredoc bodies are scanned as shell, and suggests the Write tool. The GUIDE documents the limitation.
 
 ## 0.120.14 (2026-10-02)
+
 
 ### Changed
 
@@ -404,6 +417,7 @@ the update.
 - Plugin icon (`plugins/anti-hall/.claude-plugin/icon.png`), also referenced from the Codex manifest interface (`composerIcon`, `logo`).
 - Short manifest description plus keywords in both manifests.
 - CONTRIBUTING, SECURITY and issue templates.
+
 
 ### Changed
 
@@ -467,6 +481,7 @@ the update.
 - `mesh history` re-reads consumed broadcasts without moving cursors.
 - `inbox messages --with-broadcasts`.
 
+
 ### Changed
 
 - After an update, `/reload-plugins` is the step to take. It was verified on 2026-10-01 to load new hooks and skills; restart only if a path still shows the old version.
@@ -481,6 +496,7 @@ the update.
 - command-guard allows a background direct-exec of an executable script in the session's own scratchpad, and names the allowed shapes. `git pull` and mutating fetches are labelled as state-changing remote operations.
 
 ## 0.120.7 (2026-10-01)
+
 
 ### Changed
 
@@ -737,6 +753,7 @@ against a reproducing test before the fix.
   commit -F - <<<'m'; ` repeated 20000 times) still paid an O(cmd.length) join +
   regex scan per segment. Both are now memoized per distinct command string
   alongside the literal array.
+
 
 ### Changed
 
@@ -1020,6 +1037,7 @@ Jev logging:
 
 ## 0.115.0 (2026-09-26)
 
+
 ### Changed
 
 - **`doctor --prune-cache` warns that a cron or Monitor job naming a
@@ -1213,6 +1231,7 @@ Jev logging:
 - **command-guard gcloud token curl: canonical ASCII host only.** The raw URL host must be
   plain ASCII and equal to the parsed host, with no curl URL globbing (`{…}`, `[…]`).
   This refuses percent-encoded and full-width lookalike hosts.
+
 
 ### Changed
 
@@ -1471,6 +1490,7 @@ case blocks again (or more strictly than 0.110.0).
   `git-guard.js` keeps its own independent force-push/AI-credit checks, untouched. New
   setting `guards.allowPlainPush` (default on).
 
+
 ### Changed
 
 - **Roster wording: "no upstream" no longer reads as an error.** A workspace `spawn`
@@ -1716,6 +1736,7 @@ case blocks again (or more strictly than 0.110.0).
   `similar` step runs on the main thread. `backfill` writes history records and stays
   gated.
 
+
 ### Changed
 
 - **One row-eligibility projection (`companion/lib/row-eligibility.js`).** Every workspace row is now judged once for archived (anti-hall marker, DevSwarm app DB, active-list absence, with `archivedBy` provenance), held (`devswarm.heldPartitions`), ignored (archive-ignore marker) and live/busy/waiting-on-user. It has a memoized per-invocation context and a batch API. The parent Stop gate, the per-turn parent-inbox table (plus its archive-ready nudge and stale-registry filter), and the CLI's routing, `roster` and `diagnose` read it instead of combining the predicates one axis at a time. There is no behavior change.
@@ -1941,6 +1962,7 @@ case blocks again (or more strictly than 0.110.0).
   is kept as an additional secondary signal.
 - **New settings:** `guards.silentAgentNudge` (boolean, default `true`) and
   `guards.silentAgentNudgeMin` (minutes, default `20`), both also in `/config`.
+
 
 ### Changed
 
@@ -2307,6 +2329,7 @@ restore.
   `devswarm diagnose`/`devswarm healthcheck` as owner-held. `reap-orphans` refuses them
   even under `--apply` as an extra belt; the reaper already never auto-deletes anything
   (dry-run default, human-only, `--apply --max N` required).
+
 
 ### Changed
 

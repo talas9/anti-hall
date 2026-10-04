@@ -51,7 +51,7 @@ debates reference the living docs for evidence; the *current* state and the
 > [UPDATE 2026-09-24, v0.108.0] Re-verified against the working tree on **2026-09-24**:
 > `plugin.json` version is `0.108.0`. Hooks: **72** `.js` files under
 > `plugins/anti-hall/hooks/` (incl. shared library modules; 61 scripts registered in
-> `hooks.json`, 42 of them also in `codex/hooks/hooks.json`). New hooks this release:
+> `hooks.json`, 43 of them also in `codex/hooks/hooks.json`). New hooks this release:
 > `auto-handover.js` (UserPromptSubmit), `auto-handover-pause-nag.js` (Stop),
 > `repair-on-reload.js` (SessionStart + UserPromptSubmit); unreleased on top of that
 > (post-0.108.5): `silent-agent-nudge.js` (Stop). Claude skills: **18** directories under

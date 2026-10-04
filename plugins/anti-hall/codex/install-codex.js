@@ -116,6 +116,7 @@ const ANTI_HALL_HOOKS = {
     group('Bash', ['merge-side-pick.js'], 10),
     group('Bash', ['merge-gate.js'], 10),
     group('Bash', ['compact-declaration-guard.js'], 10),
+    group('^(?:collaboration)?spawn_agent$', ['orch-on-spawn.js'], 10),
     group('apply_patch', ['api-guard.js'], 45),
     group('apply_patch', ['ship-it-guard.js'], 10),
     group('apply_patch', ['edit-guard.js'], 10),
