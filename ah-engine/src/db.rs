@@ -39,6 +39,8 @@ pub enum Op {
         /// The exported counters and histograms.
         body: String,
     },
+    /// A telemetry write (D78): a flush of counters and events, an import, or a prune.
+    Telemetry(crate::telemetry::persist::TelOp),
     /// A project-partition write (D21 pending mailbox and key-value state). A non-empty `write_id` makes it idempotent:
     /// a repeat with the same id returns the first result and changes nothing (D24).
     Proj {
@@ -430,6 +432,7 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
             c.prepare_cached(sql::METRICS_SAVE)?.execute(params![*ts_ms as i64, body])?;
             Ok(String::new())
         }
+        Op::Telemetry(t) => crate::telemetry::persist::apply(c, t),
         Op::Proj { project, write_id, verb } => {
             if !write_id.is_empty() {
                 if let Some(r) = c.prepare_cached(sql::APPLIED_GET)?.query_row(params![write_id], |r| r.get::<_, String>(0)).optional()? {

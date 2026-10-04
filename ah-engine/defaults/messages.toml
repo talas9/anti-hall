@@ -413,3 +413,19 @@ value = "no model-routing events are recorded yet (planned, D52)"
 [msg.metrics_quantile_note]
 doc = "Printed with every latency histogram: how to read its percentiles."
 value = "upper bound of the histogram bucket holding that rank"
+
+[msg.tel_err]
+doc = "A telemetry value was refused. Placeholders: {code} (stable short code) and {field} (the field, when one is named)."
+value = "telemetry value refused: {code} {field}"
+
+[msg.tel_loss_window]
+doc = "Printed with the telemetry summary: how much a crash can lose. Placeholder: {flush_ms}."
+value = "counters are kept in memory and flushed to hot.db every {flush_ms} ms and at shutdown; a kill -9 loses at most the data recorded since the last flush"
+
+[msg.tel_net_status]
+doc = "Status shown with the model-routing saving once routing decisions exist. Placeholders: {n} decisions, {days} days."
+value = "computed from {n} routing decisions in the last {days} days (estimate, see net)"
+
+[msg.tel_no_db]
+doc = "The telemetry rollup cannot run: storage did not open."
+value = "telemetry rollup needs the database, and storage is not open"

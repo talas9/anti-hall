@@ -543,7 +543,11 @@ value = { request = "CTL metrics [check=<name>] [rollup=<resolution> since=<s>]"
 
 [protocol.impact]
 doc = "The impact ledger report as JSON."
-value = { request = "CTL impact [kind=<kind>] [project=<hash>] [recent=<n>]", reply = "OK <impact JSON>" }
+value = { request = "CTL impact [kind=<kind>] [project=<hash>] [recent=<n>] [window=<7d>]", reply = "OK <impact JSON>" }
+
+[protocol.telemetry]
+doc = "The telemetry summary or its events as JSON, including what the daemon has recorded but not yet flushed (D78)."
+value = { request = "CTL telemetry [summary|events] [window=<7d>] [kind=<k>] [limit=<n>]", reply = "OK <telemetry JSON>" }
 
 [protocol.schedule]
 doc = "The scheduler: the jobs and their schedules, run one now, or the run history."

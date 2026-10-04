@@ -6,10 +6,10 @@
 //! parameters at run time and come from the defaults; nothing tunable is written into a statement.
 
 /// hot.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5];
+pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6];
 
 /// archive.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2, ARCHIVE_V3];
+pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2, ARCHIVE_V3, ARCHIVE_V4];
 
 /// hot.db v1: the impact ledger (one row per event) and its exact per-combination totals (D52).
 const HOT_V1: &str = "
@@ -215,3 +215,54 @@ pub const RUN_HISTORY: &str =
 
 /// Forget run history older than ?1 (derived log, D59).
 pub const RUN_PRUNE: &str = "DELETE FROM schedule_runs WHERE started_ms <= ?1 AND status != ?2";
+/// hot.db v6: telemetry (D78). Per-day counters per (k, h, e, o) with a latency histogram (JSON), and the rich events
+/// (routing decisions, spawn results, Jev calls, spills) with the fields they are joined on. `dedupe` is set only for
+/// events imported from a Node log, so importing the same file twice stores each line once.
+const HOT_V6: &str = "
+CREATE TABLE IF NOT EXISTS tel_counts (day INTEGER NOT NULL, k TEXT NOT NULL, h TEXT NOT NULL, e TEXT NOT NULL, o TEXT NOT NULL, n INTEGER NOT NULL, us_sum INTEGER NOT NULL, ib_sum INTEGER NOT NULL, hist TEXT NOT NULL, PRIMARY KEY (day, k, h, e, o)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS tel_events (id INTEGER PRIMARY KEY, ts_ms INTEGER NOT NULL, k TEXT NOT NULL, h TEXT NOT NULL, e TEXT NOT NULL, o TEXT NOT NULL, ms INTEGER NOT NULL, ib INTEGER NOT NULL, spawn_key TEXT NOT NULL, data TEXT NOT NULL, dedupe TEXT UNIQUE);
+CREATE INDEX IF NOT EXISTS tel_events_ts ON tel_events (ts_ms);
+CREATE INDEX IF NOT EXISTS tel_events_spawn ON tel_events (spawn_key);
+";
+
+/// archive.db v4: the daily telemetry rollups (D78), one row per day and (k, h, e, o); a re-run replaces a day's rows.
+const ARCHIVE_V4: &str = "
+CREATE TABLE IF NOT EXISTS tel_daily (day INTEGER NOT NULL, k TEXT NOT NULL, h TEXT NOT NULL, e TEXT NOT NULL, o TEXT NOT NULL, n INTEGER NOT NULL, us_sum INTEGER NOT NULL, ib_sum INTEGER NOT NULL, hist TEXT NOT NULL, PRIMARY KEY (day, k, h, e, o)) WITHOUT ROWID;
+";
+
+/// One day's counter row for a combination (?1 day, ?2 k, ?3 h, ?4 e, ?5 o), if any.
+pub const TEL_COUNT_GET: &str = "SELECT n, us_sum, ib_sum, hist FROM tel_counts WHERE day = ?1 AND k = ?2 AND h = ?3 AND e = ?4 AND o = ?5";
+
+/// Set a day's counter row (the caller merged the old values in).
+pub const TEL_COUNT_PUT: &str = "INSERT INTO tel_counts (day, k, h, e, o, n, us_sum, ib_sum, hist) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT (day, k, h, e, o) DO UPDATE SET n = excluded.n, us_sum = excluded.us_sum, ib_sum = excluded.ib_sum, hist = excluded.hist";
+
+/// Counter rows for days ?1 to ?2 inclusive.
+pub const TEL_COUNTS_RANGE: &str = "SELECT day, k, h, e, o, n, us_sum, ib_sum, hist FROM tel_counts WHERE day >= ?1 AND day <= ?2 ORDER BY day, k, h, e, o";
+
+/// Remove a counter row that is still exactly as it was read (?6 is the count then): nothing newer is lost.
+pub const TEL_COUNT_DELETE_IF: &str = "DELETE FROM tel_counts WHERE day = ?1 AND k = ?2 AND h = ?3 AND e = ?4 AND o = ?5 AND n = ?6";
+
+/// Store an event; a repeated `dedupe` value is ignored.
+pub const TEL_EVENT_INSERT: &str =
+    "INSERT OR IGNORE INTO tel_events (ts_ms, k, h, e, o, ms, ib, spawn_key, data, dedupe) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
+
+/// The newest events of kind ?1 (empty: any) at or after ?2, newest first, at most ?3.
+pub const TEL_EVENTS_RECENT: &str = "SELECT data FROM tel_events WHERE (?1 = '' OR k = ?1) AND ts_ms >= ?2 ORDER BY id DESC LIMIT ?3";
+
+/// The events the impact report joins (routing decisions, spawn results, Jev calls) at or after ?1, oldest first.
+pub const TEL_EVENTS_IMPACT: &str = "SELECT data FROM tel_events WHERE ts_ms >= ?1 AND k IN ('route', 'spawn', 'jev') ORDER BY id";
+
+/// Forget events older than ?1.
+pub const TEL_EVENTS_PRUNE: &str = "DELETE FROM tel_events WHERE ts_ms < ?1";
+
+/// Forget the oldest events beyond the newest ?1 (the row cap).
+pub const TEL_EVENTS_CAP: &str = "DELETE FROM tel_events WHERE id <= (SELECT id FROM tel_events ORDER BY id DESC LIMIT 1 OFFSET ?1)";
+
+/// Events held.
+pub const TEL_EVENTS_HELD: &str = "SELECT COUNT(*) FROM tel_events";
+
+/// Set a daily rollup row in archive.db (a re-run replaces it with the same values).
+pub const TEL_DAILY_PUT: &str = "INSERT INTO tel_daily (day, k, h, e, o, n, us_sum, ib_sum, hist) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT (day, k, h, e, o) DO UPDATE SET n = excluded.n, us_sum = excluded.us_sum, ib_sum = excluded.ib_sum, hist = excluded.hist";
+
+/// Daily rollup rows for days ?1 to ?2 inclusive.
+pub const TEL_DAILY_RANGE: &str = "SELECT day, k, h, e, o, n, us_sum, ib_sum, hist FROM tel_daily WHERE day >= ?1 AND day <= ?2 ORDER BY day, k, h, e, o";

@@ -192,12 +192,14 @@ impl Shared {
         let c = self.cfg();
         lk(&self.sessions).set_rate(c.session_rps, c.session_burst);
         lk(&self.projects).set_rate(c.project_rps, c.project_burst);
+        self.telemetry.set_enabled(c.effective.boolean("telemetry.enabled"));
     }
 
     /// Keep impact events (and, through later layers, project state) in `db` instead of memory.
     pub fn attach_db(&mut self, db: Arc<crate::db::Db>) {
         self.telemetry = Telemetry::with_store(Box::new(crate::storage::SqliteStore::new(db.clone())));
         self.telemetry.restore_metrics(); // counters and histograms continue from the last snapshot (D51)
+        self.sync_limits(); // telemetry.enabled from the active config
         self.storage = defaults::text("msg.storage_ok").to_string();
         self.store = Store::new(Some(db.clone()));
         self.db = Some(db);
@@ -253,7 +255,14 @@ impl Shared {
     fn impact_json(&self, args: &str) -> serde_json::Value {
         let filter = crate::storage::ImpactFilter { kind: kv(args, "kind"), project: kv(args, "project") };
         let recent = kv(args, "recent").parse().unwrap_or(defaults::num("telemetry.recent_default") as usize);
-        self.telemetry.impact_json(&filter, recent)
+        self.telemetry.impact_json_in(&filter, recent, &kv(args, "window"))
+    }
+
+    /// The `telemetry` control verb: `summary` or `events [kind=<k>] [limit=<n>]`, each with `window=<7d>`.
+    fn telemetry_json(&self, args: &str) -> serde_json::Value {
+        let sub = args.split_whitespace().next().unwrap_or("summary");
+        let limit = kv(args, "limit").parse().unwrap_or(defaults::num("telemetry.recent_default") as usize);
+        self.telemetry.telemetry_json(sub, &kv(args, "window"), &kv(args, "kind"), limit)
     }
 
     /// Re-read the rules file; a file that fails to parse keeps the previous rules.
@@ -326,6 +335,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("metrics") => (Reply::Ok(sh.metrics_json(args).to_string()), After::Continue),
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
+        Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
         Some("reload") => {
             sh.reload();
@@ -361,15 +371,39 @@ fn project_key(sh: &Shared, cwd: &str) -> String {
 struct DaemonObserver<'a> {
     t: &'a Telemetry,
     project: &'a str,
+    /// The hook event being served (telemetry labels every check and rule with it).
+    event: &'a str,
 }
 
 impl crate::hookio::Observer for DaemonObserver<'_> {
     fn check(&self, check: &str, rule_id: &str, verdict: &crate::checks::Verdict, micros: u64) {
-        self.t.observe_check(check, rule_id, verdict, micros, self.project);
+        self.t.observe_check_in(self.event, check, rule_id, verdict, micros, self.project);
     }
 
     fn rule(&self, rule_id: &str, action: crate::rules::Action) {
-        self.t.observe_rule(rule_id, action, self.project);
+        self.t.observe_rule_in(self.event, rule_id, action, self.project);
+    }
+}
+
+/// How a hook reply ended for telemetry (D78): its outcome and the bytes it injects into model context. A block injects
+/// nothing the model reads as context; an advisory, warning or context reply injects its whole body.
+fn reply_outcome(r: &Reply) -> (crate::telemetry::event::Outcome, u64) {
+    use crate::telemetry::event::Outcome;
+    match r {
+        Reply::Busy => (Outcome::Skip, 0),
+        Reply::Err(_) => (Outcome::Defer, 0),
+        Reply::Ok(out) if out.is_empty() => (Outcome::Allow, 0),
+        Reply::Ok(out) if out.starts_with(crate::hookio::EXIT2) => (Outcome::Block, 0),
+        Reply::Ok(out) => {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap_or_default();
+            let denied = v.pointer("/hookSpecificOutput/permissionDecision").and_then(|d| d.as_str()) == Some("deny")
+                || v.get("decision").and_then(|d| d.as_str()) == Some("block");
+            if denied {
+                (Outcome::Block, 0)
+            } else {
+                (Outcome::Advise, out.len() as u64)
+            }
+        }
     }
 }
 
@@ -379,6 +413,7 @@ fn hook(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         sh.stats.errors.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("errors", &[]));
         sh.telemetry.fallback("malformed", "");
+        sh.telemetry.record_hook(defaults::text("telemetry.no_event_label"), crate::telemetry::event::Outcome::Error, started.elapsed().as_micros() as u64, 0);
         return Reply::Err(defaults::text("msg.reply_malformed").into());
     };
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
@@ -388,12 +423,19 @@ fn hook(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         sh.stats.busy.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
         sh.telemetry.fallback("busy", &phash);
+        sh.telemetry.record_hook(
+            crate::hookio::event_of(&p).unwrap_or(defaults::text("telemetry.no_event_label")),
+            crate::telemetry::event::Outcome::Skip,
+            started.elapsed().as_micros() as u64,
+            0,
+        );
         return Reply::Busy;
     }
     let rules = sh.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
     let (start, budget) = (limits::thread_cpu_us(), cfg.eval_budget_us);
     let over = move || budget > 0 && limits::thread_cpu_us().saturating_sub(start) > budget;
-    let obs = DaemonObserver { t: &sh.telemetry, project: &phash };
+    let event = crate::hookio::event_of(&p).unwrap_or(defaults::text("telemetry.no_event_label"));
+    let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event };
     let reply = match crate::hookio::respond_observed(&p, &rules, &over, &obs) {
         Ok(out) if out == crate::hookio::FALLBACK => Reply::Err(defaults::text("msg.reply_defer").into()),
         Ok(out) => Reply::Ok(out),
@@ -405,7 +447,10 @@ fn hook(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             Reply::Err(defaults::text("msg.reply_budget").into())
         }
     };
-    sh.telemetry.observe_hook(crate::hookio::event_of(&p).unwrap_or(""), started.elapsed().as_micros() as u64);
+    let micros = started.elapsed().as_micros() as u64;
+    sh.telemetry.observe_hook(crate::hookio::event_of(&p).unwrap_or(""), micros);
+    let (outcome, injected) = reply_outcome(&reply);
+    sh.telemetry.record_hook(event, outcome, micros, injected);
     reply
 }
 
@@ -725,8 +770,13 @@ pub fn serve() {
         std::thread::spawn(move || watchdog(s));
     }
     start_scheduler(&sh);
+    if sh.db.is_some() {
+        let s = sh.clone();
+        std::thread::spawn(move || telemetry_flusher(s));
+    }
     accept_loop(&sh, &listener);
     if let Some(db) = &sh.db {
+        sh.telemetry.flush(); // telemetry recorded since the last flush (D78)
         sh.telemetry.snapshot_metrics(); // the counters as they are at exit
         db.close(); // everything queued commits before the process exits
     }
@@ -751,6 +801,7 @@ fn start_scheduler(sh: &Arc<Shared>) {
                 let r = drain_spool(&sh);
                 Ok(serde_json::json!({"applied": r.applied, "quarantined": r.quarantined, "left": r.left}).to_string())
             }
+            "telemetry_rollup" => sh.telemetry.rollup(sh.cfg().effective.num("telemetry.retention_days")).map(|v| v.to_string()),
             "noop" => Ok(String::new()),
             other => Err(defaults::render("msg.schedule_unknown_action", &[("job", &"-"), ("action", &other)])),
         }
@@ -785,6 +836,20 @@ fn schedule_ctl(sh: &Shared, args: &str) -> serde_json::Value {
             serde_json::json!({"running": true, "runs": runs})
         }
         _ => sched.list(),
+    }
+}
+
+/// Stores the telemetry recorded in memory every `telemetry.flush_ms` (D78), reading the interval from the active config
+/// each round so an edit applies without a restart. Everything recorded after the last flush is lost on `kill -9`.
+fn telemetry_flusher(sh: Arc<Shared>) {
+    let slice = defaults::millis("daemon.worker_wait_ms");
+    let mut last = Instant::now();
+    while !sh.draining.load(SeqCst) {
+        std::thread::sleep(slice);
+        if last.elapsed() >= Duration::from_millis(sh.cfg().effective.num("telemetry.flush_ms")) {
+            last = Instant::now();
+            sh.telemetry.flush();
+        }
     }
 }
 
@@ -935,5 +1000,62 @@ mod tests {
         assert_eq!(p("/nonexistent-a", "W id-1\nput again"), Reply::Ok("ok".into()));
         assert_eq!(p("/nonexistent-a", "W id-1\nput again"), Reply::Ok("ok".into()));
         assert_eq!(p("/nonexistent-a", "len"), Reply::Ok("1".into()), "the write id made the repeat a no-op");
+    }
+
+    #[test]
+    fn every_hook_and_check_run_is_recorded_with_no_per_check_code() {
+        use crate::telemetry::recorder::Delta;
+        let rs = RuleSet::parse(
+            r#"{"version":1,"rules":[{"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny","options":{"plugin_root":"/plugin"}}]}"#,
+        )
+        .unwrap();
+        let sh = Shared::new(Config::from_env(), "1", rs, "/x".into());
+        let forced = format!("git pu{}h --force origin main", "s");
+        let send = |cmd: &str| {
+            let payload =
+                serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/tmp", "session_id": "s", "tool_input": {"command": cmd}});
+            handle_request(format!("V 1\n{payload}").as_bytes(), &sh).0
+        };
+        assert!(matches!(send(&forced), Reply::Ok(_)));
+        assert!(matches!(send("ls"), Reply::Ok(_)));
+        let d = sh.telemetry.recorder().pending_deltas();
+        let n = |k: &str, h: &str, o: &str| d.iter().filter(|x: &&Delta| x.k == k && x.h == h && x.o == o && x.e == "PreToolUse").map(|x| x.n).sum::<u64>();
+        assert_eq!(n("check", "git", "block"), 1, "the git check's block is recorded: {d:?}");
+        assert_eq!(n("check", "git", "allow"), 1, "and its allow");
+        assert_eq!(n("hook", "hook", "block"), 1, "the whole hook request too");
+        assert_eq!(n("hook", "hook", "allow"), 1);
+        assert!(d.iter().all(|x| x.us_sum > 0 || x.n == 0 || x.hist.iter().sum::<u64>() == x.n), "latency is bucketed for every row");
+        // switching telemetry off through the config stops recording
+        sh.telemetry.set_enabled(false);
+        send("ls");
+        assert_eq!(sh.telemetry.recorder().pending_deltas().iter().map(|x| x.n).sum::<u64>(), d.iter().map(|x| x.n).sum::<u64>());
+    }
+
+    #[test]
+    fn busy_and_malformed_requests_are_recorded_as_skip_and_error() {
+        let mut cfg = Config::from_env();
+        cfg.session_rps = 0.001;
+        cfg.session_burst = 1.0;
+        let rs = RuleSet::parse(r#"{"version":1,"rules":[]}"#).unwrap();
+        let sh = Shared::new(cfg, "1", rs, "/x".into());
+        let q = |b: &str| handle_request(format!("V 1\n{b}").as_bytes(), &sh).0;
+        q(r#"{"hook_event_name":"Stop","session_id":"a"}"#);
+        q(r#"{"hook_event_name":"Stop","session_id":"a"}"#);
+        q("not json");
+        let d = sh.telemetry.recorder().pending_deltas();
+        let n = |o: &str| d.iter().filter(|x| x.k == "hook" && x.o == o).map(|x| x.n).sum::<u64>();
+        assert_eq!((n("allow"), n("skip"), n("error")), (1, 1, 1));
+    }
+
+    #[test]
+    fn the_telemetry_verb_reports_live_data_and_the_loss_window() {
+        let sh = shared();
+        handle_request(b"V 1\n{\"hook_event_name\":\"Stop\"}", &sh);
+        let v: serde_json::Value = serde_json::from_str(ok(&handle_request(b"CTL telemetry summary window=1d\n", &sh).0)).unwrap();
+        assert_eq!(v["invocations"], 1);
+        assert_eq!(v["live"], true);
+        assert!(v["note"].as_str().unwrap().contains("kill -9"));
+        let e: serde_json::Value = serde_json::from_str(ok(&handle_request(b"CTL telemetry events kind=route\n", &sh).0)).unwrap();
+        assert_eq!(e["count"], 0);
     }
 }

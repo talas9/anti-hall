@@ -56,6 +56,110 @@ value = "other"
 doc = "Hex digits of the hashed project key shown in impact events (the project path itself is never stored)."
 value = 12
 
+# ---- telemetry (D78, D77) -------------------------------------------------------------------------------
+# The engine's own telemetry: every hook, check and rule the daemon runs is counted (invocations, outcome, latency
+# bucket, bytes injected) in memory with no I/O, flushed to hot.db on an interval, and rolled up daily into archive.db.
+# Local only, never uploaded, never holds text content.
+
+[telemetry.enabled]
+doc = "Record telemetry (D78). Local only: nothing is uploaded. Off stops recording; what was already stored stays."
+value = true
+
+[telemetry.flush_ms]
+doc = "How often the recorder's counters and events are stored in hot.db, and at shutdown. A kill -9 loses at most this much (the data recorded since the last flush)."
+value = 10000
+env = "AH_ENGINE_TELEMETRY_FLUSH_MS"
+min = 50
+unit = "ms"
+
+[telemetry.retention_days]
+doc = "How many days of per-day counter rows and events stay in hot.db; older ones are removed by `telemetry rollup` after they are archived in archive.db, where the daily rollups are kept."
+value = 30
+min = 1
+unit = "days"
+
+[telemetry.shards]
+doc = "Counter tables the hot path spreads threads over, so threads rarely share a cache line."
+value = 4
+min = 1
+
+[telemetry.slots]
+doc = "Label combinations (kind, hook or check, event, outcome) one shard holds; rounded up to a power of two. A full table counts the sample as dropped instead of waiting."
+value = 256
+min = 16
+
+[telemetry.ring_size]
+doc = "Rich events (routing decisions, spawn results, Jev calls, spills) held in memory between flushes; older ones are overwritten and counted as dropped."
+value = 2048
+min = 16
+
+[telemetry.token_max_len]
+doc = "Longest identifier a telemetry event may hold in any text field (hook, event, model, task class, spawn key); longer ones are cut, or refused on import. Event text fields hold identifiers only, never prose."
+value = 64
+min = 8
+unit = "bytes"
+
+[telemetry.default_window_days]
+doc = "Window the `telemetry` and `impact` reports cover unless --window is given."
+value = 7
+min = 1
+unit = "days"
+
+[telemetry.bytes_per_token]
+doc = "Bytes of injected context counted as one token when `impact` estimates what injection costs."
+value = 4
+min = 1
+unit = "bytes"
+
+[telemetry.link_window_s]
+doc = "How long before a spawn result a routing decision with the same spawn key still belongs to it (D77)."
+value = 7200
+min = 1
+unit = "s"
+
+[telemetry.max_event_rows]
+doc = "Most events kept in hot.db; the oldest beyond this are removed when `telemetry rollup` runs."
+value = 200000
+min = 100
+
+[telemetry.import_dir]
+doc = "Directory, inside the base directory, where the Node plugin writes its telemetry files (`<date>.ndjson`) that `telemetry import` reads."
+value = "telemetry"
+
+[telemetry.import_ext]
+doc = "File extension of the Node plugin's telemetry files."
+value = "ndjson"
+
+[telemetry.import_batch]
+doc = "Imported lines stored per write."
+value = 500
+min = 1
+
+[telemetry.import_max_line]
+doc = "Longest line `telemetry import` reads; a longer one is rejected."
+value = 4096
+unit = "bytes"
+
+[telemetry.inherit_prefix]
+doc = "Prefix the Node routing log puts on a model name that was inherited from the parent rather than named; ignored when pricing."
+value = "inherit:"
+
+[telemetry.hook_label]
+doc = "The `h` label of the whole-hook telemetry row (one per hook request, whatever checks ran inside it)."
+value = "hook"
+
+[telemetry.rule_label]
+doc = "The `h` label of the telemetry row counting regex rule matches."
+value = "rule"
+
+[telemetry.no_event_label]
+doc = "The `e` label used when the hook event is unknown."
+value = "-"
+
+[telemetry.net_method]
+doc = "How the NET figure of `impact` is computed, shown next to it."
+value = "estimate: routing saved minus routing spent up, minus the estimated cost of injected context (injected bytes / bytes_per_token, priced as input tokens of the most common parent model) minus recorded Jev cost; models missing from the price table are counted as unpriced, not guessed"
+
 # ---- metrics --------------------------------------------------------------------------------------------
 
 [metric.requests]
@@ -197,6 +301,17 @@ value = { kind = "counter", unit = "runs", labels = ["job", "status"] }
 [metric.schedule_missed]
 doc = "Runs that caught up a missed window or skipped it, by job (D33)."
 value = { kind = "counter", unit = "runs", labels = ["job"] }
+[metric.tel_events]
+doc = "Telemetry invocations recorded, by kind (k), hook or check (h), hook event (e) and outcome (o) (D78)."
+value = { kind = "counter", unit = "invocations", labels = ["k", "h", "e", "o"] }
+
+[metric.tel_injected_bytes]
+doc = "Bytes injected into model context, by hook or check (h) and hook event (e). The whole-hook rows (h=hook) add up to the total; a per-check row is attribution inside it (D78)."
+value = { kind = "counter", unit = "bytes", labels = ["h", "e"] }
+
+[metric.tel_dropped]
+doc = "Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed)."
+value = { kind = "counter", unit = "samples", labels = ["reason"] }
 
 # ---- impact kinds ---------------------------------------------------------------------------------------
 
@@ -216,6 +331,10 @@ value = { counted = "exact" }
 doc = "A context-action rule matched and injected text for the agent."
 value = { counted = "exact" }
 
+[impact.route]
+doc = "A model-routing decision at agent spawn (D77). The check is the routing check and the reason is what it did: down, up, allow or exempt."
+value = { counted = "exact" }
+
 [impact.fallback]
 doc = "The engine could not or would not answer (a check deferred, or the request failed) and the client ran the Node hook instead."
 value = { counted = "exact" }
@@ -223,8 +342,8 @@ value = { counted = "exact" }
 # ---- savings estimates ----------------------------------------------------------------------------------
 
 [impact.price_table]
-doc = "Model price table used for model-routing savings: `date` and `source` say where the prices came from, `models` maps a model name to dollars per million input and output tokens. Empty until routing events are recorded (planned, D52)."
-value = { date = "", source = "not populated: no model-routing events are recorded yet", models = {} }
+doc = "Model price table used for model-routing savings: `date` and `source` say where the prices came from, `models` maps a model name (or a family word it contains, such as `opus`) to `{ in_uc, out_uc, cache_read_uc, cache_write_uc }`: micro-dollars per million tokens of each class. Empty until verified prices are added: with no price a figure is left out, never guessed."
+value = { date = "", source = "not populated: no prices have been verified yet, so no figure is computed in dollars", models = {} }
 
 [impact.savings_method]
 doc = "How a model-routing saving is computed, shown next to every figure so it is never read as a measurement."

@@ -30,7 +30,7 @@ labelled with how it was measured in the README of `ah-engine/`.
  ah-engine serve                                 (daemon, one per user, ~5 MB)
    |-- rules (JSON file)        regex rules: deny / warn / context
    |-- checks (compiled in)     real logic a regex cannot express: the git check
-   |-- telemetry                metrics (snapshots + rollups) and the impact ledger, stored
+   |-- telemetry                metrics (snapshots + rollups), the impact ledger, and the lock-free telemetry recorder, stored
    |-- project state            per-project mailbox and key-value pairs, in hot.db
    |-- memory layer             active key-value items (budgeted, TTL) + pub/sub channels
    `-- storage                  hot.db + archive.db (SQLite, bundled), one writer thread
@@ -74,6 +74,9 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |
 | Impact ledger and `ah-engine impact`, savings only as labelled estimates | implemented, stored in hot.db | D52 |
 | Status headline summary | implemented | D50-D52 |
+| Telemetry recorder: every hook, check and rule run counted by kind, hook or check, event and outcome with latency buckets and injected bytes; lock-free hot path; flushed to hot.db; daily rollups in archive.db; `ah-engine telemetry` | implemented | D78 |
+| Routing telemetry: route events joined to spawn results by `spawn_key`, NET savings in `ah-engine impact` | implemented (the check that writes route events is not ported yet; Node events are imported) | D77 |
+| The telemetry rollup as a scheduled daily job (`telemetry_rollup`) | implemented | D33, D78 |
 | Embedded SQLite storage: `hot.db` and `archive.db`, WAL, configured durability, versioned migrations, the `Store` trait over SQLite | implemented | D19, D21, D73 |
 | Tiered lifecycle: write-through to SQLite then memory, active items only, byte budget, key-value with TTL, pub/sub channels | implemented | D20, D22, D25 |
 | Transcript index: one incremental read of a session transcript, facts instead of lines, rebuilt on truncation or rotation | implemented as a library, not yet used by any check (planned, D75) | D22, D75 |
@@ -108,7 +111,8 @@ arguments, is in the generated reference.
 | `ah-engine serve` | no | Run the daemon in the foreground. |
 | `ah-engine status` | yes | State, uptime, memory, counters, breaker, rules and a headline summary. |
 | `ah-engine metrics` | yes | Metric series; `--check <name>` narrows to one check; `--rollup minute\|hour [--since <s>]` shows stored rollups. |
-| `ah-engine impact` | yes | What the engine affected; `--kind`, `--project` filter. |
+| `ah-engine impact` | yes | What the engine affected; `--kind`, `--project` filter, `--window <7d>` for the NET section. |
+| `ah-engine telemetry` | no | `summary`, `events`, `rollup`, `import`: see Telemetry below. `summary` and `events` only read; `rollup` and `import` write, idempotently. |
 | `ah-engine docs` | yes | The generated reference (`--format md`, or `--json`). |
 | `ah-engine check <name>` | yes | Run one check on a payload from stdin (parity harness). |
 | `ah-engine version` | yes | The version this build reports. |
@@ -152,6 +156,57 @@ and histograms are snapshotted into `hot.db`, and the same snapshot is rolled up
 (`telemetry.rollups`: per minute kept 24 h, per hour kept 30 days; pruned by `ah-engine maintain`). A new daemon starts
 from the last snapshot, so counts survive a restart; after a crash they lose at most what came after the last snapshot.
 Gauges are live readings and are not kept. `ah-engine metrics --rollup minute --since 3600` lists the stored rollups.
+
+## Telemetry (D78, D77)
+
+Telemetry answers "what did the engine and the hooks do, how often, how long did it take and how much did it inject into
+the model's context", without ever recording content. It is local only: nothing is uploaded, and it is disclosed in
+`PRIVACY.md`. `telemetry.enabled` (default on) turns recording off; `telemetry.flush_ms` and `telemetry.retention_days`
+tune it (all in `telemetry.toml`).
+
+**What is recorded.** For every hook request the daemon serves, one row `k=hook`; for every built-in check it runs
+(including the `git` check) one row `k=check` with the check as `h`; for every regex rule match one row with `h=rule`. Each
+row is counted by `h` (hook or check), `e` (hook event) and `o` (outcome: `allow`, `block`, `advise`, `defer`, `error`,
+`skip`), with a latency histogram (`ms` buckets, `telemetry.latency_buckets_us`) and `ib`, the bytes injected into model
+context. The `hook` rows add up to the total injected; a check's own `ib` is attribution inside it. This is automatic: the
+dispatcher records around every check, so a newly ported check needs no telemetry code. Rich events carry typed extras:
+`route` (a model-routing decision: requested and parent model, task class, recommended tier, `down` / `up` / `allow` /
+`exempt`, and the `spawn_key`), `spawn` (the result: the model that ran and its token usage, joined to the route event by
+`spawn_key`), `jev` (integration, mode, verdict, cost) and `spill`. An event's text fields hold identifiers only: the type
+refuses prose, and a line with an unknown field or text where an identifier belongs is rejected, so no prompt, transcript
+or file text can be stored.
+
+**Cost on the hook path.** Recording is a hash of the labels and a few relaxed atomic additions into a sharded table, plus
+a bounded in-memory ring for rich events: no I/O and no shared lock. Measured by `tests/telemetry.rs` (release build): the
+`record()` median is under 1 microsecond (the test asserts it, alone and with four threads hammering the same labels).
+
+**Persistence and the loss window.** The recorder flushes to `hot.db` every `telemetry.flush_ms` (default 10 s) and at a
+clean shutdown, through the Store's writer. A `kill -9` (or power loss) loses exactly what was recorded after the last
+flush: at most `telemetry.flush_ms` of data. Everything flushed survives (`tests/telemetry.rs` kills a daemon and reads the
+database). Samples that could not be kept (a full table, an event overwritten in the ring before a flush) are counted in
+`tel_dropped`, never silently lost. Counters also feed the metrics registry (`tel_events`, `tel_injected_bytes`), so
+`ah-engine metrics` shows the same numbers.
+
+**Daily rollups.** `hot.db` keeps one counter row per UTC day and (k, h, e, o). `ah-engine telemetry rollup` copies every
+complete day into `archive.db` (counts, sums and latency histograms), replacing the archive row, so it is idempotent, and
+removes hot rows older than `telemetry.retention_days` only after they are archived (and old events by the same
+retention). The scheduler runs it daily (job `telemetry_rollup`, `schedule.telemetry_rollup_ms`); the command runs it by hand.
+
+**Reading it.** `ah-engine telemetry summary [--window 7d]` (per hook and check: invocations, outcomes, p50/p95/p99 latency
+upper bounds, injected bytes), `ah-engine telemetry events [--kind route] [--window 7d] [--limit n]`. With a daemon they
+include data not yet flushed; without, they read the database and say so.
+
+**Node data.** The Node plugin writes route events to `<base>/telemetry/<date>.ndjson` with the same short fields.
+`ah-engine telemetry import [--dir <path>]` ingests them idempotently (each line is stored under its file, line number and
+hash, and counted once), so pre-engine data shows up in the same reports. Lines older than the retention are skipped, and a
+line with free text or an unknown field is rejected and counted by reason without keeping its content.
+
+**NET savings.** `ah-engine impact --json [--window 7d]` joins route events to spawn results (a re-spawn after a steer is
+compared against what the agent first asked for) and reports, in both directions, what steering saved (the tokens the agent
+used times the price of the model it asked for minus the price of the model that ran) and what steering up cost, minus the
+spenders: injected context (injected bytes over `telemetry.bytes_per_token`, priced as input tokens of the most common
+parent model) and recorded Jev cost. Every figure is labelled an estimate and states its method. Prices come from
+`impact.price_table`; it has no verified prices yet, so spawns are counted as unpriced and no dollar figure is invented.
 
 ## Storage
 
@@ -371,8 +426,8 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `commands.toml` | the command registry data |
-| `telemetry.toml` | the metric and impact-kind registries and the savings method |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
+| `telemetry.toml` | the metric and impact-kind registries, the savings method and the telemetry settings (`telemetry.enabled`, `telemetry.flush_ms`, `telemetry.retention_days`, table sizes, import and window defaults) |
 | `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention, backups |
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |

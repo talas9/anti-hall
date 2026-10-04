@@ -68,6 +68,10 @@ pub trait Store: Send + Sync {
     fn dropped(&self) -> u64 {
         0
     }
+    /// The database behind this store, when it has one (telemetry persists through it, D78).
+    fn db(&self) -> Option<Arc<Db>> {
+        None
+    }
     /// Keep a metrics snapshot (exported counters and histograms, D51); true when it was kept.
     fn save_metrics(&self, ts_ms: u64, body: &serde_json::Value) -> bool;
     /// The last metrics snapshot kept, with its time.
@@ -240,6 +244,10 @@ impl Store for SqliteStore {
 
     fn persisted(&self) -> bool {
         true
+    }
+
+    fn db(&self) -> Option<Arc<Db>> {
+        Some(self.db.clone())
     }
 
     fn dropped(&self) -> u64 {

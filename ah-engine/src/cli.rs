@@ -43,6 +43,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("status", cmd_status),
         ("metrics", cmd_metrics),
         ("impact", cmd_impact),
+        ("telemetry", cmd_telemetry),
         ("docs", cmd_docs),
         ("check", cmd_check),
         ("version", cmd_version),
@@ -200,13 +201,19 @@ fn cmd_metrics(p: &Parsed) -> i32 {
 
 fn cmd_impact(p: &Parsed) -> i32 {
     let mut verb = "impact".to_string();
-    for name in ["kind", "project", "recent"] {
+    for name in ["kind", "project", "recent", "window"] {
         let v = flag(p, name);
         if !v.is_empty() {
             verb.push_str(&format!(" {name}={v}"));
         }
     }
     report(p, &verb)
+}
+
+fn cmd_telemetry(p: &Parsed) -> i32 {
+    let (v, code) = crate::telemetry::cli::run(&p.rest);
+    emit(p, human(&v), v);
+    code
 }
 
 fn cmd_docs(p: &Parsed) -> i32 {

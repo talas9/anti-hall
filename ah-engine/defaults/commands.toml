@@ -22,8 +22,12 @@ doc = "Show the engine's metrics: counters, gauges and latency percentiles, opti
 value = { args = "[--check <name>] [--rollup <resolution> [--since <s>]]", read_only = true, status = "implemented" }
 
 [cmd.impact]
-doc = "Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates."
-value = { args = "[--kind <kind>] [--project <hash>]", read_only = true, status = "implemented" }
+doc = "Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77)."
+value = { args = "[--kind <kind>] [--project <hash>] [--window <7d>]", read_only = true, status = "implemented" }
+
+[cmd.telemetry]
+doc = "Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention), `import` (ingest the Node plugin's telemetry files, idempotently). Local only."
+value = { args = "[summary|events|rollup|import] [--window <7d>] [--kind <k>] [--limit <n>] [--dir <path>]", read_only = false, status = "implemented" }
 
 [cmd.docs]
 doc = "Print the generated reference: every command, setting, metric, impact kind, check and error code."
