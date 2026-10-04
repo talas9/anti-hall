@@ -145,7 +145,7 @@ env = "AH_ENGINE_SPOOL_MAX_BYTES"
 unit = "bytes"
 
 [spool.drain_ms]
-doc = "How often the daemon applies spooled writes on its own (it also drains on start and before each project write)."
+doc = "Interval of the scheduled spool drain job (it also drains on start and before each project write)."
 value = 1000
 env = "AH_ENGINE_SPOOL_DRAIN_MS"
 unit = "ms"
@@ -184,6 +184,11 @@ unit = "s"
 [retention.archive_delete_after_s]
 doc = "Archived user data (messages, key values, impact events) older than this is deleted; 0 means never, the default (D26: hard delete only with an explicit value)."
 value = 0
+unit = "s"
+
+[retention.schedule_runs_s]
+doc = "Scheduler run history older than this is forgotten by `maintain` (a derived log, D59)."
+value = 2592000
 unit = "s"
 
 [retention.batch_rows]

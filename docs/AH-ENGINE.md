@@ -69,16 +69,16 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Per-repo git cache: HEAD, branch, upstream, remotes, aliases, config values and the dirty bit, proven fresh by a file signature | implemented as a library, not yet used by any check (planned, D75) | D61, D75 |
 | Pushing channel notifications to sessions (Monitor) | planned (D45) | D45 |
 | Size control: retention, the hot-to-archive mover, WAL checkpoints and VACUUM, `ah-engine maintain` | implemented | D26 |
-| Running maintenance on a schedule | planned (D33) | D33 |
 | Compressed export of old chat | planned (D26, D45) | D26, D45 |
 | Config files layered over the shipped defaults, watched, validated and swapped in atomically; `config` and `config validate` | implemented | D18 |
 | Config loaded into versioned storage, `config versions`, `rollback`, `export`, restart handoff for restart-only keys | planned (D18) | D18 |
 | Durable write spool when the engine is down or busy: retry with backoff, fsync'd spool, drained exactly once in order | implemented | D24 |
-| Scheduler and ticker, `ah-engine schedule` | planned (D33) | D33 |
+| Scheduler and ticker: engine-side jobs (maintain, backups if enabled, metrics snapshot, spool drain), jitter, catch-up, timeouts, retry and cooldown, run history, `ah-engine schedule` | implemented | D33 |
+| Agent-targeted jobs delivered to a session's mailbox | planned (D45) | D45 |
+| Adding and removing jobs from the command line, schedules in versioned config | planned (D33, D18) | D33, D18 |
 | Mesh messaging, Monitor push, chat database | planned (D45) | D45 |
 | Jev decision lane inside the engine | planned (D34-D38) | D34-D38 |
 | Backups and restore: online snapshot of both databases, scrubbed; restore keeps the current state first | implemented | D27 |
-| Backups on a schedule | planned (D33) | D33 |
 | Issue log and opt-in upload | planned (D28) | D28 |
 | Update checks as a scheduled job | planned (D44) | D44 |
 | One dispatcher call per hook event | planned (D58) | D58 |
@@ -110,7 +110,7 @@ arguments, is in the generated reference.
 | `ah-engine config [--json]` | yes | The effective config with the source of every value (`default`, `config_toml`, `settings`, `env`), the files read, the active version, any rejected edit and settings pending a restart. Asks the running daemon, else reads the files. |
 | `ah-engine config validate <file>` | yes | Check an engine TOML file against the schema: exit 0 when valid, 1 with the reason when not. |
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
-| `ah-engine schedule` | no | planned (D33); it says so and exits 64. |
+| `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 
 ## Metrics and the impact ledger
 
@@ -120,7 +120,8 @@ the upper bound of the histogram bucket that holds that rank, so they are upper 
 `check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth`, `uptime_s`, and for the
 memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evictions`, `tier_expired`, `bus_published`
 and `bus_dropped`, for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is sharing syncs), and for
-the spool `spool_applied` and `spool_quarantined`, and for size control `db_hot_bytes`, `db_hot_wal_bytes`,
+the spool `spool_applied` and `spool_quarantined`, for the scheduler `schedule_runs` and `schedule_missed`, and for
+size control `db_hot_bytes`, `db_hot_wal_bytes`,
 `db_archive_bytes`, `db_archive_wal_bytes`, `maintain_runs` and `maintain_last_ms`.
 
 **Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. They
@@ -195,7 +196,7 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
   bookkeeping, D59), checkpoints both WALs and VACUUMs both databases, and records the run. Archived user data is never
   deleted unless `retention.archive_delete_after_s` is set (default 0, D26). It runs in its own process against the
   files, beside a live daemon or without one; SQLite's locks keep the two apart, and a daemon write that meets the lock
-  is retried and, if need be, spooled. Running it on a schedule is the scheduler's job, planned (D33).
+  is retried and, if need be, spooled. The scheduler runs it as the daily `maintain` job (`schedule.maintain_ms`).
 - **Backup and restore (D27).** `ah-engine backup` copies both databases with SQLite's online backup API, so the
   snapshot is consistent while the daemon writes, into `backups/<ms>/` in the state directory (or `--to <dir>`, never
   over an existing snapshot). The copy is scrubbed: message bodies, values and recorded results
@@ -265,6 +266,36 @@ error and is never remembered; an exit status other than 0 is remembered as "git
 compares every fact with a fresh `git` invocation on a plain repository, a linked worktree and a submodule, before and
 after commits, amends, resets, branch switches, detached HEAD, `pack-refs`, config changes, fetches and stashes.
 
+## Scheduler
+
+The engine runs its own jobs on an internal ticker; nothing outside it (cron, a hook, a session) has to trigger them
+(D33). The jobs ship in `schedules.toml`; `schedules.json` in the state directory can change or disable one, or add one
+that uses a known action (`{"jobs": {"maintain": {"every_ms": 3600000}}}`); it is read when the daemon starts, and job
+definitions in the config database are planned (D18). A shipped job's interval is a setting (`schedule.maintain_ms`,
+`schedule.backup_ms`, `telemetry.snapshot_ms`, `spool.drain_ms`) read through the layered config on every planning pass,
+so setting it in `config.toml`, `settings.json` or the environment takes effect without a restart; 0 pauses the job.
+
+| Job | Does | Default interval | Runs as |
+|---|---|---|---|
+| `maintain` | size control (D26) | daily (`schedule.maintain_ms`) | a subprocess, killed with its process group at its timeout |
+| `backup` | a scrubbed backup (D27) | off (`schedule.backup_ms` = 0) | a subprocess |
+| `metrics_snapshot` | metrics snapshot and rollups (D51) | a minute (`telemetry.snapshot_ms`) | in the daemon |
+| `spool_drain` | applies spooled writes (D24) | a second (`spool.drain_ms`) | in the daemon |
+
+- **Timing.** The ticker sleeps until the next job is due (at most `schedule.tick_ms`). Each next run is one interval
+  after the current one starts, plus up to `jitter_ms`, so jobs do not run in step.
+- **No double runs.** A job never overlaps itself. A persisted job's next time is committed to `hot.db` before its run
+  starts, so a restart (or a crash) never runs it twice; runs a killed daemon left open are marked `interrupted`.
+- **Missed windows.** After the machine slept or the engine was down, a job set to `catch_up = "once"` runs once, then one
+  interval later; a job set to `"skip"` waits for its next window. Never once per missed window.
+- **Timeouts, retries, cooldown.** A run past its `timeout_ms` is stopped (a subprocess job is killed with its process
+  group; an in-process one is recorded as timed out and the job waits for it before running again). A failed run is
+  retried with exponential backoff (`retries`, `backoff_ms`, `backoff_max_ms`), then the job cools down (`cooldown_ms`).
+- **History.** Every run of a persisted job, and every failed run of the others, is kept in `hot.db`
+  (`ah-engine schedule history`); `maintain` forgets runs older than `retention.schedule_runs_s`.
+- **Agent jobs.** A job of kind `agent` is meant for a session's mailbox; until that lands (planned, D45) each of its
+  runs is recorded with the status `planned` (D45), never as a failure.
+
 ## Reliability and safety
 
 - **Hard budget.** The client enforces a total deadline (default 2 s) with a watchdog thread; `hooks.json`'s own timeout is
@@ -290,6 +321,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `commands.toml` | the command registry data |
 | `telemetry.toml` | the metric and impact-kind registries and the savings method |
+| `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
 | `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention, backups |
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
@@ -319,7 +351,7 @@ reaches every daemon limit (`daemon.*`: request and reply deadlines, size and CP
 and idle timing); moving the remaining readers of shipped defaults onto the snapshot is incremental work (D17).
 
 State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.db` and `archive.db`, the write spool
-`spool.log` and its `spool.quarantine`, the `backups/` directory, the event log,
+`spool.log` and its `spool.quarantine`, the `backups/` directory, the optional `schedules.json`, the event log,
 `failure.json`, the breaker and crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The rules file is
 `rules.json` there, or the path in `AH_ENGINE_RULES`.
 

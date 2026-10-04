@@ -137,6 +137,10 @@ value = "spool.quarantine"
 doc = "Directory inside the state directory that holds backups and pre-restore snapshots (D27); nothing in it is ever deleted by the engine."
 value = "backups"
 
+[files.schedules_override]
+doc = "User overrides of the shipped schedules (D33): JSON, `{\"jobs\": {\"<name>\": {...}}}`; read when the daemon starts."
+value = "schedules.json"
+
 [files.advised_dir]
 doc = "Directory with one empty file per session that has already seen the failure advisory."
 value = "advised"
@@ -540,6 +544,10 @@ value = { request = "CTL metrics [check=<name>] [rollup=<resolution> since=<s>]"
 [protocol.impact]
 doc = "The impact ledger report as JSON."
 value = { request = "CTL impact [kind=<kind>] [project=<hash>] [recent=<n>]", reply = "OK <impact JSON>" }
+
+[protocol.schedule]
+doc = "The scheduler: the jobs and their schedules, run one now, or the run history."
+value = { request = "CTL schedule list | run job=<name> | history [job=<name>] [limit=<n>]", reply = "OK <schedule JSON>" }
 
 [protocol.project]
 doc = "A per-project operation on hot.db; the daemon derives the partition from the cwd, so a request cannot name another project's key. A write is answered only after it commits; the optional write id makes it idempotent."

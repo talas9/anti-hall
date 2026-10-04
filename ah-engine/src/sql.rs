@@ -6,7 +6,7 @@
 //! parameters at run time and come from the defaults; nothing tunable is written into a statement.
 
 /// hot.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4];
+pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5];
 
 /// archive.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
 pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2, ARCHIVE_V3];
@@ -35,6 +35,14 @@ CREATE TABLE IF NOT EXISTS maintenance (id INTEGER PRIMARY KEY, ts_ms INTEGER NO
 /// counters, so only the newest one matters.
 const HOT_V4: &str = "
 CREATE TABLE IF NOT EXISTS metrics_snapshot (id INTEGER PRIMARY KEY CHECK (id = 1), ts_ms INTEGER NOT NULL, body TEXT NOT NULL);
+";
+
+/// hot.db v5: the scheduler (D33): each persisted job's schedule, and one row per run (persisted jobs: every run;
+/// others: failed runs only).
+const HOT_V5: &str = "
+CREATE TABLE IF NOT EXISTS schedule_state (job TEXT PRIMARY KEY, next_ms INTEGER NOT NULL, failures INTEGER NOT NULL, cooldown_until_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS schedule_runs (id INTEGER PRIMARY KEY, job TEXT NOT NULL, due_ms INTEGER NOT NULL, started_ms INTEGER NOT NULL, ended_ms INTEGER, status TEXT NOT NULL, attempt INTEGER NOT NULL, detail TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS schedule_runs_job ON schedule_runs (job, id);
 ";
 
 /// archive.db v3: metric rollups (D51), one row per resolution and time bucket holding the snapshot at the bucket's end.
@@ -182,3 +190,28 @@ pub const ROLLUP_LIST: &str = "SELECT bucket_ms, ts_ms, body FROM metrics_rollup
 
 /// Forget rollups of one resolution older than bucket ?2 (derived data, D59).
 pub const ROLLUP_PRUNE: &str = "DELETE FROM metrics_rollup WHERE resolution = ?1 AND bucket_ms < ?2";
+
+/// Save one job's schedule.
+pub const SCHED_SAVE: &str = "INSERT INTO schedule_state (job, next_ms, failures, cooldown_until_ms, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (job) DO UPDATE SET next_ms = excluded.next_ms, failures = excluded.failures, cooldown_until_ms = excluded.cooldown_until_ms, updated_ms = excluded.updated_ms";
+
+/// Every saved schedule.
+pub const SCHED_LOAD: &str = "SELECT job, next_ms, failures, cooldown_until_ms FROM schedule_state";
+
+/// Record a run that starts now (status running).
+pub const RUN_START: &str = "INSERT INTO schedule_runs (job, due_ms, started_ms, status, attempt, detail) VALUES (?1, ?2, ?3, ?4, ?5, '')";
+
+/// Record how a run ended.
+pub const RUN_END: &str = "UPDATE schedule_runs SET ended_ms = ?2, status = ?3, detail = ?4 WHERE id = ?1";
+
+/// Record a finished run in one go (a job that keeps only failed runs).
+pub const RUN_INSERT: &str = "INSERT INTO schedule_runs (job, due_ms, started_ms, ended_ms, status, attempt, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+
+/// Runs a killed daemon left as running: they were interrupted.
+pub const RUN_INTERRUPTED: &str = "UPDATE schedule_runs SET status = ?2, ended_ms = ?1 WHERE status = ?3";
+
+/// The newest runs, optionally of one job (?1, empty for all), at most ?2, newest first.
+pub const RUN_HISTORY: &str =
+    "SELECT id, job, due_ms, started_ms, ended_ms, status, attempt, detail FROM schedule_runs WHERE (?1 = '' OR job = ?1) ORDER BY id DESC LIMIT ?2";
+
+/// Forget run history older than ?1 (derived log, D59).
+pub const RUN_PRUNE: &str = "DELETE FROM schedule_runs WHERE started_ms <= ?1 AND status != ?2";

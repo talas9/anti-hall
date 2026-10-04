@@ -334,6 +334,34 @@ value = "{path} holds no hot.db snapshot; nothing was changed"
 doc = "Event-log detail of a restore. Placeholders: {from}, {kept}."
 value = "restored from {from}; the state before it is kept in {kept}"
 
+[msg.schedule_unknown_action]
+doc = "A job names an action the scheduler does not know; the job is ignored. Placeholders: {job}, {action}."
+value = "job {job} names unknown action {action}; it is ignored"
+
+[msg.schedule_unknown_job]
+doc = "`schedule run` named a job that is not configured. Placeholder: {job}."
+value = "no job named {job}"
+
+[msg.schedule_agent_planned]
+doc = "Result of an agent-targeted job until mailbox delivery exists (D45)."
+value = "delivery to a session's mailbox is planned (D45); the run is recorded, not delivered"
+
+[msg.schedule_timeout]
+doc = "Detail of a run that passed its timeout."
+value = "the run passed its timeout and was stopped"
+
+[msg.schedule_failed]
+doc = "Event-log detail of a failed run. Placeholders: {job}, {detail}."
+value = "job {job} failed: {detail}"
+
+[msg.schedule_daemon_gone]
+doc = "An in-process job found the daemon gone (it was exiting)."
+value = "the daemon is exiting"
+
+[msg.schedule_snapshot_failed]
+doc = "The metrics snapshot job could not keep its snapshot."
+value = "the metrics snapshot could not be stored"
+
 [msg.err_unknown_check]
 doc = "`check` was asked for a check that is not registered. Placeholder: {name}."
 value = "unknown check {name}"

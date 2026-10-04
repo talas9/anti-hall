@@ -21,6 +21,7 @@ pub mod maintain;
 pub mod metrics;
 pub mod paths;
 pub mod rules;
+pub mod schedule;
 pub mod spool;
 pub mod sql;
 pub mod storage;

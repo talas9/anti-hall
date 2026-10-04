@@ -30,6 +30,8 @@ pub enum Op {
     Impact(ImpactEvent),
     /// No change: answered once everything queued before it has committed (read-your-writes for a following read).
     Barrier,
+    /// A scheduler write (D33): saves a schedule, opens or closes a run record. Answers the new run's id for a start.
+    Sched(SchedOp),
     /// Replace the metrics snapshot (D51).
     Metrics {
         /// When it was taken.
@@ -46,6 +48,70 @@ pub enum Op {
         write_id: String,
         /// What to do.
         verb: ProjVerb,
+    },
+}
+
+/// A scheduler write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchedOp {
+    /// Save a job's schedule.
+    Save {
+        /// Job name.
+        job: String,
+        /// When it runs next (ms since the epoch).
+        next_ms: u64,
+        /// Failed runs since the last success.
+        failures: u32,
+        /// No run before this time (ms since the epoch; 0: none).
+        cooldown_until_ms: u64,
+    },
+    /// A run starts.
+    Start {
+        /// Job name.
+        job: String,
+        /// When it was due.
+        due_ms: u64,
+        /// When it started.
+        started_ms: u64,
+        /// 1 for the first try, 2 for the first retry, ...
+        attempt: u32,
+    },
+    /// A run ends.
+    End {
+        /// The run id `Start` answered.
+        id: i64,
+        /// When it ended.
+        ended_ms: u64,
+        /// ok, failed, timeout, ...
+        status: String,
+        /// What it reported.
+        detail: String,
+    },
+    /// A finished run, recorded in one go.
+    Record {
+        /// Job name.
+        job: String,
+        /// When it was due.
+        due_ms: u64,
+        /// When it started.
+        started_ms: u64,
+        /// When it ended.
+        ended_ms: u64,
+        /// How it ended.
+        status: String,
+        /// Which try.
+        attempt: u32,
+        /// What it reported.
+        detail: String,
+    },
+    /// Close the runs a killed daemon left open, with this status.
+    Interrupted {
+        /// When they are closed.
+        now_ms: u64,
+        /// The status they get.
+        status: String,
+        /// The status they still have.
+        running: String,
     },
 }
 
@@ -359,6 +425,7 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
             c.prepare_cached(sql::IMPACT_COUNT)?.execute(params![e.kind, e.check, e.reason, e.project])?;
             Ok(String::new())
         }
+        Op::Sched(op) => sched_apply(c, op),
         Op::Metrics { ts_ms, body } => {
             c.prepare_cached(sql::METRICS_SAVE)?.execute(params![*ts_ms as i64, body])?;
             Ok(String::new())
@@ -377,6 +444,29 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
             Ok(r)
         }
     }
+}
+
+fn sched_apply(c: &Connection, op: &SchedOp) -> Result<String, DbError> {
+    let now = crate::health::now_ms() as i64;
+    match op {
+        SchedOp::Save { job, next_ms, failures, cooldown_until_ms } => {
+            c.prepare_cached(sql::SCHED_SAVE)?.execute(params![job, *next_ms as i64, *failures as i64, *cooldown_until_ms as i64, now])?;
+        }
+        SchedOp::Start { job, due_ms, started_ms, attempt } => {
+            c.prepare_cached(sql::RUN_START)?.execute(params![job, *due_ms as i64, *started_ms as i64, "running", *attempt as i64])?;
+            return Ok(c.last_insert_rowid().to_string());
+        }
+        SchedOp::End { id, ended_ms, status, detail } => {
+            c.prepare_cached(sql::RUN_END)?.execute(params![id, *ended_ms as i64, status, detail])?;
+        }
+        SchedOp::Record { job, due_ms, started_ms, ended_ms, status, attempt, detail } => {
+            c.prepare_cached(sql::RUN_INSERT)?.execute(params![job, *due_ms as i64, *started_ms as i64, *ended_ms as i64, status, *attempt as i64, detail])?;
+        }
+        SchedOp::Interrupted { now_ms, status, running } => {
+            c.prepare_cached(sql::RUN_INTERRUPTED)?.execute(params![*now_ms as i64, status, running])?;
+        }
+    }
+    Ok(String::new())
 }
 
 fn cap(name: &str) -> i64 {

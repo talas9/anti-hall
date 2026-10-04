@@ -31,7 +31,7 @@ doc = "Printed with metrics output when counters and histograms are snapshotted 
 value = "counters and histograms are snapshotted to hot.db every telemetry.snapshot_ms and at exit, and rolled up into archive.db; gauges are live readings"
 
 [telemetry.snapshot_ms]
-doc = "How often the daemon keeps a metrics snapshot in hot.db and its rollups in archive.db (D51); it also keeps one when it exits."
+doc = "Interval of the scheduled metrics snapshot job, which keeps the counters in hot.db and their rollups in archive.db (D51); the daemon also keeps one when it exits."
 value = 60000
 env = "AH_ENGINE_SNAPSHOT_MS"
 unit = "ms"
@@ -189,6 +189,14 @@ value = { kind = "gauge", unit = "runs", labels = [] }
 [metric.maintain_last_ms]
 doc = "When the last maintenance run happened, in ms since the epoch (0: never)."
 value = { kind = "gauge", unit = "ms", labels = [] }
+
+[metric.schedule_runs]
+doc = "Scheduled runs that finished, by job and status (ok, failed, timeout, planned, skipped) (D33)."
+value = { kind = "counter", unit = "runs", labels = ["job", "status"] }
+
+[metric.schedule_missed]
+doc = "Runs that caught up a missed window or skipped it, by job (D33)."
+value = { kind = "counter", unit = "runs", labels = ["job"] }
 
 # ---- impact kinds ---------------------------------------------------------------------------------------
 

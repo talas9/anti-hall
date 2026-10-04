@@ -54,6 +54,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("backup", cmd_backup),
         ("restore", cmd_restore),
         ("config", cmd_config),
+        ("schedule", cmd_schedule),
     ]
 }
 
@@ -268,6 +269,53 @@ fn cmd_maintain(p: &Parsed) -> i32 {
     report_result(p, res)
 }
 
+fn cmd_schedule(p: &Parsed) -> i32 {
+    let sub = p.rest.first().map(String::as_str).unwrap_or("list");
+    let verb = match sub {
+        "run" => match p.rest.get(1).filter(|j| !j.starts_with("--")) {
+            Some(job) => format!("schedule run job={job}"),
+            None => return report_result(p, Err(defaults::render("msg.cli_usage", &[("commands", &"schedule run <job>")]))),
+        },
+        "history" => {
+            let mut v = "schedule history".to_string();
+            for name in ["job", "limit"] {
+                let x = flag(p, name);
+                if !x.is_empty() {
+                    v.push_str(&format!(" {name}={x}"));
+                }
+            }
+            v
+        }
+        "list" => "schedule list".to_string(),
+        other => return report_result(p, Err(defaults::render("msg.cli_unknown", &[("command", &format!("schedule {other}"))]))),
+    };
+    if let Some(v) = client::ctl_json(&verb) {
+        return report_result(p, Ok(v));
+    }
+    // no daemon: list and history come straight from the files; a run needs the daemon
+    match sub {
+        "run" => no_daemon(p),
+        "history" => {
+            let limit = flag(p, "limit").parse().unwrap_or(defaults::num("schedule.history_default") as usize);
+            let hot = crate::paths::dir().join(defaults::text("storage.hot_file"));
+            let runs = rusqlite::Connection::open_with_flags(&hot, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .ok()
+                .and_then(|c| crate::schedule::history(&c, &flag(p, "job"), limit).ok())
+                .unwrap_or_default();
+            report_result(p, Ok(json!({"running": false, "runs": runs})))
+        }
+        _ => {
+            use crate::schedule::ScheduleSource;
+            let jobs: Vec<Value> = crate::schedule::FileSource::standard(false)
+                .jobs()
+                .iter()
+                .map(|j| json!({"name": j.name, "kind": j.kind, "action": j.action, "every_ms": j.every_ms, "persist": j.persist}))
+                .collect();
+            report_result(p, Ok(json!({"running": false, "jobs": jobs})))
+        }
+    }
+}
+
 fn cmd_backup(p: &Parsed) -> i32 {
     let to = flag(p, "to");
     let to = (!to.is_empty()).then(|| std::path::PathBuf::from(to));
@@ -429,7 +477,7 @@ mod tests {
         for n in ["status", "metrics", "impact", "docs", "check", "version"] {
             assert!(ro.contains(&n.to_string()), "{n} must be read-only");
         }
-        for n in ["serve", "hook", "stop", "reset", "proj", "ctl", "maintain", "backup", "restore"] {
+        for n in ["serve", "hook", "stop", "reset", "proj", "ctl", "maintain", "backup", "restore", "schedule"] {
             assert!(!ro.contains(&n.to_string()), "{n} changes state");
         }
     }

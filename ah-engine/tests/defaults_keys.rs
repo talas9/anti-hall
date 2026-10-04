@@ -84,9 +84,17 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         let text = text.split("#[cfg(test)]\nmod tests {").next().unwrap_or("").to_string();
         literals.extend(re.captures_iter(&text).map(|c| c[1].to_string()));
     }
+    // a scheduled job names the setting that holds its interval (`every_key`); the scheduler reads it through that name
+    for e in ah_engine::defaults::all().iter().filter(|e| e.key.starts_with("job.")) {
+        if let Some(k) = e.value.get("every_key").and_then(ah_engine::defaults::V::as_str) {
+            assert!(shipped.contains(k), "{} names every_key {k}, which is not shipped", e.key);
+            literals.insert(k.to_string());
+        }
+    }
     let indirect = |k: &str| {
         k.starts_with("cmd.") // handlers are checked against the registry by cli::tests; planned commands have no handler
             || k.starts_with("protocol.") // documents the wire format; the request words are parsed in daemon.rs
+            || k.starts_with("job.") // scheduled jobs are read by prefix in schedule.rs
             || k.starts_with("msg.hint_") // named by the health.error_codes table, not by source
             || k.starts_with("git.msg_") // block messages are rendered by block(name); the name is a literal there
     };

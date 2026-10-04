@@ -58,8 +58,8 @@ doc = "Size control (D26): move consumed messages, expired key values and old im
 value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.schedule]
-doc = "List, add and remove scheduled jobs."
-value = { args = "<list|add|remove>", read_only = false, status = "planned (D33)" }
+doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."
+value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, status = "implemented" }
 
 [cmd.config]
 doc = "Show the effective config and where each value comes from, or validate a config file; versions, rollback and export are planned (D18, they need the config database)."

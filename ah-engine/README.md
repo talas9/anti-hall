@@ -25,6 +25,7 @@ never a submodule (D69).
 | `src/rules.rs`, `src/hookio.rs` | the rules format (JSON) and hook payload to output translation |
 | `src/telemetry.rs`, `src/metrics.rs`, `src/impact.rs`, `src/storage.rs` | metrics, the impact ledger and the `Store` trait with its SQLite and in-memory stores |
 | `src/tier.rs` | the in-memory layer: the byte-budgeted, TTL-aware `Tiered` cache of active items and the pub/sub bus |
+| `src/schedule.rs` | the scheduler and ticker: job sources, due/catch-up/backoff rules, subprocess and in-process runs, run history |
 | `src/backup.rs` | backup (online, scrubbed, self-contained snapshot) and restore (pre-restore snapshot kept, then swap) |
 | `src/maintain.rs` | size control: the hot-to-archive mover, retention, checkpoints and VACUUM (`ah-engine maintain`) |
 | `src/spool.rs` | the write spool: retry with backoff, framed fsync'd records, ordered idempotent drain, quarantine |
@@ -90,6 +91,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | Residency: stays up when idle by default; idle exit is a config key | `tests/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
 | Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/agent_cli.rs` |
 | Tiered lifecycle: write-through after commit, LRU budget loses nothing, TTL ends the lifecycle but keeps the row, a restart rebuilds only active items, idempotent write ids, pub/sub never blocks | `tier::tests`, `store::tests` |
+| Scheduler: on time, a restart never runs a job twice, a missed window catches up once (or is skipped), a hung job is killed at its timeout and the next run happens, list/run/history with and without a daemon | `tests/schedule.rs`, `schedule::tests` |
 | Persisted telemetry: metric snapshots and rollups and the impact ledger survive a clean restart and a SIGKILL; counting continues from the snapshot | `tests/agent_cli.rs` (`metrics_impact_and_rollups_survive_a_restart_and_a_kill`), `metrics::tests`, `storage::tests` |
 | Backup and restore: consistent and scrubbed (no unscrubbed page left), never overwrites a snapshot, restore keeps the current state and swaps, a damaged or newer snapshot changes nothing, CLI round trip with a live daemon | `backup::tests`, `tests/agent_cli.rs` (`backup_then_restore_through_the_cli_with_a_live_daemon`) |
 | Size control: inactive rows move to the archive and active ones stay, totals stay exact, a crash between copy and remove loses and duplicates nothing, the impact cap moves the oldest, no hard delete unless configured, maintain beside a live daemon | `maintain::tests`, `tests/agent_cli.rs` (`maintain_runs_beside_a_live_daemon_and_is_reported_in_metrics`) |
@@ -226,4 +228,5 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Storage phase measured (README, Measurements)
 - [x] Config files: layered over the defaults, watched, validated, hot-swapped; `config`, `config validate` (D18, file part)
 - [x] Shared read paths: transcript index (X1) and per-repo git cache (X3, D61); no check uses them yet (D75 wave 2)
-- [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage and rollback (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases
+- [x] Scheduler and ticker, `ah-engine schedule` (D33)
+- [ ] Mailbox (D45), Jev lane (D34-D38), config in storage and rollback (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases

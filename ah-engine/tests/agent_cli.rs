@@ -142,10 +142,13 @@ fn every_implemented_read_only_command_prints_json_and_planned_ones_say_so() {
     assert!(docs["commands"].as_array().unwrap().len() >= 12 && docs["checks"].as_array().unwrap().iter().any(|c| c["name"] == "git"));
     let md = e.run(&["docs", "--format", "md"]).0;
     assert!(md.starts_with("# ah-engine reference"));
-    let (out, code) = e.run(&["schedule", "--json"]);
-    assert_eq!(code, 64, "schedule");
-    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert!(v["status"].as_str().unwrap().starts_with("planned"), "{v}");
+    for c in ah_engine::cli::commands().into_iter().filter(|c| c.status != "implemented") {
+        let planned = c.name.as_str();
+        let (out, code) = e.run(&[planned, "--json"]);
+        assert_eq!(code, 64, "{planned}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["status"].as_str().unwrap().starts_with("planned"), "{v}");
+    }
     let (_, code) = e.run(&["no-such-command"]);
     assert_eq!(code, 64);
 }

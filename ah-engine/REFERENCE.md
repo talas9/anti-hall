@@ -20,7 +20,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `proj` | `<cwd> <put\|take\|len\|set\|setex\|get> [args]` | no | implemented | Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a TTL in seconds, get); the partition is derived from the cwd. |
 | `reset` | `` | no | implemented | Clear the client breaker, the crash-loop stop and the failure record. |
 | `restore` | `<snapshot-dir>` | no | implemented | Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases. |
-| `schedule` | `<list\|add\|remove>` | no | planned (D33) | List, add and remove scheduled jobs. |
+| `schedule` | `<list\|run <job>\|history> [--job <name>] [--limit <n>]` | no | implemented | The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json. |
 | `serve` | `` | no | implemented | Run the resident daemon in the foreground (the client starts it detached when needed). |
 | `status` | `` | yes | implemented | Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did. |
 | `stop` | `` | no | implemented | Ask the daemon to drain and exit. |
@@ -36,6 +36,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `ping` | `CTL ping` | `OK pong <version> <pid>` | Liveness probe; also how a starting daemon checks that a live one already owns the socket. |
 | `project` | `P <cwd> [W <write-id> ]<put\|take\|len\|set\|setex\|get> [args]` | `OK <value> \| ERR <reason> \| BUSY` | A per-project operation on hot.db; the daemon derives the partition from the cwd, so a request cannot name another project's key. A write is answered only after it commits; the optional write id makes it idempotent. |
 | `reload` | `CTL reload` | `OK ok` | Re-read the rules file now (it is also re-read on SIGHUP and on change). |
+| `schedule` | `CTL schedule list \| run job=<name> \| history [job=<name>] [limit=<n>]` | `OK <schedule JSON>` | The scheduler: the jobs and their schedules, run one now, or the run history. |
 | `status` | `CTL status` | `OK <status JSON>` | The daemon's state as JSON, including a headline summary. |
 | `stop` | `CTL stop` | `OK ok` | Drain and exit. |
 
@@ -140,6 +141,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `files.log` | `ah-engine.log` |  |  | Event log file name (state directory). |
 | `files.reaped_prefix` | `daemon.run.reaped.` |  |  | Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended). |
 | `files.run_marker` | `daemon.run` |  |  | Written while a daemon runs; a leftover one with a dead pid is logged as one crash. |
+| `files.schedules_override` | `schedules.json` |  |  | User overrides of the shipped schedules (D33): JSON, `{"jobs": {"<name>": {...}}}`; read when the daemon starts. |
 | `files.spool` | `spool.log` |  |  | The write spool: project writes a client could not deliver, applied by the daemon in order (D24). |
 | `files.spool_quarantine` | `spool.quarantine` |  |  | Spool records that could not be parsed or that the store refused for good, kept with their reason, never dropped (D24). |
 | `files.starts` | `starts` |  |  | Counter of daemon starts, surfaced as `starts` and `restarts` in status. |
@@ -324,7 +326,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `telemetry.project_key_len` | `12` |  |  | Hex digits of the hashed project key shown in impact events (the project path itself is never stored). |
 | `telemetry.recent_default` | `20` |  |  | How many of the most recent impact events `impact` shows unless asked for more. |
 | `telemetry.rollups` | `3 entries, 3 entries` |  |  | Metric rollup resolutions in archive.db: each bucket keeps the last snapshot taken in it, and buckets older than keep_s are pruned by `ah-engine maintain` (derived data, D59). |
-| `telemetry.snapshot_ms` | `60000` | `AH_ENGINE_SNAPSHOT_MS` | ms | How often the daemon keeps a metrics snapshot in hot.db and its rollups in archive.db (D51); it also keeps one when it exits. |
+| `telemetry.snapshot_ms` | `60000` | `AH_ENGINE_SNAPSHOT_MS` | ms | Interval of the scheduled metrics snapshot job, which keeps the counters in hot.db and their rollups in archive.db (D51); the daemon also keeps one when it exits. |
 
 ### storage.toml / backup
 
@@ -350,6 +352,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `retention.kv_expired_s` | `86400` |  | s | A key value moves from hot.db to archive.db this long after its TTL ended. |
 | `retention.mailbox_consumed_s` | `604800` |  | s | A consumed mailbox message moves from hot.db to archive.db this long after it was consumed. |
 | `retention.max_batches` | `10000` |  |  | Most batches one maintenance run moves per table, so a run stays bounded. |
+| `retention.schedule_runs_s` | `2592000` |  | s | Scheduler run history older than this is forgotten by `maintain` (a derived log, D59). |
 
 ### storage.toml / spool
 
@@ -357,7 +360,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 |---|---|---|---|---|
 | `spool.backoff_max_ms` | `400` |  | ms | Longest retry delay. |
 | `spool.backoff_ms` | `20` | `AH_ENGINE_SPOOL_BACKOFF_MS` | ms | First retry delay; each retry doubles it, up to backoff_max_ms, with random jitter of up to half the delay. |
-| `spool.drain_ms` | `1000` | `AH_ENGINE_SPOOL_DRAIN_MS` | ms | How often the daemon applies spooled writes on its own (it also drains on start and before each project write). |
+| `spool.drain_ms` | `1000` | `AH_ENGINE_SPOOL_DRAIN_MS` | ms | Interval of the scheduled spool drain job (it also drains on start and before each project write). |
 | `spool.max_bytes` | `16777216` | `AH_ENGINE_SPOOL_MAX_BYTES` | bytes | Largest spool; a write that would grow it past this is refused instead of spooled, so the client learns it was not kept. |
 | `spool.retries` | `4` | `AH_ENGINE_SPOOL_RETRIES` |  | Retries of a project write before it is spooled (the first attempt is not counted). |
 | `spool.verbs` | `put, set, setex` |  |  | Project verbs a client may spool when the engine is down or busy: writes whose answer it does not need. |
@@ -483,6 +486,29 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `gitcache.ttl_ms` | `60000` |  | ms | Hard lifetime of a cached fact even when its signature has not changed (D61); the signature, not this, is what makes a fact fresh. |
 | `gitcache.xdg_git_config` | `git/config` |  |  | Path of git's config below the XDG config directory. |
 
+### schedules.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.backup` | `11 entries` |  |  | A scrubbed backup of both databases (D27); off until schedule.backup_ms is set. Runs as a subprocess. |
+| `job.maintain` | `11 entries` |  |  | Size control (D26): move inactive rows to archive.db, prune derived data, checkpoint and VACUUM; runs as a subprocess so a timeout can kill it. |
+| `job.metrics_snapshot` | `11 entries` |  |  | Keep a snapshot of the metrics counters and histograms in hot.db and its rollups in archive.db (D51). |
+| `job.spool_drain` | `11 entries` |  |  | Apply writes clients spooled while the engine was down or busy (D24); the daemon also drains on start and before each project write. |
+
+### schedules.toml / schedule
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `schedule.actions` | `maintain, backup, metrics_snapshot, spool_drain, noop` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
+| `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
+| `schedule.history_default` | `50` |  |  | Runs `schedule history` lists unless asked for more. |
+| `schedule.maintain_ms` | `86400000` | `AH_ENGINE_MAINTAIN_MS` | ms | Interval of the maintain job (D26); 0 turns it off. |
+| `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
+| `schedule.subprocess_actions` | `maintain, backup` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
+| `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -573,6 +599,13 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.restore_daemon_busy` | A restore could not stop the daemon or take its lock in time. |
 | `msg.restore_damaged` | A snapshot database failed its integrity check. Placeholders: {path}, {check}. |
 | `msg.restore_no_hot` | A snapshot directory has no hot.db. Placeholder: {path}. |
+| `msg.schedule_agent_planned` | Result of an agent-targeted job until mailbox delivery exists (D45). |
+| `msg.schedule_daemon_gone` | An in-process job found the daemon gone (it was exiting). |
+| `msg.schedule_failed` | Event-log detail of a failed run. Placeholders: {job}, {detail}. |
+| `msg.schedule_snapshot_failed` | The metrics snapshot job could not keep its snapshot. |
+| `msg.schedule_timeout` | Detail of a run that passed its timeout. |
+| `msg.schedule_unknown_action` | A job names an action the scheduler does not know; the job is ignored. Placeholders: {job}, {action}. |
+| `msg.schedule_unknown_job` | `schedule run` named a job that is not configured. Placeholder: {job}. |
 | `msg.spool_damaged` | Quarantine reason for spool bytes that are not a valid record. |
 | `msg.spool_full` | Printed by `proj` when the spool is full, so the write was not kept. |
 | `msg.spool_io` | Printed by `proj` when the spool could not be written. Placeholder: {err}. |
@@ -650,6 +683,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `requests` | counter | requests |  | Requests the daemon handled, any type. |
 | `rss_kb` | gauge | KB |  | Resident set of the daemon, sampled when status or metrics is read. |
 | `rule_hits` | counter | matches | action | Regex rule matches, by action (deny, warn, context). |
+| `schedule_missed` | counter | runs | job | Runs that caught up a missed window or skipped it, by job (D33). |
+| `schedule_runs` | counter | runs | job, status | Scheduled runs that finished, by job and status (ok, failed, timeout, planned, skipped) (D33). |
 | `spool_applied` | counter | writes |  | Spooled writes the daemon applied (D24). |
 | `spool_quarantined` | counter | records |  | Spool records moved to quarantine: damaged, or refused for good by the store (D24). |
 | `tier_bytes` | gauge | bytes |  | Bytes charged to the in-memory layer's budget (D25). |

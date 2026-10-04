@@ -128,6 +128,8 @@ pub struct Shared {
     pub db: Option<Arc<crate::db::Db>>,
     /// `ok`, or the error code that kept storage from opening, for `status`.
     pub storage: String,
+    /// The scheduler, once `serve` started it (D33).
+    pub sched: std::sync::OnceLock<Arc<crate::schedule::Scheduler>>,
 }
 
 /// The value of `name=<value>` in a space-separated argument string (empty when absent).
@@ -169,6 +171,7 @@ impl Shared {
             starts: 0,
             db: None,
             storage: defaults::text("msg.storage_off").to_string(),
+            sched: std::sync::OnceLock::new(),
         }
     }
 
@@ -322,6 +325,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
     match ctl.map(|_| verb) {
         Some("metrics") => (Reply::Ok(sh.metrics_json(args).to_string()), After::Continue),
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
+        Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
         Some("reload") => {
             sh.reload();
@@ -720,12 +724,7 @@ pub fn serve() {
         let s = sh.clone();
         std::thread::spawn(move || watchdog(s));
     }
-    if sh.db.is_some() {
-        let s = sh.clone();
-        std::thread::spawn(move || spool_drainer(s));
-        let s = sh.clone();
-        std::thread::spawn(move || snapshotter(s));
-    }
+    start_scheduler(&sh);
     accept_loop(&sh, &listener);
     if let Some(db) = &sh.db {
         sh.telemetry.snapshot_metrics(); // the counters as they are at exit
@@ -737,28 +736,55 @@ pub fn serve() {
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
 }
 
-/// Drains the spool every `spool.drain_ms` (D24): writes a client spooled while this daemon was busy get applied
-/// even if no other write arrives.
-fn spool_drainer(sh: Arc<Shared>) {
-    let every = defaults::millis("spool.drain_ms");
-    while !sh.draining.load(SeqCst) {
-        std::thread::sleep(every);
-        drain_spool(&sh);
-    }
+/// Start the scheduler's ticker (D33). Its engine-side jobs (maintain, backup, the metrics snapshot, the spool drain)
+/// run inside this daemon; the in-process ones reach the daemon through a weak handle, so the scheduler never keeps it
+/// alive.
+fn start_scheduler(sh: &Arc<Shared>) {
+    use crate::schedule::{FileSource, InProc, Observer, PlannedDelivery, Scheduler, Setting};
+    let weak = Arc::downgrade(sh);
+    let inproc: InProc = Box::new(move |action| {
+        let Some(sh) = weak.upgrade() else { return Err(defaults::text("msg.schedule_daemon_gone").to_string()) };
+        match action {
+            "metrics_snapshot" if sh.telemetry.snapshot_metrics() => Ok(String::new()),
+            "metrics_snapshot" => Err(defaults::text("msg.schedule_snapshot_failed").to_string()),
+            "spool_drain" => {
+                let r = drain_spool(&sh);
+                Ok(serde_json::json!({"applied": r.applied, "quarantined": r.quarantined, "left": r.left}).to_string())
+            }
+            "noop" => Ok(String::new()),
+            other => Err(defaults::render("msg.schedule_unknown_action", &[("job", &"-"), ("action", &other)])),
+        }
+    });
+    let weak = Arc::downgrade(sh);
+    let observe: Observer = Box::new(move |job, status, catch_up| {
+        if let Some(sh) = weak.upgrade() {
+            sh.telemetry.with_metrics(|m| {
+                m.inc("schedule_runs", &[("job", job), ("status", status)]);
+                if catch_up {
+                    m.inc("schedule_missed", &[("job", job)]);
+                }
+            });
+        }
+    });
+    let weak = Arc::downgrade(sh);
+    let setting: Setting = Box::new(move |key| weak.upgrade().map(|sh| sh.cfg().effective.num(key)).unwrap_or_else(|| defaults::num(key)));
+    let sched = Arc::new(Scheduler::new(&FileSource::standard(sh.cfg().test_hooks), sh.db.clone(), inproc, Box::new(PlannedDelivery), observe, setting));
+    let _ = sh.sched.set(sched.clone());
+    let s = sh.clone();
+    std::thread::spawn(move || sched.run_ticker(&|| s.draining.load(SeqCst)));
 }
 
-/// Keeps a metrics snapshot every `telemetry.snapshot_ms` (D51). It sleeps in short slices so a draining daemon is
-/// not held up by it.
-fn snapshotter(sh: Arc<Shared>) {
-    let every = defaults::millis("telemetry.snapshot_ms");
-    let slice = defaults::millis("daemon.worker_wait_ms").min(every);
-    let mut last = Instant::now();
-    while !sh.draining.load(SeqCst) {
-        std::thread::sleep(slice);
-        if last.elapsed() >= every {
-            last = Instant::now();
-            sh.telemetry.snapshot_metrics();
+/// The `schedule` control verb: `list`, `run job=<name>`, `history [job=<name>] [limit=<n>]`.
+fn schedule_ctl(sh: &Shared, args: &str) -> serde_json::Value {
+    let Some(sched) = sh.sched.get() else { return serde_json::json!({"running": true, "jobs": []}) };
+    match args.split_whitespace().next().unwrap_or("list") {
+        "run" => sched.run_now(&kv(args, "job")),
+        "history" => {
+            let limit = kv(args, "limit").parse().unwrap_or(defaults::num("schedule.history_default") as usize);
+            let runs = sh.db.as_ref().and_then(|db| db.read(|c| crate::schedule::history(c, &kv(args, "job"), limit)).ok()).unwrap_or_default();
+            serde_json::json!({"running": true, "runs": runs})
         }
+        _ => sched.list(),
     }
 }
 
