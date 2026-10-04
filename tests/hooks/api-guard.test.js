@@ -338,3 +338,30 @@ test('SKIP HATCH: api-guard skipped -> allow even with fake API', { skip: !HAS_P
     assert.strictEqual(r.status, 0, 'skip hatch should allow');
   } finally { h.cleanup(); }
 });
+
+// ---- JS: chained require is not a module binding; property assignment is not a read ----
+// Field replay: `const src=require('fs').readFileSync(f)...; src.replace(...)` was flagged as
+// `fs(src).replace` (src is a string, not the fs module), and `fs.x = 1` as a fake fs API.
+test('ALLOW: js chained require().method() result is not the module (field replay)', { skip: !HAS_NODE }, () => {
+  const code = "const src=require('fs').readFileSync('mine2.js','utf8').split('const tot=')[0];eval(src.replace(/const /g,'var '));\n"
+    + "const l=require('fs').readFileSync('x','utf8').split('\\n');console.log(l.length);\n"
+    + "const rl=require('readline').createInterface({input:process.stdin});rl.on('line',()=>{});\n";
+  const r = run(write('/tmp/x.js', code));
+  assert.strictEqual(r.status, 0, 'chained require must NOT block :: ' + r.stdout);
+});
+
+test('ALLOW: js property assignment on a module is not an API read (field replay)', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/x.js', "const fs=require('fs');\nfs.appendFileSync_log=1;\n"));
+  assert.strictEqual(r.status, 0, 'assignment must NOT block :: ' + r.stdout);
+});
+
+test('BLOCK: js plain require binding still checks reads (fake fs method)', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/x.js', "const fs=require('fs');\nfs.readFileQuantum('x');\nconst t = fs.fakeProp == 1;\n"));
+  assert.strictEqual(r.status, 2, r.stdout);
+  assert.ok(/readFileQuantum/.test(r.json.reason));
+});
+
+test('BLOCK: js inline require().fake still blocks', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/x.js', "const x = require('fs').readFileQuantum('x');\n"));
+  assert.strictEqual(r.status, 2, r.stdout);
+});

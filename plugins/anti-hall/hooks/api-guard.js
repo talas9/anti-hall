@@ -279,7 +279,7 @@ function jsCandidates(code) {
   let m;
 
   const reqVar = {};
-  const reReqVar = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/g;
+  const reReqVar = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)(?!\s*[.(\[?])/g;
   while ((m = reReqVar.exec(noComments))) { if (!isPathSpec(m[2]) && jsModAllowed(m[2])) reqVar[m[1]] = m[2]; }
   for (const v of Object.keys(reqVar)) {
     const re = new RegExp('\\b' + v.replace(/\$/g, '\\$') + '\\s*=(?!=)', 'g');
@@ -296,6 +296,7 @@ function jsCandidates(code) {
     const re = new RegExp('\\b' + varName.replace(/\$/g, '\\$') + '\\.([A-Za-z_$][\\w$]*)', 'g');
     while ((m = re.exec(src))) {
       if (m[1].startsWith('__')) continue;
+      if (/^[ \t]*=(?!=)/.test(src.slice(m.index + m[0].length))) continue; // `mod.x = 1` defines x, it is not an API read
       push({ kind: 'require', mod, attr: m[1], label: mod + '(' + varName + ').' + m[1] });
     }
   }

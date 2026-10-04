@@ -423,10 +423,38 @@ function shellDefs(rawCmd) {
 
 // The command a call to a same-command wrapper runs: an alias body + the call's
 // arguments; a function body with "$@" / $* / $1..$9 replaced by them.
+// A wrapper that only stores its argument (`local cmd="$1"`) and then echoes /
+// passes it as data (a test harness piping JSON to a hook) does not RUN it, so
+// splicing the call args into that assignment would scan data as a command.
+// Such an assignment is neutralised unless the variable (or one derived from it)
+// is later used in command position or beside a shell/eval/exec-style word.
+const ARG_ASSIGN_RE = /(^|[\s;&|({])((?:(?:local|declare|typeset|readonly|export)[ \t]+(?:-[A-Za-z]+[ \t]+)?)?([A-Za-z_]\w*)=)("\$(?:[1-9]|\{[1-9]\})"|\$(?:[1-9]|\{[1-9]\}))(?=[\s;&|)}]|$)/g;
+const SHELL_WORD_RE = /(?:^|[\s(])(?:eval|exec|source|\.|(?:ba|z|da|k|c)?sh|xargs|env|command|builtin|nohup|sudo|time)(?=\s|$)/;
+function varRef(n) { return new RegExp('\\$(?:\\{' + n + '\\b|' + n + '\\b)'); }
+function varIsExecuted(body, name, names) {
+  const pipeToShell = /\|[ \t]*(?:\S*\/)?(?:(?:ba|z|da|k|c)?sh)\b/.test(body);
+  const cmdPos = new RegExp('(?:^|[;&|(\\n{]|\\b(?:then|do|else)\\b)[ \\t]*(?:[A-Za-z_]\\w*=\\S*[ \\t]+)*"?\\$(?:\\{' + name + '\\}|' + name + '\\b)"?(?![\\w])');
+  if (cmdPos.test(body) || pipeToShell) return true;
+  const ref = varRef(name);
+  for (const seg of body.split(/[;&|\n]+/)) {
+    if (ref.test(seg) && SHELL_WORD_RE.test(seg)) return true;
+  }
+  // derived variable: `y=$(... "$name" ...)` / `y="$name"` where y itself runs
+  for (const m of body.matchAll(/(?:^|[\s;&|({])(?:local[ \t]+)?([A-Za-z_]\w*)=([^;\n]*)/g)) {
+    if (m[1] === name || names.has(m[1]) || !ref.test(m[2])) continue;
+    names.add(m[1]);
+    if (varIsExecuted(body, m[1], names)) return true;
+  }
+  return false;
+}
+function neutraliseDataArgAssignments(body) {
+  return body.replace(ARG_ASSIGN_RE, (all, pre, lhs, name) => (varIsExecuted(body, name, new Set([name])) ? all : pre + lhs + '""'));
+}
+
 function wrapperExpansion(def, args) {
   const words = shellWords(args);
   if (def.kind === 'alias') return def.body + (words ? ' ' + words : '');
-  return def.body
+  return neutraliseDataArgAssignments(def.body)
     .replace(/"\$[@*]"|\$[@*]|"\$\{[@*]\}"|\$\{[@*]\}/g, words)
     .replace(/"?\$\{?([1-9])\}?"?/g, (_, n) => shellWords(args.slice(Number(n) - 1, Number(n))));
 }
