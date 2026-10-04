@@ -55,6 +55,9 @@ function computed() {
     claudeSkills: dirs(P('skills')),
     codexSkills: dirs(P('codex', 'skills')),
     hookFiles: fs.readdirSync(P('hooks')).filter((f) => f.endsWith('.js')).length,
+    userConfig: Object.keys(JSON.parse(read(P('.claude-plugin', 'plugin.json'))).userConfig || {}).length,
+    // per-section key counts, addressed as `section:<key>`
+    ...Object.fromEntries(schema.SECTIONS.map((s) => [`section:${s.key}`, s.settings.length])),
   };
 }
 
@@ -76,6 +79,17 @@ const CONTRACT = [
   ['env-override keys (prose)', /Of the \d+ keys: \d+ are `advanced`[^]*?,\s*(\d+)\s+have an env override/, 'env'],
   ['locked keys (prose)', /have an env override, (\d+) are `locked`/, 'locked'],
   ['homeOnly keys (prose)', /(\d+) are `homeOnly`/, 'homeOnly'],
+];
+// One claim per schema section: the `Keys` cell of its row in the contract's section table.
+const SECTION_ROWS = require(P('hooks', 'lib', 'settings-schema.js')).SECTIONS.map((s) => [
+  `section "${s.key}" keys (table row)`,
+  new RegExp('\\| `' + s.key + '` \\|[^|\\n]*\\| (\\d+) \\|'),
+  `section:${s.key}`,
+]);
+CONTRACT.push(...SECTION_ROWS);
+const GUIDE = [
+  ['/config rows (intro)', /The `\/config` rows \((\d+) options\)/, 'userConfig'],
+  ['userConfig options (settings notes)', /(\d+) `userConfig` options in `plugin\.json`/, 'userConfig'],
 ];
 const KB = [
   ['hook files (re-verified note)', new RegExp('Hooks:\\s*\\*\\*(\\d+)\\*\\*\\s*`\\.js`\\s*files'), 'hookFiles'],
@@ -107,6 +121,7 @@ const withIndices = (re) => new RegExp(re.source, re.flags.includes('d') ? re.fl
 const DOCS = [
   ['docs/CONTRACT-1.0.md', CONTRACT],
   ['docs/KB.md', KB],
+  ['docs/GUIDE.md', GUIDE],
 ];
 const real = computed();
 
@@ -130,6 +145,26 @@ for (const [rel, claims] of DOCS) {
     }
   });
 }
+
+test('docs/CONTRACT-1.0.md: section table has one row per schema section, with matching headline keys', () => {
+  const text = read(path.join(REPO, 'docs/CONTRACT-1.0.md'));
+  const schema = require(P('hooks', 'lib', 'settings-schema.js'));
+  const problems = [];
+  const rows = text.match(/^\| `\w+` \| [^|\n]+ \| \d+ \|.*$/gm) || [];
+  const docSections = rows.map((r) => /^\| `(\w+)`/.exec(r)[1]);
+  const real = schema.SECTIONS.map((s) => s.key);
+  for (const k of real) if (!docSections.includes(k)) problems.push(`section "${k}" missing from the contract table`);
+  for (const k of docSections) if (!real.includes(k)) problems.push(`contract table lists section "${k}" which is not in the schema`);
+  for (const s of schema.SECTIONS) {
+    const row = rows.find((r) => r.startsWith('| `' + s.key + '` |'));
+    if (!row) continue;
+    const cell = row.split('|')[4] || '';
+    const doc = [...cell.matchAll(/`([^`]+)`/g)].map((m) => m[1]).sort();
+    const code = s.settings.filter((k) => k.headline).map((k) => k.key).sort();
+    if (doc.join(',') !== code.join(',')) problems.push(`section "${s.key}" headline keys: doc says [${doc}], code says [${code}]`);
+  }
+  assert.deepStrictEqual(problems, []);
+});
 
 test('computed counts are sane (non-zero)', () => {
   for (const [k, v] of Object.entries(real)) {
