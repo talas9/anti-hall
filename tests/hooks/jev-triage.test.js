@@ -420,3 +420,60 @@ test('budget cut-off: items the worker never attempted are NOT cached as permane
     });
   } finally { rm(home); }
 });
+
+// JT-1: two processes triaging the SAME uncached message at once must pay for ONE Jev call and write ONE log row.
+test('concurrent triage of the same uncached message: one Jev call, one log row (claims)', async () => {
+  const home = tmpHome();
+  try {
+    writeJevConfig(home, { enabled: true, confidenceThreshold: 0.85, timeoutMs: 2000, triageBudgetMs: 3000 });
+    let hitCount = 0;
+    await withMockServer(async (req, res) => {
+      hitCount++;
+      const body = await readJsonBody(req);
+      await new Promise((r) => setTimeout(r, 500)); // wide overlap window
+      const out = { answers: {} };
+      if (body.questions.kind) out.answers.kind = { choice: 'question-needs-answer', confidence: 0.95 };
+      if (body.questions.urgency) out.answers.urgency = { noul: 0.05 };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    }, async (endpoint) => {
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' };
+      const items = [{ key: 'q', text: 'Should I merge this now or wait for review?' }];
+      await Promise.all([runTriageInSubprocess(home, env, items), runTriageInSubprocess(home, env, items)]);
+      assert.strictEqual(hitCount, 1, 'the loser of the claim must not send a second request');
+      const log = fs.readFileSync(path.join(home, '.anti-hall', 'logs', 'jev-triage.ndjson'), 'utf8').trim().split('\n');
+      assert.strictEqual(log.length, 1, 'exactly one triage log row');
+      const cache = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'cache', 'jev-triage.json'), 'utf8'));
+      assert.strictEqual(cache[hashMessage(items[0].text)].kind, 'question-needs-answer');
+    });
+  } finally { rm(home); }
+});
+
+// JT-4: ring behaviour at the cap — add one to a full cache: size stays at the cap, the OLDEST entry is the one evicted.
+test('full cache of 500 + one new entry: size stays 500 and the evicted key is the oldest', async () => {
+  const home = tmpHome();
+  try {
+    writeJevConfig(home, { enabled: true, confidenceThreshold: 0.85, timeoutMs: 1000 });
+    const { MAX_CACHE_ENTRIES } = require(LIB);
+    const full = {};
+    for (let i = 0; i < MAX_CACHE_ENTRIES; i++) full['k' + String(i).padStart(31, '0')] = { _seq: 100 + i };
+    fs.mkdirSync(path.join(home, '.anti-hall', 'cache'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.anti-hall', 'cache', 'jev-triage.json'), JSON.stringify(full));
+    await withMockServer(async (req, res) => {
+      const body = await readJsonBody(req);
+      const out = { answers: {} };
+      if (body.questions.kind) out.answers.kind = { choice: 'fyi', confidence: 0.95 };
+      if (body.questions.urgency) out.answers.urgency = { noul: 0.05 };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    }, async (endpoint) => {
+      const env = { HOME: home, ANTIHALL_JEV_TEST_ENDPOINT: endpoint, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k' };
+      await runTriageInSubprocess(home, env, [{ key: 'n', text: 'brand new message' }]);
+      const cache = JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', 'cache', 'jev-triage.json'), 'utf8'));
+      assert.strictEqual(Object.keys(cache).length, MAX_CACHE_ENTRIES);
+      assert.ok(cache[hashMessage('brand new message')], 'new entry kept');
+      assert.ok(!cache['k' + '0'.repeat(31)], 'oldest (lowest _seq) evicted');
+      assert.ok(cache['k' + String(1).padStart(31, '0')], 'second-oldest survives');
+    });
+  } finally { rm(home); }
+});

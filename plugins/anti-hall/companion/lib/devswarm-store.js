@@ -753,10 +753,22 @@ function appendMeshMessage(store, fields) {
   const instanceNonce = f.instanceNonce != null ? String(f.instanceNonce) : null;
   const workspaceId = type === 'direct' ? to : BROADCAST_PARTITION_ID;
   const recipient = type === 'direct' ? to : null;
-  return store.appendMeshRow({
+  const appended = store.appendMeshRow({
     workspaceId, ts, hash, body: message,
     sender: from, recipient, mtype: type, urgency, isHeartbeat, needsReply, origHash, instanceNonce,
   });
+  // LABEL AT ARRIVAL (parentGateQuestion): a freshly inserted un-flagged direct
+  // message is enqueued for Jev triage (opt-in via `fields.home`, so every
+  // caller that omits it is byte-identical to before) so it carries a cache
+  // label while still UNREAD — the parent gate's jevQuestionCandidates lookup
+  // is cache-only and used to see labels only after a render had already
+  // consumed the message. Fire-and-forget + fail-open; disabled Jev, an
+  // already-labelled message, or any error is a no-op. Never touches the row.
+  if (appended && appended.inserted && type === 'direct' && !isHeartbeat && !needsReply &&
+      typeof f.home === 'string' && f.home && message) {
+    try { require('../../hooks/lib/jev-triage.js').enqueueArrival({ home: f.home, text: message }); } catch (_) { /* advisory */ }
+  }
+  return appended;
 }
 
 // isSqliteBusyError(e) -> true for a SQLITE_BUSY / "database is locked" throw

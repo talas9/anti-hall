@@ -205,6 +205,44 @@ function nextCacheSeq(cache) {
   return max + 1;
 }
 
+// In-flight claims (JT-1): two processes triaging the same uncached message at
+// once (a Primary turn plus a sibling child, or an arrival enqueue plus a render)
+// both read "uncached" and both paid for a Jev call + log row. A claim is an
+// O_EXCL file per hash; a loser skips the item (the winner's label lands in the
+// shared cache). A claim older than CLAIM_STALE_MS belongs to a dead process.
+const CLAIM_STALE_MS = 15000;
+
+function claimDir(home) {
+  return path.join(homeDir(home), '.anti-hall', 'cache', 'jev-triage.claims');
+}
+
+function claimHash(home, hash) {
+  try {
+    const dir = claimDir(home);
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, hash);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fs.closeSync(fs.openSync(p, 'wx'));
+        return true;
+      } catch (e) {
+        if (!e || e.code !== 'EEXIST') return false;
+        let age = 0;
+        try { age = Date.now() - fs.statSync(p).mtimeMs; } catch (_) { continue; }
+        if (age < CLAIM_STALE_MS) return false;
+        try { fs.unlinkSync(p); } catch (_) { /* raced: retry the create */ }
+      }
+    }
+    return false;
+  } catch (_) {
+    return true; // claims are best-effort: an unusable dir must not disable triage
+  }
+}
+
+function releaseClaim(home, hash) {
+  try { fs.unlinkSync(path.join(claimDir(home), hash)); } catch (_) { /* best-effort */ }
+}
+
 // triageMessagesSync(items, opts) -> Map<key, {urgency?, kind?}>
 //   items: [{key, text}] — `key` is the caller's own identity for the message
 //     (e.g. a seq/hash it already has); `text` is the message body used ONLY
@@ -264,10 +302,42 @@ function triageMessagesSync(items, opts) {
 
   if (uncached.length === 0) return results;
 
+  // Claim each uncached hash; re-read the cache AFTER claiming so a label a
+  // concurrent process just wrote (and released its claim for) is not paid for
+  // twice. Items another process holds are skipped (their label lands in the
+  // shared cache; they are labelled on a later call at no extra cost).
+  const claimed = [];
+  const freshCache = readCache(home);
+  const mine = new Set();
+  for (const it of uncached) {
+    if (mine.has(it.hash)) { claimed.push(it); continue; } // same text twice in ONE call: one Jev call, both keys labelled
+    if (!claimHash(home, it.hash)) continue;
+    const c = freshCache[it.hash];
+    if (c) {
+      releaseClaim(home, it.hash);
+      if (c.urgency || c.kind) results.set(it.key, { urgency: c.urgency, kind: c.kind });
+      continue;
+    }
+    mine.add(it.hash);
+    claimed.push(it);
+  }
+  uncached.length = 0;
+  for (const it of claimed) uncached.push(it);
+  if (uncached.length === 0) return results;
+
+  try {
+    return runWorkerAndCache(home, cfg, cache, uncached, results);
+  } finally {
+    for (const it of uncached) releaseClaim(home, it.hash);
+  }
+}
+
+function runWorkerAndCache(home, cfg, cache, uncached, results) {
   let workerOut = null;
   try {
     const input = JSON.stringify({
-      items: uncached.map((it) => ({ hash: it.hash, text: it.text })),
+      items: uncached.filter((it, i) => uncached.findIndex((o) => o.hash === it.hash) === i)
+        .map((it) => ({ hash: it.hash, text: it.text })),
       timeoutMs: cfg.budgetMs,
       urgentThreshold: cfg.urgentThreshold,
     });
@@ -317,11 +387,46 @@ function triageMessagesSync(items, opts) {
       }
     }
     if (Object.keys(newCacheEntries).length) {
-      writeCache(home, Object.assign({}, cache, newCacheEntries));
+      // Re-read right before writing: a concurrent process may have written
+      // entries since `cache` was read, and whole-file last-write-wins would
+      // drop them. Fresh `_seq`s are re-based on the re-read max.
+      const latest = readCache(home);
+      let seq2 = nextCacheSeq(latest);
+      for (const k of Object.keys(newCacheEntries)) newCacheEntries[k]._seq = seq2++;
+      writeCache(home, Object.assign({}, latest, newCacheEntries));
     }
   }
 
   return results;
+}
+
+// enqueueArrival({home, text}) — label a direct message AT ARRIVAL (called when
+// it is ingested into the mesh store) so the parent gate's cache-only
+// parentGateQuestion lookup finds a label on an UNREAD message. Fire-and-forget:
+// a detached child runs the SAME triageMessagesSync (same worker, same budget,
+// same claims, same cache/log), so the sender never waits on a Jev call. Zero
+// extra calls for a message already in the cache (checked here, before any
+// spawn). Disabled / no home / any error -> no-op, never throws.
+function enqueueArrival({ home, text } = {}) {
+  try {
+    if (typeof home !== 'string' || !home || typeof text !== 'string' || !text.trim()) return false;
+    const cfg = loadTriageConfig(home);
+    if (!cfg.enabled) return false;
+    if (readCache(home)[hashMessage(text)]) return false; // already classified
+    const { spawn } = require('child_process');
+    const child = spawn(process.execPath, [path.join(__dirname, 'jev-triage-arrival.js')], {
+      detached: true,
+      stdio: ['pipe', 'ignore', 'ignore'],
+      env: Object.assign({}, process.env, { ANTIHALL_TRIAGE_ARRIVAL_HOME: home, HOME: home, USERPROFILE: home }),
+    });
+    child.on('error', () => { /* fail-open */ });
+    child.stdin.on('error', () => { /* fail-open */ });
+    child.stdin.end(text);
+    child.unref();
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 // pendingPath(home) — one small JSON map of (recipient, sender) pairs
@@ -415,6 +520,7 @@ module.exports = {
   loadTriageConfig,
   hashMessage,
   triageMessagesSync,
+  enqueueArrival,
   noteLabeledInbound,
   recordAnswered,
   readPending,

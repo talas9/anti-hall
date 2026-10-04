@@ -760,7 +760,7 @@ function cmdSend(flags, ctx) {
         needsReply: questionFlag,
       };
       const hash = store.meshMessageHash(fields);
-      const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, instanceNonce: dispatcherExports().deriveReaderNonce(ctx) }));
+      const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, home, instanceNonce: dispatcherExports().deriveReaderNonce(ctx) }));
       store.deriveSummary(s, { home, env: ctx.env, now });
       // READBACK VERIFICATION (defect 84c0b4385f68, REOPENED): better-sqlite3's
       // INSERT is synchronous, so the row physically exists on disk the instant
