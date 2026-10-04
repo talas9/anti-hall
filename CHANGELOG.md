@@ -8,6 +8,10 @@ the update.
 
 ## Unreleased
 
+### Fixed
+
+- DevSwarm child workspaces no longer get the COMMS OVERRIDE / SELF_CONTINUE / REMINDER block on every delivered turn: `devswarm-child-turn.js` now uses the `guards.injectionRepeatEvery` keepalive (re-sent on change, after compaction, and every N turns), matching the parent hook. The Codex port runs the same hook.
+
 ### Added
 
 - **Coordinator work window (`coordinator-work-guard`).** The main thread keeps doing state-changing work inline instead of delegating it. A new hook counts successful state-changing Bash calls (WORK) over a 10-minute window. It adds one advisory note when the count reaches 4, and blocks the 7th WORK call in the window. Nudge delivery: PostToolUse `additionalContext` was live-observed delivering on Claude Code CLI 2.1.238 and is not doc-confirmed (`docs/KB-claude-codex.md` §1.4); re-verify after a CLI upgrade; blocks are the enforcement.

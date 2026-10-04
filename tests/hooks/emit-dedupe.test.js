@@ -576,11 +576,12 @@ test('task-tracker hook: 5 queued prompts -> 1 TASK-LIST block, emits again afte
   assert.deepStrictEqual(burst('task-tracker.js', 5, OFF, p, m), [5, 1]);
 });
 
-test('devswarm-child-turn hook: COMMS OVERRIDE block once per burst, again after delivery; vacuity off -> 5', () => {
+test('devswarm-child-turn hook: COMMS OVERRIDE block once per burst, quiet after delivery (keepalive); repeat=0 -> again; vacuity off -> 5', () => {
   const env = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y', DEVSWARM_BUILDER_ID: 'b-1' };
   const p = () => ({ hook_event_name: 'UserPromptSubmit', session_id: 'burst', prompt: 'tick', cwd: '/tmp/x' });
   const m = (c) => c.includes('DEVSWARM COMMS OVERRIDE');
-  assert.deepStrictEqual(burst('devswarm-child-turn.js', 5, { ...env, ...ON }, p, m), [1, 1]);
+  assert.deepStrictEqual(burst('devswarm-child-turn.js', 5, { ...env, ...ON }, p, m), [1, 0]);
+  assert.deepStrictEqual(burst('devswarm-child-turn.js', 5, { ...env, ...ON, ANTIHALL_INJECTION_REPEAT_EVERY: '0' }, p, m), [1, 1]);
   assert.deepStrictEqual(burst('devswarm-child-turn.js', 5, { ...env, ...OFF }, p, m), [5, 1]);
 });
 

@@ -1091,11 +1091,18 @@ function main() {
   const staticBlock = [OVERRIDE_REASSERT, SELF_CONTINUE,
     substituteId(REMINDER, env.DEVSWARM_BUILDER_ID),
     substituteId(RECEIVE_NUDGE, env.DEVSWARM_BUILDER_ID)];
+  // Keepalive = guards.injectionRepeatEvery (same knob as parent-inbox's COMMS
+  // OVERRIDE and task-tracker): once consumed, the block is re-sent on change,
+  // after compaction, and every N delivered turns — not every turn. 0 = burst
+  // collapse only (every delivered turn).
+  let staticRepeat = 10;
+  try { staticRepeat = require('./lib/settings.js').get('guards', 'injectionRepeatEvery', 10); } catch (_) {}
   let emitStatic = true;
   try {
     emitStatic = require('./lib/emit-dedupe.js').shouldEmit({
       home, sessionId: payload.session_id, transcriptPath: payload.transcript_path,
       key: 'child-turn-static', content: staticBlock.join('\n\n'),
+      keepaliveTurns: Number.isFinite(staticRepeat) && staticRepeat > 0 ? staticRepeat : 0,
     });
   } catch (_) { emitStatic = true; }
   if (emitStatic) segments.push(...staticBlock);
