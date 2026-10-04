@@ -59,7 +59,7 @@ test('git-stash-guard: ARMED repo still blocks when payload.cwd is a DELETED sub
     const r = testHook(HOOK, payload('git stash push', deletedSub), { home: h.home, env: {} });
     assert.strictEqual(r.status, 2, `a deleted-but-ancestor-armed cwd must still block: ${r.stdout}`);
     const reason = (r.json && r.json.reason) || '';
-    assert.match(reason, /GIT STASH GUARD/, 'reason must name the guard');
+    assert.match(reason, /git-stash-guard/, 'reason must name the guard');
   } finally {
     h.cleanup();
     fs.rmSync(repo, { recursive: true, force: true });

@@ -94,7 +94,7 @@ function trackerPayload(tp, sid) {
 }
 function stopPayload(tp) { return { hook_event_name: 'Stop', transcript_path: tp, session_id: 't' }; }
 function ctx(r) { return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || ''; }
-function isIdleNeglect(r) { return r.status === 0 && r.json && r.json.decision === 'block' && /IDLE NEGLECT/.test(r.json.reason || ''); }
+function isIdleNeglect(r) { return r.status === 0 && r.json && r.json.decision === 'block' && /have no in-flight agent/.test(r.json.reason || ''); }
 function demandLine(c) {
   const i = c.indexOf('DISPATCH NOW');
   return i < 0 ? '' : c.slice(i, c.indexOf(' open tasks:', i));

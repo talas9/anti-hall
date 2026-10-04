@@ -795,7 +795,7 @@ function delegationReason(toolLabel, cwd, payload) {
   const NOTES = codexHost
     ? 'session notes/reports in .anti-hall/history/**; repo docs need ' + SUB + ' or a trusted .anti-hall/edit-allow.json'
     : 'session notes/reports in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json';
-  const what = toolLabel + ' edit blocked: the ' + (devswarmActive ? 'orchestrator' : 'coordinator') + ' does not touch files directly.';
+  const what = toolLabel + ' blocked: the ' + (devswarmActive ? 'orchestrator' : 'coordinator') + ' does not touch files directly.';
   let reason;
   if (devswarmActive) {
     // Topology-aware noun (child workspace = sub-orchestrator, root = primary);

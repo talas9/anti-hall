@@ -55,8 +55,8 @@ test('edit-guard: Codex main thread apply_patch on a source file -> BLOCK', () =
   const r = eg(home, codexPayload(patch(add('src/app.js')), repo));
   assertCodexBlock(r);
   assert.strictEqual(r.json.decision, 'block');
-  assert.match(r.json.reason, /EDIT-DELEGATION RULE/);
-  assert.match(r.json.reason, /\(tool: apply_patch\)/);
+  assert.match(r.json.reason, /does not touch files directly/);
+  assert.match(r.json.reason, /apply_patch blocked/);
 }));
 
 test('edit-guard: Codex subagent (agent_id in payload) -> ALLOW', () => withRepo((home, repo) => {
@@ -99,7 +99,7 @@ test('edit-guard: ../ traversal dressed as an allowlisted dir does not slip thro
 test('edit-guard: malformed patch on the main thread -> BLOCK (fail closed)', () => withRepo((home, repo) => {
   const r = eg(home, codexPayload('*** Begin Patch\n*** Add File: .anti-hall/x.md\n+x', repo));
   assertCodexBlock(r);
-  assert.match(r.json.reason, /could not parse/i);
+  assert.match(r.json.reason, /could not be parsed/i);
 }));
 
 test('edit-guard: missing command on the main thread -> BLOCK (fail closed)', () => withRepo((home, repo) => {

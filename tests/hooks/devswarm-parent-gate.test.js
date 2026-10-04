@@ -408,7 +408,7 @@ test('LOOP-SAFE: same blocking SET escalates at the cap, then goes quiet (bounde
     const r2 = run(h.home, p, env); assert.strictEqual(r2.json && r2.json.decision, 'block', 'block #2');
     const r3 = run(h.home, p, env); // effectiveBlocks === cap (2) -> escalation, not silence
     assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
-    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'must use escalation wording, not the normal nag');
+    assert.match(r3.json.reason, /Escalation: /, 'must use escalation wording, not the normal nag');
     const r4 = run(h.home, p, env); // effectiveBlocks > cap -> now goes quiet
     assert.strictEqual(r4.status, 0);
     assert.strictEqual(r4.stdout, '', 'must go quiet the pass AFTER the escalation');
@@ -428,7 +428,7 @@ test('CAP (stable kind): a changed unread COUNT does NOT re-open the budget; cle
     run(h.home, p, env); // block #1
     run(h.home, p, env); // block #2
     const escalated = run(h.home, p, env); // block #3 -> escalation
-    assert.match(escalated.json && escalated.json.reason, /DEVSWARM ESCALATION/, 'pass #3 escalates');
+    assert.match(escalated.json && escalated.json.reason, /Escalation: /, 'pass #3 escalates');
     const capped = run(h.home, p, env); // block #4 -> now quiet
     assert.strictEqual(capped.stdout, '', 'capped (quiet) before change');
     // Mail lands while the condition persists -> same kind -> still quiet.
@@ -548,7 +548,7 @@ test('STALE-BUILD DOWNGRADE SCOPE: the NEGLECT cap ESCALATION pass still BLOCKS 
     }
     const esc = run(h.home, p, env);
     assert.strictEqual(esc.json && esc.json.decision, 'block', `the escalation pass must still block under a stale build; stdout=${esc.stdout}`);
-    assert.match(esc.json.reason, /DEVSWARM ESCALATION/);
+    assert.match(esc.json.reason, /Escalation: /);
   } finally { h.cleanup(); }
 });
 
@@ -642,7 +642,7 @@ test('LOOP-SAFE: own-unread blocking set escalates at the cap, then goes quiet (
     const r2 = run(h.home, p, env); assert.strictEqual(r2.json && r2.json.decision, 'block', 'block #2');
     const r3 = run(h.home, p, env); // effectiveBlocks === cap (2) -> escalation, not silence
     assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
-    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'must use escalation wording');
+    assert.match(r3.json.reason, /Escalation: /, 'must use escalation wording');
     const r4 = run(h.home, p, env); // effectiveBlocks > cap -> now goes quiet
     assert.strictEqual(r4.status, 0);
     assert.strictEqual(r4.stdout, '', 'must go quiet the pass AFTER the escalation for own-unread too');
@@ -968,7 +968,7 @@ test('WAKE BOUND: rides the SAME per-SET cap the neglect gate already has — no
     // rides along on this escalation block too.
     const r3 = run(h.home, p, env);
     assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
-    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'must escalate, not silently return');
+    assert.match(r3.json.reason, /Escalation: /, 'must escalate, not silently return');
     assert.ok(/MAILBOX WAKE/.test(r3.json.reason), 'escalation pass: wake line still present');
     // Only the NEXT pass (effectiveBlocks > cap) goes fully quiet.
     const r4 = run(h.home, p, env);
@@ -1631,7 +1631,7 @@ test('F6: a busy (advisory) pass KEEPS the forced-ack/escalation counter; the ne
     setTranscriptAge(h.home, s.wt, s.sid, 30);
     const r3 = run(h.home, p, env);
     assert.strictEqual(r3.json && r3.json.decision, 'block');
-    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, `the kept counter must drive escalation; reason=${r3.json && r3.json.reason}`);
+    assert.match(r3.json.reason, /Escalation: /, `the kept counter must drive escalation; reason=${r3.json && r3.json.reason}`);
   } finally { h.cleanup(); }
 });
 
@@ -1646,7 +1646,7 @@ test('F1/F6: an idle-but-alive child with unread still ESCALATES after N forced 
     assert.strictEqual(run(h.home, p, env).json.decision, 'block', 'block #2');
     const r3 = run(h.home, p, env);
     assert.strictEqual(r3.json && r3.json.decision, 'block');
-    assert.match(r3.json.reason, /DEVSWARM ESCALATION/);
+    assert.match(r3.json.reason, /Escalation: /);
   } finally { h.cleanup(); }
 });
 
@@ -1696,12 +1696,12 @@ test('UNANSWERED QUESTION: gate keeps forcing the reply up to the ceiling, then 
       assert.ok(r.json.reason.includes('<id>'), `call #${i} must label the reply target as <id>; reason=${r.json.reason}`);
       assert.ok(!r.json.reason.includes('<meshId>'), `call #${i} must NOT use the misleading <meshId> label; reason=${r.json.reason}`);
       assert.match(r.json.reason, /is NOT sufficient/i, `call #${i} must say reading alone is not sufficient`);
-      assert.ok(!/DEVSWARM ESCALATION/.test(r.json.reason), `call #${i} must not yet escalate (pre-ceiling)`);
+      assert.ok(!/Escalation: /.test(r.json.reason), `call #${i} must not yet escalate (pre-ceiling)`);
     }
     // Pass 3 (cap=2 exhausted): ONE loud escalation line, still blocks, question wording absent.
     const escalated = run(h.home, p, env);
     assert.strictEqual(escalated.json && escalated.json.decision, 'block', 'the ceiling-exhaustion pass must still block');
-    assert.match(escalated.json.reason, /DEVSWARM ESCALATION/, 'the ceiling-exhaustion pass must carry escalation wording');
+    assert.match(escalated.json.reason, /Escalation: /, 'the ceiling-exhaustion pass must carry escalation wording');
     assert.match(escalated.json.reason, /child-1/, 'the escalation must still name the asker');
     // Pass 4+: goes fully quiet on this Stop-block loop — the question itself
     // is never dropped (it is still unanswered in the store), only the
@@ -1856,13 +1856,13 @@ test('CAP-EXHAUSTION (plain, non-question backlog): the (cap+1)th call escalates
 
     for (let i = 0; i < cap; i++) {
       assert.strictEqual(results[i].json && results[i].json.decision, 'block', `call #${i + 1} (normal, pre-cap) must block`);
-      assert.ok(!/DEVSWARM ESCALATION/.test(results[i].json.reason), `call #${i + 1} must not yet escalate`);
+      assert.ok(!/Escalation: /.test(results[i].json.reason), `call #${i + 1} must not yet escalate`);
     }
     const escalationCall = results[cap]; // the (cap+1)th call
     assert.strictEqual(escalationCall.status, 0, '(cap+1)th call must exit 0');
     assert.strictEqual(escalationCall.json && escalationCall.json.decision, 'block', '(cap+1)th call must still block, not silently give up');
     assert.notStrictEqual(escalationCall.stdout, '', '(cap+1)th call must not be a silent give-up (the old behavior this fix removes)');
-    assert.match(escalationCall.json.reason, /DEVSWARM ESCALATION/, '(cap+1)th call must carry escalation wording');
+    assert.match(escalationCall.json.reason, /Escalation: /, '(cap+1)th call must carry escalation wording');
 
     const quietCall = results[cap + 1]; // the (cap+2)th call
     assert.strictEqual(quietCall.status, 0);
@@ -1909,11 +1909,11 @@ test('P0-C FIX: an unanswered-question bypass phase that overshoots the cap stil
       const r = run(h.home, p, env);
       assert.strictEqual(r.json && r.json.decision, 'block', `unanswered pass #${i} must block`);
       assert.match(r.json.reason, /UNANSWERED QUESTION/, `unanswered pass #${i} must carry the question wording`);
-      assert.ok(!/DEVSWARM ESCALATION/.test(r.json.reason), `unanswered pass #${i} must not yet hit the question ceiling`);
+      assert.ok(!/Escalation: /.test(r.json.reason), `unanswered pass #${i} must not yet hit the question ceiling`);
     }
     const qEscalated = run(h.home, p, env);
     assert.strictEqual(qEscalated.json && qEscalated.json.decision, 'block', 'the question-ceiling exhaustion pass must still block');
-    assert.match(qEscalated.json.reason, /DEVSWARM ESCALATION/, 'the question-ceiling exhaustion pass must carry escalation wording');
+    assert.match(qEscalated.json.reason, /Escalation: /, 'the question-ceiling exhaustion pass must carry escalation wording');
     const qQuiet = run(h.home, p, env);
     assert.strictEqual(qQuiet.stdout, '', 'the pass after question-ceiling escalation must go quiet (question axis only — ws1 plain backlog is untouched, still tracked underneath)');
 
@@ -1929,7 +1929,7 @@ test('P0-C FIX: an unanswered-question bypass phase that overshoots the cap stil
     // one escalation here rather than being skipped over.
     const escalated = run(h.home, p, env);
     assert.strictEqual(escalated.json && escalated.json.decision, 'block', 'first post-reply pass must still block');
-    assert.match(escalated.json.reason, /DEVSWARM ESCALATION/, 'first post-reply pass must escalate, not silently skip to quiet');
+    assert.match(escalated.json.reason, /Escalation: /, 'first post-reply pass must escalate, not silently skip to quiet');
     assert.ok(!/UNANSWERED QUESTION/.test(escalated.json.reason), 'the question is answered — must not re-appear in the reason');
 
     // Only the pass AFTER THAT goes quiet.
@@ -2018,7 +2018,7 @@ test('SMALL FIX: the "DEVSWARM NEGLECT" paragraph is entirely absent (not a self
     const p = stopPayload('neglect-wording-sess', true);
     const r = run(h.home, p);
     assert.strictEqual(r.json && r.json.decision, 'block');
-    assert.doesNotMatch(r.json.reason, /DEVSWARM NEGLECT/,
+    assert.doesNotMatch(r.json.reason, /Neglect: /,
       `the NEGLECT paragraph must not appear at all when there is no neglected workspace to name; reason=${r.json.reason}`);
     assert.doesNotMatch(r.json.reason, /0 workspace\(s\)/,
       `must never emit the self-contradicting "0 workspace(s) ... : ." sentence; reason=${r.json.reason}`);
@@ -2065,7 +2065,7 @@ test('TRUNCATED: presence of pendingQuestionsTruncated BLOCKS unconditionally, a
       const rr = run(h.home, p, env);
       assert.strictEqual(rr.json && rr.json.decision, 'block', `truncated pass #${i} must still block`);
       assert.match(rr.json.reason, /TRUNCATED/i, `truncated pass #${i} must still name the truncation`);
-      assert.ok(!/DEVSWARM ESCALATION/.test(rr.json.reason), `truncated pass #${i} must never escalate — the truncation axis bypasses the cap entirely`);
+      assert.ok(!/Escalation: /.test(rr.json.reason), `truncated pass #${i} must never escalate — the truncation axis bypasses the cap entirely`);
     }
   } finally { h.cleanup(); }
 });
@@ -2096,10 +2096,10 @@ test('UNTRUNCATED: an ordinary (non-truncated) projection behaves exactly as tod
       for (let i = 1; i <= cap + 2; i++) results.push(run(h2.home, p2));
       for (let i = 0; i < cap; i++) {
         assert.strictEqual(results[i].json && results[i].json.decision, 'block', `call #${i + 1} must block`);
-        assert.ok(!/DEVSWARM ESCALATION/.test(results[i].json.reason));
+        assert.ok(!/Escalation: /.test(results[i].json.reason));
         assert.doesNotMatch(results[i].json.reason, /TRUNCATED/i);
       }
-      assert.match(results[cap].json.reason, /DEVSWARM ESCALATION/, '(cap+1)th call must still escalate as before');
+      assert.match(results[cap].json.reason, /Escalation: /, '(cap+1)th call must still escalate as before');
       assert.strictEqual(results[cap + 1].stdout, '', '(cap+2)th call must still go quiet as before');
     } finally { h2.cleanup(); }
   } finally { h.cleanup(); }
@@ -2445,7 +2445,7 @@ test('IDENTITY-FAMILY: sig stability — the SAME collapsed state across repeate
     const r2 = run(h.home, p, env); assert.strictEqual(r2.json && r2.json.decision, 'block', 'block #2');
     const r3 = run(h.home, p, env); // effectiveBlocks === cap (2) -> escalation, never reset by a phantom-churning sig
     assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
-    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'the collapsed set signature must be STABLE run-to-run to ever reach escalation');
+    assert.match(r3.json.reason, /Escalation: /, 'the collapsed set signature must be STABLE run-to-run to ever reach escalation');
   } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
 });
 
@@ -2560,7 +2560,7 @@ test('STATED-INTENT: the FIRST block still fires even when an intent is already 
     const r = run(h.home, stopPayload('fresh-intent-sess'));
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.json && r.json.decision, 'block', 'an intent must never suppress the first-ever block for a session');
-    assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, 'the first block is a normal nag, not an escalation');
+    assert.doesNotMatch(r.json.reason, /Escalation: /, 'the first block is a normal nag, not an escalation');
   } finally { h.cleanup(); }
 });
 
@@ -2584,7 +2584,7 @@ test('STATED-INTENT: intent recorded + sig unchanged -> repeated stops do NOT es
       const r = run(h.home, p, env);
       assert.strictEqual(r.status, 0);
       assert.strictEqual(r.json && r.json.decision, 'block', `pass ${i + 2} must still block`);
-      assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, `pass ${i + 2} must NOT escalate while an intent is on file`);
+      assert.doesNotMatch(r.json.reason, /Escalation: /, `pass ${i + 2} must NOT escalate while an intent is on file`);
       const st = readGateState(h.home, 'intent-sustain-sess');
       assert.ok(st.intentAcks > lastIntentAcks, `intentAcks must increment (pass ${i + 2}): was ${lastIntentAcks}, now ${st.intentAcks}`);
       lastIntentAcks = st.intentAcks;
@@ -2603,7 +2603,7 @@ test('STATED-INTENT: sig CHANGES after an intent was recorded -> escalation beha
     const state1 = readGateState(h.home, 'intent-sig-change-sess');
     writeIntent(h.home, 'intent-sig-change-sess', state1.sig, 'on it', state1);
     const r2 = run(h.home, p, env); // still same sig -> covered by intent, no escalation
-    assert.doesNotMatch(r2.json.reason, /DEVSWARM ESCALATION/, 'still covered by the intent before the sig changes');
+    assert.doesNotMatch(r2.json.reason, /Escalation: /, 'still covered by the intent before the sig changes');
 
     // A new KIND of neglect (the Primary's OWN mailbox joins the children
     // kind) -> a genuinely NEW blocking signature (Phase 5: counts alone no
@@ -2616,7 +2616,7 @@ test('STATED-INTENT: sig CHANGES after an intent was recorded -> escalation beha
     let escalated = false;
     for (let i = 0; i < 6 && !escalated; i++) {
       const r = run(h.home, p, env);
-      if (r.json && /DEVSWARM ESCALATION/.test(r.json.reason)) escalated = true;
+      if (r.json && /Escalation: /.test(r.json.reason)) escalated = true;
     }
     assert.ok(escalated, 'the new sig must still escalate at the plain cap — the prior intent must not apply to it');
     const stFinal = readGateState(h.home, 'intent-sig-change-sess');
@@ -2633,7 +2633,7 @@ test('STATED-INTENT: no intent recorded -> existing escalate-at-cap behavior is 
     run(h.home, p, env); // block #1
     run(h.home, p, env); // block #2
     const r3 = run(h.home, p, env); // effectiveBlocks === cap(2) -> escalation
-    assert.match(r3.json && r3.json.reason, /DEVSWARM ESCALATION/, 'no stated intent -> escalates exactly like before this feature');
+    assert.match(r3.json && r3.json.reason, /Escalation: /, 'no stated intent -> escalates exactly like before this feature');
     const r4 = run(h.home, p, env);
     assert.strictEqual(r4.stdout, '', 'then goes quiet, exactly as before');
   } finally { h.cleanup(); }
@@ -2655,7 +2655,7 @@ test('STATED-INTENT: the absolute cap still bounds the loop even with an intent 
     for (let i = 0; i < 20 && !sawSilenceAfter; i++) {
       const r = run(h.home, p, env);
       if (!escalated) {
-        if (r.json && /DEVSWARM ESCALATION/.test(r.json.reason)) escalated = true;
+        if (r.json && /Escalation: /.test(r.json.reason)) escalated = true;
       } else {
         // The pass immediately after escalation must go silent, exactly like
         // the plain (no-intent) axis already does.
@@ -2681,7 +2681,7 @@ test('STATED-INTENT: a state file with NO intents key (prior shape) loads and be
     const r = run(h.home, p);
     assert.strictEqual(r.status, 0, 'must not throw on a legacy-shaped state file');
     assert.strictEqual(r.json && r.json.decision, 'block', 'must behave exactly as before — a normal block');
-    assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, 'a fresh (mismatched) sig never escalates on its first real pass');
+    assert.doesNotMatch(r.json.reason, /Escalation: /, 'a fresh (mismatched) sig never escalates on its first real pass');
   } finally { h.cleanup(); }
 });
 
@@ -2713,7 +2713,7 @@ test('STATED-INTENT: FAIL-OPEN — a corrupt/unreadable gate-state file behaves 
     const r = run(h.home, p);
     assert.strictEqual(r.status, 0, 'must exit 0, never throw on a corrupt state file');
     assert.strictEqual(r.json && r.json.decision, 'block', 'must fail open toward a normal first block, exactly as pre-intent behavior');
-    assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, 'a corrupt file must be treated as fresh state, not pre-exhausted');
+    assert.doesNotMatch(r.json.reason, /Escalation: /, 'a corrupt file must be treated as fresh state, not pre-exhausted');
   } finally { h.cleanup(); }
 });
 
@@ -3803,7 +3803,7 @@ test('ESCALATION (own mailbox): signature is count-free, stays one escalation as
     for (const n of [1, 1, 1, 2, 2, 3, 3, 4]) {
       writeOwnSummary(h.home, n);
       const r = run(h.home, p, env);
-      seq.push(r.json ? (/DEVSWARM ESCALATION/.test(r.json.reason) ? 'ESC:' + r.json.reason : 'block') : 'quiet');
+      seq.push(r.json ? (/Escalation: /.test(r.json.reason) ? 'ESC:' + r.json.reason : 'block') : 'quiet');
     }
     const escs = seq.filter((x) => x.startsWith('ESC:'));
     assert.strictEqual(escs.length, 1, 'exactly one escalation while the own mailbox stays unread: ' + seq.map((x) => x.slice(0, 5)).join(','));
@@ -3829,7 +3829,7 @@ test('ESCALATION (own mailbox): held while limit conservation is active; fires o
     }
     const off = { ...base, ANTIHALL_LIMIT_CONSERVE: 'off' };
     const r = run(h.home, p, off);
-    assert.match(r.json && r.json.reason, /DEVSWARM ESCALATION/, 'escalation was held, not lost');
+    assert.match(r.json && r.json.reason, /Escalation: /, 'escalation was held, not lost');
   } finally { h.cleanup(); }
 });
 
@@ -3847,7 +3847,7 @@ test('ESCALATION (own mailbox): read+ack (0 unread) clears the loop state', () =
     writeOwnSummary(h.home, 1);
     const again = run(h.home, p, env);
     assert.strictEqual(again.json && again.json.decision, 'block');
-    assert.doesNotMatch(again.json.reason, /DEVSWARM ESCALATION/, 'budget was reset by the clear');
+    assert.doesNotMatch(again.json.reason, /Escalation: /, 'budget was reset by the clear');
   } finally { h.cleanup(); }
 });
 
@@ -3859,6 +3859,6 @@ test('ESCALATION: limit conservation does NOT quiet a neglected CHILD escalation
     const p = stopPayload('l10-child');
     run(h.home, p, env); run(h.home, p, env);
     const r3 = run(h.home, p, env);
-    assert.match(r3.json && r3.json.reason, /DEVSWARM ESCALATION/);
+    assert.match(r3.json && r3.json.reason, /Escalation: /);
   } finally { h.cleanup(); }
 });

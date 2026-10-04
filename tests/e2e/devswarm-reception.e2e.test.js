@@ -348,14 +348,14 @@ test('5 READ-GUARD: raw inbox/store blocked (Read tool + Bash cat); summary.json
       { home, env: PRIMARY_ENV });
     assert.strictEqual(readInbox.status, 2, `raw inbox Read must block; stdout=${readInbox.stdout}`);
     assert.ok(readInbox.json && readInbox.json.decision === 'block');
-    assert.match(readInbox.json.reason, /DEVSWARM INBOX READ-GUARD/);
+    assert.match(readInbox.json.reason, /devswarm-inbox-read/);
 
     const readStore = testHook('inbox-read-guard.js',
       { tool_name: 'Read', tool_input: { file_path: storeDb }, cwd: home },
       { home, env: PRIMARY_ENV });
     assert.strictEqual(readStore.status, 2, `raw store .db Read must block; stdout=${readStore.stdout}`);
     assert.ok(readStore.json && readStore.json.decision === 'block');
-    assert.match(readStore.json.reason, /DEVSWARM STORE READ-GUARD/);
+    assert.match(readStore.json.reason, /devswarm-store-read/);
 
     const readSummary = testHook('inbox-read-guard.js',
       { tool_name: 'Read', tool_input: { file_path: summaryFile }, cwd: home },
@@ -374,7 +374,7 @@ test('5 READ-GUARD: raw inbox/store blocked (Read tool + Bash cat); summary.json
     const catStore = testHook('command-guard.js', bashPayload('cat ' + storeDb), { home, env: COORD_ENV });
     assert.strictEqual(catStore.status, 2, `cat of the raw store db must block; stdout=${catStore.stdout}`);
     assert.ok(catStore.json && catStore.json.decision === 'block');
-    assert.match(catStore.json.reason, /DEVSWARM STORE READ-GUARD/);
+    assert.match(catStore.json.reason, /devswarm-store-read/);
 
     const readMessages = testHook('command-guard.js', bashPayload('hivecontrol workspace read-messages'),
       { home, env: COORD_ENV });

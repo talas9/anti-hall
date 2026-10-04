@@ -28,16 +28,16 @@ function run(command) {
 // blocking via the command-substitution rule instead of force detection.
 //
 // Reason regexes match the EXACT messages emitted by git-guard.js scanCommand():
-//   FORCE    -> 'Force push detected'                 (Rule 2, force flag/+refspec)
+//   FORCE    -> 'force push ... is blocked'               (Rule 2, force flag/+refspec)
 //   CMDSUBST -> 'command substitution / backtick'     (Rule 2, $( )/backtick arg)
 //   COMMIT   -> 'AI/assistant self-credit trailer'    (Rule 1, inline -m/--trailer)
 //   REMAP    -> '-c trailer.*.key=`'                  (Rule 1, trailer-key remap)
 const REASON = {
-  FORCE: /Force push detected/,
+  FORCE: /force push[^\n]* is blocked/,
   CMDSUBST: /command substitution \/ backtick[\s\S]*write that file with the Write tool instead/,
   COMMIT: /AI\/assistant self-credit trailer/,
   REMAP: /trailer\.\*\.key=/,
-  FILE: /Commit message \(via `-F`\/`--file`/,
+  FILE: /commit message \(via `-F`\/`--file`/,
 };
 
 // --- No exact-shape mailbox exemption: a heredoc message file + anti-hall
@@ -47,7 +47,7 @@ const REASON = {
 // ~/.anti-hall/bin defeated it). Each of these carries a real force-push
 // mention in its body and must BLOCK, with the mailbox hint attached.
 const PEER_FILE = '/private/tmp/peer/scratchpad/landed.md';
-const HINT_RE = /write the file with the Write tool or the Edit tool/;
+const HINT_RE = /Write the file with the Write or Edit tool/;
 const LAUNCHER_MSG_BLOCK_HINTED = [
   {
     cmd: `cat > ${PEER_FILE} <<'ENDOFMSG'\nLANDED ON MAIN. Plain fast-forward, no force - I did not run \`git push --force\` or \`git push -f\`.\nENDOFMSG\nnode ~/.anti-hall/bin/devswarm.js send --to primary --message-file ${PEER_FILE}`,
@@ -2439,8 +2439,8 @@ for (const cmd of REF_DELETE_BLOCK) {
   test(`BLOCK (remote ref deletion): ${JSON.stringify(cmd)}`, () => {
     const r = run(cmd);
     assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
-    assert.match(r.stderr, /Remote ref deletion detected/);
-    assert.match(r.stderr, /skip\.json/);
+    assert.match(r.stderr, /remote ref deletion/);
+    assert.match(r.stderr, /skip git-guard/);
   });
 }
 for (const cmd of REF_DELETE_ALLOW) {

@@ -32,7 +32,7 @@ function isBlock(r) {
 }
 
 function isIdleNeglect(r) {
-  return isBlock(r) && /IDLE NEGLECT/.test(r.json.reason || '');
+  return isBlock(r) && /have no in-flight agent/.test(r.json.reason || '');
 }
 
 // Write a FRESH agent heartbeat under <home>/.anti-hall/agents/<id>.json so the

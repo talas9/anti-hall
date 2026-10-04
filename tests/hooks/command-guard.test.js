@@ -729,7 +729,7 @@ for (const cmd of HIVECTL_MESSAGE_BLOCK) {
     const r = runDevswarm(cmd);
     assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstdout: ${r.stdout}`);
     assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
-    assert.ok(/DEVSWARM MESH-ONLY MESSAGING/.test(r.json.reason), `reason must name the mesh-only-messaging rule; got=${r.json.reason}`);
+    assert.ok(/devswarm-mesh-only/.test(r.json.reason), `reason must name the mesh-only-messaging rule; got=${r.json.reason}`);
   });
 }
 
@@ -1053,7 +1053,7 @@ test('DEVSWARM FILE-READ BLOCK: head of the raw inbox ndjson', () => {
 test('DEVSWARM FILE-READ BLOCK: head of store db (read-CLI present -> gate armed)', () => {
   const r = runDevswarmFileRead((root) => `head ${pathx.join(root, 'store', 'devswarm.db')}`);
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-  assert.ok(r.json && /STORE READ-GUARD/.test(r.json.reason), 'store block reason expected');
+  assert.ok(r.json && /devswarm-store-read/.test(r.json.reason), 'store block reason expected');
 });
 
 // REGRESSION (P1): a raw inbox/store path QUOTED with double or single quotes is a
@@ -1077,7 +1077,7 @@ for (const verb of ['cat', 'head', 'tail']) {
     test(`DEVSWARM FILE-READ BLOCK (regression): ${verb} of ${label} raw store db`, () => {
       const r = runDevswarmFileRead((root) => `${verb} ${quote(pathx.join(root, 'store', 'devswarm.db'))}`);
       assert.strictEqual(r.status, 2, `expected block for ${label} ${verb}\nstdout: ${r.stdout}`);
-      assert.ok(r.json && /STORE READ-GUARD/.test(r.json.reason), 'store block reason expected');
+      assert.ok(r.json && /devswarm-store-read/.test(r.json.reason), 'store block reason expected');
     });
   }
 }

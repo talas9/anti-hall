@@ -156,7 +156,7 @@ for (const name of LEGACY_CONTINUE_NAMES) {
       try {
         const r = runIn(proj, tool, name);
         assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-        assert.match(r.json.reason, /HANDOVER-LOCATION RULE/);
+        assert.match(r.json.reason, /session-handover doc/);
         assert.match(r.json.reason, /\.anti-hall\/handovers\/<YYYY-MM-DD>\/<session-id>\/HANDOVER\.md/);
       } finally { proj.cleanup(); }
     });
@@ -181,13 +181,13 @@ test('LEGACY CONTINUE-HERE: EXISTING ./CONTINUE-HERE.md (leading ./) -> Edit sta
 // escape hatch — 'node scripts/devswarm.js skip edit-guard' — instead of
 // leaving the agent to guess or invent a wrong skip key).
 const PLAIN_REASON = (tool) =>
-  'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
-  'a subagent to make this edit and have it report a tight summary. The ' +
-  'coordinator synthesizes the summary; raw edits never happen in the main ' +
-  'thread. If the user EXPLICITLY instructed you to make THIS edit yourself, ' +
-  'that is the documented override — run ' + skipCommand('edit-guard') +
-  ' to record your consent (~/.anti-hall/skip.json, 15-min TTL), ' +
-  'then retry. Never skip on your own initiative. (tool: ' + tool + ')';
+  require('../../plugins/anti-hall/hooks/lib/block-message.js').blockMessage({
+    guard: 'edit-guard',
+    what: tool + ' blocked: the coordinator does not touch files directly.',
+    why: 'Raw edits never happen in the main thread; the coordinator synthesizes a summary.',
+    instead: 'spawn a subagent to make this edit and have it report a tight summary.',
+    override: skipCommand('edit-guard') + ' (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry',
+  });
 
 test('CONTINUE-HERE.md REGRESSION: normal source file still BLOCKED with unchanged reason', () => {
   const r = runCoord(editPayload('Edit', { filePath: 'src/foo.js' }));
@@ -521,22 +521,20 @@ test('SYMLINK CHECK: a real allowlisted file under a real directory -> still ALL
 // Both roles still BLOCK a non-allowlisted edit — only the orchestrator noun in
 // the reason string differs (child = "sub-orchestrator", root = "primary").
 
-test('DEVSWARM CHILD: coordinator + child env + Edit -> block, reason says sub-orchestrator', () => {
+test('DEVSWARM CHILD: coordinator + child env + Edit -> block, reason names the orchestrator', () => {
   const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }),
     { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' });
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
   assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
-  assert.ok(/sub-orchestrator/.test(r.json.reason), `reason: ${r.json.reason}`);
+  assert.ok(/orchestrator does not touch files directly/.test(r.json.reason), `reason: ${r.json.reason}`);
 });
 
-test('DEVSWARM PRIMARY: coordinator + primary env (no source branch) + Edit -> block, reason says primary', () => {
+test('DEVSWARM PRIMARY: coordinator + primary env (no source branch) + Edit -> block, reason names the orchestrator', () => {
   const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }),
     { DEVSWARM_REPO_ID: 'repo-x' }); // DEVSWARM_SOURCE_BRANCH unset -> Primary
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
   assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
-  assert.ok(/primary/.test(r.json.reason), `reason: ${r.json.reason}`);
-  assert.ok(!/sub-orchestrator/.test(r.json.reason),
-    `Primary reason must NOT say sub-orchestrator: ${r.json.reason}`);
+  assert.ok(/orchestrator does not touch files directly/.test(r.json.reason), `reason: ${r.json.reason}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -574,14 +572,14 @@ test('DEVSWARM PRIMARY: block reason names `devswarm.js spawn` as the PRIMARY ex
   // alternative for small/scoped work, never the headline exit.
   assert.ok(reason.indexOf('devswarm.js spawn') < reason.indexOf('subagent'),
     `workspace exit must precede the subagent alternative: ${reason}`);
-  assert.ok(/Do NOT hand a workspace-scale matter to a subagent/.test(reason),
+  assert.ok(/Never hand a workspace-scale matter to a subagent/.test(reason),
     `Primary reason must forbid subagent-for-workspace-scale: ${reason}`);
 });
 
 test('DEVSWARM PRIMARY: block reason carries the exempt-locations notes hint', () => {
   const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), PRIMARY_ENV);
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-  assert.ok(/\.anti-hall\/history\/\*\* or the scratchpad \(exempt\)/.test(r.json.reason), r.json.reason);
+  assert.ok(/Allowed here: .*\.anti-hall\/history\/\*\* or the scratchpad/.test(r.json.reason), r.json.reason);
 });
 
 test('DEVSWARM CHILD: block reason is UNCHANGED (no workspace redirect — children never spawn workspaces)', () => {
@@ -589,14 +587,14 @@ test('DEVSWARM CHILD: block reason is UNCHANGED (no workspace redirect — child
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
   assert.strictEqual(
     r.json.reason,
-    'DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
-    'directly in its workspace — spawn a subagent to make this edit and have it ' +
-    'report a tight summary. Session notes/reports can go in .anti-hall/history/** ' +
-    'or the scratchpad (exempt); repo docs need a subagent or a trusted ' +
-    '.anti-hall/edit-allow.json. If the user EXPLICITLY instructed you to make THIS ' +
-    'edit yourself, that is the documented override — run ' + skipCommand('edit-guard') +
-    ' to record your consent (~/.anti-hall/skip.json, 15-min TTL), ' +
-    'then retry. Never skip on your own initiative. (tool: Edit)',
+    require('../../plugins/anti-hall/hooks/lib/block-message.js').blockMessage({
+      guard: 'edit-guard',
+      what: 'Edit blocked: the orchestrator does not touch files directly.',
+      why: 'Raw edits in the main thread flood it; a worker returns a tight summary instead.',
+      instead: 'spawn a subagent to make this edit and have it report a tight summary.',
+      allowed: 'session notes/reports in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json',
+      override: skipCommand('edit-guard') + ' (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry',
+    }),
   );
 });
 
@@ -609,8 +607,8 @@ test('NON-DEVSWARM: block reason is the pre-fix baseline plus the skip-hint (no 
   // the DevSwarm-active wording switch. What must stay absent is the ACTIVE-mode
   // title/redirect text (the "DEVSWARM EDIT-DELEGATION RULE" title and the
   // workspace-tier CHOOSE-THE-TIER redirect), which only devswarmActive adds.
-  assert.ok(!/DEVSWARM EDIT-DELEGATION RULE/.test(r.stdout),
-    'non-DevSwarm output must not carry the DevSwarm-active title');
+  assert.ok(!/orchestrator does not touch/.test(r.stdout),
+    'non-DevSwarm output must not carry the DevSwarm-active wording');
   assert.ok(!/CHOOSE THE TIER/.test(r.stdout),
     'non-DevSwarm output must not carry the Primary workspace-tier redirect');
 });
@@ -701,7 +699,7 @@ for (const p of HANDOVER_DOC_REDIRECTED_NEW) {
       const r = runIn(proj, 'Write', p);
       assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
       assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
-      assert.match(r.json.reason, /HANDOVER-LOCATION RULE/);
+      assert.match(r.json.reason, /session-handover doc/);
       assert.match(r.json.reason, /\.anti-hall\/handovers/);
       assert.match(r.json.reason, /handover.* skill/);
       assert.match(r.json.reason, /skip edit-guard/);
@@ -709,7 +707,7 @@ for (const p of HANDOVER_DOC_REDIRECTED_NEW) {
       // the write can be copied elsewhere afterwards, so a child orchestrator
       // isn't left guessing whether it can ever produce a doc outside the
       // exempt tree.
-      assert.match(r.json.reason, /Write handovers under \.anti-hall\/handovers\/\*\* \(exempt\)/);
+      assert.match(r.json.reason, /write it under \.anti-hall\/handovers\/\*\*/);
       assert.match(r.json.reason, /copy elsewhere afterwards if the project wants one/);
     } finally {
       proj.cleanup();

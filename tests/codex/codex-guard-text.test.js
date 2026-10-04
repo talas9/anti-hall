@@ -2,7 +2,7 @@
 // Issue #94: guard block text must not tell a Codex model Claude-specific things
 // (scratchpad script, run_in_background, Haiku, "subagent" with no Codex tool).
 // Codex payloads (turn_id + model, or apply_patch) get Codex wording; Claude
-// payloads stay byte-identical to the pre-fix text (fixture generated from the
+// payloads match the golden reasons (fixture regenerated for the shared shape; generated from the
 // pre-fix hooks). Exit 2 + non-empty stderr is kept on Codex.
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -41,12 +41,12 @@ const editPayload = (cwd, extra) => Object.assign({
 }, extra || {});
 
 for (const [name, env] of Object.entries(ENVS)) {
-  test('Claude text is byte-identical to the pre-fix text: command-guard ' + name, () => withCwd((home, cwd) => {
+  test('Claude text matches the golden reasons: command-guard ' + name, () => withCwd((home, cwd) => {
     const r = testHook('command-guard.js', cmdPayload(cwd), { home, env });
     assert.strictEqual(r.status, GOLDEN['command-guard:' + name].status);
     assert.strictEqual(norm(r.json.reason, cwd), GOLDEN['command-guard:' + name].reason);
   }));
-  test('Claude text is byte-identical to the pre-fix text: edit-guard ' + name, () => withCwd((home, cwd) => {
+  test('Claude text matches the golden reasons: edit-guard ' + name, () => withCwd((home, cwd) => {
     const r = testHook('edit-guard.js', editPayload(cwd), { home, env });
     assert.strictEqual(r.status, GOLDEN['edit-guard:' + name].status);
     assert.strictEqual(norm(r.json.reason, cwd), GOLDEN['edit-guard:' + name].reason);

@@ -45,7 +45,7 @@ function trackerCtx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 function isBlock(r) { return r.status === 0 && r.json && r.json.decision === 'block'; }
-function isIdleNeglect(r) { return isBlock(r) && /IDLE NEGLECT/.test(r.json.reason || ''); }
+function isIdleNeglect(r) { return isBlock(r) && /have no in-flight agent/.test(r.json.reason || ''); }
 
 // Plant a REAL fresh heartbeat at <home>/.anti-hall/agents/<id>.json (ts=now) —
 // the exact path + format both hooks' agentsRunning() reads (numeric `ts` epoch ms).

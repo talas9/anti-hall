@@ -44,7 +44,7 @@ test('(c) new root HANDOVER-x.md: skip path is an absolute existing script', () 
   try {
     const r = blockReason('HANDOVER-x.md', dir);
     assert.strictEqual(r.status, 2, r.stdout);
-    assert.match(r.json.reason, /HANDOVER-LOCATION RULE/);
+    assert.match(r.json.reason, /session-handover doc/);
     const m = /node '([^']+)' skip edit-guard/.exec(r.json.reason);
     assert.ok(m, r.json.reason);
     assert.ok(path.isAbsolute(m[1]), m[1]);

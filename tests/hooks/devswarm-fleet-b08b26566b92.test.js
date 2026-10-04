@@ -114,7 +114,7 @@ for (const cmd of MUTATING_COMMANDS) {
       const r = run(cmd, { agentId: 'sub-1', cwd: repo });
       assert.strictEqual(r.status, 2, `expected block for subagent: ${cmd}\nstdout: ${r.stdout}`);
       const reason = (r.json && r.json.reason) || '';
-      assert.match(reason, /GIT STASH GUARD/, 'reason must name the guard');
+      assert.match(reason, /git-stash-guard/, 'reason must name the guard');
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }
@@ -128,7 +128,7 @@ test('git-stash-guard: ARMED (marker) blocks `git stash push` in COORDINATOR con
     const r = run('git stash push', { cwd: repo }); // no agentId -> coordinator
     assert.strictEqual(r.status, 2, 'a marked repo must block the coordinator too: ' + r.stdout);
     const reason = (r.json && r.json.reason) || '';
-    assert.match(reason, /GIT STASH GUARD/);
+    assert.match(reason, /git-stash-guard/);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

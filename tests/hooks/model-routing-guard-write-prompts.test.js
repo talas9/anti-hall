@@ -49,7 +49,7 @@ const READ_ONLY_FIX = [
 ];
 for (const p of READ_ONLY_FIX) {
   test('FIX: read-only prompt keeps Explore advisory: ' + p, () => {
-    assert.match(advisory('research task', p), /AGENT-ROUTING/);
+    assert.match(advisory('research task', p), /read-only-shaped/);
   });
 }
 
@@ -65,7 +65,7 @@ const READ_ONLY_GUARD = [
 for (const row of READ_ONLY_GUARD) {
   const [d, p] = row.split('|');
   test('GUARD: read-only prompt keeps Explore advisory: ' + p.slice(0, 50), () => {
-    assert.match(advisory(d, p), /AGENT-ROUTING/);
+    assert.match(advisory(d, p), /read-only-shaped/);
   });
 }
 
@@ -78,7 +78,7 @@ for (const p of ['find the bug, then fix it', 'Fix the failing hook and report',
 
 // FIX: the build prompt through the real hook (spawned process) with explicit haiku too.
 test('FIX: "research how the build works and report" + model haiku -> Explore advisory', () => {
-  assert.match(advisory('research how the build works and report', 'research how the build works and report', 'haiku'), /AGENT-ROUTING/);
+  assert.match(advisory('research how the build works and report', 'research how the build works and report', 'haiku'), /read-only-shaped/);
 });
 // GUARD: with the model OMITTED, Row 2 (strict, no exemptions by design) blocks `build`
 // as a mechanical word before Row 6 can advise; that is a block, not an advisory.

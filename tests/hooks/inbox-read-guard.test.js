@@ -184,7 +184,7 @@ test('SPAWN reason: names `inbox pull` + kill-switch, and does NOT echo the path
 test('SPAWN BLOCK: Read of the store db (read-CLI present -> store gate armed)', () => {
   const r = runRead(storeDbPath);
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-  assert.ok(/STORE READ-GUARD/.test(r.json.reason), 'store block reason expected');
+  assert.ok(/devswarm-store-read/.test(r.json.reason), 'store block reason expected');
   assert.ok(/inbox read/.test(r.json.reason) && /DISABLE_ANTIHALL_DEVSWARM=1/.test(r.json.reason),
     'store reason redirects to the wrapper + names the kill-switch');
 });

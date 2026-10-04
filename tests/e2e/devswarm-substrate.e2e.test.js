@@ -266,7 +266,7 @@ test('3 PARENT-GATE: stable-kind cap goes quiet, stays quiet while mail grows, r
     // (§4.4 requirement D).
     const b3 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
     assert.ok(b3.json && b3.json.decision === 'block', 'escalation pass must still block');
-    assert.match(b3.json.reason, /DEVSWARM ESCALATION/, 'must use escalation wording, not the normal nag');
+    assert.match(b3.json.reason, /Escalation: /, 'must use escalation wording, not the normal nag');
     // effectiveBlocks > cap on the NEXT pass -> now goes quiet (bounded at cap+1).
     const b4 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
     assert.strictEqual(b4.stdout, '', 'capped: same set goes quiet the pass AFTER the escalation');

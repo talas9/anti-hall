@@ -1637,7 +1637,7 @@ test('CRON MISSING: a stale wake-tick marker (>2x cadence) triggers the warning 
     writeStaleTick(h.home, 90 * 60 * 1000);
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
     assert.strictEqual(r.json && r.json.decision, 'block', `stale tick must warn even with nothing else to report; got: ${r.stdout}`);
-    assert.match(r.json.reason, /MAILBOX CRON MISSING/);
+    assert.match(r.json.reason, /Mailbox cron missing/);
     assert.match(r.json.reason, /CronList/);
   } finally { h.cleanup(); }
 });
@@ -1665,7 +1665,7 @@ test('CRON MISSING: never-ticked marker + old heartbeat still triggers the warni
     writeOldHeartbeat(h.home, 90 * 60 * 1000);
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
     assert.strictEqual(r.json && r.json.decision, 'block');
-    assert.match(r.json.reason, /MAILBOX CRON MISSING/);
+    assert.match(r.json.reason, /Mailbox cron missing/);
   } finally { h.cleanup(); }
 });
 
@@ -1676,7 +1676,7 @@ test('CRON MISSING: neither marker nor heartbeat exists -> too new to judge, no 
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
     // The normal heartbeat/wake forced-ack still fires (unrelated to cron-missing) —
     // this only asserts the cron-missing text itself never appears.
-    assert.ok(!r.json || !/MAILBOX CRON MISSING/.test(r.json.reason || ''), `must not judge a brand-new workspace; got: ${r.stdout}`);
+    assert.ok(!r.json || !/Mailbox cron missing/.test(r.json.reason || ''), `must not judge a brand-new workspace; got: ${r.stdout}`);
   } finally { h.cleanup(); }
 });
 
@@ -1686,15 +1686,15 @@ test('CRON MISSING: capped like every other kind — a persisting stale marker s
   try {
     writeStaleTick(h.home, 90 * 60 * 1000);
     const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
-    assert.match(r1.json.reason, /MAILBOX CRON MISSING/);
+    assert.match(r1.json.reason, /Mailbox cron missing/);
     const r2 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
-    assert.match(r2.json.reason, /MAILBOX CRON MISSING/);
+    assert.match(r2.json.reason, /Mailbox cron missing/);
     // Cap exhausted (MAX_BLOCKS=2) for the 'cron-missing' kind specifically —
     // it must stop re-appearing, even though this same Stop may still block
     // for the UNRELATED, separately-budgeted heartbeat-report reason (the
     // stale tick marker is also far too old to satisfy tickMarkerFreshZero).
     const r3 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
-    assert.ok(!r3.json || !/MAILBOX CRON MISSING/.test(r3.json.reason || ''),
+    assert.ok(!r3.json || !/Mailbox cron missing/.test(r3.json.reason || ''),
       `cap (MAX_BLOCKS=2) must stop the cron-missing re-warn; got: ${r3.stdout}`);
   } finally { h.cleanup(); }
 });
@@ -1706,7 +1706,7 @@ test('CRON MISSING: honors devswarm.cronMissingWarnMin', () => {
     // 20 minutes old: below the 60-min default, but above a 10-min override.
     writeStaleTick(h.home, 20 * 60 * 1000);
     const rDefault = testHook(HOOK, stopPayload(), { home: h.home, env: CLAUDE_CHILD_ENV });
-    assert.ok(!rDefault.json || !/MAILBOX CRON MISSING/.test((rDefault.json && rDefault.json.reason) || ''),
+    assert.ok(!rDefault.json || !/Mailbox cron missing/.test((rDefault.json && rDefault.json.reason) || ''),
       'below the default 60-min window -> no warning');
   } finally { h.cleanup(); }
   const h2 = makeHome();
@@ -1715,7 +1715,7 @@ test('CRON MISSING: honors devswarm.cronMissingWarnMin', () => {
     writeStaleTick(h2.home, 20 * 60 * 1000);
     const env = Object.assign({}, CLAUDE_CHILD_ENV, { ANTIHALL_DEVSWARM_CRON_MISSING_WARN_MIN: '10' });
     const r = testHook(HOOK, stopPayload(), { home: h2.home, expectJson: true, env });
-    assert.match(r.json.reason, /MAILBOX CRON MISSING/, 'a 10-min override warns at 20 minutes stale');
+    assert.match(r.json.reason, /Mailbox cron missing/, 'a 10-min override warns at 20 minutes stale');
   } finally { h2.cleanup(); }
 });
 

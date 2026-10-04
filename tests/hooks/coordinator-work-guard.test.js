@@ -112,7 +112,7 @@ test('4 WORK posts: the 4th nudges, the 5th is silent', () => {
   const { home } = makeHome();
   const outs = [1, 2, 3, 4, 5].map(() => post(home, WORK).stdout);
   assert.strictEqual(outs[0] + outs[1] + outs[2], '');
-  assert.match(outs[3], /COORDINATOR DRIFT: 4 state-changing calls/);
+  assert.match(outs[3], /coordinator-work-guard: 4 state-changing calls/);
   const j = JSON.parse(outs[3]);
   assert.strictEqual(j.hookSpecificOutput.hookEventName, 'PostToolUse');
   assert.ok(outs[3].length < 10000);
@@ -151,7 +151,7 @@ test('6 WORK posts, then a WORK Pre -> exit 2 with an absolute, quoted skip comm
   assert.strictEqual(r.status, 2, r.stdout + r.stderr);
   const j = JSON.parse(r.stdout);
   assert.strictEqual(j.decision, 'block');
-  assert.match(j.reason, /^COORDINATOR-WORK LIMIT: 6 state-changing calls/);
+  assert.match(j.reason, /^\S+ anti-hall · coordinator-work-guard: 6 state-changing calls/);
   const m = j.reason.match(/node '([^']+)' skip coordinator-work-guard/);
   assert.ok(m, j.reason);
   assert.ok(path.isAbsolute(m[1]));

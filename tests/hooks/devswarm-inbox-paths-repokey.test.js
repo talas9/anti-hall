@@ -116,7 +116,7 @@ for (const verb of ['cat', 'head', 'tail']) {
     test(`SPAWN BLOCK (regression, repoKey shape): ${verb} of ${label} raw repoKey store db`, () => {
       const r = runDevswarmFileRead((root) => `${verb} ${quote(path.join(root, 'store', REPOKEY, 'devswarm.db'))}`);
       assert.strictEqual(r.status, 2, `expected block for ${label} ${verb}\nstdout: ${r.stdout}`);
-      assert.ok(r.json && /STORE READ-GUARD/.test(r.json.reason), 'store block reason expected');
+      assert.ok(r.json && /devswarm-store-read/.test(r.json.reason), 'store block reason expected');
     });
   }
 }

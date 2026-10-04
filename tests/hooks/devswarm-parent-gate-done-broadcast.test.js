@@ -105,7 +105,7 @@ test('escalation names `devswarm.js archive <id>` when every flagged child is do
       let esc = null;
       for (let i = 0; i < 4 && !esc; i++) {
         const r = run(h.home, env);
-        if (r.json && /DEVSWARM ESCALATION/.test(r.json.reason)) esc = r.json.reason;
+        if (r.json && /Escalation: /.test(r.json.reason)) esc = r.json.reason;
       }
       assert.ok(esc, 'escalation fires within the cap');
       if (expectHint) assert.match(esc, /devswarm\.js archive <id>/);

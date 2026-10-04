@@ -311,8 +311,8 @@ test('FAR-BACK PENDING: status known pending in the window, create unreachable -
       upd('17', { status: 'pending', description: 'more' }, 'toolu_u'),
     ]);
     assert.strictEqual(blocked(r), true, r.stdout);
-    assert.match(r.json.reason, /^Open tasks remain/, r.json.reason);
-    assert.doesNotMatch(r.json.reason, /IDLE NEGLECT/, r.json.reason);
+    assert.match(r.json.reason, /open tasks remain/, r.json.reason);
+    assert.doesNotMatch(r.json.reason, /have no in-flight agent/, r.json.reason);
     assert.match(r.json.reason, /\(subject unknown\)/, r.json.reason);
     assert.ok(r.json.reason.endsWith(UNKNOWN_NOTE), r.json.reason);
   } finally { h.cleanup(); }
