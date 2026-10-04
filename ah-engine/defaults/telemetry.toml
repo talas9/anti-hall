@@ -324,8 +324,9 @@ value = { counted = "exact" }
 # ---- savings estimates ----------------------------------------------------------------------------------
 
 [impact.price_table]
-doc = "Model price table used for model-routing savings: `date` and `source` say where the prices came from, `models` maps a model name (or a family word it contains, such as `opus`) to `{ in_uc, out_uc, cache_read_uc, cache_write_uc }`: micro-dollars per million tokens of each class. Empty until verified prices are added: with no price a figure is left out, never guessed."
-value = { date = "", source = "not populated: no prices have been verified yet, so no figure is computed in dollars", models = {} }
+doc = "Model price table used for model-routing savings: `date` and `source` say where the prices came from, `models` maps a model name (or a family word it contains, such as `opus`) to `{ in_uc, out_uc, cache_read_uc, cache_write_uc }`: micro-dollars per million tokens of each class. A model with no entry is reported as `no price for model X` and left out of every figure, never guessed."
+# list prices for Opus 5.5 in USD per million tokens: $4 input, $20 output, $0.20 cache read, $8 cache write
+value = { date = "2026-10-05", source = "fitted exactly on 480 B1 runs, 2026-10-05", models = { opus-5-5 = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 8000000 } } }
 
 [impact.savings_method]
 doc = "How a model-routing saving is computed, shown next to every figure so it is never read as a measurement."

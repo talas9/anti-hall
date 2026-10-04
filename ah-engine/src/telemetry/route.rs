@@ -165,6 +165,7 @@ pub fn net(i: &NetInput<'_>) -> Value {
     let (mut saved, mut spent_up) = (0i128, 0i128);
     let (mut saved_n, mut up_n, mut same_n, mut unpriced, mut no_usage) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let mut tokens = Usage::default();
+    let mut unpriced_models = std::collections::BTreeSet::new();
     for c in &chains {
         let u = &c.spawn.usage;
         if u.input + u.output + u.cache_read + u.cache_write == 0 {
@@ -172,6 +173,11 @@ pub fn net(i: &NetInput<'_>) -> Value {
             continue;
         }
         let (Some(asked), Some(ran)) = (i.prices.price(c.origin.requested_model.as_str()), i.prices.price(c.spawn.actual_model.as_str())) else {
+            for m in [c.origin.requested_model.as_str(), c.spawn.actual_model.as_str()] {
+                if i.prices.price(m).is_none() {
+                    unpriced_models.insert(m.to_string());
+                }
+            }
             unpriced += 1;
             continue;
         };
@@ -196,6 +202,10 @@ pub fn net(i: &NetInput<'_>) -> Value {
     let parent = by_model.iter().max_by_key(|(m, n)| (**n, std::cmp::Reverse(**m))).map(|(m, _)| *m);
     let inj_tokens = i.injected_bytes.checked_div(i.bytes_per_token.max(1)).unwrap_or(0);
     let injection = parent.and_then(|m| i.prices.price(m)).map(|p| inj_tokens as i128 * p.input as i128);
+    if let (Some(m), None) = (parent, injection) {
+        unpriced_models.insert(m.to_string());
+    }
+    let no_price: Vec<String> = unpriced_models.iter().map(|m| defaults::render("msg.no_price_for_model", &[("model", m)])).collect();
     let jev: Vec<&super::event::Jev> = i.events.iter().filter_map(|e| if let Extras::Jev(j) = &e.extras { Some(j) } else { None }).collect();
     let jev_uc: u64 = jev.iter().map(|j| j.cost_uc).sum();
     let routing_net = saved - spent_up;
@@ -216,6 +226,7 @@ pub fn net(i: &NetInput<'_>) -> Value {
             "spawns_dearer": up_n,
             "spawns_same_price": same_n,
             "unpriced_spawns": unpriced,
+            "unpriced_models": no_price,
             "spawns_without_usage": no_usage,
             "tokens_compared": {"input": tokens.input, "output": tokens.output, "cache_read": tokens.cache_read, "cache_write": tokens.cache_write},
             "saved_usd": usd(saved),
@@ -298,6 +309,15 @@ mod tests {
 
     fn u(i: u64, o: u64) -> Usage {
         Usage { input: i, output: o, cache_read: 0, cache_write: 0 }
+    }
+
+    #[test]
+    fn the_shipped_table_prices_opus_5_5_and_nothing_else() {
+        let t = PriceTable::from_defaults();
+        let p = t.price("claude-opus-5-5").expect("opus 5.5 is priced");
+        assert_eq!((p.input, p.output, p.cache_read, p.cache_write), (4_000_000, 20_000_000, 200_000, 8_000_000));
+        assert!(t.price("claude-sonnet-5-5").is_none() && t.price("claude-haiku-4-5-20251001").is_none(), "other models stay unpriced, never guessed");
+        assert_eq!(defaults::render("msg.no_price_for_model", &[("model", &"claude-sonnet-5-5")]), "no price for model claude-sonnet-5-5");
     }
 
     #[test]

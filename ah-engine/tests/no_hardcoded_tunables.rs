@@ -33,16 +33,13 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/cli.rs", "for name in [\"job\"", "the schedule history command's flag names: part of the command line itself"),
     ("src/rules.rs", "for k in [\"command\"", "tool_input field names a rule can match by default: the host hook payload schema, an adapter concern (D30)"),
     ("src/health.rs", "for key in [\"breaker_until\"", "keys of the files.* settings the operator reset clears: names of settings, not values"),
-<<<<<<< HEAD
     // ---- the Jev lane: security grammar kept in code on purpose ----------------------------------------------
     ("src/jev/scrub.rs", "const WS", "JavaScript's whitespace class, the grammar of the redaction patterns; part of the byte-exact scrub parity, not a tunable"),
     ("src/jev/scrub.rs", "ci_any(&[\"secret\"", "the secret-word grammar of the outbound redaction, kept in code so a config edit cannot weaken what leaves the machine (D16); mirrors secret-scrub.js"),
-=======
     // ---- telemetry: the event schema and the recorder's memory layout ------------------------------------------------
     ("src/telemetry/event.rs", "", "the telemetry event schema: the field names of the line format shared with the Node route log, and the length of a UTC day; versioned with the format, not tunables"),
     ("src/telemetry/recorder.rs", "const F_", "offsets of a counter slot's fields (count, latency sum, injected bytes, first bucket): the in-memory layout of the recorder, not a tunable"),
     ("src/telemetry/recorder.rs", "static THREAD_ID", "a thread-local cell holding the thread's shard number: structural"),
->>>>>>> ah-engine: telemetry module: lock-free recorder, flush to hot.db, daily rollups, route linking, NET impact, Node import (D78, D77)
     // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
     ("src/sql.rs", "", "the SQL schema migrations and statements: the schema is code, versioned with the binary, and every tunable value is bound as a parameter at run time"),
 ];

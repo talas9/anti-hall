@@ -429,3 +429,7 @@ value = "computed from {n} routing decisions in the last {days} days (estimate, 
 [msg.tel_no_db]
 doc = "The telemetry rollup cannot run: storage did not open."
 value = "telemetry rollup needs the database, and storage is not open"
+
+[msg.no_price_for_model]
+doc = "Said by `impact` for a model that is not in the price table, instead of a guessed figure. Placeholder: {model}."
+value = "no price for model {model}"

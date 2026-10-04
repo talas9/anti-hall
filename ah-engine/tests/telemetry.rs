@@ -114,6 +114,22 @@ impl Run {
         }
     }
 
+    /// Poll (up to 20 s) until `n` hook events have been flushed to hot.db: the condition itself, not a guess at how many
+    /// flush intervals a slow runner needs.
+    fn wait_flushed(&self, n: i64) {
+        let t = Instant::now();
+        loop {
+            let got = rusqlite::Connection::open_with_flags(self.dir.join("eng").join("hot.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .and_then(|c| c.query_row("SELECT COALESCE(SUM(n), 0) FROM tel_counts WHERE k = 'hook'", [], |r| r.get::<_, i64>(0)))
+                .unwrap_or(0);
+            if got >= n {
+                return;
+            }
+            assert!(t.elapsed() < Duration::from_secs(20), "{n} hook events were not flushed within 20 s (got {got})");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// SIGKILL the daemon: nothing gets a chance to flush.
     fn kill9(&mut self) {
         if let Some(mut d) = self.daemon.take() {
@@ -142,7 +158,7 @@ fn a_killed_daemon_keeps_what_was_flushed_and_loses_only_the_window() {
     let mut run = Run::new("kill");
     run.start("100");
     run.hooks(12);
-    std::thread::sleep(Duration::from_millis(800)); // several flush intervals
+    run.wait_flushed(12);
     let live = run.json(&["telemetry", "summary", "--window", "1d"]);
     assert_eq!((live["from"].as_str(), live["invocations"].as_u64()), (Some("daemon"), Some(12)), "{live}");
     run.kill9();
@@ -166,7 +182,7 @@ fn rollup_through_the_cli_is_idempotent() {
     let mut run = Run::new("cli");
     run.start("100");
     run.hooks(3);
-    std::thread::sleep(Duration::from_millis(600)); // several flush intervals
+    run.wait_flushed(3);
     run.kill9();
     let s = run.json(&["telemetry", "summary", "--window", "1d"]);
     assert_eq!(s["invocations"], 3, "{s}");
