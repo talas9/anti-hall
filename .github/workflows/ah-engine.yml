@@ -53,7 +53,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.x
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+        working-directory: ah-engine
       - run: ah-engine/scripts/doc-check.sh ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '' || '--fast' }}
 
   # Supply chain (D84): known vulnerabilities (RustSec) and licence/source policy (ah-engine/deny.toml).

@@ -15,7 +15,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
     let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(8) {
+    while t.elapsed() < Duration::from_secs(20) {
         if f() {
             return;
         }
@@ -105,17 +105,19 @@ fn layered_config_hot_swaps_without_dropping_requests() {
             })
         })
         .collect();
-    std::thread::sleep(Duration::from_millis(150));
+    // sized by what was observed, not by a fixed time or count: on a loaded machine the threads get few turns
+    let count = |want: (u64, u64)| seen.lock().unwrap().iter().filter(|p| **p == want).count();
+    wait_for("replies from the old config", || count((q0, rss0)) >= 20);
     put(&toml, &format!("[daemon]\nqueue = {q1}\nrss_cap_kb = {rss1}\n"));
     wait_for("the new queue", || queue_cap() == Some(q1));
-    std::thread::sleep(Duration::from_millis(150));
+    wait_for("replies from the new config", || count((q1, rss1)) >= 20);
     stop.store(true, SeqCst);
     for t in threads {
         t.join().unwrap();
     }
     let seen = seen.lock().unwrap();
     assert_eq!(failures.load(SeqCst), 0, "no request may fail during a swap");
-    assert!(seen.len() > 50, "the burst was too small to mean anything: {}", seen.len());
+    assert!(seen.len() >= 40, "the burst was too small to mean anything: {}", seen.len());
     assert!(seen.contains(&(q0, rss0)) && seen.contains(&(q1, rss1)), "the burst must straddle the swap");
     for p in seen.iter() {
         assert!(*p == (q0, rss0) || *p == (q1, rss1), "torn config seen: {p:?}");
