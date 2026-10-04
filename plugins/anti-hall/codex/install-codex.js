@@ -18,9 +18,11 @@ const configPath = globalInstall ? path.join(os.homedir(), '.codex', 'config.tom
 // Transcript-heavy hooks get the same V8 flags as in hooks.json (exit-time deadlock; see hooks/lib/node-hook-flags.js).
 const { NODE_HOOK_FLAGS, EXPOSED_HOOKS } = require('../hooks/lib/node-hook-flags.js');
 
-function hook(file) {
+// `spec` may carry trailing CLI args after the script name (e.g. 'git-guard.js --audit').
+function hook(spec) {
+  const [file, ...args] = spec.split(' ');
   const flags = Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, file) ? NODE_HOOK_FLAGS.join(' ') + ' ' : '';
-  return `node ${flags}${JSON.stringify(path.join(HOOK_ROOT, file))}`;
+  return `node ${flags}${JSON.stringify(path.join(HOOK_ROOT, file))}${args.length ? ' ' + args.join(' ') : ''}`;
 }
 
 function group(matcher, files, timeout) {
@@ -133,6 +135,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['precompact-snapshot.js'], 10),
   ],
   PostToolUse: [
+    group('Bash', ['git-guard.js --audit'], 10),
     group('Bash', ['devswarm-parent-reply-tracker.js'], 10),
     group('Bash', ['devswarm-child-drain.js'], 10),
   ],

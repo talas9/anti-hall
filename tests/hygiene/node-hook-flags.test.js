@@ -77,7 +77,7 @@ test('install-codex flags the same scripts and nothing else', () => {
   for (const groups of Object.values(ANTI_HALL_HOOKS)) for (const g of groups) for (const h of g.hooks) cmds.push(h.command);
   assert.ok(cmds.length > 30);
   const bad = cmds.filter((c) => {
-    const file = path.basename(JSON.parse(c.slice(c.indexOf('"'))));
+    const file = path.basename(JSON.parse(c.match(/"(?:[^"\\]|\\.)*"/)[0]));
     return c.startsWith(PREFIX + '"') !== Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, file);
   });
   assert.deepStrictEqual(bad, []);

@@ -17,23 +17,22 @@ const REPO = path.resolve(__dirname, '..', '..');
 const TEMPLATE_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.json');
 const INSTALLER_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'install-codex.js');
 
-// Extract the basename of every hook script a hooks-registry object (either
-// the parsed hooks.json `.hooks` object, or install-codex.js's ANTI_HALL_HOOKS)
-// registers for a given event, as a Set. Both shapes are the same
-// `{ [event]: [ { matcher?, hooks: [ { command } ] } ] }` structure.
+// Normalized full command of every hook a hooks-registry object (either the
+// parsed hooks.json `.hooks` object, or install-codex.js's ANTI_HALL_HOOKS)
+// registers for a given event, as a Set. The quoted script path is reduced to
+// its basename (the template uses ${PLUGIN_ROOT}, the installer an absolute
+// path); node flags and script arguments (e.g. `--audit`) are kept.
 function hookFilesByEvent(hooksObj) {
   const out = {};
   for (const [event, groups] of Object.entries(hooksObj || {})) {
-    const files = new Set();
+    const cmds = new Set();
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
         const command = (h && h.command) || '';
-        // command looks like: node "/abs/path/to/hooks/some-hook.js"
-        const match = command.match(/([A-Za-z0-9_.-]+\.js)"?\s*$/);
-        if (match) files.add(match[1]);
+        cmds.add(command.replace(/"[^"]*[\\/]([A-Za-z0-9_.-]+\.js)"/, '$1').trim());
       }
     }
-    out[event] = files;
+    out[event] = cmds;
   }
   return out;
 }
