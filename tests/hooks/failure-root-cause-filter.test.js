@@ -96,6 +96,40 @@ test('hook: grep no-match is silent, real failure still nudges', () => {
   } finally { h.cleanup(); }
 });
 
+// Payload shape verified against the Claude Code hooks reference
+// (code.claude.com/docs/en/hooks.md, "PostToolUseFailure input"): `error` is a
+// string whose first line is `Exit code N` when a Bash command ran and exited;
+// it can also be a bare message with no exit-code line (the shell never
+// started), or `Exit code N` with no output at all (6 of 334 real Bash
+// payloads recorded by another plugin's failure hook). No other field carries
+// the exit code. Anything without a provable exit 1 must still nudge.
+function docPayload(command, error) {
+  return {
+    session_id: 'abc123', transcript_path: '/nonexistent/00893aaf.jsonl', cwd: process.cwd(),
+    permission_mode: 'default', hook_event_name: 'PostToolUseFailure', tool_name: 'Bash',
+    tool_input: { command, description: 'Run it' }, tool_use_id: 'toolu_01ABC123',
+    error, is_interrupt: false, duration_ms: 4187,
+  };
+}
+test('hook: documented PostToolUseFailure payload shape', () => {
+  const cases = [
+    ['npm test', 'Exit code 1\nError: Cannot find module \'express\'', true],
+    ['grep -q foo f', 'Exit code 1\n', false],
+    ['grep -q foo f', 'Exit code 1', false],
+    ['grep -q foo f', 'Exit code 2\ngrep: f: No such file or directory', true],
+    ['grep -q foo f', 'Command timed out after 2m 0s\nExit code 1', true],
+    ['grep -q foo f', 'spawn /bin/zsh ENOENT', true],
+    ['grep -q foo f', 'Exit code 1\n... [4096 characters truncated] ...\nmore', false],
+  ];
+  for (const [cmd, err, nudges] of cases) {
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, docPayload(cmd, err), { home: h.home });
+      assert.strictEqual(ctx(r) !== '', nudges, cmd + ' / ' + JSON.stringify(err) + ' -> ' + r.stdout);
+    } finally { h.cleanup(); }
+  }
+});
+
 test('hook: harness refusal is silent', () => {
   const h = makeHome();
   try {

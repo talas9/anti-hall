@@ -181,6 +181,12 @@ function main() {
       let running = null;
       try { running = require('./lib/agent-scan.js').runningAgentsOrNull(transcriptPath); } catch (_) { running = null; }
       demand = DD.evaluate({ actionable, knownIds: [...taskMap.keys()], inProgressIds: openTasks.filter((t) => /in[-_]?progress/i.test(t.status || '')).map((t) => t.id), running });
+      // Block only on a PROVEN uncovered task (guards.idleNeglectProvenOnly,
+      // default on): with unmapped running agents, the guard cannot tell which
+      // task each one is on, so "no in-flight agent on them" is unproven while
+      // dispatch <= unmapped. task-tracker's per-turn DISPATCH NOW line still
+      // shows. Off = the older in_progress-first estimate also blocks.
+      if (demand.fire && !demand.proven && DD.provenOnly()) demand = Object.assign({}, demand, { fire: false });
     } else {
       // Setting off: legacy blanket rule.
       demand = { fire: !haveAgents, dispatch: actionable };

@@ -54,6 +54,10 @@ function configuredCap() {
   return defaultCap();
 }
 
+function provenOnly() {
+  try { return require('./settings.js').get('guards', 'idleNeglectProvenOnly', true) !== false; } catch (_) { return true; }
+}
+
 function enabled() {
   try { return require('./settings.js').get('guards', 'dispatchDemand', true) !== false; } catch (_) { return true; }
 }
@@ -92,7 +96,15 @@ function evaluate(opts) {
   const onPending = Math.max(0, unmapped - inProgress);
   const dispatch = actionable.filter((t) => !covered.has(String(t.id)));
   const fire = dispatch.length > 0 && dispatch.length > onPending && running.length < cap;
-  return { fire, dispatch, covered: [...covered], unmapped, running: running.length, cap };
+  // proven: true only when SOME dispatchable task is uncovered under EVERY
+  // placement of the unmapped agents. The in_progress-first rule above is a
+  // guess (an agent naming no task is often on a PENDING task, or doing prep
+  // work that later tasks wait on), good enough for the per-turn advisory line
+  // but not for a Stop BLOCK that says "no in-flight agent on them". Field
+  // replay (2026-10): 34 of 58 IDLE NEGLECT blocks with a live agent had
+  // dispatch <= unmapped; most sessions said they were waiting on those agents.
+  const proven = fire && dispatch.length > unmapped;
+  return { fire, proven, dispatch, covered: [...covered], unmapped, running: running.length, cap };
 }
 
 function oneLine(s, max) {
@@ -236,7 +248,7 @@ function summary(home) {
 }
 
 module.exports = {
-  evaluate, demandLine, label, taskRefs, defaultCap, configuredCap, enabled,
+  evaluate, demandLine, label, taskRefs, defaultCap, configuredCap, enabled, provenOnly,
   resolvePending, recordDemand, recordIdleNeglect, summary, readMetrics, metricsPath, spawnedSince,
 };
 
