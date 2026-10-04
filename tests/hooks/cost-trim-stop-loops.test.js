@@ -215,3 +215,17 @@ test('JEV REVIEW DUE is still emitted in a headless run while the recommend noti
     assert.match(noticeOf(r), /jev-review: review due/);
   } finally { h.cleanup(); }
 });
+
+// Plan rev 7 (A12/C1): neither guard reads stop_hook_active; a continuation Stop is still evaluated.
+test('stop_hook_active:true is still evaluated by tasklist-guard and task-guard (Claude and Codex payloads)', () => {
+  for (const [name, extra] of [['claude', {}], ['codex', CODEX]]) {
+    const h = makeHome();
+    try {
+      const a = testHook(TL, stop(h, h.writeTranscript(edits(4)), Object.assign({ stop_hook_active: true }, extra), 'sa-' + name), { home: h.home });
+      assert.ok(isBlock(a), name + ' tasklist-guard: ' + a.stdout);
+      const tasks = [{ id: '1', content: 'one', status: 'in_progress' }];
+      const b = testHook(TG, Object.assign({ hook_event_name: 'Stop', session_id: 'sb-' + name, stop_hook_active: true, transcript_path: h.writeTranscript([todoWrite(tasks)]) }, extra), { home: h.home });
+      assert.ok(isBlock(b), name + ' task-guard: ' + b.stdout);
+    } finally { h.cleanup(); }
+  }
+});
