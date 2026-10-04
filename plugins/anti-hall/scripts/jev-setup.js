@@ -48,7 +48,7 @@ const KNOWN_INTEGRATIONS = [
   'speculation', 'triage', 'modelRouting', 'claimLedger', 'mergeGateHedge',
   'newRequest', 'outputVerifyGuard', 'gitGuardSelfCredit', 'parentGateQuestion',
   'tasklistTrivial', 'supervisorBlockerLabel', 'codexNudgeSubstantial',
-  'findingDedup', 'postHandoverGate', 'dispatchTier',
+  'findingDedup', 'postHandoverGate', 'speculationFramed', 'dispatchTier',
   'devswarmOnBrief', 'devswarmExtraSanctioned', 'devswarmWaitKind', 'devswarmLoop', 'devswarmStepMap',
 ];
 const LEGACY_ON_DEFAULT = new Set(['speculation', 'triage']);
@@ -560,6 +560,7 @@ module.exports = {
   writeKeyFileAtomic,
   callCountLast24h,
   jevConfigPath,
+  KNOWN_INTEGRATIONS,
   logPath,
   cmdTest,
   cmdStatus,

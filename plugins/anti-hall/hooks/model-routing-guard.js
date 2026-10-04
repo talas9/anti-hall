@@ -351,6 +351,7 @@ function consultModelRoutingJev(corpus, payload) {
       trust: 'relax-block',
       baseline: true,
       judge: (answer) => answer === 'mechanical',
+      recordDisagreement: true, // log would-change (+ audit snippet) whenever Jev's tier differs from the rule-based verdict
       budgetMs: 1200,
       sessionId: payload && payload.session_id != null ? String(payload.session_id) : undefined,
     });

@@ -948,7 +948,11 @@ function buildReport(rows, opts = {}) {
     // (`typeof row.jev === 'string'` -- a `choice` classifier with no boolean
     // baseline) is excluded from changedRate entirely, regardless of mode.
     const isLabelOnly = typeof row.jev === 'string';
+    // Acted-on metrics read ONLY `changed` for an 'on' row. An 'on' row may
+    // also carry `wouldChange` (recordDisagreement: Jev disagreed but did not
+    // act); that feeds labelability (labelDirection) and never changedRate.
     const rawDirection = row.mode === 'on' ? row.changed : row.wouldChange;
+    const labelDirection = row.mode === 'on' ? (row.changed || row.wouldChange) : row.wouldChange;
     const effectiveDirection = isLabelOnly ? null : rawDirection;
     if (row.h && effectiveDirection && row.backend !== 'cache') {
       bucket.changedHashByFresh.set(row.h, effectiveDirection);
@@ -958,7 +962,7 @@ function buildReport(rows, opts = {}) {
     // the owner can tp/fp-label -- collect its hash separately so the
     // precision/labelled-sample loops below can join it the same way a
     // boolean integration's changed decision would be.
-    if (isLabelOnly && row.h && rawDirection && row.backend !== 'cache') {
+    if (row.h && labelDirection && !effectiveDirection && row.backend !== 'cache') {
       bucket.labelWouldChangeHashesFresh.add(row.h);
     }
     if (Number.isFinite(row.ms)) bucket.latencies.push(row.ms);

@@ -801,7 +801,7 @@ function defaultProject() {
   try { return path.basename(process.cwd()) || 'unknown'; } catch (_) { return 'unknown'; }
 }
 
-function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef }) {
+function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef, recordDisagreement }) {
   const confident = !!(r && r.ok && Number.isFinite(r.confidence) && r.confidence >= threshold);
   const jevBool = (r && r.ok)
     ? (typeof judge === 'function' ? !!judge(r.answer) : r.answer)
@@ -821,7 +821,13 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   // mode been 'on', for every mode -- `jev-report.js` uses it for shadow rows
   // only (an 'on' row's `wouldChange` is identical to `changed` by construction,
   // so the report keeps reading `changed` there).
-  const wouldChangeDirection = directionFor(trust, (r && r.ok) ? (wouldBe !== baseline) : false);
+  // recordDisagreement (opt-in, label-only integrations such as modelRouting):
+  // report a would-change whenever Jev's answer DIFFERS from the rule-based
+  // verdict, regardless of confidence or mode, so an 'on' row (whose `changed`
+  // is null unless Jev confidently relaxed) is still a labelable decision.
+  const wouldChangeDirection = directionFor(trust, (r && r.ok)
+    ? (recordDisagreement ? (jevBool !== baseline) : (wouldBe !== baseline))
+    : false);
 
   const backend = !r ? 'baseline-only' : (cachedFlag ? 'cache' : (r.ok ? 'jev' : 'baseline-only'));
   const { costUsd, costSource } = r ? computeCostUsd({ r, cachedFlag, home }) : { costUsd: null, costSource: null };
@@ -840,7 +846,7 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
     // wouldChange: only written when it differs in meaning from `changed`
     // (mode !== 'on') -- an 'on' row's value would just duplicate `changed`,
     // and older/other readers never expect this field at all.
-    ...(mode !== 'on' ? { wouldChange: wouldChangeDirection } : {}),
+    ...((mode !== 'on' || recordDisagreement) ? { wouldChange: wouldChangeDirection } : {}),
     cached: !!cachedFlag,
     mode,
     // project: always populated (cwd-basename fallback, `jev report --by
@@ -929,11 +935,11 @@ function prepare({ id, home, trust, baseline, cacheKey, state }) {
 // ask({id, question, state, trust, baseline, judge, cacheKey, budgetMs, home})
 //   -> Promise<{final, jev, baseline, confidence, ms, backend, h}>
 async function ask(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef, recordDisagreement } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef, recordDisagreement });
   }
 
   const cache = readCache(h);
@@ -955,7 +961,7 @@ async function ask(opts = {}) {
     }
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef, recordDisagreement });
 }
 
 // askSync(...) — same contract as ask(), but fully synchronous: the network
@@ -964,11 +970,11 @@ async function ask(opts = {}) {
 // uses. For callers (e.g. model-routing-guard) whose main() is synchronous
 // and cannot await.
 function askSync(opts = {}) {
-  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef } = opts;
+  const { id, question, state, trust, baseline, judge, cacheKey, budgetMs, home, compare, project, sessionId, turnRef, recordDisagreement } = opts;
   const { h, mode, hash, threshold, skip } = prepare({ id, home, trust, baseline, cacheKey, state });
 
   if (skip) {
-    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef });
+    return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r: null, cachedFlag: false, compare, state, project, sessionId, turnRef, recordDisagreement });
   }
 
   let r; let cachedFlag = false;
@@ -997,7 +1003,7 @@ function askSync(opts = {}) {
     askSyncResultMemo.set(hash, r);
   }
 
-  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef });
+  return finalize({ id, home: h, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef, recordDisagreement });
 }
 
 // askDetached(opts) — fire-and-forget variant for callers on the user's

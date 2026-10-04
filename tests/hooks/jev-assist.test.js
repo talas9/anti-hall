@@ -951,7 +951,7 @@ test('askSync(): relax-block via subprocess, confident non-mechanical relaxes th
       };
       const r = await runAskSyncInChild({
         id: 'modelRouting', question: CHOICE_Q, state: 'write the report', trust: 'relax-block',
-        baseline: true, judgeSrc: "(a) => a === 'mechanical'", budgetMs: 8000,
+        baseline: true, judgeSrc: "a => a === 'mechanical'", budgetMs: 8000,
       }, env);
       assert.strictEqual(r.final, false, 'confident non-mechanical relaxes the block');
       assert.strictEqual(r.backend, 'jev');
@@ -1373,6 +1373,27 @@ test('rollups are never removed by default; jev.rollupRetentionDays > 0 is an ow
       h.writeState('settings.json', { jev: { rollupRetentionDays: 30 } });
       lib.writeDailyRollups(h.home);
       assert.ok(!fs.existsSync(path.join(dir, '2020-01-01.json')), 'opt-in removes rollups older than N days');
+    });
+  } finally { h.cleanup(); }
+});
+
+test('askSync(): recordDisagreement logs wouldChange + audit snippet on an ON row whose Jev answer differs but is not confident (modelRouting)', async () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, audit: { snippets: true }, integrations: { modelRouting: 'on' } });
+    await withMockServer(choiceHandler('authoring', 0.3), async (endpoint) => {
+      const env = { HOME: h.home, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint };
+      const base = { id: 'modelRouting', question: CHOICE_Q, state: 'run the deploy script', trust: 'relax-block', baseline: true, judgeSrc: "a => a === 'mechanical'", budgetMs: 3000 };
+      const r = await runAskSyncInChild(Object.assign({}, base, { recordDisagreement: true }), env);
+      assert.strictEqual(r.final, true, 'low-confidence disagreement never relaxes the block');
+      const log = readNdjson(path.join(h.home, '.anti-hall', 'logs', 'jev-assist.ndjson'));
+      assert.strictEqual(log[0].mode, 'on');
+      assert.strictEqual(log[0].changed, null);
+      assert.strictEqual(log[0].wouldChange, 'relaxed', 'Jev tier differs from the rule-based verdict');
+      const audit = fs.readFileSync(path.join(h.home, '.anti-hall', 'logs', 'jev-audit.ndjson'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      assert.strictEqual(audit.length, 1);
+      assert.strictEqual(audit[0].shadow, true);
+      assert.ok(audit[0].snippet.includes('deploy'));
     });
   } finally { h.cleanup(); }
 });

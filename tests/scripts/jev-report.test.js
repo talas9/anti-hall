@@ -1427,3 +1427,20 @@ test('CLI: trigger occurrences from jev-judge.ndjson and devswarm-supervision.nd
     h.cleanup();
   }
 });
+
+test('buildReport: on-mode choice row with only wouldChange (modelRouting recordDisagreement) is labelable', () => {
+  const rows = [
+    choiceRow({ id: 'modelRouting', h: 'm1', jev: 'authoring', base: true, changed: null, wouldChange: 'relaxed' }),
+    choiceRow({ id: 'modelRouting', h: 'm2', jev: 'mechanical', base: true, changed: null }),
+  ];
+  const r = buildReport(rows, {}).integrations.find((x) => x.id === 'modelRouting');
+  assert.strictEqual(r.labelWouldChangeUnique, 1, 'only the disagreeing decision joins the label-candidate set');
+});
+
+test('buildReport: non-choice on-mode row {changed:null, wouldChange:added} is NOT acted-on (changedUnique 0) but is labelable', () => {
+  const rows = [{ ts: new Date().toISOString(), id: 'x', h: 'b1', base: false, jev: true, conf: 0.4, ms: 5, backend: 'jev', final: false, changed: null, wouldChange: 'added', cached: false, mode: 'on' }];
+  const r = buildReport(rows, {}).integrations.find((x) => x.id === 'x');
+  assert.strictEqual(r.changedUnique, 0);
+  assert.strictEqual(r.changedRate, 0);
+  assert.strictEqual(r.labelWouldChangeUnique, 1);
+});
