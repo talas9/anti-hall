@@ -496,7 +496,9 @@ function queueNonEmpty(home) {
 
 // runArrivalWorker(home) — called by the detached child that already owns the lock.
 function runArrivalWorker(home, token) {
-  if (token) adoptArrivalLock(home, token); // lock-less when stolen: still drains (claims + cache keep it safe)
+  // fail closed: a token we cannot adopt means the lock was stolen/reclaimed, so a new
+  // owner may be draining; touching the queue now would race it.
+  if (token && !adoptArrivalLock(home, token)) return;
   arrivalTrace('start ' + process.pid);
   const t0 = Date.now();
   let batches = 0;
