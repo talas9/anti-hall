@@ -6,7 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.201.0 (2026-10-04)
+
+### Highlights
+
+- **Tradeoff fixes A-F.** git-guard skips heredoc bodies that are data and checks `xargs`, resolves git aliases and reused commit messages, and holds git/gh beside a data heredoc to a flag allowlist; api-guard, ship-it-guard and Bash edit parity see shell writes (no 64 KB skip); an opt-in unsupported-inference check and a keyless CLI judge backend; noisy advisories (root-cause nudge, output-verify) cut at the source; DevSwarm hooks exit early where they cannot act.
+- **README tradeoffs list moved** into GUIDE "Limits and escape hatches".
+- **Replay false-positive fixes** from 5,828 real PostToolUse events.
+- **Benchmark harness** (`evals/anti-hall/`) runs in the container sandbox, with `--reps`, a per-run cost reserve and `--cases-dir`.
+- **New opt-in/advisory features:** merge-side-pick advisory, Codex spawn-time orchestration rules, reduced tasklist nag, per-prompt Stop-nag budget.
 
 ### Added
 
@@ -39,6 +47,7 @@ the update.
 - Measurement and the numbers that were checked and not changed are in `docs/HOOK-LATENCY.md` (addendum 2026-10-04, second).
 
 ### Fixed
+
 - **api-guard** no longer treats the result of a chained require (`const src = require('fs').readFileSync(f)`) as the module itself, and no longer flags a property assignment on a module (`fs.x = 1`) as a fabricated API read.
 - **git-guard** shell-function wrapper expansion no longer splices call arguments into a `name="$1"` / `local name="$1"` assignment when the variable is only echoed or passed as data (test harnesses piping a command to a hook). It still blocks when the variable, or one derived from it, is later run (`$c`, `eval "$c"`, `bash -c`, piped or here-string to a shell, `source <(...)`).
 - **Judge hardening.** The secret scrub now also covers `sk_live_`/`sk_test_`/`rk_live_`, `glpat-`, `npm_`, `Authorization: Basic|Bearer` values and quoted multi-word `SECRET_KEY = "a b c"` values, and the judge input is scrubbed before it is cut to length (a cut could leave a token fragment below every pattern). The `claude -p` judge child runs in a private empty temp dir (removed afterwards) instead of the shared temp dir. Every Stop, SessionStart and UserPromptSubmit hook exits 0 silently when `ANTIHALL_JUDGE_CHILD=1` (new `hooks/lib/judge-child-exit.js`), as a second stop against recursion.
@@ -55,6 +64,7 @@ the update.
 - Jev triage: the per-hash claim and the arrival drain lock now use the single lock primitive (`companion/lib/lock.js`) instead of hand-rolled O_EXCL markers; the lock gained `adopt(path, token)` so the detached drain worker takes over the lock its spawning hook acquired. Behaviour unchanged; the hygiene allowlist entry is gone.
 
 ### Changed
+
 - Manifest: `plugin.json` now sets `termsOfServiceUrl` (the MIT LICENSE), so the plugin directory listing shows a terms link next to support and privacy. The Codex manifest already had it.
 
 - speculation-judge now sends the judge the latest user request (up to 2000 characters) and the
