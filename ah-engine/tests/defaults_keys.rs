@@ -97,6 +97,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("job.") // scheduled jobs are read by prefix in schedule.rs
             || k.starts_with("msg.hint_") // named by the health.error_codes table, not by source
             || k.starts_with("git.msg_") // block messages are rendered by block(name); the name is a literal there
+            || k.starts_with("dispatch.hooks_") // the dispatch table, read by host and event (dispatch::table::key)
     };
     let read = |k: &String| {
         let (section, name) = k.split_once('.').unwrap_or(("", k));

@@ -5,6 +5,7 @@
 //!   hook:     `V <client-version>\n<raw hook JSON>`  -> OK <hook output JSON, "" = nothing to say> | ERR | BUSY
 //!   control:  `CTL ping|reload|stop|status`           -> OK
 //!   project:  `P <cwd>\n<verb> <args>`                -> OK `<value>` | ERR   (state partitioned by project)
+//!   dispatch: `D <client-version>\n<meta>\n<payload>`   -> OK `<check answers>` | ERR | BUSY   (D58)
 //! A hook request from a NEWER client makes this daemon answer, drain queued connections, then exit,
 //! so the client's next call cold-starts the new build.
 //!
@@ -322,7 +323,13 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
     let text = String::from_utf8_lossy(req);
     let (head, body) = text.split_once('\n').unwrap_or((&text, ""));
     if let Some(v) = head.strip_prefix("V ") {
-        let reply = hook(body, sh, cfg);
+        let (env, payload) = crate::reqenv::split_request(body);
+        let reply = hook(payload, &env, sh, cfg);
+        let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
+        return (reply, if newer { After::Exit } else { After::Continue });
+    }
+    if let Some(v) = head.strip_prefix("D ") {
+        let reply = dispatch(body, sh);
         let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
@@ -403,7 +410,7 @@ fn reply_outcome(r: &Reply) -> (crate::telemetry::event::Outcome, u64) {
     }
 }
 
-fn hook(body: &str, sh: &Shared, cfg: &Config) -> Reply {
+fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) -> Reply {
     let started = Instant::now();
     let Ok(p) = serde_json::from_str::<serde_json::Value>(body) else {
         sh.stats.errors.fetch_add(1, SeqCst);
@@ -432,7 +439,7 @@ fn hook(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     let over = move || budget > 0 && limits::thread_cpu_us().saturating_sub(start) > budget;
     let event = crate::hookio::event_of(&p).unwrap_or(defaults::text("telemetry.no_event_label"));
     let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event };
-    let reply = match crate::hookio::respond_observed(&p, &rules, &over, &obs) {
+    let reply = match crate::hookio::respond_observed(&p, &rules, &over, &obs, env) {
         Ok(out) if out == crate::hookio::FALLBACK => Reply::Err(defaults::text("msg.reply_defer").into()),
         Ok(out) => Reply::Ok(out),
         Err(_) => {
@@ -448,6 +455,45 @@ fn hook(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     let (outcome, injected) = reply_outcome(&reply);
     sh.telemetry.record_hook(event, outcome, micros, injected);
     reply
+}
+
+/// `D <client-version>\n<meta JSON>\n<payload>`: the built-in checks of one event's dispatch table (D58), under the
+/// same rate limits and telemetry as a hook request. The reply lists each check's answer; the client runs the rest.
+fn dispatch(body: &str, sh: &Shared) -> Reply {
+    let started = Instant::now();
+    let (meta, raw) = body.split_once('\n').unwrap_or((body, ""));
+    let (Ok(meta), Ok(p)) = (serde_json::from_str::<crate::dispatch::native::Meta>(meta), serde_json::from_str::<serde_json::Value>(raw)) else {
+        sh.stats.errors.fetch_add(1, SeqCst);
+        sh.telemetry.with_metrics(|m| m.inc("errors", &[]));
+        sh.telemetry.fallback("malformed", "");
+        return Reply::Err(defaults::text("msg.reply_malformed").into());
+    };
+    let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
+    let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
+    let phash = telemetry::project_hash(&pkey);
+    if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
+        sh.stats.busy.fetch_add(1, SeqCst);
+        sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
+        sh.telemetry.fallback("busy", &phash);
+        return Reply::Busy;
+    }
+    let observe = |e: &crate::dispatch::table::Entry, a: &crate::dispatch::native::Answer, micros: u64| {
+        use crate::checks::Verdict;
+        use crate::dispatch::native::Answer;
+        let v = match a {
+            Answer::Defer => Verdict::Defer,
+            Answer::Decided(r) if r.code == Some(2) => Verdict::Block(r.err.trim_end().to_string()),
+            Answer::Decided(r) if !r.out.is_empty() => Verdict::Advisory(r.out.trim_end().to_string()),
+            Answer::Decided(_) => Verdict::Allow,
+        };
+        let answer = if v == Verdict::Defer { "defer" } else { "decided" };
+        let check = e.check.as_deref().unwrap_or("");
+        sh.telemetry.with_metrics(|m| m.inc("dispatch_checks", &[("event", meta.event.as_str()), ("check", check), ("answer", answer)]));
+        sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
+    };
+    let answers = crate::dispatch::native::evaluate(&meta, &p, &observe);
+    sh.telemetry.observe_hook(&meta.event, started.elapsed().as_micros() as u64);
+    Reply::Ok(crate::dispatch::native::encode(&answers))
 }
 
 /// `P <cwd>\n[W <write-id>\n]<verb> <args>`: the partition is derived here from `cwd`; the request cannot name a key. The
@@ -933,6 +979,35 @@ mod tests {
         match r {
             Reply::Ok(s) => s,
             o => panic!("not OK: {o:?}"),
+        }
+    }
+
+    /// D76: one daemon, two clients whose environments differ, same payload. The git check's on/off switch is an
+    /// environment variable, so each client must get the answer its own environment implies, whatever the daemon's is.
+    #[test]
+    fn each_request_is_evaluated_with_its_own_environment_never_the_daemons() {
+        let rs = RuleSet::parse(r#"{"version":1,"rules":[{"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny","options":{"plugin_root":"/p"}}]}"#).unwrap();
+        let sh = Shared::new(Config::from_env(), "0.1.0", rs, "/nonexistent/rules.json".into());
+        let payload =
+            r#"{"session_id":"s","cwd":"/","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
+        let home = std::env::temp_dir().join(format!("ahd-env-{}", std::process::id()));
+        let envs = [
+            crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_str().unwrap())]),
+            crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_str().unwrap()), ("ANTIHALL_GIT_GUARD", "0")]),
+        ];
+        for round in 0..2 {
+            // V (rules) and D (dispatch table) both: the first client's guard is on, the second client's is off
+            for (i, env) in envs.iter().enumerate() {
+                let v = format!("V 0.1.0\n{}\n{payload}", env.to_line());
+                let blocked_v = ok(&handle_request(v.as_bytes(), &sh).0).starts_with(crate::hookio::EXIT2);
+                let meta =
+                    crate::dispatch::native::Meta { host: "claude".into(), event: "PreToolUse".into(), tool: None, root: Some("/p".into()), env: env.clone() };
+                let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
+                let rows: Vec<serde_json::Value> = serde_json::from_str(ok(&handle_request(d.as_bytes(), &sh).0)).unwrap();
+                let git = rows.iter().find(|r| r[0] == "git-guard").expect("the git check answers its entry");
+                let blocked_d = git[1] == 2;
+                assert_eq!((blocked_v, blocked_d), (i == 0, i == 0), "round {round}, client {i}: {git}");
+            }
         }
     }
 

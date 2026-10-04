@@ -170,6 +170,9 @@ fn cmd_serve(_: &Parsed) -> i32 {
 }
 
 fn cmd_hook(p: &Parsed) -> i32 {
+    if crate::dispatch::requested(&p.rest) {
+        return crate::dispatch::hook_main(&p.rest);
+    }
     client::hook_main(&p.rest)
 }
 

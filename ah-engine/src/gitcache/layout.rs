@@ -49,9 +49,10 @@ fn content(p: &Path) -> SigItem {
     }))
 }
 
-/// `name` from the environment given to the cache, else from the process.
+/// `name` from the environment given to the cache, and from nowhere else (D76): the daemon's own environment belongs to
+/// whichever client started it, never to the request being answered.
 pub(super) fn env_get(env: &[(String, String)], name: &str) -> Option<String> {
-    env.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.clone()).or_else(|| std::env::var(name).ok())
+    env.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.clone())
 }
 
 /// Refuse when the environment changes how git finds or reads a repository.
@@ -187,4 +188,29 @@ fn global_configs(env: &[(String, String)]) -> Vec<PathBuf> {
         out.push(Path::new(&x).join(defaults::text("gitcache.xdg_git_config")));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_process_environment_is_never_read() {
+        let name = "GIT_DISCOVERY_ACROSS_FILESYSTEM";
+        assert!(defaults::list("gitcache.bypass_env").contains(&name));
+        std::env::set_var(name, "1");
+        let own = check_bypass(&[]);
+        let given = check_bypass(&[(name.to_string(), "1".to_string())]);
+        std::env::remove_var(name);
+        assert!(own.is_ok(), "the daemon's own GIT_* is not the request's: {own:?}");
+        assert!(matches!(given, Err(GitCacheError::Bypassed(n)) if n == name));
+        assert_eq!(env_get(&[], "PATH"), None);
+    }
+
+    #[test]
+    fn every_bypass_variable_reaches_the_daemon_with_the_request() {
+        for name in defaults::list("gitcache.bypass_env") {
+            assert!(crate::reqenv::allowed(name), "{name} is not in request_env.allow, so a client's value would never be seen");
+        }
+    }
 }

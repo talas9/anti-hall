@@ -10,8 +10,8 @@ doc = "Run the resident daemon in the foreground (the client starts it detached 
 value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.hook]
-doc = "The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback."
-value = { args = "[--fallback <hook.js>]", read_only = false, status = "implemented" }
+doc = "The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would."
+value = { args = "[--fallback <hook.js>] | --event <Event> [--tool <Tool>] [--host claude|codex] [--fallback-map <file>]", read_only = false, status = "implemented" }
 
 [cmd.status]
 doc = "Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did."

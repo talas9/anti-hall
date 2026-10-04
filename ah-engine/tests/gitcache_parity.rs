@@ -408,3 +408,18 @@ fn a_git_that_cannot_finish_is_an_error_and_is_not_cached() {
     assert!(matches!(r.head(), Err(GitCacheError::Run { .. })));
     assert_eq!(cache.stats().hits, 0);
 }
+
+/// D76: one cache (the daemon's) serves clients with different git environments: the client that sets `GIT_DIR` is refused
+/// (bypassed), the one that does not is answered, whatever order they come in and whatever the cache's own process has.
+#[test]
+fn clients_with_different_git_environments_share_one_cache() {
+    let fx = Fx::new("gc-two-clients");
+    let d = fx.init("repo");
+    fx.commit(&d, "a.txt", "one");
+    let mut with_git_dir = fx.env.clone();
+    with_git_dir.push(("GIT_DIR".to_string(), d.join(".git").to_string_lossy().to_string()));
+    for _ in 0..2 {
+        assert!(matches!(fx.cache.repo(&d, &with_git_dir), Err(ah_engine::gitcache::GitCacheError::Bypassed(n)) if n == "GIT_DIR"));
+        assert!(fx.cache.repo(&d, &fx.env).unwrap().head().unwrap().is_some());
+    }
+}

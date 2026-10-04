@@ -183,8 +183,8 @@ fn looks_like_file_write_shape(cmd: &str) -> bool {
 /// into `Defer`, so a bug or a pathological command can never take a daemon worker down.
 ///
 /// Mirrors `git-guard.js` `main`.
-pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Verdict {
-    let settings = Settings::from_process();
+pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str, env: &crate::reqenv::RequestEnv) -> Verdict {
+    let settings = Settings::from_env(env);
     let r = std::thread::scope(|sc| {
         std::thread::Builder::new().stack_size(tables().stack_bytes).spawn_scoped(sc, || check_with(settings, cmd, cwd, plugin_root)).map(|h| h.join())
     });
@@ -253,11 +253,15 @@ impl Check for GitGuard {
     }
 
     fn run(&self, s: &Subject<'_>, opts: &Value) -> Option<Verdict> {
+        self.run_env(s, &Value::Null, opts, &crate::reqenv::RequestEnv::default())
+    }
+
+    fn run_env(&self, s: &Subject<'_>, _payload: &Value, opts: &Value, env: &crate::reqenv::RequestEnv) -> Option<Verdict> {
         if s.event != "PreToolUse" || s.tool != Some("Bash") {
             return None;
         }
         let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
-        let root = opts.get("plugin_root").and_then(Value::as_str).map(str::to_string).or_else(|| crate::defaults::env_var("plugin_root")).unwrap_or_default();
-        Some(check_bash(cmd, s.cwd, &root))
+        let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(crate::defaults::env_name("plugin_root"))).unwrap_or_default();
+        Some(check_bash(cmd, s.cwd, root, env))
     }
 }

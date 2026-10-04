@@ -205,3 +205,30 @@ impl fmt::Display for DbError {
 }
 
 impl std::error::Error for DbError {}
+
+/// Why the per-event dispatcher (D58) could not start.
+#[derive(Debug)]
+pub enum DispatchError {
+    /// `--host` names a host the dispatch table does not have.
+    Host(String),
+    /// The `--fallback-map` file is unreadable or not an object of events to hook ids to commands.
+    Map {
+        /// The map file.
+        path: PathBuf,
+        /// What went wrong.
+        detail: String,
+    },
+}
+
+impl fmt::Display for DispatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DispatchError::Host(h) => {
+                f.write_str(&defaults::render("dispatch.msg_unknown_host", &[("host", h), ("hosts", &crate::dispatch::table::hosts().join(", "))]))
+            }
+            DispatchError::Map { path, detail } => f.write_str(&defaults::render("dispatch.msg_bad_map", &[("path", &path.display()), ("err", detail)])),
+        }
+    }
+}
+
+impl std::error::Error for DispatchError {}

@@ -18,6 +18,7 @@ use crate::checks::guardkit::settings::{get_bool, is_skipped};
 use crate::checks::guardkit::text::is_js_space;
 use crate::checks::{Check, Verdict};
 use crate::defaults;
+use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
@@ -278,7 +279,7 @@ impl Check for ShipItGuard {
         (s.event == "PreToolUse" && s.tool.is_some()).then_some(Verdict::Defer)
     }
 
-    fn run_payload(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value) -> Option<Verdict> {
-        decide(payload, &Settings::from_process())
+    fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        decide(payload, &Settings::from_env(env))
     }
 }

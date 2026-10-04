@@ -18,6 +18,7 @@ use crate::checks::guardkit::state::{self, SessionState, session_key};
 use crate::checks::guardkit::text::{collapse_ws, js_trim, slice_utf16};
 use crate::checks::{Check, Verdict};
 use crate::defaults;
+use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
@@ -231,7 +232,7 @@ impl Check for MergeSidePick {
         (s.tool == Some("Bash")).then_some(Verdict::Defer)
     }
 
-    fn run_payload(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value) -> Option<Verdict> {
-        decide(payload, &Settings::from_process(), state::global())
+    fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        decide(payload, &Settings::from_env(env), state::global())
     }
 }

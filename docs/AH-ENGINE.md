@@ -96,7 +96,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Backups and restore: online snapshot of both databases, scrubbed; restore keeps the current state first | implemented | D27 |
 | Issue log and opt-in upload | planned (D28) | D28 |
 | Update checks as a scheduled job | planned (D44) | D44 |
-| One dispatcher call per hook event | planned (D58) | D58 |
+| One dispatcher call per hook event: `ah-engine hook --event`, built-in checks in the engine, the other hooks as Node, combined in `hooks.json` order | implemented (not yet wired into `hooks.json`; plugin wiring is planned (D75)) | D58 |
 | Porting the other guards | planned (D57) | D57 |
 | Prebuilt binaries for every Unix target, release automation | planned (D56, D64, D67, D68) | D56, D64, D67, D68 |
 
@@ -107,7 +107,7 @@ arguments, is in the generated reference.
 
 | Command | Read-only | What it does |
 |---|---|---|
-| `ah-engine hook` | no | The hook client: payload on stdin, answer on stdout. |
+| `ah-engine hook` | no | The hook client: payload on stdin, answer on stdout. With `--event` it is the per-event dispatcher (see Dispatcher). |
 | `ah-engine serve` | no | Run the daemon in the foreground. |
 | `ah-engine status` | yes | State, uptime, memory, counters, breaker, rules and a headline summary. |
 | `ah-engine metrics` | yes | Metric series; `--check <name>` narrows to one check; `--rollup minute\|hour [--since <s>]` shows stored rollups. |
@@ -133,7 +133,7 @@ arguments, is in the generated reference.
 
 **Metrics** are counters, gauges and latency histograms kept in memory and bounded. Latency percentiles are reported as
 the upper bound of the histogram bucket that holds that rank, so they are upper estimates. The registered names are:
-`requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `hook_calls`, `hook_latency_us`,
+`requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `hook_calls`, `hook_latency_us`, `dispatch_checks`,
 `check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth`, `uptime_s`, and for the
 memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evictions`, `tier_expired`, `bus_published`
 and `bus_dropped`, for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is sharing syncs), and for
@@ -428,6 +428,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
 | `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
 | `jev.toml` | the Jev lane: vendor endpoints and models, budgets, breaker and fallback timing, the integration table with its default modes, cache and log limits, key-file rules, messages |
+| `dispatch.toml` | the dispatcher's settings and its per-event table, generated from the plugin's two `hooks.json` files |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
@@ -457,6 +458,57 @@ State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.d
 `failure.json`, the breaker and crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The rules file is
 `rules.json` there, or the path in `AH_ENGINE_RULES`.
 
+## Dispatcher
+
+`ah-engine hook --event <Event> [--tool <Tool>] [--host claude|codex] [--fallback-map <file>]` stands in for every hook
+`hooks.json` registers for that event (D58). Its table, `dispatch.toml`, lists each host's entries per event in
+`hooks.json` order with the exact command and timeout, and which built-in check (today: `git` and the five ported small guards, on PreToolUse) answers an entry. `parity/gen-dispatch.js` regenerates the table, and a test fails when either
+`hooks.json` changes without it.
+
+1. The entries whose matcher selects the payload are chosen the way the host chooses them: on Claude a matcher of
+   plain names is an exact name or list and anything else an unanchored regex; on Codex every matcher is a regex and
+   `Edit`/`Write` also match `apply_patch`. When nothing matches, the dispatcher says nothing and starts nothing.
+2. Every entry without a built-in check starts at once as its Node hook, under the shell, with the payload on stdin and
+   its own timeout. A hook past its timeout is killed with its process group and counts as saying nothing.
+3. The built-in checks run in the daemon (`D` request; or in the client when `dispatch.in_process` is 1). An entry whose
+   check defers, and every check when the daemon cannot answer, runs as its Node hook too (D11). `--fallback-map` (a
+   JSON object of event, then hook id, to command) replaces an entry's Node command.
+4. The results are combined the way the host combines separate hooks. Both hosts run matching hooks in parallel and
+   read each one's output on its own (the Claude Code and Codex hook docs, quoted in `dispatch.toml`):
+   - the first entry that exited 2 is the answer, byte for byte; failing that, the first whose JSON blocks;
+   - when exactly one entry said anything, its output, stderr and exit code pass through unchanged;
+   - several JSON answers merge: `additionalContext` and `systemMessage` values are joined in order, the strongest
+     `permissionDecision` wins with its reason, any other field must agree, and stderr is concatenated.
+
+**The environment (D76).** A hook runs in its host's environment, not the daemon's. The client forwards the variables on
+`request_env.allow` (`defaults/engine.toml`) with each `V` and `D` request, and every check runs against that
+environment, never the daemon's own; a request without one gets an empty environment. The reply frame magic carries the
+protocol version (`AHR2`), so a client and a daemon of different protocols fall back to Node.
+
+**Exact output.** A check can answer with exact exit code, stdout and stderr bytes (`Verdict::Exact`), for guards whose
+output is not the plain exit-2 block, for example the JSON block `io.blockDecision` produces.
+
+**What one process cannot say.** The host shows each hook's `additionalContext` as its own reminder, with its own size
+cap (10,000 characters on Claude, about 2,500 tokens on Codex); the dispatcher joins them into one value, which the
+host caps as a whole. A join of several hooks' contexts over the cap is therefore not delivered: the dispatcher logs
+`dispatch_context_over_cap`, prints a message on stderr and exits `dispatch.defer_exit` (75), asking its wrapper to run
+the Node hooks one by one as the host does (the host shows that non-blocking error, so it is never silent). When one
+entry blocks, the advisories of the others are not shown. Results that cannot be combined (plain text next to another
+answer, a non-zero exit other than 2 next to another answer, two different values for one field) are delivered one
+after another (stdout of every hook that exited 0, stderr of all, exit 0) and logged as `dispatch_conflict`; nothing
+is dropped.
+
+**Guards fail closed (D74).** For a guard event (`dispatch.guard_events`: `PreToolUse`, `PermissionRequest`) a Node
+hook that cannot run (no runnable command, an unreadable `--fallback-map`, a usage error such as an unknown host, a
+panic) answers exit 2 with `dispatch.msg_fail_closed` on stderr, never a silent allow; the log has `dispatch_defer`.
+Any other event runs the hooks it can and logs `dispatch_defer` for the ones it cannot. The plugin is not wired to the
+dispatcher yet; that is planned (D75).
+
+**Parity.** `parity/run-dispatch.js` runs every matching Node hook of an event as its own process (as the host does),
+combines them with an independent model of the host (`parity/dispatch-lib.js`), and compares exit code, stdout and
+stderr byte for byte with one dispatcher call; `parity/fuzz-dispatch.js` drives the merge with fake hooks. The
+results are in the README of `ah-engine/`.
+
 ## How to extend it
 
 - **A new check.** Implement `Check` in its own module under `src/checks/`, list it in `checks::registry()`, put its
@@ -466,7 +518,7 @@ State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.d
   code, then regenerate `REFERENCE.md` (`cargo run -q -- docs --format md > REFERENCE.md`). The tests tell you if you forgot.
 - **A new command.** Add its data to `commands.toml`, a handler in `src/cli.rs`, and regenerate the reference.
 - **A new host.** Hosts share the hook payload field names today; a host with a different shape needs an adapter
-  (D30). The planned dispatcher (D58) will make that explicit.
+  (D30). The dispatcher (D58) already keeps a table and matcher rules per host in `dispatch.toml`.
 
 ## Building from source
 

@@ -63,6 +63,9 @@ pub fn decision_name(v: &Verdict) -> &'static str {
         Verdict::Allow => "allow",
         Verdict::Block(_) => "block",
         Verdict::Advisory(_) => "advisory",
+        Verdict::Exact(x) if x.code == 2 => "block",
+        Verdict::Exact(x) if !x.out.is_empty() => "advisory",
+        Verdict::Exact(_) => "allow",
         Verdict::Defer => "defer",
     }
 }
@@ -186,6 +189,9 @@ impl Telemetry {
             Verdict::Allow => (Outcome::Allow, 0),
             Verdict::Block(_) => (Outcome::Block, 0),
             Verdict::Advisory(j) => (Outcome::Advise, j.len() as u64),
+            Verdict::Exact(x) if x.code == 2 => (Outcome::Block, 0),
+            Verdict::Exact(x) if !x.out.is_empty() => (Outcome::Advise, x.out.len() as u64),
+            Verdict::Exact(_) => (Outcome::Allow, 0),
             Verdict::Defer => (Outcome::Defer, 0),
         };
         self.rec.record(Kind::Check, check, event, outcome, micros, injected);
@@ -198,8 +204,9 @@ impl Telemetry {
         match verdict {
             Verdict::Block(_) => self.impact("block", check, rule_id, project),
             Verdict::Advisory(_) => self.impact("advisory", check, rule_id, project),
+            Verdict::Exact(_) if decision == "block" || decision == "advisory" => self.impact(decision, check, rule_id, project),
             Verdict::Defer => self.impact("fallback", check, "defer", project),
-            Verdict::Allow => {}
+            Verdict::Allow | Verdict::Exact(_) => {}
         }
     }
 

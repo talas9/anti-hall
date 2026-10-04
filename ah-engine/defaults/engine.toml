@@ -366,7 +366,7 @@ env = "AH_ENGINE_CRASH_COOLDOWN_S"
 unit = "s"
 
 [client.fallback_ms]
-doc = "The Node fallback hook is killed after this long (then plain allow, since it is unavailable)."
+doc = "The Node fallback hook must finish, and its stdout and stderr must reach EOF, within this long. A hook still running at the deadline is killed (then plain allow, since it is unavailable); one that finished with output still unread is an error outcome, never an empty stdout."
 value = 8000
 env = "AH_ENGINE_FALLBACK_MS"
 unit = "ms"
@@ -399,11 +399,6 @@ unit = "ms"
 [client.fallback_poll_ms]
 doc = "Poll interval while the Node fallback runs."
 value = 2
-unit = "ms"
-
-[client.fallback_read_ms]
-doc = "Time allowed to collect the fallback's stdout after it exits."
-value = 500
 unit = "ms"
 
 # ---- project store --------------------------------------------------------------------------------------
@@ -519,7 +514,7 @@ value = "anti-hall warning: "
 
 [protocol.hook]
 doc = "A hook payload evaluated against the rules and built-in checks. The client half-closes after writing; the reply is always a framed OK, BUSY or ERR, and anything else makes the client run the Node hook."
-value = { request = "V <client-version>\n<hook payload JSON>", reply = "OK <hook output JSON or empty> | BUSY | ERR <reason>" }
+value = { request = "V <client-version>\nE <request env JSON>\n<hook payload JSON>", reply = "OK <hook output JSON or empty> | BUSY | ERR <reason>" }
 
 [protocol.ping]
 doc = "Liveness probe; also how a starting daemon checks that a live one already owns the socket."
@@ -556,3 +551,19 @@ value = { request = "CTL schedule list | run job=<name> | history [job=<name>] [
 [protocol.project]
 doc = "A per-project operation on hot.db; the daemon derives the partition from the cwd, so a request cannot name another project's key. A write is answered only after it commits; the optional write id makes it idempotent."
 value = { request = "P <cwd>\n[W <write-id>\n]<put|take|len|set|setex|get> [args]", reply = "OK <value> | ERR <reason> | BUSY" }
+
+# ---- the environment a request carries (D76) -------------------------------------------------------------
+
+[request_env.allow]
+doc = "The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle; the `gitcache.bypass_env` names (and XDG_CONFIG_HOME, which locates git's config) are forwarded so the git cache sees the client's git environment, never the daemon's; CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads."
+value = ["CLAUDE_CODE_ENTRYPOINT", "DEVSWARM_REPO_ID", "ANTIHALL_*", "ANTI_HALL_*", "HOME", "USERPROFILE", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_OPTION_*", "PATH", "AH_ENGINE_PLUGIN_ROOT", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_INDEX_FILE", "GIT_NAMESPACE", "XDG_CONFIG_HOME"]
+
+[request_env.line_prefix]
+doc = "Prefix of the request line that carries the forwarded environment as one JSON object."
+value = "E "
+
+[request_env.max_bytes]
+doc = "Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them, and the checks that read the environment then see an empty one."
+value = 65536
+unit = "bytes"
+min = 1024

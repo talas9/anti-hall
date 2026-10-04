@@ -22,6 +22,7 @@ never a submodule (D69).
 | `src/health.rs`, `src/limits.rs`, `src/paths.rs`, `src/config.rs` | breaker, crash loop, advisory, resource caps, locations, limits |
 | `src/cfgstore.rs` | config layering (env, `settings.json`, `config.toml`, defaults), file watching, atomic hot-swap, `config` command data (D18) |
 | `src/checks/` | the `Check` trait and registry; `checks/git/` is the git-guard port (tokenizer, segments, aliases, heredoc, runners, launcher) |
+| `src/dispatch/` | the per-event dispatcher (D58): the table and host matcher rules, running Node hooks at once, the built-in checks, combining results as the host would |
 | `src/rules.rs`, `src/hookio.rs` | the rules format (JSON) and hook payload to output translation |
 | `src/telemetry/`, `src/metrics.rs`, `src/impact.rs`, `src/storage.rs` | metrics, the impact ledger, the lock-free telemetry recorder (`recorder`), its event schema, flush, rollups, routing join and NET savings, and reports (D78, D77), and the `Store` trait with its SQLite and in-memory stores |
 | `src/tier.rs` | the in-memory layer: the byte-budgeted, TTL-aware `Tiered` cache of active items and the pub/sub bus |
@@ -100,6 +101,8 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | Durability: SIGKILL mid-burst, 50 loops: every acknowledged write present, nothing torn, invented or duplicated, write ids match rows; group commit shares syncs within its window | `tests/durability.rs`, `db::tests::concurrent_writes_share_commits_within_the_window` |
 | Transcript index: appended bytes only, truncation, rotation and in-place rewrite rebuild, a final unterminated line counted once, caps, registry bounds; facts equal the Node readers' on fixtures and on real transcripts | `tests/transcript_index.rs`, `tests/transcript_parity.rs`, `parity/run-transcript.js` |
 | Git cache: every fact equals a fresh `git` before and after each mutation on a plain repository, a linked worktree and a submodule; each signed file invalidates on its own; the dirty bit is time-bounded and `dirty_exact` is not; a bypass environment and a timeout are errors, never cached | `tests/gitcache_parity.rs` |
+| Dispatcher (D58): the table equals both `hooks.json` files; Node hooks run at once and a hook past its timeout is killed with its group; a block wins byte for byte; contexts merge in order; a guard event whose Node hook cannot run fails closed (exit 2); a conflict is delivered in order; a join over the host cap is handed back (exit 75); the table equals the generator's output | `tests/dispatch_table.rs`, `tests/dispatch_e2e.rs`, `dispatch::*::tests` |
+| The daemon never answers from its own environment (git cache, config); a damaged exact reply, a signal-killed fallback and a timed-out fallback's helpers are handled | `tests/process_env_reads.rs`, `tests/gitcache_parity.rs`, `tests/fallback_read.rs`, `client::tests` |
 | Storage: WAL and configured durability, versioned idempotent migrations, a newer schema refused, acknowledged only after commit, queued writes committed on close; both `Store` backends behave the same | `db::tests`, `storage::tests` |
 
 Known limits: CI runs the whole suite on ubuntu and macOS (`.github/workflows/ah-engine.yml`); the Linux CI run found a real
@@ -212,6 +215,48 @@ harness is not vacuous.
 `parity/run.js` is the phase-2 decision-agreement harness for the regex rules; the force-push and AI-credit regex rules
 are examples, not ports, because a regex cannot tokenize shell.
 
+## Dispatcher parity and timing (`parity/run-dispatch.js`)
+
+`ah-engine hook --event PreToolUse` against the separate Node hooks it replaces, Node hooks from `dev` at 3d36268:
+the reference runs every matching hook as its own process at once (as the host does) and combines their outputs with
+`parity/dispatch-lib.js`, an independent model of the host; the dispatcher answers git-guard with the built-in `git`
+check and runs the other hooks through Node. Exit code, stdout and stderr are compared byte for byte (no trimming).
+Each side has its own temporary HOME, every item its own session, and commands run in a throwaway git repo.
+
+```
+node run-dispatch.js --plugin <repo>/plugins/anti-hall --corpus corpus.jsonl [--host claude|codex] [--mode oneshot|daemon|both]
+node fuzz-dispatch.js --out <dir> --n 3000 && node run-dispatch.js --plugin ... --corpus <dir>/corpus.jsonl --fallback-map <dir>/map.json
+```
+
+| corpus | host | n | oneshot (in-process checks) | daemon |
+|---|---|---|---|---|
+| committed git corpus `corpus.jsonl` | claude (9 Bash hooks) | 526 | **100%** | **100%** |
+| real recorded commands, seeded sample | claude | 5000 | **100%** | **100%** |
+| adversarial: several guards at once, odd payloads (no cwd, bad cwd, no command, numeric command) | claude | 61 | **100%** | **100%** |
+| combination fuzz (`fuzz-dispatch.js`, seed 11): fake hooks printing blocks, JSON blocks, contexts, messages, decisions, plain text, non-zero exits, conflicting fields | claude | 3000 (707 blocks, 922 single, 873 merged, 392 conflicts) | **100%** | **100%** |
+| committed git corpus | codex (7 Bash hooks) | 526 | **100%** | **100%** |
+| review round 1 re-run (guards fail closed, conflicts in order): git corpus, claude and codex | claude, codex | 526 each | **100%** | **100%** |
+| review round 1 re-run: real recorded commands, spread sample | claude | 1500 | **100%** | **100%** |
+| review round 1 re-run: combination fuzz (seed 11, 141 conflicts delivered in order) | claude | 1000 | **100%** | **100%** |
+| adversarial | codex | 61 | **100%** | **100%** |
+| real recorded commands, first 1250 of the sample | codex | 1250 | **100%** | **100%** |
+
+The real-command sample is mostly silent in a fresh repo (13 of 5000 blocked, none produced two outputs), so the merge
+rules rest on the fuzz corpus. Changing the context joiner and the decision order on purpose dropped the fuzz run to
+95.5%, so the harness does see a wrong merge.
+
+Wall time and CPU of a whole Bash PreToolUse event, median of 30, same machine and minute, with other work running
+(CPU = the caller's child processes, so the daemon's own CPU is not counted):
+
+| command | 9 Node hooks at once (host) | 9 Node hooks one by one | dispatcher, daemon | dispatcher, in-process |
+|---|---|---|---|---|
+| `ls -la` (allow) | 37 ms, 250 ms CPU | 240 ms, 220 ms CPU | 37 ms, 217 ms CPU | 38 ms, 227 ms CPU |
+| force push (block) | 77 ms, 320 ms CPU | 417 ms, 353 ms CPU | 85 ms, 309 ms CPU | 85 ms, 310 ms CPU |
+| commit then push | 105 ms, 391 ms CPU | 423 ms, 382 ms CPU | 67 ms, 319 ms CPU | 67 ms, 340 ms CPU |
+
+With one of nine hooks built in, the event costs about what the host's parallel Node hooks cost: eight Node processes
+still start. Each ported check removes one Node process per event; the D58 savings arrive with the ports (D57).
+
 ## Measurements
 
 Same machine, same session, quiet, macOS, brew rust 1.99, release build (`opt-level = "z"`, lto), `zsh wall-git.zsh
@@ -292,4 +337,5 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Shared read paths: transcript index (X1) and per-repo git cache (X3, D61); no check uses them yet (D75 wave 2)
 - [x] Scheduler and ticker, `ah-engine schedule` (D33)
 - [x] Jev lane: client, transports, modes, trust, cache, log, parity harness (D34-D38); wiring it into the dispatcher is planned (D58)
+- [x] Per-event dispatcher: table generated from `hooks.json` with a drift test, host matcher rules, Node hooks at once, built-in checks in the daemon or in-process, host-faithful combination, whole-event parity (D58)
 - [ ] Mailbox (D45), config in storage and rollback (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases

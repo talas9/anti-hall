@@ -32,6 +32,11 @@ impl<'a> Runner<'a> {
                 cmd.env(k, v);
             }
         }
+        // git must see the caller's git environment only: the daemon's own GIT_* (it was started by some other client)
+        // would change where git looks, and the bypass check never saw it
+        for name in defaults::list("gitcache.bypass_env") {
+            cmd.env_remove(name);
+        }
         for (k, v) in self.env {
             cmd.env(k, v);
         }

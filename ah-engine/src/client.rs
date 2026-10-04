@@ -144,9 +144,18 @@ fn engine_attempt(raw: &str, cfg: &ClientConfig, have_fallback: bool) -> Option<
     if raw.len() as u64 > crate::defaults::num("daemon.max_request") || health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() {
         return None;
     }
+    let payload = format!("V {}\n{}\n{}", crate::version(), crate::reqenv::RequestEnv::capture().to_line(), raw);
+    attempt(payload.as_bytes(), cfg, have_fallback)
+}
+
+/// Send one request (a hook `V` or a dispatch `D` request) to the daemon, starting it when none answers. `None` =
+/// use the fallback; with `have_fallback` a cold start does not wait (the Node hook answers this call).
+pub(crate) fn attempt(payload: &[u8], cfg: &ClientConfig, have_fallback: bool) -> Option<String> {
+    if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() {
+        return None;
+    }
     let sock = paths::socket();
-    let payload = format!("V {}\n{}", crate::version(), raw);
-    match exchange(&sock, payload.as_bytes(), cfg.deadline) {
+    match exchange(&sock, payload, cfg.deadline) {
         Exch::Reply(Kind::Ok, body) => Some(body),
         Exch::Reply(_, _) => None, // BUSY or ERR: the daemon shed or could not evaluate it
         Exch::Failed(why) => {
@@ -172,7 +181,7 @@ fn engine_attempt(raw: &str, cfg: &ClientConfig, have_fallback: bool) -> Option<
                     }
                     ping(&sock)?;
                 }
-                if let Exch::Reply(Kind::Ok, body) = exchange(&sock, payload.as_bytes(), cfg.deadline) {
+                if let Exch::Reply(Kind::Ok, body) = exchange(&sock, payload, cfg.deadline) {
                     return Some(body);
                 }
                 std::thread::sleep(defaults::millis("client.cold_start_poll_ms"));
@@ -182,38 +191,89 @@ fn engine_attempt(raw: &str, cfg: &ClientConfig, have_fallback: bool) -> Option<
     }
 }
 
-/// Run the Node hook: stdin = the payload; stdout and exit code are returned; stderr is inherited.
-/// `None` when it cannot run or does not finish in time (= the fallback is unavailable).
+/// Log a fallback failure; the state dir may not exist yet (no daemon ever ran here), and the event must still be on record.
+fn log_fallback(kind: &str, code: &str, detail: &str) {
+    let _ = crate::limits::ensure_private_dir(&paths::dir());
+    health::log_event(kind, code, detail);
+}
+
+/// Read `stream` to EOF on a thread; the bytes arrive on the returned channel once, at EOF.
+fn read_to_eof(mut stream: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stream.read_to_end(&mut b);
+        let _ = tx.send(b);
+    });
+    rx
+}
+
+/// Run the Node hook: stdin = the payload; stdout, stderr and the exit code are returned. Both streams are read to EOF,
+/// bounded only by the overall deadline (`client.fallback_ms`), because a hook can exit before its output is complete
+/// (a background process of its own holds the pipe) and an empty stdout would read as an allow.
+///
+/// `None` when it cannot run or does not finish in time (= the fallback is unavailable, as when the host's own timeout
+/// kills a hook). A hook that finished but whose output was still unread at the deadline is an explicit error outcome
+/// (exit 1, a message on stderr): never an empty stdout.
 fn run_fallback(raw: &str, path: &Path, cfg: &ClientConfig) -> Option<Outcome> {
     let node = std::env::var_os(defaults::env_name("node")).unwrap_or_else(|| "node".into());
-    let mut child = Command::new(node).arg(path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().ok()?;
+    // its own process group, so a timeout can take its helpers down with it (they would otherwise hold the pipes open)
+    let mut child = Command::new(node).arg(path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn().ok()?;
     let mut stdin = child.stdin.take()?;
     let data = raw.as_bytes().to_vec();
     std::thread::spawn(move || {
         let _ = stdin.write_all(&data);
     });
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = stdout.read_to_end(&mut b);
-        let _ = tx.send(b);
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() < cfg.fallback_timeout => std::thread::sleep(defaults::millis("client.fallback_poll_ms")),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                health::log_event("fallback_fail", "timeout", defaults::text("msg.log_fallback_timeout"));
-                return None;
-            }
+    let (out_rx, err_rx) = (read_to_eof(child.stdout.take()?), read_to_eof(child.stderr.take()?));
+    let deadline = Instant::now() + cfg.fallback_timeout;
+    let (mut status, mut out, mut err) = (None, None, None);
+    loop {
+        status = status.or_else(|| child.try_wait().ok().flatten());
+        out = out.or_else(|| out_rx.try_recv().ok());
+        err = err.or_else(|| err_rx.try_recv().ok());
+        if let (Some(st), Some(o), Some(e)) = (status, &out, &err) {
+            use std::os::unix::process::ExitStatusExt;
+            let Some(code) = st.code() else {
+                // killed by a signal (out of memory, a crash): no decision, never an exit 0 that reads as an allow
+                let sig = st.signal().unwrap_or(0);
+                log_fallback("fallback_fail", &format!("sig{sig}"), &defaults::render("msg.log_fallback_signal", &[("signal", &sig)]));
+                return Some(Outcome { out: String::new(), code: 1, err: format!("{}\n", defaults::render("msg.fallback_signal", &[("signal", &sig)])) });
+            };
+            return Some(Outcome { out: String::from_utf8_lossy(o).to_string(), code, err: String::from_utf8_lossy(e).to_string() });
         }
-    };
-    let bytes = rx.recv_timeout(defaults::millis("client.fallback_read_ms")).unwrap_or_default();
-    Some(Outcome { out: String::from_utf8_lossy(&bytes).to_string(), code: status.code().unwrap_or(0), err: String::new() })
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(defaults::millis("client.fallback_poll_ms"));
+    }
+    let finished = status.is_some();
+    // the whole group, as `dispatch::node` does: a helper the hook left behind holds its pipes and must not outlive the deadline
+    // SAFETY: killpg only sends a signal; the group id is the child we spawned as its own group leader
+    unsafe {
+        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    }
+    if !finished {
+        let _ = child.kill();
+        let _ = child.wait();
+        log_fallback("fallback_fail", "timeout", defaults::text("msg.log_fallback_timeout"));
+        return None;
+    }
+    log_fallback("fallback_read_timeout", "-", defaults::text("msg.log_fallback_read_timeout"));
+    Some(Outcome { out: String::new(), code: 1, err: format!("{}\n", defaults::text("msg.fallback_read_timeout")) })
+}
+
+/// What an OK reply body means: exact bytes, an exit-2 block, or plain stdout. `None` when the body claims to be exact
+/// bytes but does not parse as such: a damaged verdict must never reach the host as plain stdout (an allow), so the caller
+/// runs the Node fallback instead.
+fn reply_outcome(body: String) -> Option<Outcome> {
+    if let Some(j) = body.strip_prefix(crate::hookio::EXACT) {
+        let x = serde_json::from_str::<(i32, String, String)>(j).ok()?;
+        return Some(Outcome { out: x.1, code: x.0, err: x.2 });
+    }
+    if let Some(reason) = body.strip_prefix(crate::hookio::EXIT2) {
+        return Some(Outcome { out: String::new(), code: 2, err: reason.to_string() });
+    }
+    Some(Outcome { out: body, code: 0, err: String::new() })
 }
 
 /// Core of `engine hook`. Pure of process exit.
@@ -222,11 +282,8 @@ pub fn run(raw: &str, fallback: Option<&Path>) -> Outcome {
         return Outcome { out: String::new(), code: 0, err: String::new() };
     }
     let cfg = ClientConfig::from_env();
-    if let Some(out) = engine_attempt(raw, &cfg, fallback.is_some()) {
-        if let Some(reason) = out.strip_prefix(crate::hookio::EXIT2) {
-            return Outcome { out: String::new(), code: 2, err: reason.to_string() };
-        }
-        return Outcome { out, code: 0, err: String::new() };
+    if let Some(o) = engine_attempt(raw, &cfg, fallback.is_some()).and_then(reply_outcome) {
+        return o;
     }
     let mut o = fallback.and_then(|p| run_fallback(raw, p, &cfg)).unwrap_or(Outcome { out: String::new(), code: 0, err: String::new() });
     // We are running on the built-in checks: tell the agent once per session if the engine is in a known-bad state.
@@ -275,4 +332,36 @@ pub fn hook_main(args: &[String]) -> i32 {
         o.code
     });
     res.unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checks::Exact;
+
+    #[test]
+    fn an_exact_verdict_reaches_the_host_byte_for_byte() {
+        let x = Exact::json_block("no \"way\"\n");
+        let body = crate::hookio::EXACT.to_string() + &serde_json::json!([x.code, x.out, x.err]).to_string();
+        assert_eq!(reply_outcome(body), Some(Outcome { out: x.out, code: 2, err: x.err }));
+    }
+
+    #[test]
+    fn the_other_reply_shapes_keep_their_meaning() {
+        assert_eq!(reply_outcome(format!("{}why\n", crate::hookio::EXIT2)), Some(Outcome { out: String::new(), code: 2, err: "why\n".into() }));
+        assert_eq!(reply_outcome("{\"a\":1}".into()), Some(Outcome { out: "{\"a\":1}".into(), code: 0, err: String::new() }));
+        assert_eq!(reply_outcome(String::new()).unwrap().code, 0);
+    }
+
+    #[test]
+    fn a_damaged_exact_verdict_is_no_answer_so_the_fallback_runs() {
+        for body in [
+            format!("{}not json", crate::hookio::EXACT),
+            format!("{}[2,\"out\"]", crate::hookio::EXACT),
+            format!("{}[\"2\",\"o\",\"e\"]", crate::hookio::EXACT),
+            crate::hookio::EXACT.to_string(),
+        ] {
+            assert_eq!(reply_outcome(body.clone()), None, "{body}");
+        }
+    }
 }

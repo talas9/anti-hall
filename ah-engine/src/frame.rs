@@ -1,14 +1,17 @@
 //! Reply framing. A reply is trusted only if it is complete and intact:
 //!
 //! ```text
-//! AHR1 <OK|BUSY|ERR> <body-len> <crc32-hex>\n<body bytes>\nAHEND\n
+//! AHR2 <OK|BUSY|ERR> <body-len> <crc32-hex>\n<body bytes>\nAHEND\n
 //! ```
 //!
 //! Anything else (empty, truncated, wrong length, bad checksum, trailing bytes, wrong magic) is a
 //! `FrameErr`, and the client treats it as an engine failure: it runs the Node hook, never "allow".
+//! The magic carries the protocol version: it is bumped whenever the request or reply format changes (AHR2: the request
+//! carries the client's environment, D76), so a client and a daemon of different protocols never read each other's
+//! frames as answers; the client treats the mismatch as an engine failure and runs the Node hook.
 //! An empty BODY inside a valid OK frame is the engine's real "nothing to say" answer.
 
-const MAGIC: &str = "AHR1";
+const MAGIC: &str = "AHR2";
 const END: &[u8] = b"\nAHEND\n";
 
 /// Reply kind carried in a frame header.
@@ -141,6 +144,6 @@ mod tests {
         assert_eq!(decode(&g), Err(FrameErr::Malformed));
         assert_eq!(decode(b""), Err(FrameErr::Empty));
         assert_eq!(decode(b"{\"decision\":\"allow\"}"), Err(FrameErr::Malformed));
-        assert_eq!(decode(b"AHR1 OK 99999999999999999999 00000000\n"), Err(FrameErr::Malformed));
+        assert_eq!(decode(b"AHR2 OK 99999999999999999999 00000000\n"), Err(FrameErr::Malformed));
     }
 }

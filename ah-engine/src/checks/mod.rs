@@ -14,6 +14,7 @@ pub mod merge_side_pick;
 pub mod scan_throttle;
 pub mod ship_it;
 
+use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use serde_json::Value;
 
@@ -26,9 +27,33 @@ pub enum Verdict {
     Block(String),
     /// Exit 0 with this stdout JSON line, no decision.
     Advisory(String),
+    /// Exact exit code, stdout and stderr bytes, for a Node guard whose output is not one of the shapes above
+    /// (for example the JSON block of `io.blockDecision`).
+    Exact(Exact),
     /// The Node guard may decide differently (for example a Jev consult would run): the engine answers with a
     /// deferral and the client runs the Node hook, so a deferral is never a silent allow (D11).
     Defer,
+}
+
+/// The exact output of a Node guard: exit code, stdout and stderr, byte for byte.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Exact {
+    /// The exit code.
+    pub code: i32,
+    /// What goes to stdout.
+    pub out: String,
+    /// What goes to stderr.
+    pub err: String,
+}
+
+impl Exact {
+    /// The block `io.blockDecision(reason)` produces (`hooks/lib/guard-io.js`): the JSON decision and a newline on
+    /// stdout, the reason and a newline on stderr, exit 2. The JSON is written by hand so the key order is the Node
+    /// object's (`decision`, then `reason`), whatever the JSON library's map order is.
+    pub fn json_block(reason: &str) -> Exact {
+        let quoted = serde_json::to_string(reason).unwrap_or_else(|_| String::from("\"\""));
+        Exact { code: 2, out: format!("{{\"decision\":\"block\",\"reason\":{quoted}}}\n"), err: format!("{reason}\n") }
+    }
 }
 
 /// A built-in check.
@@ -45,6 +70,12 @@ pub trait Check: Send + Sync {
     /// this one; a check that needs only the subject keeps this default.
     fn run_payload(&self, subject: &Subject<'_>, _payload: &Value, opts: &Value) -> Option<Verdict> {
         self.run(subject, opts)
+    }
+    /// Like [`Check::run_payload`] but also given the environment of the request (D76): the variables the host's
+    /// hook process had, never the daemon's own. Every caller that evaluates a check goes through this one; a check that
+    /// reads no environment keeps this default.
+    fn run_env(&self, subject: &Subject<'_>, payload: &Value, opts: &Value, _env: &RequestEnv) -> Option<Verdict> {
+        self.run_payload(subject, payload, opts)
     }
 }
 
@@ -100,7 +131,7 @@ pub fn cli_main(name: &str) -> i32 {
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),
     };
-    match check.run_payload(&subject, &p, &Value::Null) {
+    match check.run_env(&subject, &p, &Value::Null, &RequestEnv::capture()) {
         None | Some(Verdict::Allow) => 0,
         Some(Verdict::Block(m)) => {
             let _ = writeln!(std::io::stderr(), "{m}");
@@ -109,6 +140,11 @@ pub fn cli_main(name: &str) -> i32 {
         Some(Verdict::Advisory(j)) => {
             let _ = writeln!(std::io::stdout(), "{j}");
             0
+        }
+        Some(Verdict::Exact(x)) => {
+            let _ = std::io::stderr().write_all(x.err.as_bytes());
+            let _ = std::io::stdout().write_all(x.out.as_bytes());
+            x.code
         }
         Some(Verdict::Defer) => {
             let _ = writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK);
@@ -120,6 +156,23 @@ pub fn cli_main(name: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Expected values computed with Node: `io.blockDecision(reason)` from `hooks/lib/guard-io.js`.
+    #[test]
+    fn the_json_block_matches_node_io_block_decision() {
+        let cases = [
+            ("plain reason", "{\"decision\":\"block\",\"reason\":\"plain reason\"}\n", "plain reason\n"),
+            ("quote \" back \\ nl\nend", "{\"decision\":\"block\",\"reason\":\"quote \\\" back \\\\ nl\\nend\"}\n", "quote \" back \\ nl\nend\n"),
+            (
+                "tab\t ctl\u{1} uni é \u{1F600} \u{2028}",
+                "{\"decision\":\"block\",\"reason\":\"tab\\t ctl\\u0001 uni é \u{1F600} \u{2028}\"}\n",
+                "tab\t ctl\u{1} uni é \u{1F600} \u{2028}\n",
+            ),
+        ];
+        for (reason, out, err) in cases {
+            assert_eq!(Exact::json_block(reason), Exact { code: 2, out: out.into(), err: err.into() }, "{reason:?}");
+        }
+    }
 
     #[test]
     fn registry_names_are_unique_and_resolvable() {

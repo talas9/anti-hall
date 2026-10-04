@@ -1,0 +1,225 @@
+//! The per-event dispatcher (D58): one `ah-engine hook --event <Event> [--tool <Tool>] [--host <host>]
+//! [--fallback-map <file>]` call stands in for every hook `hooks.json` registers for that event.
+//!
+//! Steps:
+//!  1. Pick the entries of the event's table (`defaults/dispatch.toml`, generated from `hooks.json`) whose matcher
+//!     selects this payload, in `hooks.json` order. None: say nothing (an event no hook cares about never wakes the
+//!     engine).
+//!  2. Start every entry without a built-in check as its Node hook, all at once, as the host would.
+//!  3. Ask the daemon for the built-in checks (`D` request; or run them here when `dispatch.in_process` is 1). An
+//!     entry whose check defers, and every check when the daemon cannot answer, runs as its Node hook too (D11).
+//!  4. Combine the results in table order the way the host combines separate hooks ([`combine`]).
+//!
+//! A guard event (`dispatch.guard_events`) whose Node hook cannot run (no runnable command, an unreadable
+//! `--fallback-map`, a usage error, a panic) fails CLOSED: exit 2 with `dispatch.msg_fail_closed`, never a silent allow
+//! (D74). Any other event runs the hooks it can and logs the ones it cannot. Results one output cannot express are
+//! delivered one after another ([`combine::sequential`]); a join over the host's context cap is handed back to the
+//! wrapper with `dispatch.defer_exit` so the hooks run separately, as the host runs them.
+pub mod combine;
+pub mod native;
+pub mod node;
+pub mod table;
+
+use crate::client::Outcome;
+use crate::error::DispatchError;
+use crate::{defaults, health};
+use native::{Answer, Meta};
+use serde_json::Value;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+
+/// The dispatcher's arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Args {
+    /// The host whose table applies.
+    pub host: String,
+    /// The hook event.
+    pub event: String,
+    /// The tool the host matched on, when the wiring passes it.
+    pub tool: Option<String>,
+    /// The `--fallback-map` file.
+    pub map: Option<PathBuf>,
+}
+
+/// True when the `hook` command line asks for the dispatcher (it names an `--event`).
+pub fn requested(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--event")
+}
+
+fn flag(args: &[String], name: &str) -> Option<String> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// Parse the dispatcher's flags.
+pub fn parse_args(args: &[String]) -> Result<Args, DispatchError> {
+    let host = flag(args, "--host").unwrap_or_else(|| defaults::text("dispatch.default_host").to_string());
+    if !table::hosts().contains(&host.as_str()) {
+        return Err(DispatchError::Host(host));
+    }
+    Ok(Args { host, event: flag(args, "--event").unwrap_or_default(), tool: flag(args, "--tool"), map: flag(args, "--fallback-map").map(PathBuf::from) })
+}
+
+/// Ask the daemon for the built-in checks; `None` when it cannot answer (the checks then run as Node hooks).
+fn ask_daemon(meta: &Meta, raw: &str) -> Option<Vec<(String, Answer)>> {
+    let cfg = crate::config::ClientConfig::from_env();
+    let meta = serde_json::to_string(meta).ok()?;
+    let req = format!("D {}\n{meta}\n{raw}", crate::version());
+    if req.len() as u64 > defaults::num("daemon.max_request") {
+        return None; // the daemon would refuse it; Node answers instead
+    }
+    native::decode(&crate::client::attempt(req.as_bytes(), &cfg, true)?)
+}
+
+/// True for an event whose hooks can block: a deferral there fails closed.
+fn guarded(event: &str) -> bool {
+    defaults::list("dispatch.guard_events").contains(&event)
+}
+
+fn log_defer(event: &str, why: &str) {
+    // the state dir may not exist yet (no daemon ever ran here); the deferral must still be on record
+    let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+    health::log_event("dispatch_defer", event, &defaults::render("dispatch.msg_defer", &[("why", &why)]));
+}
+
+/// The answer for a guard event whose Node hooks cannot run: block (exit 2), never a silent allow.
+pub fn fail_closed(event: &str, why: &str) -> Outcome {
+    log_defer(event, why);
+    Outcome { out: String::new(), code: 2, err: format!("{}\n", defaults::render("dispatch.msg_fail_closed", &[("event", &event), ("why", &why)])) }
+}
+
+/// The joined `additionalContext` length and the host's cap, when several hooks contributed context and the join is over
+/// the cap: the host spills one over-cap value to a file where separate hooks would each have been inline.
+fn over_cap(args: &Args, results: &[combine::HookResult], joined: &str) -> Option<(usize, usize)> {
+    let cap = defaults::raw("dispatch.context_cap").get(&args.host).and_then(|v| v.as_integer()).unwrap_or(0) as usize;
+    let len = combine::context_of(joined)?.chars().count();
+    let contexts = results.iter().filter(|r| combine::context_of(&r.out).is_some()).count();
+    (cap > 0 && contexts > 1 && len > cap).then_some((len, cap))
+}
+
+/// Dispatch one event; the result is what to print and exit with. A guard event whose Node hooks cannot run answers exit 2
+/// ([`fail_closed`]); any other event runs the hooks it can and logs the rest. Output the host would have seen as separate
+/// hooks and one process cannot join is delivered one after another, or (over the host's context cap) handed back to the
+/// wrapper with `dispatch.defer_exit`.
+pub fn run(raw: &str, args: &Args) -> Outcome {
+    let guard = guarded(&args.event);
+    let parsed = serde_json::from_str::<Value>(raw).ok();
+    let p = parsed.clone().unwrap_or(Value::Null);
+    let mut entries = table::select(&args.host, &args.event, &p, args.tool.as_deref());
+    if entries.is_empty() {
+        return Outcome { out: String::new(), code: 0, err: String::new() };
+    }
+    if let Some(path) = &args.map {
+        match table::FallbackMap::load(path) {
+            Ok(m) => m.apply(&args.event, &mut entries),
+            Err(e) if guard => return fail_closed(&args.event, &e.to_string()),
+            Err(e) => log_defer(&args.event, &e.to_string()),
+        }
+    }
+    let no_command = |id: &str| defaults::render("dispatch.msg_no_fallback", &[("id", &id)]);
+    if guard {
+        if let Some(e) = entries.iter().find(|e| e.check.is_none() && !table::runnable(&e.command)) {
+            return fail_closed(&args.event, &no_command(&e.id));
+        }
+    } else {
+        entries.retain(|e| {
+            let ok = e.check.is_some() || table::runnable(&e.command);
+            if !ok {
+                health::log_event("dispatch_defer", &args.event, &defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]));
+            }
+            ok
+        });
+    }
+    // the Node hooks start first, so they run while the built-in checks are answered
+    let mut started: Vec<(usize, node::Running)> =
+        entries.iter().enumerate().filter(|(_, e)| e.check.is_none()).map(|(i, e)| (i, node::start(e, raw.as_bytes()))).collect();
+    let meta = Meta {
+        host: args.host.clone(),
+        event: args.event.clone(),
+        tool: args.tool.clone(),
+        root: table::plugin_root(&args.host),
+        env: crate::reqenv::RequestEnv::capture(),
+    };
+    let answers = match &parsed {
+        // a payload serde_json cannot read (JS may): every check defers, Node decides
+        None => Vec::new(),
+        Some(_) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
+        Some(p) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
+        Some(_) => ask_daemon(&meta, raw).unwrap_or_default(),
+    };
+    let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
+    for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_some()) {
+        match answers.iter().find(|(id, _)| *id == e.id) {
+            Some((_, Answer::Decided(r))) => results[i] = Some(r.clone()),
+            _ if !table::runnable(&e.command) => {
+                if guard {
+                    let _ = node::finish(started.into_iter().map(|(_, r)| r).collect());
+                    return fail_closed(&args.event, &no_command(&e.id));
+                }
+                health::log_event("dispatch_defer", &args.event, &defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]));
+            }
+            _ => started.push((i, node::start(e, raw.as_bytes()))),
+        }
+    }
+    let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
+    for (i, r) in slots.into_iter().zip(node::finish(running)) {
+        results[i] = Some(r);
+    }
+    let results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    match combine::combine(&results) {
+        combine::Combined::Answer(o) => match over_cap(args, &results, &o.out) {
+            Some((len, cap)) => {
+                let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+                health::log_event(
+                    "dispatch_context_over_cap",
+                    &args.event,
+                    &defaults::render("dispatch.msg_context_over_cap", &[("len", &len), ("cap", &cap)]),
+                );
+                let err = defaults::render("dispatch.msg_defer_separately", &[("event", &args.event), ("len", &len), ("cap", &cap)]);
+                Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{err}\n") }
+            }
+            None => o,
+        },
+        combine::Combined::Conflict(ids) => {
+            let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+            health::log_event("dispatch_conflict", &args.event, &defaults::render("dispatch.msg_conflict", &[("ids", &ids.join(","))]));
+            combine::sequential(&results)
+        }
+    }
+}
+
+/// `ah-engine hook --event ...`: read stdin, dispatch, print, exit with the combined code. Never panics out, and never
+/// turns a failure into an allow for a guard event: a usage error or a panic there answers exit 2 like [`fail_closed`].
+pub fn hook_main(args: &[String]) -> i32 {
+    let event = flag(args, "--event").unwrap_or_default();
+    let guard = guarded(&event);
+    let res = std::panic::catch_unwind(|| {
+        let a = match parse_args(args) {
+            Ok(a) => a,
+            Err(e) if guard => {
+                let o = fail_closed(&event, &e.to_string());
+                let _ = std::io::stderr().write_all(o.err.as_bytes());
+                return o.code;
+            }
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "{e}");
+                return 64; // a usage error: the host reports it as a non-blocking hook error
+            }
+        };
+        let mut raw = String::new();
+        let _ = std::io::stdin().take(defaults::num("client.max_stdin")).read_to_string(&mut raw);
+        let o = run(&raw, &a);
+        let _ = std::io::stderr().write_all(o.err.as_bytes());
+        let mut so = std::io::stdout();
+        let _ = so.write_all(o.out.as_bytes());
+        let _ = so.flush();
+        o.code
+    });
+    res.unwrap_or_else(|_| {
+        if !guard {
+            return 0;
+        }
+        let o = fail_closed(&event, defaults::text("dispatch.msg_panic"));
+        let _ = std::io::stderr().write_all(o.err.as_bytes());
+        o.code
+    })
+}

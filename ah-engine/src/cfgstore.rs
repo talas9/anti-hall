@@ -374,6 +374,10 @@ fn coerce(e: &Entry, raw: &Json) -> Option<Json> {
 
 impl Effective {
     /// Resolve every shipped setting through the layers. `env` looks up an environment variable by name.
+    ///
+    /// The environment here is the engine process's own, on purpose: only integer engine tunables (`AH_ENGINE_*`) read an
+    /// environment variable, and those configure the daemon or the client process itself. A session's `ANTIHALL_*` switches are
+    /// not settings of this kind: they travel with each request (`request_env`, D76) and the checks read them from there.
     pub fn resolve(layers: &Layers, env: &dyn Fn(&str) -> Option<String>) -> Effective {
         let mut map = BTreeMap::new();
         for e in defaults::all() {
@@ -769,6 +773,17 @@ pub fn report_from_files() -> Json {
 
 #[cfg(test)]
 mod tests {
+    /// A setting that reads the process environment is an engine tunable of the process that resolves it; a per-session
+    /// switch (`ANTIHALL_*`) would stick to whichever client started the daemon, so none may be an integer setting.
+    #[test]
+    fn only_engine_tunables_read_the_process_environment() {
+        for e in defaults::all() {
+            if let (Some(name), V::Int(_)) = (e.env, &e.value) {
+                assert!(name.starts_with("AH_ENGINE_"), "{} reads {name} from the daemon's environment", e.key);
+            }
+        }
+    }
+
     use super::*;
 
     fn no_env(_: &str) -> Option<String> {

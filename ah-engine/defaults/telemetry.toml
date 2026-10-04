@@ -168,6 +168,10 @@ value = { kind = "counter", unit = "panics", labels = [] }
 doc = "Connections dropped because the peer uid was not ours."
 value = { kind = "counter", unit = "connections", labels = [] }
 
+[metric.dispatch_checks]
+doc = "Built-in check entries the dispatcher sent to the daemon, by event, check and answer (decided, or defer = its Node hook ran instead) (D58)."
+value = { kind = "counter", unit = "entries", labels = ["event", "check", "answer"] }
+
 [metric.hook_calls]
 doc = "Hook requests served, by hook event."
 value = { kind = "counter", unit = "requests", labels = ["event"] }

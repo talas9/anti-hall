@@ -64,6 +64,22 @@ value = "daemon killed while starting"
 doc = "Log detail when the Node fallback did not finish in time."
 value = "node fallback did not finish"
 
+[msg.log_fallback_read_timeout]
+doc = "Log detail when the Node fallback finished but its stdout or stderr was still open at the deadline."
+value = "node fallback output not read to the end"
+
+[msg.fallback_read_timeout]
+doc = "Printed on stderr (exit 1) when the Node fallback finished but its output could not be read to the end in time, so no decision exists."
+value = "anti-hall: the Node hook finished but its output was not complete before the deadline; no decision was made for this call"
+
+[msg.log_fallback_signal]
+doc = "Log detail when the Node fallback was killed by a signal (out of memory, a crash)."
+value = "node fallback was killed by signal {signal}"
+
+[msg.fallback_signal]
+doc = "Printed on stderr (exit 1) when the Node fallback was killed by a signal, so no decision exists. Placeholder: {signal}."
+value = "anti-hall: the Node hook was killed by signal {signal}; no decision was made for this call"
+
 [msg.log_operator_reset]
 doc = "Log detail for `reset`."
 value = "operator reset"

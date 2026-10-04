@@ -23,6 +23,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/frame.rs", "const END", "reply frame trailer: the wire format identifier"),
     ("src/spool.rs", "const MAGIC", "spool record magic: the on-disk spool format identifier, versioned with the format"),
     ("src/hookio.rs", "pub const EXIT2", "reply-body marker for an exit-2 block: internal wire contract between daemon and client"),
+    ("src/hookio.rs", "pub const EXACT", "reply-body marker for a check's exact exit code and bytes: internal wire contract between daemon and client"),
     ("src/hookio.rs", "pub const FALLBACK", "reply-body marker for a deferral: internal wire contract between daemon and client"),
     (
         "src/docs.rs",
@@ -36,6 +37,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/cli.rs", "for name in [\"check\"", "the metrics command's flag names: part of the command line itself"),
     ("src/cli.rs", "for name in [\"job\"", "the schedule history command's flag names: part of the command line itself"),
     ("src/rules.rs", "for k in [\"command\"", "tool_input field names a rule can match by default: the host hook payload schema, an adapter concern (D30)"),
+    ("src/dispatch/combine.rs", "const ", "field names of the host's hook output JSON (hookSpecificOutput, additionalContext, ...): the host protocol schema the merge reads, an adapter concern (D30)"),
     ("src/health.rs", "for key in [\"breaker_until\"", "keys of the files.* settings the operator reset clears: names of settings, not values"),
     // ---- the Jev lane: security grammar kept in code on purpose ----------------------------------------------
     (

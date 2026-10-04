@@ -13,12 +13,16 @@
 //! | SessionStart / SubagentStart | n/a (treated as context)                    | `hookSpecificOutput.additionalContext`  |
 use crate::checks::{self, Verdict};
 use crate::defaults;
+use crate::reqenv::RequestEnv;
 use crate::rules::{Action, Budget, RuleSet, Subject};
 use serde_json::{Value, json};
 
 /// Reply-body prefix for a built-in check that blocks the way the Node guards do (exit 2, reason on stderr);
 /// the rest of the body is the stderr text. JSON bodies start with `{`, so the two cannot be confused.
 pub const EXIT2: &str = "AHEXIT 2\n";
+/// Reply-body prefix for a built-in check whose answer is exact bytes ([`crate::checks::Exact`]); the rest of the body is
+/// the JSON array `[exit code, stdout, stderr]`. JSON bodies start with `{`, so it cannot be confused with one.
+pub const EXACT: &str = "AHEXACT ";
 /// Reply body of a built-in check that must defer to the Node hook (the daemon turns it into an ERR frame).
 pub const FALLBACK: &str = "AHFALLBACK";
 
@@ -55,15 +59,16 @@ pub fn respond(raw: &str, rules: &RuleSet) -> String {
 
 /// `respond` on an already-parsed payload, abandoning the evaluation when `over()` turns true.
 pub fn respond_value(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool) -> Result<String, Budget> {
-    respond_observed(p, rules, over, &NoObserver)
+    respond_observed(p, rules, over, &NoObserver, &RequestEnv::default())
 }
 
-/// `respond_value` that reports checks and rule matches to `obs`.
-pub fn respond_observed(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn Observer) -> Result<String, Budget> {
-    Ok(respond_inner(p, rules, over, obs)?.unwrap_or_default())
+/// `respond_value` that reports checks and rule matches to `obs`, and evaluates every check with `env`, the environment
+/// the request carried (D76).
+pub fn respond_observed(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn Observer, env: &RequestEnv) -> Result<String, Budget> {
+    Ok(respond_inner(p, rules, over, obs, env)?.unwrap_or_default())
 }
 
-fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn Observer) -> Result<Option<String>, Budget> {
+fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn Observer, env: &RequestEnv) -> Result<Option<String>, Budget> {
     let r = |s: String| Ok(Some(s));
     let none = Ok(None);
     let Some(event) = event_of(p) else { return none };
@@ -84,11 +89,12 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn 
             continue;
         }
         let started = std::time::Instant::now();
-        if let Some(o) = builtin(rule, &subject, p) {
+        if let Some(o) = builtin(rule, &subject, p, env) {
             obs.check(rule.check.as_deref().unwrap_or(""), &rule.id, &o, started.elapsed().as_micros() as u64);
             match o {
                 Verdict::Block(m) => return r(format!("{EXIT2}{m}\n")),
                 Verdict::Advisory(j) => advisory = Some(j),
+                Verdict::Exact(x) => return r(format!("{EXACT}{}", json!([x.code, x.out, x.err]))),
                 Verdict::Defer => return r(FALLBACK.to_string()),
                 Verdict::Allow => {}
             }
@@ -136,8 +142,8 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn 
 }
 
 /// Run a built-in check by name; `None` when it is unknown or does not apply to this payload.
-fn builtin(rule: &crate::rules::Rule, s: &Subject, payload: &Value) -> Option<Verdict> {
-    checks::get(rule.check.as_deref()?)?.run_payload(s, payload, &rule.options)
+fn builtin(rule: &crate::rules::Rule, s: &Subject, payload: &Value, env: &RequestEnv) -> Option<Verdict> {
+    checks::get(rule.check.as_deref()?)?.run_env(s, payload, &rule.options, env)
 }
 
 #[cfg(test)]
