@@ -286,6 +286,21 @@ function main() {
   if (failHit) bits.push('a failure signal (' + JSON.stringify(failHit) + ')');
   if (nonZeroExit) bits.push('a non-zero exit code (' + exitCode + ')');
 
+  // Once per turn per distinct signal set (guards.outputVerifyOncePerTurn, default
+  // on): re-running the same suite in one turn yields the identical advisory
+  // each time; the first copy already told the model to verify the counts.
+  if (settingsGet('guards', 'outputVerifyOncePerTurn') !== false) {
+    try {
+      if (!require('./lib/turn-gate.js').firstThisTurn({
+        sessionId: payload.session_id,
+        agentId: typeof payload.agent_id === 'string' ? payload.agent_id : '',
+        transcriptPath: payload.transcript_path,
+        key: 'output-verify-guard',
+        sig: bits.join('|'),
+      })) process.exit(0);
+    } catch (_) { /* fail-open: emit */ }
+  }
+
   const reason = require('./lib/block-message.js').message({
     kind: 'warn',
     guard: 'output-verify-guard',
