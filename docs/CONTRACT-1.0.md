@@ -12,7 +12,7 @@ right and this document gets a fix.
 |---|---|---|
 | Settings keys | 244 in 14 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
-| Other user-facing CLIs | 5 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
+| Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
 | Hook scripts | 59 (66 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.json` |
 | Codex hook scripts | 41 (43 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
 | Skills | 18 Claude, 21 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
@@ -88,7 +88,7 @@ forward-migrated (`companion/lib/migrations.js` `migrateSettingsFromLegacy`).
 
 Source: the `run()` switch in `plugins/anti-hall/scripts/devswarm.js`. `devswarm.js help`
 (and `help --short`, `help <verb>`, `<verb> --help`, `-h`) lists the verbs from that switch,
-so the help cannot drift from the dispatcher. 47 verbs:
+and so does the `unknown command:` error, so neither can drift from the dispatcher. 47 verbs:
 
 | Group | Verbs |
 |---|---|
@@ -121,16 +121,17 @@ so the help cannot drift from the dispatcher. 47 verbs:
   `--message`, `--message-file`, `--urgency`, `--receipt`, `--limit`, `--since`, `--tail`,
   `--set`, `--clear`, `--summary`, `--apply`, `--max`, `--ttl`, `--all`.
 - Safety refusals are part of the contract: `reap-orphans --apply` needs `--max` and a
-  human (`--i-am-a-human` or a TTY); `prune-archived` deletes only with `--confirm-ids` and
+  human (`--i-am-a-human` or a TTY) and is refused outright (`automation-refused`) while
+  `ANTIHALL_DEVSWARM_AUTOMATION=1` is set; `prune-archived` deletes only with `--confirm-ids` and
   `--plan`; `--since`/`--tail` are rejected on every ack-bearing read.
 
 ### Other user-facing scripts
 
 | Script | Stable invocations | Machine-read output |
 |---|---|---|
-| `scripts/settings.js` | `show [--section K] [--all]`, `get <s.k>`, `set <s.k> <v> [--confirmed]`, `reset <s.k> [--confirmed]`, `trust-command-allow [<repo>]`, `trust-edit-allow [<repo>]` | `--json` on every verb; a gated write returns `{ok:false, needsConfirmation:true, warning}`; exit 1 on error |
-| `hooks/doctor.js` | plain (read-only), `--check`, `--repair` (alias `--fix`), `--dry-run`, `--quiet`, `--migrations-only` | exit 0 when every check passes, 1 otherwise |
-| `skills/update/scripts/update.js` | plain (full update), `--check` (no pull, no writes) | first stdout line is one JSON status object `{installed, latest, updated, cacheSynced, action, ingestHeal?, reconcile?, harnessRegistered?}`; exit 1 only on a hard STOP (dirty clone, non-fast-forward) |
+| `scripts/settings.js` | `show [--section K] [--all]`, `get <s.k>`, `set <s.k> <v> [--confirmed]`, `reset <s.k> [--confirmed]`, `judge on\|off\|status`, `trust-command-allow [<repo>]`, `trust-edit-allow [<repo>]` | `--json` on every verb; a gated write returns `{ok:false, needsConfirmation:true, warning}`; exit 1 on error |
+| `hooks/doctor.js` | plain (read-only), `--check`, `--repair` (alias `--fix`), `--dry-run`, `--quiet`, `--migrations-only`, `--logs`, `--confirmed` (only with `--prune-cache`) | exit 0 when every check passes, 1 otherwise |
+| `skills/update/scripts/update.js` | plain (full update), `--check` (no pull, no writes) | first stdout line is one JSON status object (test-only `ANTIHALL_MARKETPLACE_DIR` aside) `{installed, latest, updated, cacheSynced, action, ingestHeal?, reconcile?, harnessRegistered?}`; exit 1 only on a hard STOP (dirty clone, non-fast-forward) |
 | `scripts/migrate-state.js` | `[dir]`, `--planning`, `--mark-read`, `--restore-planning [--dir <wt>]` | copy-only; originals never deleted |
 | `scripts/capability-scan.js` | plain (human), `--json` | `--json` prints only the JSON report |
 | `scripts/coordinator-work-baseline.js` | `<transcript.jsonl> [--from-line N] [--cwd DIR] [--json]` | `--json` prints `{calls, work, share, attemptedShare, wouldNudge, wouldBlock}` |
@@ -183,7 +184,7 @@ output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
 | `speculation-judge` | Stop | block | `jev.semanticJudge` | `speculation-judge` | yes |
 | `claim-ledger` | Stop | record | `guards.claimLedger` | `claim-ledger` | yes |
 | `codex-nudge` | Stop | block | `codexNudge.enabled` | `codex-nudge` | no |
-| `devswarm-parent-gate` | Stop | block | `devswarm.parentGate` | — | yes |
+| `devswarm-parent-gate` | Stop | block | `devswarm.parentGate` | `devswarm-parent-gate` | yes |
 | `devswarm-child-gate` | Stop | block | `devswarm.childGate` | `devswarm-child-gate` | yes |
 | `auto-handover-pause-nag` | Stop | block | `autoHandover.nag` | `auto-handover` | yes |
 | `silent-agent-nudge` | Stop | block | `guards.silentAgentNudge` | `silent-agent-nudge` | yes |
@@ -214,8 +215,9 @@ output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
 | `session-end-mcp-reaper` | SessionEnd | record | `maintenance.sessionEndReaper` | — | no |
 
 Not registered in `hooks.json` and so not covered: `doctor.js` (a CLI, section 2),
-`agent-watchdog.js` (a manual helper), the `*-refresh.js` workers, `skip-guard.js`,
-`coordinator-detect.js`, `omc-detect.js` (libraries). The one monitor,
+`agent-watchdog.js` (a manual helper), the `*-refresh.js` workers, and the shared modules
+`skip-guard.js`, `coordinator-detect.js`, `omc-detect.js`, `limit-conserve.js`,
+`session-history-index.js` and `verify-first-core.js` (libraries). The one monitor,
 `devswarm-wake-watch` (`plugins/anti-hall/monitors/monitors.json`), is stable by name.
 
 **Kill switches**, narrowest first:
@@ -268,7 +270,7 @@ Frozen per hook: its script name, event, matcher, the setting and skip name, and
 | `~/.anti-hall/trusted-command-allow.json` | repo realpath to sha256 of the trusted allowlist | `hooks/lib/command-allow.js` |
 | `~/.anti-hall/defects/` | local defect reports | `hooks/lib/defect-store.js` |
 | `~/.anti-hall/logs/` | JSONL event and error logs | `companion/lib/anti-hall-log.js` |
-| `~/.anti-hall/devswarm/` | mesh root: `workspaces/`, `archived/`, `heartbeats/`, `store/<hash>/devswarm.db`, `summaries/`, `ignore.json`, `maintainer-notices.jsonl` | `companion/lib/liveness.js`, `companion/lib/devswarm-store.js` |
+| `~/.anti-hall/devswarm/` | mesh root: `workspaces/`, `archived/`, `heartbeats/`, `store/<hash>/devswarm.db` (or `journal/` on the fallback backend), `summaries/`, `ignore.json`, `maintainer-notices.jsonl` | `companion/lib/liveness.js`, `companion/lib/devswarm-store.js` |
 | `~/.anti-hall/update-sweep-state.json` | per-version migration markers | `companion/lib/migrations.js` |
 | `~/.anti-hall/jev.json` | legacy Jev config, read-only fallback | `settings-schema.js` `legacy` |
 | `~/.anti-hall/coordinator-work-session-<id>.json` (+ `.lock`), `coordinator-work-metrics.json` (+ `.lock`), `coordinator-work-trips.log` (JSONL, rotated to `.1` at 1 MiB), `.coordinator-work-fold-stamp.json` | the main-thread work window: per-session state, folded per-version metrics, nudge/block trips | `hooks/lib/coordinator-work.js` |
@@ -318,7 +320,7 @@ scripts** (`codex/hooks/hooks.json` points at `${PLUGIN_ROOT}/hooks/*.js`).
 
 | Difference | Reason |
 |---|---|
-| 18 hooks are Claude-only (the "no" rows in section 3) | Codex has no `TaskCreated`/`TaskCompleted`/`SessionEnd`/`PostToolUseFailure` event (it does fire `SubagentStart`, with `agent_id`/`agent_type`: a captured codex-cli 0.160.0 payload and `codex-rs/hooks/src/events/session_start.rs` at rust-v0.160.0; `verify-first-subagent` is not registered there yet because its Codex payload has no tests), reports file edits only as `apply_patch` (edit-guard, api-guard and ship-it-guard's existence gate run there; shell writes bypass them), and has no `Agent`, `Task`, `Read`, `SendMessage`, `AskUserQuestion` or `TaskStop` matcher |
+| 18 hooks are Claude-only (the "no" rows in section 3) | Per-hook reasons are in `CLAUDE_ONLY_ALLOWLIST` (`tests/hygiene/manifest-drift.test.js`): `codex-nudge` is self-referential inside Codex, `scan-throttle` is not yet ported, `coordinator-work-guard` waits on a verified Codex PostToolUse payload and coordinator detection, `output-verify-guard` reads Claude's `tool_response` shape. The rest follow from Codex surface gaps: it has no `TaskCreated`/`TaskCompleted`/`SessionEnd`/`PostToolUseFailure` event (it does fire `SubagentStart`, with `agent_id`/`agent_type`: a captured codex-cli 0.160.0 payload and `codex-rs/hooks/src/events/session_start.rs` at rust-v0.160.0; `verify-first-subagent` is not registered there yet because its Codex payload has no tests), reports file edits only as `apply_patch` (edit-guard, api-guard and ship-it-guard's existence gate run there; shell writes bypass them), and has no `Agent`, `Task`, `Read`, `SendMessage`, `AskUserQuestion` or `TaskStop` matcher |
 | No `/config` on Codex | locked keys use `--confirmed` or the env var |
 | `deadly-loop-multi` is Claude-only | it multiplies the Claude trio |
 | Codex-only skills: `anti-hall-context-conserve`, `anti-hall-model-policy`, `anti-hall-omc`, `anti-hall-omx` | Codex-side orchestration and routing guidance |
@@ -334,6 +336,11 @@ These may change in any release, including a PATCH:
 - **Internal modules:** everything under `hooks/lib/`, `companion/lib/`,
   `scripts/devswarm-lib/`, and every exported function. Only the CLIs and hook scripts are
   public.
+- **Skill-run helper scripts:** `scripts/defect.js`, `jev-report.js`, `jev-setup.js`,
+  `briefing.js`, `dispatch-report.js`, `auto-handover-config.js`, `finding-dedup.js`,
+  `harvest-debt.js`, `devswarm-store-leak-report.js`, `companion/devswarm-recover.js` and the
+  `companion/install-*.js` scripts. Skills invoke them, but their flags and output are not
+  frozen; only the scripts in section 2 are stable CLIs.
 - **Message wording:** guard block reasons, advisory and nudge text, human report lines,
   `help` synopses, warnings, and the verify-first discipline text. Only the machine-read
   lines in section 2 are frozen.

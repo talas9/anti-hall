@@ -45,6 +45,11 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [plugins/anti-hall/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/README.md): the plugin directory page (what it does, install, data sent).
 - [plugins/anti-hall/codex/README.md](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/codex/README.md): the Codex port, hook subset, skills, OMX mapping.
 - [docs/README.md](https://github.com/talas9/anti-hall/blob/main/docs/README.md): the documentation start page, a grouped index of every doc.
+- [docs/CONTRACT-1.0.md](https://github.com/talas9/anti-hall/blob/main/docs/CONTRACT-1.0.md): the 1.0 compatibility contract (stable CLIs, hooks, settings, paths).
+- [docs/HOOK-LATENCY.md](https://github.com/talas9/anti-hall/blob/main/docs/HOOK-LATENCY.md): measured hook latency (wall p50/p95, CPU).
+- [docs/E2E-TESTING.md](https://github.com/talas9/anti-hall/blob/main/docs/E2E-TESTING.md): end-to-end testing guide.
+- [docs/TASK-WORK.md](https://github.com/talas9/anti-hall/blob/main/docs/TASK-WORK.md): the task dedup/relate ladder.
+- [docs/TASKLIST-GUARD.md](https://github.com/talas9/anti-hall/blob/main/docs/TASKLIST-GUARD.md): the tasklist guard and per-session progress files.
 - [docs/KB.md](https://github.com/talas9/anti-hall/blob/main/docs/KB.md): knowledge-base ground truth.
 - [docs/GUIDE.md](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md): extended guide and per-hook reference.
 - [docs/KB-devswarm-hivecontrol.md](https://github.com/talas9/anti-hall/blob/main/docs/KB-devswarm-hivecontrol.md): DevSwarm hivecontrol CLI and the mesh.
@@ -100,12 +105,12 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | PreToolUse (Bash) | command-guard.js | Coordinator must delegate heavy commands; blocks DevSwarm destructive verbs and native hivecontrol messaging. | ✓ | safety.commandGuard (safety: --confirmed) |
 | PreToolUse + PostToolUse (Bash) | coordinator-work-guard.js | Main thread: counts successful state-changing Bash calls (git/gh mutations, repo-file writes, script runs, inline code) in a time window; one advisory note at the nudge count, blocks the Nth (recovery commands and loosely matched inline code are counted but never blocked). Claude only. | — | guards.coordinatorWorkWindowMinutes (`0` = off), guards.coordinatorWorkNudgeAt, guards.coordinatorWorkBlockAt |
 | PreToolUse (Bash) | merge-gate.js | Opt-in: blocks auto-merge without a recorded review. | ✓ | `ANTIHALL_MERGE_GATE=on` |
-| PreToolUse (Agent/Task/Write/Edit/MultiEdit/NotebookEdit/Bash) | compact-declaration-guard.js | Opt-in (default OFF): after a SAFE TO COMPACT declaration in the current turn, blocks new work (spawns, edits, state-changing shell) until the next user message or an explicit `RETRACT SAFE TO COMPACT` line; read-only tools pass. | ✓ (Bash only) | guards.compactDeclarationGuard (default false) |
+| PreToolUse (Agent/Task/Write/Edit/MultiEdit/NotebookEdit/Bash) | compact-declaration-guard.js | After a SAFE TO COMPACT declaration in the current turn, blocks new work (spawns, edits, state-changing shell) until the next user message or an explicit `RETRACT SAFE TO COMPACT` line; read-only tools pass. On by default since 0.117.0. | ✓ (Bash only) | guards.compactDeclarationGuard (default true; `false` is the kill switch) |
 | PreToolUse (Bash) | scan-throttle.js | Advises (never rewrites) running user-listed heavy scan commands under `taskpolicy`/`nice` (no built-in patterns). | — | guards.scanThrottle; `ANTI_HALL_THROTTLE_PATTERNS` |
 | PreToolUse (TaskStop) | stale-agent-stop-note.js | Advisory line (never blocks) when the agent being stopped was sent a message or resumed after its last report and has not reported since. | — | guards.staleAgentStopNote; `ANTIHALL_STALE_AGENT_STOP_NOTE=off` |
-| PreToolUse (Write/Edit/MultiEdit) | api-guard.js | Blocks writing a `module.attr` the installed runtime doesn't have (stdlib/builtins by default). | — | guards.apiGuard; `ANTIHALL_API_GUARD_THIRDPARTY=1` |
-| PreToolUse (Write/Edit/MultiEdit) | ship-it-guard.js | Opt-in: blocks hard-risk code edits with no `PLAN.md`. | — | `ANTIHALL_SHIPIT_GATE=on` |
-| PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | — | safety.editGuard (safety: --confirmed); `ANTIHALL_EDIT_GUARD_ALLOW` |
+| PreToolUse (Write/Edit/MultiEdit) | api-guard.js | Blocks writing a `module.attr` the installed runtime doesn't have (stdlib/builtins by default). | ✓ (apply_patch) | guards.apiGuard; `ANTIHALL_API_GUARD_THIRDPARTY=1` |
+| PreToolUse (Write/Edit/MultiEdit) | ship-it-guard.js | Opt-in: blocks hard-risk code edits with no `PLAN.md`. | ✓ (apply_patch) | `ANTIHALL_SHIPIT_GATE=on` |
+| PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | edit-guard.js | Coordinator must delegate file edits (root-anchored allowlist for docs/state). | ✓ (apply_patch) | safety.editGuard (safety: --confirmed); `ANTIHALL_EDIT_GUARD_ALLOW` |
 | PreToolUse (Read) | inbox-read-guard.js | Blocks a direct Read of a raw DevSwarm inbox file (use the CLI). | — | devswarm.inboxReadGuard |
 | PreToolUse (AskUserQuestion) | ask-guard.js | Optional, off by default: advises or blocks a question call that would hold work waiting for an answer; a first question starting `DESTRUCTIVE:` or `CREDENTIAL:` is allowed. Also adds a note when background agents are in flight. Claude only. | — | guards.noBlockingQuestions (off/advise/block), guards.questionAgentsNote |
 | PreToolUse (SendMessage) | devswarm-comms-guard.js | Blocks `SendMessage` to a peer session that is a registered DevSwarm workspace (mesh only); never blocks subagent steering. | — | devswarm.commsGuard |

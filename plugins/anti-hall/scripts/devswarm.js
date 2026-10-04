@@ -1022,11 +1022,7 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|'
-          + 'archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|'
-          + 'migrate-owner-keys|logs|send|roster|app-state|app-sync|sync-ui|diagnose|healthcheck|mesh|'
-          + 'reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived|'
-          + 'retention|notice)' } };
+          ' (' + verbListFromSwitch().join('|') + ')' } };
     }
   } catch (e) {
     if (e && e.seatRefusal) throw e; // run() reports it as primary-seat-conflict

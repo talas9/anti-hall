@@ -112,7 +112,7 @@ reproduce/validate/lint steps and run them before claiming success.
 - DEDUP + RELATE before creating tasks: check TaskList FIRST so you never duplicate an
   existing open task — refine it instead, and link related tasks via addBlockedBy
   (prereq) / addBlocks (gates that); supersede a true duplicate rather than piling on.
-  Keep a fresh `.anti-hall-progress.md` (done/in-progress/next, gitignored) so freshness
+  Keep a fresh per-session progress file `.anti-hall/progress/<YYYY-MM-DD>/<session_id>.md` (done/in-progress/next, gitignored) so freshness
   survives compaction. See `docs/TASK-WORK.md` for the dedup/relate ladder.
 - USER OVERRIDE (escape hatch): if the user EXPLICITLY and CLEARLY asks to skip a guard or
   rule, honor it — record consent by writing `~/.anti-hall/skip.json` as
