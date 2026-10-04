@@ -51,6 +51,12 @@ impl Env {
         (String::from_utf8_lossy(&o.stdout).trim().to_string(), String::from_utf8_lossy(&o.stderr).trim().to_string(), o.status.code().unwrap_or(-1))
     }
 
+    /// What a failing assertion should print: the daemon's log and status (so a CI failure explains itself).
+    fn diag(&self) -> String {
+        let log = std::fs::read_to_string(self.dir.join("eng").join("ah-engine.log")).unwrap_or_default();
+        format!("\n--- ah-engine.log ---\n{log}\n--- status ---\n{}", self.run(&["status", "--json"]).0)
+    }
+
     fn run(&self, args: &[&str]) -> (String, i32) {
         let o = self.cmd().args(args).output().unwrap();
         (String::from_utf8_lossy(&o.stdout).trim().to_string(), o.status.code().unwrap_or(-1))
@@ -91,7 +97,8 @@ const FORCE: &str = "git pu\x73h --force origin main";
 fn metrics_impact_and_status_reflect_real_hook_calls() {
     let e = Env::new("obs", &[]);
     e.warm();
-    assert_eq!(e.hook(FORCE).2, 2, "the git check blocks a force push");
+    let forced = e.hook(FORCE);
+    assert_eq!(forced.2, 2, "the git check blocks a force push: {forced:?}{}", e.diag());
     assert_eq!(e.hook("git status").2, 0);
     e.hook("rm -rf build");
     let imp = e.json(&["impact", "--json"]);
