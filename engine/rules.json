@@ -6,7 +6,7 @@
       "events": ["PreToolUse"],
       "tools": ["Bash"],
       "field": "command",
-      "pattern": "\\bgit\\s+(?:-\\S+\\s+)*push\\b[^|;&\\n]*(?:\\s--force(?:-with-lease)?\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s\\+\\S)",
+      "pattern": "\\bgit\\s+(?:-\\S+\\s+)*push\\b[^|;&\\n]*(?:\\s--force(?:-with-lease)?\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s\\+\\S|\\s--(?:delete|mirror)\\b|\\s-d\\b|\\s:\\S)",
       "action": "deny",
       "message": "anti-hall git-guard: BLOCKED. Force push detected. Rewriting published history is a deliberate human action - do it manually with explicit owner confirmation, never from an automated push."
     },
