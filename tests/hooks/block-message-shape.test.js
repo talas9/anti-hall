@@ -116,8 +116,3 @@ test('coordinator-work-guard block + nudge text have the shared shape', () => {
   const n = lib.NUDGE(5, cfg);
   assert.match(n, /^⚠️ anti-hall · coordinator-work-guard: /);
 });
-
-test('inbox-read-guard block text has the shared shape', () => {
-  const out = require('node:child_process').spawnSync(process.execPath, [path.join(HOOKS_DIR, 'inbox-read-guard.js')], { input: '{}', encoding: 'utf8' });
-  assert.strictEqual(out.status, 0); // empty payload: fail-open; shape of the builder is covered via command-guard above
-});

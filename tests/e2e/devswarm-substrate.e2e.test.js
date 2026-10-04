@@ -102,7 +102,7 @@ test('1 GUARD: coordinator+DevSwarm blocks raw `monitor` (unconditional) with du
       { home, env: COORD_ENV });
     assert.strictEqual(r.status, 2, `monitor must block; stdout=${r.stdout}`);
     assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
-    assert.match(r.json.reason, /COORDINATOR-READ REDIRECT/);
+    assert.match(r.json.reason, /devswarm-read-guard/);
   } finally { H.rm(home); }
 });
 

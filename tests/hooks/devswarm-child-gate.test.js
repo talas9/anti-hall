@@ -1765,7 +1765,7 @@ test('ARCHIVED CHILD-GATE: blocks an archived child ONCE with the handover reaso
 
     const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
     assert.strictEqual(r1.json && r1.json.decision, 'block', `first Stop must be blocked; got: ${r1.stdout}`);
-    assert.match(r1.json.reason, /ARCHIVED/);
+    assert.match(r1.json.reason, /Archived/);
     assert.match(r1.json.reason, /handover/);
     assert.match(r1.json.reason, /stop/);
 

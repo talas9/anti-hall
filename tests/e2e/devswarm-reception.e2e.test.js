@@ -380,6 +380,6 @@ test('5 READ-GUARD: raw inbox/store blocked (Read tool + Bash cat); summary.json
       { home, env: COORD_ENV });
     assert.strictEqual(readMessages.status, 2, `read-messages must block unconditionally; stdout=${readMessages.stdout}`);
     assert.ok(readMessages.json && readMessages.json.decision === 'block');
-    assert.match(readMessages.json.reason, /COORDINATOR-READ REDIRECT/);
+    assert.match(readMessages.json.reason, /devswarm-read-guard/);
   } finally { H.rm(home); }
 });
