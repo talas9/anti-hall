@@ -346,3 +346,17 @@ value = "To keep the machine responsive."
 [scan_throttle.msg_first_instead]
 doc = "Advice when the scan is the first simple command; {throttled} is the command with the prefix in place."
 value = "re-run it background-throttled: `{throttled}`."
+
+# ---- coordinator-work-guard (hooks/coordinator-work-guard.js, hooks/coordinator-detect.js) -----------------
+
+[coordinator_work.summary]
+doc = "One-line description of the coordinator-work-guard check in the generated reference."
+value = "Main-thread work window: allows subagent Bash calls in the engine; the window itself (classification, counters, block) stays with the Node guard until the command-guard port lands (port of coordinator-work-guard.js)."
+
+[coordinator_work.agent_markers]
+doc = "Payload fields the host puts on a subagent's hook payload and never on the main thread's."
+value = ["agent_id", "agent_type"]
+
+[coordinator_work.codex_markers]
+doc = "Payload fields that, both non-empty strings, identify a Codex payload."
+value = ["turn_id", "model"]

@@ -146,6 +146,11 @@ Deliberate differences from the Node guard:
   regexes, and the engine matches only a plain subset itself (literals, `.`, groups, alternation, quantifiers, simple
   classes, `^`/`$`, `\s \d \w \b`, escaped punctuation). Lookaround, back-references, counted repeats, Unicode escapes and
   non-ASCII patterns defer to Node. Its state (none) and its tool probe read the engine process's `PATH`.
+- `coordinator-work-guard`: only the exits the payload proves are decided here (not Bash, no session id, a subagent marker
+  in the payload, which on the recorded field data is 88 percent of Bash calls). The window (counters, nudge, block) needs
+  `classifyBashWork` from command-guard and the hook's `CLAUDE_CODE_ENTRYPOINT`, neither of which the engine has yet, so
+  every main-thread call defers to the Node guard, which keeps all of the window's state; the engine keeps none, so the
+  two cannot disagree. The window moves in with the command-guard port (planned, D75).
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 

@@ -134,7 +134,7 @@ async function runParity(o) {
     if (flag('--show-defer')) console.log('  deferred scenarios: ' + [...stats.deferredIds].slice(0, 60).join(' | '));
   }
   fs.writeFileSync(o.out || path.join(os.tmpdir(), `ah-parity-${o.name}-mismatches.json`), JSON.stringify(mism, null, 1));
-  for (const m of mism.slice(0, SHOW)) console.log(JSON.stringify({ s: m.scenario, step: m.step, mode: m.mode, cmd: (m.payload.tool_input && (m.payload.tool_input.command || m.payload.tool_input.file_path) || '').slice(0, 160), n: [m.node.code, m.node.out.slice(0, 120), m.node.err.slice(0, 120)], e: [m.engine.code, m.engine.out.slice(0, 120), m.engine.err.slice(0, 120)] }));
+  for (const m of mism.slice(0, SHOW)) console.log(JSON.stringify({ s: m.scenario, step: m.step, mode: m.mode, cmd: (m.payload && m.payload.tool_input && (m.payload.tool_input.command || m.payload.tool_input.file_path) || '').slice(0, 160), n: [m.node.code, m.node.out.slice(0, 120), m.node.err.slice(0, 120)], e: [m.engine.code, m.engine.out.slice(0, 120), m.engine.err.slice(0, 120)] }));
   fs.rmSync(tmp, { recursive: true, force: true });
   process.exitCode = stats.mismatch ? 1 : 0;
   return stats;
