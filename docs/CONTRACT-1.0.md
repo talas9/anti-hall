@@ -10,11 +10,11 @@ right and this document gets a fix.
 
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 239 in 14 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
+| Settings keys | 244 in 14 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 5 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
-| Hook scripts | 58 (64 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.json` |
-| Codex hook scripts | 38 (40 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
+| Hook scripts | 59 (66 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.json` |
+| Codex hook scripts | 41 (43 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
 | Skills | 18 Claude, 21 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys
@@ -41,7 +41,7 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `codexNudge` | Codex Nudge | 2 | |
 | `defects` | Defects | 1 | |
 
-Of the 239 keys: 114 are `advanced` (hidden from `settings.js show` without `--all`), 160
+Of the 244 keys: 119 are `advanced` (hidden from `settings.js show` without `--all`), 165
 have an env override, 11 are `locked` (safety keys), 3 are `homeOnly`. The full list with
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.
