@@ -5,6 +5,10 @@
 //
 //   node evals/anti-hall/build-cases.js           write cases/ + manifest.json
 //   node evals/anti-hall/build-cases.js --check   oracle check only, write nothing
+//   node evals/anti-hall/build-cases.js --suite routing   same, for the strength-study suite in
+//     families-routing.js -> cases-routing/ + manifest-routing.json (docs/BENCHMARK-METHOD.md Amendment 3).
+//     Suite families may add: `variants` (default 4), `runs`, `maxTurns`, `timeout`, `quiz` (B3),
+//     `items` (B4 per-item graders: [{id, grader?}]); these pass through to the manifest.
 //
 // Before writing, every family's scaffold is run in a temp dir (with no user
 // git config) to (1) learn the deterministic fixture SHAs that graders match,
@@ -22,18 +26,29 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { PRELUDE } = require('./families.js');
-// Pilot families (dev + heldout) plus the amendment 2 confirmatory candidates.
-const FAMILIES = [
-  ...require('./families.js').FAMILIES,
-  ...require('./families-c2-claims.js').FAMILIES,
-  ...require('./families-c2-risky.js').FAMILIES,
-  ...require('./families-c2-scope.js').FAMILIES,
-];
+// Pilot families (dev + heldout) plus the amendment 2 confirmatory candidates; or one strength-study suite.
+const SUITES = ['probes', 'routing', 'continuity', 'tasklist'];
+function loadFamilies(suite) {
+  if (suite) {
+    if (!SUITES.includes(suite)) throw new Error(`--suite must be one of ${SUITES.join(', ')}`);
+    const f = path.join(__dirname, `families-${suite}.js`);
+    if (!fs.existsSync(f)) throw new Error(`families-${suite}.js does not exist: suite cases are written by an independent author (Amendment 3), not generated here`);
+    return require(f).FAMILIES;
+  }
+  return [
+    ...require('./families.js').FAMILIES,
+    ...require('./families-c2-claims.js').FAMILIES,
+    ...require('./families-c2-risky.js').FAMILIES,
+    ...require('./families-c2-scope.js').FAMILIES,
+  ];
+}
 const { evalRule } = require('./rules.js');
 
 const HERE = __dirname;
-const CASES_DIR = path.join(HERE, 'cases');
 const NO_MENTION = /anti-?hall|plugin|guard|eval|benchmark/i;
+// B1 extends the filter (Amendment 3 §B1): the guard classifies prompts by keywords, so a prompt that
+// names models, tiers or delegation could trigger or dodge it. Other suites keep the base filter.
+const NO_MENTION_BY_SUITE = { routing: /anti-?hall|plugin|guard|eval|benchmark|haiku|sonnet|opus|subagent|delegat|model/i };
 // Pre-registered run settings (docs/BENCHMARK-METHOD.md §3.2, §7).
 const RUNS = 5;
 const MAX_TURNS = 25;
@@ -154,6 +169,12 @@ function yamlFrontmatter(obj) {
 }
 
 function main() {
+  const si = process.argv.indexOf('--suite');
+  const suite = si === -1 ? null : process.argv[si + 1];
+  const FAMILIES = loadFamilies(suite);
+  const CASES_DIR = path.join(HERE, suite ? `cases-${suite}` : 'cases');
+  const MANIFEST = path.join(HERE, suite ? `manifest-${suite}.json` : 'manifest.json');
+  const noMention = (suite && NO_MENTION_BY_SUITE[suite]) || NO_MENTION;
   const checkOnly = process.argv.includes('--check');
   const manifest = { generatedBy: 'evals/anti-hall/build-cases.js', preregistration: 'docs/BENCHMARK-METHOD.md', runsPerArm: RUNS, cases: [] };
   const allProblems = [];
@@ -167,11 +188,11 @@ function main() {
     const probs = oracleCheck(fam, graders);
     for (const p of probs) allProblems.push(`${fam.id}: ${p}`);
     fam.prompts.forEach((prompt, i) => {
-      if (NO_MENTION.test(prompt)) allProblems.push(`${fam.id} v${i + 1}: prompt mentions a forbidden word`);
+      if (noMention.test(prompt)) allProblems.push(`${fam.id} v${i + 1}: prompt mentions a forbidden word`);
       plan.push({ fam, prompt, graders, name: `${fam.id}-v${i + 1}` });
     });
   }
-  for (const fam of FAMILIES) if (fam.prompts.length !== 4) allProblems.push(`${fam.id}: expected 4 prompts`);
+  for (const fam of FAMILIES) if (fam.prompts.length !== (fam.variants ?? 4)) allProblems.push(`${fam.id}: expected ${fam.variants ?? 4} prompts`);
   if (allProblems.length) { console.error(allProblems.join('\n')); process.exit(1); }
   if (checkOnly) { console.log(`oracle check ok: ${FAMILIES.length} families, ${plan.length} cases`); return; }
 
@@ -180,16 +201,16 @@ function main() {
     const dir = path.join(CASES_DIR, fam.category, name);
     fs.mkdirSync(path.join(dir, 'graders'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'prompt.md'), yamlFrontmatter({
-      tags: [fam.category, fam.split, fam.id], runs: RUNS, max_turns: MAX_TURNS, timeout_seconds: TIMEOUT, allowed_tools: TOOLS,
+      tags: [fam.category, fam.split, fam.id], runs: fam.runs ?? RUNS, max_turns: fam.maxTurns ?? MAX_TURNS, timeout_seconds: fam.timeout ?? TIMEOUT, allowed_tools: TOOLS,
     }) + '\n' + prompt + '\n');
     fs.writeFileSync(path.join(dir, 'case.yaml'), `schema_version: "1.1"\nname: ${JSON.stringify(name)}\ncontext:\n  scaffold_script: scaffold.sh\n`);
     fs.writeFileSync(path.join(dir, 'scaffold.sh'), scaffoldScript(fam), { mode: 0o755 });
     for (const [gname, g] of Object.entries(graders)) fs.writeFileSync(path.join(dir, 'graders', gname + '.md'), yamlFrontmatter(g));
-    manifest.cases.push({ name, category: fam.category, family: fam.id, split: fam.split, violation: fam.violation, graders: Object.keys(graders) });
+    manifest.cases.push({ name, category: fam.category, family: fam.id, split: fam.split, violation: fam.violation ?? null, graders: Object.keys(graders), ...(fam.quiz ? { quiz: fam.quiz } : {}), ...(fam.items ? { items: fam.items } : {}) });
   }
-  fs.writeFileSync(path.join(HERE, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+  fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2) + '\n');
   console.log(`wrote ${plan.length} cases, manifest.json; oracle check ok`);
 }
 
-if (require.main === module) main();
-module.exports = { HOOK_BLOCK_RE };
+if (require.main === module) { try { main(); } catch (e) { console.error(`build-cases.js: ${e.message}`); process.exit(1); } }
+module.exports = { HOOK_BLOCK_RE, NO_MENTION, NO_MENTION_BY_SUITE, loadFamilies, SUITES };

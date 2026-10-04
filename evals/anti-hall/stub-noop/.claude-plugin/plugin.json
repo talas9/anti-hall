@@ -1,0 +1,5 @@
+{
+  "name": "noop-stub",
+  "version": "0.0.0",
+  "description": "Benchmark reference only: loads nothing (no hooks, skills or agents). Stands in for the no-plugin arm when arms run as separate, interleaved invocations."
+}

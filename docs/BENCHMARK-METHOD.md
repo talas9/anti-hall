@@ -673,3 +673,241 @@ the effect of the self-credit block on benign success is measured.
 | **Total** | **4,500** | **about $451** (about $640 if harder cases cost 1.5× per run) |
 
 Neither run starts without the project owner's budget approval (§3.2).
+
+### Amendment 3 (DRAFT): strength studies B0 to B4
+
+**Status: DRAFT. Nothing in this amendment has been run.** It becomes binding
+only when committed before the first B-run; its commit hash is the
+timestamp. The harness changes it needs exist as code and unit tests
+(`evals/anti-hall/lib/`, `run.js`, `analyze.js`, `seeds/`, `stub-probe/`),
+verified on synthetic transcripts only, with no paid run. Each study is a
+new, separately pre-registered hypothesis and needs its own budget approval.
+None re-opens H1 to H4.
+
+**Frozen, unchanged.** Same model and harness in both arms, identical
+prompts, no prompt names the plugin, guards or evals (§3.4), deterministic
+headline graders only (§4.1), effects not attempts (§4.2), the paired
+cluster-robust Δ with the t(C−1) interval as the decision interval (§6.1),
+the exclusion rules (§6.5), a cost ceiling on every invocation, and
+Bash-granting runs in the Linux container (Amendment 1). **Scope:** Claude
+Code only, one pinned model per study, the recorded `claudeVersion`,
+list-price "virtual dollars" (subscription users do not pay these), one
+harness (`-p`, sealed HOME). No claim covers interactive sessions.
+
+#### B0. Headless probes (gate B1 to B4)
+
+A `probes` suite (`run.js --suite probes`). It answers preconditions with
+transcript evidence. It is not a hypothesis test and publishes no result.
+Any probe answered "no" closes the study it gates, or switches that study to
+its stated fallback; the outcome is recorded in this amendment.
+
+| Probe | Question | Deterministic grader | Gates |
+|---|---|---|---|
+| P1 skill-trigger recall | Do the skills still trigger after a trim? | 18 prompts × 5 runs, `max_turns: 1`, `tool_used: Skill`; aggregate drop ≤10 points, no skill below 3 of 5 | trim release |
+| P2 swarm smoke | Is the orchestration block delivered once per epoch in the coordinator and never in subagents? | regex counts in main vs sidechain lines | trim feature |
+| P3 context landing | Where does PreToolUse vs PostToolUse `additionalContext` on `Agent` land, and is it delivered when a sibling hook denies? | `stub-probe` emits `PROBE-PRE-<uuid>` / `PROBE-POST-<uuid>`; token position in trace plus quoted in the final message | spawn-hook event choice |
+| P4 Workflow discriminator | What do `Workflow` and `agent()` spawns inside it send to hooks? | `stub-probe` writes each hook stdin to `.probe/<n>.json` | spawn-hook skip rule |
+| P5 `/compact` under `-p` | Does a headless resume compact, and what JSONL does it write? | regex `compact_boundary` in the transcript | B3 |
+| P6 resume seed | Does a frozen history resume, what is SessionStart `source`, does the resume hook find a scaffolded handover? | trace regex on the guided-resume injection | B3 |
+| P7 task tools in `-p` | Are the task tools present or deferred? | `system:init` tools list | B4 |
+| P8 Stop block in `-p` | Does a Stop-hook block continue the agent? | stub blocks once with a token; a turn follows the token | B4 |
+| P9 settings reach hooks | Does a settings file or env var set by `run.js` reach plugin hooks in the sealed HOME? | stub echoes `ANTIHALL_MODEL_ROUTING` into `.probe/` | B1 ablation arm |
+| P10 Opus main and spawn usage | Is the Opus main model accepted, and do background spawns also carry `usage` and `resolvedModel`? | regex on `tool_use_result` | B1 |
+
+P5 fallbacks are tried in this order: `claude -p --resume <id> "/compact"`;
+the `--autocompact <tokens>` window override with a resumed prompt (the flag
+is listed in `claude --help`; that it forces a compaction on a seed of about
+100k tokens is unverified until P5); a tmux-driven interactive `/compact`
+with the transcript copied. If all three fail, B3 is not run.
+
+Estimated cost about $25 (band $15 to $50).
+
+#### B1. Routing savings on an Opus main thread
+
+**H-B1 (two-sided):** with the plugin, dollars per completed task differ
+from without, on multi-step tasks where delegation is natural. Savings may
+be small or negative: Opus 5.5 cache reads cost the same as Sonnet's, and the
+plugin adds cache-write tokens per run at Opus prices.
+
+**Primary metric:** dollars per completed task = Σ `total_cost_usd` /
+Σ successes per arm, reported as the with/without ratio; CI by cluster
+bootstrap over families (10,000 resamples, fixed seed, ratio of sums).
+Cross-check: paired per-case log mean-cost ratio, cluster-robust t(C−1).
+**"Saves" is claimed only if** the bootstrap 95% CI upper bound is below 1.00
+**and** success non-inferiority holds. **Co-primary guard:** the lower
+t-CI bound of Δsuccess exceeds **−0.10** (a new margin for a new hypothesis:
+long tasks have lower base success and −0.05 is unreachable at this n;
+stated, not tuned; `analyze.js --ni-margin -0.10`).
+
+**Secondary (descriptive):** (a) share of subagent tokens and dollars by
+tier Haiku / Sonnet / Opus (`resolvedModel` plus per-spawn `usage`; the
+dollar split is an estimate: spawn tokens × that model's effective
+dollars per token from `modelUsage`); (b) share of Bash executions run
+inside Haiku subagents vs the main thread; (c) spawns per run, spawns
+without a model, routing-guard blocks and the tier of the next spawn;
+(d) main-thread share of all and of mutating tool calls, main-thread
+tokens; (e) duration; (f) first-request `cache_read` per arm. Tier-mix
+figures are conditioned on spawning (post-treatment) and are reported only
+if at least 20% of runs spawn in some arm.
+
+**Arms:** `without` (no plugin) vs `with` (frozen commit), both on the same
+Opus model, same tools. **Ablation arm (secondary, K = 3):** `with` plus
+`guards.modelRouting=advisory`, only if P9 passes.
+
+**Cases:** 10 families × 4 variants = 40 headline cases, plus 2 dev
+families for smoke that never enter the headline. Genres where a human lead
+would delegate: multi-package test triage with long logs; repo-wide
+rename/audit; log forensics on large files; license inventory; docs synced
+to CLI `--help`; data-migration script with verification; changelog from
+200 commits plus a version bump; lint-fix plus tests; benchmark-and-summarise;
+two-implementation comparison. Every family has effect-based `success_*`
+graders and an oracle check (the untouched fixture fails, the reference
+solution passes). **Authors:** someone other than the plugin author, given
+only this section and never the guard's keyword lists. The prompt filter is
+extended to reject `/anti-?hall|plugin|guard|eval|benchmark|haiku|sonnet|opus|subagent|delegat|model/i`
+(`build-cases.js --suite routing`). Cases and graders are hashed before the
+first with-arm run.
+
+**N and power:** K = 5; assume σ_d = 0.30 on the log ratio [assumption,
+delegation on long tasks is bimodal]. For a 15% cost change (δ = 0.163),
+t(9) for 10 families gives n ≈ 34, so 40 cases. N is re-estimated from the
+dev-family smoke and frozen before the confirmatory run: N = max(40,
+computed), capped at 60. Success non-inferiority at −0.10 is reachable only
+if the true Δ is about 0 (stated as a limitation).
+
+**Cost:** about $430 (band $215 to $860) at about $0.80 per Opus run
+[estimate, band ×0.5 to ×2]. **Stopping rules:** no interim efficacy look;
+the with arm is never run before the hash except dev-family smoke; if the
+smoke shows 0 spawns in both arms B1 still runs (cost is the estimand).
+**Threats:** cross-run prompt cache (arms are interleaved per case in
+alternating order; first-request `cache_read` is reported per arm); the guard
+cannot see the parent model; `-p` has no user to answer questions; Workflow
+availability in `-p` (P4); tokenizer differences across tiers; results hold
+for the one Opus model tested; list price.
+
+#### B2. Post-trim overhead (secondary to the deterministic injection profile)
+
+Blocked until the injection-size trim and its deterministic profile script
+are on the development branch. The deterministic profile (characters per
+event × frequency) stays the primary gate; B2 only reports real-run dollars.
+**H-B2:** post-trim with-arm cost per run is lower than pre-trim on the same
+cases. **Primary metric:** paired per-case difference in mean
+`total_cost_usd`, post − pre, cluster-robust t(19) CI over the 20 `-v1`
+cases. **Arms:** `without`, `with@pre`, `with@post` (archives passed as
+`--arm-plugin with@pre=<dir>`), interleaved per case. K = 5. With per-case
+paired SD about $0.027 to $0.034 the MDE is about $0.021 per run, and the
+projected saving is $0.015 to $0.03 [estimate], so **B2 may be
+underpowered; stated in advance.** Cost about $36 (band $30 to $55). One
+batch, no re-runs except §6.5 exclusions.
+
+#### B3. Continuity across compaction
+
+**H-B3:** after a real Claude Code compaction, the plugin's handover,
+pre-compaction snapshot and resume injection raise recall of session facts.
+**Primary metric:** fact recall = share of 10 planted facts answered
+correctly per run (deterministic regex on a fixed JSON answer block,
+`lib/quiz.js`), paired with − without, cluster-robust t(11) by seed family.
+**Secondary:** wrong-fact rate (a superseded decoy value given), recall on
+conversation-only facts, A1 vs A2 (injection vs file presence), the
+mediator split "fact kept or dropped by the compaction summary" (regex on
+the frozen summary at build time), cost.
+
+**Seeds** (built once, frozen, sha256 in a manifest): 12 families. A driver
+plays a scripted 40 to 60 user turns (about 100k tokens) through
+`claude -p --resume` with no plugin in a scaffolded repo. Ten facts per seed
+in three strata: 3 workspace-recoverable, 5 conversation-only, 2 superseded
+(the old value is the decoy). Half are planted early (turns 2 to 10), half
+mid-session. Then **one compaction by Claude Code itself** (P5 method). No
+hand-written or model-prompted summary substitutes for it in the primary
+analysis; if P5 and its fallbacks fail, B3 is not run. The workspace is
+re-checked against the seed's last `git status` / `ls`.
+
+**Plugin artefacts (with arm):** a handover written by the plugin's handover
+skill on the uncompacted seed (one resume with the plugin loaded), frozen;
+a pre-compaction snapshot built offline by running the snapshot hook on the
+pre-compaction transcript (deterministic, no model, isolated HOME). The
+scaffold places both under `.anti-hall/handovers/<today>/<sid>/` and touches
+their mtime (P6; `run.js --seed-files`).
+
+**Arms (all resume the same frozen compacted history):** A0 `without` (no
+plugin, no files); A1 `with` (plugin and files); A2 `files-present-no-plugin`
+(files, no plugin). Reference ceiling (K = 1, in no test): uncompacted
+history, no plugin. **Cases:** 12 seeds × 3 variants (quiz order and
+wording, final-turn framing) = 36. The quiz prompt never mentions handovers,
+notes or files. **Authors:** someone other than the plugin author, blind to
+the handover template.
+
+**N and power:** K = 3, assumed between-family SD of the paired diff 0.15
+[assumption]: MDE ≈ 13 points. Field data showed a state-loss signal after
+7 of 106 real compactions, not above baseline, so a small or null effect is
+plausible and will be reported as such. **Cost:** about $250 (band $150 to
+$400). **Stopping:** gated on P5/P6; a seed rebuild is a deviation and a
+re-hash; no interim look. **Threats:** the plugin joins at the end (the seed
+has no per-turn injections, conservative for context features); the with arm
+gets an extra model call the without arm lacks (that is the treatment; A2
+isolates file presence); one compaction draw per seed; the quiz is less
+natural than "continue"; evaluation awareness from an explicit quiz.
+
+#### B4. Task-list completion
+
+**H-B4:** with the plugin, more requested items are completed and verified.
+**Primary metric:** per run, share of items whose effect graders pass
+(`item_<id>`; "verified" items also need an `ℹ tests N` line after the last
+edit), paired with − without, cluster-robust t(C−1). **Secondary:** false
+"all done" (the final message claims completion while at least one item
+fails; negation-aware claim regex `lib/claim-regex.js` with known-answer
+tests), Stop blocks per run, turns, cost.
+
+**Arms:** `without` vs `with`. **Cases:** 15 candidate families × 4 = 60,
+each an 8 to 12 item request in one prompt, one item needing a slow (60 to
+90 s) test, one late "oh, and also…" item. Authors are independent of the
+plugin author and blind to the task guards. **Screen (Amendment 2 rule):**
+without arm only, K = 3; a case passes with at least 1 run that left an item
+undone; a family enters if at least 2 of 4 variants pass; screen runs are
+never reused. Fewer than 10 families or 40 cases: reported underpowered, no
+claim. **N and power:** K = 5 on 40 cases; assumed family-level SD of the
+paired diff 0.08 [assumption] gives an MDE of about 8 points (about 12 if
+the SD is 0.12). **Dependency:** P7/P8. If task tools or Stop blocks do not
+act in `-p`, B4 measures only what does act, and says so. **Cost:** about
+$330 (band $200 to $530). **Threats:** a single prompt has no mid-task user
+interjection (a resumed follow-up driver exists in `lib/multiturn.js` but is
+not part of this pre-registration); Stop-loop cost inflation (reported);
+item graders are effect-only.
+
+#### Harness (what the code provides)
+
+| Need | Where |
+|---|---|
+| main model, suite, plugin dir, named arm dirs, ablation override, settings, seed files, dry run | `run.js` options (`--model --suite --plugin --arm-plugin --ablation --settings --seed-files --dry-run`), all recorded in `command.json` |
+| arms: `without`, `with`, `files-present-no-plugin`, `with-settings`, `with@<tag>` (before/after builds) | `lib/arms.js` |
+| interleaving of arms per case, alternating order, so neither arm systematically warms the prompt cache | `run.js --arms a,b --reps K`, `lib/arms.js` |
+| a global spend cap summed across every run of a study | `run.js --max-total-usd`, `lib/spend.js` (sums `costUsd` under all result dirs with the label prefix; each call's ceiling is `min(per-batch, remaining)`) |
+| cost per model, tier of each spawn, Bash by tier, main-thread shares, first-request `cache_read` | `lib/trace.js` |
+| bootstrap, quiz grading, claim regex | `lib/stats.js`, `lib/quiz.js`, `lib/claim-regex.js` |
+| paired metrics, bootstrap ratio, `--ni-margin`, `--compare` of two arms | `analyze.js --study --arm name=<dir> ...` |
+| forced compaction ladder, seed builder, resumed follow-up driver | `lib/compaction.js`, `seeds/make-seed.js`, `lib/multiturn.js` |
+| probe plugin | `stub-probe/` |
+
+In an interleaved run each `without` call loads `stub-noop` (a plugin that
+registers nothing) because one invocation runs one arm; that this equals the
+harness's no-plugin arm is checked by the first smoke. Case families for
+B0 to B4 are authored by independent authors and are not part of the harness.
+
+#### Run order and budget
+
+| # | Study | Runs | Estimate (list $) | Band |
+|---|---|---|---|---|
+| 1 | B0 probes | about 200 | $25 | $15 to $50 |
+| 2 | B1 routing (Opus main) | 536 | $430 | $215 to $860 |
+| 3 | B2 post-trim overhead | 300 | $36 | $30 to $55 |
+| 4 | B3 continuity | about 400 | $250 | $150 to $400 |
+| 5 | B4 task list | 580 | $330 | $200 to $530 |
+| | **Total** | about 2,000 | **about $1,070** | $610 to $1,900 |
+
+Each study needs its own budget approval; every estimate is replaced by the
+measured smoke mean before that approval.
+
+**Out of scope:** planning and review skills (quality needs a planted-bug
+design), the classifier integration and the multi-workspace mesh (`-p` with a
+sealed HOME cannot host them). There is no Codex analogue of B1 (no routing
+guard is registered there); a Codex B3/B4 mirror needs a Codex eval runner.

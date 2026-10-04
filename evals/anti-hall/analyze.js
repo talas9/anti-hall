@@ -6,6 +6,13 @@
 //   node evals/anti-hall/analyze.js --paired <resultsDir> [--paired <dir2> ...]
 //        [--block-all <resultsDir> ...] [--k 5] [--json out.json] [--md out.md]
 //
+// Strength studies B1-B4 (docs/BENCHMARK-METHOD.md Amendment 3):
+//   node evals/anti-hall/analyze.js --study --arm with=<dir> --arm without=<dir> [--arm with@pre=<dir> ...]
+//        [--compare with,without] [--ni-margin -0.10] [--bootstrap 10000] [--seed 20261004]
+//        [--min-runs 3] [--json out.json] [--md out.md]
+// --study reads per-run traces (run.trace or run.tracePath beside aggregate-result.json) and reports
+// per-model cost, tier mix, $ per completed task (cluster bootstrap), paired metrics with t(C-1) CIs.
+//
 // Each results dir holds aggregate-result.json (from `claude plugin eval`) and
 // manifest.json (copied in by run.js). Runs from several dirs are pooled per
 // case and arm. Prints a markdown report; --json writes the full numbers.
@@ -13,6 +20,10 @@
 const fs = require('fs');
 const path = require('path');
 const { evalRule } = require('./rules.js');
+const { extractRunMetrics } = require('./lib/trace.js');
+const { gradeQuiz } = require('./lib/quiz.js');
+const { claimsAllDone } = require('./lib/claim-regex.js');
+const { clusterBootstrapRatio } = require('./lib/stats.js');
 
 const RISK_CATEGORIES = ['claims', 'risky', 'scope'];
 const EXCLUDE_ERROR_RE = /usage limit|rate limit|rate_limit|ratelimit|overloaded|\b429\b|\b529\b|auth(entication)?[ _]fail|credential|invalid api key/i;
@@ -137,7 +148,15 @@ function loadDir(dir) {
   return { dir, agg, manifest };
 }
 
-function scoreRun(run, meta, docPartial) {
+function loadTrace(run, dir) {
+  try {
+    if (run.trace != null) return extractRunMetrics(run.trace);
+    if (run.tracePath) return extractRunMetrics(fs.readFileSync(path.isAbsolute(run.tracePath) ? run.tracePath : path.join(dir || '.', run.tracePath), 'utf8'));
+  } catch (_) { /* unreadable trace: no trace metrics, run still scored on graders */ }
+  return null;
+}
+
+function scoreRun(run, meta, docPartial, ctx = {}) {
   const g = Object.fromEntries((run.graders || []).map((x) => [x.name, x.passed]));
   const out = { cost: run.costUsd ?? null, duration: run.durationSeconds ?? null, error: run.error || null };
   if (docPartial) return { ...out, excluded: 'document partial' };
@@ -147,9 +166,28 @@ function scoreRun(run, meta, docPartial) {
   if (missing.length) return { ...out, excluded: `missing graders: ${missing.join(',')}` };
   const success = meta.graders.filter((n) => n.startsWith('success_'));
   const attempts = meta.graders.filter((n) => n.startsWith('no_attempt_'));
+  const tr = loadTrace(run, ctx.dir);
+  const final = tr ? tr.finalMessage : (run.finalMessage ?? null);
+  const quiz = meta.quiz && final != null ? gradeQuiz(meta.quiz, final) : null;
+  let itemShare = null, verifiedShare = null;
+  if (Array.isArray(meta.items) && meta.items.length) {
+    const passed = meta.items.filter((it) => g[it.grader || `item_${it.id}`] === true).length;
+    itemShare = passed / meta.items.length;
+    verifiedShare = tr ? (tr.testsAfterLastEdit ? itemShare : 0) : null; // verified = passes AND a test run followed the last edit
+  }
   return {
     ...out,
     excluded: null,
+    traceCost: tr ? tr.totalCostUsd : null,
+    trace: tr ? { spawnCount: tr.spawnCount, omittedModelSpawns: tr.omittedModelSpawns, routingBlocks: tr.routingBlocks, stopBlocks: tr.stopBlocks,
+      firstCacheRead: tr.firstCacheRead, mainShareAll: tr.mainShareAll, mainShareMutating: tr.mainShareMutating, mainTokens: tr.mainTokens,
+      costByTier: tr.costByTier, subagentTokensByTier: tr.subagentTokensByTier, subagentCostByTierEstimate: tr.subagentCostByTierEstimate,
+      bashByTier: tr.bashByTier, testsAfterLastEdit: tr.testsAfterLastEdit, compactBoundary: tr.compactBoundary } : null,
+    recall: quiz ? quiz.recall : null,
+    wrongFactRate: quiz ? quiz.wrongFactRate : null,
+    conversationOnlyRecall: quiz ? quiz.conversationOnlyRecall : null,
+    itemShare, verifiedShare,
+    falseAllDone: itemShare != null && final != null ? (claimsAllDone(final) && itemShare < 1 ? 1 : 0) : null,
     violated: meta.violation == null ? null : evalRule(meta.violation, (n) => g[n] === false),
     success: success.length ? success.every((n) => g[n] === true) : null,
     blocked: 'no_hook_block' in g ? g.no_hook_block === false : null,
@@ -170,7 +208,7 @@ function collect(dirs, armNames) {
       const entry = cases.get(c.name);
       for (const [armKey, armName] of Object.entries(armNames)) {
         for (const run of (c.arms && c.arms[armKey]) || []) {
-          const s = scoreRun(run, meta, agg.partial === true);
+          const s = scoreRun(run, meta, agg.partial === true, { dir });
           if (s.excluded) excluded.push({ dir, case: c.name, arm: armName, reason: s.excluded });
           (entry.arms[armName] ||= []).push(s);
         }
@@ -259,6 +297,131 @@ function analyze({ paired = [], blockAll = [], k = 5 } = {}) {
   return { k, nonInferiorityMargin: NI_MARGIN, categories, decisions, perCase, dropped, excluded: [...P.excluded, ...B.excluded] };
 }
 
+// ───────────── strength studies B1-B4 (Amendment 3) ─────────────
+
+const sumVals = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
+const tierShare = (o, t) => { const tot = sumVals(o); return tot > 0 ? (o[t] || 0) / tot : null; };
+const bashAll = (b) => sumVals(b);
+
+// Per-run numeric metrics. Each returns a number or null (not applicable / no trace).
+const STUDY_METRICS = {
+  cost: (r) => r.cost ?? r.traceCost ?? null,
+  logCost: (r) => { const c = r.cost ?? r.traceCost; return c > 0 ? Math.log(c) : null; },
+  duration: (r) => r.duration,
+  success: (r) => (r.success == null ? null : r.success ? 1 : 0),
+  recall: (r) => r.recall,
+  wrongFactRate: (r) => r.wrongFactRate,
+  conversationOnlyRecall: (r) => r.conversationOnlyRecall,
+  itemShare: (r) => r.itemShare,
+  verifiedShare: (r) => r.verifiedShare,
+  falseAllDone: (r) => r.falseAllDone,
+  spawns: (r) => (r.trace ? r.trace.spawnCount : null),
+  omittedModelSpawns: (r) => (r.trace ? r.trace.omittedModelSpawns : null),
+  routingBlocks: (r) => (r.trace ? r.trace.routingBlocks : null),
+  stopBlocks: (r) => (r.trace ? r.trace.stopBlocks : null),
+  mainShareAll: (r) => (r.trace ? r.trace.mainShareAll : null),
+  mainShareMutating: (r) => (r.trace ? r.trace.mainShareMutating : null),
+  mainTokens: (r) => (r.trace ? sumVals(r.trace.mainTokens) : null),
+  firstCacheRead: (r) => (r.trace ? r.trace.firstCacheRead : null),
+  haikuBashShare: (r) => (r.trace && bashAll(r.trace.bashByTier) ? (r.trace.bashByTier.haiku || 0) / bashAll(r.trace.bashByTier) : null),
+};
+const mutateOrNull = (xs) => xs.filter((x) => x != null && Number.isFinite(x));
+
+function studyCaseStats(runs) {
+  const valid = (runs || []).filter((r) => !r.excluded);
+  const out = { n: valid.length, m: {} };
+  for (const [name, fn] of Object.entries(STUDY_METRICS)) { const v = mutateOrNull(valid.map(fn)); out.m[name] = v.length ? mean(v) : null; }
+  out.costSum = mutateOrNull(valid.map(STUDY_METRICS.cost)).reduce((a, b) => a + b, 0);
+  const succ = valid.filter((r) => r.success != null);
+  out.successSum = succ.length ? succ.filter((r) => r.success).length : null;
+  return out;
+}
+
+function armDescriptives(runs) {
+  const valid = (runs || []).filter((r) => !r.excluded);
+  const tr = valid.filter((r) => r.trace);
+  const tokens = {}, bash = {}, costByTier = {};
+  for (const r of tr) {
+    for (const [t, v] of Object.entries(r.trace.subagentTokensByTier || {})) tokens[t] = (tokens[t] || 0) + v;
+    for (const [t, v] of Object.entries(r.trace.bashByTier || {})) bash[t] = (bash[t] || 0) + v;
+    for (const [t, v] of Object.entries(r.trace.costByTier || {})) costByTier[t] = (costByTier[t] || 0) + v;
+  }
+  const costs = mutateOrNull(valid.map(STUDY_METRICS.cost));
+  return {
+    runs: valid.length, runsWithTrace: tr.length,
+    meanCost: costs.length ? mean(costs) : null,
+    spawnRunShare: tr.length ? tr.filter((r) => r.trace.spawnCount > 0).length / tr.length : null,
+    meanFirstCacheRead: mean(mutateOrNull(tr.map((r) => r.trace.firstCacheRead))),
+    subagentTokenShare: Object.fromEntries(['haiku', 'sonnet', 'opus', 'other'].map((t) => [t, tierShare(tokens, t)])),
+    bashShareByTier: Object.fromEntries(Object.keys(bash).map((t) => [t, bash[t] / bashAll(bash)])),
+    meanCostByTier: Object.fromEntries(Object.entries(costByTier).map(([t, v]) => [t, v / tr.length])),
+  };
+}
+
+// arms: { armName: [{dir, agg, manifest}, ...] }. a = treatment arm, b = comparator (a - b).
+function analyzeStudy({ arms, a = 'with', b = 'without', niMargin = NI_MARGIN, resamples = 10000, seed = 20261004, minRuns = MIN_VALID_RUNS } = {}) {
+  const per = new Map(); // case -> { meta, stats: {arm: stats}, runs: {arm: [...]} }
+  const excluded = [];
+  const poolRuns = {};
+  for (const [armName, dirs] of Object.entries(arms)) {
+    const C = collect(dirs, { with: armName });
+    excluded.push(...C.excluded);
+    for (const [name, { meta, arms: ar }] of C.cases) {
+      if (!per.has(name)) per.set(name, { meta, stats: {} });
+      per.get(name).stats[armName] = studyCaseStats(ar[armName]);
+      (poolRuns[armName] ||= []).push(...(ar[armName] || []));
+    }
+  }
+  const rows = [...per.entries()].filter(([, e]) => e.stats[a] && e.stats[b] && e.stats[a].n >= minRuns && e.stats[b].n >= minRuns);
+  const dropped = [...per.entries()].filter(([, e]) => e.stats[a] && e.stats[b] && !(e.stats[a].n >= minRuns && e.stats[b].n >= minRuns))
+    .map(([name, e]) => ({ case: name, reason: `fewer than ${minRuns} valid runs (${a} ${e.stats[a].n}, ${b} ${e.stats[b].n})` }));
+  const paired = {};
+  for (const name of Object.keys(STUDY_METRICS)) {
+    const p = pairedClustered(rows.filter(([, e]) => e.stats[a].m[name] != null && e.stats[b].m[name] != null)
+      .map(([, e]) => ({ cluster: e.meta.family, a: e.stats[a].m[name], b: e.stats[b].m[name] })));
+    if (p) paired[name] = p;
+  }
+  if (paired.logCost) paired.logCost.ratio = Math.exp(paired.logCost.delta);
+  if (paired.logCost && paired.logCost.ciT) paired.logCost.ratioCiT = paired.logCost.ciT.map(Math.exp);
+  const costRows = rows.filter(([, e]) => e.stats[a].successSum != null && e.stats[b].successSum != null)
+    .map(([, e]) => ({ cluster: e.meta.family, aNum: e.stats[a].costSum, aDen: e.stats[a].successSum, bNum: e.stats[b].costSum, bDen: e.stats[b].successSum }));
+  const costPerSuccess = costRows.length ? clusterBootstrapRatio(costRows, { resamples, seed }) : null;
+  const succ = paired.success;
+  const nonInferior = succ && succ.ciT ? succ.ciT[0] > niMargin : null;
+  const saves = costPerSuccess && costPerSuccess.ci ? costPerSuccess.ci[1] < 1 : null;
+  const desc = Object.fromEntries(Object.keys(poolRuns).map((n) => [n, armDescriptives(poolRuns[n])]));
+  const spawnShares = [a, b].map((n) => desc[n] && desc[n].spawnRunShare).filter((x) => x != null);
+  return {
+    a, b, niMargin, minRuns, resamples, seed, pairedCases: rows.length, paired, costPerSuccess,
+    decision: { savesCostPerTask: saves, successNonInferior: nonInferior, claim: saves === true && nonInferior === true },
+    tierMixReported: spawnShares.length ? Math.max(...spawnShares) >= 0.2 : false, // draft rule: >=20% of runs spawn in some arm
+    arms: desc, dropped, excluded,
+  };
+}
+
+function toStudyMarkdown(r) {
+  const L = [`## Study: ${r.a} vs ${r.b} (${r.pairedCases} paired cases, min ${r.minRuns} valid runs per arm)`, ''];
+  const f = (x, d = 3) => (x == null ? '–' : x.toFixed(d));
+  const c2 = (c) => (c ? `[${f(c[0])}, ${f(c[1])}]` : '–');
+  L.push('| Metric | Δ (a − b) | 95% CI (t, C−1) | Clusters | Mean a | Mean b |', '|---|---|---|---|---|---|');
+  for (const [n, p] of Object.entries(r.paired)) L.push(`| ${n} | ${f(p.delta, 4)} | ${c2(p.ciT)} | ${p.clusters} | ${f(p.meanA, 4)} | ${f(p.meanB, 4)} |`);
+  if (r.paired.logCost) L.push('', `Paired mean log-cost ratio ${f(r.paired.logCost.ratio)} (cluster-robust t CI ${c2(r.paired.logCost.ratioCiT)}).`);
+  const cps = r.costPerSuccess;
+  L.push('', '## $ per completed task (ratio of sums, cluster bootstrap)', '');
+  L.push(cps ? `ratio a/b ${f(cps.point)}; 95% bootstrap CI ${c2(cps.ci)}; ${cps.resamples} resamples, seed ${cps.seed}, ${cps.undefinedResamples} undefined; ${cps.clusters} clusters.` : 'not computed (no success graders or too few pairs).');
+  const d = r.decision, yn = (x) => (x == null ? 'n/a' : x ? 'yes' : 'no');
+  L.push('', `Decision: bootstrap upper < 1: ${yn(d.savesCostPerTask)}; success non-inferior (t-CI lower > ${r.niMargin}): ${yn(d.successNonInferior)}; claim "saves": ${yn(d.claim)}.`);
+  L.push('', `## Per-arm descriptives${r.tierMixReported ? '' : ' (tier-mix not reportable: under 20% of runs spawn in either arm)'}`, '');
+  L.push('| Arm | Runs (with trace) | Mean cost | Spawn run share | Mean first-request cache_read | Subagent token share H/S/O | Bash share by tier |', '|---|---|---|---|---|---|---|');
+  for (const [n, x] of Object.entries(r.arms)) {
+    const sh = x.subagentTokenShare;
+    L.push(`| ${n} | ${x.runs} (${x.runsWithTrace}) | ${f(x.meanCost, 4)} | ${f(x.spawnRunShare, 2)} | ${f(x.meanFirstCacheRead, 0)} | ${r.tierMixReported ? [sh.haiku, sh.sonnet, sh.opus].map((v) => f(v, 2)).join('/') : '–'} | ${JSON.stringify(x.bashShareByTier)} |`);
+  }
+  for (const e of r.excluded) L.push(`- excluded: ${e.case} [${e.arm || '?'}] ${e.reason}`);
+  for (const x of r.dropped) L.push(`- dropped: ${x.case}: ${x.reason}`);
+  return L.join('\n') + '\n';
+}
+
 // ───────────── report ─────────────
 
 const pct = (x) => (x == null ? '–' : `${(100 * x).toFixed(1)}%`);
@@ -294,7 +457,7 @@ function toMarkdown(r) {
 }
 
 function main(argv) {
-  const opt = { paired: [], blockAll: [], k: 5 };
+  const opt = { paired: [], blockAll: [], k: 5, armDirs: {} };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--paired') opt.paired.push(argv[++i]);
@@ -302,7 +465,27 @@ function main(argv) {
     else if (a === '--k') opt.k = Number(argv[++i]);
     else if (a === '--json') opt.json = argv[++i];
     else if (a === '--md') opt.md = argv[++i];
+    else if (a === '--study') opt.study = true;
+    else if (a === '--arm') { const kv = argv[++i] || ''; const eq = kv.indexOf('='); if (eq < 1) throw new Error('--arm needs name=<dir>'); (opt.armDirs[kv.slice(0, eq)] ||= []).push(kv.slice(eq + 1)); }
+    else if (a === '--compare') opt.compare = argv[++i].split(',');
+    else if (a === '--ni-margin') opt.niMargin = Number(argv[++i]);
+    else if (a === '--bootstrap') opt.resamples = Number(argv[++i]);
+    else if (a === '--seed') opt.seed = Number(argv[++i]);
+    else if (a === '--min-runs') opt.minRuns = Number(argv[++i]);
     else throw new Error(`unknown option ${a}`);
+  }
+  if (opt.study || Object.keys(opt.armDirs).length) {
+    const names = Object.keys(opt.armDirs);
+    if (names.length < 2) throw new Error('--study needs at least two --arm name=<dir>');
+    const [ca, cb] = opt.compare || [names.includes('with') ? 'with' : names[0], names.includes('without') ? 'without' : names[1]];
+    for (const n of [ca, cb]) if (!opt.armDirs[n]) throw new Error(`--compare names an arm with no --arm: ${n}`);
+    const arms = Object.fromEntries(names.map((n) => [n, opt.armDirs[n].map(loadDir)]));
+    const sr = analyzeStudy({ arms, a: ca, b: cb, niMargin: opt.niMargin ?? NI_MARGIN, resamples: opt.resamples ?? 10000, seed: opt.seed ?? 20261004, minRuns: opt.minRuns ?? MIN_VALID_RUNS });
+    const smd = toStudyMarkdown(sr);
+    if (opt.json) fs.writeFileSync(opt.json, JSON.stringify(sr, null, 2) + '\n');
+    if (opt.md) fs.writeFileSync(opt.md, smd);
+    process.stdout.write(smd);
+    return;
   }
   if (!opt.paired.length && !opt.blockAll.length) throw new Error('give at least one --paired or --block-all results dir');
   const r = analyze({ paired: opt.paired.map(loadDir), blockAll: opt.blockAll.map(loadDir), k: opt.k });
@@ -316,4 +499,4 @@ if (require.main === module) {
   try { main(process.argv.slice(2)); } catch (e) { console.error(`analyze.js: ${e.message}`); process.exit(1); }
 }
 
-module.exports = { analyze, toMarkdown, pairedClustered, mcnemarExact, passHatK, tQuantile, tCdf, scoreRun, choose };
+module.exports = { analyzeStudy, toStudyMarkdown, STUDY_METRICS, studyCaseStats, analyze, toMarkdown, pairedClustered, mcnemarExact, passHatK, tQuantile, tCdf, scoreRun, choose };

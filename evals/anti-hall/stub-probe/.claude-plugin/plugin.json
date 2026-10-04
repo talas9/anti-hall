@@ -1,0 +1,5 @@
+{
+  "name": "probe-stub",
+  "version": "0.0.0",
+  "description": "Benchmark probes only (B0, docs/BENCHMARK-METHOD.md Amendment 3): logs every hook payload it receives to .probe/ and emits uuid tokens so a trace shows where each hook's context lands."
+}
