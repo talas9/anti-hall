@@ -9,11 +9,9 @@
 // Fail-open: any error -> exit 0, no output.
 'use strict';
 
-const fs = require('fs');
+const io = require('./lib/guard-io.js');
 
-function main() {
-  let payload;
-  try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { return; }
+function main(payload, env, argv, out) {
   if (!payload || payload.tool_name !== 'Bash') return;
   const cmd = payload.tool_input && typeof payload.tool_input.command === 'string' ? payload.tool_input.command : '';
   const sid = typeof payload.session_id === 'string' ? payload.session_id.trim() : '';
@@ -21,15 +19,22 @@ function main() {
   try { if (require('./lib/settings.js').get('guards', 'mergeSidePickAdvisory') === false) return; } catch (_) { /* default on */ }
   try { if (require('./skip-guard.js').isSkipped('merge-side-pick')) return; } catch (_) { /* fail open */ }
   const lib = require('./lib/merge-side-pick.js');
-  const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, process.env);
-  if (payload.hook_event_name === 'PostToolUse' || process.argv.includes('--post')) {
+  const home = require('../companion/lib/test-home-guard.js').resolveHome(undefined, env);
+  if (payload.hook_event_name === 'PostToolUse' || argv.includes('--post')) {
     lib.record(home, sid, cmd);
     return;
   }
   const pick = lib.pushCheck(home, sid, cmd);
   if (!pick) return;
-  fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: lib.advisory(pick) } }) + '\n');
+  out.json({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: lib.advisory(pick) } });
 }
 
-try { main(); } catch (_) { /* fail open */ }
-process.exit(0);
+function evaluate(payload, env, opts) {
+  const out = io.recorder();
+  try { main(payload, env || process.env, (opts && opts.argv) || [], out); } catch (_) { /* fail open */ }
+  return out.done(0);
+}
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

@@ -56,7 +56,7 @@
 
 'use strict';
 
-const fs = require('fs');
+const io = require('./lib/guard-io.js');
 
 // Bound how much text we regex-scan so a pathological multi-MB tool output
 // can never make this hook slow or memory-heavy. Head+tail keeps both the
@@ -213,30 +213,18 @@ function extractExitCode(payload, blob) {
   return null;
 }
 
-function main() {
-  let raw = '';
-  try {
-    raw = fs.readFileSync(0, 'utf8');
-  } catch (_) {
-    raw = '';
-  }
-
+function main(payload) {
   if (settingsGet('guards', 'outputVerifyGuard') === false) {
-    process.exit(0);
+    return io.decision(0);
   }
 
   // Escape hatch: shared user-consented skip. Outer main() try/catch fails
   // OPEN on any skip-guard error, matching codex-nudge/speculation-guard.
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('output-verify-guard')) process.exit(0);
+  if (isSkipped('output-verify-guard')) return io.decision(0);
 
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (_) {
-    process.exit(0);
-  }
-  if (!payload || payload.tool_name !== 'Bash') process.exit(0);
+  if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
+  if (!payload || payload.tool_name !== 'Bash') return io.decision(0);
 
   // DETERMINISTIC FIX: only evaluate output from an actual test-runner
   // invocation (command-position verb, not a substring of the command or
@@ -244,10 +232,10 @@ function main() {
   // run and must never trigger this advisory.
   const cmd = payload.tool_input && typeof payload.tool_input.command === 'string'
     ? payload.tool_input.command : '';
-  if (!isTestRunnerCommand(cmd)) process.exit(0);
+  if (!isTestRunnerCommand(cmd)) return io.decision(0);
 
   const blob = buildBlob(payload);
-  if (!blob) process.exit(0);
+  if (!blob) return io.decision(0);
 
   const failHit = firstMatch(FAIL_PATTERNS, blob);
   const passHit = firstMatch(PASS_PATTERNS, blob);
@@ -279,7 +267,7 @@ function main() {
     });
   } catch (_) { /* best-effort — never affects the advisory below */ }
 
-  if (!mismatch) process.exit(0);
+  if (!mismatch) return io.decision(0);
 
   const bits = [];
   if (passHit) bits.push('a passing signal (' + JSON.stringify(passHit) + ')');
@@ -297,7 +285,7 @@ function main() {
         transcriptPath: payload.transcript_path,
         key: 'output-verify-guard',
         sig: bits.join('|'),
-      })) process.exit(0);
+      })) return io.decision(0);
     } catch (_) { /* fail-open: emit */ }
   }
 
@@ -316,15 +304,13 @@ function main() {
     },
   };
 
-  // fs.writeSync(1,...) not process.stdout.write: on macOS node 18/20 async
-  // pipe flush can race process.exit(0) and truncate the JSON; writeSync is
-  // atomic (same reasoning as verify-first-subagent.js / command-guard.js).
-  fs.writeSync(1, JSON.stringify(out) + '\n');
+  return io.decision(0, JSON.stringify(out) + '\n');
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: never block or wedge a PostToolUse turn.
+function evaluate(payload) {
+  try { return main(payload) || io.decision(0); } catch (_) { return io.decision(0); } // fail-open: never block or wedge a PostToolUse turn
 }
-process.exit(0);
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

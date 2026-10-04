@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Changed
+
+- **The 15 Bash pre/post guard invocations return decisions instead of exiting.** compact-declaration-guard, git-guard (pre and `--audit`), command-guard, coordinator-work-guard (pre and `--post`), merge-side-pick (pre and `--post`), merge-gate, scan-throttle, api-guard, ship-it-guard, output-verify-guard, devswarm-parent-reply-tracker and devswarm-child-drain each export `evaluate(payload, env, { argv })` returning `{ exitCode, stdout, stderr }` and never call `process.exit`; a thin `require.main === module` wrapper (`hooks/lib/guard-io.js`) reads stdin, writes both streams and exits with the code. A block can no longer turn into an allow when guards run in one process inside fail-open try/catch blocks. CLI behaviour is byte-identical. `tests/hooks/guard-evaluate-parity.test.js` runs every guard through the spawned CLI and in-process and compares exit code, stdout and stderr.
+
 ## 0.201.0 (2026-10-04)
 
 ### Highlights

@@ -44,7 +44,7 @@
 //   - Shadowed names (locals, params, `with/except as`) are excluded, so a param
 //     named like an import (`def f(pd): pd.x`) is never false-blocked.
 
-const fs = require('fs');
+const io = require('./lib/guard-io.js');
 const os = require('os');
 const { spawnSync } = require('child_process');
 
@@ -438,14 +438,12 @@ function verifyJs(cands, deadline) {
 // identical to a genuinely-verified-clean one — that's the defect this closes.
 // STDERR ONLY (never stdout: PreToolUse stdout is protocol-significant), ONE
 // line, wrapped so a write failure can never block the edit it's reporting on.
-function emitTimeoutNotice() {
+function emitTimeoutNotice(out) {
   if (!timeoutNotice) return;
-  try {
-    process.stderr.write(
-      'anti-hall api-guard: API verification skipped (probe for "' + timeoutNotice.bin +
-      '" timed out after ' + timeoutNotice.budgetMs + 'ms budget) — edit allowed unchecked.\n'
-    );
-  } catch (_) { /* never let a stderr failure block the edit */ }
+  out.err(
+    'anti-hall api-guard: API verification skipped (probe for "' + timeoutNotice.bin +
+    '" timed out after ' + timeoutNotice.budgetMs + 'ms budget) — edit allowed unchecked.\n'
+  );
 }
 
 function runtimeVersion(bin) {
@@ -469,22 +467,18 @@ function pyBin() {
   return _pyBin;
 }
 
-function main() {
+function main(payload, out) {
   // Settings switch guards.apiGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
   try { if (!require('./lib/settings.js').enabled('guards', 'apiGuard')) return; } catch (_) { /* run */ }
   const deadline = Date.now() + TOTAL_DEADLINE_MS;
-  let raw = '';
-  try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { process.exit(0); }
+  if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
 
   let isSkipped;
   try { ({ isSkipped } = require('./skip-guard.js')); } catch (_) { isSkipped = () => false; }
-  if (isSkipped('api-guard')) process.exit(0);
-
-  let payload;
-  try { payload = JSON.parse(raw); } catch (_) { process.exit(0); }
+  if (isSkipped('api-guard')) return io.decision(0);
 
   const chunks = newCodeChunks(payload);
-  if (!chunks.length) process.exit(0);
+  if (!chunks.length) return io.decision(0);
 
   const pyCands = [];
   const jsCands = [];
@@ -494,7 +488,7 @@ function main() {
     if (lang === 'py') pyCands.push(...pyCandidates(ch.code));
     else if (lang === 'js') jsCands.push(...jsCandidates(ch.code));
   }
-  if (!pyCands.length && !jsCands.length) process.exit(0);
+  if (!pyCands.length && !jsCands.length) return io.decision(0);
 
   const fakes = [];
   const binsUsed = new Set();
@@ -504,7 +498,7 @@ function main() {
   }
   if (jsCands.length) { binsUsed.add('node'); fakes.push(...verifyJs(jsCands, deadline)); }
 
-  if (!fakes.length) { emitTimeoutNotice(); process.exit(0); }
+  if (!fakes.length) { emitTimeoutNotice(out); return io.decision(0, out.stdout, out.stderr); }
 
   const seen = new Set();
   const uniq = fakes.filter((f) => (seen.has(f.label) ? false : (seen.add(f.label), true)));
@@ -520,15 +514,19 @@ function main() {
     extra: list.split('\n'),
   });
 
-  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   // Codex honors exit 2 only with the reason on stderr (it reads stdout JSON on
   // exit 0 only); Claude output is unchanged.
-  if (payload.tool_name === 'apply_patch' || payload.tool_name === 'Bash') fs.writeSync(2, reason + '\n');
-  process.exit(2);
+  const toStderr = payload.tool_name === 'apply_patch' || payload.tool_name === 'Bash';
+  return io.decision(2, JSON.stringify({ decision: 'block', reason }) + '\n', toStderr ? reason + '\n' : '');
 }
 
-try {
-  main();
-} catch (_) {
-  process.exit(0); // FAIL-OPEN on any internal error
+function evaluate(payload) {
+  const out = io.recorder();
+  timeoutNotice = null;
+  _pyBin = undefined;
+  try { return main(payload, out) || io.decision(0, out.stdout, out.stderr); } catch (_) { return io.decision(0); } // FAIL-OPEN on any internal error
 }
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

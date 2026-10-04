@@ -138,7 +138,7 @@ function anchoredAntiHallCli(dir, script, tailSrc) {
 // for the full anchoring rationale: which home-anchor forms are accepted,
 // and why the anchoring stays as narrow as anchoredAntiHallCli above).
 const { anchoredAntiHallStableLauncher } = require('./lib/stable-launcher.js');
-const { emitBlock } = require('./lib/emit-block.js');
+const io = require('./lib/guard-io.js');
 
 // Commands that look heavy by verb but are actually lightweight inspection commands.
 // We allow these even if the verb matches HEAVY_VERBS.
@@ -4253,24 +4253,15 @@ function classifyBashWork(command, payload, opts = {}, depth = 0, shared = null)
   return res;
 }
 
-function main() {
-  // Read + parse the payload FIRST — coordinator/subagent detection needs the
-  // payload's agent_id/agent_type markers (the only reliable signal under cmux).
-  let raw = '';
-  try {
-    raw = fs.readFileSync(0, 'utf8');
-  } catch (_) {
-    process.exit(0);
-  }
+// Returns the decision ({exitCode, stdout, stderr}); every block is a RETURNED
+// io.blockDecision(), never an exit, so the fail-open try/catch blocks below
+// cannot swallow it. `payload` is the parsed stdin (undefined when unreadable).
+function main(payload, env) {
+  // Coordinator/subagent detection needs the payload's agent_id/agent_type
+  // markers (the only reliable signal under cmux).
+  if (payload === undefined) return io.decision(0);
 
   const { isSkipped } = require('./skip-guard.js');
-
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (_) {
-    process.exit(0);
-  }
 
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
 
@@ -4289,24 +4280,21 @@ function main() {
   try {
     let devswarmActive = false;
     try {
-      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(env);
     } catch (_) {
       devswarmActive = false; // fail-open: dormant
     }
     if (devswarmActive && !isSkipped('devswarm-read-guard')) {
-      // Emit via fs.writeSync(1,…) not process.stdout.write per CLAUDE.md: on macOS
-      // node 18/20 a synchronous exit right after process.stdout.write can race the
-      // async pipe flush and truncate the JSON; writeSync is atomic.
       const kind = detectHivectlDestructiveRead(command);
       if (kind) {
-        const reason = buildDevswarmReason(kind, process.env);
-        emitBlock(reason);
+        const reason = buildDevswarmReason(kind, env);
+        return io.blockDecision(reason);
       }
       const cwd = (payload && payload.cwd) || '';
       const fileKind = detectProtectedFileRead(command, os.homedir(), cwd);
       if (fileKind) {
         const reason = buildRawFileReadReason(fileKind);
-        emitBlock(reason);
+        return io.blockDecision(reason);
       }
     }
   } catch (_) {
@@ -4329,7 +4317,7 @@ function main() {
   try {
     let devswarmActive = false;
     try {
-      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(env);
     } catch (_) {
       devswarmActive = false; // fail-open: dormant
     }
@@ -4337,7 +4325,7 @@ function main() {
       const sendKind = detectHivectlMessageSend(command);
       if (sendKind) {
         const reason = buildDevswarmSendReason(sendKind);
-        emitBlock(reason);
+        return io.blockDecision(reason);
       }
     }
   } catch (_) {
@@ -4358,7 +4346,7 @@ function main() {
       && settingsGet('guards', 'allowSubagentMailbox') !== true
       && !isSkipped('devswarm-subagent-mailbox-guard')
       && detectSubagentMailboxTouch(command)) {
-      emitBlock(buildSubagentMailboxReason());
+      return io.blockDecision(buildSubagentMailboxReason());
     }
   } catch (_) {
     // fail-open: never block a turn on a devswarm-subagent-mailbox-guard bug.
@@ -4393,7 +4381,7 @@ function main() {
         if (armed) {
           const { isSubagentByPayload } = require('./coordinator-detect.js');
           const subagent = isSubagentByPayload(payload);
-          emitBlock(buildGitStashReason(stashSub, subagent));
+          return io.blockDecision(buildGitStashReason(stashSub, subagent));
         }
       }
     }
@@ -4402,17 +4390,17 @@ function main() {
   }
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
-  if (isSkipped('command-guard')) process.exit(0);
+  if (isSkipped('command-guard')) return io.decision(0);
   // Settings switch safety.commandGuard (0.108.4, safety: set/reset need --confirmed).
   // Off -> the core heavy-command gate below no-ops; the data-safety
   // sub-guards above (DevSwarm read/send/mailbox, armed stash) already ran.
   // Fail-open: any error runs the gate.
-  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard')) process.exit(0); } catch (_) { /* run */ }
+  try { if (!require('./lib/settings.js').enabled('safety', 'commandGuard')) return io.decision(0); } catch (_) { /* run */ }
   const { isCoordinator } = require('./coordinator-detect.js');
 
   // Only block heavy commands in coordinator context (subagents pass through).
   if (!isCoordinator(payload)) {
-    process.exit(0);
+    return io.decision(0);
   }
 
   // Bash edit parity (F3): a main-thread Bash write (sed -i/perl -i/tee/cp/mv/
@@ -4434,7 +4422,7 @@ function main() {
       }
       if (scans.some((c) => classifyBashWork(c, payload, { editOnly: true }).editBlocks.length)) {
         const reason = require('./edit-guard.js').delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload);
-        emitBlock(reason);
+        return io.blockDecision(reason);
       }
     }
   } catch (_) {
@@ -4442,7 +4430,7 @@ function main() {
   }
 
   if (!isHeavyCommand(command)) {
-    process.exit(0);
+    return io.decision(0);
   }
 
   // Narrow allow (owner-approved 2026-09-26): a bounded, single-target
@@ -4452,7 +4440,7 @@ function main() {
   // ordinary block below). See isBoundedVerificationCommand's header.
   try {
     if (settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command, { payload })) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -4472,7 +4460,7 @@ function main() {
         let repoTop = '';
         try { repoTop = require('../companion/lib/identity.js').resolveContext(cwd || process.cwd(), { missingPath: 'ancestor' }).toplevel || ''; } catch (_) { /* best-effort only */ }
         appendProjectCommandAllowAudit({ cwd, repo: repoTop, pattern: matched, command });
-        process.exit(0);
+        return io.decision(0);
       }
     }
   } catch (_) {
@@ -4488,7 +4476,7 @@ function main() {
     if (settingsGet('guards', 'allowPlainPush') !== false) {
       const cwd = (payload && payload.cwd) || '';
       if (isAllowedPlainPushChain(command, cwd, payload)) {
-        process.exit(0);
+        return io.decision(0);
       }
     }
   } catch (_) {
@@ -4501,7 +4489,7 @@ function main() {
   // See isBackgroundScratchScript's header. Fail-closed on any error.
   try {
     if (settingsGet('guards', 'allowBackgroundScratchScripts') !== false && isBackgroundScratchScript(command, payload)) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -4512,7 +4500,7 @@ function main() {
   // isAllowedGcloudReadCommand's header. Fail-closed on any error.
   try {
     if (settingsGet('guards', 'allowGcloudReads') !== false && isAllowedGcloudReadCommand(command)) {
-      process.exit(0);
+      return io.decision(0);
     }
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
@@ -4542,8 +4530,8 @@ function main() {
   let devswarmPrimary = false;
   try {
     devswarmPrimary =
-      require('./lib/devswarm-detect.js').isDevswarmActive(process.env) &&
-      !require('./lib/devswarm-role.js').isChildWorkspace(process.env);
+      require('./lib/devswarm-detect.js').isDevswarmActive(env) &&
+      !require('./lib/devswarm-role.js').isChildWorkspace(env);
   } catch (_) {
     devswarmPrimary = false;
   }
@@ -4576,7 +4564,7 @@ function main() {
   // work. Advice text only; the block decision above is unchanged. Fail-open
   // to the subagent-only text.
   let tierText = false;
-  try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(process.env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
+  try { tierText = devswarmPrimary && require('./lib/primary-tier.js').primaryTierTextOn(env, (payload && payload.cwd) || process.cwd()); } catch (_) { tierText = false; }
   const H = require('./lib/host-text.js');
   const codexHost = H.isCodex(payload);
   const heavyWhat = (cls && cls.kind === 'remote' ? 'state-changing remote command' : 'heavy command') +
@@ -4598,19 +4586,21 @@ function main() {
       : delegateTo + '.') + cdJoinHint,
     allowed: allowedShapes,
   });
-  emitBlock(reason);
+  return io.blockDecision(reason);
 }
 
-if (require.main === module) {
+function evaluate(payload, env) {
   try {
-    main();
+    return main(payload, env || process.env) || io.decision(0);
   } catch (_) {
-    // Fail-open: never block a turn due to a hook bug.
+    return io.decision(0); // Fail-open: never block a turn due to a hook bug.
   }
-  process.exit(0);
 }
+
+if (require.main === module) io.runCli(evaluate);
 
 module.exports = {
+  evaluate,
   ANTI_HALL_CLI_PATTERNS,
   scriptPathVerdict,
   classifyBashWork,

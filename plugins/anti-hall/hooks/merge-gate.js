@@ -32,6 +32,7 @@
 // discipline — NOT a guarantee.
 
 const fs = require('fs');
+const io = require('./lib/guard-io.js');
 
 // Bounded transcript tail-scan budget (mirror task-tracker's capped readTail).
 // Small enough to stay well under the 10s hook timeout; the recent hedge we care
@@ -300,38 +301,34 @@ function isAutoMerge(cmd) {
   return false;
 }
 
-function main() {
-  // 1. Read stdin first; on any read failure fail-open.
-  let raw = '';
-  try { raw = fs.readFileSync(0, 'utf8'); } catch (_) { process.exit(0); }
+function decide(payload) {
+  // 1. Unreadable / unparseable stdin (payload undefined) fails open.
+  if (payload === undefined) return io.decision(0);
 
   // 2. Skip-hatch: an explicit user opt-out disables this guard (TTL'd).
   let isSkipped;
   try { ({ isSkipped } = require('./skip-guard.js')); } catch (_) { isSkipped = () => false; }
-  try { if (isSkipped('merge-gate')) process.exit(0); } catch (_) { /* fail-open */ }
+  try { if (isSkipped('merge-gate')) return io.decision(0); } catch (_) { /* fail-open */ }
 
   // 3. DEFAULT OFF — no-op unless explicitly enabled.
-  if (!gateEnabled()) process.exit(0);
-
-  let payload;
-  try { payload = JSON.parse(raw); } catch (_) { process.exit(0); }
+  if (!gateEnabled()) return io.decision(0);
 
   const ti = payload && payload.tool_input;
   const cmd = ti && typeof ti.command === 'string' ? ti.command : '';
-  if (!cmd) process.exit(0);
+  if (!cmd) return io.decision(0);
 
   // 4. Only consider AUTO-MERGE commands.
-  if (!isAutoMerge(cmd)) process.exit(0);
+  if (!isAutoMerge(cmd)) return io.decision(0);
 
   // 5. Scan the recent assistant output for an UNRESOLVED hedge.
   const tp = payload && payload.transcript_path;
-  if (!tp || typeof tp !== 'string') process.exit(0); // no transcript -> fail-open allow
+  if (!tp || typeof tp !== 'string') return io.decision(0); // no transcript -> fail-open allow
   const records = readRecords(tp);
   const text = records.filter((r) => r.kind === 'assistant').map((r) => r.text).join('\n');
-  if (!text) process.exit(0);
+  if (!text) return io.decision(0);
 
   const hedge = firstHedge(text);
-  if (!hedge) process.exit(0);           // no hedge -> allow
+  if (!hedge) return io.decision(0);           // no hedge -> allow
   const unresolved = isHedgeUnresolved(records);
 
   // JEV SHADOW (mergeGateHedge, default mode "shadow"): only on merge
@@ -364,7 +361,7 @@ function main() {
     });
   } catch (_) { /* best-effort — never affects the gate's own decision */ }
 
-  if (!unresolved) process.exit(0); // hedge present but resolved (or resolution came after) -> allow
+  if (!unresolved) return io.decision(0); // hedge present but resolved (or resolution came after) -> allow
 
   // 6. Unresolved hedge + auto-merge -> BLOCK.
   // Report the LAST hedge that actually triggered the block (order-sensitive).
@@ -377,8 +374,13 @@ function main() {
     override: 'set ANTIHALL_MERGE_GATE=off, or skip merge-gate',
   });
 
-  process.stderr.write(reason + '\n');
-  process.exit(2);
+  return io.decision(2, '', reason + '\n');
 }
 
-try { main(); } catch (_) { process.exit(0); } // fail-open on anything unexpected
+function evaluate(payload) {
+  try { return decide(payload); } catch (_) { return io.decision(0); } // fail-open on anything unexpected
+}
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);

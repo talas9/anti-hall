@@ -45,6 +45,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const io = require('./lib/guard-io.js');
 const { HEREDOC_RE, basename, parseHeredocAt, SHELL_VERBS } = require('./lib/shell-scan.js');
 
 // currentSessionId — set once by main() from the PreToolUse payload's
@@ -74,21 +75,15 @@ let activeRepls = [];
 // exactly one PreToolUse call, so a module-level counter is safe.
 let launcherFsWalkBudget = 64;
 
-function fail_open() {
-  process.exit(0);
-}
-
 // gm(opts) -> block text in the shared shape (lib/block-message.js).
 function gm(o) { return require('./lib/block-message.js').blockMessage(Object.assign({ guard: 'git-guard' }, o)); }
 function skipCmd(k) { return require('./lib/skip-cmd.js').skipCommand(k); }
 // Alias resolution + reused-commit-message checks live in lib/git-alias-scan.js.
 function aliasScan() { return require('./lib/git-alias-scan.js'); }
 
+// A git-guard block: the reason on stderr only, exit 2 (a returned decision, never an exit).
 function block(msg) {
-  try {
-    process.stderr.write(msg + '\n');
-  } catch (_) { /* ignore */ }
-  process.exit(2);
+  return io.decision(2, '', msg + '\n');
 }
 
 // True when a blocked command LOOKS LIKE a heredoc/echo/printf writing FILE
@@ -3708,45 +3703,61 @@ function auditRecentCommits(cmd, cwd) {
   return hits;
 }
 
-function main() {
+// Per-invocation state: one CLI process handled exactly one call, so these were
+// module-level; an in-process evaluate() must start every call from the same state.
+function resetInvocationState() {
+  currentSessionId = null;
+  currentRawCommand = '';
+  activeRepls = [];
+  launcherFsWalkBudget = 64;
+  jevSpentMs = 0;
+  heredocDataOn = null;
+  quotedLiteralsCache = null;
+  stdinCandidateTextCache = null;
+  safeHomedirCache = null;
+  launcherCmdText = '';
+  handoverQueryBudget = 8;
+  handoverSkipped = 0;
+  handoverEvalBudget = 50;
+  handoverGuardOn = null;
+  selfCreditScanCache.clear();
+  consultGitGuardSelfCreditJevMemo.clear();
+  handoverQueryCache.clear();
+  handoverAdds.length = 0;
+}
+
+function main(payload, argv, out) {
   // Settings switch safety.gitGuard (0.108.4): off -> no-op. Fail-open: any error runs the hook.
-  try { if (!require('./lib/settings.js').enabled('safety', 'gitGuard')) return; } catch (_) { /* run */ }
-  let raw = '';
-  try {
-    raw = fs.readFileSync(0, 'utf8');
-  } catch (_) {
-    return fail_open();
-  }
+  try { if (!require('./lib/settings.js').enabled('safety', 'gitGuard')) return io.decision(0); } catch (_) { /* run */ }
+  if (payload === undefined) return io.decision(0); // unreadable / unparseable stdin
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('git-guard')) process.exit(0);
+  if (isSkipped('git-guard')) return io.decision(0);
 
   let cmd = '';
   let cwd = '';
   try {
-    const payload = JSON.parse(raw);
     const ti = payload && payload.tool_input;
     if (ti && typeof ti.command === 'string') {
       cmd = ti.command;
     }
     if (payload && typeof payload.cwd === 'string') cwd = payload.cwd;
-    // currentSessionId (module-scoped, set once per process here): a single
-    // git-guard invocation is one short-lived process handling ONE PreToolUse
-    // call, so a module-level value is safe (no concurrency within it) and
+    // currentSessionId (module-scoped, reset per evaluate()): a single
+    // git-guard call handles ONE PreToolUse payload (no concurrency within it) and
     // avoids threading a param through scanCommand's recursive eval/`bash -c`
     // unwrapping just for jev-assist.ndjson's optional sessionId tag.
     if (payload && payload.session_id) currentSessionId = String(payload.session_id);
   } catch (_) {
-    return fail_open(); // unparseable envelope -> allow (do not scan whole blob)
+    return io.decision(0); // unparseable envelope -> allow (do not scan whole blob)
   }
-  if (!cmd) return fail_open();
+  if (!cmd) return io.decision(0);
   currentRawCommand = cmd;
 
-  if (process.argv.includes('--audit')) {
-    let cwd = process.cwd();
-    try { const p = JSON.parse(raw); if (p && typeof p.cwd === 'string' && p.cwd) cwd = p.cwd; } catch (_) { /* keep */ }
-    const hits = auditRecentCommits(cmd, cwd);
+  if (argv.includes('--audit')) {
+    let auditCwd = process.cwd();
+    if (payload && typeof payload.cwd === 'string' && payload.cwd) auditCwd = payload.cwd;
+    const hits = auditRecentCommits(cmd, auditCwd);
     if (hits.length) {
       const reason =
         'anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last ' +
@@ -3754,9 +3765,9 @@ function main() {
         '"Generated with <AI>") - added by a git hook, template, cherry-pick/rebase, ' +
         'or an editor. Commits carry no AI co-author credit: reword them now ' +
         '(`git commit --amend` for HEAD, `git rebase -i` for older ones) BEFORE pushing.';
-      fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: reason } }) + '\n');
+      out.json({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: reason } });
     }
-    process.exit(0);
+    return io.decision(0, out.stdout);
   }
 
   const msg = scanCommand(cmd, 0, cwd);
@@ -3769,16 +3780,20 @@ function main() {
 
   // The handover-commit check ran out of budget for some commits: say so (no block).
   if (handoverSkipped > 0) {
-    fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext:
+    out.json({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext:
       'anti-hall git-guard: the handover-commit check was skipped for ' + handoverSkipped +
       ' commit(s) in this command (too many distinct commits/repos to check). Make sure none of them ' +
-      'includes a session handover (.anti-hall/handovers/**, HANDOVER*.md, CONTINUE-HERE.md).' } }) + '\n');
+      'includes a session handover (.anti-hall/handovers/**, HANDOVER*.md, CONTINUE-HERE.md).' } });
   }
-  process.exit(0);
+  return io.decision(0, out.stdout);
 }
 
-try {
-  main();
-} catch (_) {
-  fail_open();
+function evaluate(payload, env, opts) {
+  const out = io.recorder();
+  resetInvocationState();
+  try { return main(payload, (opts && opts.argv) || [], out) || io.decision(0); } catch (_) { return io.decision(0); } // fail-open
 }
+
+module.exports = { evaluate };
+
+if (require.main === module) io.runCli(evaluate);
