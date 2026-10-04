@@ -158,6 +158,9 @@ const NOT_A_REPORT_KEYS = ['origin', 'promptSource', 'turnOrigin', 'permissionMo
 // written: observed never later than the entry (0 of 3374). Beyond this skew it
 // is forged or garbage.
 const REPORT_FUTURE_SKEW_MS = 5000;
+// idleReason values that end a teammate's work (field: "available" on a final
+// report, "failed" on an errored turn; no idleReason = waiting on its own work).
+const FINISHED_IDLE_REASON = /^(available|failed)$/;
 // teammateIdles(entry, entryTs, spawned) -> [{name, ts}] from a genuine teammate
 // report. ALL must hold: a `user` entry with a bare-string content; none of
 // NOT_A_REPORT_KEYS (isSidechain only when true); the string BEGINS with the
@@ -189,7 +192,7 @@ function teammateIdles(entry, entryTs, spawned) {
     if (!o || o.type !== 'idle_notification' || o.from !== m[1]) continue;
     const inner = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
     if (Number.isFinite(inner) && Number.isFinite(entryTs) && inner > entryTs + REPORT_FUTURE_SKEW_MS) continue;
-    out.push({ name: m[1], ts: Number.isFinite(inner) && Number.isFinite(entryTs) ? inner : entryTs });
+    out.push({ name: m[1], ts: Number.isFinite(inner) && Number.isFinite(entryTs) ? inner : entryTs, reason: typeof o.idleReason === 'string' ? o.idleReason : '' });
   }
   return out;
 }
@@ -256,7 +259,8 @@ const { notificationTexts: idleNotificationTexts } = require('../../companion/li
 const RESUME_SKEW_SLACK_MS = 2000;
 
 // scanTranscript(transcriptPath) -> { launched: Map<id, {outputFile, description, launchedAtMs}>, terminal: Set<id>,
-//   pendingMessages: Map<teammate name, {sentAtMs, lastIdleMs, lastSeenMs, live, agentId}> } | null
+//   pendingMessages: Map<teammate name, {sentAtMs, lastIdleMs, lastSeenMs, live, agentId}>,
+//   finishedTeammates: Map<teammate name, {idleSinceMs, reason, agentId}> } | null
 // preLines (optional): already-read tail lines, so a caller that also parses
 // the transcript for other reasons reads it only once.
 // opts.nowMs: clock for the pending-message bound (default Date.now()).
@@ -285,12 +289,12 @@ function scanTranscript(transcriptPath, preLines, opts) {
   const taskStops = [];
   const erroredToolUseIds = new Set();
   const answeredToolUseIds = new Set();
-  // Teammate lifecycle events, name -> [{kind:'spawn'|'send'|'idle'|'stop', ts, seq}].
+  // Teammate lifecycle events, name -> [{kind:'spawn'|'send'|'idle'|'stop', ts, seq, reason?}].
   const teamEvents = new Map();
   const teamInfo = new Map(); // name -> { toolUseId, agentId } from its spawn record
-  const teamEvent = (name, kind, ts, evSeq) => {
+  const teamEvent = (name, kind, ts, evSeq, reason) => {
     if (!teamEvents.has(name)) teamEvents.set(name, []);
-    teamEvents.get(name).push({ kind, ts, seq: evSeq });
+    teamEvents.get(name).push({ kind, ts, seq: evSeq, reason: reason || '' });
   };
   const answersCall = (toolUseId, names) => {
     const c = toolUseId !== undefined ? toolUses.get(toolUseId) : undefined;
@@ -410,7 +414,7 @@ function scanTranscript(transcriptPath, preLines, opts) {
       }
     }
 
-    if (hasIdle) for (const i of teammateIdles(entry, entryTs, teamInfo)) teamEvent(i.name, 'idle', i.ts, seq);
+    if (hasIdle) for (const i of teammateIdles(entry, entryTs, teamInfo)) teamEvent(i.name, 'idle', i.ts, seq, i.reason);
 
     if (entry.type !== 'user') continue;
 
@@ -569,6 +573,14 @@ function scanTranscript(transcriptPath, preLines, opts) {
   // "idle" (unknown): the first idle after a send then reads as consumption,
   // i.e. the scan stays silent rather than claim a pending message it cannot show.
   const pendingMessages = new Map();
+  // FINISHED, NOT STOPPED: the replay ends idle on an idle_notification whose
+  // idleReason is "available" or "failed" (the turn ended with the teammate's
+  // final report), with no later send or TaskStop. An idle_notification with no
+  // idleReason is a teammate waiting on its own background work (observed text:
+  // "still running the full suite; waiting on the monitor"), so it does not
+  // count. Background agents are not listed: their "completed" notification
+  // already ended them (TaskStop answers "not running (status: completed)").
+  const finishedTeammates = new Map();
   for (const [name, evs] of teamEvents) {
     // Only names seen as teammates (spawned or reporting); "Message sent to
     // X's inbox" is also the result text for a peer session.
@@ -581,6 +593,7 @@ function scanTranscript(transcriptPath, preLines, opts) {
     let queuedAt = NaN; // newest send waiting for the current turn to end
     let pendingAt = NaN; // newest send the current turn is working on
     let lastIdleMs = NaN;
+    let lastIdleReason = '';
     for (const e of ordered) {
       if (e.kind === 'spawn') { state = 'busy'; queuedAt = NaN; pendingAt = NaN; }
       else if (e.kind === 'stop') { state = 'stopped'; queuedAt = NaN; pendingAt = NaN; }
@@ -589,9 +602,14 @@ function scanTranscript(transcriptPath, preLines, opts) {
         if (state === 'idle') { state = 'busy'; pendingAt = e.ts; } else queuedAt = e.ts;
       } else { // idle
         lastIdleMs = e.ts;
+        lastIdleReason = e.reason || '';
         if (Number.isFinite(queuedAt)) { pendingAt = queuedAt; queuedAt = NaN; state = 'busy'; }
         else { pendingAt = NaN; state = 'idle'; }
       }
+    }
+    if (state === 'idle' && FINISHED_IDLE_REASON.test(lastIdleReason) && Number.isFinite(lastIdleMs) && !backgroundIds.has(name)) {
+      const info = teamInfo.get(name) || {};
+      finishedTeammates.set(name, { idleSinceMs: lastIdleMs, reason: lastIdleReason, agentId: info.agentId || '' });
     }
     const sentAtMs = Number.isFinite(queuedAt) ? queuedAt : pendingAt;
     if (!Number.isFinite(sentAtMs)) continue;
@@ -615,7 +633,7 @@ function scanTranscript(transcriptPath, preLines, opts) {
     terminal.delete(name);
   }
 
-  return { launched, terminal, pendingMessages };
+  return { launched, terminal, pendingMessages, finishedTeammates };
 }
 
 // rowsOf(scan) -> the running rows (launched, not terminal).

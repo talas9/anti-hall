@@ -104,6 +104,7 @@ const ANTI_HALL_HOOKS = {
   UserPromptSubmit: [
     group(null, ['verify-first.js'], 10),
     group(null, ['task-tracker.js'], 10),
+    group(null, ['idle-agent-sweep.js'], 10),
     group(null, ['limit-conserve-inject.js'], 10),
     group(null, ['devswarm-parent-inbox.js'], 10),
     group(null, ['devswarm-child-turn.js'], 10),

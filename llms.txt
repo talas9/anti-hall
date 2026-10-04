@@ -96,6 +96,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | SessionStart + UserPromptSubmit | repair-on-reload.js | When any repair migration isn't stamped for the running version, spawns one detached `doctor.js --repair --migrations-only --quiet` (data migrations only; never writes user config — the legacy migration copies into the project's `.anti-hall/history/legacy/` and never deletes or moves a repo file — the GSD `.planning/` fold is explicit-only, copy-only `migrate-state.js --planning`; lock-guarded; at most once an hour; newest 5 logs kept). | ✓ | maintenance.repairOnReload (`ANTIHALL_REPAIR_ON_RELOAD=off`) |
 | UserPromptSubmit | verify-first.js | Short rotating one-line verify-first nudge. | ✓ | context.verifyFirstTurn |
 | UserPromptSubmit | task-tracker.js | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | context.taskTracker |
+| UserPromptSubmit | idle-agent-sweep.js | Advisory (never blocks), once per user prompt: lists agents that finished but were never stopped (Claude named teammates whose last report has idleReason available/failed, with no later SendMessage or TaskStop; Codex multi_agent_v1 agents completed/errored in wait_agent and never closed), oldest first, up to 10 names, with the exact `TaskStop` / `close_agent` call. Fires at ≥ 3 idle or any idle ≥ 15 min. | ✓ | guards.idleAgentSweep, guards.idleAgentSweepCount (3), guards.idleAgentSweepMin (15) |
 | UserPromptSubmit | limit-conserve-inject.js | Token-conservation nudge at the usage threshold (auto mode reads the OMC usage cache). | ✓ | `ANTIHALL_LIMIT_CONSERVE`, `ANTIHALL_LIMIT_THRESHOLD` |
 | UserPromptSubmit | auto-handover.js | At 85% context (known window) or 170k tokens: write a handover unasked, tell the user, urge `/compact`/`/clear`; milestone nags every +5 points; unknown window → one soft advisory only. | ✓ | `ANTIHALL_AUTO_HANDOVER_PCT` (`0` = off) |
 | UserPromptSubmit | devswarm-parent-inbox.js | DevSwarm Primary: per-turn workspace table (app titles, sidebar order, finish/PR state, unread, `stale anti-hall <v>`) and neglect nags (after a 120 s grace for fresh unread). | ✓ | devswarm.parentInbox |
@@ -248,6 +249,7 @@ Codex: no `/config`, use the skill.
 | guards.questionAgentsNote | true | `ANTIHALL_QUESTION_AGENTS_NOTE` |
 | guards.sharedTreeAgentNote | true | `ANTIHALL_SHARED_TREE_AGENT_NOTE` |
 | guards.mergeSidePickAdvisory | true | `ANTIHALL_MERGE_SIDE_PICK_ADVISORY` |
+| guards.idleAgentSweep / idleAgentSweepCount / idleAgentSweepMin | true / 3 / 15 | `ANTIHALL_IDLE_AGENT_SWEEP`, `ANTIHALL_IDLE_AGENT_SWEEP_COUNT`, `ANTIHALL_IDLE_AGENT_SWEEP_MIN` |
 | guards.tasklistNoTaskTools | reduced | `ANTIHALL_TASKLIST_NO_TASK_TOOLS` |
 | guards.stopNagBudgetPerPrompt | 0 | `ANTIHALL_STOP_NAG_BUDGET` |
 | guards.apiGuard / speculationGuard / claimLedger / taskGuard / tasklistGuard / scanThrottle | true | `ANTIHALL_SCAN_THROTTLE` (scanThrottle; deprecated alias `ANTI_HALL_SCAN_THROTTLE`) |

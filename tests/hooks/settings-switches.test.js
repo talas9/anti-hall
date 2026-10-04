@@ -77,6 +77,7 @@ const SWITCHES = {
   'repo-self-drift.js': 'guards.repoSelfDrift',
   'merge-gate.js': 'guards.mergeGate',
   'merge-side-pick.js': 'guards.mergeSidePickAdvisory',
+  'idle-agent-sweep.js': 'guards.idleAgentSweep',
   'ship-it-guard.js': 'guards.shipitGate',
   'codex-nudge.js': 'codexNudge.enabled',
   'version-alert.js': 'versionAlerts.antiHall',
