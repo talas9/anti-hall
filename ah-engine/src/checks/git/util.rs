@@ -186,13 +186,24 @@ pub fn path_join(a: &str, b: &str) -> String {
 // bounded child process
 
 /// Run `prog args` with a wall-clock timeout; `Some(stdout)` only on exit status 0.
-pub fn run_capture(prog: &str, args: &[String], cwd: Option<&str>, env: &HashMap<String, String>, timeout: Duration) -> Option<String> {
+///
+/// The child's environment is `base` (the request's environment, D76) with `env` (the command's own assignments) on top;
+/// the process's own environment (the daemon's) is never inherited, so its `GIT_*` variables and `HOME` cannot change an
+/// answer meant for another session.
+pub fn run_capture(
+    prog: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    base: &HashMap<String, String>,
+    env: &HashMap<String, String>,
+    timeout: Duration,
+) -> Option<String> {
     let mut cmd = Command::new(prog);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).env_clear();
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
-    for (k, v) in env {
+    for (k, v) in base.iter().chain(env) {
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().ok()?;

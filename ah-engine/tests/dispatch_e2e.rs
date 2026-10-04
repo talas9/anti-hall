@@ -162,14 +162,14 @@ fn a_guard_event_that_cannot_run_its_node_hooks_fails_closed() {
 #[test]
 fn an_event_that_is_not_a_guard_runs_what_it_can() {
     let e = Env::new("open");
-    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop"}).to_string();
-    let (code, _, err) = e.run(&["hook", "--event", "Stop"], true, &p, false);
+    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart"}).to_string();
+    let (code, _, err) = e.run(&["hook", "--event", "SessionStart"], true, &p, false);
     assert_eq!(code, 0, "no runnable hook, none blocks: {err}");
     let bad = e.dir.join("bad-map.json");
     std::fs::write(&bad, "not json").unwrap();
-    let (code, _, _) = e.run(&["hook", "--event", "Stop", "--fallback-map", bad.to_str().unwrap()], true, &p, false);
+    let (code, _, _) = e.run(&["hook", "--event", "SessionStart", "--fallback-map", bad.to_str().unwrap()], true, &p, false);
     assert_ne!(code, 2, "a broken map does not block a non-guard event");
-    assert_eq!(e.run(&["hook", "--event", "Stop", "--host", "nope"], true, &p, true).0, 64);
+    assert_eq!(e.run(&["hook", "--event", "SessionStart", "--host", "nope"], true, &p, true).0, 64);
 }
 
 /// Outputs one hook output cannot join are delivered one after another, not dropped.
@@ -180,37 +180,64 @@ fn a_conflict_delivers_every_output_in_order() {
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
     assert_eq!(code, 0);
-    assert_eq!(out, format!("{}\nplain text\n", r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from command-guard"}}"#));
-    assert_eq!(err, "warn\n");
+    // the JSON keeps stdout (the host reads stdout as one object or as text); the plain text goes to stderr after the warning
+    assert_eq!(out, format!("{}\n", r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from command-guard"}}"#));
+    assert_eq!(err, "warn\nplain text\n");
     let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
     assert_eq!(log.matches("dispatch_conflict").count(), 1, "{log}");
 }
 
-/// Three hooks of 4000 characters each fit the host's cap one by one but not joined: the dispatcher hands the event back
-/// with `dispatch.defer_exit` and says so on stderr.
+/// Three hooks of 4000 characters each fit the host's cap one by one but not joined. On a guard event the dispatcher still
+/// delivers every decision (exit 75 would lose an `ask` or `defer`): the join goes out as one object and the over-cap join is
+/// logged.
 #[test]
-fn a_join_over_the_host_cap_is_handed_back_to_run_separately() {
+fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     let e = Env::new("overcap");
-    let big = |n: &str| {
-        format!(r#"printf '{{"hookSpecificOutput":{{"hookEventName":"PreToolUse","additionalContext":"%s"}}}}\n' "$(head -c 4000 /dev/zero | tr '\0' {n})""#)
+    let big = |n: &str, extra: &str| {
+        format!(
+            r#"printf '{{"hookSpecificOutput":{{"hookEventName":"PreToolUse"{extra},"additionalContext":"%s"}}}}\n' "$(head -c 4000 /dev/zero | tr '\0' {n})""#
+        )
     };
-    let (a, b, c) = (big("a"), big("b"), big("c"));
+    let (a, b, c) = (big("a", ""), big("b", ""), big("c", r#","permissionDecision":"ask","permissionDecisionReason":"sure?""#));
     let map = e.map(&[("command-guard", a.as_str()), ("merge-side-pick", b.as_str()), ("api-guard", c.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
-    assert_eq!((code, out.as_str()), (75, ""), "{err}");
-    assert!(err.contains("over the 10000"), "{err}");
-    // two of them fit joined: delivered as one
+    assert_eq!((code, err.as_str()), (0, ""));
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask", "the decision survives the join");
+    assert_eq!(v["hookSpecificOutput"]["additionalContext"].as_str().map(|c| c.chars().count()), Some(3 * 4000 + 2 * 2));
+    let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
+    assert_eq!(log.matches("dispatch_context_over_cap").count(), 1, "{log}");
+    // two of them fit joined: delivered as one, nothing logged
     let map = e.map(&[("command-guard", a.as_str()), ("merge-side-pick", b.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     assert_eq!(e.run(&args, true, &bash("ls", &e.dir), true).0, 0);
 }
 
+/// An event that cannot block still hands an over-cap join back to the wrapper with `dispatch.defer_exit`.
+#[test]
+fn a_join_over_the_host_cap_on_another_event_is_handed_back_to_run_separately() {
+    let e = Env::new("overcap-open");
+    let big = |n: &str| {
+        format!(r#"printf '{{"hookSpecificOutput":{{"hookEventName":"SessionStart","additionalContext":"%s"}}}}\n' "$(head -c 4000 /dev/zero | tr '\0' {n})""#)
+    };
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "SessionStart").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().enumerate().map(|(i, id)| (id.clone(), if i < 3 { big(["a", "b", "c"][i]) } else { "true".to_string() }.into())).collect();
+    let map = e.dir.join("map.json");
+    std::fs::write(&map, serde_json::json!({ "SessionStart": m }).to_string()).unwrap();
+    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let (code, out, err) = e.run(&args, true, &p, true);
+    assert_eq!((code, out.as_str()), (75, ""), "{err}");
+    assert!(err.contains("over the 10000"), "{err}");
+}
+
 #[test]
 fn a_bad_host_is_a_usage_error() {
     let e = Env::new("host");
-    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop"}).to_string();
-    let (code, out, err) = e.run(&["hook", "--event", "Stop", "--host", "nope"], true, &p, true);
+    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart"}).to_string();
+    let (code, out, err) = e.run(&["hook", "--event", "SessionStart", "--host", "nope"], true, &p, true);
     assert_eq!((code, out.as_str()), (64, ""));
     assert!(err.contains("nope"));
 }

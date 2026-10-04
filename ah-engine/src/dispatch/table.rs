@@ -110,6 +110,17 @@ pub fn select(host: &str, event: &str, payload: &Value, tool: Option<&str>) -> V
         .collect()
 }
 
+/// [`select`] for a guard event: a payload that names no tool (unparsable, truncated, or no `--tool`) selects EVERY entry of
+/// the event, matchers ignored, instead of none. A guard whose matcher cannot be tested must still run (D74); an entry the
+/// payload does not concern simply allows.
+pub fn select_guarded(host: &str, event: &str, payload: &Value, tool: Option<&str>) -> Vec<Entry> {
+    let unknown = matcher_subjects(host, event, payload, tool).is_some_and(|s| s.first().is_none_or(String::is_empty));
+    if unknown {
+        return entries(host, event);
+    }
+    select(host, event, payload, tool)
+}
+
 /// The fallback map: event, then hook id, to the Node command that replaces the table's command for that entry.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FallbackMap(pub HashMap<String, HashMap<String, String>>);

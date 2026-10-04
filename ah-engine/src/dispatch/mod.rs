@@ -104,7 +104,11 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
     let guard = guarded(&args.event);
     let parsed = serde_json::from_str::<Value>(raw).ok();
     let p = parsed.clone().unwrap_or(Value::Null);
-    let mut entries = table::select(&args.host, &args.event, &p, args.tool.as_deref());
+    let mut entries = if guard {
+        table::select_guarded(&args.host, &args.event, &p, args.tool.as_deref())
+    } else {
+        table::select(&args.host, &args.event, &p, args.tool.as_deref())
+    };
     if entries.is_empty() {
         return Outcome { out: String::new(), code: 0, err: String::new() };
     }
@@ -161,24 +165,38 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
         }
     }
     let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
-    for (i, r) in slots.into_iter().zip(node::finish(running)) {
-        results[i] = Some(r);
+    let finished = node::finish(running);
+    if guard {
+        // a hook that could not run says nothing, and on a guard event nothing must not read as an allow (a timeout is
+        // the host's own discard, so it stays one; it is logged by `node`)
+        if let Some(f) = finished.iter().find(|f| matches!(f.fate, node::Fate::Spawn | node::Fate::Died | node::Fate::Incomplete)) {
+            let key = match f.fate {
+                node::Fate::Spawn => "dispatch.msg_why_spawn",
+                node::Fate::Died => "dispatch.msg_why_died",
+                _ => "dispatch.msg_why_incomplete",
+            };
+            return fail_closed(&args.event, &defaults::render(key, &[("id", &f.result.id)]));
+        }
+    }
+    for (i, f) in slots.into_iter().zip(finished) {
+        results[i] = Some(f.result);
     }
     let results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
     match combine::combine(&results) {
-        combine::Combined::Answer(o) => match over_cap(args, &results, &o.out) {
-            Some((len, cap)) => {
-                let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
-                health::log_event(
-                    "dispatch_context_over_cap",
-                    &args.event,
-                    &defaults::render("dispatch.msg_context_over_cap", &[("len", &len), ("cap", &cap)]),
-                );
-                let err = defaults::render("dispatch.msg_defer_separately", &[("event", &args.event), ("len", &len), ("cap", &cap)]);
-                Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{err}\n") }
+        combine::Combined::Answer(o) => {
+            // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper
+            // that does not exist yet, and exit 75 would lose it. A guard event therefore never gets 75 (its decisions
+            // are delivered, the host spills the over-cap context itself).
+            let plain = o.code == 0 && !results.iter().any(|r| r.code.is_some() && combine::json_blocks(&r.out));
+            let Some((len, cap)) = over_cap(args, &results, &o.out).filter(|_| plain) else { return o };
+            let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+            health::log_event("dispatch_context_over_cap", &args.event, &defaults::render("dispatch.msg_context_over_cap", &[("len", &len), ("cap", &cap)]));
+            if guard {
+                return combine::sequential(&results);
             }
-            None => o,
-        },
+            let err = defaults::render("dispatch.msg_defer_separately", &[("event", &args.event), ("len", &len), ("cap", &cap)]);
+            Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{err}\n") }
+        }
         combine::Combined::Conflict(ids) => {
             let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
             health::log_event("dispatch_conflict", &args.event, &defaults::render("dispatch.msg_conflict", &[("ids", &ids.join(","))]));
@@ -205,8 +223,27 @@ pub fn hook_main(args: &[String]) -> i32 {
                 return 64; // a usage error: the host reports it as a non-blocking hook error
             }
         };
-        let mut raw = String::new();
-        let _ = std::io::stdin().take(defaults::num("client.max_stdin")).read_to_string(&mut raw);
+        // one byte more than the cap tells a payload that fits from one that was cut off
+        let max = defaults::num("client.max_stdin");
+        let mut bytes = Vec::new();
+        let read = std::io::stdin().take(max + 1).read_to_end(&mut bytes);
+        let cut = bytes.len() as u64 > max;
+        if guard {
+            // a payload the dispatcher does not hold whole cannot be routed or checked: block, never allow unguarded
+            let failure = match &read {
+                Err(e) => Some(defaults::render("dispatch.msg_stdin_read", &[("err", &e)])),
+                Ok(_) if cut => Some(defaults::render("dispatch.msg_stdin_truncated", &[("max", &max)])),
+                Ok(_) => None,
+            };
+            if let Some(why) = failure {
+                let o = fail_closed(&a.event, &why);
+                let _ = std::io::stderr().write_all(o.err.as_bytes());
+                return o.code;
+            }
+        }
+        bytes.truncate(max as usize);
+        // JS decodes invalid UTF-8 with U+FFFD, as this does, so a Node hook and the checks read the same text
+        let raw = String::from_utf8_lossy(&bytes).to_string();
         let o = run(&raw, &a);
         let _ = std::io::stderr().write_all(o.err.as_bytes());
         let mut so = std::io::stdout();

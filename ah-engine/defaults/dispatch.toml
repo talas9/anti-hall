@@ -103,8 +103,8 @@ doc = "Event-log detail when the joined additionalContext of an event is over th
 value = "joined context is {len} characters, over the {cap} the host delivers inline"
 
 [dispatch.guard_events]
-doc = "Events whose hooks can block (guards). When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74)."
-value = ["PreToolUse", "PermissionRequest"]
+doc = "Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call, Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74)."
+value = ["PreToolUse", "PermissionRequest", "Stop", "SubagentStop"]
 
 [dispatch.defer_exit]
 doc = "Exit code with which the dispatcher asks its wrapper to run the event's Node hooks one by one, as the host does (the joined output could not be delivered faithfully). EX_TEMPFAIL; the host reads it as a non-blocking hook error and shows stderr, so without a wrapper the deferral is visible, never silent."
@@ -151,6 +151,38 @@ value = "cannot read the fallback map {path}: {err}"
 [protocol.dispatch]
 doc = "The built-in checks of one event's dispatch table, evaluated by the daemon; the client runs the other entries and every deferral as their Node hooks."
 value = { request = "D <client-version>\n<meta JSON: host, event, tool, root>\n<hook payload JSON>", reply = "OK <JSON array of [id, verdict, text]> | BUSY | ERR <reason>" }
+
+[dispatch.msg_hook_timeout]
+doc = "Event-log detail when a Node hook was still running at its timeout and was killed with its group (the host discards such a hook, so the call goes on)."
+value = "the hook ran past its timeout and was killed; the host discards a timed-out hook"
+
+[dispatch.msg_hook_died]
+doc = "Event-log detail when a Node hook was killed by a signal or could not be waited for."
+value = "the hook was killed by a signal or could not be waited for"
+
+[dispatch.msg_hook_spawn]
+doc = "Event-log detail when a Node hook's command could not be started."
+value = "the hook's command could not be started"
+
+[dispatch.msg_why_spawn]
+doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook could not be started. Placeholder: {id}."
+value = "hook {id} could not be started"
+
+[dispatch.msg_why_died]
+doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook was killed by a signal. Placeholder: {id}."
+value = "hook {id} was killed before it could answer"
+
+[dispatch.msg_why_incomplete]
+doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook finished but a process it left behind kept its output open, so the output is incomplete. Placeholder: {id}."
+value = "hook {id} finished with incomplete output"
+
+[dispatch.msg_stdin_truncated]
+doc = "Reason in dispatch.msg_fail_closed when the payload on stdin is longer than client.max_stdin, so the dispatcher holds only part of it. Placeholder: {max}."
+value = "the hook payload is larger than the {max} bytes the engine reads"
+
+[dispatch.msg_stdin_read]
+doc = "Reason in dispatch.msg_fail_closed when reading the payload from stdin failed. Placeholder: {err}."
+value = "the hook payload could not be read: {err}"
 
 # ---- GENERATED TABLE BELOW (parity/gen-dispatch.js from the plugin's hooks.json files; do not edit by hand) ----
 # tests/dispatch_table.rs fails when hooks.json changes and this part does not: run node parity/gen-dispatch.js.

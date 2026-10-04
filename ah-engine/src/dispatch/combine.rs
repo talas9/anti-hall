@@ -168,26 +168,39 @@ pub fn context_of(out: &str) -> Option<String> {
     v.get("hookSpecificOutput")?.get("additionalContext")?.as_str().map(str::to_string)
 }
 
-/// The results delivered one after another, nothing dropped: the stdout of every hook that exited 0 (each ended with a
-/// newline) and the stderr of all of them, exit 0. This is what several separate hooks would have shown the host as far as
-/// one process can say it; blocks never get here ([`combine`] answers them first).
+/// The results delivered as one answer when [`combine`] found they cannot be expressed exactly (a conflict, or a join the
+/// wrapper cannot take), exit 0, nothing silently dropped that the host would have acted on. The host reads a hook's whole
+/// stdout as ONE JSON object or as plain text, so two JSON lines printed one after another would be read as text and every
+/// decision in them lost. So:
+///
+/// - the JSON objects among the stdouts of the hooks that exited 0 are merged into one line by the same rules as
+///   [`combine`] (strongest `permissionDecision` wins, `additionalContext` and `systemMessage` values joined), except that a
+///   field two hooks set to different values keeps the first hook's value instead of being a conflict;
+/// - plain-text stdout next to such JSON cannot share the stdout with it, so it is appended to stderr;
+/// - with no JSON at all, the plain-text stdouts are delivered one after another, each ended with a newline;
+/// - the stderr of every hook that finished is kept, in order. Blocks never get here ([`combine`] answers them first).
 pub fn sequential(results: &[HookResult]) -> Outcome {
-    let mut out = String::new();
-    let mut err = String::new();
-    for r in results.iter().filter(|r| r.code.is_some()) {
-        if r.code == Some(0) && !r.out.is_empty() {
-            out.push_str(&r.out);
-            if !r.out.ends_with('\n') {
-                out.push('\n');
-            }
-        }
-        err.push_str(&r.err);
+    let live: Vec<&HookResult> = results.iter().filter(|r| r.code.is_some()).collect();
+    let mut err: String = live.iter().map(|r| r.err.as_str()).collect();
+    let said: Vec<&HookResult> = live.iter().copied().filter(|r| r.code == Some(0) && !r.out.is_empty()).collect();
+    let (json, plain): (Vec<&HookResult>, Vec<&HookResult>) = said.into_iter().partition(|r| parse_object(&r.out).is_some());
+    let lines = |rs: &[&HookResult]| -> String { rs.iter().map(|r| if r.out.ends_with('\n') { r.out.clone() } else { format!("{}\n", r.out) }).collect() };
+    if json.is_empty() {
+        return Outcome { out: lines(&plain), code: 0, err };
     }
+    let out = match json.as_slice() {
+        [one] => lines(&[*one]),
+        many => match merge(many, true) {
+            Combined::Answer(o) => o.out,
+            Combined::Conflict(_) => lines(&many[..1]),
+        },
+    };
+    err.push_str(&lines(&plain));
     Outcome { out, code: 0, err }
 }
 
 /// True when this output blocks through its JSON (`dispatch.blocking_decisions`).
-fn json_blocks(out: &str) -> bool {
+pub(crate) fn json_blocks(out: &str) -> bool {
     let Some(v) = parse_object(out) else { return false };
     let table = defaults::raw("dispatch.blocking_decisions");
     let blocks = |field: &str, val: Option<&Ordered>| val.and_then(Ordered::as_str).is_some_and(|s| table.get(field).is_some_and(|l| l.strings().contains(&s)));
@@ -213,11 +226,12 @@ pub fn combine(results: &[HookResult]) -> Combined {
         1 => return verbatim(active[0]),
         _ => {}
     }
-    merge(&active)
+    merge(&active, false)
 }
 
-/// Merge several answers (rule 3 of the module docs); a conflict names the entries involved.
-fn merge(active: &[&HookResult]) -> Combined {
+/// Merge several answers (rule 3 of the module docs); a conflict names the entries involved. `lenient` keeps the first
+/// value of a field that two answers set differently instead of reporting a conflict (see [`sequential`]).
+fn merge(active: &[&HookResult], lenient: bool) -> Combined {
     const HSO: &str = "hookSpecificOutput";
     const CTX: &str = "additionalContext";
     const MSG: &str = "systemMessage";
@@ -232,9 +246,9 @@ fn merge(active: &[&HookResult]) -> Combined {
     let mut decision: Option<(usize, Ordered, Option<Ordered>)> = None;
     let mut err = String::new();
     // Insert `key` at its first position; a repeat must carry an equal value.
-    fn put(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) -> bool {
+    fn put(lenient: bool, obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) -> bool {
         match obj.iter().find(|(k, _)| k == key) {
-            Some((_, old)) => *old == v,
+            Some((_, old)) => lenient || *old == v,
             None => {
                 obj.push((key.to_string(), v));
                 true
@@ -254,32 +268,32 @@ fn merge(active: &[&HookResult]) -> Combined {
             let ok = match (k.as_str(), v) {
                 (HSO, Ordered::Obj(inner)) => {
                     // a placeholder at the first position; the merged object replaces it at the end
-                    let mut ok = put(&mut top, HSO, Ordered::Obj(Vec::new()));
+                    let mut ok = put(lenient, &mut top, HSO, Ordered::Obj(Vec::new()));
                     let reason = inner.iter().find(|(k, _)| k == REASON).map(|(_, v)| v.clone());
                     for (k2, v2) in inner {
                         ok &= match (k2.as_str(), v2) {
                             (CTX, Ordered::Str(s)) => {
                                 contexts.push(s);
-                                put(&mut hso, CTX, Ordered::Str(String::new()))
+                                put(lenient, &mut hso, CTX, Ordered::Str(String::new()))
                             }
                             (DEC, Ordered::Str(d)) => {
                                 let r = rank(&d);
                                 if decision.as_ref().is_none_or(|(best, _, _)| r < *best) {
                                     decision = Some((r, Ordered::Str(d), reason.clone()));
                                 }
-                                put(&mut hso, DEC, Ordered::Str(String::new()))
+                                put(lenient, &mut hso, DEC, Ordered::Str(String::new()))
                             }
-                            (REASON, _) => put(&mut hso, REASON, Ordered::Str(String::new())),
-                            (k2, v2) => put(&mut hso, k2, v2),
+                            (REASON, _) => put(lenient, &mut hso, REASON, Ordered::Str(String::new())),
+                            (k2, v2) => put(lenient, &mut hso, k2, v2),
                         };
                     }
                     ok
                 }
                 (MSG, Ordered::Str(s)) => {
                     messages.push(s);
-                    put(&mut top, MSG, Ordered::Str(String::new()))
+                    put(lenient, &mut top, MSG, Ordered::Str(String::new()))
                 }
-                (k, v) => put(&mut top, k, v),
+                (k, v) => put(lenient, &mut top, k, v),
             };
             if !ok {
                 return Combined::Conflict(ids());
@@ -404,6 +418,27 @@ mod tests {
             HookResult { id: "d".into(), code: None, out: String::new(), err: String::new() },
         ];
         assert!(matches!(combine(&rs), Combined::Conflict(_)));
-        assert_eq!(sequential(&rs), Outcome { out: "{\"x\":1}\nplain\n".into(), code: 0, err: "w\ne\n".into() });
+        // the JSON keeps stdout (the host reads stdout as one object or as text), the plain text moves to stderr
+        assert_eq!(sequential(&rs), Outcome { out: "{\"x\":1}\n".into(), code: 0, err: "w\ne\nplain\n".into() });
+    }
+
+    #[test]
+    fn a_delivery_without_json_prints_the_plain_outputs_one_after_another() {
+        let rs = [r("a", 0, "one", ""), r("b", 0, "two\n", "w\n"), r("c", 1, "ignored", "e\n")];
+        assert_eq!(sequential(&rs), Outcome { out: "one\ntwo\n".into(), code: 0, err: "w\ne\n".into() });
+    }
+
+    #[test]
+    fn a_delivery_of_several_json_outputs_is_one_object_with_the_strongest_decision() {
+        let a = "{\"systemMessage\":\"one\",\"x\":1,\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"A\"}}\n";
+        let b = "{\"x\":2,\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"r\",\"additionalContext\":\"B\"}}\n";
+        let o = sequential(&[r("a", 0, a, ""), r("b", 0, b, ""), r("c", 1, "", "boom\n")]);
+        // the two hooks disagree about `x`: the first wins (a strict merge would be a conflict); nothing else is lost
+        assert_eq!(
+            o.out,
+            "{\"systemMessage\":\"one\",\"x\":1,\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"A\\n\\nB\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"r\"}}\n"
+        );
+        assert_eq!((o.code, o.err.as_str()), (0, "boom\n"));
+        assert!(parse_object(&o.out).is_some(), "one valid JSON object");
     }
 }

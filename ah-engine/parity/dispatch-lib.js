@@ -81,9 +81,15 @@ function combine(results, joiners = { context: '\n\n', message: '\n' }) {
   const active = results.filter(r => r.code !== null && (r.code !== 0 || r.out !== '' || r.err !== ''));
   if (active.length === 0) return { code: 0, out: '', err: '' };
   if (active.length === 1) return { code: active[0].code, out: active[0].out, err: active[0].err };
+  return mergeObjects(active, joiners, false);
+}
+
+// Merge several answers (src/dispatch/combine.rs `merge`); `lenient` keeps the first value of a field two answers set
+// differently instead of reporting a conflict (`sequential`).
+function mergeObjects(active, joiners, lenient) {
   const top = {}, hso = {}, contexts = [], messages = [];
   let decision = null, err = '';
-  const put = (o, k, v) => { if (!(k in o)) { o[k] = v; return true; } return deepEq(o[k], v); };
+  const put = (o, k, v) => { if (!(k in o)) { o[k] = v; return true; } return lenient || deepEq(o[k], v); };
   for (const r of active) {
     if (r.code !== 0) return { conflict: true };
     err += r.err;
@@ -124,14 +130,19 @@ function combine(results, joiners = { context: '\n\n', message: '\n' }) {
   return { code: 0, out: JSON.stringify(outTop) + '\n', err };
 }
 
-// A conflict is delivered one hook after another: the stdout of every hook that exited 0 (newline-terminated) and the
-// stderr of all of them, exit 0 (src/dispatch/combine.rs `sequential`).
-function sequential(results) {
-  let out = '', err = '';
-  for (const r of results.filter(r => r.code !== null)) {
-    if (r.code === 0 && r.out !== '') out += r.out.endsWith('\n') ? r.out : r.out + '\n';
-    err += r.err;
-  }
+// A delivery that cannot be one exact answer (a conflict, or an over-cap join on a guard event): the JSON objects among the
+// stdouts of the hooks that exited 0 are merged into ONE line (a field set differently keeps the first value; the host reads
+// a whole stdout as one object or as text), plain stdout next to JSON moves to stderr, and with no JSON the plain stdouts
+// are delivered one after another; the stderr of every finished hook is kept (src/dispatch/combine.rs `sequential`).
+function sequential(results, joiners = { context: '\n\n', message: '\n' }) {
+  const live = results.filter(r => r.code !== null);
+  let err = live.map(r => r.err).join('');
+  const said = live.filter(r => r.code === 0 && r.out !== '');
+  const json = said.filter(r => parseObject(r.out)), plain = said.filter(r => !parseObject(r.out));
+  const lines = rs => rs.map(r => r.out.endsWith('\n') ? r.out : r.out + '\n').join('');
+  if (json.length === 0) return { code: 0, out: lines(plain), err };
+  const out = json.length === 1 ? lines(json) : mergeObjects(json, joiners, true).out;
+  err += lines(plain);
   return { code: 0, out, err };
 }
 // Several hooks' contexts joined past the host's inline cap: the dispatcher hands the event back (exit 75).
@@ -142,4 +153,4 @@ function overCap(results, combined, cap) {
   return n > 1 && joined !== null && [...joined].length > cap ? [...joined].length : 0;
 }
 
-module.exports = { sequential, overCap, matches, select, runHook, combine, parseObject, idOf };
+module.exports = { sequential, overCap, matches, select, runHook, combine, parseObject, jsonBlocks, idOf };

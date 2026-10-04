@@ -148,7 +148,7 @@ fn handover_query(ctx: &mut Ctx, dir: &str, args: &[String], status_parse: bool)
     let mut argv: Vec<String> = vec!["-C".into(), dir.to_string()];
     argv.extend(argv_template("argv_diff_relative", ""));
     argv.extend(args.iter().cloned());
-    let out = run_capture(&tables().git_binary, &argv, None, &HashMap::new(), tables().handover_git_timeout);
+    let out = run_capture(&tables().git_binary, &argv, None, &ctx.settings.env, &HashMap::new(), tables().handover_git_timeout);
     let parsed = out.map(|s| {
         let names: Vec<String> = s.split('\0').filter(|x| !x.is_empty()).map(|x| x.to_string()).collect();
         if status_parse {
@@ -320,7 +320,7 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
     }
     let mut gd_argv: Vec<String> = vec!["-C".into(), dir.clone()];
     gd_argv.extend(argv_template("argv_git_dir", ""));
-    let gd = run_capture(&tables().git_binary, &gd_argv, None, &HashMap::new(), tables().handover_git_timeout);
+    let gd = run_capture(&tables().git_binary, &gd_argv, None, &ctx.settings.env, &HashMap::new(), tables().handover_git_timeout);
     let gd = gd?;
     if js_trim(&gd).is_empty() {
         return None;

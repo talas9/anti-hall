@@ -1,5 +1,5 @@
 //! D76: the daemon never answers a request from its own environment. This scan fails when a non-test source file reads
-//! the process environment (`env::var`, `env::var_os`, `env::vars`) and is not on the list below, which says for each file
+//! the process environment (`env::var`, `env::var_os`, `env::vars`, `env::vars_os`) and is not on the list below, which says for each file
 //! whose environment it is and why that is right. A new read has to be justified here in review.
 
 use std::fs;
@@ -38,7 +38,7 @@ fn only_justified_files_read_the_process_environment() {
         let reads = code
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))
-            .any(|l| l.contains("env::var(") || l.contains("env::var_os(") || l.contains("env::vars("));
+            .any(|l| l.contains("env::var(") || l.contains("env::var_os(") || l.contains("env::vars(") || l.contains("env::vars_os("));
         let rel = f.strip_prefix(root).unwrap().to_string_lossy().to_string();
         if reads && !ALLOW.iter().any(|(s, _)| rel.ends_with(s)) {
             bad.push(rel);

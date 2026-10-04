@@ -168,11 +168,41 @@ fn rows() -> Vec<Row> {
             ..BASE
         },
         // ---- joined context over the host's cap, with every kind of decision ----
-        Row { name: "over-cap context with an ask", hook: Hook::Cmd { first: CTX_ASK, second: CTX_OTHER }, want: Want::OneJson("\"ask\""), events: PRE, ..BASE },
-        Row { name: "over-cap context with a defer", hook: Hook::Cmd { first: CTX_DEFER, second: CTX_OTHER }, want: Want::OneJson("\"defer\""), events: PRE, ..BASE },
-        Row { name: "over-cap context with a JSON deny", hook: Hook::Cmd { first: CTX_DENY, second: CTX_OTHER }, want: Want::OneJson("DENYME"), events: PRE, ..BASE },
-        Row { name: "over-cap context with an exit-2 block", hook: Hook::Cmd { first: CTX_BLOCK_EXIT2, second: CTX_OTHER }, want: Want::Blocks("BLOCKME"), events: PRE, ..BASE },
-        Row { name: "over-cap context with an allow", hook: Hook::Cmd { first: CTX_PLAIN, second: CTX_OTHER }, want: Want::OneJson("additionalContext"), events: PRE, ..BASE },
+        Row {
+            name: "over-cap context with an ask",
+            hook: Hook::Cmd { first: CTX_ASK, second: CTX_OTHER },
+            want: Want::OneJson("\"ask\""),
+            events: PRE,
+            ..BASE
+        },
+        Row {
+            name: "over-cap context with a defer",
+            hook: Hook::Cmd { first: CTX_DEFER, second: CTX_OTHER },
+            want: Want::OneJson("\"defer\""),
+            events: PRE,
+            ..BASE
+        },
+        Row {
+            name: "over-cap context with a JSON deny",
+            hook: Hook::Cmd { first: CTX_DENY, second: CTX_OTHER },
+            want: Want::OneJson("DENYME"),
+            events: PRE,
+            ..BASE
+        },
+        Row {
+            name: "over-cap context with an exit-2 block",
+            hook: Hook::Cmd { first: CTX_BLOCK_EXIT2, second: CTX_OTHER },
+            want: Want::Blocks("BLOCKME"),
+            events: PRE,
+            ..BASE
+        },
+        Row {
+            name: "over-cap context with an allow",
+            hook: Hook::Cmd { first: CTX_PLAIN, second: CTX_OTHER },
+            want: Want::OneJson("additionalContext"),
+            events: PRE,
+            ..BASE
+        },
     ]
 }
 

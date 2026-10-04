@@ -124,7 +124,7 @@ fn git_run(ctx: &mut Ctx, argv: &[String], dir: Option<&str>, env: &Env) -> Opti
     if let Some(v) = ctx.git_cache.get(&key) {
         return v.clone();
     }
-    let r = run_capture(&tables().git_binary, argv, if cwd.is_empty() { None } else { Some(&cwd) }, env, tables().git_timeout);
+    let r = run_capture(&tables().git_binary, argv, if cwd.is_empty() { None } else { Some(&cwd) }, &ctx.settings.env, env, tables().git_timeout);
     ctx.git_cache.insert(key, r.clone());
     r
 }

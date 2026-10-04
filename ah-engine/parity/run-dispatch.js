@@ -10,7 +10,8 @@
 // its own temporary HOME and every item its own session id, so stateful hooks see the same state on both sides;
 // commands run in a throwaway git repo, never in a real checkout. Nothing touches the real home.
 // A conflict (the reference combiner cannot express the outputs as one) expects the outputs one after another
-// (lib.sequential); a join over the host's context cap expects exit 75 with the hand-back message. --time also reports the wall time of the whole event per side.
+// (lib.sequential); a join over the host's context cap expects exit 75 with the hand-back message on an event that cannot
+// block, and the decisions merged (lib.sequential) on a guard event. --time also reports the wall time of the whole event per side.
 'use strict';
 const fs = require('fs'), path = require('path'), cp = require('child_process');
 const lib = require('./dispatch-lib.js');
@@ -21,6 +22,8 @@ const HOST = arg('--host', 'claude'), EVENT = arg('--event', 'PreToolUse'), TOOL
 const MODE = arg('--mode', 'both'), LIMIT = +arg('--limit', 1e9), CONC = +arg('--conc', 6), SHOW = +arg('--show', 10);
 const OUT = arg('--out', path.join(__dirname, 'last-dispatch-mismatches.json'));
 const CAP = +arg('--context-cap', 10000);
+// the events whose hooks can block: defaults/dispatch.toml dispatch.guard_events
+const GUARD_EVENTS = ['PreToolUse', 'PermissionRequest', 'Stop', 'SubagentStop'];
 const MAP = arg('--fallback-map'), TIME = process.argv.includes('--time');
 const hooksJson = JSON.parse(fs.readFileSync(path.join(PLUGIN, HOST === 'codex' ? 'codex/hooks/hooks.json' : 'hooks/hooks.json'), 'utf8'));
 // a fallback map replaces commands on BOTH sides (the reference runs exactly what the dispatcher would)
@@ -76,9 +79,20 @@ const entriesFor = payload => lib.select(hooksJson, HOST, EVENT, payload).map(e 
     stats.refMs.push(Number(process.hrtime.bigint() - t0) / 1e6);
     let want = lib.combine(results);
     const active = results.filter(r => r.code !== null && (r.code !== 0 || r.out || r.err)).length;
+    let handed = false;
     if (want.conflict) { stats.conflicts++; want = lib.sequential(results); }
-    const len = lib.overCap(results, want, CAP);
-    if (len) want = { code: 75, out: '', err: `anti-hall: the joined ${EVENT} context is ${len} characters, over the ${CAP} the host delivers inline; the hooks must run separately\n` };
+    else {
+      // only a plain answer (exit 0, no JSON block) can be handed back; a guard event never gets exit 75, it delivers the
+      // decisions merged (src/dispatch/mod.rs `run`)
+      const len = lib.overCap(results, want, CAP);
+      const plain = want.code === 0 && !results.some(r => r.code !== null && lib.jsonBlocks(r.out));
+      if (len && plain) {
+        handed = true;
+        want = GUARD_EVENTS.includes(EVENT) ? lib.sequential(results)
+          : { code: 75, out: '', err: `anti-hall: the joined ${EVENT} context is ${len} characters, over the ${CAP} the host delivers inline; the hooks must run separately\n` };
+      }
+    }
+    if (handed) { /* counted as merged below */ stats.merged++; }
     else if (want.code === 2 || results.some(r => r.code === 2)) stats.blocks++;
     else if (active === 0) stats.silent++;
     else if (active === 1) stats.single++;
