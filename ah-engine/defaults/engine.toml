@@ -534,8 +534,8 @@ doc = "The daemon's state as JSON, including a headline summary."
 value = { request = "CTL status", reply = "OK <status JSON>" }
 
 [protocol.metrics]
-doc = "All metric series as JSON, optionally for one check."
-value = { request = "CTL metrics [check=<name>]", reply = "OK <metrics JSON>" }
+doc = "All metric series as JSON, optionally for one check; with rollup, the stored rollups of one resolution instead."
+value = { request = "CTL metrics [check=<name>] [rollup=<resolution> since=<s>]", reply = "OK <metrics JSON>" }
 
 [protocol.impact]
 doc = "The impact ledger report as JSON."

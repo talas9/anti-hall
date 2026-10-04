@@ -185,8 +185,14 @@ fn report(p: &Parsed, verb: &str) -> i32 {
 }
 
 fn cmd_metrics(p: &Parsed) -> i32 {
-    let check = flag(p, "check");
-    report(p, &if check.is_empty() { "metrics".to_string() } else { format!("metrics check={check}") })
+    let mut verb = "metrics".to_string();
+    for name in ["check", "rollup", "since"] {
+        let v = flag(p, name);
+        if !v.is_empty() {
+            verb.push_str(&format!(" {name}={v}"));
+        }
+    }
+    report(p, &verb)
 }
 
 fn cmd_impact(p: &Parsed) -> i32 {

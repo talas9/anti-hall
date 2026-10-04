@@ -18,8 +18,8 @@ doc = "Show the daemon's state: version, uptime, memory, counters, breaker and c
 value = { args = "", read_only = true, status = "implemented" }
 
 [cmd.metrics]
-doc = "Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check."
-value = { args = "[--check <name>]", read_only = true, status = "implemented" }
+doc = "Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds."
+value = { args = "[--check <name>] [--rollup <resolution> [--since <s>]]", read_only = true, status = "implemented" }
 
 [cmd.impact]
 doc = "Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates."

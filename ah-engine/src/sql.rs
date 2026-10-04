@@ -6,10 +6,10 @@
 //! parameters at run time and come from the defaults; nothing tunable is written into a statement.
 
 /// hot.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3];
+pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4];
 
 /// archive.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2];
+pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2, ARCHIVE_V3];
 
 /// hot.db v1: the impact ledger (one row per event) and its exact per-combination totals (D52).
 const HOT_V1: &str = "
@@ -29,6 +29,17 @@ CREATE TABLE IF NOT EXISTS applied (write_id TEXT PRIMARY KEY, ts_ms INTEGER NOT
 /// hot.db v3: one row per maintenance run with its report (D26), so the runs are visible in metrics and status.
 const HOT_V3: &str = "
 CREATE TABLE IF NOT EXISTS maintenance (id INTEGER PRIMARY KEY, ts_ms INTEGER NOT NULL, report TEXT NOT NULL);
+";
+
+/// hot.db v4: the latest metrics snapshot (D51), one row, replaced on every snapshot: it is derived from the running
+/// counters, so only the newest one matters.
+const HOT_V4: &str = "
+CREATE TABLE IF NOT EXISTS metrics_snapshot (id INTEGER PRIMARY KEY CHECK (id = 1), ts_ms INTEGER NOT NULL, body TEXT NOT NULL);
+";
+
+/// archive.db v3: metric rollups (D51), one row per resolution and time bucket holding the snapshot at the bucket's end.
+const ARCHIVE_V3: &str = "
+CREATE TABLE IF NOT EXISTS metrics_rollup (resolution TEXT NOT NULL, bucket_ms INTEGER NOT NULL, ts_ms INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (resolution, bucket_ms)) WITHOUT ROWID;
 ";
 
 /// archive.db v2: consumed messages and expired key values moved out of hot.db (D26). A message keeps its id and a
@@ -155,3 +166,19 @@ pub const SCRUB_SELECT: &str = "SELECT DISTINCT {col} FROM {table}";
 
 /// Replace one value of a column everywhere it occurs; placeholders as in `SCRUB_SELECT`.
 pub const SCRUB_UPDATE: &str = "UPDATE {table} SET {col} = ?2 WHERE {col} = ?1";
+
+/// Replace the metrics snapshot.
+pub const METRICS_SAVE: &str =
+    "INSERT INTO metrics_snapshot (id, ts_ms, body) VALUES (1, ?1, ?2) ON CONFLICT (id) DO UPDATE SET ts_ms = excluded.ts_ms, body = excluded.body";
+
+/// The metrics snapshot.
+pub const METRICS_LOAD: &str = "SELECT ts_ms, body FROM metrics_snapshot WHERE id = 1";
+
+/// Record (or replace) the rollup of one resolution and bucket.
+pub const ROLLUP_SAVE: &str = "INSERT INTO metrics_rollup (resolution, bucket_ms, ts_ms, body) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (resolution, bucket_ms) DO UPDATE SET ts_ms = excluded.ts_ms, body = excluded.body";
+
+/// Rollups of one resolution from bucket ?2 on, oldest first.
+pub const ROLLUP_LIST: &str = "SELECT bucket_ms, ts_ms, body FROM metrics_rollup WHERE resolution = ?1 AND bucket_ms >= ?2 ORDER BY bucket_ms";
+
+/// Forget rollups of one resolution older than bucket ?2 (derived data, D59).
+pub const ROLLUP_PRUNE: &str = "DELETE FROM metrics_rollup WHERE resolution = ?1 AND bucket_ms < ?2";

@@ -223,3 +223,55 @@ fn backup_then_restore_through_the_cli_with_a_live_daemon() {
     let (out, code) = e.run(&["restore", "/nonexistent/no-snapshot", "--json"]);
     assert_eq!(code, 1, "{out}");
 }
+
+fn counter_total(m: &serde_json::Value, name: &str) -> u64 {
+    m["metrics"]["counters"].as_array().unwrap().iter().filter(|c| c["name"] == name).map(|c| c["value"].as_u64().unwrap()).sum()
+}
+
+fn wait_down(e: &Env) {
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(5) && e.up() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!e.up(), "the daemon did not stop");
+}
+
+#[test]
+fn metrics_impact_and_rollups_survive_a_restart_and_a_kill() {
+    let e = Env::new("persist", &[("AH_ENGINE_SNAPSHOT_MS", "100")]);
+    e.warm();
+    assert_eq!(e.hook(FORCE).2, 2);
+    assert_eq!(e.hook("git status").2, 0);
+    let before = counter_total(&e.json(&["metrics", "--json"]), "check_calls");
+    assert!(before >= 3, "{before}");
+
+    // a clean stop keeps a snapshot at exit
+    e.run(&["stop"]);
+    wait_down(&e);
+    e.warm();
+    let m = e.json(&["metrics", "--json"]);
+    assert_eq!(m["persisted"], true, "{m}");
+    let restored = counter_total(&m, "check_calls");
+    assert!(restored >= before, "counts from before the restart are kept: {restored} after {before}{}", e.diag());
+    assert_eq!(e.hook("git status").2, 0);
+    assert_eq!(counter_total(&e.json(&["metrics", "--json"]), "check_calls"), restored + 1, "and counting continues from them");
+    let imp = e.json(&["impact", "--json"]);
+    assert_eq!(imp["by_kind"]["block"], 1, "impact totals survive a restart: {imp}");
+    assert_eq!(imp["persisted"], true);
+    let r = e.json(&["metrics", "--json", "--rollup", "minute"]);
+    assert!(!r["rollups"].as_array().unwrap().is_empty(), "rollups are kept in archive.db: {r}");
+
+    // a kill loses at most what came after the last periodic snapshot
+    let seen = counter_total(&e.json(&["metrics", "--json"]), "check_calls");
+    std::thread::sleep(Duration::from_millis(400)); // several snapshot periods
+    let pid = common::marker_pid(&e.dir.join("eng")).expect("run marker");
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(3) && common::alive(pid) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    e.warm();
+    let after = counter_total(&e.json(&["metrics", "--json"]), "check_calls");
+    assert!(after >= seen, "counts snapshotted before the kill survive it: {after} after {seen}");
+    assert_eq!(e.json(&["impact", "--json"])["by_kind"]["block"], 1);
+}

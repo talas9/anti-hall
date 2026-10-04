@@ -30,7 +30,7 @@ labelled with how it was measured in the README of `ah-engine/`.
  ah-engine serve                                 (daemon, one per user, ~5 MB)
    |-- rules (JSON file)        regex rules: deny / warn / context
    |-- checks (compiled in)     real logic a regex cannot express: the git check
-   |-- telemetry                metrics in memory; impact ledger in hot.db
+   |-- telemetry                metrics (snapshots + rollups) and the impact ledger, stored
    |-- project state            per-project mailbox and key-value pairs, in hot.db
    |-- memory layer             active key-value items (budgeted, TTL) + pub/sub channels
    `-- storage                  hot.db + archive.db (SQLite, bundled), one writer thread
@@ -60,7 +60,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `git` check with exact parity to git-guard | implemented | D29-D31 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
-| Metrics (counters, gauges, latency percentiles) and `ah-engine metrics` | implemented, in memory | D51 |
+| Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |
 | Impact ledger and `ah-engine impact`, savings only as labelled estimates | implemented, stored in hot.db | D52 |
 | Status headline summary | implemented | D50-D52 |
 | Embedded SQLite storage: `hot.db` and `archive.db`, WAL, configured durability, versioned migrations, the `Store` trait over SQLite | implemented | D19, D21, D73 |
@@ -92,7 +92,7 @@ arguments, is in the generated reference.
 | `ah-engine hook` | no | The hook client: payload on stdin, answer on stdout. |
 | `ah-engine serve` | no | Run the daemon in the foreground. |
 | `ah-engine status` | yes | State, uptime, memory, counters, breaker, rules and a headline summary. |
-| `ah-engine metrics` | yes | Metric series; `--check <name>` narrows to one check. |
+| `ah-engine metrics` | yes | Metric series; `--check <name>` narrows to one check; `--rollup minute\|hour [--since <s>]` shows stored rollups. |
 | `ah-engine impact` | yes | What the engine affected; `--kind`, `--project` filter. |
 | `ah-engine docs` | yes | The generated reference (`--format md`, or `--json`). |
 | `ah-engine check <name>` | yes | Run one check on a payload from stdin (parity harness). |
@@ -127,8 +127,11 @@ the same tokens. The method text is printed next to every figure, prices come fr
 its own date and source, and no figure is shown while no routing event has been recorded (planned, D52). A measured
 benchmark, when one exists, is shown next to the estimate with its task set, model and date. None is registered yet.
 
-Metrics live in memory only and reset when the daemon exits; snapshots in `hot.db` and rollups in `archive.db` are
-planned (D51).
+Metrics are counted in memory. Every `telemetry.snapshot_ms` (default a minute) and when the daemon exits, the counters
+and histograms are snapshotted into `hot.db`, and the same snapshot is rolled up into `archive.db` per resolution
+(`telemetry.rollups`: per minute kept 24 h, per hour kept 30 days; pruned by `ah-engine maintain`). A new daemon starts
+from the last snapshot, so counts survive a restart; after a crash they lose at most what came after the last snapshot.
+Gauges are live readings and are not kept. `ah-engine metrics --rollup minute --since 3600` lists the stored rollups.
 
 ## Storage
 

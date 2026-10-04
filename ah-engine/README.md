@@ -86,6 +86,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | Residency: stays up when idle by default; idle exit is a config key | `tests/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
 | Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/agent_cli.rs` |
 | Tiered lifecycle: write-through after commit, LRU budget loses nothing, TTL ends the lifecycle but keeps the row, a restart rebuilds only active items, idempotent write ids, pub/sub never blocks | `tier::tests`, `store::tests` |
+| Persisted telemetry: metric snapshots and rollups and the impact ledger survive a clean restart and a SIGKILL; counting continues from the snapshot | `tests/agent_cli.rs` (`metrics_impact_and_rollups_survive_a_restart_and_a_kill`), `metrics::tests`, `storage::tests` |
 | Backup and restore: consistent and scrubbed (no unscrubbed page left), never overwrites a snapshot, restore keeps the current state and swaps, a damaged or newer snapshot changes nothing, CLI round trip with a live daemon | `backup::tests`, `tests/agent_cli.rs` (`backup_then_restore_through_the_cli_with_a_live_daemon`) |
 | Size control: inactive rows move to the archive and active ones stay, totals stay exact, a crash between copy and remove loses and duplicates nothing, the impact cap moves the oldest, no hard delete unless configured, maintain beside a live daemon | `maintain::tests`, `tests/agent_cli.rs` (`maintain_runs_beside_a_live_daemon_and_is_reported_in_metrics`) |
 | Spool: 100 writes with the engine down are applied exactly once and in order per session, a replay changes nothing, a busy engine makes the client spool, damage is quarantined, a take is never spooled | `tests/spool.rs`, `spool::tests` |
@@ -184,5 +185,5 @@ state directory. If it keeps failing it stops respawning (crash-loop stop) and h
 - [x] Spool (D24)
 - [x] Size control and retention, `ah-engine maintain` (D26)
 - [x] Backup and restore (D27)
-- [ ] Storage: persisted metrics (D51): this phase
+- [x] Metrics and impact persisted through the SQLite `Store` (D51, D52)
 - [ ] Scheduler (D33), mailbox (D45), Jev lane (D34-D38), config in storage (D18), build and release CI (D56, D64, D67, D68), porting the other guards (D57): later phases

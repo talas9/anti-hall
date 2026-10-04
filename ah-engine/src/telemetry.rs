@@ -15,6 +15,8 @@ use std::sync::Mutex;
 pub struct Telemetry {
     metrics: Mutex<Metrics>,
     store: Box<dyn Store>,
+    /// When the last snapshot was kept (ms since the epoch; 0: none yet).
+    snapshot_ms: std::sync::atomic::AtomicU64,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -54,7 +56,7 @@ impl Telemetry {
 
     /// A telemetry handle recording impact events in `store` (the daemon passes the SQLite store, D52).
     pub fn with_store(store: Box<dyn Store>) -> Telemetry {
-        Telemetry { metrics: Mutex::new(Metrics::default()), store }
+        Telemetry { metrics: Mutex::new(Metrics::default()), store, snapshot_ms: std::sync::atomic::AtomicU64::new(0) }
     }
 
     /// Count one request of any type.
@@ -112,13 +114,41 @@ impl Telemetry {
         self.impact("fallback", "", reason, project);
     }
 
+    /// Keep a snapshot of the counters and histograms in the store (D51); the lock is held only for the export.
+    pub fn snapshot_metrics(&self) -> bool {
+        let body = lk(&self.metrics).export();
+        let now = now_ms();
+        let kept = self.store.save_metrics(now, &body);
+        if kept {
+            self.snapshot_ms.store(now, std::sync::atomic::Ordering::SeqCst);
+        }
+        kept
+    }
+
+    /// Start from the last snapshot the store kept, so counters and histograms survive a restart.
+    pub fn restore_metrics(&self) {
+        if let Some((ts, body)) = self.store.load_metrics() {
+            lk(&self.metrics).import(&body);
+            self.snapshot_ms.store(ts, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     /// The `metrics` command's body: all series, optionally for one check, with the live gauges refreshed.
     pub fn metrics_json(&self, check: &str, gauges: &[(&str, f64)]) -> Value {
+        let persisted = self.store.persisted();
+        let note = defaults::text(if persisted { "telemetry.metrics_persisted_note" } else { "telemetry.not_persisted_note" });
+        let snap = self.snapshot_ms.load(std::sync::atomic::Ordering::SeqCst);
         let mut m = lk(&self.metrics);
         for (n, v) in gauges {
             m.set(n, *v);
         }
-        json!({"running": true, "persisted": false, "note": defaults::text("telemetry.not_persisted_note"), "metrics": m.snapshot(check)})
+        json!({"running": true, "persisted": persisted, "snapshot_ms": snap, "note": note, "metrics": m.snapshot(check)})
+    }
+
+    /// The `metrics --rollup` body: the stored rollups of one resolution since `since_ms`.
+    pub fn rollups_json(&self, resolution: &str, since_ms: u64) -> Value {
+        let known: Vec<&str> = crate::storage::resolutions().iter().map(|r| r.0).collect();
+        json!({"running": true, "resolution": resolution, "resolutions": known, "rollups": self.store.rollups(resolution, since_ms)})
     }
 
     /// The `impact` command's body.

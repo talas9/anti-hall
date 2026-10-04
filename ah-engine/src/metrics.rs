@@ -130,6 +130,46 @@ impl Metrics {
         self.counters.iter().filter(|(k, _)| *k == name || k.starts_with(&prefix)).map(|(_, v)| *v).sum()
     }
 
+    /// The counters and histograms as JSON, for a snapshot in storage (D51). Gauges are live readings and are not kept.
+    pub fn export(&self) -> Value {
+        let hists: Map<String, Value> =
+            self.hists.iter().map(|(k, h)| (k.clone(), json!({"buckets": h.buckets, "count": h.count, "sum": h.sum, "max": h.max}))).collect();
+        json!({"counters": self.counters, "histograms": hists})
+    }
+
+    /// Load a snapshot made by [`Metrics::export`]: its counters and histograms become the starting values. A histogram
+    /// whose bucket count no longer matches `telemetry.latency_buckets_us` is skipped (its buckets would be misread).
+    pub fn import(&mut self, v: &Value) {
+        let want = bucket_bounds().len() + 1;
+        if let Some(c) = v.get("counters").and_then(Value::as_object) {
+            for (k, n) in c {
+                if let Some(n) = n.as_u64() {
+                    self.track(k);
+                    self.counters.insert(k.clone(), n);
+                }
+            }
+        }
+        if let Some(h) = v.get("histograms").and_then(Value::as_object) {
+            for (k, x) in h {
+                let buckets: Vec<u64> = x.get("buckets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+                if buckets.len() != want {
+                    continue;
+                }
+                let n = |f: &str| x.get(f).and_then(Value::as_u64).unwrap_or(0);
+                self.track(k);
+                self.hists.insert(k.clone(), Hist { buckets, count: n("count"), sum: n("sum"), max: n("max") });
+            }
+        }
+    }
+
+    /// Count a series loaded from a snapshot against its metric's series cap.
+    fn track(&mut self, key: &str) {
+        if key.contains('|') && !self.counters.contains_key(key) && !self.hists.contains_key(key) {
+            let name = key.split('|').next().unwrap_or("").to_string();
+            *self.series_per_metric.entry(name).or_insert(0) += 1;
+        }
+    }
+
     /// Everything as JSON, optionally only series whose `check` label equals `check`.
     pub fn snapshot(&self, check: &str) -> Value {
         let bounds: Vec<u64> = bucket_bounds();
@@ -206,6 +246,28 @@ mod tests {
         let cap = defaults::num("telemetry.max_series") as usize;
         assert!(m.counters.len() <= cap + 1, "{} series", m.counters.len());
         assert_eq!(m.counter_total("check_calls"), 10_000, "overflow is still counted");
+    }
+
+    #[test]
+    fn export_and_import_round_trip_counters_and_histograms() {
+        let mut m = Metrics::default();
+        m.inc("check_calls", &[("check", "git")]);
+        m.add("requests", &[], 41);
+        m.observe("check_latency_us", &[("check", "git")], 300);
+        m.set("rss_kb", 9.0);
+        let mut n = Metrics::default();
+        n.import(&m.export());
+        assert_eq!(n.counter("check_calls", &[("check", "git")]), 1);
+        assert_eq!(n.counter_total("requests"), 41);
+        assert_eq!(n.snapshot("")["histograms"][0]["count"], 1);
+        assert_eq!(n.snapshot("")["gauges"].as_array().unwrap().len(), 0, "gauges are live readings, not restored");
+        n.inc("requests", &[]);
+        assert_eq!(n.counter_total("requests"), 42, "counting continues from the snapshot");
+        let mut bad = m.export();
+        bad["histograms"]["check_latency_us|check=git"]["buckets"] = json!([1, 2]);
+        let mut o = Metrics::default();
+        o.import(&bad);
+        assert_eq!(o.snapshot("")["histograms"].as_array().unwrap().len(), 0, "a histogram with other buckets is skipped");
     }
 
     #[test]

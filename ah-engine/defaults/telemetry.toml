@@ -1,8 +1,8 @@
 # ah-engine shipped metric and impact-event registries (D51, D52). Format: see the header of engine.toml.
 #
 # A metric or impact kind that code records must be registered here, so `ah-engine docs` lists it and a test
-# catches a typo; a registered name nothing records is flagged by the same test. Metrics are kept in memory and
-# bounded; impact events are stored in hot.db (D52).
+# catches a typo; a registered name nothing records is flagged by the same test. Metrics are kept in memory, bounded,
+# and snapshotted to hot.db with rollups in archive.db (D51); impact events are stored in hot.db (D52).
 
 [telemetry.latency_buckets_us]
 doc = "Upper bounds of the latency histogram buckets; a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate."
@@ -25,6 +25,24 @@ env = "AH_ENGINE_MAX_EVENTS"
 [telemetry.not_persisted_note]
 doc = "Printed with metrics, and with impact output when storage could not open, while they live in memory only."
 value = "kept in memory by the running daemon and reset when it exits"
+
+[telemetry.metrics_persisted_note]
+doc = "Printed with metrics output when counters and histograms are snapshotted to hot.db."
+value = "counters and histograms are snapshotted to hot.db every telemetry.snapshot_ms and at exit, and rolled up into archive.db; gauges are live readings"
+
+[telemetry.snapshot_ms]
+doc = "How often the daemon keeps a metrics snapshot in hot.db and its rollups in archive.db (D51); it also keeps one when it exits."
+value = 60000
+env = "AH_ENGINE_SNAPSHOT_MS"
+unit = "ms"
+min = 50
+
+[telemetry.rollups]
+doc = "Metric rollup resolutions in archive.db: each bucket keeps the last snapshot taken in it, and buckets older than keep_s are pruned by `ah-engine maintain` (derived data, D59)."
+value = [
+  { name = "minute", bucket_s = 60, keep_s = 86400 },
+  { name = "hour", bucket_s = 3600, keep_s = 2592000 },
+]
 
 [telemetry.impact_persisted_note]
 doc = "Printed with impact output when the events are stored in hot.db."

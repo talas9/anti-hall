@@ -68,11 +68,31 @@ pub trait Store: Send + Sync {
     fn dropped(&self) -> u64 {
         0
     }
+    /// Keep a metrics snapshot (exported counters and histograms, D51); true when it was kept.
+    fn save_metrics(&self, ts_ms: u64, body: &serde_json::Value) -> bool;
+    /// The last metrics snapshot kept, with its time.
+    fn load_metrics(&self) -> Option<(u64, serde_json::Value)>;
+    /// Rollups of `resolution` from `since_ms` on, oldest first, as `{bucket_ms, ts_ms, metrics}`.
+    fn rollups(&self, resolution: &str, since_ms: u64) -> Vec<serde_json::Value>;
+}
+
+/// The configured rollup resolutions: (name, bucket length in ms, how long rollups are kept in ms).
+pub fn resolutions() -> Vec<(&'static str, u64, u64)> {
+    crate::defaults::raw("telemetry.rollups")
+        .as_array()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| {
+            let n = |k: &str| r.get(k).and_then(crate::defaults::V::as_integer).map(|v| v.max(1) as u64 * 1000);
+            Some((r.get("name")?.as_str()?, n("bucket_s")?, n("keep_s")?))
+        })
+        .collect()
 }
 
 /// The in-memory store: a ring of recent events plus exact per-combination counters.
 pub struct MemStore {
     inner: Mutex<MemInner>,
+    metrics: Mutex<Option<(u64, serde_json::Value)>>,
 }
 
 struct MemInner {
@@ -89,7 +109,7 @@ impl MemStore {
     pub fn new(cap: usize, max_series: usize, overflow: &str) -> MemStore {
         let inner =
             MemInner { events: VecDeque::new(), cap: cap.max(1), counts: HashMap::new(), max_series: max_series.max(1), overflow: overflow.to_string() };
-        MemStore { inner: Mutex::new(inner) }
+        MemStore { inner: Mutex::new(inner), metrics: Mutex::new(None) }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, MemInner> {
@@ -146,6 +166,19 @@ impl Store for MemStore {
 
     fn held_events(&self) -> usize {
         self.lock().events.len()
+    }
+
+    fn save_metrics(&self, ts_ms: u64, body: &serde_json::Value) -> bool {
+        *self.metrics.lock().unwrap_or_else(|e| e.into_inner()) = Some((ts_ms, body.clone()));
+        true
+    }
+
+    fn load_metrics(&self) -> Option<(u64, serde_json::Value)> {
+        self.metrics.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn rollups(&self, _: &str, _: u64) -> Vec<serde_json::Value> {
+        Vec::new() // memory keeps only the latest snapshot
     }
 }
 
@@ -212,6 +245,40 @@ impl Store for SqliteStore {
     fn dropped(&self) -> u64 {
         self.dropped.load(SeqCst)
     }
+
+    /// The snapshot goes to hot.db (acknowledged after commit), then into each resolution's rollup bucket in
+    /// archive.db (replaced while the bucket is current, so each bucket ends up holding its last snapshot).
+    fn save_metrics(&self, ts_ms: u64, body: &serde_json::Value) -> bool {
+        let text = body.to_string();
+        if self.db.write(Op::Metrics { ts_ms, body: text.clone() }).is_err() {
+            return false;
+        }
+        let _ = self.db.archive(|c| {
+            for (name, bucket, _) in resolutions() {
+                c.prepare_cached(sql::ROLLUP_SAVE)?.execute(rusqlite::params![name, (ts_ms - ts_ms % bucket) as i64, ts_ms as i64, text])?;
+            }
+            Ok(())
+        });
+        true
+    }
+
+    fn load_metrics(&self) -> Option<(u64, serde_json::Value)> {
+        let (ts, body): (i64, String) = self.db.read(|c| c.query_row(sql::METRICS_LOAD, [], |r| Ok((r.get(0)?, r.get(1)?)))).ok()?;
+        Some((ts.max(0) as u64, serde_json::from_str(&body).ok()?))
+    }
+
+    fn rollups(&self, resolution: &str, since_ms: u64) -> Vec<serde_json::Value> {
+        self.db
+            .archive(|c| {
+                let mut st = c.prepare_cached(sql::ROLLUP_LIST)?;
+                let rows = st.query_map(rusqlite::params![resolution, since_ms as i64], |r| {
+                    let body: String = r.get(2)?;
+                    Ok(serde_json::json!({"bucket_ms": r.get::<_, i64>(0)?, "ts_ms": r.get::<_, i64>(1)?, "metrics": serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default()}))
+                })?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +339,26 @@ mod tests {
         let s = SqliteStore::new(db.clone());
         conformance(&s);
         assert!(s.persisted() && !MemStore::new(1, 1, "o").persisted());
+    }
+
+    #[test]
+    fn metrics_snapshots_and_rollups_survive_reopening() {
+        let d = crate::db::TempDir::new("metrics");
+        let body = serde_json::json!({"counters": {"requests": 7}, "histograms": {}});
+        {
+            let s = SqliteStore::new(Db::open(&d.0).unwrap());
+            assert!(s.save_metrics(120_000, &body));
+            assert!(s.save_metrics(130_000, &serde_json::json!({"counters": {"requests": 9}, "histograms": {}})));
+        }
+        let s = SqliteStore::new(Db::open(&d.0).unwrap());
+        let (ts, b) = s.load_metrics().unwrap();
+        assert_eq!((ts, b["counters"]["requests"].as_u64()), (130_000, Some(9)), "the newest snapshot");
+        let (name, _, _) = resolutions()[0];
+        let r = s.rollups(name, 0);
+        assert_eq!(r.len(), 1, "both snapshots fall in one bucket, which keeps the last: {r:?}");
+        assert_eq!(r[0]["metrics"]["counters"]["requests"], 9);
+        let m = MemStore::new(1, 1, "o");
+        assert!(m.load_metrics().is_none() && m.save_metrics(1, &body) && m.load_metrics().is_some());
     }
 
     #[test]

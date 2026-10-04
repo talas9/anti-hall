@@ -6,7 +6,8 @@
 //!     than `retention.impact_hot_s` or beyond the `retention.impact_hot_rows` cap (their totals stay in hot.db). Each
 //!     batch is copied and committed to archive.db first (synced like hot.db), then removed from hot.db; a crash in
 //!     between leaves a copy in both, and the next run's copy is a no-op (rows keep their keys), so nothing is lost.
-//!  2. **Prune** derived bookkeeping only: applied write ids older than `retention.applied_s` (D59).
+//!  2. **Prune** derived data only: applied write ids older than `retention.applied_s` and metric rollups past their
+//!     resolution's `keep_s` (`telemetry.rollups`) (D59).
 //!  3. **Hard delete** archived user data only when `retention.archive_delete_after_s` is set (default 0: never, D26).
 //!  4. **Checkpoint** both WALs (`TRUNCATE`) and **VACUUM** both databases.
 //!
@@ -137,6 +138,10 @@ pub fn run(dir: &Path) -> Result<Value, DbError> {
     )?;
 
     let pruned_applied = hot.execute(sql::APPLIED_PRUNE, params![now - ms("retention.applied_s")])? as u64;
+    let mut pruned_rollups = 0;
+    for (name, _, keep) in crate::storage::resolutions() {
+        pruned_rollups += arch.execute(sql::ROLLUP_PRUNE, params![name, now - keep as i64])? as u64;
+    }
 
     let delete_after = ms("retention.archive_delete_after_s");
     let mut archive_deleted = json!(null);
@@ -156,7 +161,7 @@ pub fn run(dir: &Path) -> Result<Value, DbError> {
     }
     let report = json!({
         "moved_to_archive": {"mailbox": mail, "kv": kv, "impact": impact},
-        "pruned": {"applied_write_ids": pruned_applied},
+        "pruned": {"applied_write_ids": pruned_applied, "metric_rollups": pruned_rollups},
         "archive_deleted": archive_deleted,
         "checkpointed": true,
         "vacuumed": true,

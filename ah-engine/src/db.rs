@@ -30,6 +30,13 @@ pub enum Op {
     Impact(ImpactEvent),
     /// No change: answered once everything queued before it has committed (read-your-writes for a following read).
     Barrier,
+    /// Replace the metrics snapshot (D51).
+    Metrics {
+        /// When it was taken.
+        ts_ms: u64,
+        /// The exported counters and histograms.
+        body: String,
+    },
     /// A project-partition write (D21 pending mailbox and key-value state). A non-empty `write_id` makes it idempotent:
     /// a repeat with the same id returns the first result and changes nothing (D24).
     Proj {
@@ -350,6 +357,10 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
         Op::Impact(e) => {
             c.prepare_cached(sql::IMPACT_INSERT)?.execute(params![e.ts_ms as i64, e.kind, e.check, e.reason, e.project])?;
             c.prepare_cached(sql::IMPACT_COUNT)?.execute(params![e.kind, e.check, e.reason, e.project])?;
+            Ok(String::new())
+        }
+        Op::Metrics { ts_ms, body } => {
+            c.prepare_cached(sql::METRICS_SAVE)?.execute(params![*ts_ms as i64, body])?;
             Ok(String::new())
         }
         Op::Proj { project, write_id, verb } => {

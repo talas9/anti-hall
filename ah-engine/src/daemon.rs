@@ -175,6 +175,7 @@ impl Shared {
     /// Keep impact events (and, through later layers, project state) in `db` instead of memory.
     pub fn attach_db(&mut self, db: Arc<crate::db::Db>) {
         self.telemetry = Telemetry::with_store(Box::new(crate::storage::SqliteStore::new(db.clone())));
+        self.telemetry.restore_metrics(); // counters and histograms continue from the last snapshot (D51)
         self.storage = defaults::text("msg.storage_ok").to_string();
         self.store = Store::new(Some(db.clone()));
         self.db = Some(db);
@@ -184,8 +185,15 @@ impl Shared {
         self.started.elapsed().as_millis() as u64
     }
 
-    /// The `metrics` control verb: `check=<name>` narrows to one check's series. Live gauges are refreshed first.
+    /// The `metrics` control verb: `check=<name>` narrows to one check's series; `rollup=<resolution>` (with
+    /// `since=<seconds>`) returns stored rollups instead. Live gauges are refreshed first.
     fn metrics_json(&self, args: &str) -> serde_json::Value {
+        let rollup = kv(args, "rollup");
+        if !rollup.is_empty() {
+            let since_s: u64 = kv(args, "since").parse().unwrap_or(0);
+            let since = if since_s == 0 { 0 } else { health::now_ms().saturating_sub(since_s.saturating_mul(1000)) };
+            return self.telemetry.rollups_json(&rollup, since);
+        }
         let check = kv(args, "check");
         let mut gauges =
             vec![("rss_kb", limits::rss_kb() as f64), ("queue_depth", self.depth.load(SeqCst) as f64), ("uptime_s", self.started.elapsed().as_secs() as f64)];
@@ -682,9 +690,12 @@ pub fn serve() {
     if sh.db.is_some() {
         let s = sh.clone();
         std::thread::spawn(move || spool_drainer(s));
+        let s = sh.clone();
+        std::thread::spawn(move || snapshotter(s));
     }
     accept_loop(&sh, &listener);
     if let Some(db) = &sh.db {
+        sh.telemetry.snapshot_metrics(); // the counters as they are at exit
         db.close(); // everything queued commits before the process exits
     }
     health::clear_marker();
@@ -700,6 +711,21 @@ fn spool_drainer(sh: Arc<Shared>) {
     while !sh.draining.load(SeqCst) {
         std::thread::sleep(every);
         drain_spool(&sh);
+    }
+}
+
+/// Keeps a metrics snapshot every `telemetry.snapshot_ms` (D51). It sleeps in short slices so a draining daemon is
+/// not held up by it.
+fn snapshotter(sh: Arc<Shared>) {
+    let every = defaults::millis("telemetry.snapshot_ms");
+    let slice = defaults::millis("daemon.worker_wait_ms").min(every);
+    let mut last = Instant::now();
+    while !sh.draining.load(SeqCst) {
+        std::thread::sleep(slice);
+        if last.elapsed() >= every {
+            last = Instant::now();
+            sh.telemetry.snapshot_metrics();
+        }
     }
 }
 
