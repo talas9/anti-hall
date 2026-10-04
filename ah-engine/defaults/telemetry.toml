@@ -1,8 +1,8 @@
 # ah-engine shipped metric and impact-event registries (D51, D52). Format: see the header of engine.toml.
 #
 # A metric or impact kind that code records must be registered here, so `ah-engine docs` lists it and a test
-# catches a typo; a registered name nothing records is flagged by the same test. Metrics are kept in memory,
-# bounded, and are not persisted yet (planned with the storage phase, D19-D26).
+# catches a typo; a registered name nothing records is flagged by the same test. Metrics are kept in memory and
+# bounded; impact events are stored in hot.db (D52).
 
 [telemetry.latency_buckets_us]
 doc = "Upper bounds of the latency histogram buckets; a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate."
@@ -23,8 +23,12 @@ value = 5000
 env = "AH_ENGINE_MAX_EVENTS"
 
 [telemetry.not_persisted_note]
-doc = "Printed with metrics and impact output while they live in memory only."
-value = "kept in memory by the running daemon and reset when it exits; durable storage is planned (D19-D26)"
+doc = "Printed with metrics, and with impact output when storage could not open, while they live in memory only."
+value = "kept in memory by the running daemon and reset when it exits"
+
+[telemetry.impact_persisted_note]
+doc = "Printed with impact output when the events are stored in hot.db."
+value = "stored in hot.db: totals and events survive a restart"
 
 [telemetry.overflow_label]
 doc = "Label value used for series beyond max_series."

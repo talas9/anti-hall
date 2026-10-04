@@ -30,8 +30,9 @@ labelled with how it was measured in the README of `ah-engine/`.
  ah-engine serve                                 (daemon, one per user, ~5 MB)
    |-- rules (JSON file)        regex rules: deny / warn / context
    |-- checks (compiled in)     real logic a regex cannot express: the git check
-   |-- telemetry                metrics + impact ledger, in memory
-   `-- project state            per-project mailbox and key-value pairs, in memory
+   |-- telemetry                metrics in memory; impact ledger in hot.db
+   |-- project state            per-project mailbox and key-value pairs, in memory
+   `-- storage                  hot.db + archive.db (SQLite, bundled), one writer thread
 ```
 
 - **Client.** Reads the hook payload, asks the daemon, prints the answer. If anything is wrong (no daemon, busy, timeout,
@@ -59,9 +60,10 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics` | implemented, in memory | D51 |
-| Impact ledger and `ah-engine impact`, savings only as labelled estimates | implemented, in memory | D52 |
+| Impact ledger and `ah-engine impact`, savings only as labelled estimates | implemented, stored in hot.db | D52 |
 | Status headline summary | implemented | D50-D52 |
-| Embedded SQLite storage, `hot.db` and `archive.db`, tiered lifecycle, retention | planned (D19-D26) | D19-D26 |
+| Embedded SQLite storage: `hot.db` and `archive.db`, WAL, configured durability, versioned migrations, the `Store` trait over SQLite | implemented | D19, D21, D73 |
+| Tiered lifecycle, in-memory layer, retention | planned (D20, D22, D25, D26) | D20, D22, D25, D26 |
 | Config loaded into versioned storage with reload and rollback | planned (D18) | D18 |
 | Durable write spool when the engine is down | planned (D24) | D24 |
 | Scheduler and ticker, `ah-engine schedule` | planned (D33) | D33 |
@@ -102,8 +104,9 @@ the upper bound of the histogram bucket that holds that rank, so they are upper 
 `requests`, `busy_replies`, `errors`, `budget_trips`, `panics`, `rejected_peers`, `hook_calls`, `hook_latency_us`,
 `check_calls`, `check_decisions`, `check_latency_us`, `rule_hits`, `rss_kb`, `queue_depth` and `uptime_s`.
 
-**Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. Counts
-are exact for the life of the daemon; the project is only ever a short hash, never a path.
+**Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. They
+are stored in `hot.db` with exact per-combination totals, so counts survive a restart; the project is only ever a short
+hash, never a path.
 
 **Savings are estimates, never measurements.** A model-routing saving is the actual tokens the routed agent used times
 the price difference between the model it asked for and the model selected, assuming the original model would have used
@@ -111,7 +114,32 @@ the same tokens. The method text is printed next to every figure, prices come fr
 its own date and source, and no figure is shown while no routing event has been recorded (planned, D52). A measured
 benchmark, when one exists, is shown next to the estimate with its task set, model and date. None is registered yet.
 
-Both live in memory only: they reset when the daemon exits. Durable storage is planned (D19-D26).
+Metrics live in memory only and reset when the daemon exits; snapshots in `hot.db` and rollups in `archive.db` are
+planned (D51).
+
+## Storage
+
+The daemon keeps what it records in two SQLite databases inside the state directory (D19, D21). SQLite is compiled into
+the binary, so there is nothing to install; it was chosen over redb by measurement (D73).
+
+| File | Holds | Durability |
+|---|---|---|
+| `hot.db` | frequent small writes: impact events and their totals | WAL, `synchronous=FULL`: a write is on disk before it is acknowledged |
+| `archive.db` | append-mostly history; opened on first use | WAL, `synchronous=NORMAL`, batched commits |
+
+- **One writer.** A single writer thread owns the `hot.db` write connection. Requests hand it their writes over a bounded
+  queue (`storage.write_queue`; when it is full the write is refused as busy). Whatever is queued while a commit runs
+  goes into the next transaction, so concurrent writes share one sync, and each write sits in its own savepoint, so a
+  refused write never undoes its neighbours. Reads use a second connection.
+- **Hooks never wait on storage.** Impact events from the hook path are queued without waiting; a later read first waits
+  for everything queued before it, so it sees them. If storage cannot open, the daemon logs why, shows it as `storage` in
+  `status`, and keeps serving hooks with the impact ledger in memory.
+- **Settings are keys.** Journal mode, synchronous level, `storage.fullfsync` (macOS power-loss safety, off by default:
+  it cost about 99 percent of the commit rate when measured, D73), page cache, mmap, timeouts and the writer queue are all
+  in `storage.toml`.
+- **Versioned schema.** Each database records how many migrations it has run (`PRAGMA user_version`); opening applies
+  the missing ones, each in its own transaction, and re-running them changes nothing. A database written by a newer build
+  is refused rather than rewritten.
 
 ## Reliability and safety
 
@@ -138,14 +166,15 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `commands.toml` | the command registry data |
 | `telemetry.toml` | the metric and impact-kind registries and the savings method |
+| `storage.toml` | database file names, SQLite durability settings and the writer queue |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
 message is written in Rust instead (`no_hardcoded_tunables`), and another if code and defaults disagree. User-level
 overrides loaded from files and versioned storage are planned (D18).
 
-State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): the event log, `failure.json`, the breaker and
-crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The rules file is
+State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.db` and `archive.db`, the event log,
+`failure.json`, the breaker and crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The rules file is
 `rules.json` there, or the path in `AH_ENGINE_RULES`.
 
 ## How to extend it

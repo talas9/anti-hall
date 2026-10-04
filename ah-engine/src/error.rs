@@ -113,7 +113,7 @@ impl fmt::Display for DirError {
 impl std::error::Error for DirError {}
 
 /// Why a project-partition operation was refused. All of these become an `ERR` reply, never a panic.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     /// The daemon already tracks the maximum number of projects.
     TooManyProjects,
@@ -140,3 +140,68 @@ impl fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
+
+/// Why the storage layer could not do what was asked. A request that meets one of these is answered `ERR` (or `BUSY`),
+/// never acknowledged: a write is acknowledged only after its commit (D23).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbError {
+    /// SQLite reported an error (the text is SQLite's own).
+    Sql(String),
+    /// The database was written by a newer build: its schema version is above every migration this build knows.
+    Schema {
+        /// Which database.
+        db: String,
+        /// The version found in the file.
+        found: i64,
+        /// The newest version this build knows.
+        known: usize,
+    },
+    /// The journal mode could not be set (the file system may not support WAL).
+    JournalMode(String),
+    /// The writer queue is full; the client retries, then spools.
+    Busy,
+    /// Storage is closed or never opened.
+    Unavailable,
+    /// The write was queued but did not commit within `storage.ack_timeout_ms`; it may still commit later, and its
+    /// write id makes a retry harmless.
+    Timeout,
+    /// The write was refused by a store rule (a cap, an unknown verb).
+    Rejected(StoreError),
+}
+
+impl From<rusqlite::Error> for DbError {
+    fn from(e: rusqlite::Error) -> DbError {
+        DbError::Sql(e.to_string())
+    }
+}
+
+impl DbError {
+    /// Stable error code for logs and the health classifier.
+    pub fn code(&self) -> &'static str {
+        match self {
+            DbError::Sql(_) => "db_sql",
+            DbError::Schema { .. } => "db_schema",
+            DbError::JournalMode(_) => "db_journal",
+            DbError::Busy => "db_busy",
+            DbError::Unavailable => "db_unavailable",
+            DbError::Timeout => "db_timeout",
+            DbError::Rejected(_) => "db_rejected",
+        }
+    }
+}
+
+impl fmt::Display for DbError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DbError::Sql(e) => f.write_str(&defaults::render("msg.err_db_sql", &[("err", e)])),
+            DbError::Schema { db, found, known } => f.write_str(&defaults::render("msg.err_db_schema", &[("db", db), ("found", found), ("known", known)])),
+            DbError::JournalMode(m) => f.write_str(&defaults::render("msg.err_db_journal", &[("mode", m)])),
+            DbError::Busy => f.write_str(defaults::text("msg.err_db_busy")),
+            DbError::Unavailable => f.write_str(defaults::text("msg.err_db_unavailable")),
+            DbError::Timeout => f.write_str(defaults::text("msg.err_db_timeout")),
+            DbError::Rejected(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for DbError {}

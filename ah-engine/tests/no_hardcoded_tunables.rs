@@ -31,6 +31,8 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/rules.rs", "for k in [\"command\"", "tool_input field names a rule can match by default: the host hook payload schema, an adapter concern (D30)"),
     ("src/store.rs", "matches!(verb, \"take\"", "project-store verbs: the store's own wire protocol"),
     ("src/health.rs", "for key in [\"breaker_until\"", "keys of the files.* settings the operator reset clears: names of settings, not values"),
+    // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
+    ("src/sql.rs", "", "the SQL schema migrations and statements: the schema is code, versioned with the binary, and every tunable value is bound as a parameter at run time"),
 ];
 
 /// Files that are not engine code paths (test helpers).

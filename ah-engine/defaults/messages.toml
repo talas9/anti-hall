@@ -262,6 +262,38 @@ value = "too many keys"
 doc = "A project operation verb is not known. Placeholder: {verb}."
 value = "unknown verb {verb}"
 
+[msg.err_db_sql]
+doc = "A storage operation failed inside SQLite. Placeholder: {err}."
+value = "storage error: {err}"
+
+[msg.err_db_schema]
+doc = "A database was written by a newer build of the engine. Placeholders: {db}, {found}, {known}."
+value = "{db} has schema version {found}, newer than this build knows ({known}); storage stays off until the matching build runs"
+
+[msg.err_db_journal]
+doc = "The journal mode could not be set. Placeholder: {mode}."
+value = "the database journal mode could not be set (got {mode}); the file system may not support it"
+
+[msg.err_db_busy]
+doc = "The storage writer queue is full."
+value = "storage is busy; retry later"
+
+[msg.err_db_unavailable]
+doc = "Storage is not open."
+value = "storage is not available"
+
+[msg.err_db_timeout]
+doc = "A write did not commit in time; it may still commit, and its write id makes a retry harmless."
+value = "the write did not commit in time; retry with the same write id"
+
+[msg.storage_ok]
+doc = "Status value when the databases are open."
+value = "ok"
+
+[msg.storage_off]
+doc = "Status value when the daemon runs without storage (unit tests, or before it opened)."
+value = "memory only"
+
 [msg.err_unknown_check]
 doc = "`check` was asked for a check that is not registered. Placeholder: {name}."
 value = "unknown check {name}"

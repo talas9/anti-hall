@@ -47,8 +47,8 @@ pub fn summary(store: &dyn Store, filter: &ImpactFilter, recent: usize) -> Value
         .collect();
     json!({
         "running": true,
-        "persisted": false,
-        "note": defaults::text("telemetry.not_persisted_note"),
+        "persisted": store.persisted(),
+        "note": defaults::text(if store.persisted() { "telemetry.impact_persisted_note" } else { "telemetry.not_persisted_note" }),
         "registered_kinds": kinds(),
         "total": total,
         "by_kind": by_kind,
@@ -56,6 +56,7 @@ pub fn summary(store: &dyn Store, filter: &ImpactFilter, recent: usize) -> Value
         "blocks_by_reason": blocks_by_reason,
         "by_project": by_project,
         "events_held": store.held_events(),
+        "events_dropped": store.dropped(),
         "recent": events,
         "savings": {
             "model_routing": {
@@ -88,7 +89,7 @@ mod tests {
 
     #[test]
     fn the_report_groups_blocks_by_reason() {
-        let mut s = MemStore::new(10, 10, "other");
+        let s = MemStore::new(10, 10, "other");
         for (k, r) in [("block", "force_push"), ("block", "force_push"), ("block", "credit"), ("warning", "w")] {
             s.record_impact(ImpactEvent { ts_ms: 1, kind: k.into(), check: "git".into(), reason: r.into(), project: "p".into() });
         }

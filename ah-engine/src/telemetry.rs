@@ -14,7 +14,7 @@ use std::sync::Mutex;
 /// Metrics plus the impact ledger.
 pub struct Telemetry {
     metrics: Mutex<Metrics>,
-    store: Mutex<Box<dyn Store>>,
+    store: Box<dyn Store>,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -49,7 +49,12 @@ impl Telemetry {
             defaults::num("telemetry.max_series") as usize * 4,
             defaults::text("telemetry.overflow_label"),
         );
-        Telemetry { metrics: Mutex::new(Metrics::default()), store: Mutex::new(Box::new(store)) }
+        Telemetry::with_store(Box::new(store))
+    }
+
+    /// A telemetry handle recording impact events in `store` (the daemon passes the SQLite store, D52).
+    pub fn with_store(store: Box<dyn Store>) -> Telemetry {
+        Telemetry { metrics: Mutex::new(Metrics::default()), store }
     }
 
     /// Count one request of any type.
@@ -64,7 +69,7 @@ impl Telemetry {
 
     /// Record one impact event.
     pub fn impact(&self, kind: &str, check: &str, reason: &str, project: &str) {
-        lk(&self.store).record_impact(ImpactEvent { ts_ms: now_ms(), kind: kind.into(), check: check.into(), reason: reason.into(), project: project.into() });
+        self.store.record_impact(ImpactEvent { ts_ms: now_ms(), kind: kind.into(), check: check.into(), reason: reason.into(), project: project.into() });
     }
 
     /// A built-in check finished: count the run, time it, and record the impact of a block or advisory.
@@ -118,13 +123,12 @@ impl Telemetry {
 
     /// The `impact` command's body.
     pub fn impact_json(&self, filter: &ImpactFilter, recent: usize) -> Value {
-        crate::impact::summary(&**lk(&self.store), filter, recent)
+        crate::impact::summary(&*self.store, filter, recent)
     }
 
     /// Headline counts for `status`.
     pub fn headline(&self) -> Value {
-        let store = lk(&self.store);
-        let all = store.impact_counts(&ImpactFilter::default());
+        let all = self.store.impact_counts(&ImpactFilter::default());
         let total = |kind: &str| all.iter().filter(|c| c.kind == kind).map(|c| c.count).sum::<u64>();
         let m = lk(&self.metrics);
         json!({

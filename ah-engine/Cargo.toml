@@ -8,6 +8,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
 libc = "0.2.190"
+# Embedded storage (D19, D73): SQLite compiled in (`bundled`), so there is nothing for the user to install; `backup` is the
+# online backup API used by `ah-engine backup` (D27).
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "cache"] }
 
 [build-dependencies]
 # Compiles defaults/*.toml into static data (build.rs); not linked into the binary.

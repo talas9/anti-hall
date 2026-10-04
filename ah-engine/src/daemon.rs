@@ -124,6 +124,10 @@ pub struct Shared {
     /// Metrics and the impact ledger (D51, D52).
     pub telemetry: Telemetry,
     starts: u64,
+    /// The databases, when they opened (D19); hooks never depend on them.
+    pub db: Option<Arc<crate::db::Db>>,
+    /// `ok`, or the error code that kept storage from opening, for `status`.
+    pub storage: String,
 }
 
 /// The value of `name=<value>` in a space-separated argument string (empty when absent).
@@ -163,7 +167,16 @@ impl Shared {
             last_request: AtomicU64::new(0),
             telemetry: Telemetry::new(),
             starts: 0,
+            db: None,
+            storage: defaults::text("msg.storage_off").to_string(),
         }
+    }
+
+    /// Keep impact events (and, through later layers, project state) in `db` instead of memory.
+    pub fn attach_db(&mut self, db: Arc<crate::db::Db>) {
+        self.telemetry = Telemetry::with_store(Box::new(crate::storage::SqliteStore::new(db.clone())));
+        self.storage = defaults::text("msg.storage_ok").to_string();
+        self.db = Some(db);
     }
 
     fn ms(&self) -> u64 {
@@ -220,6 +233,7 @@ impl Shared {
             "rules": {"version": rules.version, "count": rules.rules.len(), "fingerprint": format!("{:016x}", rules.fingerprint())},
             "summary": self.telemetry.headline(),
             "mem_limit": self.rlimit,
+            "storage": self.storage,
             "rss_cap_kb": self.cfg.rss_cap_kb,
         })
         .to_string()
@@ -578,6 +592,15 @@ pub fn serve() {
     let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);
     sh.rlimit = rlimit;
     sh.starts = starts;
+    // Storage is opened after the singleton lock, so only one daemon ever writes the databases. A storage failure
+    // is logged and the daemon serves hooks anyway (they never depend on storage); impact then stays in memory.
+    match crate::db::Db::open(&paths::dir()) {
+        Ok(db) => sh.attach_db(db),
+        Err(e) => {
+            health::log_event("storage", e.code(), &e.to_string());
+            sh.storage = e.code().to_string();
+        }
+    }
     let sh = Arc::new(sh);
     for i in 0..sh.cfg.workers {
         let s = sh.clone();
@@ -588,6 +611,9 @@ pub fn serve() {
         std::thread::spawn(move || watchdog(s));
     }
     accept_loop(&sh, &listener);
+    if let Some(db) = &sh.db {
+        db.close(); // everything queued commits before the process exits
+    }
     health::clear_marker();
     health::log_event("exit", "clean", "drained");
     // The socket was unlinked when the drain began (a successor may already own that path); the lock

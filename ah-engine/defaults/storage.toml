@@ -1,0 +1,79 @@
+# ah-engine shipped storage defaults (D19-D27, D73): file names, SQLite durability settings, the writer queue, the
+# in-memory tier, the spool, retention and backups. Format: see the header of engine.toml.
+#
+# Durability settings are keys, not code (D73). The measured choice for hot.db is WAL with synchronous=FULL (every
+# commit is on disk before the write is acknowledged, so nothing acknowledged is lost if the process dies);
+# archive.db holds append-mostly history and commits in batches.
+
+# ---- files ----------------------------------------------------------------------------------------------
+
+[storage.hot_file]
+doc = "The database for frequent small writes (impact events, project state, metric snapshots), inside the state directory (D21)."
+value = "hot.db"
+
+[storage.archive_file]
+doc = "The database for append-mostly history, inside the state directory; opened on first use (D21)."
+value = "archive.db"
+
+# ---- SQLite settings ------------------------------------------------------------------------------------
+
+[storage.journal_mode]
+doc = "SQLite journal mode for both databases; WAL lets readers run while the writer commits (D73)."
+value = "WAL"
+
+[storage.hot_synchronous]
+doc = "SQLite synchronous level for hot.db; FULL syncs every commit, so an acknowledged write survives a process crash (D23, D73)."
+value = "FULL"
+
+[storage.archive_synchronous]
+doc = "SQLite synchronous level for archive.db, which takes batched, re-runnable moves and rollups."
+value = "NORMAL"
+
+[storage.fullfsync]
+doc = "1 makes SQLite use F_FULLFSYNC on macOS, which also survives power loss at a large cost in commit rate (D73: 479 against 43k commits per second measured); 0 keeps the plain fsync. Off until metrics decide."
+value = 0
+env = "AH_ENGINE_FULLFSYNC"
+min = 0
+max = 1
+
+[storage.cache_kb]
+doc = "SQLite page cache per connection; capped so the daemon's memory stays flat (D25)."
+value = 512
+unit = "KB"
+min = 64
+
+[storage.mmap_kb]
+doc = "SQLite memory-mapped I/O per connection; 0 turns it off so file pages are not counted in the daemon's resident set (D25)."
+value = 0
+unit = "KB"
+
+[storage.busy_timeout_ms]
+doc = "How long a connection waits for another connection's lock before the statement fails."
+value = 1000
+unit = "ms"
+
+[storage.wal_autocheckpoint]
+doc = "WAL pages after which SQLite checkpoints on its own (between explicit checkpoints by `ah-engine maintain`)."
+value = 1000
+unit = "pages"
+
+# ---- writer ---------------------------------------------------------------------------------------------
+
+[storage.write_queue]
+doc = "Writes that may wait for the writer thread; beyond this a write is refused as busy (the client retries, then spools)."
+value = 1024
+env = "AH_ENGINE_WRITE_QUEUE"
+min = 1
+max = 65536
+
+[storage.batch_max]
+doc = "Most writes committed in one transaction."
+value = 256
+min = 1
+
+[storage.ack_timeout_ms]
+doc = "How long a request waits for its write to commit before it is answered with an error (the client then retries or spools; the write id makes a late commit harmless); kept below client.ctl_timeout_ms so the client hears the error."
+value = 1000
+env = "AH_ENGINE_ACK_TIMEOUT_MS"
+unit = "ms"
+min = 1
