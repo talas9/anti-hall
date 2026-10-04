@@ -359,11 +359,14 @@ replacement string (`xargs -I`/`-i`/`-J`, find's `{}`, parallel's `{}`/`-I`) is
 the command word, the git subcommand or an argument before it, the command is
 unknown and is blocked if a force or remote-delete flag is visible
 (`xargs -I{} git {} --force`). Custom placeholders (`-I{x}`, parallel's
-`{1}`/`{.}`/`{/}`/`{#}`) are ordinary words: `{` and `}` are treated as
-group braces only as standalone words in command position, as in bash. When
+`{1}`/`{.}`/`{/}`/`{#}`) are ordinary words: `{` is a group brace only as
+a standalone word (blanks on both sides, so `function f { ...; }` and
+`coproc NAME { ...; }` bodies are scanned) and `}` only after `;`, `&` or
+a newline. When
 xargs or parallel runs `git` with no subcommand word, the subcommand comes
 from stdin, so it is blocked if a force or remote-delete token appears
-anywhere on the same command line (`echo 'push --force o m' | xargs git`).
+anywhere on the same command line, also after quote removal
+(`echo 'push --force o m' | xargs git`, `echo push '-'f o m | xargs git`).
 When the script comes from stdin (`xargs -I{} sh -c '{}'`, `| parallel`
 with no command, `| sh`, `| bash -s`), the quoted strings and echo/printf
 words on the line are scanned as commands. A `sh -c` / `bash -c` script

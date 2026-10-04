@@ -243,23 +243,16 @@ function tokenize(segment) {
   return tokens;
 }
 
-// Reserved words after which bash still expects a command, so a following
-// standalone `{` opens a group (`then { ...; }`, `! { ...; }`).
-const BRACE_LEAD_WORDS = new Set(['!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time']);
-
 // True when the `{`/`}` at the current scan position is the reserved word:
 // `cur` is the segment text before it (already split after ; & | newline ( )),
-// c2 the next char. `}` closes only at segment start; `{` also needs a
-// following blank, since `{x}` / `{}` / `{a,b}` are ordinary words.
+// c2 the next char. Any standalone `{` (a blank or segment start before it, a
+// blank after it) splits, wherever it sits - after `function f`, `coproc
+// NAME`, `time -p` the group body still runs, and over-splitting a literal
+// `{` argument only makes the scan stricter. `{x}` / `{}` / `{a,b}` /
+// `${X}` are ordinary words. `}` closes only at segment start.
 function isBraceGroupWord(cur, c, c2) {
-  const lead = cur.trim();
-  if (c === '}') {
-    if (lead !== '') return false;
-    return c2 === '' || /[\s;&|<>)]/.test(c2);
-  }
-  if (c2 !== '' && !/\s/.test(c2)) return false;
-  if (cur !== '' && !/\s$/.test(cur)) return false;
-  return lead === '' || lead.split(/\s+/).every((w) => BRACE_LEAD_WORDS.has(w));
+  if (c2 !== '' && !/\s/.test(c2)) return c === '}' && cur.trim() === '' && /[;&|<>)]/.test(c2);
+  return c === '}' ? cur.trim() === '' : (cur === '' || /\s$/.test(cur));
 }
 
 // Split a full command line into logical segments on the shell operators
@@ -410,9 +403,8 @@ function splitSegments(cmd) {
     // `(git push --force)` and `$(...)` / `{ ...; }` bodies are scanned as their
     // own segments. We drop the bracket char itself.
     // `{` and `}` are bash reserved words, so they open/close a group only
-    // as a standalone word in command position: `{` followed by whitespace
-    // where a command (or a leading reserved word) is expected, `}` right
-    // after `;`, `&` or a newline. Anywhere else they are word text - the
+    // as standalone words: `{` between blanks, `}` right after `;`, `&` or a
+    // newline. Anywhere else they are word text - the
     // xargs -I{x} / find {} / parallel {1} {.} placeholders, `${VAR}` - and
     // splitting there cut `parallel git {1} --force` in two (R3 B1).
     if (c === ')') { flush(); i++; continue; }
@@ -1390,10 +1382,15 @@ function placeholderVerdict(ev, repls) {
 // line, so these helpers look there.
 
 // True when a force or remote-delete token (--force, -f, +ref, --delete,
-// :ref, ...) appears anywhere in the line, quoted text included.
+// :ref, ...) appears anywhere in the line, quoted text included. The words
+// are taken both raw and after shell quote removal, so `'-'f` / `-"f"`
+// (which echo prints as `-f`) count too.
 function forceishAnywhere(cmd) {
-  const words = String(cmd).split(/[\s'"`;|&()<>\\]+/).filter(Boolean)
-    .map((text) => ({ text, quotedOnly: false }));
+  const texts = String(cmd).split(/[\s'"`;|&()<>\\]+/);
+  for (const seg of splitSegments(cmd)) {
+    for (const t of tokenize(seg)) texts.push(...t.text.split(/\s+/));
+  }
+  const words = texts.filter(Boolean).map((text) => ({ text, quotedOnly: false }));
   return isForcePush(words) || isDeleteRefPush(words);
 }
 
@@ -2041,6 +2038,7 @@ function hdIsDataSink(t) {
 // not a git hook name or dotfile, and not an existing symlink.
 function hdTargetOk(t, dirs) {
   if (!t) return false;
+  t = t.replace(/^\$(?:HOME|\{HOME\})(?=\/|$)/, '~'); // `$HOME/n.md` is `~/n.md`
   if (/^\/dev\/(?:null|stdout|stderr|fd\/[12])$/.test(t)) return true;
   if (!/^[A-Za-z0-9_.\/~+@%:,=-]+$/.test(t) || t.indexOf('__AH') >= 0) return false;
   if (hdBadPath(t)) return false;

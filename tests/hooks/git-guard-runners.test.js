@@ -179,11 +179,35 @@ block('{ FP;} group', `{ ${FP};}`);
 block('then { ... } group', `if true; then { ${FP}; }; fi`);
 block('f() { ... } function body', `f() { ${FP}; }; f`);
 allow('{ echo a; echo b; } > out.txt', '{ echo a; echo b; } > out.txt');
+// Any standalone `{` opens a group, not only in command position: after
+// `function f`, `coproc [NAME]` or `time -p` the body still runs (R4 P1).
+block('function f { G; }; f', `function f { ${FP}; }; f`);
+block('function f { G; } NL f', `function f { ${FP}; }\nf`);
+block('function f {  G ; } ; f', `function f {  ${FP} ; } ; f`);
+block('second function body', `function f { echo ; }; function g { ${FP}; }; g`);
+block('coproc { G; }', `coproc { ${FP}; }`);
+block('coproc NAME { G; }', `coproc NAME { ${FP}; }`);
+block('time -p { G; }', `time -p { ${FP}; }`);
+block('bash -c "function f { G; }; f"', `bash -c "function f { ${FP}; }; f"`);
+block("sh -c 'coproc { G; }'", `sh -c 'coproc { ${FP}; }'`);
+block("eval 'function f { G; }; f'", `eval 'function f { ${FP}; }; f'`);
+block('function f { G NL }', `function f { ${FP}\n}`);
+allow('find -exec grep -l foo {} +', 'find -exec grep -l foo {} +');
+allow('git stash show -p stash@{0}', 'git stash show -p stash@{0}');
+allow('git show HEAD@{1}', 'git show HEAD@{1}');
+allow('echo {a,b}', 'echo {a,b}');
+allow("awk '{print $1}'", "awk '{print $1}' f");
+allow("jq '.a | {b}'", "jq '.a | {b}' f");
+allow('parallel echo {1} ::: a', 'parallel echo {1} ::: a');
 
 // ---- subcommand or script on stdin (R3 A6) ---------------------------------
 block("echo 'P F' | xargs git", `echo '${P} ${F} o m' | xargs git`);
 block("echo 'P +main' | xargs git", `echo '${P} +main' | xargs git`);
 block("echo 'P o :main' | xargs git", `echo '${P} o :main' | xargs git`);
+// Quote removal: echo prints `'-'f` / `-"f"` as `-f` (R4 P2).
+block("echo P '-'f | xargs git", `echo ${P} '-'f o m | xargs git`);
+block('echo P -"f" | xargs git', `echo ${P} -"f" o m | xargs git`);
+block("printf P --fo'rce' | xargs git", `printf '%s ' ${P} --fo'rce' | xargs git`);
 block('printf P F | parallel git', `printf '%s\\n' ${P} ${F} | parallel git`);
 block('xargs git < <(echo P F)', `xargs git < <(echo ${P} ${F} o m)`);
 block('xargs git > log (redirect is not a subcommand)', `echo '${P} ${F} o m' | xargs git > log`);

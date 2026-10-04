@@ -101,6 +101,14 @@ block('existing symlink target', `cat > link.md <<'EOF'\n${FP}\nEOF`);
 block('variable target', `cat > $F.md <<'EOF'\n${FP}\nEOF`);
 block('substitution target', `cat > "$(echo x).md" <<'EOF'\n${FP}\nEOF`);
 block('launcher-dir target', `cat > ~/.anti-hall/bin/devswarm.md <<'EOF'\nx\nEOF`);
+// `$HOME/` is the same target as `~/` (R4 P2).
+allow('~/n.md target', `cat > ~/n.md <<'EOF'\n${NOTE}EOF`);
+allow('$HOME/n.md target', `cat > $HOME/n.md <<'EOF'\n${NOTE}EOF`);
+allow('"$HOME/n.md" target', `cat > "$HOME/n.md" <<'EOF'\n${NOTE}EOF`);
+block('$HOME launcher-dir target', `cat > $HOME/.anti-hall/bin/devswarm.md <<'EOF'\nx\nEOF`);
+block('$HOME/x.sh target', `cat > $HOME/x.sh <<'EOF'\n${NOTE}EOF`);
+block('$HOME/.bashrc target', `cat > $HOME/.bashrc <<'EOF'\n${NOTE}EOF`);
+block('$HOMEX/n.md is another variable', `cat > $HOMEX/n.md <<'EOF'\n${NOTE}EOF`);
 block('force push after the terminator', `cat > n.md <<'EOF'\nx\nEOF\n${FP}`);
 block('padded delimiter line inside the body', `cat > n.md <<'EOF'\nx\n EOF\n${FP}\nEOF`);
 block('"EOF)" line inside a $( ) body', `echo "$(cat <<'EOF'\nhi\nEOF)"\n${FP}\nEOF`);
