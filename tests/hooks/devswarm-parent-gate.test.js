@@ -409,6 +409,7 @@ test('LOOP-SAFE: same blocking SET escalates at the cap, then goes quiet (bounde
     const r3 = run(h.home, p, env); // effectiveBlocks === cap (2) -> escalation, not silence
     assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
     assert.match(r3.json.reason, /Escalation: /, 'must use escalation wording, not the normal nag');
+    require('../helpers/block-shape.js').assertShape(r3.json.reason, 'devswarm-parent-gate', 'parent-gate escalation', { requireWhy: true });
     const r4 = run(h.home, p, env); // effectiveBlocks > cap -> now goes quiet
     assert.strictEqual(r4.status, 0);
     assert.strictEqual(r4.stdout, '', 'must go quiet the pass AFTER the escalation');

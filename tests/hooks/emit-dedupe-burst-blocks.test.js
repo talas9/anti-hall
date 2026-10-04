@@ -53,7 +53,7 @@ function burst(hook, n, { env, seed }, matchers) {
 }
 
 test('limit-conserve: 4 queued prompts -> 1 LIMIT CONSERVATION block; emitted again after delivery', () => {
-  const r = burst('limit-conserve-inject.js', 4, { env: { ANTIHALL_LIMIT_CONSERVE: 'on' } }, [(c) => c.includes('LIMIT CONSERVATION ACTIVE')]);
+  const r = burst('limit-conserve-inject.js', 4, { env: { ANTIHALL_LIMIT_CONSERVE: 'on' } }, [(c) => c.includes('limit conservation is active')]);
   assert.deepStrictEqual(r.counts, [1]);
   // keepalive key (guards.injectionRepeatEvery=10): consumed + unchanged -> quiet on the next delivered turn by design.
   assert.deepStrictEqual(r.after, [0]);

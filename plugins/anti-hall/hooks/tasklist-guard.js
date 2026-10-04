@@ -521,7 +521,7 @@ function main() {
         }
         if (!alreadyAdvised) {
           finalReason = sanitizeReason(
-            finalReason + '\n\u{1F4A1} No handover exists yet after significant work: consider /anti-hall:handover before ending.'
+            finalReason + '\n\u{1F4A1} anti-hall \u00B7 handover: no handover exists yet after significant work.\nDo instead: consider /anti-hall:handover before ending.'
           );
           try {
             fs.mkdirSync(stateDir, { recursive: true });
@@ -580,7 +580,7 @@ function main() {
             }
             if (!alreadyWarned) {
               finalReason = sanitizeReason(
-                finalReason + '\n\u26A0\uFE0F The handover is stale (work happened after it was written): refresh it before the user compacts.'
+                finalReason + '\n\u26A0\uFE0F anti-hall \u00B7 handover: the saved handover is stale (work happened after it was written).\nDo instead: refresh it before the user compacts.'
               );
               try {
                 fs.mkdirSync(stateDir, { recursive: true });

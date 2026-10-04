@@ -968,7 +968,7 @@ test('THREAD 5 ADVISORY: blocking session + no handover dir -> advisory appended
     const tp = h.writeTranscript(edits(4));
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /No handover exists yet after significant work/);
+    assert.match(r.json.reason, /no handover exists yet after significant work/);
     assert.match(r.json.reason, /consider \/anti-hall:handover before ending/);
   } finally { h.cleanup(); }
 });
@@ -1040,7 +1040,7 @@ test('THREAD 7b STALENESS: handover older than the transcript -> stale advisory 
     const tp = h.writeTranscript(edits(4)); // written now -> newer than the handover
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /The handover is stale/);
+    assert.match(r.json.reason, /the saved handover is stale/);
     assert.match(r.json.reason, /refresh it before the user compacts/);
   } finally { h.cleanup(); }
 });
@@ -1056,7 +1056,7 @@ test('THREAD 7b STALENESS: handover newer than the transcript -> NOT stale, no a
     fs.writeFileSync(path.join(hdir, 'HANDOVER.md'), '# handover\n', 'utf8'); // written after -> newer
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.doesNotMatch(r.json.reason, /The handover is stale/);
+    assert.doesNotMatch(r.json.reason, /the saved handover is stale/);
   } finally { h.cleanup(); }
 });
 
@@ -1083,7 +1083,7 @@ test('THREAD 7b STALENESS: transcript entries WITHOUT timestamps -> silent (neve
     const tp = h.writeTranscript(noTs);
     const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.doesNotMatch(r.json.reason, /The handover is stale/);
+    assert.doesNotMatch(r.json.reason, /the saved handover is stale/);
   } finally { h.cleanup(); }
 });
 
@@ -1102,12 +1102,12 @@ test('THREAD 7b STALENESS: capped — does not repeat once already warned this s
     const tp1 = h.writeTranscript(edits(4));
     const r1 = testHook(HOOK, stopPayload(tp1, h.home, session), { home: h.home });
     assert.ok(isBlock(r1), `first block expected; stdout: ${r1.stdout}`);
-    assert.match(r1.json.reason, /The handover is stale/);
+    assert.match(r1.json.reason, /the saved handover is stale/);
 
     const tp2 = h.writeTranscript(edits(7)); // different workBucket (floor(n/3)) -> new dedup signal // new signal -> re-blocks
     const r2 = testHook(HOOK, stopPayload(tp2, h.home, session), { home: h.home });
     assert.ok(isBlock(r2), `second block expected on a new signal; stdout: ${r2.stdout}`);
-    assert.doesNotMatch(r2.json.reason, /The handover is stale/,
+    assert.doesNotMatch(r2.json.reason, /the saved handover is stale/,
       'staleness advisory must not repeat once already warned this session');
   } finally { h.cleanup(); }
 });

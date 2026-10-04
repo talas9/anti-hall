@@ -160,7 +160,7 @@ const ON = { ANTIHALL_SHIPIT_GATE: '1' };
 test('ship-it-guard: ON + apply_patch on a hard-risk path + no PLAN.md -> BLOCK', () => withRepo((home, repo) => {
   const r = testHook(SG, codexPayload(patch(add('README.md'), add('db/migrations/001_init.sql')), repo), { home, env: ON });
   assert.strictEqual(r.status, 2, r.stderr);
-  assert.match(r.stderr, /ship-it gate/);
+  assert.match(r.stderr, /ship-it-guard: L-risk/);
   assert.match(r.stderr, /001_init\.sql/);
 }));
 

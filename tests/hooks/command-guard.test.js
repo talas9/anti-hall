@@ -1186,9 +1186,9 @@ const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature
 // redirect, no DevSwarm text, scratchpad path first, inline-allowed shapes named.
 function assertBaselineReason(reason) {
   assert.match(reason, /^\u26D4 anti-hall \u00B7 command-guard: heavy command \(verb: npm\) blocked in the main thread\./);
-  assert.match(reason, /Do instead: To read output yourself: put a READ-ONLY command in a scratchpad script and run it with run_in_background/);
-  assert.match(reason, /Otherwise delegate to a subagent \(cheap model: Haiku or similar\)/);
-  assert.match(reason, /Allowed here: Inline-allowed ONLY when piped to tail\/head\/wc\/grep -c\/grep -m N: `python3 -m pytest -q <one file>`/);
+  assert.match(reason, /Do instead: delegate to a subagent \(it returns a short summary\)/);
+  assert.match(reason, /Allowed here: piped to tail\/head\/wc\/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`/);
+  assert.match(reason, /read-only scratchpad script \(executable, absolute path, no VAR= prefix\) run with run_in_background/);
   assert.ok(!/workspace-scale|devswarm\.js spawn/.test(reason), reason);
 }
 
@@ -1214,7 +1214,7 @@ test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js s
     `Primary reason must name devswarm.js spawn: ${reason}`);
   assert.ok(/workspace-scale/i.test(reason), `Primary reason must state the choice rule: ${reason}`);
   // Measured from the rule text: the leading scratchpad hint names a subagent for state changes.
-  const rule = reason.indexOf('Otherwise');
+  const rule = reason.indexOf('Do instead:');
   assert.ok(rule > 0 && reason.indexOf('devswarm.js spawn', rule) < reason.indexOf('subagent', rule),
     `workspace exit must precede the subagent alternative: ${reason}`);
   assert.ok(/Never hand a workspace-scale matter to a subagent/.test(reason),

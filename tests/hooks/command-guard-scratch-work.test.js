@@ -303,8 +303,8 @@ test('hint: read-only output capture; state changes and test runs go to a subage
     const r = testHook(HOOK, { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm run build' }, session_id: 't', cwd: REPO },
       { home: h.home, env: COORD });
     assert.strictEqual(r.status, 2);
-    assert.match(r.json.reason, /Do instead: To read output yourself: put a READ-ONLY command in a scratchpad script and run it with run_in_background/);
-    assert.match(r.json.reason, /Commits, pushes, patch applies, gh mutations, repo edits and test runs go to a subagent/);
+    assert.match(r.json.reason, /Allowed here: .*read-only scratchpad script .*run with run_in_background/);
+    assert.match(r.json.reason, /Do instead: delegate to a subagent/);
     assert.ok(!/coordinator work window/i.test(r.json.reason));
   } finally { h.cleanup(); }
 });

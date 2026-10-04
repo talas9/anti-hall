@@ -206,7 +206,7 @@ function checkFlags(cmd, flags) {
 // list for `cmd` to stderr. Called BEFORE any store write, so nothing is
 // ever written when an unknown flag is present.
 function printFlagError(cmd, errors) {
-  for (const e of errors) process.stderr.write('error: ' + e + '\n');
+  for (const e of errors) process.stderr.write('\u274C anti-hall \u00B7 defect: ' + e + '\n');
   process.stderr.write(`valid flags for \`${cmd}\`: ${(VALID_FLAGS[cmd] || []).map((f) => '--' + f).join(', ')}\n`);
 }
 
@@ -363,7 +363,7 @@ function cmdBackfill(args) {
   try {
     res = history.backfill({ repo, dryRun: !!f['dry-run'] });
   } catch (e) {
-    process.stderr.write(`error: backfill could not read git history at ${repo}: ${String((e && e.message) || e).split('\n')[0]}\n`);
+    process.stderr.write(`\u274C anti-hall \u00B7 defect: backfill could not read git history at ${repo}: ${String((e && e.message) || e).split('\n')[0]}\n`);
     return 1;
   }
   const out = {

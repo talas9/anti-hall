@@ -141,7 +141,7 @@ function effectiveIntegrations(opts) {
 function cmdShow(args, opts) {
   const target = args.section ? schema.SECTIONS.filter((s) => s.key === args.section) : schema.SECTIONS;
   if (args.section && target.length === 0) {
-    process.stderr.write('unknown section: ' + args.section + '\n');
+    process.stderr.write('\u274C anti-hall \u00B7 settings: unknown section: ' + args.section + '\n');
     process.exitCode = 1;
     return;
   }
@@ -214,7 +214,7 @@ function cmdGet(args, opts) {
   const [section, key] = splitKey(args._[0]);
   const entry = section && schema.findSetting(section, key);
   if (!entry) {
-    process.stderr.write('unknown setting: ' + args._[0] + ' (expected section.key)\n');
+    process.stderr.write('\u274C anti-hall \u00B7 settings: unknown setting: ' + args._[0] + ' (expected section.key)\n');
     process.exitCode = 1;
     return;
   }
@@ -232,12 +232,12 @@ function cmdSet(args, opts) {
   const rawValue = args._[1];
   const entry = section && schema.findSetting(section, key);
   if (!entry) {
-    process.stderr.write('unknown setting: ' + args._[0] + ' (expected section.key)\n');
+    process.stderr.write('\u274C anti-hall \u00B7 settings: unknown setting: ' + args._[0] + ' (expected section.key)\n');
     process.exitCode = 1;
     return;
   }
   if (rawValue === undefined) {
-    process.stderr.write('usage: settings.js set <section.key> <value>\n');
+    process.stderr.write('\uD83D\uDCA1 anti-hall \u00B7 settings: usage: settings.js set <section.key> <value>\n');
     process.exitCode = 1;
     return;
   }
@@ -249,7 +249,7 @@ function cmdSet(args, opts) {
     } else if (args.json) {
       process.stdout.write(JSON.stringify({ ok: false, error: result.error }) + '\n');
     } else {
-      process.stderr.write('error: ' + result.error + '\n');
+      process.stderr.write('\u274C anti-hall \u00B7 settings: ' + result.error + '\n');
     }
     process.exitCode = 1;
     return;
@@ -263,7 +263,7 @@ function cmdReset(args, opts) {
   const [section, key] = splitKey(args._[0]);
   const entry = section && schema.findSetting(section, key);
   if (!entry) {
-    process.stderr.write('unknown setting: ' + args._[0] + ' (expected section.key)\n');
+    process.stderr.write('\u274C anti-hall \u00B7 settings: unknown setting: ' + args._[0] + ' (expected section.key)\n');
     process.exitCode = 1;
     return;
   }
@@ -275,7 +275,7 @@ function cmdReset(args, opts) {
     } else if (args.json) {
       process.stdout.write(JSON.stringify({ ok: false, error: result.error }) + '\n');
     } else {
-      process.stderr.write('error: ' + result.error + '\n');
+      process.stderr.write('\u274C anti-hall \u00B7 settings: ' + result.error + '\n');
     }
     process.exitCode = 1;
     return;
@@ -298,7 +298,7 @@ function cmdTrustAllow(kind, args, opts) {
   const top = allowLib.repoToplevel(target);
   const fail = (error) => {
     if (args.json) process.stdout.write(JSON.stringify({ ok: false, error }) + '\n');
-    else process.stderr.write('error: ' + error + '\n');
+    else process.stderr.write('\u274C anti-hall \u00B7 settings: ' + error + '\n');
     process.exitCode = 1;
   };
   if (!top) return fail('not inside a git repository: ' + target);
@@ -350,14 +350,14 @@ const JUDGE_COST = 'about $0.0001\u20130.001 and 1\u20133 s per turn end, estima
 function cmdJudge(args, opts) {
   const verb = args._[0];
   if (verb !== 'on' && verb !== 'off' && verb !== 'status') {
-    process.stderr.write('usage: settings.js judge on|off|status\n');
+    process.stderr.write('\uD83D\uDCA1 anti-hall \u00B7 settings: usage: settings.js judge on|off|status\n');
     process.exitCode = 1;
     return;
   }
   if (verb !== 'status') {
     const r = settings.set('jev', 'semanticJudge', verb === 'on' ? 'true' : 'false', opts);
     if (!r.ok) {
-      process.stderr.write('error: ' + r.error + '\n');
+      process.stderr.write('\u274C anti-hall \u00B7 settings: ' + r.error + '\n');
       process.exitCode = 1;
       return;
     }
@@ -404,7 +404,7 @@ function main() {
     case 'trust-command-allow': return cmdTrustCommandAllow(args, opts);
     case 'trust-edit-allow': return cmdTrustEditAllow(args, opts);
     default:
-      process.stderr.write('usage: settings.js <show|get|set|reset|judge|trust-command-allow|trust-edit-allow> [args] [--json]\n');
+      process.stderr.write('\uD83D\uDCA1 anti-hall \u00B7 settings: usage: settings.js <show|get|set|reset|judge|trust-command-allow|trust-edit-allow> [args] [--json]\n');
       process.exitCode = 1;
   }
 }

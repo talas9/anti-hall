@@ -4493,7 +4493,7 @@ function main() {
   // Codex variant: no scratchpad-script path (no scratchpad dir, no
   // run_in_background on Codex Bash), Codex sub-agent + cheap-tier wording.
   const SUB = codexHost ? H.CODEX_SUBAGENT : 'a subagent';
-  const delegateTo = 'delegate to ' + SUB + ' (it returns a short summary)';
+  const delegateTo = 'delegate to ' + (codexHost ? H.CODEX_CHEAP : SUB) + ' (it returns a short summary)';
   // Compact allowed list: exactly the shapes isQualifyingSingleTargetCheck accepts
   // (piped to tail/head/wc/grep -c/grep -m N) plus the scratchpad read-only script.
   const allowedShapes = 'piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <name>`, `<cc> -fsyntax-only`, --check/--dry-run/--list forms' +

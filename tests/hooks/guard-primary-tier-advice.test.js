@@ -71,7 +71,7 @@ test('command-guard Primary, no-workspace repo: workspace advice dropped, subage
   assert.ok(!WS.test(r.json.reason), r.json.reason);
   assert.match(r.json.reason, /delegate to a subagent/);
   assert.match(r.json.reason, /\(verb: npm\)/);
-  assert.match(r.json.reason, /Inline-allowed ONLY/);
+  assert.match(r.json.reason, /piped to tail/);
 });
 
 test('command-guard child wording is byte-identical in both repo kinds', () => {

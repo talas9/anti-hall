@@ -38,15 +38,18 @@ function homeWith(mode) {
 }
 function run(h, pl, env) { return testHook(HOOK, pl, { home: h.home, env: env || {} }); }
 
-const ADVISE = "Standing rule: do not hold work on a question. Take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.";
-const BLOCK_START = 'Blocked by guards.noBlockingQuestions: decide the recommended option yourself, state it in your reply, and continue.';
-const CHILD_RE = /DevSwarm child workspace.*devswarm\.js send --to-primary --question/;
+const ADVISE = require('../../plugins/anti-hall/hooks/lib/block-message.js').message({
+  kind: 'tip', guard: 'ask-guard', what: 'do not hold work on a question.',
+  instead: "take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.",
+});
+const BLOCK_START = '\u26D4 anti-hall \u00B7 ask-guard: AskUserQuestion blocked by guards.noBlockingQuestions.';
+const CHILD_RE = /Child workspace: send the question to your parent with `devswarm\.js send --to-primary --question/;
 
 function assertBlocked(r) {
   assert.strictEqual(r.status, 2, `expected exit 2; stdout=${r.stdout}`);
   assert.strictEqual(r.json.decision, 'block');
   assert.ok(r.json.reason.startsWith(BLOCK_START), r.json.reason);
-  assert.ok(r.json.reason.includes('re-issue it with the question header starting with DESTRUCTIVE: — or CREDENTIAL: if it needs a secret only the user can supply.'));
+  assert.ok(r.json.reason.includes('question header starting DESTRUCTIVE: (or CREDENTIAL: for a secret only the user can supply)'));
 }
 function assertSilent(r) {
   assert.strictEqual(r.status, 0, `stderr=${r.stderr}`);

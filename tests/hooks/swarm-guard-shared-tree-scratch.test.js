@@ -40,7 +40,7 @@ const SCRATCH = { description: 'scratch writer', subagent_type: 'general-purpose
 
 // FIX tests fail on the pre-fix note (which always warns); GUARD tests pass before and after.
 test('GUARD: both spawns in the session repo -> still warns', () => {
-  assert.match(run(launch('t1', A1, REPO), REPO), /SHARED-TREE/);
+  assert.match(run(launch('t1', A1, REPO), REPO), /shared-tree:/);
 });
 const SCRATCH_FIX = [
   SCRATCH,
@@ -75,6 +75,6 @@ const WARN = [
 ];
 for (const prompt of WARN) {
   test('GUARD: in-tree writer still warns: ' + prompt.slice(0, 55), () => {
-    assert.match(run(launch('t1', A1, REPO), { ...REPO, prompt }), /SHARED-TREE/);
+    assert.match(run(launch('t1', A1, REPO), { ...REPO, prompt }), /shared-tree:/);
   });
 }

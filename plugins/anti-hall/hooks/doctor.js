@@ -560,7 +560,7 @@ function versionAlertTest() {
     fs.writeFileSync(cachePath, JSON.stringify({ latest: '999.0.0', checkedAt: Date.now() }));
     const stale = runHook('version-alert.js', { hook_event_name: 'SessionStart', session_id: 'doctor-va-stale-' + Date.now() }, fakeEnv);
     // v0.108.0 wording: "Tell the user now: anti-hall vX is available (you are running vY) ..."
-    const staleAlerted = /"additionalContext"\s*:\s*"[^"]*anti-hall v999\.0\.0 is available \(you are running v/.test(stale.out);
+    const staleAlerted = /"additionalContext"\s*:\s*"[^"]*version-alert: v999\.0\.0 is available \(you are running v/.test(stale.out);
 
     // Case 2: fresh cache, latest === running -> must stay silent (no stdout).
     fs.writeFileSync(cachePath, JSON.stringify({ latest: version, checkedAt: Date.now() }));

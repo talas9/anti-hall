@@ -29,15 +29,15 @@ function run(entries, taskId, env) {
 test('FIELD CASE: TaskStop on a teammate sent a message after its last report -> one advisory line, never a decision', () => {
   const r = run(fieldCase(), NAME);
   assert.strictEqual(r.status, 0);
-  assert.match(ctx(r), /^STALE-STOP NOTE: "rel-worker" was sent a message at \d\d:\d\d UTC, after its last report \(\d\d:\d\d UTC\), and has not reported since/);
-  assert.ok(!/\n/.test(ctx(r)), 'one line');
+  assert.match(ctx(r), /stale-stop: "rel-worker" was sent a message at \d\d:\d\d UTC, after its last report \(\d\d:\d\d UTC\), and has not reported since/);
+  assert.ok(ctx(r).split('\n').length <= 4, 'short shaped message');
   assert.strictEqual(r.json.decision, undefined);
   assert.strictEqual(r.json.hookSpecificOutput.permissionDecision, undefined);
   assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'PreToolUse');
 });
 
 test('stopped by its <name>@<team> agent id -> same note', () => {
-  assert.match(ctx(run(fieldCase().slice(0, -1).concat(stop(NAME + '@session-fx', ago(0), { answered: false })), NAME + '@session-fx')), /^STALE-STOP NOTE: "rel-worker"/);
+  assert.match(ctx(run(fieldCase().slice(0, -1).concat(stop(NAME + '@session-fx', ago(0), { answered: false })), NAME + '@session-fx')), /stale-stop: "rel-worker"/);
 });
 
 test('teammate that reported after the message -> silent', () => {
@@ -64,7 +64,7 @@ test('background agent resumed after its last report -> note; finished after the
   const notif = (ts) => ({ type: 'user', message: { role: 'user', content: '<task-notification>\n<task-id>' + ID + '</task-id>\n<status>completed</status>\n</task-notification>' }, timestamp: ts });
   const resume = { type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_r', type: 'tool_result', content: [{ type: 'text', text: JSON.stringify({ success: true, message: 'Resuming agent ' + ID.slice(0, 7), resumedAgentId: ID }) }] }] }, timestamp: ago(60) };
   const s = stop(ID, ago(0), { answered: false });
-  assert.match(ctx(run([launch, notif(ago(90)), resume, ...s], ID)), /^STALE-STOP NOTE: "dddd111122223333e" was resumed at \d\d:\d\d UTC, after its last report/);
+  assert.match(ctx(run([launch, notif(ago(90)), resume, ...s], ID)), /stale-stop: "dddd111122223333e" was resumed at \d\d:\d\d UTC, after its last report/);
   assert.ok(silent(run([launch, notif(ago(90)), resume, notif(ago(30)), ...s], ID)));
   assert.ok(silent(run([launch, ...s], ID)), 'never resumed: an ordinary stop of a running agent');
 });

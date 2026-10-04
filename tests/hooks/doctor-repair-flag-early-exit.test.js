@@ -91,7 +91,7 @@ test('--repair-ingest-orphans: prints its own section and exits WITHOUT reaching
     const r = runDoctor(home, ['--repair-ingest-orphans']);
     assert.match(r.out, /Repair ingest orphans/, 'its own section must still print');
     assert.doesNotMatch(r.out, new RegExp(SECTION_6N_MARKER), 'must exit before reaching a later section');
-    assert.match(r.out, /anti-hall (ACTIVE|has \d+ FAILURE)/, 'must still print its own verdict line');
+    assert.match(r.out, /anti-hall \u00B7 doctor: (active|\d+ failure)/, 'must still print its own verdict line');
     assert.strictEqual(r.code, 0, 'nothing failed in this fixture, so exit must be 0');
   } finally { cleanup(); }
 });
@@ -102,7 +102,7 @@ test('--repair-test-stores: prints its own section and exits WITHOUT reaching se
     const r = runDoctor(home, ['--repair-test-stores']);
     assert.match(r.out, /Repair test stores/, 'its own section must still print');
     assert.doesNotMatch(r.out, new RegExp(SECTION_6N_MARKER), 'must exit before reaching a later section');
-    assert.match(r.out, /anti-hall (ACTIVE|has \d+ FAILURE)/, 'must still print its own verdict line');
+    assert.match(r.out, /anti-hall \u00B7 doctor: (active|\d+ failure)/, 'must still print its own verdict line');
     assert.strictEqual(r.code, 0);
   } finally { cleanup(); }
 });
@@ -113,7 +113,7 @@ test('--repair-resurrected: prints its own section and exits WITHOUT reaching se
     const r = runDoctor(home, ['--repair-resurrected']);
     assert.match(r.out, /Repair resurrected registry rows/, 'its own section must still print');
     assert.doesNotMatch(r.out, new RegExp(SECTION_6N_MARKER), 'must exit before reaching a later section');
-    assert.match(r.out, /anti-hall (ACTIVE|has \d+ FAILURE)/, 'must still print its own verdict line');
+    assert.match(r.out, /anti-hall \u00B7 doctor: (active|\d+ failure)/, 'must still print its own verdict line');
     assert.strictEqual(r.code, 0);
   } finally { cleanup(); }
 });
@@ -170,7 +170,7 @@ test('COMBINED FLAGS: `--repair-ingest-orphans --repair-test-stores` runs BOTH s
     assert.doesNotMatch(r.out, new RegExp(SECTION_6N_MARKER), 'must still exit before reaching a later, unrequested section');
     // Exactly ONE verdict line: emitVerdictAndExit() must fire once, not
     // once per matched block (which would print the summary twice).
-    const verdictMatches = r.out.match(/anti-hall (ACTIVE|has \d+ FAILURE)/g) || [];
+    const verdictMatches = r.out.match(/anti-hall \u00B7 doctor: (active|\d+ failure)/g) || [];
     assert.strictEqual(verdictMatches.length, 1, 'exactly one verdict line, not one per matched repair flag');
     assert.strictEqual(r.code, 0);
   } finally { cleanup(); }
@@ -184,7 +184,7 @@ test('COMBINED FLAGS: all three flags together run all three sections, then exit
     assert.match(r.out, /Repair test stores/);
     assert.match(r.out, /Repair resurrected registry rows/);
     assert.doesNotMatch(r.out, new RegExp(SECTION_6N_MARKER));
-    const verdictMatches = r.out.match(/anti-hall (ACTIVE|has \d+ FAILURE)/g) || [];
+    const verdictMatches = r.out.match(/anti-hall \u00B7 doctor: (active|\d+ failure)/g) || [];
     assert.strictEqual(verdictMatches.length, 1);
     assert.strictEqual(r.code, 0);
   } finally { cleanup(); }

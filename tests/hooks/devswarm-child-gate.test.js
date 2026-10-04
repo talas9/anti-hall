@@ -1639,6 +1639,7 @@ test('CRON MISSING: a stale wake-tick marker (>2x cadence) triggers the warning 
     assert.strictEqual(r.json && r.json.decision, 'block', `stale tick must warn even with nothing else to report; got: ${r.stdout}`);
     assert.match(r.json.reason, /Mailbox cron missing/);
     assert.match(r.json.reason, /CronList/);
+    require('../helpers/block-shape.js').assertShape(r.json.reason, 'devswarm-child-gate', 'child-gate cron', { requireWhy: true });
   } finally { h.cleanup(); }
 });
 

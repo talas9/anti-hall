@@ -322,7 +322,7 @@ const CASES = [
   {
     hook: 'scan-throttle.js', key: 'guards.scanThrottle', env: { ANTI_HALL_THROTTLE_PATTERNS: 'reindex-repo' },
     payload: () => bashPayload('reindex-repo --full'),
-    fired: (r) => !!(r.json && r.json.hookSpecificOutput && /SCAN-THROTTLE/.test(r.json.hookSpecificOutput.additionalContext || '')),
+    fired: (r) => !!(r.json && r.json.hookSpecificOutput && /scan-throttle/.test(r.json.hookSpecificOutput.additionalContext || '')),
     platforms: ['darwin', 'linux'],
   },
   {

@@ -44,7 +44,7 @@ test('injects a JEV REVIEW DUE line when an integration is due', () => {
     const r = testHook(HOOK, sessionStartPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     assert.ok(r.json, 'expected JSON output: ' + r.stdout);
-    assert.match(r.json.hookSpecificOutput.additionalContext, /JEV REVIEW DUE/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /jev-review: review due/);
     assert.match(r.json.hookSpecificOutput.additionalContext, /modelRouting/);
   } finally {
     h.cleanup();
@@ -72,7 +72,7 @@ test('no review line when Jev is not enabled (only the recommend notice, from je
     const r = testHook(HOOK, sessionStartPayload(), { home: h.home });
     assert.strictEqual(r.status, 0);
     const ctx = r.json.hookSpecificOutput.additionalContext;
-    assert.doesNotMatch(ctx, /JEV REVIEW DUE/);
+    assert.doesNotMatch(ctx, /jev-review: review due/);
     assert.match(ctx, /Recommended: enable Jev/);
   } finally {
     h.cleanup();

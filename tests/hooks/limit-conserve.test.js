@@ -433,7 +433,7 @@ test('INJECTOR DOWNSHIFT: conserving -> directive contains MAIN-MODEL DOWNSHIFT'
     const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     const ctx = additionalContext(r);
-    assert.ok(ctx.includes('MAIN-MODEL DOWNSHIFT'), `downshift directive missing; got: ${ctx}`);
+    assert.ok(ctx.includes('Main-model downshift'), `downshift directive missing; got: ${ctx}`);
   } finally { h.cleanup(); }
 });
 
