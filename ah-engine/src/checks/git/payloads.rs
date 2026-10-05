@@ -76,11 +76,7 @@ pub fn forward_positional(script: &str, pos: &[Tok]) -> String {
         return script.to_string();
     }
     let word = |t: &Tok, quoted: bool| -> String {
-        if quoted {
-            shq(&t.text)
-        } else {
-            t.text.split(is_js_space).filter(|x| !x.is_empty()).map(shq).collect::<Vec<_>>().join(" ")
-        }
+        if quoted { shq(&t.text) } else { t.text.split(is_js_space).filter(|x| !x.is_empty()).map(shq).collect::<Vec<_>>().join(" ") }
     };
     let val = |r: &str, quoted: bool| -> String {
         if r == "@" || r == "*" {

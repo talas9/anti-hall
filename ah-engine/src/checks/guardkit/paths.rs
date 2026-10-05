@@ -19,11 +19,7 @@ pub fn join(a: &str, b: &str) -> String {
 /// `path.resolve(p)` for an absolute `p`: normalized, with no trailing slash (except the root).
 pub fn resolve_abs(p: &str) -> String {
     let n = posix_normalize(p);
-    if n.len() > 1 {
-        n.trim_end_matches('/').to_string()
-    } else {
-        n
-    }
+    if n.len() > 1 { n.trim_end_matches('/').to_string() } else { n }
 }
 
 /// `path.relative(from, to)` for two absolute paths.

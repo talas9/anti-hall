@@ -1,4 +1,5 @@
 //! scanCommand, the git verdicts, the quote-blind backstops and the handover-commit check (git-guard.js).
+use super::Ctx;
 use super::aliases::*;
 use super::gitcmd::*;
 use super::heredoc::mask_data_heredocs;
@@ -8,7 +9,6 @@ use super::runner::*;
 use super::tables::{argv_template, block, plain, tables};
 use super::tokenize::*;
 use super::util::*;
-use super::Ctx;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::HashMap;
@@ -262,49 +262,48 @@ fn committed_handovers(ctx: &mut Ctx, ev: &Ev, last_cd_dir: Option<&str>) -> Opt
         paths = diff(ctx, &dir, &a);
     } else {
         paths = diff(ctx, &dir, &["--cached".to_string()]);
-        if all {
-            if let Q::Value(Some(p)) = &paths {
-                let tracked = diff(ctx, &dir, &[]);
-                paths = match tracked {
-                    Q::Value(Some(t)) => {
-                        let mut np = p.clone();
-                        np.extend(t);
-                        Q::Value(Some(np))
-                    }
-                    other => other,
-                };
-            }
+        if all && let Q::Value(Some(p)) = &paths {
+            let tracked = diff(ctx, &dir, &[]);
+            paths = match tracked {
+                Q::Value(Some(t)) => {
+                    let mut np = p.clone();
+                    np.extend(t);
+                    Q::Value(Some(np))
+                }
+                other => other,
+            };
         }
     }
-    if let Q::Value(Some(p)) = &paths {
-        if specs.is_empty() && !ctx.handover_adds.is_empty() {
-            let a: Vec<String> = [
-                "status",
-                "--porcelain",
-                "-z",
-                "--untracked-files=all",
-                "--",
-                &format!(":(top,glob)**/{}**", tables().handover_dir_prefix),
-                ":(top,glob)HANDOVER.md",
-                ":(top,glob)HANDOVER-*.md",
-                ":(top,glob)CONTINUE-HERE.md",
-                ":(top,glob)*.continue-here.md",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-            let st = handover_query(ctx, &dir, &a, true);
-            match st {
-                Q::Exhausted => paths = Q::Exhausted,
-                Q::Value(Some(st)) => {
-                    let adds = ctx.handover_adds.clone();
-                    let covered = |p: &str| adds.iter().any(|a| a == "." || a == p || p.starts_with(&format!("{}/", a.trim_end_matches('/'))));
-                    let mut np = p.clone();
-                    np.extend(st.into_iter().filter(|x| covered(x)));
-                    paths = Q::Value(Some(np));
-                }
-                Q::Value(None) => {}
+    if let Q::Value(Some(p)) = &paths
+        && specs.is_empty()
+        && !ctx.handover_adds.is_empty()
+    {
+        let a: Vec<String> = [
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            &format!(":(top,glob)**/{}**", tables().handover_dir_prefix),
+            ":(top,glob)HANDOVER.md",
+            ":(top,glob)HANDOVER-*.md",
+            ":(top,glob)CONTINUE-HERE.md",
+            ":(top,glob)*.continue-here.md",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let st = handover_query(ctx, &dir, &a, true);
+        match st {
+            Q::Exhausted => paths = Q::Exhausted,
+            Q::Value(Some(st)) => {
+                let adds = ctx.handover_adds.clone();
+                let covered = |p: &str| adds.iter().any(|a| a == "." || a == p || p.starts_with(&format!("{}/", a.trim_end_matches('/'))));
+                let mut np = p.clone();
+                np.extend(st.into_iter().filter(|x| covered(x)));
+                paths = Q::Value(Some(np));
             }
+            Q::Value(None) => {}
         }
     }
     let paths = match paths {
@@ -358,10 +357,10 @@ fn handover_commit_verdict(ctx: &mut Ctx, ev: &Ev, last_cd: Option<&str>) -> Opt
 // ---------------------------------------------------------------------------------------------------
 
 fn cd_next(ctx: &Ctx, cd: Option<&str>, dir_tok: &str) -> Option<String> {
-    if let Some(c) = cd {
-        if c.chars().count() > 4096 || c.split('/').count() > 64 {
-            return None;
-        }
+    if let Some(c) = cd
+        && (c.chars().count() > 4096 || c.split('/').count() > 64)
+    {
+        return None;
     }
     let n = normalize_guard_path(ctx, dir_tok, cd);
     Some(if n.is_empty() { dir_tok.to_string() } else { n })
@@ -412,10 +411,10 @@ pub fn scan_command(ctx: &mut Ctx, cmd: &str, depth: usize, base_cwd: Option<&st
             if is_assign(&t.text) {
                 let Some(eq) = t.text.find('=') else { continue }; // is_assign guarantees an '='
                 let v = &t.text[eq + 1..];
-                if !v.is_empty() {
-                    if let Some(hit) = scan_command_value(ctx, v, d) {
-                        return Some(hit);
-                    }
+                if !v.is_empty()
+                    && let Some(hit) = scan_command_value(ctx, v, d)
+                {
+                    return Some(hit);
                 }
             }
         }
@@ -450,10 +449,10 @@ pub fn scan_command(ctx: &mut Ctx, cmd: &str, depth: usize, base_cwd: Option<&st
         if ev.verb == "eval" {
             if d < 3 {
                 let payload = extract_eval_payload(seg);
-                if !payload.is_empty() {
-                    if let Some(n) = scan_command(ctx, &payload, d + 1, last_cd.as_deref()) {
-                        return Some(n);
-                    }
+                if !payload.is_empty()
+                    && let Some(n) = scan_command(ctx, &payload, d + 1, last_cd.as_deref())
+                {
+                    return Some(n);
                 }
             }
             continue;
@@ -465,10 +464,10 @@ pub fn scan_command(ctx: &mut Ctx, cmd: &str, depth: usize, base_cwd: Option<&st
                     if let Some(n) = scan_command(ctx, &payload, d + 1, last_cd.as_deref()) {
                         return Some(n);
                     }
-                } else if shell_script_is_input_pub(&tokens, &[]) {
-                    if let Some(sv) = stdin_script_verdict(ctx, cmd, d, last_cd.as_deref()) {
-                        return Some(sv);
-                    }
+                } else if shell_script_is_input_pub(&tokens, &[])
+                    && let Some(sv) = stdin_script_verdict(ctx, cmd, d, last_cd.as_deref())
+                {
+                    return Some(sv);
                 }
             }
             continue;
@@ -522,10 +521,10 @@ pub fn scan_command(ctx: &mut Ctx, cmd: &str, depth: usize, base_cwd: Option<&st
             return Some(hv);
         }
     }
-    if d == 0 {
-        if let Some(lb) = launcher_backstop(ctx, &scan_text, base_cwd) {
-            return Some(lb);
-        }
+    if d == 0
+        && let Some(lb) = launcher_backstop(ctx, &scan_text, base_cwd)
+    {
+        return Some(lb);
     }
     git_backstop(ctx, &scan_text, d, &heredoc_bodies, base_cwd)
 }
@@ -563,12 +562,11 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
     while j + 1 < args.len() {
         if args[j].text == "-c" {
             let v = args[j + 1].text.as_str();
-            if let Some(eq) = v.find('=') {
-                if eq >= 1 {
-                    if let Some(hit) = scan_command_value(ctx, &v[eq + 1..], d) {
-                        return Some(hit);
-                    }
-                }
+            if let Some(eq) = v.find('=')
+                && eq >= 1
+                && let Some(hit) = scan_command_value(ctx, &v[eq + 1..], d)
+            {
+                return Some(hit);
             }
         }
         j += 1;
@@ -627,10 +625,10 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
                 cached_credit = Some(c);
             } else {
                 let mut p = spec.clone();
-                if !p.starts_with('/') {
-                    if let Some(cd) = last_cd.filter(|c| !c.is_empty()) {
-                        p = path_join(cd, &p);
-                    }
+                if !p.starts_with('/')
+                    && let Some(cd) = last_cd.filter(|c| !c.is_empty())
+                {
+                    p = path_join(cd, &p);
                 }
                 let abs = ctx.abs_from_cwd(&p);
                 text = read_file_lossy(&abs);

@@ -65,9 +65,5 @@ pub fn js_string_of(v: &serde_json::Value) -> Option<String> {
 
 /// `String(n)` for a finite number: integers print without a fraction, as JavaScript does up to 1e21.
 fn js_number_string(n: f64) -> String {
-    if n == n.trunc() && n.abs() < 1e21 {
-        format!("{}", n as i128)
-    } else {
-        format!("{n}")
-    }
+    if n == n.trunc() && n.abs() < 1e21 { format!("{}", n as i128) } else { format!("{n}") }
 }

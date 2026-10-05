@@ -3,11 +3,11 @@
 //! in the Authorization header, a redirect is never followed (so the key and the text stay at the vendor), a proxy named in
 //! the environment is never used, one deadline covers the whole call, and an oversized body cannot grow memory.
 
+use ah_engine::jev::Question;
 use ah_engine::jev::assist::{AskRequest, Backend, Jev, Trust};
 use ah_engine::jev::breaker::SystemClock;
 use ah_engine::jev::settings::Env;
 use ah_engine::jev::transport::{HttpTransport, NetError, Request, Transport};
-use ah_engine::jev::Question;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -176,7 +176,8 @@ fn a_proxy_named_in_the_environment_is_never_used() {
         l.local_addr().unwrap().port()
     };
     for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
-        std::env::set_var(var, format!("http://127.0.0.1:{dead}"));
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(var, format!("http://127.0.0.1:{dead}")) };
     }
     let m = Mock::start(|_, _| ok_json("{}"));
     let r = send(&HttpTransport::new(), &m.url("/x"), Some("{}"), 3000);

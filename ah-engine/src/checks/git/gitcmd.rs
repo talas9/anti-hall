@@ -1,9 +1,9 @@
 //! git argument analysis ported from git-guard.js: subcommand resolution (with inline aliases), push force /
 //! delete detection, command-substitution args, self-credit matching and commit-message extraction.
+use super::Ctx;
 use super::tables::{block, tables};
 use super::tokenize::*;
 use super::util::*;
-use super::Ctx;
 use std::collections::HashMap;
 
 fn is_sep_char(c: char) -> bool {
@@ -41,10 +41,10 @@ pub fn git_subcommand(args: &[Tok]) -> (Option<String>, Vec<Tok>) {
         } else {
             a.strip_prefix("--config-env=").map(|s| s.to_string())
         };
-        if let Some(v) = cfg_val {
-            if v.get(..6).is_some_and(|x| x.eq_ignore_ascii_case("alias.")) {
-                return (Some("push".into()), vec![Tok::plain("--force")]);
-            }
+        if let Some(v) = cfg_val
+            && v.get(..6).is_some_and(|x| x.eq_ignore_ascii_case("alias."))
+        {
+            return (Some("push".into()), vec![Tok::plain("--force")]);
         }
     }
     let mut alias_map: HashMap<String, String> = HashMap::new();
@@ -53,20 +53,19 @@ pub fn git_subcommand(args: &[Tok]) -> (Option<String>, Vec<Tok>) {
     while j + 1 < args.len() {
         if args[j].text == "-c" {
             let cfg = &args[j + 1].text;
-            if let Some(rest) = cfg.strip_prefix("alias.") {
-                if let Some(eq) = rest.find('=') {
-                    if eq >= 1 {
-                        let name = &rest[..eq];
-                        let val = js_trim(&rest[eq + 1..]);
-                        let first_word: String = if val.starts_with('!') { "!".into() } else { val.split(is_js_space).next().unwrap_or("").to_string() };
-                        alias_map.insert(name.to_string(), first_word.clone());
-                        let mut parts: Vec<String> = js_split_seps(val).into_iter().skip(1).filter(|p| !p.is_empty()).collect();
-                        if first_word == "!" {
-                            parts.retain(|p| p != "--");
-                        }
-                        alias_body.insert(name.to_string(), parts.iter().map(|p| Tok::plain(p)).collect());
-                    }
+            if let Some(rest) = cfg.strip_prefix("alias.")
+                && let Some(eq) = rest.find('=')
+                && eq >= 1
+            {
+                let name = &rest[..eq];
+                let val = js_trim(&rest[eq + 1..]);
+                let first_word: String = if val.starts_with('!') { "!".into() } else { val.split(is_js_space).next().unwrap_or("").to_string() };
+                alias_map.insert(name.to_string(), first_word.clone());
+                let mut parts: Vec<String> = js_split_seps(val).into_iter().skip(1).filter(|p| !p.is_empty()).collect();
+                if first_word == "!" {
+                    parts.retain(|p| p != "--");
                 }
+                alias_body.insert(name.to_string(), parts.iter().map(|p| Tok::plain(p)).collect());
             }
         }
         j += 1;
@@ -531,12 +530,13 @@ pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
                 }
             }
         }
-        if let Some(fs_) = file_spec {
-            if !fs_.is_empty() && fs_ != "-" {
-                let p = ctx.abs_from_cwd(&fs_);
-                if let Some(t) = read_file_lossy(&p) {
-                    vals.push(t);
-                }
+        if let Some(fs_) = file_spec
+            && !fs_.is_empty()
+            && fs_ != "-"
+        {
+            let p = ctx.abs_from_cwd(&fs_);
+            if let Some(t) = read_file_lossy(&p) {
+                vals.push(t);
             }
         }
         i += 1;

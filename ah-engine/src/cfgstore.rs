@@ -38,7 +38,7 @@
 use crate::config::Config;
 use crate::defaults::{self, Entry, V};
 use crate::{health, paths};
-use serde_json::{json, Map, Value as Json};
+use serde_json::{Map, Value as Json, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Deref;
@@ -579,13 +579,12 @@ impl Snapshot {
         let mut pending = Vec::new();
         if let Some(prev) = prev {
             for (k, r) in effective.map.iter_mut() {
-                if restart_only(k) {
-                    if let Some(old) = prev.effective.get(k) {
-                        if old.value != r.value {
-                            pending.push(k.to_string());
-                            *r = old.clone();
-                        }
-                    }
+                if restart_only(k)
+                    && let Some(old) = prev.effective.get(k)
+                    && old.value != r.value
+                {
+                    pending.push(k.to_string());
+                    *r = old.clone();
                 }
             }
         }

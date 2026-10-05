@@ -24,7 +24,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -398,11 +398,7 @@ fn reply_outcome(r: &Reply) -> (crate::telemetry::event::Outcome, u64) {
             let v: serde_json::Value = serde_json::from_str(out).unwrap_or_default();
             let denied = v.pointer("/hookSpecificOutput/permissionDecision").and_then(|d| d.as_str()) == Some("deny")
                 || v.get("decision").and_then(|d| d.as_str()) == Some("block");
-            if denied {
-                (Outcome::Block, 0)
-            } else {
-                (Outcome::Advise, out.len() as u64)
-            }
+            if denied { (Outcome::Block, 0) } else { (Outcome::Advise, out.len() as u64) }
         }
     }
 }
@@ -636,14 +632,14 @@ fn watchdog(sh: Arc<Shared>) {
             }
         }
         // Idle exit is off unless configured (D7): the engine stays resident so the scheduler and mailbox keep running.
-        if let Some(idle) = cfg.idle_exit {
-            if last_idle_check.elapsed() >= defaults::millis("daemon.idle_check_ms") {
-                last_idle_check = Instant::now();
-                let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0;
-                if quiet && now.saturating_sub(sh.last_request.load(SeqCst)) > idle.as_millis() as u64 {
-                    begin_drain(&sh, defaults::text("msg.exit_reason_idle"), false);
-                    continue;
-                }
+        if let Some(idle) = cfg.idle_exit
+            && last_idle_check.elapsed() >= defaults::millis("daemon.idle_check_ms")
+        {
+            last_idle_check = Instant::now();
+            let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0;
+            if quiet && now.saturating_sub(sh.last_request.load(SeqCst)) > idle.as_millis() as u64 {
+                begin_drain(&sh, defaults::text("msg.exit_reason_idle"), false);
+                continue;
             }
         }
         if last_rss.elapsed() >= cfg.rss_check {
@@ -694,10 +690,10 @@ pub fn serve() {
     let lock_path = paths::lock_for(&sock);
     // state dir + socket dir: private (0700), ours, not a symlink
     for d in [Some(paths::dir()), sock.parent().map(Path::to_path_buf)].into_iter().flatten() {
-        if !d.as_os_str().is_empty() {
-            if let Err(e) = limits::ensure_private_dir(&d) {
-                start_fail(&e.code(), &e.to_string());
-            }
+        if !d.as_os_str().is_empty()
+            && let Err(e) = limits::ensure_private_dir(&d)
+        {
+            start_fail(&e.code(), &e.to_string());
         }
     }
     let lock = match acquire_lock(&lock_path, &sock) {

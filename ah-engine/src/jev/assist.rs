@@ -29,12 +29,12 @@ use super::error::Reason;
 use super::log::{DecisionLog, FileLog, Row};
 use super::question::Question;
 use super::settings::{Env, Files, JevSettings, Mode, Sources, Vendor};
-use super::transport::{endpoint_for, HttpTransport, Transport};
+use super::transport::{HttpTransport, Transport, endpoint_for};
 use crate::defaults;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -378,11 +378,7 @@ fn compute_final(trust: Trust, baseline: &Value, jev: &Value, confident: bool) -
         }
         Trust::RelaxBlock => {
             // What Node would do; the engine only reports it as a would-change (see the module docs).
-            if *baseline != t {
-                baseline.clone()
-            } else {
-                Value::Bool(!(confident && *jev == Value::Bool(false)))
-            }
+            if *baseline != t { baseline.clone() } else { Value::Bool(!(confident && *jev == Value::Bool(false))) }
         }
         Trust::Advisory => {
             if *baseline == t {
@@ -421,10 +417,10 @@ fn cost_of(s: &JevSettings, r: &CallResult, cached: bool) -> (Option<f64>, Optio
     }
     if let (Some(i), Some(o)) = (r.tokens_in, r.tokens_out) {
         let entry = r.model.as_deref().and_then(|m| s.prices.get(m)).or_else(|| s.prices.get("default"));
-        if let Some(e) = entry {
-            if let (Some(pi), Some(po)) = (e.get("inPerMTok").and_then(Value::as_f64), e.get("outPerMTok").and_then(Value::as_f64)) {
-                return (Some(i / 1e6 * pi + o / 1e6 * po), Some(CostSource::PriceTable));
-            }
+        if let Some(e) = entry
+            && let (Some(pi), Some(po)) = (e.get("inPerMTok").and_then(Value::as_f64), e.get("outPerMTok").and_then(Value::as_f64))
+        {
+            return (Some(i / 1e6 * pi + o / 1e6 * po), Some(CostSource::PriceTable));
         }
         return (Some(i / 1e6 * s.price_in + o / 1e6 * s.price_out), Some(CostSource::DefaultPrice));
     }
@@ -521,11 +517,11 @@ impl Jev {
         // the same way: the key names the vendor chain, models and endpoints, and a test endpoint override never reads or
         // writes the cache. A hit still needs a key for the CALLING session; without one the call fails as `no-key`.
         let cache_key = self.cache_key_of(&s, req);
-        if let Some(ck) = cache_key.as_deref().filter(|_| resolve_key(&s, s.transport).key.is_some()) {
-            if let Some(c) = self.cache.get(ck) {
-                let r = CallResult::answered(c.answer, c.confidence, 0);
-                return self.finish(&s, req, mode, Some(r), true, true);
-            }
+        if let Some(ck) = cache_key.as_deref().filter(|_| resolve_key(&s, s.transport).key.is_some())
+            && let Some(c) = self.cache.get(ck)
+        {
+            let r = CallResult::answered(c.answer, c.confidence, 0);
+            return self.finish(&s, req, mode, Some(r), true, true);
         }
         let r = self.client.decide(&s, &req.question, &req.state, req.budget_ms);
         if let (Some(a), Some(ck)) = (&r.answer, &cache_key) {
@@ -654,11 +650,7 @@ impl Jev {
             let verdict = if answered.is_none() {
                 "no-answer"
             } else if changed {
-                if req.trust == Trust::AddBlock {
-                    "added"
-                } else {
-                    "changed"
-                }
+                if req.trust == Trust::AddBlock { "added" } else { "changed" }
             } else if mode != Mode::On && would_change != Value::Null {
                 "would-change"
             } else {
@@ -746,10 +738,10 @@ impl Jev {
         if let Some(t) = req.turn_ref.as_ref().filter(|s| !s.is_empty()) {
             row.put("turnRef", json!(t));
         }
-        if let Some(x) = r.filter(|x| !x.ok()) {
-            if let Some(reason) = &x.reason {
-                row.put("reason", json!(reason.to_string()));
-            }
+        if let Some(x) = r.filter(|x| !x.ok())
+            && let Some(reason) = &x.reason
+        {
+            row.put("reason", json!(reason.to_string()));
         }
         if let Some(x) = r.filter(|_| !cached) {
             if let Some(t) = x.transport {
@@ -798,7 +790,7 @@ impl Jev {
 mod tests {
     use super::*;
     use crate::jev::breaker::ManualClock;
-    use crate::jev::testkit::{ok, Fake};
+    use crate::jev::testkit::{Fake, ok};
 
     struct MemLog(Mutex<Vec<Row>>);
     impl DecisionLog for MemLog {

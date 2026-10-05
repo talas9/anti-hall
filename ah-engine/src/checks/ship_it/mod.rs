@@ -114,10 +114,10 @@ fn extract_path_tokens(text: &str) -> Vec<String> {
     for raw in cleaned.split(|c: char| is_js_space(c) || seps.contains(c)).filter(|s| !s.is_empty()) {
         let mut t = raw;
         // .replace(/^\.\/+/, '')
-        if let Some(rest) = t.strip_prefix('.') {
-            if rest.starts_with('/') {
-                t = rest.trim_start_matches('/');
-            }
+        if let Some(rest) = t.strip_prefix('.')
+            && rest.starts_with('/')
+        {
+            t = rest.trim_start_matches('/');
         }
         // .replace(/[.,;:]+$/, '')
         let t = t.trim_end_matches(|c: char| trim.contains(c));
@@ -163,11 +163,7 @@ fn parse_plan_declared_files(plan: &str) -> Option<HashSet<String>> {
         let value = &rest[..p.files_end.find(rest).map_or(rest.len(), |m| m.start())];
         declared.extend(extract_path_tokens(value));
     }
-    if phase_count == 0 || declared.is_empty() {
-        None
-    } else {
-        Some(declared)
-    }
+    if phase_count == 0 || declared.is_empty() { None } else { Some(declared) }
 }
 
 /// True when `file` matches a declared token exactly or by path suffix, in either direction.

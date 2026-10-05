@@ -119,10 +119,10 @@ impl RuleSet {
                 "context" => Action::Context,
                 a => return Err(RulesError::Action { index: i, action: a.to_string() }),
             };
-            if let Some(c) = &r.check {
-                if crate::checks::get(c).is_none() {
-                    return Err(RulesError::Check { index: i, name: c.clone() });
-                }
+            if let Some(c) = &r.check
+                && crate::checks::get(c).is_none()
+            {
+                return Err(RulesError::Check { index: i, name: c.clone() });
             }
             let re = Regex::new(&r.pattern).map_err(|source| RulesError::Pattern { index: i, id: r.id.clone(), source })?;
             rules.push(Rule {
@@ -204,11 +204,7 @@ fn natural(ti: &Value) -> String {
             return s.clone();
         }
     }
-    if ti.is_null() {
-        String::new()
-    } else {
-        ti.to_string()
-    }
+    if ti.is_null() { String::new() } else { ti.to_string() }
 }
 
 impl Rule {

@@ -15,8 +15,8 @@
 //! `{"id", "session", "cwd", "verb", "args", "ts_ms"}`.
 use crate::client::{self, Exch};
 use crate::defaults;
-use crate::frame::{crc32, Kind};
-use serde_json::{json, Value};
+use crate::frame::{Kind, crc32};
+use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -329,11 +329,7 @@ mod tests {
         let mut n = 0;
         let r = drain(&p, &mut |_| {
             n += 1;
-            if n <= 2 {
-                Applied::Done
-            } else {
-                Applied::Later
-            }
+            if n <= 2 { Applied::Done } else { Applied::Later }
         });
         assert_eq!((r.applied, r.left), (2, 3));
         let mut rest = vec![];

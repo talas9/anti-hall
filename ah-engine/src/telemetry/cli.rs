@@ -5,7 +5,7 @@
 use super::persist::TelDb;
 use super::report;
 use crate::{client, defaults, paths};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// A flag's value: the word after `--<name>` (empty when absent).
 fn flag(rest: &[String], name: &str) -> String {

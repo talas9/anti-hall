@@ -79,10 +79,11 @@ impl Drop for Env {
         common::reap(&state, || {
             let _ = self.ctl("stop");
         });
-        if let Some(p) = std::fs::read_to_string(self.eng().join("e.sock.lock")).ok().and_then(|t| t.trim().parse::<i32>().ok()) {
-            if p > 1 && common::alive(p) {
-                unsafe { libc::kill(p, libc::SIGKILL) };
-            }
+        if let Some(p) = std::fs::read_to_string(self.eng().join("e.sock.lock")).ok().and_then(|t| t.trim().parse::<i32>().ok())
+            && p > 1
+            && common::alive(p)
+        {
+            unsafe { libc::kill(p, libc::SIGKILL) };
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -136,7 +137,7 @@ fn fake_server(e: &Env, reply: impl Fn() -> Option<Vec<u8>> + Send + 'static) {
 
 #[test]
 fn bad_replies_run_the_node_fallback_never_allow() {
-    use ah_engine::frame::{encode, Kind};
+    use ah_engine::frame::{Kind, encode};
     let good = encode(Kind::Ok, r#"{"decision":"block","reason":"x"}"#);
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("empty", vec![]),

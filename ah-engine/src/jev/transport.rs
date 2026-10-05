@@ -135,13 +135,12 @@ impl Transport for HttpTransport {
             return Err(NetError::Network); // a redirect is never followed: the key and the text stay at the vendor
         }
         let limit = defaults::num("jev.max_response_bytes");
-        let body = resp.body_mut().with_config().limit(limit).read_to_string().map_err(|e| {
-            if matches!(e, ureq::Error::Timeout(_)) {
-                BodyError::Timeout
-            } else {
-                BodyError::Other
-            }
-        });
+        let body = resp
+            .body_mut()
+            .with_config()
+            .limit(limit)
+            .read_to_string()
+            .map_err(|e| if matches!(e, ureq::Error::Timeout(_)) { BodyError::Timeout } else { BodyError::Other });
         Ok(RawResponse { status, body })
     }
 }
@@ -212,10 +211,8 @@ pub fn endpoint_for(settings: &JevSettings, vendor: super::settings::Vendor, pri
     if let Some(per) = &settings.endpoint_overrides[idx] {
         return per.clone();
     }
-    if primary {
-        if let Some(generic) = &settings.endpoint_override {
-            return generic.clone();
-        }
+    if primary && let Some(generic) = &settings.endpoint_override {
+        return generic.clone();
     }
     match vendor {
         Vendor::Vercel => defaults::text("jev.endpoint_vercel").to_string(),
@@ -228,7 +225,7 @@ mod tests {
     use super::*;
     use crate::jev::breaker::ManualClock;
     use crate::jev::settings::{Env, Sources, Vendor};
-    use crate::jev::testkit::{ok, Fake};
+    use crate::jev::testkit::{Fake, ok};
 
     fn post(script: Vec<Result<RawResponse, NetError>>) -> Posted {
         let f = Fake::new(script);

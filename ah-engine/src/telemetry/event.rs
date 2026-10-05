@@ -9,7 +9,7 @@
 //! The short field names mirror the kinds of the Node `hooks/lib/telemetry.js` (`h`, `e`, `o`, `ms`, `ib`); there is no
 //! Node writer (D80), the engine records everything.
 use crate::defaults;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::fmt;
 
 /// Why a telemetry value was refused. Display text comes from the shipped messages; match on [`TelemetryError::code`].

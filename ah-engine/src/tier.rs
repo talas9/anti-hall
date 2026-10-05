@@ -10,9 +10,9 @@
 //! subscriber that falls behind loses notifications (counted), never data, because the data itself is in SQLite.
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::Mutex;
 
 struct Slot<V> {
     value: V,
@@ -106,11 +106,11 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
         self.bytes += size;
         while self.bytes > self.budget {
             let Some((&t, _)) = self.order.iter().next() else { break };
-            if let Some(victim) = self.order.remove(&t) {
-                if let Some(s) = self.map.remove(&victim) {
-                    self.bytes -= s.size;
-                    self.evictions += 1;
-                }
+            if let Some(victim) = self.order.remove(&t)
+                && let Some(s) = self.map.remove(&victim)
+            {
+                self.bytes -= s.size;
+                self.evictions += 1;
             }
         }
     }

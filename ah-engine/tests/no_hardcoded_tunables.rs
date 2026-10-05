@@ -24,7 +24,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/spool.rs", "const MAGIC", "spool record magic: the on-disk spool format identifier, versioned with the format"),
     ("src/hookio.rs", "pub const EXIT2", "reply-body marker for an exit-2 block: internal wire contract between daemon and client"),
     ("src/hookio.rs", "pub const FALLBACK", "reply-body marker for a deferral: internal wire contract between daemon and client"),
-    ("src/docs.rs", "writeln!", "layout of the generated Markdown reference (headings, table headers): the generator's own format, not a tunable and not a message the engine shows at run time"),
+    (
+        "src/docs.rs",
+        "writeln!",
+        "layout of the generated Markdown reference (headings, table headers): the generator's own format, not a tunable and not a message the engine shows at run time",
+    ),
     ("src/docs.rs", "\"| `{}` |", "row layout of the generated Markdown reference"),
     ("src/checks/git/tokenize.rs", "pub const CMDSUBST", "internal sentinel the tokenizer inserts for a command substitution; never shown to a user"),
     ("src/checks/mod.rs", "static ALL", "the check registry: the list of compiled-in checks is code, not configuration"),
@@ -34,14 +38,34 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/rules.rs", "for k in [\"command\"", "tool_input field names a rule can match by default: the host hook payload schema, an adapter concern (D30)"),
     ("src/health.rs", "for key in [\"breaker_until\"", "keys of the files.* settings the operator reset clears: names of settings, not values"),
     // ---- the Jev lane: security grammar kept in code on purpose ----------------------------------------------
-    ("src/jev/scrub.rs", "const WS", "JavaScript's whitespace class, the grammar of the redaction patterns; part of the byte-exact scrub parity, not a tunable"),
-    ("src/jev/scrub.rs", "ci_any(&[\"secret\"", "the secret-word grammar of the outbound redaction, kept in code so a config edit cannot weaken what leaves the machine (D16); mirrors secret-scrub.js"),
+    (
+        "src/jev/scrub.rs",
+        "const WS",
+        "JavaScript's whitespace class, the grammar of the redaction patterns; part of the byte-exact scrub parity, not a tunable",
+    ),
+    (
+        "src/jev/scrub.rs",
+        "ci_any(&[\"secret\"",
+        "the secret-word grammar of the outbound redaction, kept in code so a config edit cannot weaken what leaves the machine (D16); mirrors secret-scrub.js",
+    ),
     // ---- telemetry: the event schema and the recorder's memory layout ------------------------------------------------
-    ("src/telemetry/event.rs", "", "the telemetry event schema: the field names of the line format shared with the Node route log, and the length of a UTC day; versioned with the format, not tunables"),
-    ("src/telemetry/recorder.rs", "const F_", "offsets of a counter slot's fields (count, latency sum, injected bytes, first bucket): the in-memory layout of the recorder, not a tunable"),
+    (
+        "src/telemetry/event.rs",
+        "",
+        "the telemetry event schema: the field names of the line format shared with the Node route log, and the length of a UTC day; versioned with the format, not tunables",
+    ),
+    (
+        "src/telemetry/recorder.rs",
+        "const F_",
+        "offsets of a counter slot's fields (count, latency sum, injected bytes, first bucket): the in-memory layout of the recorder, not a tunable",
+    ),
     ("src/telemetry/recorder.rs", "static THREAD_ID", "a thread-local cell holding the thread's shard number: structural"),
     // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
-    ("src/sql.rs", "", "the SQL schema migrations and statements: the schema is code, versioned with the binary, and every tunable value is bound as a parameter at run time"),
+    (
+        "src/sql.rs",
+        "",
+        "the SQL schema migrations and statements: the schema is code, versioned with the binary, and every tunable value is bound as a parameter at run time",
+    ),
 ];
 
 /// Files that are not engine code paths (test helpers).
