@@ -49,13 +49,14 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
     const cwd = okCwd(c.cwd);
     const p = payload(c.command, cwd);
     const t0 = Date.now();
-    const n = norm(await run('node', [path.join(HOOKS, 'git-guard.js')], p, baseEnv, cwd));
+    const rowEnv = c.env && typeof c.env === 'object' ? c.env : {}; // a row may carry env the host passed (GIT_CONFIG_* ...)
+    const n = norm(await run('node', [path.join(HOOKS, 'git-guard.js')], p, { ...baseEnv, ...rowEnv }, cwd));
     nodeMs += Date.now() - t0;
     stats.n++;
     if (n.code === 2) stats.node_block++; else if (n.out) stats.node_adv++;
     const miss = {};
-    if (MODE !== 'daemon') { const e = norm(await run(ENGINE, ['check', 'git'], p, oenv, cwd)); if (e.out === 'AHFALLBACK') { stats.deferred++; stats.oneshot++; } else if (same(n, e)) stats.oneshot++; else miss.oneshot = e; }
-    if (MODE !== 'oneshot') { const e = norm(await run(ENGINE, ['hook'], p, denv, cwd)); if (same(n, e)) stats.daemon++; else miss.daemon = e; }
+    if (MODE !== 'daemon') { const e = norm(await run(ENGINE, ['check', 'git'], p, { ...oenv, ...rowEnv }, cwd)); if (e.out === 'AHFALLBACK') { stats.deferred++; stats.oneshot++; } else if (same(n, e)) stats.oneshot++; else miss.oneshot = e; }
+    if (MODE !== 'oneshot') { const e = norm(await run(ENGINE, ['hook'], p, { ...denv, ...rowEnv }, cwd)); if (same(n, e)) stats.daemon++; else miss.daemon = e; }
     if (Object.keys(miss).length && mism.length < 5000) mism.push({ command: c.command.slice(0, 600), len: c.command.length, cwd: c.cwd, source: c.source, node: n, ...miss });
   });
   const pc = x => stats.n ? (100 * x / stats.n).toFixed(2) + '%' : '-';

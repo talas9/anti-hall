@@ -524,3 +524,6 @@
 {"id":524,"rule":"rm-rf-root-home","command":"rm -rf test-results && npx playwright test --project='*chromium*' --workers=2 > /tmp/pw_item21_chromium.log 2>&1; echo \"EXIT:$?\"; tail -20 /tmp/pw_item21_chromium.log","source":"real-corpus","expect_relevant":false}
 {"id":525,"rule":"rm-rf-root-home","command":"rm -rf test-results && npx playwright test --project='*chromium*' --workers=2 2>&1 | tail -220","source":"real-corpus","expect_relevant":false}
 {"id":526,"rule":"rm-rf-root-home","command":"rm -rf test-results && npx playwright test --project=e2e-webkit-390 --workers=2 2>&1 | tail -30","source":"real-corpus","expect_relevant":false}
+{"id": 527, "rule": "git-force-push", "command": "git pf origin main", "env": {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "alias.pf", "GIT_CONFIG_VALUE_0": "push --force"}, "source": "env-config-alias", "expect_relevant": true}
+{"id": 528, "rule": "git-force-push", "command": "git pf origin main", "env": {"GIT_CONFIG_PARAMETERS": "'alias.pf=push --force'"}, "source": "env-config-alias", "expect_relevant": true}
+{"id": 529, "rule": "git-force-push", "command": "git pf origin main", "env": {"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "x", "GIT_CONFIG_KEY_1": "alias.pf", "GIT_CONFIG_VALUE_1": "push --force"}, "source": "env-config-alias", "expect_relevant": true}
