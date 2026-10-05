@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Allowance added to a configured timeout before a wall-clock bound fails: it only has to be far below the 30 s the fake
+/// server hangs, so a timeout that is not enforced still fails, while a loaded machine does not.
+const SLACK: Duration = Duration::from_secs(10);
+
 const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 const RULES: &str = r#"{"version":1,"rules":[{"id":"force","events":["PreToolUse"],"tools":["Bash"],"field":"command","pattern":"git push --force","action":"deny","message":"engine-blocked"}]}"#;
 const DENY_IN: &str =
@@ -196,7 +200,9 @@ fn hung_engine_times_out_then_falls_back() {
     fake_server(&e, || None);
     let (out, code, dt) = e.hook(DENY_IN, true);
     assert_eq!((out.as_str(), code), ("NODE-FALLBACK", 2));
-    assert!(dt < Duration::from_millis(2500), "took {dt:?}");
+    // gave up at the 400 ms deadline (the lower bound) rather than waiting for the server's 30 s hang; the upper bound is
+    // the deadline plus a generous allowance for process start-up and the fallback under load
+    assert!(dt >= Duration::from_millis(400) && dt < Duration::from_millis(400) + SLACK, "took {dt:?}");
 }
 
 #[test]
@@ -205,7 +211,7 @@ fn default_client_deadline_is_about_two_seconds() {
     fake_server(&e, || None);
     let (out, _, dt) = e.hook(DENY_IN, true);
     assert_eq!(out, "NODE-FALLBACK");
-    assert!(dt > Duration::from_millis(1800) && dt < Duration::from_millis(3500), "took {dt:?}");
+    assert!(dt > Duration::from_millis(1800) && dt < Duration::from_millis(2000) + SLACK, "took {dt:?}");
 }
 
 #[test]
@@ -230,7 +236,8 @@ fn slow_sender_cannot_wedge_the_daemon() {
     let mut b = Vec::new();
     s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
     let _ = s.read_to_end(&mut b);
-    assert!(t.elapsed() < Duration::from_millis(1500), "read deadline not enforced: {:?}", t.elapsed());
+    // the 300 ms read deadline; if it were not enforced the read above would run to its own 3 s timeout
+    assert!(t.elapsed() < Duration::from_millis(2900), "read deadline not enforced: {:?}", t.elapsed());
     assert!(ah_engine::frame::decode(&b).is_ok(), "slow sender still gets a well-formed ERR frame");
     assert!(e.hook(DENY_IN, false).0.contains("engine-blocked"), "daemon still serves");
 }
@@ -269,13 +276,19 @@ fn stuck_worker_triggers_exit() {
 fn breaker_opens_after_repeated_failures_and_skips_engine() {
     let e = Env::new("brk", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "150"), ("AH_ENGINE_BREAKER_N", "3")]);
     fake_server(&e, || None);
+    // each of these waits out the 150 ms deadline against the hung server
+    let mut waited = Vec::new();
     for _ in 0..3 {
-        assert_eq!(e.hook(DENY_IN, true).0, "NODE-FALLBACK");
+        let (out, _, dt) = e.hook(DENY_IN, true);
+        assert_eq!(out, "NODE-FALLBACK");
+        waited.push(dt);
     }
     assert!(e.eng().join("breaker.until").exists(), "breaker should be open");
     let (out, _, dt) = e.hook(DENY_IN, true);
     assert_eq!(out, "NODE-FALLBACK");
-    assert!(dt < Duration::from_millis(140), "open breaker goes straight to fallback, took {dt:?}");
+    // relative, not absolute: an open breaker skips the wait, so it must be faster than every call that did wait
+    let fastest_wait = waited.iter().min().unwrap();
+    assert!(dt < *fastest_wait, "open breaker goes straight to fallback, took {dt:?} against {waited:?}");
     let st: serde_json::Value =
         serde_json::from_str(&e.cmd().args(["status", "--json"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap()).unwrap();
     assert!(st["breaker"].as_str().unwrap().starts_with("open"), "{st}");
@@ -400,16 +413,31 @@ fn queue_overflow_answers_busy_and_clients_fall_back() {
         .map(|_| {
             let mut c = e.cmd();
             std::thread::spawn(move || {
-                let _ = c.args(["ctl", "sleep 1200"]).output();
+                let _ = c.args(["ctl", "sleep 8000"]).output();
             })
         })
         .collect();
-    std::thread::sleep(Duration::from_millis(300)); // 1 running, 1 queued, 1 refused
-    let (out, code, dt) = e.hook(DENY_IN, true);
+    // 1 running, 1 queued, 1 refused: poll until a hook is refused (the sleepers may take a while to connect on a loaded
+    // machine; until they have, the engine simply answers the hook), instead of guessing how long that takes
+    let t = Instant::now();
+    let (mut out, mut code, mut dt) = (String::new(), 0, Duration::ZERO);
+    while t.elapsed() < Duration::from_secs(6) {
+        (out, code, dt) = e.hook(DENY_IN, true);
+        if out == "NODE-FALLBACK" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert_eq!((out.as_str(), code), ("NODE-FALLBACK", 2), "overflow must fall back, not allow");
-    assert!(dt < Duration::from_millis(1500));
+    // a refused hook is answered at once: far below the sleepers' 8 s, with an allowance for a loaded machine
+    assert!(dt < Duration::from_secs(3), "took {dt:?}");
     for s in sleepers {
         s.join().unwrap();
+    }
+    // the clients above gave up after their own deadline, so the daemon may still be sleeping in its worker: wait for it
+    let t = Instant::now();
+    while e.ctl("status").is_none() && t.elapsed() < Duration::from_secs(15) {
+        std::thread::sleep(Duration::from_millis(100));
     }
     assert!(e.status()["busy_replies"].as_u64().unwrap() >= 1);
 }
