@@ -80,7 +80,7 @@ const entriesFor = payload => lib.select(hooksJson, HOST, EVENT, payload).map(e 
     let want = lib.combine(results);
     const active = results.filter(r => r.code !== null && (r.code !== 0 || r.out || r.err)).length;
     let handed = false;
-    if (want.conflict) { stats.conflicts++; want = lib.sequential(results); }
+    if (want.conflict) { stats.conflicts++; want = lib.sequential(results, undefined, EVENT); }
     else {
       // only a plain answer (exit 0, no JSON block) can be handed back; a guard event never gets exit 75, it delivers the
       // decisions merged (src/dispatch/mod.rs `run`)
@@ -88,7 +88,7 @@ const entriesFor = payload => lib.select(hooksJson, HOST, EVENT, payload).map(e 
       const plain = want.code === 0 && !results.some(r => r.code !== null && lib.jsonBlocks(r.out));
       if (len && plain) {
         handed = true;
-        want = GUARD_EVENTS.includes(EVENT) ? lib.sequential(results)
+        want = GUARD_EVENTS.includes(EVENT) ? lib.sequential(results, undefined, EVENT)
           : { code: 75, out: '', err: `anti-hall: the joined ${EVENT} context is ${len} characters, over the ${CAP} the host delivers inline; the hooks must run separately\n` };
       }
     }

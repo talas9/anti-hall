@@ -209,7 +209,7 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
             let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
             health::log_event("dispatch_context_over_cap", &args.event, &defaults::render("dispatch.msg_context_over_cap", &[("len", &len), ("cap", &cap)]));
             if guard {
-                return combine::sequential(&results);
+                return combine::sequential(&results, &args.event);
             }
             let err = defaults::render("dispatch.msg_defer_separately", &[("event", &args.event), ("len", &len), ("cap", &cap)]);
             Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{err}\n") }
@@ -217,7 +217,7 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
         combine::Combined::Conflict(ids) => {
             let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
             health::log_event("dispatch_conflict", &args.event, &defaults::render("dispatch.msg_conflict", &[("ids", &ids.join(","))]));
-            combine::sequential(&results)
+            combine::sequential(&results, &args.event)
         }
     }
 }

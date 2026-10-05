@@ -297,14 +297,8 @@ mod tests {
 
     #[test]
     fn a_read_error_on_a_pipe_is_incomplete_output_not_a_whole_answer() {
-        let running = Running {
-            id: "broken".into(),
-            child: None,
-            out: reader(Some(Broken(false))),
-            err: None,
-            timeout: Duration::from_secs(5),
-            started: Instant::now(),
-        };
+        let running =
+            Running { id: "broken".into(), child: None, out: reader(Some(Broken(false))), err: None, timeout: Duration::from_secs(5), started: Instant::now() };
         let f = conclude(running, Waited::Code(0));
         assert_eq!(f.fate, Fate::Incomplete);
         assert_eq!(f.result.code, Some(1));

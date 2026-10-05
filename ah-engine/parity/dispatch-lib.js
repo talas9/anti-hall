@@ -132,12 +132,17 @@ function mergeObjects(active, joiners, lenient) {
 
 // A delivery that cannot be one exact answer (a conflict, or an over-cap join on a guard event): the JSON objects among the
 // stdouts of the hooks that exited 0 are merged into ONE line (a field set differently keeps the first value; the host reads
-// a whole stdout as one object or as text), plain stdout next to JSON moves to stderr, and with no JSON the plain stdouts
-// are delivered one after another; the stderr of every finished hook is kept (src/dispatch/combine.rs `sequential`).
-function sequential(results, joiners = { context: '\n\n', message: '\n' }) {
+// a whole stdout as one object or as text), plain stdout next to JSON moves to stderr (on an event where plain stdout is model
+// context it becomes an additionalContext of its own instead), and with no JSON the plain stdouts are delivered one after
+// another; the stderr of every finished hook is kept (src/dispatch/combine.rs `sequential`).
+const PLAIN_CONTEXT_EVENTS = ['UserPromptSubmit', 'UserPromptExpansion', 'SessionStart', 'PostModelSwitch']; // dispatch.plain_context_events
+function sequential(results, joiners = { context: '\n\n', message: '\n' }, event = '') {
   const live = results.filter(r => r.code !== null);
   let err = live.map(r => r.err).join('');
-  const said = live.filter(r => r.code === 0 && r.out !== '');
+  let said = live.filter(r => r.code === 0 && r.out !== '');
+  if (PLAIN_CONTEXT_EVENTS.includes(event) && said.some(r => parseObject(r.out)) && said.some(r => !parseObject(r.out))) {
+    said = said.map(r => parseObject(r.out) ? r : { ...r, out: JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: r.out.replace(/\n+$/, '') } }) + '\n' });
+  }
   const json = said.filter(r => parseObject(r.out)), plain = said.filter(r => !parseObject(r.out));
   const lines = rs => rs.map(r => r.out.endsWith('\n') ? r.out : r.out + '\n').join('');
   if (json.length === 0) return { code: 0, out: lines(plain), err };

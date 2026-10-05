@@ -176,14 +176,33 @@ pub fn context_of(out: &str) -> Option<String> {
 /// - the JSON objects among the stdouts of the hooks that exited 0 are merged into one line by the same rules as
 ///   [`combine`] (strongest `permissionDecision` wins, `additionalContext` and `systemMessage` values joined), except that a
 ///   field two hooks set to different values keeps the first hook's value instead of being a conflict;
-/// - plain-text stdout next to such JSON cannot share the stdout with it, so it is appended to stderr;
+/// - plain-text stdout next to such JSON cannot share the stdout with it. On an event where plain stdout is context for the
+///   model (`dispatch.plain_context_events`) it is folded into the merged `additionalContext`, in hook order, so it still
+///   reaches the model; on any other event it is appended to stderr;
 /// - with no JSON at all, the plain-text stdouts are delivered one after another, each ended with a newline;
 /// - the stderr of every hook that finished is kept, in order. Blocks never get here ([`combine`] answers them first).
-pub fn sequential(results: &[HookResult]) -> Outcome {
+pub fn sequential(results: &[HookResult], event: &str) -> Outcome {
     let live: Vec<&HookResult> = results.iter().filter(|r| r.code.is_some()).collect();
     let mut err: String = live.iter().map(|r| r.err.as_str()).collect();
     let said: Vec<&HookResult> = live.iter().copied().filter(|r| r.code == Some(0) && !r.out.is_empty()).collect();
-    let (json, plain): (Vec<&HookResult>, Vec<&HookResult>) = said.into_iter().partition(|r| parse_object(&r.out).is_some());
+    let (json, plain): (Vec<&HookResult>, Vec<&HookResult>) = said.iter().copied().partition(|r| parse_object(&r.out).is_some());
+    // plain stdout is model context on these events: make each such text a context of its own, so it joins the JSON ones
+    let as_context: Vec<HookResult>;
+    let (json, plain) = if !json.is_empty() && !plain.is_empty() && defaults::list("dispatch.plain_context_events").contains(&event) {
+        as_context = said
+            .iter()
+            .map(|r| {
+                if parse_object(&r.out).is_some() {
+                    return (*r).clone();
+                }
+                let hso = serde_json::json!({ "hookEventName": event, "additionalContext": r.out.trim_end_matches('\n') });
+                HookResult { out: format!("{}\n", serde_json::json!({ "hookSpecificOutput": hso })), ..(*r).clone() }
+            })
+            .collect();
+        (as_context.iter().collect(), Vec::new())
+    } else {
+        (json, plain)
+    };
     let lines = |rs: &[&HookResult]| -> String { rs.iter().map(|r| if r.out.ends_with('\n') { r.out.clone() } else { format!("{}\n", r.out) }).collect() };
     if json.is_empty() {
         return Outcome { out: lines(&plain), code: 0, err };
@@ -419,20 +438,20 @@ mod tests {
         ];
         assert!(matches!(combine(&rs), Combined::Conflict(_)));
         // the JSON keeps stdout (the host reads stdout as one object or as text), the plain text moves to stderr
-        assert_eq!(sequential(&rs), Outcome { out: "{\"x\":1}\n".into(), code: 0, err: "w\ne\nplain\n".into() });
+        assert_eq!(sequential(&rs, "PreToolUse"), Outcome { out: "{\"x\":1}\n".into(), code: 0, err: "w\ne\nplain\n".into() });
     }
 
     #[test]
     fn a_delivery_without_json_prints_the_plain_outputs_one_after_another() {
         let rs = [r("a", 0, "one", ""), r("b", 0, "two\n", "w\n"), r("c", 1, "ignored", "e\n")];
-        assert_eq!(sequential(&rs), Outcome { out: "one\ntwo\n".into(), code: 0, err: "w\ne\n".into() });
+        assert_eq!(sequential(&rs, "PreToolUse"), Outcome { out: "one\ntwo\n".into(), code: 0, err: "w\ne\n".into() });
     }
 
     #[test]
     fn a_delivery_of_several_json_outputs_is_one_object_with_the_strongest_decision() {
         let a = "{\"systemMessage\":\"one\",\"x\":1,\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"A\"}}\n";
         let b = "{\"x\":2,\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"r\",\"additionalContext\":\"B\"}}\n";
-        let o = sequential(&[r("a", 0, a, ""), r("b", 0, b, ""), r("c", 1, "", "boom\n")]);
+        let o = sequential(&[r("a", 0, a, ""), r("b", 0, b, ""), r("c", 1, "", "boom\n")], "PreToolUse");
         // the two hooks disagree about `x`: the first wins (a strict merge would be a conflict); nothing else is lost
         assert_eq!(
             o.out,
@@ -440,5 +459,17 @@ mod tests {
         );
         assert_eq!((o.code, o.err.as_str()), (0, "boom\n"));
         assert!(parse_object(&o.out).is_some(), "one valid JSON object");
+    }
+
+    #[test]
+    fn plain_text_next_to_json_on_a_context_event_stays_context() {
+        let rs =
+            [r("a", 0, "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"A\"}}\n", ""), r("b", 0, "plain B\n", "w\n")];
+        let o = sequential(&rs, "UserPromptSubmit");
+        assert_eq!(o.out, "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"A\\n\\nplain B\"}}\n");
+        assert_eq!(o.err, "w\n", "the plain text is not moved to stderr");
+        // an event whose plain stdout is not context keeps the old route
+        let o = sequential(&rs, "PostToolUse");
+        assert!(o.err.ends_with("plain B\n") && o.out.contains("\"A\""));
     }
 }

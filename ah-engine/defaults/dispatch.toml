@@ -98,6 +98,10 @@ value = { decision = ["block"], permissionDecision = ["deny"] }
 doc = "Text placed between the additionalContext values of several hooks when they are joined into one."
 value = "\n\n"
 
+[dispatch.plain_context_events]
+doc = "Events on which plain-text stdout (exit 0) is context for the model (docs/KB-claude-code-hooks.md: UserPromptSubmit, UserPromptExpansion, SessionStart, PostModelSwitch). When the dispatcher must deliver such text next to a hook's JSON it folds it into the merged additionalContext instead of moving it to stderr, where the model would not see it."
+value = ["UserPromptSubmit", "UserPromptExpansion", "SessionStart", "PostModelSwitch"]
+
 [dispatch.message_joiner]
 doc = "Text placed between the systemMessage values of several hooks when they are joined into one."
 value = "\n"
