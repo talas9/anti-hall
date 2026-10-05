@@ -24,13 +24,37 @@ pub fn is_stop_event(event: &str) -> bool {
     defaults::list("dispatch.stop_events").contains(&event)
 }
 
+fn safe(payload: Option<&Value>, field: &str) -> String {
+    let v = payload.and_then(|p| p.get(field)).and_then(Value::as_str).unwrap_or("");
+    v.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect()
+}
+
+fn dir() -> PathBuf {
+    crate::paths::dir().join(defaults::text("dispatch.stop_state_dir"))
+}
+
+/// The counter file: one per event, session and (for a SubagentStop) agent, so one looping agent's cap is not restarted
+/// by another's healthy run. A payload that names no session shares the `dispatch.stop_unknown_session` key.
 fn counter(payload: Option<&Value>, event: &str) -> PathBuf {
-    let sid = payload.and_then(|p| p.get("session_id")).and_then(Value::as_str).unwrap_or("");
-    let mut key: String = sid.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect();
+    let mut key = safe(payload, "session_id");
     if key.is_empty() {
         key = defaults::text("dispatch.stop_unknown_session").to_string();
     }
-    crate::paths::dir().join(defaults::text("dispatch.stop_state_dir")).join(format!("{event}-{key}"))
+    let agent = safe(payload, "agent_id");
+    let name = if agent.is_empty() { format!("{event}-{key}") } else { format!("{event}-{key}-{agent}") };
+    dir().join(name)
+}
+
+/// Remove the counter files not touched for `dispatch.stop_state_max_age_days` (sessions that ended while blocked).
+fn prune() {
+    let max = std::time::Duration::from_secs(defaults::num("dispatch.stop_state_max_age_days") * 86_400);
+    let Ok(rd) = std::fs::read_dir(dir()) else { return };
+    for e in rd.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > max);
+        if old && e.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// A fail-closed `event` is about to block: decide whether it may. The payload's `stop_hook_active` true fails open; so
@@ -39,6 +63,7 @@ pub fn judge(event: &str, payload: Option<&Value>, why: &str) -> Verdict {
     if payload.and_then(|p| p.get("stop_hook_active")).and_then(Value::as_bool) == Some(true) {
         return Verdict::Open(defaults::render("dispatch.msg_stop_active", &[("event", &event), ("why", &why)]));
     }
+    prune();
     let path = counter(payload, event);
     let cap = defaults::num("dispatch.stop_block_cap");
     let seen: u64 = std::fs::read_to_string(&path).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
@@ -50,8 +75,10 @@ pub fn judge(event: &str, payload: Option<&Value>, why: &str) -> Verdict {
 }
 
 /// The guards ran fine for `event`: the run of consecutive blocks is over.
+/// A payload-less block counts under the shared unknown key, so a healthy run clears that one too.
 pub fn reset(event: &str, payload: Option<&Value>) {
     if is_stop_event(event) {
         let _ = std::fs::remove_file(counter(payload, event));
+        let _ = std::fs::remove_file(counter(None, event));
     }
 }

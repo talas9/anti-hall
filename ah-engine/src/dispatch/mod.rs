@@ -99,7 +99,8 @@ pub fn closed(event: &str, payload: Option<&Value>, why: &str) -> Outcome {
         health::log_event("dispatch_stop_open", event, &note);
         return Outcome { out: String::new(), code: 0, err: format!("{note}\n") };
     }
-    Outcome { out: String::new(), code: 2, err: format!("{}\n", defaults::render("dispatch.msg_fail_closed", &[("event", &event), ("why", &why)])) }
+    let key = if stoploop::is_stop_event(event) { "dispatch.msg_fail_closed_stop" } else { "dispatch.msg_fail_closed" };
+    Outcome { out: String::new(), code: 2, err: format!("{}\n", defaults::render(key, &[("event", &event), ("why", &why)])) }
 }
 
 /// The joined `additionalContext` length and the host's cap, when several hooks contributed context and the join is over
@@ -125,7 +126,7 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
         table::select(&args.host, &args.event, &p, args.tool.as_deref())
     };
     if entries.is_empty() {
-        stoploop::reset(&args.event, parsed.as_ref());
+        // no guard ran for this payload (another agent's SubagentStop, say), so it proves nothing about a block run
         return Outcome { out: String::new(), code: 0, err: String::new() };
     }
     if let Some(path) = &args.map {

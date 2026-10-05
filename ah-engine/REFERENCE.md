@@ -775,6 +775,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.msg_defer` | `dispatcher deferred the whole call: {why}` |  |  | Event-log detail when the dispatcher cannot answer an event and defers the whole call. |
 | `dispatch.msg_defer_separately` | `anti-hall: the joined {event} context is {len} characters, over the {cap} the...` |  |  | Printed on stderr with dispatch.defer_exit when the joined output is over the host's cap. Placeholders: {event}, {len}, {cap}. |
 | `dispatch.msg_fail_closed` | `anti-hall: the engine could not run the guards for {event} ({why}). The call ...` |  |  | Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}. |
+| `dispatch.msg_fail_closed_stop` | `anti-hall: the engine could not run the guards for {event} ({why}). The agent...` |  |  | Printed on stderr (exit 2) when a Stop or SubagentStop cannot run its guards and the block is still within dispatch.stop_block_cap. Placeholders: {event}, {why}. |
 | `dispatch.msg_hook_died` | `the hook was killed by a signal or could not be waited for` |  |  | Event-log detail when a Node hook was killed by a signal or could not be waited for. |
 | `dispatch.msg_hook_spawn` | `the hook's command could not be started` |  |  | Event-log detail when a Node hook's command could not be started. |
 | `dispatch.msg_hook_timeout` | `the hook ran past its timeout and was killed; the host discards a timed-out hook` |  |  | Event-log detail when a Node hook was still running at its timeout and was killed with its group (the host discards such a hook, so the call goes on). |
@@ -798,6 +799,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.stop_block_cap` | `2` |  |  | How many consecutive fail-closed blocks a Stop or SubagentStop may answer in one session before every later one fails open with a log (the count resets when the guards run fine again). |
 | `dispatch.stop_events` | `Stop, SubagentStop` |  |  | Guard events whose exit 2 keeps the agent running instead of denying one call (Stop, SubagentStop). A fail-closed block there must be bounded, or an agent whose hooks cannot run could never finish: the payload's stop_hook_active true fails open, and so do more than dispatch.stop_block_cap consecutive fail-closed blocks in one session (the Node Stop hooks make the same stop_hook_active check). |
 | `dispatch.stop_state_dir` | `stop-blocks` |  |  | The directory under the state dir holding one consecutive-block counter file per event and session. |
+| `dispatch.stop_state_max_age_days` | `7` |  | days | Counter files of the Stop block counter older than this many days are removed (a session that ended while its guards were failing leaves one behind). |
 | `dispatch.stop_unknown_session` | `unknown` |  |  | Counter key for a Stop whose payload names no session (unreadable or cut off). |
 | `dispatch.tool_aliases` | `2 entries` |  |  | Per host, extra names a tool also answers to when matching (Codex: matcher values Edit and Write also match apply_patch). |
 

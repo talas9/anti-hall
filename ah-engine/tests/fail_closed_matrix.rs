@@ -659,3 +659,40 @@ fn a_stop_hooks_genuine_block_survives_a_failed_sibling_at_the_cap() {
         }
     }
 }
+
+/// A payload-less fail-closed Stop counts under the shared "unknown" key; a healthy run of any session clears it, so a
+/// later payload-less failure blocks again instead of failing open for good. The block message names the agent, not a call,
+/// and counter files older than `dispatch.stop_state_max_age_days` are pruned.
+#[test]
+fn the_unknown_session_counter_resets_wording_and_pruning() {
+    let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
+    let dir_name = ah_engine::defaults::text("dispatch.stop_state_dir");
+    for host in table::hosts() {
+        for event in ah_engine::defaults::list("dispatch.stop_events") {
+            if table::entries(host, event).is_empty() {
+                continue;
+            }
+            let host: &'static str = Box::leak(host.to_string().into_boxed_str());
+            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-un-{host}-{event}-{}", std::process::id())) };
+            let _ = std::fs::remove_dir_all(&case.dir);
+            let counters = case.dir.join("state").join(dir_name);
+            std::fs::create_dir_all(&counters).unwrap();
+            let old = counters.join("old-session");
+            std::fs::write(&old, "1").unwrap();
+            let age = std::time::Duration::from_secs((ah_engine::defaults::num("dispatch.stop_state_max_age_days") + 1) * 86_400);
+            std::fs::File::options().write(true).open(&old).unwrap().set_modified(std::time::SystemTime::now() - age).unwrap();
+            let lost = Row { name: "payload-less failure", stdin: Stdin::NotJson, runnable: false, ..BASE };
+            let ctx = format!("[{host}/{event}]");
+            for i in 0..cap {
+                let r = run_kept(&case, &lost, MARK, MARK);
+                assert_eq!(r.code, 2, "{ctx} block {i}: {}", r.err);
+                assert!(!r.err.contains("The call is blocked"), "{ctx} a Stop must not say a call is blocked: {}", r.err);
+            }
+            assert!(!old.exists(), "{ctx} the stale counter file was not pruned");
+            assert_eq!(run_kept(&case, &lost, MARK, MARK).code, 0, "{ctx} at the cap");
+            let healthy = Row { name: "healthy", ..BASE };
+            assert_eq!(run_kept(&case, &healthy, MARK, MARK).code, 0, "{ctx} healthy");
+            assert_eq!(run_kept(&case, &lost, MARK, MARK).code, 2, "{ctx} the unknown counter must reset after a healthy run");
+        }
+    }
+}

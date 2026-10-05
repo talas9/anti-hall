@@ -132,6 +132,13 @@ max = 100
 doc = "The directory under the state dir holding one consecutive-block counter file per event and session."
 value = "stop-blocks"
 
+[dispatch.stop_state_max_age_days]
+doc = "Counter files of the Stop block counter older than this many days are removed (a session that ended while its guards were failing leaves one behind)."
+value = 7
+unit = "days"
+min = 1
+max = 365
+
 [dispatch.stop_unknown_session]
 doc = "Counter key for a Stop whose payload names no session (unreadable or cut off)."
 value = "unknown"
@@ -157,6 +164,10 @@ max = 255
 [dispatch.msg_fail_closed]
 doc = "Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}."
 value = "anti-hall: the engine could not run the guards for {event} ({why}). The call is blocked rather than allowed unguarded; repair the install (`doctor --repair`) or retry."
+
+[dispatch.msg_fail_closed_stop]
+doc = "Printed on stderr (exit 2) when a Stop or SubagentStop cannot run its guards and the block is still within dispatch.stop_block_cap. Placeholders: {event}, {why}."
+value = "anti-hall: the engine could not run the guards for {event} ({why}). The agent is held from finishing rather than let go unguarded; repair the install (`doctor --repair`) or retry (it is let finish after a few attempts)."
 
 [dispatch.msg_panic]
 doc = "Reason given in dispatch.msg_fail_closed when the dispatcher panicked."
