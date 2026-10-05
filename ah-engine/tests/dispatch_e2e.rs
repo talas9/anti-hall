@@ -271,3 +271,15 @@ fn two_clients_with_different_environments_get_answers_for_their_own() {
     assert_eq!(unguarded, (0, String::new(), String::new()), "client with the switch: allowed");
     assert_eq!(guarded_again, guarded, "the switch of one client does not stick to the daemon");
 }
+
+#[test]
+fn a_finished_hooks_genuine_block_survives_a_check_whose_node_command_cannot_run() {
+    let e = Env::new("deferred-block");
+    // git-guard has no runnable Node command, and with no daemon (NOSPAWN) its built-in check defers; command-guard is a Node
+    // hook that ran, finished and blocked: its block must be handed back, not replaced by the generic fail-closed text
+    let map = e.map(&[("git-guard", ""), ("command-guard", "echo sibling-blocks >&2; exit 2")]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let (code, out, err) = e.run_with(&args, false, &bash("ls", &e.dir), true, &[("AH_ENGINE_NOSPAWN", "1")]);
+    assert_eq!(code, 2, "{out:?} {err:?}");
+    assert!(err.contains("sibling-blocks"), "the finished hook's own block text: {err:?}");
+}

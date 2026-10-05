@@ -103,6 +103,16 @@ pub fn closed(event: &str, payload: Option<&Value>, why: &str) -> Outcome {
     Outcome { out: String::new(), code: 2, err: format!("{}\n", defaults::render(key, &[("event", &event), ("why", &why)])) }
 }
 
+/// The first genuine block among the results that did run (exit 2, or a JSON block), as the answer to hand back verbatim.
+fn genuine_block(done: Vec<Option<combine::HookResult>>) -> Option<Outcome> {
+    let done: Vec<combine::HookResult> = done.into_iter().flatten().collect();
+    let blocker = done.iter().find(|r| r.code == Some(2)).or_else(|| done.iter().find(|r| r.code.is_some() && combine::json_blocks(&r.out)))?;
+    match combine::combine(std::slice::from_ref(blocker)) {
+        combine::Combined::Answer(o) => Some(o),
+        _ => None,
+    }
+}
+
 /// The joined `additionalContext` length and the host's cap, when several hooks contributed context and the join is over
 /// the cap: the host spills one over-cap value to a file where separate hooks would each have been inline.
 fn over_cap(args: &Args, results: &[combine::HookResult], joined: &str) -> Option<(usize, usize)> {
@@ -173,7 +183,17 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
             Some((_, Answer::Decided(r))) => results[i] = Some(r.clone()),
             _ if !table::runnable(&e.command) => {
                 if guard {
-                    let _ = node::finish(started.into_iter().map(|(_, r)| r).collect());
+                    // the hooks already started are finished first: one that ran and blocked still decides, as below
+                    let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
+                    let mut done = results.clone();
+                    for (i, f) in slots.iter().zip(node::finish(running)) {
+                        if f.fate == node::Fate::Ran {
+                            done[*i] = Some(f.result);
+                        }
+                    }
+                    if let Some(o) = genuine_block(done) {
+                        return o;
+                    }
                     return closed(&args.event, parsed.as_ref(), &no_command(&e.id));
                 }
                 health::log_event("dispatch_defer", &args.event, &defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]));
@@ -194,11 +214,7 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
                     done[*i] = Some(f.result.clone());
                 }
             }
-            let done: Vec<combine::HookResult> = done.into_iter().flatten().collect();
-            let blocker = done.iter().find(|r| r.code == Some(2)).or_else(|| done.iter().find(|r| r.code.is_some() && combine::json_blocks(&r.out)));
-            if let Some(b) = blocker
-                && let combine::Combined::Answer(o) = combine::combine(std::slice::from_ref(b))
-            {
+            if let Some(o) = genuine_block(done) {
                 return o;
             }
             let key = match bad.fate {

@@ -36,12 +36,15 @@ fn dir() -> PathBuf {
 /// The counter file: one per event, session and (for a SubagentStop) agent, so one looping agent's cap is not restarted
 /// by another's healthy run. A payload that names no session shares the `dispatch.stop_unknown_session` key.
 fn counter(payload: Option<&Value>, event: &str) -> PathBuf {
-    let mut key = safe(payload, "session_id");
-    if key.is_empty() {
-        key = defaults::text("dispatch.stop_unknown_session").to_string();
-    }
+    // The ids may hold `-` and `_` (see `safe`), so a `-` join can make two different (session, agent) pairs one file name:
+    // "a-b" + "c" and "a" + "b-c". `.` is outside the allowed set, so it separates the parts without ambiguity, and a
+    // payload with no session is tagged `u` (the shared `dispatch.stop_unknown_session` key) where a named one is tagged `s`.
+    let session = safe(payload, "session_id");
+    let mut name = if session.is_empty() { format!("{event}.u.{}", defaults::text("dispatch.stop_unknown_session")) } else { format!("{event}.s.{session}") };
     let agent = safe(payload, "agent_id");
-    let name = if agent.is_empty() { format!("{event}-{key}") } else { format!("{event}-{key}-{agent}") };
+    if !agent.is_empty() {
+        name = format!("{name}.a.{agent}");
+    }
     dir().join(name)
 }
 
@@ -80,5 +83,29 @@ pub fn reset(event: &str, payload: Option<&Value>) {
     if is_stop_event(event) {
         let _ = std::fs::remove_file(counter(payload, event));
         let _ = std::fs::remove_file(counter(None, event));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn counter_names_cannot_collide_across_ids_that_hold_hyphens() {
+        let a = counter(Some(&json!({"session_id": "a-b", "agent_id": "c"})), "SubagentStop");
+        let b = counter(Some(&json!({"session_id": "a", "agent_id": "b-c"})), "SubagentStop");
+        assert_ne!(a, b, "two different (session, agent) pairs");
+        let x = counter(Some(&json!({"session_id": "a-b"})), "Stop");
+        let y = counter(Some(&json!({"session_id": "a", "agent_id": "b"})), "Stop");
+        assert_ne!(x, y, "a session and a session with an agent");
+    }
+
+    #[test]
+    fn a_payload_without_a_session_never_shares_a_counter_with_a_session_of_the_same_name() {
+        let none = counter(Some(&json!({})), "Stop");
+        let named = counter(Some(&json!({"session_id": defaults::text("dispatch.stop_unknown_session")})), "Stop");
+        assert_ne!(none, named);
+        assert_eq!(none, counter(None, "Stop"), "an unreadable payload shares the unknown counter");
     }
 }

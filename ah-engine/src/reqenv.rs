@@ -82,6 +82,15 @@ mod tests {
     }
 
     #[test]
+    fn the_git_object_store_variables_are_forwarded() {
+        for name in ["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NO_REPLACE_OBJECTS"] {
+            assert!(allowed(name), "{name} changes what git reads, so the git check must see the client's value");
+            assert_eq!(RequestEnv::from_pairs([(name, "v")]).get(name), Some("v"));
+        }
+        assert!(!allowed("GIT_AUTHOR_NAME") && !allowed("GIT_TRACE"), "and nothing else under GIT_ rides along");
+    }
+
+    #[test]
     fn the_request_line_round_trips_and_a_bare_body_has_no_environment() {
         let e = RequestEnv::from_pairs([("HOME", "/h\nx"), ("ANTIHALL_X", "é\"")]);
         let body = format!("{}\n{{\"a\":1}}", e.to_line());
