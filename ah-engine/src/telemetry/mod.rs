@@ -64,6 +64,8 @@ pub fn decision_name(v: &Verdict) -> &'static str {
         Verdict::Block(_) => "block",
         Verdict::Advisory(_) => "advisory",
         Verdict::Exact(x) if x.code == 2 => "block",
+        // any other non-zero exit is the host's non-blocking error, not an allow
+        Verdict::Exact(x) if x.code != 0 => "error",
         Verdict::Exact(x) if !x.out.is_empty() => "advisory",
         Verdict::Exact(_) => "allow",
         Verdict::Defer => "defer",
@@ -190,6 +192,7 @@ impl Telemetry {
             Verdict::Block(_) => (Outcome::Block, 0),
             Verdict::Advisory(j) => (Outcome::Advise, j.len() as u64),
             Verdict::Exact(x) if x.code == 2 => (Outcome::Block, 0),
+            Verdict::Exact(x) if x.code != 0 => (Outcome::Error, 0),
             Verdict::Exact(x) if !x.out.is_empty() => (Outcome::Advise, x.out.len() as u64),
             Verdict::Exact(_) => (Outcome::Allow, 0),
             Verdict::Defer => (Outcome::Defer, 0),
@@ -346,6 +349,21 @@ mod tests {
         assert_eq!(imp["total"], 1);
         assert_eq!(imp["by_kind"]["block"], 1);
         assert_eq!(imp["blocks_by_reason"]["git-guard"], 1);
+    }
+
+    #[test]
+    fn an_exact_answer_with_a_non_zero_non_block_exit_is_an_error_not_an_allow() {
+        let x = |code, out: &str| Verdict::Exact(crate::checks::Exact { code, out: out.into(), err: String::new() });
+        assert_eq!(decision_name(&x(1, "")), "error");
+        assert_eq!(decision_name(&x(1, "text")), "error");
+        assert_eq!(decision_name(&x(2, "")), "block");
+        assert_eq!(decision_name(&x(0, "")), "allow");
+        assert_eq!(decision_name(&x(0, "{}")), "advisory");
+        let t = Telemetry::new();
+        t.observe_check("c", "r", &x(1, ""), 10, "abc");
+        let h = t.headline();
+        assert_eq!((h["blocks"].as_u64(), h["check_runs"].as_u64()), (Some(0), Some(1)));
+        assert_eq!(t.impact_json(&ImpactFilter::default(), 10)["total"], 0, "an error is not an impact");
     }
 
     #[test]

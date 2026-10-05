@@ -94,6 +94,8 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn 
             match o {
                 Verdict::Block(m) => return r(format!("{EXIT2}{m}\n")),
                 Verdict::Advisory(j) => advisory = Some(j),
+                // an exit-0 answer that says nothing is an allow: the rules after it still apply
+                Verdict::Exact(x) if quiet_exact(&x) => {}
                 Verdict::Exact(x) => return r(format!("{EXACT}{}", json!([x.code, x.out, x.err]))),
                 Verdict::Defer => return r(FALLBACK.to_string()),
                 Verdict::Allow => {}
@@ -141,6 +143,11 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn 
     r(out.to_string())
 }
 
+/// True for an exact answer that exits 0 and prints nothing: it decides nothing, so evaluation goes on past it.
+fn quiet_exact(x: &checks::Exact) -> bool {
+    x.code == 0 && x.out.is_empty() && x.err.is_empty()
+}
+
 /// Run a built-in check by name; `None` when it is unknown or does not apply to this payload.
 fn builtin(rule: &crate::rules::Rule, s: &Subject, payload: &Value, env: &RequestEnv) -> Option<Verdict> {
     checks::get(rule.check.as_deref()?)?.run_env(s, payload, &rule.options, env)
@@ -149,6 +156,13 @@ fn builtin(rule: &crate::rules::Rule, s: &Subject, payload: &Value, env: &Reques
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_exact_exit_zero_with_no_output_is_quiet_and_anything_else_is_an_answer() {
+        let x = |code, out: &str, err: &str| checks::Exact { code, out: out.into(), err: err.into() };
+        assert!(quiet_exact(&x(0, "", "")));
+        assert!(!quiet_exact(&x(0, "{}\n", "")) && !quiet_exact(&x(0, "", "w\n")) && !quiet_exact(&x(1, "", "")) && !quiet_exact(&x(2, "", "")));
+    }
 
     fn rs() -> RuleSet {
         RuleSet::parse(
