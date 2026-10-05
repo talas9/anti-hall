@@ -238,8 +238,8 @@ mod tests {
 
     #[test]
     fn runnable_needs_every_named_variable() {
-        std::env::set_var("AH_DISPATCH_T_SET", "/x");
-        std::env::remove_var("AH_DISPATCH_T_UNSET");
+        unsafe { std::env::set_var("AH_DISPATCH_T_SET", "/x") };
+        unsafe { std::env::remove_var("AH_DISPATCH_T_UNSET") };
         assert!(runnable("node \"${AH_DISPATCH_T_SET}/hooks/a.js\" --post"));
         assert!(runnable("node $AH_DISPATCH_T_SET/a.js"));
         assert!(!runnable("node \"${AH_DISPATCH_T_UNSET}/hooks/a.js\""));

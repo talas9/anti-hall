@@ -473,8 +473,8 @@ impl FakeDaemon {
 }
 
 fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
-    use ah_engine::dispatch::native::{encode, Answer};
-    use ah_engine::frame::{encode as frame, Kind};
+    use ah_engine::dispatch::native::{Answer, encode};
+    use ah_engine::frame::{Kind, encode as frame};
     use std::io::Read;
     let body = match mode {
         Daemon::InProcess | Daemon::Down => return None,

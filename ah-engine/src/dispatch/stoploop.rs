@@ -46,11 +46,7 @@ pub fn judge(event: &str, payload: Option<&Value>, why: &str) -> Verdict {
         return Verdict::Open(defaults::render("dispatch.msg_stop_capped", &[("event", &event), ("cap", &cap), ("why", &why)]));
     }
     let recorded = path.parent().is_some_and(|d| crate::limits::ensure_private_dir(d).is_ok()) && std::fs::write(&path, (seen + 1).to_string()).is_ok();
-    if recorded {
-        Verdict::Block
-    } else {
-        Verdict::Open(defaults::render("dispatch.msg_stop_uncounted", &[("event", &event), ("why", &why)]))
-    }
+    if recorded { Verdict::Block } else { Verdict::Open(defaults::render("dispatch.msg_stop_uncounted", &[("event", &event), ("why", &why)])) }
 }
 
 /// The guards ran fine for `event`: the run of consecutive blocks is over.

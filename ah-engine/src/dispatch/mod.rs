@@ -93,11 +93,11 @@ pub fn fail_closed(event: &str, why: &str) -> Outcome {
 /// never clear keeps the agent from finishing.
 pub fn closed(event: &str, payload: Option<&Value>, why: &str) -> Outcome {
     log_defer(event, why);
-    if stoploop::is_stop_event(event) {
-        if let stoploop::Verdict::Open(note) = stoploop::judge(event, payload, why) {
-            health::log_event("dispatch_stop_open", event, &note);
-            return Outcome { out: String::new(), code: 0, err: format!("{note}\n") };
-        }
+    if stoploop::is_stop_event(event)
+        && let stoploop::Verdict::Open(note) = stoploop::judge(event, payload, why)
+    {
+        health::log_event("dispatch_stop_open", event, &note);
+        return Outcome { out: String::new(), code: 0, err: format!("{note}\n") };
     }
     Outcome { out: String::new(), code: 2, err: format!("{}\n", defaults::render("dispatch.msg_fail_closed", &[("event", &event), ("why", &why)])) }
 }

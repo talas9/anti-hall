@@ -3,7 +3,7 @@
 //! every deferral, becomes that entry's Node hook in the client.
 use crate::checks::{self, Verdict};
 use crate::rules::Subject;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::combine::HookResult;
 use super::table::{self, Entry};

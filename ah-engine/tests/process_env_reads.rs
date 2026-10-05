@@ -12,7 +12,10 @@ const ALLOW: &[(&str, &str)] = &[
     ("src/dispatch/table.rs", "the dispatcher is the hook client process: the plugin-root variable the host exported to this hook"),
     ("src/defaults.rs", "`AH_ENGINE_*` tunable overrides and names: settings of the engine process itself"),
     ("src/cfgstore.rs", "integer `AH_ENGINE_*` engine tunables only (test `only_engine_tunables_read_the_process_environment`)"),
-    ("src/jev/settings.rs", "`Env::process`, the Jev lane's snapshot constructor, called by `ah-engine jev ask|status|scrub` (the CLI process: its own environment is right). Wiring Jev into the dispatcher (D58) must snapshot the REQUEST's environment (`Env::from_pairs`) instead"),
+    (
+        "src/jev/settings.rs",
+        "`Env::process`, the Jev lane's snapshot constructor, called by `ah-engine jev ask|status|scrub` (the CLI process: its own environment is right). Wiring Jev into the dispatcher (D58) must snapshot the REQUEST's environment (`Env::from_pairs`) instead",
+    ),
 ];
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {

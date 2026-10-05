@@ -198,10 +198,10 @@ mod tests {
     fn the_process_environment_is_never_read() {
         let name = "GIT_DISCOVERY_ACROSS_FILESYSTEM";
         assert!(defaults::list("gitcache.bypass_env").contains(&name));
-        std::env::set_var(name, "1");
+        unsafe { std::env::set_var(name, "1") };
         let own = check_bypass(&[]);
         let given = check_bypass(&[(name.to_string(), "1".to_string())]);
-        std::env::remove_var(name);
+        unsafe { std::env::remove_var(name) };
         assert!(own.is_ok(), "the daemon's own GIT_* is not the request's: {own:?}");
         assert!(matches!(given, Err(GitCacheError::Bypassed(n)) if n == name));
         assert_eq!(env_get(&[], "PATH"), None);
