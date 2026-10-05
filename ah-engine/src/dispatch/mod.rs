@@ -195,10 +195,11 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
                 }
             }
             let done: Vec<combine::HookResult> = done.into_iter().flatten().collect();
-            if let Some(b) = done.iter().find(|r| r.code == Some(2)).or_else(|| done.iter().find(|r| r.code.is_some() && combine::json_blocks(&r.out))) {
-                if let combine::Combined::Answer(o) = combine::combine(std::slice::from_ref(b)) {
-                    return o;
-                }
+            let blocker = done.iter().find(|r| r.code == Some(2)).or_else(|| done.iter().find(|r| r.code.is_some() && combine::json_blocks(&r.out)));
+            if let Some(b) = blocker
+                && let combine::Combined::Answer(o) = combine::combine(std::slice::from_ref(b))
+            {
+                return o;
             }
             let key = match bad.fate {
                 node::Fate::Spawn => "dispatch.msg_why_spawn",
