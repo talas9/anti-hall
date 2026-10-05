@@ -14,7 +14,7 @@ use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::settings::{get_bool, is_skipped};
-use crate::checks::guardkit::state::{self, SessionState, session_key};
+use crate::checks::guardkit::state::{self, session_key, SessionState};
 use crate::checks::guardkit::text::{collapse_ws, js_trim, slice_utf16};
 use crate::checks::{Check, Verdict};
 use crate::defaults;
@@ -142,7 +142,11 @@ fn record(store: &dyn SessionState, sid: &str, cmd: &str) -> Option<()> {
         }
         Some(st.dump())
     });
-    if failed { None } else { Some(()) }
+    if failed {
+        None
+    } else {
+        Some(())
+    }
 }
 
 /// The recorded side-pick command when no test run followed it, else empty.
@@ -155,7 +159,11 @@ fn pending(store: &dyn SessionState, sid: &str) -> String {
     }
     let st = Rec::load(store.get(defaults::text("merge_side_pick.state_ns"), &key).as_deref());
     if st.pick_seq > 0 && st.pick_seq > st.test_seq {
-        if st.cmd.is_empty() { defaults::text("merge_side_pick.fallback_cmd").to_string() } else { st.cmd }
+        if st.cmd.is_empty() {
+            defaults::text("merge_side_pick.fallback_cmd").to_string()
+        } else {
+            st.cmd
+        }
     } else {
         String::new()
     }

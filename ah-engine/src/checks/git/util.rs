@@ -1,6 +1,6 @@
 //! Small helpers: message builder, ASCII case-insensitive matching, Node-compatible path functions,
 //! bounded child processes, and the settings / skip.json reads the Node guard performs.
-use super::tables::{Switch, tables};
+use super::tables::{tables, Switch};
 use super::tokenize::js_trim;
 use crate::defaults;
 use std::collections::HashMap;
@@ -106,7 +106,11 @@ pub fn posix_normalize(p: &str) -> String {
     if trailing {
         path.push('/');
     }
-    if is_abs { format!("/{path}") } else { path }
+    if is_abs {
+        format!("/{path}")
+    } else {
+        path
+    }
 }
 
 /// Like Node `path.posix.dirname`.
@@ -164,7 +168,11 @@ pub fn resolve(base: &str, rel: &str, cwd: &str) -> String {
         resolved = if resolved.is_empty() { cwd.to_string() } else { format!("{cwd}/{resolved}") };
     }
     let n = posix_normalize(&resolved);
-    if n.len() > 1 && n.ends_with('/') { n[..n.len() - 1].to_string() } else { n }
+    if n.len() > 1 && n.ends_with('/') {
+        n[..n.len() - 1].to_string()
+    } else {
+        n
+    }
 }
 
 /// Like Node `path.posix.join`.
@@ -252,33 +260,34 @@ impl Settings {
     /// `settings.enabled(section, key)`: false only when the switch resolves to exactly `false`.
     /// Chain: env var, settings.json, `CLAUDE_PLUGIN_OPTION_<name>` env, default (on).
     pub fn enabled(&self, sw: &Switch) -> bool {
-        if let Some(v) = self.env.get(&sw.env)
-            && let Some(b) = bool_token(v)
-        {
-            return b;
+        if let Some(v) = self.env.get(&sw.env) {
+            if let Some(b) = bool_token(v) {
+                return b;
+            }
         }
         if !self.home.is_empty() {
             let p = format!("{}/{}", self.home, tables().settings_file);
-            if let Ok(txt) = std::fs::read_to_string(&p)
-                && let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(&txt)
-            {
-                let v = o.get(&sw.section).and_then(|s| s.as_object()).and_then(|s| s.get(&sw.key));
-                match v {
-                    Some(serde_json::Value::Bool(b)) => return *b,
-                    Some(serde_json::Value::String(s)) => {
-                        if let Some(b) = bool_token(s) {
-                            return b;
+            if let Ok(txt) = std::fs::read_to_string(&p) {
+                if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    let v = o.get(&sw.section).and_then(|s| s.as_object()).and_then(|s| s.get(&sw.key));
+                    match v {
+                        Some(serde_json::Value::Bool(b)) => return *b,
+                        Some(serde_json::Value::String(s)) => {
+                            if let Some(b) = bool_token(s) {
+                                return b;
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
-        if !sw.option.is_empty()
-            && let Some(v) = self.env.get(&format!("{}{}", tables().plugin_option_prefix, sw.option.to_uppercase()))
-            && let Some(b) = bool_token(v)
-        {
-            return b;
+        if !sw.option.is_empty() {
+            if let Some(v) = self.env.get(&format!("{}{}", tables().plugin_option_prefix, sw.option.to_uppercase())) {
+                if let Some(b) = bool_token(v) {
+                    return b;
+                }
+            }
         }
         true
     }
@@ -302,10 +311,10 @@ impl Settings {
         if let Some(v) = settings.as_ref().and_then(|j| j.get(&jn.section)).and_then(|j| j.get(&jn.enabled_key)) {
             enabled = on(Some(v));
         }
-        if let Some(v) = self.env.get(&jn.env_enabled)
-            && v == "0"
-        {
-            enabled = false;
+        if let Some(v) = self.env.get(&jn.env_enabled) {
+            if v == "0" {
+                enabled = false;
+            }
         }
         if !enabled {
             return false;
@@ -343,10 +352,10 @@ impl Settings {
         }
         let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(txt) else { return false };
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
-        if let Some(v) = o.get(name).and_then(|v| v.as_f64())
-            && v > now
-        {
-            return true;
+        if let Some(v) = o.get(name).and_then(|v| v.as_f64()) {
+            if v > now {
+                return true;
+            }
         }
         // git-guard is a destructive guard: a broad "all" skip does not cover it
         false

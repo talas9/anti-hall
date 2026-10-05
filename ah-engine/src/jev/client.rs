@@ -11,12 +11,12 @@
 //! silently using the backup would hide it. Breakers are per vendor: an open primary is skipped, an open backup is not
 //! tried, and when both are open no call is made.
 use super::breaker::{Breakers, Clock};
-use super::credentials::{Key, resolve_key};
+use super::credentials::{resolve_key, Key};
 use super::error::Reason;
-use super::question::{Kind, Question, js_key_order, json_str};
+use super::question::{js_key_order, json_str, Kind, Question};
 use super::scrub::scrub_secrets;
 use super::settings::{JevSettings, Vendor};
-use super::transport::{Posted, Transport, endpoint_for, post_systemone};
+use super::transport::{endpoint_for, post_systemone, Posted, Transport};
 use crate::defaults;
 use serde_json::Value;
 use std::sync::Arc;
@@ -150,12 +150,12 @@ pub fn extract_usage(json: &Value) -> Usage {
         return u;
     }
     u.cost = finite(json.get("total_cost")).or_else(|| finite(json.get("gateway_cost"))).or_else(|| finite(json.get("market_cost")));
-    if u.cost.is_none()
-        && let Some(gw) = json.get("provider_metadata").and_then(|m| m.get("gateway")).filter(|g| g.is_object())
-    {
-        u.cost = number_or_numeric_string(gw.get("cost"))
-            .or_else(|| number_or_numeric_string(gw.get("gatewayCost")))
-            .or_else(|| number_or_numeric_string(gw.get("marketCost")));
+    if u.cost.is_none() {
+        if let Some(gw) = json.get("provider_metadata").and_then(|m| m.get("gateway")).filter(|g| g.is_object()) {
+            u.cost = number_or_numeric_string(gw.get("cost"))
+                .or_else(|| number_or_numeric_string(gw.get("gatewayCost")))
+                .or_else(|| number_or_numeric_string(gw.get("marketCost")));
+        }
     }
     u.tokens_in = finite(json.get("tokens_prompt"));
     u.tokens_out = finite(json.get("tokens_completion"));
@@ -410,7 +410,7 @@ mod tests {
     use super::*;
     use crate::jev::breaker::ManualClock;
     use crate::jev::settings::{Env, Sources};
-    use crate::jev::testkit::{Fake, ok};
+    use crate::jev::testkit::{ok, Fake};
     use serde_json::json;
 
     fn settings(env: &[(&str, &str)], jev: Value) -> JevSettings {

@@ -6,7 +6,7 @@
 //! committed `REFERENCE.md`, so a new endpoint, key or code has to land in the reference in the same commit.
 use crate::defaults::V;
 use crate::{checks, cli, defaults};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::fmt::Write;
 
 /// A setting value in one table cell: scalars as is, long lists and tables summarised.

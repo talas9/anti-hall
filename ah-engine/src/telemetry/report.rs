@@ -3,13 +3,13 @@
 //! Each report reads what was flushed to the databases and, when it runs inside the daemon, adds what the recorder holds
 //! that has not been flushed yet, so a live report is current. Without a daemon it reads the databases only, and says so:
 //! it then lacks at most the last `telemetry.flush_ms` of data.
-use super::event::{DAY_MS, Extras, day_of};
+use super::event::{day_of, Extras, DAY_MS};
 use super::persist::{DayRow, TelDb};
 use super::recorder::{Delta, Recorder};
 use super::rollup::merge_days;
-use super::route::{NetInput, PriceTable, net};
+use super::route::{net, NetInput, PriceTable};
 use crate::defaults;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 /// A window like `7d`, `36h` or `14` (days) as whole days (at least 1); `None` when it is not one of those shapes.

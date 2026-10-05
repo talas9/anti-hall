@@ -14,7 +14,7 @@
 //! know is counted as unpriced rather than guessed.
 use super::event::{Event, Extras, Route, Spawn, Usage};
 use crate::defaults;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
 /// Prices of one model in micro-dollars per million tokens, per token class.

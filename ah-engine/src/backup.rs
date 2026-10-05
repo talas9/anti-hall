@@ -16,8 +16,8 @@ use crate::defaults;
 use crate::error::DbError;
 use crate::sql;
 use rusqlite::backup::Backup;
-use rusqlite::{Connection, OpenFlags, params};
-use serde_json::{Value, json};
+use rusqlite::{params, Connection, OpenFlags};
+use serde_json::{json, Value};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -193,8 +193,8 @@ mod tests {
     fn bodies(p: &Path) -> Vec<String> {
         let c = Connection::open(p).unwrap();
         let mut st = c.prepare("SELECT body FROM mailbox ORDER BY id").unwrap();
-
-        st.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        let v = st.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        v
     }
 
     #[test]

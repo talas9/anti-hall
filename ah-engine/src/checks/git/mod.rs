@@ -158,7 +158,11 @@ impl Ctx {
 
     /// A path as the Node process would open it (relative paths resolve against the hook's cwd).
     pub fn abs_from_cwd(&self, p: &str) -> String {
-        if p.starts_with('/') || self.proc_cwd.is_empty() { p.to_string() } else { format!("{}/{}", self.proc_cwd.trim_end_matches('/'), p) }
+        if p.starts_with('/') || self.proc_cwd.is_empty() {
+            p.to_string()
+        } else {
+            format!("{}/{}", self.proc_cwd.trim_end_matches('/'), p)
+        }
     }
 }
 

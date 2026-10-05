@@ -4,7 +4,7 @@
 use crate::db::{Db, Op, ProjVerb};
 use crate::error::{DbError, StoreError};
 use crate::sql;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;

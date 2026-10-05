@@ -13,7 +13,7 @@
 //! check says nothing, as Node does, without looking at the command.
 //!
 //! Mirrors `hooks/scan-throttle.js`.
-use crate::checks::git::tokenize::{ArithScan, parse_heredoc_at};
+use crate::checks::git::tokenize::{parse_heredoc_at, ArithScan};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
@@ -218,14 +218,13 @@ fn split_segments(cmd: &str) -> Vec<String> {
             i += 1;
             continue;
         }
-        if c == '<'
-            && c2 == Some('<')
-            && let Some(h) = parse_heredoc_at(&cs, i, &mut scan)
-        {
-            cur.extend(&cs[i..i + h.opener_len]);
-            i = h.end;
-            flush(&mut cur, &mut segs);
-            continue;
+        if c == '<' && c2 == Some('<') {
+            if let Some(h) = parse_heredoc_at(&cs, i, &mut scan) {
+                cur.extend(&cs[i..i + h.opener_len]);
+                i = h.end;
+                flush(&mut cur, &mut segs);
+                continue;
+            }
         }
         if (c == '&' && c2 == Some('&')) || (c == '|' && c2 == Some('|')) {
             flush(&mut cur, &mut segs);

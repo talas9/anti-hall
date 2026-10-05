@@ -13,8 +13,8 @@
 //! A last line without a trailing newline is not consumed: it is parsed on its own into a one-record overlay, so a
 //! reader sees it the way `readTail` (which splits on newlines and parses every piece) does, and the next refresh
 //! re-reads it once it is complete, so it is never counted twice.
+use super::record::{cap_text, parse_line, Assistant, Notification, Prompt, Record, TaskEvent, TaskStatus, ToolUse};
 use super::TranscriptError;
-use super::record::{Assistant, Notification, Prompt, Record, TaskEvent, TaskStatus, ToolUse, cap_text, parse_line};
 use crate::defaults;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::File;

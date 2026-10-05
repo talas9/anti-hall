@@ -51,7 +51,11 @@ fn is_codex(p: &Value) -> bool {
 /// Mirrors `coordinator-detect.js` `isCoordinator` (payload part), `isSubagent` and `isSubagentByPayload`.
 fn subagent_by_payload(p: &Value) -> bool {
     let markers = defaults::list("coordinator_work.agent_markers");
-    if is_codex(p) { markers.iter().any(|k| present(p, k)) } else { markers.iter().any(|k| truthy(p.get(k))) }
+    if is_codex(p) {
+        markers.iter().any(|k| present(p, k))
+    } else {
+        markers.iter().any(|k| truthy(p.get(k)))
+    }
 }
 
 /// The check's decision on one payload. `None`: nothing to say.

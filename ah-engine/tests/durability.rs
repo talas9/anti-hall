@@ -12,7 +12,7 @@
 
 mod common;
 
-use ah_engine::client::{Exch, exchange};
+use ah_engine::client::{exchange, Exch};
 use ah_engine::frame::Kind;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

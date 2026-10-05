@@ -5,7 +5,7 @@ use crate::config::ClientConfig;
 use crate::defaults;
 use crate::paths;
 use regex::Regex;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -56,11 +56,11 @@ pub struct Event {
 /// Append `ts<TAB>kind<TAB>code<TAB>detail`. The log is trimmed to its last half when it passes 64 KiB.
 pub fn log_event(kind: &str, code: &str, detail: &str) {
     let p = file(log_name());
-    if std::fs::metadata(&p).map(|m| m.len() > defaults::num("health.log_cap")).unwrap_or(false)
-        && let Ok(t) = std::fs::read_to_string(&p)
-    {
-        let keep: Vec<&str> = t.lines().rev().take(defaults::num("health.log_keep_lines") as usize).collect::<Vec<_>>().into_iter().rev().collect();
-        let _ = std::fs::write(&p, keep.join("\n") + "\n");
+    if std::fs::metadata(&p).map(|m| m.len() > defaults::num("health.log_cap")).unwrap_or(false) {
+        if let Ok(t) = std::fs::read_to_string(&p) {
+            let keep: Vec<&str> = t.lines().rev().take(defaults::num("health.log_keep_lines") as usize).collect::<Vec<_>>().into_iter().rev().collect();
+            let _ = std::fs::write(&p, keep.join("\n") + "\n");
+        }
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
         let _ = f.write_all(format!("{}\t{}\t{}\t{}\n", now_ms(), clean(kind), clean(code), clean(detail)).as_bytes());
@@ -358,11 +358,8 @@ mod tests {
 
     #[test]
     fn scrub_removes_secrets_emails_and_home() {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("HOME", "/Users/someone") };
-        let s = scrub(
-            "key sk-abcdef0123456789ABCDEF token=hunter2 Authorization: Bearer abcdefgh12345678 ghp_0123456789abcdefghijABCDEF me@example.com /Users/someone/x AKIAABCDEFGHIJKLMNOP",
-        );
+        std::env::set_var("HOME", "/Users/someone");
+        let s = scrub("key sk-abcdef0123456789ABCDEF token=hunter2 Authorization: Bearer abcdefgh12345678 ghp_0123456789abcdefghijABCDEF me@example.com /Users/someone/x AKIAABCDEFGHIJKLMNOP");
         for leak in ["sk-abcdef", "hunter2", "abcdefgh12345678", "ghp_0123", "me@example.com", "/Users/someone", "AKIAABCD"] {
             assert!(!s.contains(leak), "{leak} leaked: {s}");
         }

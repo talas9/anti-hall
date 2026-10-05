@@ -4,7 +4,7 @@
 //! it and a test catches a name nobody registered. A series is a metric name plus its label values; the number of
 //! series per metric is capped so a label with unbounded values (a path, a session id) cannot grow memory.
 use crate::defaults;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 /// A latency histogram with the fixed buckets from `telemetry.latency_buckets_us`.

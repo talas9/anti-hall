@@ -28,10 +28,10 @@ fn keys_after(text: &str, callers: &[&str]) -> BTreeSet<String> {
             // a bare call, not a method (`.text("x")`) or a longer name (`fn_text("x")`)
             let prev = text[..at].chars().last();
             let after = &rest[p + c.len() + 2..];
-            if !prev.is_some_and(|ch| ch == '.' || ch == ':' || ch.is_alphanumeric() || ch == '_')
-                && let Some(end) = after.find('"')
-            {
-                out.insert(after[..end].to_string());
+            if !prev.is_some_and(|ch| ch == '.' || ch == ':' || ch.is_alphanumeric() || ch == '_') {
+                if let Some(end) = after.find('"') {
+                    out.insert(after[..end].to_string());
+                }
             }
             base += p + c.len() + 2;
             rest = &rest[p + c.len() + 2..];

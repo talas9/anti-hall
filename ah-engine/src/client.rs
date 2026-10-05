@@ -230,16 +230,15 @@ pub fn run(raw: &str, fallback: Option<&Path>) -> Outcome {
     }
     let mut o = fallback.and_then(|p| run_fallback(raw, p, &cfg)).unwrap_or(Outcome { out: String::new(), code: 0, err: String::new() });
     // We are running on the built-in checks: tell the agent once per session if the engine is in a known-bad state.
-    if o.code == 0
-        && paths::dir().join(defaults::text("files.failure")).exists()
-        && let Ok(p) = serde_json::from_str::<serde_json::Value>(raw)
-    {
-        let session = p["session_id"].as_str().unwrap_or("-");
-        let event = crate::hookio::event_of(&p).unwrap_or("");
-        if let Some(text) = health::advisory(session)
-            && let Some(m) = health::merge_advisory(event, o.out.trim(), &text)
-        {
-            o.out = m;
+    if o.code == 0 && paths::dir().join(defaults::text("files.failure")).exists() {
+        if let Ok(p) = serde_json::from_str::<serde_json::Value>(raw) {
+            let session = p["session_id"].as_str().unwrap_or("-");
+            let event = crate::hookio::event_of(&p).unwrap_or("");
+            if let Some(text) = health::advisory(session) {
+                if let Some(m) = health::merge_advisory(event, o.out.trim(), &text) {
+                    o.out = m;
+                }
+            }
         }
     }
     o

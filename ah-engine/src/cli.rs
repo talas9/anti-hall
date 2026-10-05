@@ -5,7 +5,7 @@
 //! `defaults/commands.toml`; the handlers are here. A test keeps the two in step, so a command cannot exist without
 //! documentation or be documented without existing.
 use crate::{client, daemon, defaults, docs, health};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// A parsed command line: the command, whether `--json` was given, and the remaining arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,7 +4,7 @@
 //! are process-global, so this file holds a single test that walks the scenarios in order.
 mod common;
 use ah_engine::client;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
@@ -59,8 +59,7 @@ fn layered_config_hot_swaps_without_dropping_requests() {
         ("AH_ENGINE_CONFIG_DEBOUNCE_MS", "100".into()),
         ("AH_ENGINE_NOSPAWN", "1".into()),
     ] {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var(k, v) };
+        std::env::set_var(k, v);
     }
     let daemon = Command::new(BIN).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     /// Stops the daemon and collects it (a dead child stays a zombie until waited for, which `reap` would read as alive),

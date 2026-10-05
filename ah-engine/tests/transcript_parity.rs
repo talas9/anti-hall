@@ -7,7 +7,7 @@
 
 mod transcript_support;
 use ah_engine::transcript::{Index, Limits};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::process::Command;
 use transcript_support::*;
 

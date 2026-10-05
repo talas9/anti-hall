@@ -64,15 +64,15 @@ impl FileLog {
         if meta.len() <= self.max_bytes {
             return;
         }
-        let r#gen = |n: u64| {
+        let gen = |n: u64| {
             let mut s = self.path.as_os_str().to_os_string();
             s.push(format!(".{n}"));
             PathBuf::from(s)
         };
         for i in (1..self.keep).rev() {
-            let _ = std::fs::rename(r#gen(i), r#gen(i + 1)); // a gap in the chain is fine
+            let _ = std::fs::rename(gen(i), gen(i + 1)); // a gap in the chain is fine
         }
-        let _ = std::fs::rename(&self.path, r#gen(1)); // on failure the row is appended to the oversized file
+        let _ = std::fs::rename(&self.path, gen(1)); // on failure the row is appended to the oversized file
     }
 }
 

@@ -84,10 +84,10 @@ pub fn process_cpu_secs() -> f64 {
 pub fn rss_kb() -> u64 {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(s) = std::fs::read_to_string("/proc/self/statm")
-            && let Some(pages) = s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok())
-        {
-            return pages * (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64) / 1024;
+        if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
+            if let Some(pages) = s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()) {
+                return pages * (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64) / 1024;
+            }
         }
     }
     let probe = crate::defaults::list("health.rss_probe");

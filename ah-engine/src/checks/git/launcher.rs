@@ -1,8 +1,8 @@
 //! Writes into the stable launcher directory (`~/.anti-hall/bin`) and call-literal command extraction.
-use super::Ctx;
 use super::tables::{block, tables};
 use super::tokenize::*;
 use super::util::*;
+use super::Ctx;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::sync::OnceLock;
@@ -41,12 +41,13 @@ pub fn normalize_guard_path(ctx: &Ctx, raw: &str, cd_dir: Option<&str>) -> Strin
     }
     let home = ctx.home.as_str();
     let mut base = expand_tilde(&raw.replace('\\', "/"), home);
-    if !base.starts_with('/')
-        && let Some(cd) = cd_dir
-        && !cd.is_empty()
-    {
-        let dir = expand_tilde(&cd.replace('\\', "/"), home);
-        base = format!("{}/{}", dir.trim_end_matches('/'), base);
+    if !base.starts_with('/') {
+        if let Some(cd) = cd_dir {
+            if !cd.is_empty() {
+                let dir = expand_tilde(&cd.replace('\\', "/"), home);
+                base = format!("{}/{}", dir.trim_end_matches('/'), base);
+            }
+        }
     }
     posix_normalize(&base)
 }
@@ -243,7 +244,11 @@ fn glob_could_hit_launcher(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
     let p2 = if let Some(r) = p.strip_prefix("${HOME}") {
         format!("{home}{r}")
     } else if let Some(r) = p.strip_prefix("$HOME") {
-        if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) { format!("{home}{r}") } else { p.to_string() }
+        if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
+            format!("{home}{r}")
+        } else {
+            p.to_string()
+        }
     } else {
         p.to_string()
     };
@@ -323,7 +328,11 @@ fn var_target_hits_launcher(ctx: &mut Ctx, p: &str, cd_dir: Option<&str>, hops: 
         let c2 = if let Some(r) = joined.strip_prefix("${HOME}") {
             format!("{home_or}{r}")
         } else if let Some(r) = joined.strip_prefix("$HOME") {
-            if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) { format!("{home_or}{r}") } else { joined.clone() }
+            if r.chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
+                format!("{home_or}{r}")
+            } else {
+                joined.clone()
+            }
         } else {
             joined.clone()
         };
@@ -413,10 +422,10 @@ pub fn writes_launcher_dir(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, cd_dir: Optio
             }
             k = tc[kk + 1..].iter().position(|&c| c == '>').map(|p| p + kk + 1);
         }
-        if let Some(raw) = &t.raw
-            && raw.contains('>')
-        {
-            targets.extend(redirect_words(raw));
+        if let Some(raw) = &t.raw {
+            if raw.contains('>') {
+                targets.extend(redirect_words(raw));
+            }
         }
     }
     let ops: Vec<String> = ev.args.iter().map(|a| a.text.clone()).collect();

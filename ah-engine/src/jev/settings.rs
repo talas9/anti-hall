@@ -428,7 +428,11 @@ impl JevSettings {
         if let Some(m) = configured {
             return m;
         }
-        if defaults::list("jev.legacy_on_default").contains(&id) { Mode::On } else { Mode::parse(defaults::text("jev.unlisted_mode")).unwrap_or(Mode::Shadow) }
+        if defaults::list("jev.legacy_on_default").contains(&id) {
+            Mode::On
+        } else {
+            Mode::parse(defaults::text("jev.unlisted_mode")).unwrap_or(Mode::Shadow)
+        }
     }
 
     /// The configured mode of `id` and whether it came from the shipped default (or nothing).

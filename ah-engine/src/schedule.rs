@@ -16,7 +16,7 @@
 use crate::db::{Db, Op, SchedOp};
 use crate::defaults;
 use crate::sql;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
