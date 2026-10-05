@@ -184,14 +184,27 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
     let finished = node::finish(running);
     if guard {
         // a hook that could not run says nothing, and on a guard event nothing must not read as an allow (a timeout is
-        // the host's own discard, so it stays one; it is logged by `node`)
-        if let Some(f) = finished.iter().find(|f| matches!(f.fate, node::Fate::Spawn | node::Fate::Died | node::Fate::Incomplete)) {
-            let key = match f.fate {
+        // the host's own discard, so it stays one; it is logged by `node`). A hook that DID finish and block still
+        // decides: its block is handed back verbatim, and the fail-closed counter is not touched.
+        if let Some(bad) = finished.iter().find(|f| matches!(f.fate, node::Fate::Spawn | node::Fate::Died | node::Fate::Incomplete)) {
+            let mut done: Vec<Option<combine::HookResult>> = results.clone();
+            for (i, f) in slots.iter().zip(&finished) {
+                if f.fate == node::Fate::Ran {
+                    done[*i] = Some(f.result.clone());
+                }
+            }
+            let done: Vec<combine::HookResult> = done.into_iter().flatten().collect();
+            if let Some(b) = done.iter().find(|r| r.code == Some(2)).or_else(|| done.iter().find(|r| r.code.is_some() && combine::json_blocks(&r.out))) {
+                if let combine::Combined::Answer(o) = combine::combine(std::slice::from_ref(b)) {
+                    return o;
+                }
+            }
+            let key = match bad.fate {
                 node::Fate::Spawn => "dispatch.msg_why_spawn",
                 node::Fate::Died => "dispatch.msg_why_died",
                 _ => "dispatch.msg_why_incomplete",
             };
-            return closed(&args.event, parsed.as_ref(), &defaults::render(key, &[("id", &f.result.id)]));
+            return closed(&args.event, parsed.as_ref(), &defaults::render(key, &[("id", &bad.result.id)]));
         }
     }
     for (i, f) in slots.into_iter().zip(finished) {

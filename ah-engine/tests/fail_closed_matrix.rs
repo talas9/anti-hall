@@ -581,6 +581,11 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
                     (label("allowing hook"), run(case, &row, MARK, MARK2), Want::Closed),
                     (label("blocking hook"), run(case, &row, BLOCK, MARK2), Want::Closed),
                 ],
+                // a valid payload: every hook runs, so the outcome is exact (the hook's own allow or block, never the engine's)
+                Hook::Crossed if matches!(row.stdin, Stdin::Valid) => vec![
+                    (label("allowing hook"), run(case, &row, MARK, MARK2), Want::Allow),
+                    (label("blocking hook"), run(case, &row, BLOCK, MARK2), Want::Blocks("BLOCKME")),
+                ],
                 Hook::Crossed => vec![
                     (label("allowing hook"), run(case, &row, MARK, MARK2), Want::ClosedOrAllow),
                     (label("blocking hook"), run(case, &row, BLOCK, MARK2), Want::BlocksOrClosed("BLOCKME")),
@@ -619,6 +624,38 @@ fn consecutive_stops_with_a_broken_install_end_in_an_exit_0_within_the_cap() {
             let healthy = Row { name: "healthy", ..BASE };
             assert_eq!(run_kept(&case, &healthy, MARK, MARK).code, 0, "[{host}/{event}] healthy Stop");
             assert_eq!(run_kept(&case, &broken, MARK, MARK).code, 2, "[{host}/{event}] the count restarted after a healthy Stop");
+        }
+    }
+}
+
+/// A healthy hook's genuine block must reach the host even when a sibling hook cannot run and the Stop block counter is at
+/// its cap or the payload says `stop_hook_active` (D74): the cap bounds the engine's own fail-closed blocks, never a hook's.
+#[test]
+fn a_stop_hooks_genuine_block_survives_a_failed_sibling_at_the_cap() {
+    let cap = ah_engine::defaults::num("dispatch.stop_block_cap").to_string();
+    let dir_name = ah_engine::defaults::text("dispatch.stop_state_dir");
+    for host in table::hosts() {
+        for event in ah_engine::defaults::list("dispatch.stop_events") {
+            if table::entries(host, event).is_empty() {
+                continue;
+            }
+            let host: &'static str = Box::leak(host.to_string().into_boxed_str());
+            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-gb-{host}-{event}-{}", std::process::id())) };
+            let siblings: [(&str, &str); 3] = [("killed sibling", "kill -9 $$"), ("unspawnable sibling", "a\0b"), ("orphan holding the pipes", "(exec sleep 3) & echo partial")];
+            for (what, second) in siblings {
+                for (state, active, filled) in [("fresh", Stdin::Valid, false), ("counter at the cap", Stdin::Valid, true), ("stop_hook_active", Stdin::StopActive, false), ("both", Stdin::StopActive, true)] {
+                    let _ = std::fs::remove_dir_all(&case.dir);
+                    if filled {
+                        let counters = case.dir.join("state").join(dir_name);
+                        std::fs::create_dir_all(&counters).unwrap();
+                        std::fs::write(counters.join(format!("{event}-fc")), &cap).unwrap();
+                    }
+                    let row = Row { name: "genuine block", stdin: active, ..BASE };
+                    let r = run_kept(&case, &row, BLOCK, second);
+                    let ctx = format!("[{host}/{event}] {what}, {state}: code {} err {:?}", r.code, r.err);
+                    assert!(r.code == 2 && r.err.contains("BLOCKME") && !r.err.contains("could not run the guards"), "the hook's block must be returned verbatim: {ctx}");
+                }
+            }
         }
     }
 }
