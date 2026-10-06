@@ -29,6 +29,8 @@ enum Stdin {
     Valid,
     /// A payload cut off by `client.max_stdin`: valid JSON up to a point, then more bytes than the client reads.
     Truncated,
+    /// Valid UTF-8 payload bytes over `client.max_stdin`.
+    OverCapUtf8,
     /// Text that is not JSON.
     NotJson,
     /// Bytes that are not UTF-8.
@@ -147,6 +149,8 @@ fn rows() -> Vec<Row> {
         // ---- input side: crossed with an allowing and a blocking hook ----
         Row { name: "truncated payload, tool given", stdin: Stdin::Truncated, ..BASE },
         Row { name: "truncated payload, no --tool", stdin: Stdin::Truncated, tool: Tool::Omitted, ..BASE },
+        Row { name: "over-cap UTF-8 stdin, tool given", stdin: Stdin::OverCapUtf8, events: PRE, ..BASE },
+        Row { name: "over-cap UTF-8 stdin, no --tool", stdin: Stdin::OverCapUtf8, tool: Tool::Omitted, events: PRE, ..BASE },
         Row { name: "invalid JSON, tool given", stdin: Stdin::NotJson, ..BASE },
         Row { name: "invalid JSON, no --tool", stdin: Stdin::NotJson, tool: Tool::Omitted, ..BASE },
         Row { name: "non-UTF-8 stdin, tool given", stdin: Stdin::NotUtf8, ..BASE },
@@ -340,6 +344,14 @@ fn stdin_bytes(s: Stdin, event: &str, dir: &std::path::Path) -> Vec<u8> {
         Stdin::Truncated => {
             let mut b = br#"{"tool_name":"Bash","tool_input":{"command":"git push --force "#.to_vec();
             b.resize(ah_engine::defaults::num("client.max_stdin") as usize + 4096, b'x');
+            b
+        }
+        Stdin::OverCapUtf8 => {
+            let mut b = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test "#.to_vec();
+            while b.len() <= ah_engine::defaults::num("client.max_stdin") as usize + 4096 {
+                b.extend_from_slice(b"\xc3\xa9");
+            }
+            b.extend_from_slice(br#""}}"#);
             b
         }
         Stdin::NotJson => br#"{"tool_name":"Bash","tool_input":{"command":"git push --force"#.to_vec(),

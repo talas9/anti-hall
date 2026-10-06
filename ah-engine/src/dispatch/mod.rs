@@ -276,11 +276,13 @@ pub fn hook_main(args: &[String]) -> i32 {
         let mut bytes = Vec::new();
         let read = std::io::stdin().take(max + 1).read_to_end(&mut bytes);
         let cut = bytes.len() as u64 > max;
+        let utf8 = std::str::from_utf8(&bytes);
         if guard {
             // a payload the dispatcher does not hold whole cannot be routed or checked: block, never allow unguarded
             let failure = match &read {
                 Err(e) => Some(defaults::render("dispatch.msg_stdin_read", &[("err", &e)])),
                 Ok(_) if cut => Some(defaults::render("dispatch.msg_stdin_truncated", &[("max", &max)])),
+                Ok(_) if utf8.is_err() => Some(defaults::text("msg.dispatch_stdin_utf8").to_string()),
                 Ok(_) => None,
             };
             if let Some(why) = failure {
@@ -290,7 +292,7 @@ pub fn hook_main(args: &[String]) -> i32 {
             }
         }
         bytes.truncate(max as usize);
-        // JS decodes invalid UTF-8 with U+FFFD, as this does, so a Node hook and the checks read the same text
+        // Non-guard events cannot block; keep matching Node's replacement-character decode there.
         let raw = String::from_utf8_lossy(&bytes).to_string();
         let o = run(&raw, &a);
         let _ = std::io::stderr().write_all(o.err.as_bytes());

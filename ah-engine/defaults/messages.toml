@@ -224,6 +224,14 @@ value = "{what}: {err}"
 doc = "Exchange failure when the reply frame was damaged. Placeholder: {err}."
 value = "bad reply frame: {err}"
 
+[msg.client_fallback_unavailable]
+doc = "Printed on stderr (exit 2) when stdin cannot safely be sent to the engine and the Node fallback cannot answer."
+value = "hook fallback unavailable for undecodable or oversized stdin\n"
+
+[msg.dispatch_stdin_utf8]
+doc = "Reason in dispatch.msg_fail_closed when a guard event's stdin payload is not valid UTF-8."
+value = "the hook payload is not valid UTF-8"
+
 # ---- typed errors (Display text) ----------------------------------------------------------------------
 
 [msg.err_rules_json]

@@ -208,6 +208,11 @@ fn read_to_eof(mut stream: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>
     rx
 }
 
+enum FallbackInput {
+    Bytes(Vec<u8>),
+    BytesThenStdin(Vec<u8>, std::io::Stdin),
+}
+
 /// Run the Node hook: stdin = the payload; stdout, stderr and the exit code are returned. Both streams are read to EOF,
 /// bounded only by the overall deadline (`client.fallback_ms`), because a hook can exit before its output is complete
 /// (a background process of its own holds the pipe) and an empty stdout would read as an allow.
@@ -215,14 +220,19 @@ fn read_to_eof(mut stream: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>
 /// `None` when it cannot run or does not finish in time (= the fallback is unavailable, as when the host's own timeout
 /// kills a hook). A hook that finished but whose output was still unread at the deadline is an explicit error outcome
 /// (exit 1, a message on stderr): never an empty stdout.
-fn run_fallback(raw: &str, path: &Path, cfg: &ClientConfig) -> Option<Outcome> {
+fn run_fallback(input: FallbackInput, path: &Path, cfg: &ClientConfig) -> Option<Outcome> {
     let node = std::env::var_os(defaults::env_name("node")).unwrap_or_else(|| "node".into());
     // its own process group, so a timeout can take its helpers down with it (they would otherwise hold the pipes open)
     let mut child = Command::new(node).arg(path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn().ok()?;
     let mut stdin = child.stdin.take()?;
-    let data = raw.as_bytes().to_vec();
-    std::thread::spawn(move || {
-        let _ = stdin.write_all(&data);
+    std::thread::spawn(move || match input {
+        FallbackInput::Bytes(bytes) => {
+            let _ = stdin.write_all(&bytes);
+        }
+        FallbackInput::BytesThenStdin(bytes, mut rest) => {
+            let _ = stdin.write_all(&bytes);
+            let _ = std::io::copy(&mut rest, &mut stdin);
+        }
     });
     let (out_rx, err_rx) = (read_to_eof(child.stdout.take()?), read_to_eof(child.stderr.take()?));
     let deadline = Instant::now() + cfg.fallback_timeout;
@@ -278,18 +288,40 @@ fn reply_outcome(body: String) -> Option<Outcome> {
 
 /// Core of `engine hook`. Pure of process exit.
 pub fn run(raw: &str, fallback: Option<&Path>) -> Outcome {
-    if raw.trim().is_empty() {
+    run_bytes(raw.as_bytes().to_vec(), false, fallback, None, false)
+}
+
+/// Core of `engine hook` for raw stdin bytes. `force_fallback` means the client cannot safely ask the engine (invalid
+/// UTF-8, a capped read, or a stdin read error), so the Node fallback receives the exact bytes the client read.
+fn run_bytes(raw: Vec<u8>, force_fallback: bool, fallback: Option<&Path>, rest: Option<std::io::Stdin>, fail_closed_unavailable: bool) -> Outcome {
+    if raw.is_empty() && !force_fallback {
         return Outcome { out: String::new(), code: 0, err: String::new() };
     }
     let cfg = ClientConfig::from_env();
-    if let Some(o) = engine_attempt(raw, &cfg, fallback.is_some()).and_then(reply_outcome) {
+    let text = std::str::from_utf8(&raw).ok();
+    if !force_fallback
+        && let Some(raw) = text
+        && let Some(o) = engine_attempt(raw, &cfg, fallback.is_some()).and_then(reply_outcome)
+    {
         return o;
     }
-    let mut o = fallback.and_then(|p| run_fallback(raw, p, &cfg)).unwrap_or(Outcome { out: String::new(), code: 0, err: String::new() });
+    let advisory_raw = if force_fallback { None } else { text.map(str::to_owned) };
+    let input = match rest {
+        Some(rest) => FallbackInput::BytesThenStdin(raw, rest),
+        None => FallbackInput::Bytes(raw),
+    };
+    let mut o = fallback.and_then(|p| run_fallback(input, p, &cfg)).unwrap_or_else(|| {
+        if fail_closed_unavailable {
+            Outcome { out: String::new(), code: 2, err: defaults::text("msg.client_fallback_unavailable").into() }
+        } else {
+            Outcome { out: String::new(), code: 0, err: String::new() }
+        }
+    });
     // We are running on the built-in checks: tell the agent once per session if the engine is in a known-bad state.
     if o.code == 0
         && paths::dir().join(defaults::text("files.failure")).exists()
-        && let Ok(p) = serde_json::from_str::<serde_json::Value>(raw)
+        && let Some(raw) = advisory_raw
+        && let Ok(p) = serde_json::from_str::<serde_json::Value>(&raw)
     {
         let session = p["session_id"].as_str().unwrap_or("-");
         let event = crate::hookio::event_of(&p).unwrap_or("");
@@ -313,9 +345,15 @@ fn fallback_arg(args: &[String]) -> Option<PathBuf> {
 /// `engine hook`: read stdin, print the result, exit with the Node hook's code (0 when the engine answered).
 pub fn hook_main(args: &[String]) -> i32 {
     let res = std::panic::catch_unwind(|| {
-        let mut raw = String::new();
-        let _ = std::io::stdin().take(defaults::num("client.max_stdin")).read_to_string(&mut raw);
-        let o = run(&raw, fallback_arg(args).as_deref());
+        let fallback = fallback_arg(args);
+        let max = defaults::num("client.max_stdin");
+        let mut raw = Vec::new();
+        let mut stdin = std::io::stdin();
+        let read = stdin.by_ref().take(max + 1).read_to_end(&mut raw);
+        let cap_hit = raw.len() as u64 > max;
+        let force_fallback = read.is_err() || cap_hit || std::str::from_utf8(&raw).is_err();
+        let rest = (force_fallback && cap_hit).then_some(stdin);
+        let o = run_bytes(raw, force_fallback, fallback.as_deref(), rest, force_fallback);
         if !o.err.is_empty() {
             let mut se = std::io::stderr();
             let _ = se.write_all(o.err.as_bytes());

@@ -876,9 +876,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.client_bad_frame` | Exchange failure when the reply frame was damaged. Placeholder: {err}. |
 | `msg.client_bad_socket` | Exchange failure when the socket path is not a socket owned by this user. |
 | `msg.client_connect` | Exchange failure when connecting failed. Placeholder: {err}. |
+| `msg.client_fallback_unavailable` | Printed on stderr (exit 2) when stdin cannot safely be sent to the engine and the Node fallback cannot answer. |
 | `msg.client_io` | Exchange failure for another I/O step. Placeholders: {what}, {err}. |
 | `msg.client_timeout` | Exchange failure when the hard deadline passed. |
 | `msg.diagnostics` | Secret-scrubbed diagnostic block attached to a permanent-failure advisory. Placeholders: {version}, {os}, {arch}, {code}, {log}. |
+| `msg.dispatch_stdin_utf8` | Reason in dispatch.msg_fail_closed when a guard event's stdin payload is not valid UTF-8. |
 | `msg.docs_checks_note` | Paragraph under the checks heading of the generated reference. |
 | `msg.docs_intro` | Opening paragraph of the generated reference. |
 | `msg.docs_rule_fields` | Paragraph listing the fields of a rule in the generated reference. |

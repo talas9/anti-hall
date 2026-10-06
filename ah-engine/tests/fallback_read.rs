@@ -24,25 +24,41 @@ impl Env {
 
     /// (stdout, stderr, exit code) of one client call whose fallback deadline is `deadline_ms`.
     fn call(&self, deadline_ms: u64) -> (String, String, i32) {
+        self.call_bytes(br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}"#, deadline_ms)
+    }
+
+    fn call_bytes(&self, input: &[u8], deadline_ms: u64) -> (String, String, i32) {
+        self.call_bytes_with(input, deadline_ms, Some(self.dir.join("fb.sh")), Some("/bin/sh"))
+    }
+
+    fn call_bytes_with(&self, input: &[u8], deadline_ms: u64, fallback: Option<PathBuf>, node: Option<&str>) -> (String, String, i32) {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-        c.args(["hook", "--fallback"])
-            .arg(self.dir.join("fb.sh"))
+        c.arg("hook")
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.dir.join("eng"))
             .env("AH_ENGINE_VERSION", "fb-test")
             .env("AH_ENGINE_NOSPAWN", "1")
-            .env("AH_ENGINE_NODE", "/bin/sh")
             .env("AH_ENGINE_FALLBACK_MS", deadline_ms.to_string());
+        if let Some(fallback) = fallback {
+            c.arg("--fallback").arg(fallback);
+        }
+        if let Some(node) = node {
+            c.env("AH_ENGINE_NODE", node);
+        }
         let mut ch = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-        ch.stdin.take().unwrap().write_all(br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}"#).unwrap();
+        ch.stdin.take().unwrap().write_all(input).unwrap();
         let o = ch.wait_with_output().unwrap();
         (String::from_utf8_lossy(&o.stdout).into(), String::from_utf8_lossy(&o.stderr).into(), o.status.code().unwrap_or(-1))
     }
 
     fn log(&self) -> String {
         std::fs::read_dir(self.dir.join("eng")).into_iter().flatten().flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect()
+    }
+
+    fn seen(&self) -> Vec<u8> {
+        std::fs::read(self.dir.join("seen")).unwrap()
     }
 }
 
@@ -85,6 +101,88 @@ fn a_hook_killed_by_a_signal_is_an_error_not_an_exit_0() {
     let (out, err, code) = e.call(30_000);
     assert_eq!((out.as_str(), code), ("", 1));
     assert!(err.contains("killed by signal 9"), "{err:?}");
+    assert!(e.log().contains("fallback_fail"), "logged: {:?}", e.log());
+}
+
+#[test]
+fn non_utf8_stdin_runs_the_fallback_with_the_original_bytes() {
+    let e = Env::new("nonutf8", "cat > \"$(dirname \"$0\")/seen\"\necho BLOCKED >&2\nexit 2\n");
+    let input = b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm test \xff\"}}";
+    let (out, err, code) = e.call_bytes(input, 30_000);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("BLOCKED"), "{err:?}");
+    assert_eq!(e.seen(), input);
+}
+
+#[test]
+fn non_empty_whitespace_stdin_is_not_a_noop_when_a_fallback_exists() {
+    let e = Env::new("space", "cat > \"$(dirname \"$0\")/seen\"\necho BLOCKED >&2\nexit 2\n");
+    let input = b" \n\t";
+    let (out, err, code) = e.call_bytes(input, 30_000);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("BLOCKED"), "{err:?}");
+    assert_eq!(e.seen(), input);
+}
+
+#[test]
+fn over_cap_stdin_runs_the_fallback_with_the_original_bytes() {
+    let e = Env::new("overcap", "cat > \"$(dirname \"$0\")/seen\"\necho BLOCKED >&2\nexit 2\n");
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    let mut input = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test "#.to_vec();
+    while input.len() <= max + 4096 {
+        input.extend_from_slice(b"\xc3\xa9");
+    }
+    input.extend_from_slice(br#""}}"#);
+    let (out, err, code) = e.call_bytes(&input, 30_000);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("BLOCKED"), "{err:?}");
+    assert_eq!(e.seen().len(), input.len());
+    assert_eq!(e.seen(), input);
+}
+
+#[test]
+fn forced_fallback_without_a_usable_fallback_fails_closed() {
+    let input = b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm test \xff\"}}";
+    let e = Env::new("nofb", "cat >/dev/null\n");
+    let (out, err, code) = e.call_bytes_with(input, 30_000, None, None);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("fallback unavailable"), "{err:?}");
+
+    let e = Env::new("badnode", "cat >/dev/null\n");
+    let (out, err, code) = e.call_bytes_with(input, 30_000, Some(e.dir.join("fb.sh")), Some("/nonexistent/ah-node"));
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("fallback unavailable"), "{err:?}");
+}
+
+#[test]
+fn exact_stdin_cap_is_not_over_cap_but_one_more_byte_is() {
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    let prefix = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":""#;
+    let suffix = br#""}}"#;
+    let filler = max - prefix.len() - suffix.len();
+    let mut exact = prefix.to_vec();
+    exact.resize(prefix.len() + filler, b'x');
+    exact.extend_from_slice(suffix);
+    assert_eq!(exact.len(), max);
+
+    let e = Env::new("exact-cap", "cat >/dev/null\n");
+    // With no daemon and no fallback, valid JSON at exactly the stdin cap keeps the historical fail-open outcome.
+    assert_eq!(e.call_bytes_with(&exact, 30_000, None, None), (String::new(), String::new(), 0));
+
+    let mut over = exact;
+    over.push(b'\n');
+    let (out, err, code) = e.call_bytes_with(&over, 30_000, None, None);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("fallback unavailable"), "{err:?}");
+}
+
+#[test]
+fn forced_fallback_timeout_fails_closed() {
+    let e = Env::new("forced-timeout", "cat >/dev/null\nexec sleep 30\n");
+    let input = b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm test \xff\"}}";
+    let (out, err, code) = e.call_bytes(input, 500);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("fallback unavailable"), "{err:?}");
     assert!(e.log().contains("fallback_fail"), "logged: {:?}", e.log());
 }
 
