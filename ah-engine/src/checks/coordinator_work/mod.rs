@@ -49,7 +49,7 @@ fn is_codex(p: &Value) -> bool {
 /// only other way to be a subagent, so its absence proves nothing).
 ///
 /// Mirrors `coordinator-detect.js` `isCoordinator` (payload part), `isSubagent` and `isSubagentByPayload`.
-fn subagent_by_payload(p: &Value) -> bool {
+pub(crate) fn subagent_by_payload(p: &Value) -> bool {
     let markers = defaults::list("coordinator_work.agent_markers");
     if is_codex(p) { markers.iter().any(|k| present(p, k)) } else { markers.iter().any(|k| truthy(p.get(k))) }
 }

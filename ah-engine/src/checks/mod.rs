@@ -6,6 +6,7 @@
 //!
 //! Why a trait plus a registry instead of a `match` on names: rules refer to checks by name from data
 //! files, so the set of valid names must be discoverable at runtime (rule validation, `docs`, `status`).
+pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
 pub mod git;
@@ -90,13 +91,14 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 6] = [
+    static ALL: [&dyn Check; 7] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
         &scan_throttle::ScanThrottle,
         &coordinator_work::CoordinatorWorkGuard,
         &compact_decl::CompactDeclarationGuard,
+        &command::CommandGuard,
     ];
     &ALL
 }

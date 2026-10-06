@@ -91,23 +91,23 @@ fn bash(cmd: &str, cwd: &Path) -> String {
     serde_json::json!({"session_id": "e2e", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}).to_string()
 }
 
-const CTX_A: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from command-guard"}}\n'"#;
-const CTX_B: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from merge-side-pick"}}\n'"#;
+const CTX_MERGE_GATE: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from merge-gate"}}\n'"#;
+const CTX_API_GUARD: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from api-guard"}}\n'"#;
 
 #[test]
 fn several_advisories_merge_in_hooks_json_order() {
     let e = Env::new("merge");
-    let map = e.map(&[("merge-side-pick", CTX_B), ("command-guard", CTX_A)]);
+    let map = e.map(&[("api-guard", CTX_API_GUARD), ("merge-gate", CTX_MERGE_GATE)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
     assert_eq!((code, err.as_str()), (0, ""));
-    assert_eq!(out, "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"from command-guard\\n\\nfrom merge-side-pick\"}}\n");
+    assert_eq!(out, "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"from merge-gate\\n\\nfrom api-guard\"}}\n");
 }
 
 #[test]
 fn the_built_in_check_blocks_in_process_and_through_the_daemon() {
     let e = Env::new("block");
-    let map = e.map(&[("command-guard", CTX_A)]);
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let p = bash("git push --force origin main", &e.dir);
     let (code, out, err) = e.run(&args, true, &p, true);
@@ -176,12 +176,12 @@ fn an_event_that_is_not_a_guard_runs_what_it_can() {
 #[test]
 fn a_conflict_delivers_every_output_in_order() {
     let e = Env::new("conflict");
-    let map = e.map(&[("command-guard", CTX_A), ("merge-gate", "echo plain text; echo warn >&2")]);
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE), ("api-guard", "echo plain text; echo warn >&2")]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
     assert_eq!(code, 0);
     // the JSON keeps stdout (the host reads stdout as one object or as text); the plain text goes to stderr after the warning
-    assert_eq!(out, format!("{}\n", r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from command-guard"}}"#));
+    assert_eq!(out, format!("{}\n", r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from merge-gate"}}"#));
     assert_eq!(err, "warn\nplain text\n");
     let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
     assert_eq!(log.matches("dispatch_conflict").count(), 1, "{log}");
@@ -199,7 +199,7 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
         )
     };
     let (a, b, c) = (big("a", ""), big("b", ""), big("c", r#","permissionDecision":"ask","permissionDecisionReason":"sure?""#));
-    let map = e.map(&[("command-guard", a.as_str()), ("merge-side-pick", b.as_str()), ("api-guard", c.as_str())]);
+    let map = e.map(&[("merge-side-pick", a.as_str()), ("merge-gate", b.as_str()), ("api-guard", c.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
     assert_eq!((code, err.as_str()), (0, ""));
@@ -209,7 +209,7 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
     assert_eq!(log.matches("dispatch_context_over_cap").count(), 1, "{log}");
     // two of them fit joined: delivered as one, nothing logged
-    let map = e.map(&[("command-guard", a.as_str()), ("merge-side-pick", b.as_str())]);
+    let map = e.map(&[("merge-side-pick", a.as_str()), ("merge-gate", b.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     assert_eq!(e.run(&args, true, &bash("ls", &e.dir), true).0, 0);
 }
@@ -275,9 +275,9 @@ fn two_clients_with_different_environments_get_answers_for_their_own() {
 #[test]
 fn a_finished_hooks_genuine_block_survives_a_check_whose_node_command_cannot_run() {
     let e = Env::new("deferred-block");
-    // git-guard has no runnable Node command, and with no daemon (NOSPAWN) its built-in check defers; command-guard is a Node
+    // compact-declaration-guard has no runnable Node command, and with no daemon (NOSPAWN) its built-in check defers; merge-gate is a Node
     // hook that ran, finished and blocked: its block must be handed back, not replaced by the generic fail-closed text
-    let map = e.map(&[("git-guard", ""), ("command-guard", "echo sibling-blocks >&2; exit 2")]);
+    let map = e.map(&[("compact-declaration-guard", ""), ("merge-gate", "echo sibling-blocks >&2; exit 2")]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run_with(&args, false, &bash("ls", &e.dir), true, &[("AH_ENGINE_NOSPAWN", "1")]);
     assert_eq!(code, 2, "{out:?} {err:?}");

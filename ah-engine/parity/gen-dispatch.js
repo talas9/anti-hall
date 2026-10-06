@@ -15,6 +15,7 @@ const HOSTS = [
 // Hook entries a built-in check answers: event + script + args (the PostToolUse `--audit` pass is not ported).
 const CHECKS = [
   ['git-guard', 'git'],
+  ['command-guard', 'command'],
   ['merge-side-pick', 'merge-side-pick'],
   ['ship-it-guard', 'ship-it-guard'],
   ['scan-throttle', 'scan-throttle'],

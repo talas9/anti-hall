@@ -164,6 +164,50 @@ Deliberate differences from the Node guard:
   nesting or exponent) also defers.
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
+## Built-in checks: the command check
+
+A rule with `"check": "command"` runs a port of the Node command-guard (PreToolUse on Bash; source `dev` at 3d36268),
+the most frequent Bash hook. Its code is in `src/checks/command/`, its tables, patterns and limits in
+`defaults/command.toml`, and each Rust function cites the Node function it mirrors.
+
+**What the engine answers today: only the allows that hold in every context.** command-guard's blocks depend on things
+the engine cannot reproduce exactly yet: the hook's own environment (`CLAUDE_CODE_ENTRYPOINT` decides coordinator vs
+subagent, plus DevSwarm and settings switches; a daemon only sees its own environment), DevSwarm state files, edit-guard's
+verdict on a written path, the repo's command allowlist, and git subprocesses for the plain-push carve-out. Its block is
+also a stdout JSON line plus stderr, which the `Block` verdict cannot carry. So the check returns Allow only when Node
+allows the command whatever the context, and Defer otherwise (the client then runs the Node hook, D11):
+
+1. no DevSwarm or stash guard can fire (DevSwarm CLI verb in any scanned segment, `devswarm.js`, `stash`, or an
+   `inbox`/`store` path component in the command or the cwd);
+2. no write target the edit-guard parity branch would judge (redirects, tee, `sed -i`, `perl -i`, cp/mv, and inline
+   interpreter code that might name one; targets with `$`, globs, braces or a leading `~` are skipped as in Node);
+3. not heavy (`isHeavyCommand`, ported in full, except the stable-launcher light exception, which depends on the home
+   directory and is never granted).
+
+A payload that proves a subagent (agent markers, read as the coordinator-work check reads them) only needs test 1: Node
+answers a subagent with exit 0 right after the DevSwarm and stash guards, before the write and heavy tests. That is the
+common case on field data, where most Bash calls come from subagents. The main thread still needs the hook environment.
+
+Parity (`parity/run-command.js`, Node command-guard at dev 3b64965 as the authority; exit code, stdout and stderr compared
+exactly; the daemon column runs the production path, where a deferral runs the real Node hook):
+
+| corpus | cases | oneshot | daemon | engine answered |
+|---|---|---|---|---|
+| the guard's own Node tests (973 tests, 1826 distinct payloads and environments, captured by a spy) | 1826 | **100%** | **100%** | 17.5% |
+| real field commands (20,000, half biased to the shapes the guard judges), coordinator and subagent | 40,000 | **100%** | **100%** | 77.8% |
+| fuzz and adversarial (6,000), 13 caller profiles (markers empty, null, type-only, Codex shapes, DevSwarm active, stash armed) | 78,000 | **100%** | | 70.7% |
+| non-ASCII injection into trigger-bearing commands (5,229), 5 profiles | 26,145 | **100%** | **100%** | 9.2% |
+| real field commands (3,000) x 13 profiles | 39,000 | **100%** | | 75.3% |
+
+`parity/field-rate-command.js` measures the defer rate on the recorded field corpus (every 9th recorded call, 29,930 rows,
+subagent flag taken from the row): **12.3% deferred overall** (5.1% for subagent calls, 68.3% for main-thread calls, which
+need the hook environment). The corpus is mostly subagent calls, so most Bash hook runs no longer start Node.
+
+Every predicate errs only toward Defer. Any command longer than 65536 characters defers, and so does any command with a
+non-ASCII character unless a subagent is proven: the write and heavy tests lean on JavaScript's UTF-16 indexing, wider `\s`
+and case folding, while the trigger test of test 1 is exact on the command with the non-ASCII characters dropped or turned
+into blanks (a character that lower-cases to ASCII still defers). Exact blocks are planned (D57) once the
+engine carries the hook's environment and a block verdict with a stdout part.
 
 ## Parity harness (`parity/`)
 

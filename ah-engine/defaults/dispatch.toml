@@ -323,7 +323,7 @@ doc = "The claude PreToolUse hook entries, in plugins/anti-hall/hooks/hooks.json
 value = [
   { id = "compact-declaration-guard", matcher = "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"", timeout = 10, check = "compact-declaration-guard" },
   { id = "git-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\"", timeout = 10, check = "git" },
-  { id = "command-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/command-guard.js\"", timeout = 10, check = "" },
+  { id = "command-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/command-guard.js\"", timeout = 10, check = "command" },
   { id = "coordinator-work-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\"", timeout = 10, check = "coordinator-work-guard" },
   { id = "merge-side-pick", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\"", timeout = 10, check = "merge-side-pick" },
   { id = "merge-gate", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-gate.js\"", timeout = 10, check = "" },
@@ -414,7 +414,7 @@ value = [
 doc = "The codex PreToolUse hook entries, in plugins/anti-hall/codex/hooks/hooks.json order."
 value = [
   { id = "git-guard", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\"", timeout = 10, check = "git" },
-  { id = "command-guard", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/command-guard.js\"", timeout = 10, check = "" },
+  { id = "command-guard", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/command-guard.js\"", timeout = 10, check = "command" },
   { id = "merge-side-pick", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\"", timeout = 10, check = "merge-side-pick" },
   { id = "merge-gate", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-gate.js\"", timeout = 10, check = "" },
   { id = "compact-declaration-guard", matcher = "Bash", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"", timeout = 10, check = "compact-declaration-guard" },
