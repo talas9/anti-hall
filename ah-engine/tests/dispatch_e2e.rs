@@ -389,12 +389,12 @@ fn a_guard_node_module_resolution_exit_one_is_unrunnable_but_own_exit_one_is_not
     let cmd = format!("node \"{}\"", script.display());
     let map = pretool_map(&e, &[("command-guard", &cmd)], "true");
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run_with(&args, true, &bash("ls", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
+    let (code, out, err) = e.run_with(&args, true, &bash("npm test", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
     assert_eq!((code, out.as_str()), (2, ""), "{err}");
     assert!(err.contains("could not run the guards for PreToolUse"), "{err}");
 
     let bin = e.fake_node("echo OWN_REASON >&2; exit 1");
-    let (code, out, err) = e.run_with(&args, true, &bash("ls", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
+    let (code, out, err) = e.run_with(&args, true, &bash("npm test", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
     assert_eq!((code, out.as_str()), (1, ""), "{err}");
     assert_eq!(err, "OWN_REASON\n");
 }
@@ -416,19 +416,8 @@ fn unparsable_spawn_payload_blocks_only_when_node_cannot_run_model_routing() {
 #[test]
 fn a_payload_only_js_can_parse_is_deferred_to_node_not_blocked() {
     let e = Env::new("mr-surrogate");
-    let mut m: serde_json::Map<String, serde_json::Value> = [
-        "compact-declaration-guard",
-        "swarm-guard",
-        "phase-tracker",
-        "swarm-guard#2",
-        "phase-tracker#2",
-        "orch-on-spawn",
-        "model-routing-guard",
-        "model-routing-guard#2",
-    ]
-    .into_iter()
-    .map(|id| (id.to_string(), "true".into()))
-    .collect();
+    let mut m: serde_json::Map<String, serde_json::Value> =
+        ah_engine::dispatch::table::entries("claude", "PreToolUse").into_iter().map(|x| (x.id, "true".into())).collect();
     let node_ok = e.dir.join("node-ok-map.json");
     std::fs::write(&node_ok, serde_json::json!({ "PreToolUse": m.clone() }).to_string()).unwrap();
     m.insert("model-routing-guard".into(), r#"printf '{"decision":"block","reason":"node decided"}\n'; exit 2"#.into());
@@ -722,7 +711,7 @@ fn small_payloads_do_not_need_a_usable_spool_dir() {
     let mark = e.dir.join("pretool-ran");
     let map = e.map(&[("command-guard", r#"wc -c > "$AH_TEST_MARK""#)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let payload = bash("ls", &e.dir);
+    let payload = bash("npm test", &e.dir);
     let (code, out, err) =
         e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
@@ -985,4 +974,69 @@ fn a_finished_hooks_genuine_block_survives_a_check_whose_node_command_cannot_run
     let (code, out, err) = e.run_with(&args, false, &bash("ls", &e.dir), true, &[("AH_ENGINE_NOSPAWN", "1")]);
     assert_eq!(code, 2, "{out:?} {err:?}");
     assert!(err.contains("sibling-blocks"), "the finished hook's own block text: {err:?}");
+}
+
+/// The wrapper (`ah-hook.sh`) in front of the real engine must treat a payload serde_json rejects exactly as the
+/// Node-only path does: a payload JS parses (a lone surrogate escape) or cannot parse (`{bad`) is decided by the Node
+/// hooks (allow stays allow, a block is returned verbatim), never hard-blocked by the engine. Invalid UTF-8 is the one
+/// documented stricter case (D74): the engine fails closed on a guard event even where Node, which decodes it lossily,
+/// would allow.
+#[test]
+fn wrapper_and_engine_agree_on_unparsable_guard_payloads() {
+    let e = Env::new("wrapper-unparsable");
+    let hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks");
+    let wrapper = hooks.join("ah-hook.sh");
+    let shipped: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(hooks.join("ah-fallback.map.json")).unwrap()).unwrap();
+    let ids: Vec<String> = shipped["PreToolUse"].as_object().unwrap().keys().cloned().collect();
+    let node = |name: &str, cmd: &str| -> (PathBuf, PathBuf) {
+        let m: serde_json::Map<String, serde_json::Value> = ids.iter().map(|id| (id.clone(), cmd.into())).collect();
+        let map = e.dir.join(format!("{name}.map.json"));
+        std::fs::write(&map, serde_json::json!({ "PreToolUse": m }).to_string()).unwrap();
+        let list = e.dir.join(format!("{name}.list"));
+        std::fs::write(&list, format!("@PreToolUse\t10\n*\t10\t{cmd}\n")).unwrap();
+        (map, list)
+    };
+    let allow = node("allow", "true");
+    let block = node("block", "echo node-blocked >&2; exit 2");
+    let surrogate = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"s","cwd":"/tmp","tool_input":{"command":"echo hi \ud83d"}}"#.to_vec();
+    let invalid_utf8 =
+        b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"session_id\":\"s\",\"cwd\":\"/tmp\",\"tool_input\":{\"command\":\"echo \xffhi\"}}"
+            .to_vec();
+    let run = |engine: &str, (map, list): &(PathBuf, PathBuf), payload: &[u8]| -> (i32, String) {
+        let mut c = Command::new("sh");
+        c.arg(&wrapper)
+            .args(["PreToolUse", "--tool", "Bash"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", e.dir.join("home"))
+            .env("AH_ENGINE_DIR", e.state())
+            .env("AH_WRAPPER_TEST", "1")
+            .env("AH_ENGINE_BIN", engine)
+            .env("AH_FALLBACK_MAP", map)
+            .env("AH_FALLBACK_LIST", list)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut ch = c.spawn().unwrap();
+        ch.stdin.take().unwrap().write_all(payload).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        (o.status.code().unwrap(), String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let engine = env!("CARGO_BIN_EXE_ah-engine");
+    for (name, payload) in [("lone surrogate", surrogate), ("not JSON", b"{bad".to_vec())] {
+        for (label, nodes, want) in [("allow", &allow, 0), ("block", &block, 2)] {
+            let with_engine = run(engine, nodes, &payload);
+            let node_only = run("/nonexistent/ah-engine", nodes, &payload);
+            assert_eq!(with_engine.0, want, "{name}, Node {label}, engine in front: {}", with_engine.1);
+            assert_eq!(node_only.0, want, "{name}, Node {label}, Node only: {}", node_only.1);
+            if want == 2 {
+                assert!(with_engine.1.contains("node-blocked"), "{name}: the Node block text is returned verbatim: {}", with_engine.1);
+            }
+        }
+    }
+    for (label, nodes) in [("allow", &allow), ("block", &block)] {
+        let (code, err) = run(engine, nodes, &invalid_utf8);
+        assert_eq!(code, 2, "invalid UTF-8, Node {label}: the engine fails closed (D74), stricter than Node: {err}");
+        assert!(err.contains("not valid UTF-8"), "{err}");
+    }
 }
