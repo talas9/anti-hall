@@ -963,6 +963,22 @@ test_block_stderr_is_exactly_the_hooks_text_every_shell() {
   return 0
 }
 
+test_unmatched_tool_runs_nothing_but_unparseable_selects_all() {
+  h=$(hook_script rowbash 'printf bash-row; exit 2')
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/unmatched.list"
+  e=$(make_engine unmatched-engine seventyfive)
+  printf '{"tool_name":"Read","tool_input":{}}' >"$tmp/read.json"
+  printf 'not json at all' >"$tmp/garbage.json"
+  printf '{"tool_name":"Bash","tool_input":{}}' >"$tmp/bash.json"
+  set +e
+  AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/unmatched.list" sh "$wrapper" PreToolUse --tool-from-payload <"$tmp/read.json" >"$tmp/um1.out" 2>"$tmp/um1.err"; rc1=$?
+  AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/unmatched.list" sh "$wrapper" PreToolUse --tool-from-payload <"$tmp/garbage.json" >"$tmp/um2.out" 2>"$tmp/um2.err"; rc2=$?
+  AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/unmatched.list" sh "$wrapper" PreToolUse --tool-from-payload <"$tmp/bash.json" >"$tmp/um3.out" 2>"$tmp/um3.err"; rc3=$?
+  set -e
+  # Read: structurally extracted, no row => nothing to run => allow; garbage: ambiguous => all rows run => block; Bash row blocks
+  [ "$rc1" -eq 0 ] && [ ! -s "$tmp/um1.out" ] && [ "$rc2" -eq 2 ] && [ "$rc3" -eq 2 ]
+}
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -1011,6 +1027,7 @@ check temp_base_prefers_home_then_xdg test_temp_base_prefers_home_then_xdg
 check healthy_engine_returns_immediately_every_shell test_healthy_engine_returns_immediately_every_shell
 check hanging_engine_is_cut_at_timeout_not_before test_hanging_engine_is_cut_at_timeout_not_before
 check block_stderr_is_exactly_the_hooks_text_every_shell test_block_stderr_is_exactly_the_hooks_text_every_shell
+check unmatched_tool_runs_nothing_but_unparseable_selects_all test_unmatched_tool_runs_nothing_but_unparseable_selects_all
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

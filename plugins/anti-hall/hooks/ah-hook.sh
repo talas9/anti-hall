@@ -679,7 +679,14 @@ run_fallback() {
     fail_closed "fallback hook failed before producing a complete answer"
   fi
   if [ "$ran" -eq 0 ] && [ "$guard_event" -eq 1 ]; then
-    [ "$selected" -eq 0 ] && fail_closed "no matching fallback hooks"
+    if [ "$selected" -eq 0 ]; then
+      # The tool name was read structurally and no row names it: the host would have run nothing.
+      if [ "$tool_from_payload" -eq 1 ] && [ "$tool_match_all" -eq 0 ] && [ -n "$tool" ]; then
+        fallback_note "$reason"
+        exit 0
+      fi
+      fail_closed "no matching fallback hooks"
+    fi
     fail_closed "fallback hooks did not run"
   fi
   fallback_note "$reason"
