@@ -7,6 +7,10 @@ repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 wrapper=$repo/plugins/anti-hall/hooks/ah-hook.sh
 tmp=${TMPDIR:-/tmp}/ah-wrapper-test.$$
 mkdir -p "$tmp"
+: >"$tmp/homefile"
+HOME=$tmp/homefile/h
+export HOME
+unset XDG_RUNTIME_DIR
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 pass=0
@@ -523,8 +527,26 @@ test_temp_refuses_bad_base_and_symlink_parent() {
   set +e
   TMPDIR="$linkparent" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/symlink.out" 2>"$tmp/symlink.err"
   rc2=$?
+  hostile=$tmp/hostile
+  elsewhere=$tmp/elsewhere
+  mkdir -m 700 "$hostile" "$elsewhere"
+  ln -s "$elsewhere" "$hostile/ah-hook-$uid_now"
+  TMPDIR="$hostile" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/hostile.out" 2>"$tmp/hostile.err"
+  rc3=$?
+  open_parent=$tmp/openparent
+  mkdir "$open_parent"
+  chmod 777 "$open_parent"
+  TMPDIR="$open_parent" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/open.out" 2>"$tmp/open.err"
+  rc4=$?
+  sticky_parent=$tmp/stickyparent
+  mkdir "$sticky_parent"
+  chmod 1777 "$sticky_parent"
+  TMPDIR="$sticky_parent" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/sticky.out" 2>"$tmp/sticky.err"
+  rc5=$?
   set -e
-  [ "$rc1" -eq 2 ] && [ "$rc2" -eq 2 ]
+  # bad base mode refused; symlinked parent is canonicalised and works; symlinked final component refused;
+  # world-writable parent without sticky refused; with sticky accepted
+  [ "$rc1" -eq 2 ] && [ "$rc2" -eq 0 ] && [ "$(cat "$tmp/symlink.out")" = badbase ] && [ "$rc3" -eq 2 ] && [ "$rc4" -eq 2 ] && [ "$rc5" -eq 0 ]
 }
 
 test_temp_sweep_old_keeps_fresh() {
@@ -852,6 +874,22 @@ test_ah_knobs_honored_with_wrapper_test() {
   [ -e "$tmp/knob2-engine-ran" ] && ! grep -q 'ignoring test-only' "$tmp/knob2.err"
 }
 
+test_temp_base_prefers_home_then_xdg() {
+  home=$tmp/prefer-home
+  xdg=$tmp/prefer-xdg
+  mkdir -p "$home" "$xdg"
+  chmod 700 "$xdg"
+  h=$(hook_script preferhome 'mode(){ stat -f "%Lp" "$1" 2>/dev/null || stat -c "%a" "$1"; }; d="$HOME/.anti-hall/tmp"; set -- "$d"/ah-wrapper-run.*/payload; [ -f "$1" ] && [ "$(mode "$d")" = 700 ] && printf home-ok')
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/preferhome.list"
+  e=$(make_engine preferhome-engine seventyfive)
+  HOME="$home" TMPDIR="$tmp/never-used" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/preferhome.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/preferhome.out" 2>"$tmp/preferhome.err" || return 1
+  [ "$(cat "$tmp/preferhome.out")" = home-ok ] || return 1
+  h2=$(hook_script preferxdg 'set -- "$XDG_RUNTIME_DIR"/ah-hook-*/ah-wrapper-run.*/payload; [ -f "$1" ] && printf xdg-ok')
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h2" >"$tmp/preferxdg.list"
+  HOME="$home" XDG_RUNTIME_DIR="$xdg" TMPDIR="$tmp/never-used" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/preferxdg.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/preferxdg.out" 2>"$tmp/preferxdg.err" || return 1
+  [ "$(cat "$tmp/preferxdg.out")" = xdg-ok ]
+}
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -896,6 +934,7 @@ check fallback_missing_module_exit1_fails_closed_own_exit1_does_not test_fallbac
 check fallback_node_module_not_found_exit1_guard_only test_fallback_node_module_not_found_exit1_guard_only
 check ah_knobs_ignored_without_wrapper_test test_ah_knobs_ignored_without_wrapper_test
 check ah_knobs_honored_with_wrapper_test test_ah_knobs_honored_with_wrapper_test
+check temp_base_prefers_home_then_xdg test_temp_base_prefers_home_then_xdg
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

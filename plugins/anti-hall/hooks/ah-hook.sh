@@ -103,7 +103,7 @@ validate_positive_int "$sweep_age" AH_HOOK_SWEEP_AGE_S
 
 stat_pair() {
   p=$1
-  if stat -f '%u %Lp' "$p" 2>/dev/null; then
+  if stat -f '%u %Mp%Lp' "$p" 2>/dev/null; then
     return 0
   fi
   stat -c '%u %a' "$p" 2>/dev/null
@@ -117,27 +117,73 @@ stat_mtime() {
   stat -c '%Y' "$p" 2>/dev/null
 }
 
-private_tmp_base() {
-  if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-    parent=$XDG_RUNTIME_DIR
-  else
-    parent=${TMPDIR:-/tmp}
-  fi
-  [ ! -L "$parent" ] || return 1
-  base=$parent/ah-hook-$uid
+# Verify and create a private directory: final component not a symlink, owned by us, mode 700.
+# $1 = physical parent (already canonical), $2 = final component name.
+private_dir_in() {
+  pd_parent=$1
+  pd_base=$pd_parent/$2
+  [ ! -L "$pd_base" ] || return 1
   old_umask=$(umask)
   umask 077
-  mkdir -p -m 700 "$base" 2>/dev/null || {
+  mkdir -p -m 700 "$pd_base" 2>/dev/null || {
     umask "$old_umask"
     return 1
   }
   umask "$old_umask"
-  [ ! -L "$base" ] || return 1
-  set -- $(stat_pair "$base") || return 1
+  [ -d "$pd_base" ] && [ ! -L "$pd_base" ] || return 1
+  set -- $(stat_pair "$pd_base") || return 1
   [ "${1:-}" = "$uid" ] || return 1
-  mode=${2:-}
-  [ "$mode" = 700 ] || [ "$mode" = 0700 ] || return 1
-  printf '%s\n' "$base"
+  pd_mode=${2:-}
+  [ "$pd_mode" = 700 ] || [ "$pd_mode" = 0700 ] || return 1
+  printf '%s\n' "$pd_base"
+}
+
+# A shared parent (XDG dir, TMPDIR, /tmp): canonicalise it physically (macOS /tmp is a symlink), then
+# refuse a world-writable parent unless it has the sticky bit.
+shared_parent_ok() {
+  sp_parent=$1
+  set -- $(stat_pair "$sp_parent") || return 1
+  sp_mode=${2:-}
+  case "$sp_mode" in
+    *[2367]) ;;
+    *) return 0 ;;
+  esac
+  [ "${#sp_mode}" -eq 4 ] || return 1
+  case "$sp_mode" in
+    [1357]*) return 0 ;;
+  esac
+  return 1
+}
+
+private_tmp_base() {
+  # 1. XDG_RUNTIME_DIR (per-user, private by definition)
+  if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+    cand=$(CDPATH= cd -- "$XDG_RUNTIME_DIR" 2>/dev/null && pwd -P) || cand=
+    if [ -n "$cand" ] && shared_parent_ok "$cand"; then
+      private_dir_in "$cand" "ah-hook-$uid" && return 0
+    fi
+  fi
+  # 2. $HOME/.anti-hall/tmp (our own tree, never shared)
+  case "${HOME:-}" in
+    /*)
+      old_umask=$(umask)
+      umask 077
+      mkdir -p -m 700 "$HOME/.anti-hall" 2>/dev/null || true
+      umask "$old_umask"
+      cand=$(CDPATH= cd -- "$HOME/.anti-hall" 2>/dev/null && pwd -P) || cand=
+      if [ -n "$cand" ]; then
+        set -- $(stat_pair "$cand") || set --
+        if [ "${1:-}" = "$uid" ]; then
+          private_dir_in "$cand" tmp && return 0
+        fi
+      fi
+      ;;
+  esac
+  # 3. TMPDIR or /tmp: shared parent, so check it carefully
+  parent=${TMPDIR:-/tmp}
+  cand=$(CDPATH= cd -- "$parent" 2>/dev/null && pwd -P) || return 1
+  shared_parent_ok "$cand" || return 1
+  private_dir_in "$cand" "ah-hook-$uid"
 }
 
 sweep_old_runs() {
