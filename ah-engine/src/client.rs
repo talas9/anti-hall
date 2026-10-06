@@ -286,6 +286,117 @@ fn reply_outcome(body: String) -> Option<Outcome> {
     Some(Outcome { out: body, code: 0, err: String::new() })
 }
 
+fn guarded(event: &str) -> bool {
+    crate::defaults::list("dispatch.guard_events").contains(&event)
+}
+
+fn event_from_lossy(raw: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(raw);
+    if let Ok(p) = serde_json::from_str::<serde_json::Value>(&text) {
+        return crate::hookio::event_of(&p).map(str::to_owned);
+    }
+    event_from_prefix(&text)
+}
+
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    i
+}
+
+fn string_end(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i) != Some(&b'"') {
+        return None;
+    }
+    let mut esc = false;
+    for (off, b) in bytes[i + 1..].iter().enumerate() {
+        if esc {
+            esc = false;
+        } else if *b == b'\\' {
+            esc = true;
+        } else if *b == b'"' {
+            return Some(i + 1 + off + 1);
+        }
+    }
+    None
+}
+
+fn skip_value(bytes: &[u8], mut i: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    loop {
+        match bytes.get(i).copied() {
+            Some(b'"') => i = string_end(bytes, i)?,
+            Some(b'{' | b'[') => {
+                depth += 1;
+                i += 1;
+            }
+            Some(b'}' | b']') if depth > 0 => {
+                depth -= 1;
+                i += 1;
+            }
+            Some(b',' | b'}') if depth == 0 => return Some(i),
+            Some(_) => i += 1,
+            None => return None,
+        }
+    }
+}
+
+fn best_event(keys: &[&str], found: &[(String, String)]) -> Option<String> {
+    keys.iter().find_map(|want| found.iter().find(|(key, _)| key == want).map(|(_, value)| value.clone()))
+}
+
+fn event_from_prefix(text: &str) -> Option<String> {
+    let keys = defaults::list("hook.event_keys");
+    let bytes = text.as_bytes();
+    let mut i = skip_ws(bytes, 0);
+    if bytes.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    let mut found: Vec<(String, String)> = Vec::new();
+    loop {
+        i = skip_ws(bytes, i);
+        if bytes.get(i) == Some(&b'}') {
+            break;
+        }
+        let key_end = match string_end(bytes, i) {
+            Some(key_end) => key_end,
+            None => return best_event(&keys, &found),
+        };
+        let key: String = match serde_json::from_str(&text[i..key_end]).ok() {
+            Some(key) => key,
+            None => return best_event(&keys, &found),
+        };
+        i = skip_ws(bytes, key_end);
+        if bytes.get(i) != Some(&b':') {
+            return best_event(&keys, &found);
+        }
+        i = skip_ws(bytes, i + 1);
+        if keys.iter().any(|k| k == &key) {
+            let value_end = match string_end(bytes, i) {
+                Some(value_end) => value_end,
+                None => return best_event(&keys, &found),
+            };
+            let value = match serde_json::from_str(&text[i..value_end]).ok() {
+                Some(value) => value,
+                None => return best_event(&keys, &found),
+            };
+            found.push((key, value));
+            i = value_end;
+        } else {
+            i = match skip_value(bytes, i) {
+                Some(i) => i,
+                None => return best_event(&keys, &found),
+            };
+        }
+        if bytes.get(i) == Some(&b',') {
+            i += 1;
+        }
+    }
+    best_event(&keys, &found)
+}
+
 /// Core of `engine hook`. Pure of process exit.
 pub fn run(raw: &str, fallback: Option<&Path>) -> Outcome {
     run_bytes(raw.as_bytes().to_vec(), false, fallback, None, false)
@@ -313,6 +424,8 @@ fn run_bytes(raw: Vec<u8>, force_fallback: bool, fallback: Option<&Path>, rest: 
     let mut o = fallback.and_then(|p| run_fallback(input, p, &cfg)).unwrap_or_else(|| {
         if fail_closed_unavailable {
             Outcome { out: String::new(), code: 2, err: defaults::text("msg.client_fallback_unavailable").into() }
+        } else if force_fallback {
+            Outcome { out: String::new(), code: 0, err: defaults::text("msg.client_fallback_unavailable").into() }
         } else {
             Outcome { out: String::new(), code: 0, err: String::new() }
         }
@@ -353,7 +466,8 @@ pub fn hook_main(args: &[String]) -> i32 {
         let cap_hit = raw.len() as u64 > max;
         let force_fallback = read.is_err() || cap_hit || std::str::from_utf8(&raw).is_err();
         let rest = (force_fallback && cap_hit).then_some(stdin);
-        let o = run_bytes(raw, force_fallback, fallback.as_deref(), rest, force_fallback);
+        let fail_closed_unavailable = force_fallback && event_from_lossy(&raw).is_none_or(|event| guarded(&event));
+        let o = run_bytes(raw, force_fallback, fallback.as_deref(), rest, fail_closed_unavailable);
         if !o.err.is_empty() {
             let mut se = std::io::stderr();
             let _ = se.write_all(o.err.as_bytes());

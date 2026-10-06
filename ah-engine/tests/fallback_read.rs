@@ -155,6 +155,39 @@ fn forced_fallback_without_a_usable_fallback_fails_closed() {
 }
 
 #[test]
+fn forced_fallback_without_a_usable_fallback_fails_open_for_non_guard_events() {
+    let input = b"{\"hook_event_name\":\"SessionStart\",\"source\":\"startup \xff\"}";
+    let e = Env::new("nofb-nonguard", "cat >/dev/null\n");
+    let (out, err, code) = e.call_bytes_with(input, 30_000, None, None);
+    assert_eq!((out.as_str(), code), ("", 0));
+    assert!(err.contains("fallback unavailable"), "{err:?}");
+}
+
+#[test]
+fn over_cap_forced_fallback_without_a_usable_fallback_fails_open_for_non_guard_events() {
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    for event in ["SessionStart", "UserPromptSubmit", "PostToolUse"] {
+        let mut input = format!(r#"{{"hook_event_name":"{event}","source":"startup "#).into_bytes();
+        input.resize(max + 4096, b'x');
+        let e = Env::new(&format!("nofb-overcap-{event}"), "cat >/dev/null\n");
+        let (out, err, code) = e.call_bytes_with(&input, 30_000, None, None);
+        assert_eq!((out.as_str(), code), ("", 0), "{event}");
+        assert!(err.contains("fallback unavailable"), "{event}: {err:?}");
+    }
+}
+
+#[test]
+fn over_cap_prefix_event_classification_keeps_configured_key_precedence() {
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    let mut input = br#"{"event":"SessionStart","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test "#.to_vec();
+    input.resize(max + 4096, b'x');
+    let e = Env::new("nofb-overcap-precedence", "cat >/dev/null\n");
+    let (out, err, code) = e.call_bytes_with(&input, 30_000, None, None);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("fallback unavailable"), "{err:?}");
+}
+
+#[test]
 fn exact_stdin_cap_is_not_over_cap_but_one_more_byte_is() {
     let max = ah_engine::defaults::num("client.max_stdin") as usize;
     let prefix = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":""#;

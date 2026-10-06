@@ -35,6 +35,8 @@ enum Stdin {
     NotJson,
     /// Bytes that are not UTF-8.
     NotUtf8,
+    /// A Stop payload whose re-entry flag is readable after replacement-decoding, but another JSON string is not UTF-8.
+    StopActiveNotUtf8,
     /// Valid JSON without a `tool_name`.
     NoToolName,
     /// A stdin whose read fails (a directory).
@@ -153,8 +155,16 @@ fn rows() -> Vec<Row> {
         Row { name: "over-cap UTF-8 stdin, no --tool", stdin: Stdin::OverCapUtf8, tool: Tool::Omitted, events: PRE, ..BASE },
         Row { name: "invalid JSON, tool given", stdin: Stdin::NotJson, ..BASE },
         Row { name: "invalid JSON, no --tool", stdin: Stdin::NotJson, tool: Tool::Omitted, ..BASE },
-        Row { name: "non-UTF-8 stdin, tool given", stdin: Stdin::NotUtf8, ..BASE },
-        Row { name: "non-UTF-8 stdin, no --tool", stdin: Stdin::NotUtf8, tool: Tool::Omitted, ..BASE },
+        Row { name: "non-UTF-8 stdin, tool given", stdin: Stdin::NotUtf8, want: Want::Closed, events: PRE, ..BASE },
+        Row { name: "non-UTF-8 stdin, no --tool", stdin: Stdin::NotUtf8, tool: Tool::Omitted, want: Want::Closed, events: PRE, ..BASE },
+        Row {
+            name: "stop_hook_active with non-UTF-8 stdin",
+            stdin: Stdin::StopActiveNotUtf8,
+            hook: Hook::Cmd { first: MARK, second: MARK2 },
+            want: Want::Open,
+            events: STOPS,
+            ..BASE
+        },
         Row { name: "stdin read error, tool given", stdin: Stdin::ReadError, ..BASE },
         Row { name: "stdin read error, no --tool", stdin: Stdin::ReadError, tool: Tool::Omitted, ..BASE },
         Row { name: "no --tool, valid payload", tool: Tool::Omitted, ..BASE },
@@ -359,6 +369,16 @@ fn stdin_bytes(s: Stdin, event: &str, dir: &std::path::Path) -> Vec<u8> {
             let mut b = br#"{"tool_name":"Bash","tool_input":{"command":"ls "#.to_vec();
             b.extend_from_slice(&[0xff, 0xfe, 0xfd]);
             b.extend_from_slice(br#""}}"#);
+            b
+        }
+        Stdin::StopActiveNotUtf8 => {
+            let mut b = format!(
+                r#"{{"session_id":"fc","cwd":{},"hook_event_name":"{event}","stop_hook_active":true,"note":"bad "#,
+                serde_json::to_string(&dir).unwrap()
+            )
+            .into_bytes();
+            b.push(0xff);
+            b.extend_from_slice(br#""}"#);
             b
         }
         Stdin::NoToolName => br#"{"session_id":"fc"}"#.to_vec(),
@@ -612,6 +632,43 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
         }
     }
     assert!(failures.is_empty(), "{} fail-closed violations:\n{}", failures.len(), failures.join("\n"));
+}
+
+#[test]
+fn pretooluse_invalid_utf8_fails_closed_before_hooks_run() {
+    for host in table::hosts() {
+        let host: &'static str = Box::leak(host.to_string().into_boxed_str());
+        let case = Case { host, event: "PreToolUse".to_string(), dir: std::env::temp_dir().join(format!("ahd-utf8-pre-{host}-{}", std::process::id())) };
+        if table::entries(case.host, &case.event).is_empty() {
+            continue;
+        }
+        let row = Row { name: "non-UTF-8 stdin", stdin: Stdin::NotUtf8, want: Want::Closed, events: PRE, ..BASE };
+        let r = run(&case, &row, MARK, MARK2);
+        check(&format!("[{host}/PreToolUse] direct non-UTF-8"), &row, Want::Closed, &r);
+    }
+}
+
+#[test]
+fn stop_active_invalid_utf8_fails_open_before_utf8_rejection() {
+    for host in table::hosts() {
+        for event in ah_engine::defaults::list("dispatch.stop_events") {
+            if table::entries(host, event).is_empty() {
+                continue;
+            }
+            let host: &'static str = Box::leak(host.to_string().into_boxed_str());
+            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-utf8-stop-{host}-{event}-{}", std::process::id())) };
+            let row = Row {
+                name: "stop_hook_active with non-UTF-8 stdin",
+                stdin: Stdin::StopActiveNotUtf8,
+                hook: Hook::Cmd { first: MARK, second: MARK2 },
+                want: Want::Open,
+                events: STOPS,
+                ..BASE
+            };
+            let r = run(&case, &row, MARK, MARK2);
+            check(&format!("[{host}/{event}] direct stop_hook_active non-UTF-8"), &row, Want::Open, &r);
+        }
+    }
 }
 
 /// A Stop whose hooks can never run (plugin root unset) must not block forever: the flag-free payload is blocked up to

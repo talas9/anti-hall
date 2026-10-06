@@ -277,6 +277,8 @@ pub fn hook_main(args: &[String]) -> i32 {
         let read = std::io::stdin().take(max + 1).read_to_end(&mut bytes);
         let cut = bytes.len() as u64 > max;
         let utf8 = std::str::from_utf8(&bytes);
+        let lossy_payload =
+            (guard && stoploop::is_stop_event(&a.event)).then(|| serde_json::from_str::<Value>(&String::from_utf8_lossy(&bytes)).ok()).flatten();
         if guard {
             // a payload the dispatcher does not hold whole cannot be routed or checked: block, never allow unguarded
             let failure = match &read {
@@ -286,7 +288,7 @@ pub fn hook_main(args: &[String]) -> i32 {
                 Ok(_) => None,
             };
             if let Some(why) = failure {
-                let o = fail_closed(&a.event, &why);
+                let o = closed(&a.event, lossy_payload.as_ref(), &why);
                 let _ = std::io::stderr().write_all(o.err.as_bytes());
                 return o.code;
             }
