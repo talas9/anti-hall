@@ -700,7 +700,6 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `model_routing.handover_state_suffix` | `.json` |  |  | Suffix of the per-session handover-delegation advisory cap file. |
 | `model_routing.handover_verb_re` | `\b(write\|prepare\|create\|author\|draft)\b` |  |  | Handover write-verb regex for the handover-delegation advisory. |
 | `model_routing.hard_execution` | `run script, install, build, run tests, git push, deploy` |  |  | Mechanical signals that suppress the row-1 research exemption. |
-| `model_routing.id_fields` | `tool_use_id, tool_call_id, id` |  |  | Hook payload id fields, in priority order, that can identify a spawn without hashing prompt or description text. |
 | `model_routing.inline_code_re` | ``[^`]*`` |  |  | Regex for inline code spans stripped before planning and reasoning regexes. |
 | `model_routing.jev_budget_ms` | `1200` |  | ms | Synchronous Jev budget for model-routing relaxation, matching the Node hook. |
 | `model_routing.jev_choice_authoring` | `Writing or editing substantial code/content that requires judgment.` |  |  | Jev choice description for authoring tasks. |
@@ -714,6 +713,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `model_routing.jev_label_research` | `research` |  |  | Jev answer label for research work. |
 | `model_routing.jev_question_instructions` | `Classify the SHAPE of this agent-spawn task from its description/prompt.` |  |  | Jev choice-question instructions for model-routing relaxation. |
 | `model_routing.jev_state_limit` | `4000` |  | utf16-code-units | Maximum JavaScript UTF-16 code units sent to Jev for model-routing relaxation. |
+| `model_routing.key_prefix_chars` | `256` |  | characters | Characters of the spawn prompt hashed (never stored) into the route event's spawn_key, with the session, parent agent and subagent type, so a retry after a deny (new tool_use_id, changed model) joins the first decision. Known limit: two spawns by one agent in one session whose prompts share this prefix and subagent type share a key. |
 | `model_routing.mechanical` | `19 items` |  |  | Mechanical execution-only signal phrases, matched as token phrases after compatibility folding. |
 | `model_routing.mechanical_shape_re` | `\b(run\s+exactly\|run\s+only\|run\s+(?:this\|these\|the\s+following)\s+(?:exact\s...` |  |  | Fixed-command or bounded-output regex used to suppress row-4 false positives. |
 | `model_routing.message_guard` | `model-routing` |  |  | The guard label used in ordinary routing advisory text. |

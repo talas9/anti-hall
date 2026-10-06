@@ -269,100 +269,92 @@ fn parent_model_uses_payload_model_else_unknown_and_selected_model_is_recorded()
 }
 
 #[test]
-fn spawn_key_prefers_tool_use_id_and_never_depends_on_prompt_text() {
+fn spawn_key_is_stable_across_a_retry_and_never_holds_prompt_text() {
     let mut payload = mechanical_payload(Some("opus"));
-    let subagent_type = "general-purpose";
-    let original = route_key(&payload, subagent_type, "opus");
+    let st = "general-purpose";
+    let original = route_key(&payload, st);
+    // a retry: another model, another call id and turn, same session and prompt
     payload["tool_input"]["model"] = json!("haiku");
-    assert_ne!(original, route_key(&payload, subagent_type, "haiku"));
-    payload["tool_input"]["prompt"] = json!("fetch another endpoint");
-    assert_eq!(original, route_key(&payload, subagent_type, "opus"));
-    payload["session_id"] = json!("another-session");
-    assert_ne!(original, route_key(&payload, subagent_type, "opus"));
-    payload["tool_use_id"] = json!("call-1");
-    payload["turn_id"] = json!("turn-1");
-    let call = route_key(&payload, subagent_type, "opus");
-    payload["tool_input"]["model"] = json!("opus");
-    assert_eq!(call, route_key(&payload, subagent_type, "opus"));
     payload["tool_use_id"] = json!("call-2");
     payload["turn_id"] = json!("turn-2");
-    assert_ne!(call, route_key(&payload, subagent_type, "opus"));
-    payload["tool_use_id"] = json!("call-1");
-    payload["tool_input"]["prompt"] = json!("fetch a different task");
-    assert_eq!(call, route_key(&payload, subagent_type, "opus"));
-    payload["agent_id"] = json!("another-parent-agent");
-    assert_eq!(call, route_key(&payload, subagent_type, "opus"));
-    payload.as_object_mut().unwrap().remove("tool_use_id");
-    payload.as_object_mut().unwrap().remove("agent_id");
+    assert_eq!(original, route_key(&payload, st));
+    // a different session, parent agent, subagent type or prompt start is a different spawn
+    let mut other = payload.clone();
+    other["session_id"] = json!("another-session");
+    assert_ne!(original, route_key(&other, st));
+    let mut other = payload.clone();
+    other["agent_id"] = json!("another-parent-agent");
+    assert_ne!(original, route_key(&other, st));
+    assert_ne!(original, route_key(&payload, "Explore"));
+    let mut other = payload.clone();
+    other["tool_input"]["prompt"] = json!("fetch another endpoint");
+    assert_ne!(original, route_key(&other, st));
+    // only a bounded prefix counts, and the key is O(1) and content-free
+    let limit = defaults::num("model_routing.key_prefix_chars") as usize;
     payload["tool_input"]["prompt"] = json!(format!("SECRET_PROMPT_MARKER {}", "x".repeat(1024 * 1024)));
-    let huge = route_key(&payload, subagent_type, "opus");
-    payload["tool_input"]["prompt"] = json!("tiny different prompt");
-    payload["tool_input"]["description"] = json!("SECRET_DESCRIPTION_MARKER");
-    assert_eq!(huge, route_key(&payload, subagent_type, "opus"));
+    let huge = route_key(&payload, st);
+    let mut tail = payload.clone();
+    let prefix: String = format!("SECRET_PROMPT_MARKER {}", "x".repeat(limit)).chars().take(limit).collect();
+    tail["tool_input"]["prompt"] = json!(format!("{prefix}and a different tail"));
+    assert_eq!(huge, route_key(&tail, st));
     let huge_subagent = format!("{}{}", "s".repeat(defaults::num("telemetry.token_max_len") as usize), "SECRET_SUBAGENT_MARKER".repeat(1024));
-    let huge_model = format!("{}{}", "m".repeat(defaults::num("telemetry.token_max_len") as usize), "SECRET_MODEL_MARKER".repeat(1024));
-    let bounded = route_key(&payload, &huge_subagent, &huge_model);
-    assert_eq!(
-        bounded,
-        route_key(
-            &payload,
-            &huge_subagent[..defaults::num("telemetry.token_max_len") as usize],
-            &huge_model[..defaults::num("telemetry.token_max_len") as usize]
-        )
-    );
-    assert!(!huge.contains("SECRET"));
-    assert!(!bounded.contains("SECRET"));
-    assert!(call.len() < defaults::num("telemetry.token_max_len") as usize);
+    let bounded = route_key(&payload, &huge_subagent);
+    assert_eq!(bounded, route_key(&payload, &huge_subagent[..defaults::num("telemetry.token_max_len") as usize]));
+    assert!(!huge.contains("SECRET") && !bounded.contains("SECRET"));
+    assert!(huge.len() < defaults::num("telemetry.token_max_len") as usize);
 }
 
 #[test]
-fn route_events_with_different_tool_use_ids_do_not_join_to_the_same_spawn() {
+fn an_opus_deny_then_a_haiku_retry_in_one_session_join_on_one_key() {
     use crate::telemetry::event::{Event, Extras, Kind, Outcome, Route, RouteOutcome, Spawn, Token, Usage};
     let env = RequestEnv::from_pairs([("HOME", "/tmp")]);
     let mut payload = mechanical_payload(Some("opus"));
     payload["tool_use_id"] = json!("call-1");
     payload["turn_id"] = json!("turn-1");
-    let (_, original) = routed_exact(decide(&payload, &env));
+    let (x, original) = routed_exact(decide(&payload, &env));
+    assert_eq!(x.code, 2, "the opus spawn is denied");
     let mut retry = payload;
     retry["tool_input"]["model"] = json!("haiku");
     retry["tool_use_id"] = json!("call-2");
     retry["turn_id"] = json!("turn-2");
     let Some(Verdict::Routed(_, rerouted)) = decide(&retry, &env) else { panic!("expected routed allow") };
-    let route = |meta: &RouteMeta| {
+    assert_eq!(original[0].spawn_key, rerouted[0].spawn_key, "the retry links to the first decision");
+    let route = |meta: &RouteMeta, outcome| {
         Extras::Route(Route {
             requested_model: Token::sanitize(&meta.requested_model),
             parent_model: Token::sanitize(&meta.parent_model),
             task_class: Token::sanitize(&meta.task_class),
             recommended_tier: Token::sanitize(&meta.recommended_tier),
             selected_model: Token::sanitize(&meta.selected_model),
-            outcome: RouteOutcome::Allow,
+            outcome,
             spawn_key: Token::sanitize(&meta.spawn_key),
         })
     };
-    let event = |ts_ms, kind, extras| Event {
+    let event = |ts_ms, kind, o, extras| Event {
         ts_ms,
         kind,
         h: Token::sanitize("model-routing"),
         e: Token::sanitize("PreToolUse"),
-        o: Outcome::Allow,
+        o,
         ms: 0,
         ib: 0,
         extras,
     };
     let events = vec![
-        event(1, Kind::Route, route(&original[0])),
-        event(2, Kind::Route, route(&rerouted[0])),
+        event(1, Kind::Route, Outcome::Block, route(&original[0], RouteOutcome::Deny)),
+        event(2, Kind::Route, Outcome::Allow, route(&rerouted[0], RouteOutcome::Allow)),
         event(
             3,
             Kind::Spawn,
+            Outcome::Allow,
             Extras::Spawn(Spawn { spawn_key: Token::sanitize(&rerouted[0].spawn_key), actual_model: Token::sanitize("haiku"), usage: Usage::default() }),
         ),
     ];
     let (chains, unlinked) = crate::telemetry::route::chains(&events, 10);
-    assert_eq!(unlinked, 1);
+    assert_eq!(unlinked, 0);
     assert_eq!(chains.len(), 1);
-    assert_eq!(chains[0].decisions, 1);
-    assert_eq!(chains[0].origin.requested_model.as_str(), "haiku");
+    assert_eq!(chains[0].decisions, 2);
+    assert_eq!(chains[0].origin.requested_model.as_str(), "opus", "the chain is compared against what was first asked for");
 }
 
 #[test]

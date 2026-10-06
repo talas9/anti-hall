@@ -537,9 +537,11 @@ value = "general-purpose"
 doc = "Subagent type recommended for read-only research-shaped generic spawns."
 value = "Explore"
 
-[model_routing.id_fields]
-doc = "Hook payload id fields, in priority order, that can identify a spawn without hashing prompt or description text."
-value = ["tool_use_id", "tool_call_id", "id"]
+[model_routing.key_prefix_chars]
+doc = "Characters of the spawn prompt hashed (never stored) into the route event's spawn_key, with the session, parent agent and subagent type, so a retry after a deny (new tool_use_id, changed model) joins the first decision. Known limit: two spawns by one agent in one session whose prompts share this prefix and subagent type share a key."
+value = 256
+min = 1
+unit = "characters"
 
 [model_routing.flagship_models]
 doc = "Explicit model enum values treated as flagship tiers for row 1 and row 3."

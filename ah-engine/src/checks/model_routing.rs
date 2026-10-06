@@ -264,20 +264,28 @@ fn bounded_component(s: &str) -> String {
     out
 }
 
-fn route_key(payload: &Value, subagent_type: &str, requested_model: &str) -> String {
-    let id_fields = defaults::list("model_routing.id_fields");
-    if let Some(id) = first_str(payload, &id_fields) {
-        return format!("spawn-{:016x}", crate::health::fnv(&format!("id:{}", bounded_component(id))));
-    }
-    // No prompt, description, or other payload text: this fallback is O(1) and content-free.
+/// The spawn identity that a retry keeps: a spawn denied on one model and re-spawned on another (new `tool_use_id`, changed
+/// `model`) is the same decision chain. It hashes the session, the parent agent, the subagent type and a bounded prefix of
+/// the prompt; the prefix is hashed and never stored, so no prompt text reaches an event, and the cost is O(1). Neither the
+/// requested model nor a per-call id is part of it. Two byte-identical-prefix spawns by one agent in one session share a key
+/// (documented in the `model_routing.key_prefix_chars` setting).
+fn route_key(payload: &Value, subagent_type: &str) -> String {
+    let prefix: String = payload
+        .get("tool_input")
+        .and_then(|i| i.get("prompt"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .take(defaults::num("model_routing.key_prefix_chars") as usize)
+        .collect();
     let identity = [
         bounded_component(payload.get("session_id").and_then(Value::as_str).unwrap_or("")),
         bounded_component(payload.get("agent_id").and_then(Value::as_str).unwrap_or("")),
         bounded_component(subagent_type),
-        bounded_component(requested_model),
+        format!("{:016x}", crate::health::fnv(&prefix)),
     ]
     .join("\u{1f}");
-    format!("spawn-{:016x}", crate::health::fnv(&identity.to_string()))
+    format!("spawn-{:016x}", crate::health::fnv(&identity))
 }
 
 fn parent_model(payload: &Value) -> String {
@@ -320,7 +328,7 @@ fn routed(v: Verdict, payload: &Value, input: RouteInput<'_>, class: &str, recom
             recommended_tier: recommended.to_string(),
             selected_model: selected,
             outcome: outcome.to_string(),
-            spawn_key: route_key(payload, input.subagent_type, &requested),
+            spawn_key: route_key(payload, input.subagent_type),
             delegate,
         }],
     )
