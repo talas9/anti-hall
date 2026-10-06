@@ -59,7 +59,7 @@ pub enum Kind {
     Hook,
     /// One built-in check or regex rule inside a hook.
     Check,
-    /// A model-routing decision at agent spawn (D77).
+    /// A model-routing decision at agent spawn (D78/D86).
     Route,
     /// The result of a spawn, linked to its route event by `spawn_key` (D77).
     Spawn,
@@ -67,6 +67,8 @@ pub enum Kind {
     Jev,
     /// Hook output that was too large to inject and was spilled to a file.
     Spill,
+    /// A routing deny that forces delegation to another model (D86).
+    Delegate,
 }
 
 impl Kind {
@@ -79,6 +81,7 @@ impl Kind {
             Kind::Spawn => "spawn",
             Kind::Jev => "jev",
             Kind::Spill => "spill",
+            Kind::Delegate => "delegate",
         }
     }
 
@@ -91,6 +94,7 @@ impl Kind {
             "spawn" => Kind::Spawn,
             "jev" => Kind::Jev,
             "spill" => Kind::Spill,
+            "delegate" => Kind::Delegate,
             _ => return None,
         })
     }
@@ -140,7 +144,7 @@ impl Outcome {
     }
 }
 
-/// What the model-routing check did with a spawn (D77).
+/// What the model-routing check did with a spawn (D78/D86).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteOutcome {
     /// Steered to a cheaper model than the one asked for or inherited.
@@ -151,6 +155,10 @@ pub enum RouteOutcome {
     Allow,
     /// Exempt from routing (for example an explicitly pinned model).
     Exempt,
+    /// The check added advice without blocking.
+    Advise,
+    /// The check denied the spawn.
+    Deny,
 }
 
 impl RouteOutcome {
@@ -161,6 +169,8 @@ impl RouteOutcome {
             RouteOutcome::Up => "up",
             RouteOutcome::Allow => "allow",
             RouteOutcome::Exempt => "exempt",
+            RouteOutcome::Advise => "advise",
+            RouteOutcome::Deny => "deny",
         }
     }
 
@@ -171,6 +181,8 @@ impl RouteOutcome {
             "up" => RouteOutcome::Up,
             "allow" => RouteOutcome::Allow,
             "exempt" => RouteOutcome::Exempt,
+            "advise" => RouteOutcome::Advise,
+            "deny" => RouteOutcome::Deny,
             _ => return None,
         })
     }
@@ -237,7 +249,7 @@ pub struct Usage {
     pub cache_write: u64,
 }
 
-/// A model-routing decision (D77): what was asked for, what the table recommended, what the check did.
+/// A model-routing decision (D78/D86): what was asked for, what the table recommended, what the check did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
     /// The model the agent asked for (or the parent's, when it inherited).
@@ -324,7 +336,7 @@ fn extra_fields(kind: Kind) -> &'static [&'static str] {
         Kind::Spawn => &["spawn_key", "actual_model", "in", "out", "cr", "cw"],
         Kind::Jev => &["integration", "mode", "verdict", "cost_uc"],
         Kind::Spill => &["bytes"],
-        Kind::Hook | Kind::Check => &[],
+        Kind::Hook | Kind::Check | Kind::Delegate => &[],
     }
 }
 
@@ -419,7 +431,7 @@ impl Event {
             }),
             Kind::Jev => Extras::Jev(Jev { integration: tok("integration")?, mode: tok("mode")?, verdict: tok("verdict")?, cost_uc: num("cost_uc")? }),
             Kind::Spill => Extras::Spill(num("bytes")?),
-            Kind::Hook | Kind::Check => Extras::None,
+            Kind::Hook | Kind::Check | Kind::Delegate => Extras::None,
         };
         Ok(Event { ts_ms, kind, h: tok("h")?, e: tok("e")?, o, ms: num("ms")?.min(u32::MAX as u64) as u32, ib: num("ib")?, extras })
     }
@@ -501,6 +513,7 @@ mod tests {
                 }),
             ),
             (Kind::Spill, Extras::Spill(9000)),
+            (Kind::Delegate, Extras::None),
             (Kind::Hook, Extras::None),
         ] {
             let e = Event { kind, extras: ex, ..route() };

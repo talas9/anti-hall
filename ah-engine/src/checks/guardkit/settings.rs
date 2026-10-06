@@ -44,7 +44,7 @@ fn coerce_json(v: &Value) -> Option<bool> {
 }
 
 /// Read a JSON object file under the home directory; `None` when absent, unreadable, not JSON or not an object.
-fn read_object(st: &Settings, rel: &str) -> Option<serde_json::Map<String, Value>> {
+pub(crate) fn read_object(st: &Settings, rel: &str) -> Option<serde_json::Map<String, Value>> {
     if st.home.is_empty() {
         return None;
     }
@@ -56,7 +56,7 @@ fn read_object(st: &Settings, rel: &str) -> Option<serde_json::Map<String, Value
 }
 
 /// `readStoredPluginOptions`: the options the host stored for this plugin, flat and nested forms merged.
-fn stored_options(st: &Settings) -> Option<serde_json::Map<String, Value>> {
+pub(crate) fn stored_options(st: &Settings) -> Option<serde_json::Map<String, Value>> {
     let host = read_object(st, defaults::text("guardkit.claude_settings_file"))?;
     let map = host.get("pluginConfigs")?.as_object()?;
     let mut out: Option<serde_json::Map<String, Value>> = None;

@@ -439,3 +439,460 @@ value = 100
 [compact_decl.codex_text_types]
 doc = "Content block types that carry assistant text in a Codex rollout entry."
 value = ["output_text", "text"]
+
+# ---- model-routing-guard (hooks/model-routing-guard.js) ----------------------------------------------------
+
+[model_routing.summary]
+doc = "One-line description of the model-routing check in the generated reference."
+value = "Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches (port of model-routing-guard.js)."
+
+[model_routing.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "model-routing-guard"
+
+[model_routing.message_guard]
+doc = "The guard label used in ordinary routing advisory text."
+value = "model-routing"
+
+[model_routing.handover_guard]
+doc = "The guard label used in the handover-delegation advisory."
+value = "handover"
+
+[model_routing.update_setting]
+doc = "Where the update-in-session switch is read from (guards.updateInSession, default on)."
+value = { section = "guards", key = "updateInSession", env = "ANTIHALL_UPDATE_IN_SESSION", aliases = [], option = "guards_update_in_session", default = true }
+
+[model_routing.mode_env]
+doc = "Environment variable whose value advisory downgrades strict omitted-model blocks."
+value = "ANTIHALL_MODEL_ROUTING"
+
+[model_routing.deploy_floor_env]
+doc = "Environment variable that sets the deploy/migration/secret minimum model floor."
+value = "ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR"
+
+[model_routing.mode_option]
+doc = "Claude plugin option key for guards.modelRouting."
+value = "guards_model_routing"
+
+[model_routing.deploy_floor_option]
+doc = "Claude plugin option key for guards.modelRoutingDeployFloor."
+value = "guards_model_routing_deploy_floor"
+
+[model_routing.mode_values]
+doc = "Valid guards.modelRouting enum values."
+value = ["strict", "advisory", "off"]
+
+[model_routing.deploy_floor_values]
+doc = "Valid guards.modelRoutingDeployFloor enum values."
+value = ["sonnet", "opus", "off"]
+
+[model_routing.advisory_mode]
+doc = "Routing-mode value that downgrades omitted-model strict blocks to advisories."
+value = "advisory"
+
+[model_routing.off_mode]
+doc = "Routing-mode value that disables model-routing."
+value = "off"
+
+[model_routing.deploy_floor_default]
+doc = "Default deploy/migration/secret model floor."
+value = "sonnet"
+
+[model_routing.deploy_floor_off]
+doc = "Deploy-floor value that disables the deploy/migration/secret floor."
+value = "off"
+
+[model_routing.scan_limit]
+doc = "Maximum JavaScript UTF-16 code units of description plus prompt scanned for routing keywords (String.prototype.slice parity)."
+value = 131072
+min = 1
+unit = "utf16-code-units"
+
+[model_routing.deploy_weak_threshold]
+doc = "Number of distinct weak deploy/migration/secret signal kinds needed to activate the deploy floor."
+value = 2
+min = 1
+
+[model_routing.setting_section]
+doc = "Settings section containing the model-routing settings."
+value = "guards"
+
+[model_routing.setting_key]
+doc = "Settings key containing the model-routing mode."
+value = "modelRouting"
+
+[model_routing.deploy_floor_key]
+doc = "Settings key containing the deploy/migration/secret model floor."
+value = "modelRoutingDeployFloor"
+
+[model_routing.routing_mode_default]
+doc = "Default model-routing mode when no setting or env override is present."
+value = "strict"
+
+[model_routing.generic_type]
+doc = "The generic subagent type whose spawns are eligible for the generic-agent routing rows."
+value = "general-purpose"
+
+[model_routing.explore_type]
+doc = "Subagent type recommended for read-only research-shaped generic spawns."
+value = "Explore"
+
+[model_routing.tools]
+doc = "Tool names answered by the model-routing check."
+value = ["Agent", "Task"]
+
+[model_routing.flagship_models]
+doc = "Explicit model enum values treated as flagship tiers for row 1 and row 3."
+value = ["opus", "fable"]
+
+[model_routing.tier_haiku]
+doc = "The cheap execution model tier recommended by rows 1, 2 and 3."
+value = "haiku"
+
+[model_routing.tier_opus]
+doc = "The planning advisory's default stronger tier."
+value = "opus"
+
+[model_routing.tier_main]
+doc = "Pseudo-tier used when the guard forces work back to the main session."
+value = "main"
+
+[model_routing.tier_inherit]
+doc = "Pseudo-tier used in telemetry when an omitted model inherits from the parent."
+value = "inherit"
+
+[model_routing.model_rank]
+doc = "Rank table for the deploy/migration/secret model floor."
+value = { haiku = 1, sonnet = 2, opus = 3, fable = 3 }
+
+[model_routing.mechanical]
+doc = "Mechanical execution-only signal phrases, matched as token phrases after compatibility folding."
+value = ["fetch", "download", "curl", "grep", "glob", "search files", "run command", "run script", "install", "build", "run tests", "git push", "deploy", "dump", "export", "tail", "read logs", "list", "check status"]
+
+[model_routing.hard_execution]
+doc = "Mechanical signals that suppress the row-1 research exemption."
+value = ["run script", "install", "build", "run tests", "git push", "deploy"]
+
+[model_routing.complex]
+doc = "Complex/planning signal phrases whose presence vetoes rows that steer to haiku."
+value = ["plan", "planning", "design", "architect", "review", "audit", "regression", "coupling", "merge order", "critique", "debate", "validate", "simulate", "root cause", "workflow analysis", "logic", "mockup", "security"]
+
+[model_routing.role_word_re]
+doc = "Debate-role exemption regex matched against the description only."
+value = '\b(reviewer|auditor|critic|debate|deadly[- ]?loop)\b'
+
+[model_routing.research_re]
+doc = "Research/read-only regex for the row-1 research exemption and row-6 Explore advisory."
+value = '\b(research|investigate|find|search|audit|survey|read[ -]?only|locate|map|gather|explore|scout|look\s+up|trace|reconnaissance)\b'
+
+[model_routing.write_re]
+doc = "Write/execute regex that suppresses the row-6 Explore advisory."
+value = '\b(write|edit|modif|commit|push|changelog|create\s+(?:an?\s+|the\s+|new\s+)?files?|migrat|refactor|implement)\b'
+
+[model_routing.write_imperative_re]
+doc = "Instruction-position ambiguous write/execute regex that suppresses the row-6 Explore advisory."
+value = '(?:^|[\n\r\u2028\u2029]|[.;:!?]\s+|\b(?:then|and|also|please|to)\s+)(?:tag|release|bump|apply|patch|build|deploy|install|fix)\b'
+
+[model_routing.write_phrase_re]
+doc = "Explicit write phrase regex that suppresses the row-6 Explore advisory even when read-only override words are present."
+value = '\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch)\b|(?:^|[\n\r\u2028\u2029]|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b'
+
+[model_routing.readonly_override_re]
+doc = "Explicit read-only statement regex that overrides ambiguous write words for row 6."
+value = '''\b(?:report\s+only|read[- ]?only|(?:do\s+not|don'?t|never)\s+(?:edit|modify|write|change|commit)|no\s+(?:edits|changes|writes))\b'''
+
+[model_routing.deploy_strong_re]
+doc = "Strong deploy/migration/secret regex that activates the deploy floor."
+value = '\b(deploy\w*|redeploy\w*|migrat\w*|rollbacks?|roll\s+back|token\s+rotation|rotat\w*\s+(?:the\s+|a\s+)?(?:api\s+)?(?:tokens?|keys?|secrets?|credentials?)|wrangler|terraform|kubectl\s+apply|helm\s+(?:install|upgrade)|firebase\s+deploy|db\s+migrate)\b'
+
+[model_routing.deploy_weak_re]
+doc = "Weak deploy/migration/secret words; two distinct kinds activate the deploy floor."
+value = '\b(prod|production|secrets?|credentials?)\b'
+
+[model_routing.deploy_weak_aliases]
+doc = "Weak deploy/migration/secret words normalized before distinct-kind counting. This mirrors Node's production -> prod policy."
+value = { production = "prod" }
+
+[model_routing.update_qualifier]
+doc = "Lowercase qualifier required with a generic update.js command before it is treated as an anti-hall update-in-session."
+value = "anti-hall"
+
+[model_routing.update_node_re]
+doc = "Regex for node commands that run an update.js script."
+value = '''\bnode\s+["']?\S*update\.js\b'''
+
+[model_routing.update_skill_path_re]
+doc = "Regex for node commands that run anti-hall's update skill script."
+value = '''\bnode\s+["']?\S*skills[\\/]update[\\/]scripts[\\/]update\.js\b'''
+
+[model_routing.update_slash_re]
+doc = "Regex for explicit requests to invoke the anti-hall update skill."
+value = '\b(?:run|invoke|execute)\s+`?/anti-hall:update\b'
+
+[model_routing.planning_intent_re]
+doc = "Strict planning-intent regex for the row-4 haiku advisory."
+value = '\b(architect(?:ure)?|brainstorm|design\s+(?:a|the|an)\b|plan\s+(?:a|the|an|out)\b|deep\s+review|code\s+review|design\s+review|security\s+review|review\s+the\s+(?:code|design|architecture|plan)|review\s+(?:this|the|a)\s+(?:pr|pull\s+request|diff|patch|change(?:s|set)?)|audit\s+(?:the|this)\b|critique|debate|merge\s+order|workflow\s+analysis|root[- ]cause\s+analysis|(?:find|identify|determine|diagnose|trace)\s+(?:the\s+)?root[- ]cause|root[- ]cause\s+(?:why|how|the|this)|regression\s+analysis|security\s+audit)\b'
+
+[model_routing.readonly_re]
+doc = "Read-only/mechanical marker regex used to suppress row-4 false positives."
+value = '\b(verbatim|read[- ]?only|mechanical|append\s*only|run\s+exactly|do\s+nothing\s+else|nothing\s+else|no\s+other\s+file\s+edits|no\s+repo\s+edits|no\s+source\s+edits)\b'
+
+[model_routing.mechanical_shape_re]
+doc = "Fixed-command or bounded-output regex used to suppress row-4 false positives."
+value = '\b(run\s+exactly|run\s+only|run\s+(?:this|these|the\s+following)\s+(?:exact\s+)?commands?|exactly\s+(?:this|these)\s+commands?|verbatim|append\s*only|do\s+nothing\s+else|nothing\s+else|return\s+(?:only\s+)?(?:at\s+most\s+|no\s+more\s+than\s+|under\s+|up\s+to\s+)?\d+\s+lines?)\b|return\s+(?:only\s+)?(?:≤|<=)\s*\d+\s+lines?\b'
+
+[model_routing.review_design_verb_re]
+doc = "Review/design/analysis verb regex that keeps row 4 live despite read-only markers."
+value = '\b(review|audit|design|architect(?:ure)?|plan|brainstorm|critique|analy[sz]e|analysis|investigate|root[- ]cause)\b'
+
+[model_routing.reasoning_re]
+doc = "Heavy reading and synthesis regex that vetoes rows steering to haiku."
+value = '\b(analy[sz]\w*|synthesi[sz]\w*|summari[sz]\w*|reconcil\w*|evaluat\w*|interpret\w*|distill\w*|compare|comparison)\b|\bread\w*\b[^.\n]{0,60}\b(?:pdf|pdfs|pages?|papers?|documents?|specs?|transcripts?|articles?|books?|manuals?|whitepapers?)\b|\b\d+[- ]page\b|\bpage[- ]by[- ]page\b'
+
+[model_routing.handover_noun_re]
+doc = "Handover noun regex for the handover-delegation advisory."
+value = '\b(handover|handoff)\b'
+
+[model_routing.handover_verb_re]
+doc = "Handover write-verb regex for the handover-delegation advisory."
+value = '\b(write|prepare|create|author|draft)\b'
+
+[model_routing.code_fence_re]
+doc = "Regex for fenced code spans stripped before planning and reasoning regexes."
+value = '```[\s\S]*?```'
+
+[model_routing.inline_code_re]
+doc = "Regex for inline code spans stripped before planning and reasoning regexes."
+value = '`[^`]*`'
+
+[model_routing.session_safe_re]
+doc = "Regex whose non-matching characters are replaced in the handover advisory state file name."
+value = '[^A-Za-z0-9_.-]'
+
+[model_routing.state_dir]
+doc = "State directory, relative to home, for the handover-delegation advisory cap."
+value = ".anti-hall"
+
+[model_routing.handover_state_prefix]
+doc = "Prefix of the per-session handover-delegation advisory cap file."
+value = "model-routing-guard-handover-state-"
+
+[model_routing.handover_state_suffix]
+doc = "Suffix of the per-session handover-delegation advisory cap file."
+value = ".json"
+
+[model_routing.unknown_session]
+doc = "Fallback session id used in the handover advisory state file name."
+value = "unknown-session"
+
+[model_routing.handover_state_json]
+doc = "JSON written to cap the handover-delegation advisory."
+value = '{"advised":true}'
+
+[model_routing.msg_update_what]
+doc = "Update-in-session block headline."
+value = "a subagent spawn that runs the anti-hall update is blocked."
+
+[model_routing.msg_update_why]
+doc = "Update-in-session block reason."
+value = "update.js runs migrations and the main session must judge the result."
+
+[model_routing.msg_update_instead]
+doc = "Update-in-session block advice."
+value = "run `node <path>/update.js ...` directly in the main session."
+
+[model_routing.msg_handover_what]
+doc = "Handover-delegation advisory headline."
+value = "this spawn looks like it writes a session handover."
+
+[model_routing.msg_handover_why]
+doc = "Handover-delegation advisory reason."
+value = "A subagent never lived this session, so its reconstruction loses decision/trial fidelity."
+
+[model_routing.msg_handover_instead]
+doc = "Handover-delegation advisory advice."
+value = "invoke the handover skill yourself in the session that holds the memory."
+
+[model_routing.msg_deploy_omitted_what]
+doc = "Deploy-floor advisory headline for omitted-model spawns."
+value = "deploy/migration/secret-shaped spawn sets no explicit model."
+
+[model_routing.msg_deploy_omitted_instead]
+doc = "Deploy-floor advisory advice for omitted-model spawns."
+value = "set model:'{floor}' or higher, never haiku."
+
+[model_routing.msg_deploy_low_what]
+doc = "Deploy-floor advisory headline for too-low explicit model spawns."
+value = "deploy/migration/secret-shaped spawn runs on '{model}'."
+
+[model_routing.msg_deploy_low_instead]
+doc = "Deploy-floor advisory advice for too-low explicit model spawns."
+value = "use model:'{floor}' or higher.{extra}"
+
+[model_routing.msg_deploy_low_extra]
+doc = "Extra row-4 planning note appended to a haiku deploy-floor advisory when applicable."
+value = " It also looks planning-shaped; consider opus or fable for deeper reasoning."
+
+[model_routing.msg_deploy_why]
+doc = "Deploy-floor advisory reason."
+value = "Auth/secret edge cases get mishandled by a cheap model."
+
+[model_routing.msg_row1_what]
+doc = "Row-1 block headline."
+value = "execution-shaped task on a flagship model (model: '{model}') is blocked."
+
+[model_routing.msg_row1_why]
+doc = "Row-1 block reason."
+value = "This hook cannot see the parent model; execution-only work needs an explicit cheap model."
+
+[model_routing.msg_row1_instead]
+doc = "Row-1 block advice."
+value = "respawn with model:'haiku' (or 'sonnet' if it authors code)."
+
+[model_routing.msg_row1_role_what]
+doc = "Row-1 role-exempt advisory headline."
+value = "execution-shaped spawn on a flagship model ('{model}'), exempt because a debate-role word is in its description."
+
+[model_routing.msg_row1_role_instead]
+doc = "Row-1 role-exempt advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.msg_row1_research_what]
+doc = "Row-1 research-exempt advisory headline."
+value = "execution-shaped spawn on a flagship model ('{model}'), exempt from blocking because it reads as research with no unambiguous execution verb."
+
+[model_routing.msg_row2_block_what]
+doc = "Row-2 strict block headline."
+value = "execution-shaped spawn with no explicit model is blocked (strict default)."
+
+[model_routing.msg_row2_block_why]
+doc = "Row-2 strict block reason."
+value = "An omitted model inherits the orchestrator's and cannot be verified here; on a flagship orchestrator that silently makes an all-flagship swarm."
+
+[model_routing.msg_row2_block_instead]
+doc = "Row-2 strict block advice."
+value = "set model:'haiku' (or 'sonnet' for code) on the spawn."
+
+[model_routing.msg_row2_block_override]
+doc = "Row-2 strict block override text."
+value = "set ANTIHALL_MODEL_ROUTING=advisory to downgrade this block to an advisory"
+
+[model_routing.msg_row2_adv_what]
+doc = "Row-2 advisory headline."
+value = "execution-shaped spawn sets no explicit model."
+
+[model_routing.msg_row2_adv_instead]
+doc = "Row-2 advisory advice."
+value = "set model:'haiku' (or 'sonnet' if it authors code)."
+
+[model_routing.msg_row2_adv_why]
+doc = "Row-2 advisory reason."
+value = "An omitted model inherits the orchestrator's, so mechanical work may run on a flagship."
+
+[model_routing.msg_row1_jev_what]
+doc = "Row-1 Jev relaxation advisory headline."
+value = "execution-shaped spawn on a flagship model ('{model}'); Jev judged it non-mechanical, so the block is downgraded."
+
+[model_routing.msg_row1_jev_instead]
+doc = "Row-1 Jev relaxation advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.msg_row2_jev_what]
+doc = "Row-2 Jev relaxation advisory headline."
+value = "omitted-model spawn looks execution-shaped; Jev judged it non-mechanical, so the strict block is downgraded."
+
+[model_routing.msg_row2_jev_instead]
+doc = "Row-2 Jev relaxation advisory advice."
+value = "if it is genuinely mechanical work, prefer model:'haiku'."
+
+[model_routing.jev_id]
+doc = "Jev integration id used by the Node model-routing guard."
+value = "modelRouting"
+
+[model_routing.jev_question_instructions]
+doc = "Jev choice-question instructions for model-routing relaxation."
+value = "Classify the SHAPE of this agent-spawn task from its description/prompt."
+
+[model_routing.jev_choice_mechanical]
+doc = "Jev choice description for mechanical tasks."
+value = "Execution-only: running commands, fetching/building/testing/deploying, no authoring or judgment calls required."
+
+[model_routing.jev_choice_authoring]
+doc = "Jev choice description for authoring tasks."
+value = "Writing or editing substantial code/content that requires judgment."
+
+[model_routing.jev_choice_research]
+doc = "Jev choice description for research tasks."
+value = "Investigation, research, or audit work — read-only or reporting."
+
+[model_routing.jev_choice_plan_review]
+doc = "Jev choice description for planning/review tasks."
+value = "Planning, architecture, review, critique, or debate work."
+
+[model_routing.jev_state_limit]
+doc = "Maximum JavaScript UTF-16 code units sent to Jev for model-routing relaxation."
+value = 4000
+min = 1
+unit = "utf16-code-units"
+
+[model_routing.jev_budget_ms]
+doc = "Synchronous Jev budget for model-routing relaxation, matching the Node hook."
+value = 1200
+min = 1
+unit = "ms"
+
+[model_routing.jev_label_mechanical]
+doc = "Jev answer label that keeps the model-routing block."
+value = "mechanical"
+
+[model_routing.jev_label_authoring]
+doc = "Jev answer label for authoring work."
+value = "authoring"
+
+[model_routing.jev_label_research]
+doc = "Jev answer label for research work."
+value = "research"
+
+[model_routing.jev_label_plan_review]
+doc = "Jev answer label for planning/review work."
+value = "plan-review"
+
+[model_routing.msg_fail_closed_what]
+doc = "Fail-closed headline for internal model-routing errors."
+value = "model-routing could not safely evaluate this spawn."
+
+[model_routing.msg_fail_closed_why]
+doc = "Fail-closed reason for internal model-routing errors."
+value = "The built-in check hit a decode/config/runtime error; a silent allow would violate fail-closed routing."
+
+[model_routing.msg_fail_closed_instead]
+doc = "Fail-closed advice for internal model-routing errors."
+value = "run the Node hook fallback or set an explicit safe model before spawning."
+
+[model_routing.msg_row3_what]
+doc = "Row-3 advisory headline."
+value = "execution-shaped task on a flagship model ('{model}') via custom subagent_type '{subagent_type}'."
+
+[model_routing.msg_row3_instead]
+doc = "Row-3 advisory advice."
+value = "unless that agent is pinned to a flagship on purpose, prefer model:'haiku'."
+
+[model_routing.msg_row4_what]
+doc = "Row-4 advisory headline."
+value = "planning-shaped task (architecture/design/plan/brainstorm/deep review) runs on haiku."
+
+[model_routing.msg_row4_instead]
+doc = "Row-4 advisory advice."
+value = "consider opus or fable for deeper reasoning."
+
+[model_routing.msg_row6_what]
+doc = "Row-6 advisory headline."
+value = "research/read-only-shaped spawn uses subagent_type:'general-purpose'."
+
+[model_routing.msg_row6_instead]
+doc = "Row-6 advisory advice."
+value = "re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent tool, so it cannot recurse). Keep general-purpose only if it must write files or spawn sub-agents."
+
+[model_routing.msg_row6_why]
+doc = "Row-6 advisory reason."
+value = "general-purpose carries the Agent tool and can recurse; chains waste ~7x tokens by depth 5."

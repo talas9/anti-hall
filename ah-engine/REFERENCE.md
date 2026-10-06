@@ -59,6 +59,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `coordinator-work-guard` | Main-thread work window: allows subagent Bash calls in the engine; the window itself (classification, counters, block) stays with the Node guard until the command-guard port lands (port of coordinator-work-guard.js). |
 | `compact-declaration-guard` | Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks (port of compact-declaration-guard.js). |
 | `command` | command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook. |
+| `model-routing` | Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches (port of model-routing-guard.js). |
 
 ## Settings
 
@@ -671,6 +672,123 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `merge_side_pick.summary` | `Advisory: a push after a conflict was resolved by taking one side wholesale, ...` |  |  | One-line description of the merge-side-pick check in the generated reference. |
 | `merge_side_pick.test_patterns` | `11 items` |  |  | Regex sources that recognise a test run in a command segment. |
 
+### small_guards.toml / model_routing
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `model_routing.advisory_mode` | `advisory` |  |  | Routing-mode value that downgrades omitted-model strict blocks to advisories. |
+| `model_routing.code_fence_re` | ````[\s\S]*?```` |  |  | Regex for fenced code spans stripped before planning and reasoning regexes. |
+| `model_routing.complex` | `18 items` |  |  | Complex/planning signal phrases whose presence vetoes rows that steer to haiku. |
+| `model_routing.deploy_floor_default` | `sonnet` |  |  | Default deploy/migration/secret model floor. |
+| `model_routing.deploy_floor_env` | `ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR` |  |  | Environment variable that sets the deploy/migration/secret minimum model floor. |
+| `model_routing.deploy_floor_key` | `modelRoutingDeployFloor` |  |  | Settings key containing the deploy/migration/secret model floor. |
+| `model_routing.deploy_floor_off` | `off` |  |  | Deploy-floor value that disables the deploy/migration/secret floor. |
+| `model_routing.deploy_floor_option` | `guards_model_routing_deploy_floor` |  |  | Claude plugin option key for guards.modelRoutingDeployFloor. |
+| `model_routing.deploy_floor_values` | `sonnet, opus, off` |  |  | Valid guards.modelRoutingDeployFloor enum values. |
+| `model_routing.deploy_strong_re` | `\b(deploy\w*\|redeploy\w*\|migrat\w*\|rollbacks?\|roll\s+back\|token\s+rotation\|ro...` |  |  | Strong deploy/migration/secret regex that activates the deploy floor. |
+| `model_routing.deploy_weak_aliases` | `1 entries` |  |  | Weak deploy/migration/secret words normalized before distinct-kind counting. This mirrors Node's production -> prod policy. |
+| `model_routing.deploy_weak_re` | `\b(prod\|production\|secrets?\|credentials?)\b` |  |  | Weak deploy/migration/secret words; two distinct kinds activate the deploy floor. |
+| `model_routing.deploy_weak_threshold` | `2` |  |  | Number of distinct weak deploy/migration/secret signal kinds needed to activate the deploy floor. |
+| `model_routing.explore_type` | `Explore` |  |  | Subagent type recommended for read-only research-shaped generic spawns. |
+| `model_routing.flagship_models` | `opus, fable` |  |  | Explicit model enum values treated as flagship tiers for row 1 and row 3. |
+| `model_routing.generic_type` | `general-purpose` |  |  | The generic subagent type whose spawns are eligible for the generic-agent routing rows. |
+| `model_routing.guard_name` | `model-routing-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
+| `model_routing.handover_guard` | `handover` |  |  | The guard label used in the handover-delegation advisory. |
+| `model_routing.handover_noun_re` | `\b(handover\|handoff)\b` |  |  | Handover noun regex for the handover-delegation advisory. |
+| `model_routing.handover_state_json` | `{"advised":true}` |  |  | JSON written to cap the handover-delegation advisory. |
+| `model_routing.handover_state_prefix` | `model-routing-guard-handover-state-` |  |  | Prefix of the per-session handover-delegation advisory cap file. |
+| `model_routing.handover_state_suffix` | `.json` |  |  | Suffix of the per-session handover-delegation advisory cap file. |
+| `model_routing.handover_verb_re` | `\b(write\|prepare\|create\|author\|draft)\b` |  |  | Handover write-verb regex for the handover-delegation advisory. |
+| `model_routing.hard_execution` | `run script, install, build, run tests, git push, deploy` |  |  | Mechanical signals that suppress the row-1 research exemption. |
+| `model_routing.inline_code_re` | ``[^`]*`` |  |  | Regex for inline code spans stripped before planning and reasoning regexes. |
+| `model_routing.jev_budget_ms` | `1200` |  | ms | Synchronous Jev budget for model-routing relaxation, matching the Node hook. |
+| `model_routing.jev_choice_authoring` | `Writing or editing substantial code/content that requires judgment.` |  |  | Jev choice description for authoring tasks. |
+| `model_routing.jev_choice_mechanical` | `Execution-only: running commands, fetching/building/testing/deploying, no aut...` |  |  | Jev choice description for mechanical tasks. |
+| `model_routing.jev_choice_plan_review` | `Planning, architecture, review, critique, or debate work.` |  |  | Jev choice description for planning/review tasks. |
+| `model_routing.jev_choice_research` | `Investigation, research, or audit work — read-only or reporting.` |  |  | Jev choice description for research tasks. |
+| `model_routing.jev_id` | `modelRouting` |  |  | Jev integration id used by the Node model-routing guard. |
+| `model_routing.jev_label_authoring` | `authoring` |  |  | Jev answer label for authoring work. |
+| `model_routing.jev_label_mechanical` | `mechanical` |  |  | Jev answer label that keeps the model-routing block. |
+| `model_routing.jev_label_plan_review` | `plan-review` |  |  | Jev answer label for planning/review work. |
+| `model_routing.jev_label_research` | `research` |  |  | Jev answer label for research work. |
+| `model_routing.jev_question_instructions` | `Classify the SHAPE of this agent-spawn task from its description/prompt.` |  |  | Jev choice-question instructions for model-routing relaxation. |
+| `model_routing.jev_state_limit` | `4000` |  | utf16-code-units | Maximum JavaScript UTF-16 code units sent to Jev for model-routing relaxation. |
+| `model_routing.mechanical` | `19 items` |  |  | Mechanical execution-only signal phrases, matched as token phrases after compatibility folding. |
+| `model_routing.mechanical_shape_re` | `\b(run\s+exactly\|run\s+only\|run\s+(?:this\|these\|the\s+following)\s+(?:exact\s...` |  |  | Fixed-command or bounded-output regex used to suppress row-4 false positives. |
+| `model_routing.message_guard` | `model-routing` |  |  | The guard label used in ordinary routing advisory text. |
+| `model_routing.mode_env` | `ANTIHALL_MODEL_ROUTING` |  |  | Environment variable whose value advisory downgrades strict omitted-model blocks. |
+| `model_routing.mode_option` | `guards_model_routing` |  |  | Claude plugin option key for guards.modelRouting. |
+| `model_routing.mode_values` | `strict, advisory, off` |  |  | Valid guards.modelRouting enum values. |
+| `model_routing.model_rank` | `4 entries` |  |  | Rank table for the deploy/migration/secret model floor. |
+| `model_routing.msg_deploy_low_extra` | ` It also looks planning-shaped; consider opus or fable for deeper reasoning.` |  |  | Extra row-4 planning note appended to a haiku deploy-floor advisory when applicable. |
+| `model_routing.msg_deploy_low_instead` | `use model:'{floor}' or higher.{extra}` |  |  | Deploy-floor advisory advice for too-low explicit model spawns. |
+| `model_routing.msg_deploy_low_what` | `deploy/migration/secret-shaped spawn runs on '{model}'.` |  |  | Deploy-floor advisory headline for too-low explicit model spawns. |
+| `model_routing.msg_deploy_omitted_instead` | `set model:'{floor}' or higher, never haiku.` |  |  | Deploy-floor advisory advice for omitted-model spawns. |
+| `model_routing.msg_deploy_omitted_what` | `deploy/migration/secret-shaped spawn sets no explicit model.` |  |  | Deploy-floor advisory headline for omitted-model spawns. |
+| `model_routing.msg_deploy_why` | `Auth/secret edge cases get mishandled by a cheap model.` |  |  | Deploy-floor advisory reason. |
+| `model_routing.msg_fail_closed_instead` | `run the Node hook fallback or set an explicit safe model before spawning.` |  |  | Fail-closed advice for internal model-routing errors. |
+| `model_routing.msg_fail_closed_what` | `model-routing could not safely evaluate this spawn.` |  |  | Fail-closed headline for internal model-routing errors. |
+| `model_routing.msg_fail_closed_why` | `The built-in check hit a decode/config/runtime error; a silent allow would vi...` |  |  | Fail-closed reason for internal model-routing errors. |
+| `model_routing.msg_handover_instead` | `invoke the handover skill yourself in the session that holds the memory.` |  |  | Handover-delegation advisory advice. |
+| `model_routing.msg_handover_what` | `this spawn looks like it writes a session handover.` |  |  | Handover-delegation advisory headline. |
+| `model_routing.msg_handover_why` | `A subagent never lived this session, so its reconstruction loses decision/tri...` |  |  | Handover-delegation advisory reason. |
+| `model_routing.msg_row1_instead` | `respawn with model:'haiku' (or 'sonnet' if it authors code).` |  |  | Row-1 block advice. |
+| `model_routing.msg_row1_jev_instead` | `if it is genuinely mechanical work, prefer model:'haiku'.` |  |  | Row-1 Jev relaxation advisory advice. |
+| `model_routing.msg_row1_jev_what` | `execution-shaped spawn on a flagship model ('{model}'); Jev judged it non-mec...` |  |  | Row-1 Jev relaxation advisory headline. |
+| `model_routing.msg_row1_research_what` | `execution-shaped spawn on a flagship model ('{model}'), exempt from blocking ...` |  |  | Row-1 research-exempt advisory headline. |
+| `model_routing.msg_row1_role_instead` | `if it is genuinely mechanical work, prefer model:'haiku'.` |  |  | Row-1 role-exempt advisory advice. |
+| `model_routing.msg_row1_role_what` | `execution-shaped spawn on a flagship model ('{model}'), exempt because a deba...` |  |  | Row-1 role-exempt advisory headline. |
+| `model_routing.msg_row1_what` | `execution-shaped task on a flagship model (model: '{model}') is blocked.` |  |  | Row-1 block headline. |
+| `model_routing.msg_row1_why` | `This hook cannot see the parent model; execution-only work needs an explicit ...` |  |  | Row-1 block reason. |
+| `model_routing.msg_row2_adv_instead` | `set model:'haiku' (or 'sonnet' if it authors code).` |  |  | Row-2 advisory advice. |
+| `model_routing.msg_row2_adv_what` | `execution-shaped spawn sets no explicit model.` |  |  | Row-2 advisory headline. |
+| `model_routing.msg_row2_adv_why` | `An omitted model inherits the orchestrator's, so mechanical work may run on a...` |  |  | Row-2 advisory reason. |
+| `model_routing.msg_row2_block_instead` | `set model:'haiku' (or 'sonnet' for code) on the spawn.` |  |  | Row-2 strict block advice. |
+| `model_routing.msg_row2_block_override` | `set ANTIHALL_MODEL_ROUTING=advisory to downgrade this block to an advisory` |  |  | Row-2 strict block override text. |
+| `model_routing.msg_row2_block_what` | `execution-shaped spawn with no explicit model is blocked (strict default).` |  |  | Row-2 strict block headline. |
+| `model_routing.msg_row2_block_why` | `An omitted model inherits the orchestrator's and cannot be verified here; on ...` |  |  | Row-2 strict block reason. |
+| `model_routing.msg_row2_jev_instead` | `if it is genuinely mechanical work, prefer model:'haiku'.` |  |  | Row-2 Jev relaxation advisory advice. |
+| `model_routing.msg_row2_jev_what` | `omitted-model spawn looks execution-shaped; Jev judged it non-mechanical, so ...` |  |  | Row-2 Jev relaxation advisory headline. |
+| `model_routing.msg_row3_instead` | `unless that agent is pinned to a flagship on purpose, prefer model:'haiku'.` |  |  | Row-3 advisory advice. |
+| `model_routing.msg_row3_what` | `execution-shaped task on a flagship model ('{model}') via custom subagent_typ...` |  |  | Row-3 advisory headline. |
+| `model_routing.msg_row4_instead` | `consider opus or fable for deeper reasoning.` |  |  | Row-4 advisory advice. |
+| `model_routing.msg_row4_what` | `planning-shaped task (architecture/design/plan/brainstorm/deep review) runs o...` |  |  | Row-4 advisory headline. |
+| `model_routing.msg_row6_instead` | `re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent tool, so...` |  |  | Row-6 advisory advice. |
+| `model_routing.msg_row6_what` | `research/read-only-shaped spawn uses subagent_type:'general-purpose'.` |  |  | Row-6 advisory headline. |
+| `model_routing.msg_row6_why` | `general-purpose carries the Agent tool and can recurse; chains waste ~7x toke...` |  |  | Row-6 advisory reason. |
+| `model_routing.msg_update_instead` | `run `node <path>/update.js ...` directly in the main session.` |  |  | Update-in-session block advice. |
+| `model_routing.msg_update_what` | `a subagent spawn that runs the anti-hall update is blocked.` |  |  | Update-in-session block headline. |
+| `model_routing.msg_update_why` | `update.js runs migrations and the main session must judge the result.` |  |  | Update-in-session block reason. |
+| `model_routing.off_mode` | `off` |  |  | Routing-mode value that disables model-routing. |
+| `model_routing.planning_intent_re` | `\b(architect(?:ure)?\|brainstorm\|design\s+(?:a\|the\|an)\b\|plan\s+(?:a\|the\|an\|ou...` |  |  | Strict planning-intent regex for the row-4 haiku advisory. |
+| `model_routing.readonly_override_re` | `\b(?:report\s+only\|read[- ]?only\|(?:do\s+not\|don'?t\|never)\s+(?:edit\|modify\|w...` |  |  | Explicit read-only statement regex that overrides ambiguous write words for row 6. |
+| `model_routing.readonly_re` | `\b(verbatim\|read[- ]?only\|mechanical\|append\s*only\|run\s+exactly\|do\s+nothing...` |  |  | Read-only/mechanical marker regex used to suppress row-4 false positives. |
+| `model_routing.reasoning_re` | `\b(analy[sz]\w*\|synthesi[sz]\w*\|summari[sz]\w*\|reconcil\w*\|evaluat\w*\|interpr...` |  |  | Heavy reading and synthesis regex that vetoes rows steering to haiku. |
+| `model_routing.research_re` | `\b(research\|investigate\|find\|search\|audit\|survey\|read[ -]?only\|locate\|map\|gat...` |  |  | Research/read-only regex for the row-1 research exemption and row-6 Explore advisory. |
+| `model_routing.review_design_verb_re` | `\b(review\|audit\|design\|architect(?:ure)?\|plan\|brainstorm\|critique\|analy[sz]e\|...` |  |  | Review/design/analysis verb regex that keeps row 4 live despite read-only markers. |
+| `model_routing.role_word_re` | `\b(reviewer\|auditor\|critic\|debate\|deadly[- ]?loop)\b` |  |  | Debate-role exemption regex matched against the description only. |
+| `model_routing.routing_mode_default` | `strict` |  |  | Default model-routing mode when no setting or env override is present. |
+| `model_routing.scan_limit` | `131072` |  | utf16-code-units | Maximum JavaScript UTF-16 code units of description plus prompt scanned for routing keywords (String.prototype.slice parity). |
+| `model_routing.session_safe_re` | `[^A-Za-z0-9_.-]` |  |  | Regex whose non-matching characters are replaced in the handover advisory state file name. |
+| `model_routing.setting_key` | `modelRouting` |  |  | Settings key containing the model-routing mode. |
+| `model_routing.setting_section` | `guards` |  |  | Settings section containing the model-routing settings. |
+| `model_routing.state_dir` | `.anti-hall` |  |  | State directory, relative to home, for the handover-delegation advisory cap. |
+| `model_routing.summary` | `Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inhe...` |  |  | One-line description of the model-routing check in the generated reference. |
+| `model_routing.tier_haiku` | `haiku` |  |  | The cheap execution model tier recommended by rows 1, 2 and 3. |
+| `model_routing.tier_inherit` | `inherit` |  |  | Pseudo-tier used in telemetry when an omitted model inherits from the parent. |
+| `model_routing.tier_main` | `main` |  |  | Pseudo-tier used when the guard forces work back to the main session. |
+| `model_routing.tier_opus` | `opus` |  |  | The planning advisory's default stronger tier. |
+| `model_routing.tools` | `Agent, Task` |  |  | Tool names answered by the model-routing check. |
+| `model_routing.unknown_session` | `unknown-session` |  |  | Fallback session id used in the handover advisory state file name. |
+| `model_routing.update_node_re` | `\bnode\s+["']?\S*update\.js\b` |  |  | Regex for node commands that run an update.js script. |
+| `model_routing.update_qualifier` | `anti-hall` |  |  | Lowercase qualifier required with a generic update.js command before it is treated as an anti-hall update-in-session. |
+| `model_routing.update_setting` | `6 entries` |  |  | Where the update-in-session switch is read from (guards.updateInSession, default on). |
+| `model_routing.update_skill_path_re` | `\bnode\s+["']?\S*skills[\\/]update[\\/]scripts[\\/]update\.js\b` |  |  | Regex for node commands that run anti-hall's update skill script. |
+| `model_routing.update_slash_re` | `\b(?:run\|invoke\|execute)\s+`?/anti-hall:update\b` |  |  | Regex for explicit requests to invoke the anti-hall update skill. |
+| `model_routing.write_imperative_re` | `(?:^\|[\n\r\u2028\u2029]\|[.;:!?]\s+\|\b(?:then\|and\|also\|please\|to)\s+)(?:tag\|re...` |  |  | Instruction-position ambiguous write/execute regex that suppresses the row-6 Explore advisory. |
+| `model_routing.write_phrase_re` | `\bsave\s+(?:[\w-]+\s+){0,4}?(?:to\|into)\s+\S\|\bclone\s+(?:\S+\s+){0,3}?(?:int...` |  |  | Explicit write phrase regex that suppresses the row-6 Explore advisory even when read-only override words are present. |
+| `model_routing.write_re` | `\b(write\|edit\|modif\|commit\|push\|changelog\|create\s+(?:an?\s+\|the\s+\|new\s+)?f...` |  |  | Write/execute regex that suppresses the row-6 Explore advisory. |
+
 ### small_guards.toml / scan_throttle
 
 | Key | Default | Env override | Unit | What it is |
@@ -835,6 +953,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.msg_hook_died` | `the hook was killed by a signal or could not be waited for` |  |  | Event-log detail when a Node hook was killed by a signal or could not be waited for. |
 | `dispatch.msg_hook_spawn` | `the hook's command could not be started` |  |  | Event-log detail when a Node hook's command could not be started. |
 | `dispatch.msg_hook_timeout` | `the hook ran past its timeout and was killed; the host discards a timed-out hook` |  |  | Event-log detail when a Node hook was still running at its timeout and was killed with its group (the host discards such a hook, so the call goes on). |
+| `dispatch.msg_malformed_model_routing` | `model-routing could not parse the hook payload` |  |  | Reason in dispatch.msg_fail_closed when malformed JSON reaches a model-routing Agent/Task guard row. |
 | `dispatch.msg_no_fallback` | `entry {id} deferred with no runnable Node command` |  |  | Reason logged when a deferred hook entry has no runnable Node command. |
 | `dispatch.msg_panic` | `the dispatcher hit an internal error` |  |  | Reason given in dispatch.msg_fail_closed when the dispatcher panicked. |
 | `dispatch.msg_skipped_entry` | `entry {id} skipped: no runnable Node command` |  |  | Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}. |
@@ -1090,7 +1209,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `block` | A check or rule blocked a call. The reason is the check or rule id. |
 | `context` | A context-action rule matched and injected text for the agent. |
 | `fallback` | The engine could not or would not answer (a check deferred, or the request failed) and the client ran the Node hook instead. |
-| `route` | A model-routing decision at agent spawn (D77). The check is the routing check and the reason is what it did: down, up, allow or exempt. |
+| `route` | A model-routing decision at agent spawn (D78/D86). The check is the routing check and the reason is what it did: down, up, allow, exempt, advise, deny, or delegate; a forced-delegation deny records a deny route event plus a delegate event. |
 | `warning` | A warn-action rule matched and added a warning for the agent. |
 
 ## Error codes

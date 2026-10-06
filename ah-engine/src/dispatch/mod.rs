@@ -444,6 +444,9 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
             return Outcome { out: String::new(), code: 0, err: pre_err };
         }
     }
+    if parsed.is_none() && entries.iter().any(|e| e.check.as_deref() == Some("model-routing")) {
+        return closed(&args.event, None, defaults::text("dispatch.msg_malformed_model_routing"));
+    }
     // the Node hooks start first, so they run while the built-in checks are answered
     let mut started: Vec<(usize, node::Running)> =
         entries.iter().enumerate().filter(|(_, e)| e.check.is_none()).map(|(i, e)| (i, start_node(e, raw.as_bytes(), payload))).collect();
@@ -455,7 +458,8 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         env: crate::reqenv::RequestEnv::capture(),
     };
     let answers = match (&parsed, complete) {
-        // a payload serde_json cannot read (JS may): every check defers, Node decides
+        // A payload serde_json cannot read usually falls back to Node (JS may still parse/repair it). Model-routing is a
+        // D74 guardrail, handled above, so malformed Agent/Task spawns never fall through to Node.
         (_, false) | (None, _) => Vec::new(),
         (Some(_), _) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
@@ -464,7 +468,7 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
     let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_some()) {
         match answers.iter().find(|(id, _)| *id == e.id) {
-            Some((_, Answer::Decided(r))) => results[i] = Some(r.clone()),
+            Some((_, Answer::Decided(r, _))) => results[i] = Some(r.clone()),
             _ if !table::runnable(&e.command) => {
                 if guard {
                     // the hooks already started are finished first: one that ran and blocked still decides, as below

@@ -518,7 +518,7 @@ fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
                 .filter(|e| e.check.is_some())
                 .map(|e| {
                     let r = ah_engine::dispatch::combine::HookResult { id: e.id.clone(), code: Some(2), out: String::new(), err: "DAEMONBLOCK\n".into() };
-                    (e.id, Answer::Decided(r))
+                    (e.id, Answer::Decided(r, Vec::new()))
                 })
                 .collect();
             encode(&answers)

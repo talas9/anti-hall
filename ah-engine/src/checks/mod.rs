@@ -12,6 +12,7 @@ pub mod coordinator_work;
 pub mod git;
 pub mod guardkit;
 pub mod merge_side_pick;
+pub mod model_routing;
 pub mod scan_throttle;
 pub mod ship_it;
 
@@ -20,7 +21,7 @@ use crate::rules::Subject;
 use serde_json::Value;
 
 /// What a check decided about one payload.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Verdict {
     /// Nothing to say.
     Allow,
@@ -34,6 +35,8 @@ pub enum Verdict {
     /// The Node guard may decide differently (for example a Jev consult would run): the engine answers with a
     /// deferral and the client runs the Node hook, so a deferral is never a silent allow (D11).
     Defer,
+    /// A verdict plus rich telemetry events the daemon should record before handling the verdict.
+    Routed(Box<Verdict>, Vec<RouteMeta>),
 }
 
 /// The exact output of a Node guard: exit code, stdout and stderr, byte for byte.
@@ -45,6 +48,25 @@ pub struct Exact {
     pub out: String,
     /// What goes to stderr.
     pub err: String,
+}
+
+/// Rich route telemetry emitted by a routing check.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct RouteMeta {
+    /// The model named in the spawn, or the inherited marker for omitted models.
+    pub requested_model: String,
+    /// The selected or inherited model known to the guard.
+    pub parent_model: String,
+    /// The classified task class.
+    pub task_class: String,
+    /// Recommended model tier.
+    pub recommended_tier: String,
+    /// Route decision outcome (`allow`, `advise`, or `deny`).
+    pub outcome: String,
+    /// Opaque key for linking with spawn telemetry.
+    pub spawn_key: String,
+    /// Whether this deny forces delegation to another model.
+    pub delegate: bool,
 }
 
 impl Exact {
@@ -99,6 +121,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &coordinator_work::CoordinatorWorkGuard,
         &compact_decl::CompactDeclarationGuard,
         &command::CommandGuard,
+        &model_routing::ModelRouting,
     ];
     &ALL
 }
@@ -119,9 +142,27 @@ pub fn cli_main(name: &str) -> i32 {
     };
     let mut raw = String::new();
     let _ = std::io::stdin().read_to_string(&mut raw);
-    // A payload serde_json cannot read (e.g. a lone surrogate escape, which JS accepts) is answered by the daemon
-    // with ERR, so the client runs the Node hook; report that deferral here too.
+    // Most built-in parity checks mirror the daemon's decode-error deferral. Model-routing is a guardrail with a D74
+    // fail-closed requirement, so its standalone parity path blocks malformed stdin instead of silently allowing it.
     let Ok(p) = serde_json::from_str::<Value>(&raw) else {
+        if name == "model-routing" {
+            match model_routing::fail_closed() {
+                Verdict::Exact(x) => {
+                    let _ = std::io::stderr().write_all(x.err.as_bytes());
+                    let _ = std::io::stdout().write_all(x.out.as_bytes());
+                    return x.code;
+                }
+                Verdict::Routed(inner, _) => match *inner {
+                    Verdict::Exact(x) => {
+                        let _ = std::io::stderr().write_all(x.err.as_bytes());
+                        let _ = std::io::stdout().write_all(x.out.as_bytes());
+                        return x.code;
+                    }
+                    _ => return 2,
+                },
+                _ => return 2,
+            }
+        }
         let _ = writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK);
         return 0;
     };
@@ -152,6 +193,27 @@ pub fn cli_main(name: &str) -> i32 {
             let _ = writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK);
             0
         }
+        Some(Verdict::Routed(inner, _)) => match *inner {
+            Verdict::Allow => 0,
+            Verdict::Block(m) => {
+                let _ = writeln!(std::io::stderr(), "{m}");
+                2
+            }
+            Verdict::Advisory(j) => {
+                let _ = writeln!(std::io::stdout(), "{j}");
+                0
+            }
+            Verdict::Exact(x) => {
+                let _ = std::io::stderr().write_all(x.err.as_bytes());
+                let _ = std::io::stdout().write_all(x.out.as_bytes());
+                x.code
+            }
+            Verdict::Defer => {
+                let _ = writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK);
+                0
+            }
+            Verdict::Routed(_, _) => 0,
+        },
     }
 }
 

@@ -29,7 +29,7 @@ pub struct Meta {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     /// The check decided; this is what the Node hook would have produced.
-    Decided(HookResult),
+    Decided(HookResult, Vec<checks::RouteMeta>),
     /// The Node hook must decide (the check deferred, panicked, or does not apply).
     Defer,
 }
@@ -57,10 +57,14 @@ pub fn run_entry(entry: &Entry, meta: &Meta, p: &Value) -> Answer {
 /// The bytes the Node hook `id` would have produced for a check's verdict.
 fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
     match verdict {
-        Some(Verdict::Allow) => Answer::Decided(HookResult::quiet(id)),
-        Some(Verdict::Block(m)) => Answer::Decided(HookResult { id: id.into(), code: Some(2), out: String::new(), err: format!("{m}\n") }),
-        Some(Verdict::Advisory(j)) => Answer::Decided(HookResult { id: id.into(), code: Some(0), out: format!("{j}\n"), err: String::new() }),
-        Some(Verdict::Exact(x)) => Answer::Decided(HookResult { id: id.into(), code: Some(x.code), out: x.out, err: x.err }),
+        Some(Verdict::Routed(inner, routes)) => match answer_of(id, Some(*inner)) {
+            Answer::Decided(r, _) => Answer::Decided(r, routes),
+            Answer::Defer => Answer::Defer,
+        },
+        Some(Verdict::Allow) => Answer::Decided(HookResult::quiet(id), Vec::new()),
+        Some(Verdict::Block(m)) => Answer::Decided(HookResult { id: id.into(), code: Some(2), out: String::new(), err: format!("{m}\n") }, Vec::new()),
+        Some(Verdict::Advisory(j)) => Answer::Decided(HookResult { id: id.into(), code: Some(0), out: format!("{j}\n"), err: String::new() }, Vec::new()),
+        Some(Verdict::Exact(x)) => Answer::Decided(HookResult { id: id.into(), code: Some(x.code), out: x.out, err: x.err }, Vec::new()),
         Some(Verdict::Defer) | None => Answer::Defer,
     }
 }
@@ -85,7 +89,7 @@ pub fn encode(answers: &[(String, Answer)]) -> String {
         .iter()
         .map(|(id, a)| match a {
             Answer::Defer => json!([id, "defer"]),
-            Answer::Decided(r) => json!([id, r.code, r.out, r.err]),
+            Answer::Decided(r, _) => json!([id, r.code, r.out, r.err]),
         })
         .collect();
     Value::Array(rows).to_string()
@@ -102,7 +106,7 @@ pub fn decode(body: &str) -> Option<Vec<(String, Answer)>> {
             }
             let code = r.get(1)?.as_i64().map(|c| c as i32);
             let s = |i: usize| r.get(i).and_then(Value::as_str).map(str::to_string);
-            Some((id.clone(), Answer::Decided(HookResult { id, code, out: s(2)?, err: s(3)? })))
+            Some((id.clone(), Answer::Decided(HookResult { id, code, out: s(2)?, err: s(3)? }, Vec::new())))
         })
         .collect()
 }
@@ -128,7 +132,7 @@ mod tests {
         let (id, a) = got.iter().find(|(id, _)| id == "git-guard").unwrap();
         assert_eq!(id, "git-guard");
         match a {
-            Answer::Decided(r) => {
+            Answer::Decided(r, _) => {
                 assert_eq!(r.code, Some(2));
                 assert!(r.err.ends_with('\n') && r.out.is_empty());
             }
@@ -140,7 +144,7 @@ mod tests {
     fn an_exact_verdict_becomes_the_entrys_exact_bytes() {
         let x = crate::checks::Exact::json_block("stop");
         let a = answer_of("e", Some(Verdict::Exact(x.clone())));
-        assert_eq!(a, Answer::Decided(HookResult { id: "e".into(), code: Some(2), out: x.out.clone(), err: x.err.clone() }));
+        assert_eq!(a, Answer::Decided(HookResult { id: "e".into(), code: Some(2), out: x.out.clone(), err: x.err.clone() }, Vec::new()));
         assert_eq!(decode(&encode(&[("e".into(), a.clone())])), Some(vec![("e".to_string(), a)]));
         assert_eq!(x.out, "{\"decision\":\"block\",\"reason\":\"stop\"}\n");
     }
@@ -149,7 +153,7 @@ mod tests {
     fn the_reply_round_trips() {
         let a = vec![
             ("x".to_string(), Answer::Defer),
-            ("y".to_string(), Answer::Decided(HookResult { id: "y".into(), code: Some(2), out: "o".into(), err: "e\n".into() })),
+            ("y".to_string(), Answer::Decided(HookResult { id: "y".into(), code: Some(2), out: "o".into(), err: "e\n".into() }, Vec::new())),
         ];
         assert_eq!(decode(&encode(&a)), Some(a));
         assert_eq!(decode("not json"), None);

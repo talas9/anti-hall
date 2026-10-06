@@ -48,6 +48,17 @@ impl Env {
         p
     }
 
+    fn spawn_map(&self) -> PathBuf {
+        let m: serde_json::Map<String, serde_json::Value> =
+            ["compact-declaration-guard", "swarm-guard", "phase-tracker", "swarm-guard#2", "phase-tracker#2", "orch-on-spawn"]
+                .into_iter()
+                .map(|id| (id.to_string(), "true".into()))
+                .collect();
+        let p = self.dir.join("spawn-map.json");
+        std::fs::write(&p, serde_json::json!({ "PreToolUse": m }).to_string()).unwrap();
+        p
+    }
+
     fn run(&self, args: &[&str], in_process: bool, payload: &str, root: bool) -> (i32, String, String) {
         self.run_with(args, in_process, payload, root, &[])
     }
@@ -386,6 +397,18 @@ fn a_guard_node_module_resolution_exit_one_is_unrunnable_but_own_exit_one_is_not
     let (code, out, err) = e.run_with(&args, true, &bash("ls", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
     assert_eq!((code, out.as_str()), (1, ""), "{err}");
     assert_eq!(err, "OWN_REASON\n");
+}
+
+#[test]
+fn malformed_spawn_payload_for_model_routing_fails_closed_before_node_fallback() {
+    let e = Env::new("mr-malformed");
+    let map = e.spawn_map();
+    for tool in ["Agent", "Task"] {
+        let args = ["hook", "--event", "PreToolUse", "--tool", tool, "--fallback-map", map.to_str().unwrap()];
+        let (code, out, err) = e.run(&args, true, "{bad", true);
+        assert_eq!((code, out.as_str()), (2, ""), "{tool}: {out:?} {err:?}");
+        assert!(err.contains("model-routing") && err.contains("blocked rather than allowed unguarded"), "{tool}: {err}");
+    }
 }
 
 /// Any other event goes on with what it can run, and a usage error there stays the host's non-blocking 64.

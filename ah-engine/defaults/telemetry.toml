@@ -318,7 +318,7 @@ doc = "A context-action rule matched and injected text for the agent."
 value = { counted = "exact" }
 
 [impact.route]
-doc = "A model-routing decision at agent spawn (D77). The check is the routing check and the reason is what it did: down, up, allow or exempt."
+doc = "A model-routing decision at agent spawn (D78/D86). The check is the routing check and the reason is what it did: down, up, allow, exempt, advise, deny, or delegate; a forced-delegation deny records a deny route event plus a delegate event."
 value = { counted = "exact" }
 
 [impact.fallback]

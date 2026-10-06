@@ -390,6 +390,47 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
     fn rule(&self, rule_id: &str, action: crate::rules::Action) {
         self.t.observe_rule_in(self.event, rule_id, action, self.project);
     }
+
+    fn route(&self, check: &str, event: &str, route: &crate::checks::RouteMeta) {
+        use crate::telemetry::event::{Event, Extras, Kind, Outcome, Route, RouteOutcome, Token};
+        let outcome = if route.delegate { RouteOutcome::Deny } else { RouteOutcome::parse(&route.outcome).unwrap_or(RouteOutcome::Advise) };
+        let ev = Event {
+            ts_ms: crate::health::now_ms(),
+            kind: Kind::Route,
+            h: Token::sanitize(check),
+            e: Token::sanitize(event),
+            o: if route.delegate {
+                Outcome::Block
+            } else if outcome == RouteOutcome::Allow {
+                Outcome::Allow
+            } else {
+                Outcome::Advise
+            },
+            ms: 0,
+            ib: 0,
+            extras: Extras::Route(Route {
+                requested_model: Token::sanitize(&route.requested_model),
+                parent_model: Token::sanitize(&route.parent_model),
+                task_class: Token::sanitize(&route.task_class),
+                recommended_tier: Token::sanitize(&route.recommended_tier),
+                outcome,
+                spawn_key: Token::sanitize(&route.spawn_key),
+            }),
+        };
+        self.t.route(ev, self.project);
+        if route.delegate {
+            self.t.event(Event {
+                ts_ms: crate::health::now_ms(),
+                kind: Kind::Delegate,
+                h: Token::sanitize(check),
+                e: Token::sanitize(event),
+                o: Outcome::Block,
+                ms: 0,
+                ib: 0,
+                extras: Extras::None,
+            });
+        }
+    }
 }
 
 /// How a hook reply ended for telemetry (D78): its outcome and the bytes it injects into model context. A block injects
@@ -480,14 +521,20 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     let observe = |e: &crate::dispatch::table::Entry, a: &crate::dispatch::native::Answer, micros: u64| {
         use crate::checks::Verdict;
         use crate::dispatch::native::Answer;
+        let check = e.check.as_deref().unwrap_or("");
         let v = match a {
             Answer::Defer => Verdict::Defer,
-            Answer::Decided(r) if r.code == Some(2) => Verdict::Block(r.err.trim_end().to_string()),
-            Answer::Decided(r) if !r.out.is_empty() => Verdict::Advisory(r.out.trim_end().to_string()),
-            Answer::Decided(_) => Verdict::Allow,
+            Answer::Decided(r, routes) if r.code == Some(2) => Verdict::Routed(Box::new(Verdict::Block(r.err.trim_end().to_string())), routes.clone()),
+            Answer::Decided(r, routes) if !r.out.is_empty() => Verdict::Routed(Box::new(Verdict::Advisory(r.out.trim_end().to_string())), routes.clone()),
+            Answer::Decided(_, routes) => Verdict::Routed(Box::new(Verdict::Allow), routes.clone()),
         };
+        if let Verdict::Routed(_, routes) = &v {
+            let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event: &meta.event };
+            for r in routes {
+                crate::hookio::Observer::route(&obs, check, &meta.event, r);
+            }
+        }
         let answer = if v == Verdict::Defer { "defer" } else { "decided" };
-        let check = e.check.as_deref().unwrap_or("");
         sh.telemetry.with_metrics(|m| m.inc("dispatch_checks", &[("event", meta.event.as_str()), ("check", check), ("answer", answer)]));
         sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
     };

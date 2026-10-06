@@ -31,6 +31,8 @@ pub const FALLBACK: &str = "AHFALLBACK";
 pub trait Observer {
     /// A built-in check ran: its name, the id of the rule that named it, what it decided and how long it took.
     fn check(&self, check: &str, rule_id: &str, verdict: &Verdict, micros: u64);
+    /// Rich route telemetry emitted by a routing check.
+    fn route(&self, check: &str, event: &str, route: &checks::RouteMeta);
     /// A regex rule matched.
     fn rule(&self, rule_id: &str, action: Action);
 }
@@ -40,6 +42,7 @@ pub struct NoObserver;
 
 impl Observer for NoObserver {
     fn check(&self, _: &str, _: &str, _: &Verdict, _: u64) {}
+    fn route(&self, _: &str, _: &str, _: &checks::RouteMeta) {}
     fn rule(&self, _: &str, _: Action) {}
 }
 
@@ -91,14 +94,26 @@ fn respond_inner(p: &Value, rules: &RuleSet, over: &dyn Fn() -> bool, obs: &dyn 
         let started = std::time::Instant::now();
         if let Some(o) = builtin(rule, &subject, p, env) {
             obs.check(rule.check.as_deref().unwrap_or(""), &rule.id, &o, started.elapsed().as_micros() as u64);
-            match o {
+            let owned;
+            let effective = match &o {
+                Verdict::Routed(inner, routes) => {
+                    for rmeta in routes {
+                        obs.route(rule.check.as_deref().unwrap_or(""), event, rmeta);
+                    }
+                    owned = (**inner).clone();
+                    &owned
+                }
+                _ => &o,
+            };
+            match effective {
                 Verdict::Block(m) => return r(format!("{EXIT2}{m}\n")),
-                Verdict::Advisory(j) => advisory = Some(j),
+                Verdict::Advisory(j) => advisory = Some(j.clone()),
                 // an exit-0 answer that says nothing is an allow: the rules after it still apply
-                Verdict::Exact(x) if quiet_exact(&x) => {}
+                Verdict::Exact(x) if quiet_exact(x) => {}
                 Verdict::Exact(x) => return r(format!("{EXACT}{}", json!([x.code, x.out, x.err]))),
                 Verdict::Defer => return r(FALLBACK.to_string()),
                 Verdict::Allow => {}
+                Verdict::Routed(_, _) => {}
             }
         }
     }

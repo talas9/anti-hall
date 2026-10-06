@@ -9,14 +9,14 @@
 //! the settings re-check: at most one `stat` of each of the two settings files per `jev.settings_recheck_ms` (and none
 //! between), taken by whichever call finds the window elapsed; [`Jev::reload`] is the notification path that replaces it.
 //!
-//! Trust rules (D36). Jev may ADD a block or an advisory and never remove one:
+//! Trust rules (D36). Jev may ADD a block or advisory, and an explicitly enabled relax-block integration may remove a
+//! blocking baseline when Jev confidently says the block should not stand:
 //!
 //! * [`Trust::AddBlock`]: `final = baseline || (confident && jev == true)`.
 //! * [`Trust::Advisory`]: a baseline of `true` stays `true`; otherwise `final = jev` when confident, else the baseline
 //!   (a label-valued baseline or none is how a classification advisory is produced).
-//! * [`Trust::RelaxBlock`]: Node lets Jev turn a block into a non-block. The engine does not (D36), so a relax-block call
-//!   is consulted and logged exactly like a shadow call and never changes the outcome. This is the one deliberate
-//!   deviation from the Node rules; the log row then reads `mode: "shadow"` because that is how the call was treated.
+//! * [`Trust::RelaxBlock`]: a non-blocking baseline stays as-is and is not consulted; a blocking baseline becomes
+//!   non-blocking only when the integration is `on`, the answer is confident, and Jev's decision is `false`.
 //!
 //! Modes: `off` consults nothing, `shadow` consults and logs but never changes the outcome, `on` lets the trust rule
 //! apply. `changed` is `"added"`, `"changed"` or `null`; `wouldChange` reports what the rule would have done had the mode
@@ -45,7 +45,7 @@ pub enum Trust {
     AddBlock,
     /// Jev may only add an advisory or supply a label; a baseline of `true` stays.
     Advisory,
-    /// Node's relax-block: observe only in the engine (D36).
+    /// Jev may relax a blocking baseline when this integration is explicitly on.
     RelaxBlock,
 }
 
@@ -377,8 +377,11 @@ fn compute_final(trust: Trust, baseline: &Value, jev: &Value, confident: bool) -
             }
         }
         Trust::RelaxBlock => {
-            // What Node would do; the engine only reports it as a would-change (see the module docs).
-            if *baseline != t { baseline.clone() } else { Value::Bool(!(confident && *jev == Value::Bool(false))) }
+            if *baseline != t {
+                baseline.clone()
+            } else {
+                Value::Bool(!(confident && *jev == Value::Bool(false)))
+            }
         }
         Trust::Advisory => {
             if *baseline == t {
@@ -508,8 +511,6 @@ impl Jev {
             // The off path: no hashing, no cache, no network and, unless asked, no log row.
             return self.finish(&s, req, mode, None, false, defaults::num("jev.log_off_rows") == 1);
         }
-        // The engine never relaxes a block (D36), so a relax-block call is observed like a shadow call.
-        let mode = if req.trust == Trust::RelaxBlock && mode == Mode::On { Mode::Shadow } else { mode };
         if req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true) {
             return self.finish(&s, req, mode, None, false, true); // nothing to relax: not consulted
         }
@@ -870,16 +871,21 @@ mod tests {
     }
 
     #[test]
-    fn relax_block_is_observe_only_and_a_non_blocking_baseline_is_not_consulted() {
-        let (jev, f, log) = lane(&[("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")], vec![ok(200, &answer(0.0))]);
-        let mut r = req("claimLedger", Trust::RelaxBlock, json!(true));
+    fn relax_block_relaxes_when_on_and_a_non_blocking_baseline_is_not_consulted() {
+        let (jev, f, log) = lane(
+            &[("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk"), ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_MODEL_ROUTING", "on")],
+            vec![ok(200, &answer(0.0))],
+        );
+        let mut r = req("modelRouting", Trust::RelaxBlock, json!(true));
         let d = jev.ask(&r);
-        assert_eq!(d.outcome, json!(true), "the engine never relaxes a block (D36)");
+        assert_eq!((d.outcome, d.changed), (json!(false), true));
         r.baseline = json!(false);
         r.state = "x2".into();
         jev.ask(&r);
         assert_eq!(f.seen.lock().unwrap().len(), 1, "a non-blocking baseline asks nothing");
-        assert_eq!(field(&log.0.lock().unwrap()[0], "wouldChange"), json!("relaxed"));
+        let row = log.0.lock().unwrap()[0].clone();
+        assert_eq!((field(&row, "mode"), field(&row, "changed")), (json!("on"), json!("relaxed")));
+        assert!(row.0.iter().all(|(k, _)| *k != "wouldChange"), "an on row carries no wouldChange");
     }
 
     #[test]

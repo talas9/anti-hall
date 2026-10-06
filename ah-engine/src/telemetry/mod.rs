@@ -60,6 +60,7 @@ fn now_ms() -> u64 {
 /// The decision name of a verdict, as used in metric labels and impact reasons.
 pub fn decision_name(v: &Verdict) -> &'static str {
     match v {
+        Verdict::Routed(inner, _) => decision_name(inner),
         Verdict::Allow => "allow",
         Verdict::Block(_) => "block",
         Verdict::Advisory(_) => "advisory",
@@ -187,6 +188,14 @@ impl Telemetry {
     /// latency, bytes injected) and the impact of a block or advisory.
     pub fn observe_check_in(&self, event: &str, check: &str, rule_id: &str, verdict: &Verdict, micros: u64, project: &str) {
         let decision = decision_name(verdict);
+        let effective;
+        let verdict = match verdict {
+            Verdict::Routed(inner, _) => {
+                effective = &**inner;
+                effective
+            }
+            _ => verdict,
+        };
         let (outcome, injected) = match verdict {
             Verdict::Allow => (Outcome::Allow, 0),
             Verdict::Block(_) => (Outcome::Block, 0),
@@ -196,6 +205,7 @@ impl Telemetry {
             Verdict::Exact(x) if !x.out.is_empty() => (Outcome::Advise, x.out.len() as u64),
             Verdict::Exact(_) => (Outcome::Allow, 0),
             Verdict::Defer => (Outcome::Defer, 0),
+            Verdict::Routed(_, _) => (Outcome::Allow, 0),
         };
         self.rec.record(Kind::Check, check, event, outcome, micros, injected);
         {
@@ -209,7 +219,7 @@ impl Telemetry {
             Verdict::Advisory(_) => self.impact("advisory", check, rule_id, project),
             Verdict::Exact(_) if decision == "block" || decision == "advisory" => self.impact(decision, check, rule_id, project),
             Verdict::Defer => self.impact("fallback", check, "defer", project),
-            Verdict::Allow | Verdict::Exact(_) => {}
+            Verdict::Allow | Verdict::Exact(_) | Verdict::Routed(_, _) => {}
         }
     }
 

@@ -17,6 +17,7 @@ const CHECKS = [
   ['git-guard', 'git'],
   ['command-guard', 'command'],
   ['merge-side-pick', 'merge-side-pick'],
+  ['model-routing-guard', 'model-routing'],
   ['ship-it-guard', 'ship-it-guard'],
   ['scan-throttle', 'scan-throttle'],
   ['coordinator-work-guard', 'coordinator-work-guard'],

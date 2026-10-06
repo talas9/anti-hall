@@ -9,6 +9,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+unicode-normalization = "0.1.25"
 libc = "0.2.190"
 # Embedded storage (D19, D73): SQLite compiled in (`bundled`), so there is nothing for the user to install; `backup` is the
 # online backup API used by `ah-engine backup` (D27).

@@ -21,7 +21,8 @@
 //!
 //! The decision record's rules for this lane: static checks never route to Jev (D34); every Jev decision has a
 //! deterministic non-Jev path and the engine behaves as if Jev were absent when it is off, missing, over budget or
-//! failing (D35); Jev may add a block or advisory and never remove one, and is never the sole safety gate (D36);
+//! failing (D35); Jev may add a block or advisory, and an explicitly enabled relax-block integration may relax a
+//! blocking baseline when Jev confidently says it should not stand; Jev is never the sole safety gate (D36);
 //! the per-call budget, timeout, cache, warm connection and async queue live in [`assist::Jev`] (D36).
 pub mod assist;
 pub mod breaker;
