@@ -979,6 +979,58 @@ test_unmatched_tool_runs_nothing_but_unparseable_selects_all() {
   [ "$rc1" -eq 0 ] && [ ! -s "$tmp/um1.out" ] && [ "$rc2" -eq 2 ] && [ "$rc3" -eq 2 ]
 }
 
+test_killed_wrapper_orphans_are_reaped() {
+  parent=$tmp/orphanparent
+  mkdir "$parent"
+  started=$tmp/orphan.started
+  pidfile=$tmp/orphan.pid
+  rm -f "$started" "$pidfile"
+  : >"$tmp/orphan.list"
+  e=$(make_engine orphan-engine hang)
+  TMPDIR="$parent" AH_STARTED="$started" AH_PIDFILE="$pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/orphan.list" AH_HOOK_TIMEOUT_S=60 sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/orphan.out" 2>"$tmp/orphan.err" &
+  wrapper_pid=$!
+  wait_for_file "$started" "$poll_limit" && [ -s "$pidfile" ] || {
+    kill_test_tree "$wrapper_pid"
+    return 1
+  }
+  engine_pid=$(cat "$pidfile")
+  sleeper_pid=$(pgrep -P "$engine_pid" 2>/dev/null | head -n 1 || true)
+  kill -KILL "$wrapper_pid" 2>/dev/null || true
+  set +e
+  wait "$wrapper_pid" 2>/dev/null
+  set -e
+  # the watchdog notices the dead wrapper, kills the hook and its children, and removes the payload dir
+  if ! wait_for_pids_gone 6 "$engine_pid" ${sleeper_pid:+"$sleeper_pid"}; then
+    kill -KILL "$engine_pid" ${sleeper_pid:+"$sleeper_pid"} 2>/dev/null || true
+    return 1
+  fi
+  root=$parent/ah-hook-$(id -u)
+  i=0
+  while [ "$i" -lt 6 ]; do
+    set -- "$root"/ah-wrapper-run.*
+    [ "$1" = "$root/ah-wrapper-run.*" ] && return 0
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+test_sweep_removes_dead_owner_dirs_keeps_live_owner() {
+  parent=$tmp/ownersweep
+  mkdir "$parent"
+  root=$parent/ah-hook-$(id -u)
+  mkdir -m 700 "$root"
+  dead=99999
+  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
+  mkdir -m 700 "$root/ah-wrapper-run.$dead.AAAA" "$root/ah-wrapper-run.$$.BBBB"
+  printf x >"$root/ah-wrapper-run.$dead.AAAA/payload"
+  h=$(hook_script ownersweep 'printf sweep')
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/ownersweep.list"
+  e=$(make_engine ownersweep-engine seventyfive)
+  TMPDIR="$parent" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/ownersweep.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/ownersweep.out" 2>"$tmp/ownersweep.err"
+  [ ! -e "$root/ah-wrapper-run.$dead.AAAA" ] && [ -d "$root/ah-wrapper-run.$$.BBBB" ]
+}
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -1028,6 +1080,8 @@ check healthy_engine_returns_immediately_every_shell test_healthy_engine_returns
 check hanging_engine_is_cut_at_timeout_not_before test_hanging_engine_is_cut_at_timeout_not_before
 check block_stderr_is_exactly_the_hooks_text_every_shell test_block_stderr_is_exactly_the_hooks_text_every_shell
 check unmatched_tool_runs_nothing_but_unparseable_selects_all test_unmatched_tool_runs_nothing_but_unparseable_selects_all
+check killed_wrapper_orphans_are_reaped test_killed_wrapper_orphans_are_reaped
+check sweep_removes_dead_owner_dirs_keeps_live_owner test_sweep_removes_dead_owner_dirs_keeps_live_owner
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

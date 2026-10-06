@@ -43,6 +43,7 @@ dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 list=${AH_FALLBACK_LIST:-"$dir/ah-fallback.list"}
 fallback_map=${AH_FALLBACK_MAP:-"$dir/ah-fallback.map.json"}
 uid=$(id -u 2>/dev/null || printf '0')
+self_pid=$$
 tmp=
 payload=
 children=
@@ -186,14 +187,30 @@ private_tmp_base() {
   private_dir_in "$cand" "ah-hook-$uid"
 }
 
+# Remove stale run dirs: older than AH_HOOK_SWEEP_AGE_S, or (name carries the owner pid) whose owning
+# wrapper is gone, e.g. SIGKILLed before it could clean up. Bounded: at most 200 dirs are examined.
 sweep_old_runs() {
   base=$1
   now=$(date +%s)
+  seen_dirs=0
   for d in "$base"/ah-wrapper-run.*; do
     [ -d "$d" ] || continue
     [ ! -L "$d" ] || continue
+    seen_dirs=$((seen_dirs + 1))
+    [ "$seen_dirs" -le 200 ] || break
     set -- $(stat_pair "$d") || continue
     [ "${1:-}" = "$uid" ] || continue
+    owner=${d##*/ah-wrapper-run.}
+    owner=${owner%%.*}
+    case "$owner" in
+      ""|*[!0-9]*) ;;
+      *)
+        if [ "$owner" != "$self_pid" ] && ! kill -0 "$owner" 2>/dev/null; then
+          rm -rf "$d"
+          continue
+        fi
+        ;;
+    esac
     mt=$(stat_mtime "$d" 2>/dev/null || printf '')
     case "$mt" in ""|*[!0-9]*) continue ;; esac
     age=$((now - mt))
@@ -208,7 +225,7 @@ make_payload_file() {
   sweep_old_runs "$base"
   old_umask=$(umask)
   umask 077
-  tmp=$(mktemp -d "$base/ah-wrapper-run.XXXXXXXXXX" 2>/dev/null) || {
+  tmp=$(mktemp -d "$base/ah-wrapper-run.$self_pid.XXXXXXXXXX" 2>/dev/null) || {
     umask "$old_umask"
     return 1
   }
@@ -546,6 +563,12 @@ start_watchdog() {
     while [ "$n" -lt "$w_timeout" ]; do
       sleep 1
       kill -0 "$w_pid" 2>/dev/null || exit 0
+      if ! kill -0 "$self_pid" 2>/dev/null; then
+        # The wrapper itself is gone (SIGKILL): do not leave the hook running or its payload behind.
+        terminate_process_group "$w_pid" "$w_group"
+        [ -n "$tmp" ] && rm -rf "$tmp"
+        exit 0
+      fi
       n=$((n + 1))
     done
     : >"$w_timed"
