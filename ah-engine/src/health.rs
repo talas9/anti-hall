@@ -53,8 +53,11 @@ pub struct Event {
     pub detail: String,
 }
 
-/// Append `ts<TAB>kind<TAB>code<TAB>detail`. The log is trimmed to its last half when it passes 64 KiB.
-pub fn log_event(kind: &str, code: &str, detail: &str) {
+fn event_line(kind: &str, code: &str, detail: &str) -> String {
+    format!("{}\t{}\t{}\t{}\n", now_ms(), clean(kind), clean(code), clean(detail))
+}
+
+fn append_event_line(line: &str) -> bool {
     let p = file(log_name());
     if std::fs::metadata(&p).map(|m| m.len() > defaults::num("health.log_cap")).unwrap_or(false)
         && let Ok(t) = std::fs::read_to_string(&p)
@@ -63,7 +66,21 @@ pub fn log_event(kind: &str, code: &str, detail: &str) {
         let _ = std::fs::write(&p, keep.join("\n") + "\n");
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let _ = f.write_all(format!("{}\t{}\t{}\t{}\n", now_ms(), clean(kind), clean(code), clean(detail)).as_bytes());
+        return f.write_all(line.as_bytes()).is_ok();
+    }
+    false
+}
+
+/// Append `ts<TAB>kind<TAB>code<TAB>detail`. The log is trimmed to its last half when it passes 64 KiB.
+pub fn log_event(kind: &str, code: &str, detail: &str) {
+    let _ = append_event_line(&event_line(kind, code, detail));
+}
+
+/// Append an event, or write the exact sanitized event line to stderr when the state-dir log is unavailable.
+pub fn log_event_or_stderr(kind: &str, code: &str, detail: &str) {
+    let line = event_line(kind, code, detail);
+    if !append_event_line(&line) {
+        let _ = std::io::stderr().write_all(line.as_bytes());
     }
 }
 

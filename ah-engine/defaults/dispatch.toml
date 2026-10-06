@@ -143,6 +143,13 @@ max = 365
 doc = "Counter key for a Stop whose payload names no session (unreadable or cut off)."
 value = "unknown"
 
+[dispatch.spool_stale_s]
+doc = "Age at which a named raw-payload stdin spool file from an older build or unlink failure is considered stale and removed. Keep this larger than the longest hook timeout."
+value = 1800
+unit = "s"
+min = 1
+max = 86400
+
 [dispatch.msg_stop_active]
 doc = "Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the host says a Stop hook already blocked this turn (stop_hook_active). Placeholders: {event}, {why}."
 value = "anti-hall: the engine could not run the guards for {event} ({why}), and a Stop hook already held this turn, so the agent is let finish rather than looped. Repair the install (`doctor --repair`)."
@@ -229,13 +236,13 @@ value = "hook {id} was killed before it could answer"
 doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook finished but a process it left behind kept its output open, so the output is incomplete. Placeholder: {id}."
 value = "hook {id} finished with incomplete output"
 
-[dispatch.msg_stdin_truncated]
-doc = "Reason in dispatch.msg_fail_closed when the payload on stdin is longer than client.max_stdin, so the dispatcher can route or check only its capped prefix; Node hooks still receive every byte from the spooled stdin file. Placeholder: {max}."
-value = "the hook payload is larger than the {max} bytes the engine can route or check in-process"
+[dispatch.msg_stdin_over_cap]
+doc = "Event-log detail when the payload on stdin is longer than client.max_stdin and is sent to Node hooks through an anonymous open file. Placeholder: {max}."
+value = "the hook payload is larger than {max} bytes; built-in checks are skipped and Node hooks receive the full payload from an anonymous spool file"
 
-[dispatch.msg_stdin_read]
-doc = "Reason in dispatch.msg_fail_closed when reading the payload from stdin failed. Placeholder: {err}."
-value = "the hook payload could not be read: {err}"
+[dispatch.msg_spool_sweep]
+doc = "Event-log detail when stale named raw-payload spool files were removed. Placeholder: {n}."
+value = "removed {n} stale dispatch stdin spool file(s)"
 
 # ---- GENERATED TABLE BELOW (parity/gen-dispatch.js from the plugin's hooks.json files; do not edit by hand) ----
 # tests/dispatch_table.rs fails when hooks.json changes and this part does not: run node parity/gen-dispatch.js.

@@ -5,8 +5,11 @@
 mod common;
 
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 struct Env {
     dir: PathBuf,
@@ -73,6 +76,55 @@ impl Env {
         (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
     }
 
+    fn run_with_file_size_limit(
+        &self,
+        args: &[&str],
+        in_process: bool,
+        payload: &str,
+        root: bool,
+        extra: &[(&str, &str)],
+        file_size: libc::rlim_t,
+    ) -> (i32, String, String) {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        c.args(args)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", self.dir.join("home"))
+            .env("AH_ENGINE_DIR", self.state())
+            .env("AH_ENGINE_VERSION", "dispatch-e2e")
+            .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
+            .current_dir(&self.dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if root {
+            c.env("CLAUDE_PLUGIN_ROOT", &self.dir);
+        }
+        c.envs(extra.iter().copied());
+        unsafe {
+            c.pre_exec(move || {
+                if libc::signal(libc::SIGXFSZ, libc::SIG_IGN) == libc::SIG_ERR {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let limit = libc::rlimit { rlim_cur: file_size, rlim_max: file_size };
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut ch = c.spawn().unwrap();
+        if let Some(mut stdin) = ch.stdin.take() {
+            match stdin.write_all(payload.as_bytes()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(e) => panic!("failed to write hook payload to stdin: {e}"),
+            }
+        }
+        let o = ch.wait_with_output().unwrap();
+        (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+    }
+
     fn dispatch_temp_files(&self) -> Vec<PathBuf> {
         std::fs::read_dir(self.state())
             .into_iter()
@@ -81,6 +133,12 @@ impl Env {
             .map(|e| e.path())
             .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("dispatch-stdin-")))
             .collect()
+    }
+
+    fn dispatch_temp_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.dispatch_temp_files().into_iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).collect();
+        names.sort();
+        names
     }
 
     fn stop(&self) {
@@ -123,11 +181,32 @@ fn pretool_payload_len(len: usize) -> String {
     p
 }
 
+fn stop_payload_len(len: usize) -> String {
+    let prefix = r#"{"session_id":"e2e","cwd":".","hook_event_name":"Stop","stop_hook_active":true,"transcript_path":""#;
+    let suffix = r#""}"#;
+    assert!(len >= prefix.len() + suffix.len());
+    let mut p = String::with_capacity(len);
+    p.push_str(prefix);
+    p.extend(std::iter::repeat_n('x', len - prefix.len() - suffix.len()));
+    p.push_str(suffix);
+    p
+}
+
 fn session_map(e: &Env, first: &str, rest: &str) -> PathBuf {
     let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "SessionStart").into_iter().map(|x| x.id).collect();
     let m: serde_json::Map<String, serde_json::Value> = ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == 0 { first } else { rest }.into())).collect();
     let map = e.dir.join("session-map.json");
     std::fs::write(&map, serde_json::json!({ "SessionStart": m }).to_string()).unwrap();
+    map
+}
+
+fn event_map(e: &Env, event: &str, first: &str, rest: &str) -> PathBuf {
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", event).into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> = ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == 0 { first } else { rest }.into())).collect();
+    let map = e.dir.join(format!("{event}-map.json"));
+    let mut events = serde_json::Map::new();
+    events.insert(event.to_string(), serde_json::Value::Object(m));
+    std::fs::write(&map, serde_json::Value::Object(events).to_string()).unwrap();
     map
 }
 
@@ -300,6 +379,264 @@ fn dispatcher_stdin_temp_file_is_removed_after_hook_timeout() {
 }
 
 #[test]
+fn over_cap_pretooluse_exit0_runs_node_with_the_full_stdin() {
+    let e = Env::new("stdin-pretool-allow");
+    let mark = e.dir.join("bytes");
+    let map = event_map(&e, "PreToolUse", r#"wc -c > "$AH_TEST_MARK""#, "true");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
+fn over_cap_pretooluse_exit2_preserves_node_output() {
+    let e = Env::new("stdin-pretool-block");
+    let mark = e.dir.join("ran");
+    let map = event_map(&e, "PreToolUse", r#"touch "$AH_TEST_MARK"; echo NODEBLOCK >&2; exit 2"#, "true");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())]);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.contains("NODEBLOCK"), "{err:?}");
+    assert!(mark.exists(), "the Node hook did not run");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
+fn over_cap_guard_with_unrunnable_node_hooks_fails_closed() {
+    let e = Env::new("stdin-pretool-unrunnable");
+    let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run(&["hook", "--event", "PreToolUse"], true, &payload, false);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.contains("could not run the guards") && err.contains("no runnable Node command"), "{err:?}");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
+fn over_cap_stop_active_runs_node_and_unrunnable_failures_are_capped() {
+    let e = Env::new("stdin-stop-active");
+    let mark = e.dir.join("bytes");
+    let map = event_map(&e, "Stop", r#"wc -c > "$AH_TEST_MARK""#, "true");
+    let args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let payload = stop_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
+
+    let broken = event_map(&e, "Stop", "a\0b", "true");
+    let args = ["hook", "--event", "Stop", "--fallback-map", broken.to_str().unwrap()];
+    let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
+    let codes: Vec<i32> = (0..cap + 2).map(|_| e.run(&args, true, &payload, true).0).collect();
+    let expect: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
+    assert_eq!(codes, expect, "a Stop whose Node hooks cannot run must fail open only after the cap");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
+fn small_payloads_do_not_need_a_usable_spool_dir() {
+    let e = Env::new("stdin-small-state-file");
+    let state_file = e.dir.join("not-a-state-dir");
+    std::fs::write(&state_file, "not a dir").unwrap();
+
+    let mark = e.dir.join("pretool-ran");
+    let map = e.map(&[("command-guard", r#"wc -c > "$AH_TEST_MARK""#)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let payload = bash("ls", &e.dir);
+    let (code, out, err) =
+        e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
+
+    let mark = e.dir.join("session-ran");
+    let map = session_map(&e, r#"wc -c > "$AH_TEST_MARK""#, "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let payload = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
+    let (code, out, err) =
+        e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
+}
+
+#[test]
+fn over_cap_payload_with_regular_file_spool_dir_follows_event_fail_mode() {
+    let e = Env::new("stdin-overcap-state-file");
+    let state = e.dir.join("not-a-state-dir");
+    std::fs::write(&state, "not a dir").unwrap();
+    assert_over_cap_spool_failure_modes(&e, &state, "regular file");
+}
+
+#[test]
+fn over_cap_payload_with_uncreatable_spool_dir_follows_event_fail_mode() {
+    let e = Env::new("stdin-overcap-uncreatable-state");
+    let parent = e.dir.join("no-write-parent");
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let state = parent.join("state");
+    assert_over_cap_spool_failure_modes(&e, &state, "uncreatable dir");
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+fn assert_over_cap_spool_failure_modes(e: &Env, state: &Path, ctx: &str) {
+    let mark = e.dir.join("pretool-ran");
+    let map = e.map(&[("command-guard", r#"touch "$AH_TEST_MARK""#)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
+    assert_eq!((code, out.as_str()), (2, ""), "{ctx}: {err:?}");
+    assert!(err.contains("could not run the guards") && err.contains("payload"), "{ctx}: {err:?}");
+    assert!(!mark.exists(), "{ctx}: Node must not run without the full payload");
+
+    let mark = e.dir.join("session-ran");
+    let map = session_map(e, r#"touch "$AH_TEST_MARK""#, "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
+    assert_eq!((code, out.as_str()), (0, ""), "{ctx}: {err:?}");
+    assert!(err.contains("skipped SessionStart Node hooks") && err.contains("dispatch_spool_unavailable"), "{ctx}: {err:?}");
+    assert!(!mark.exists(), "{ctx}: Node must not run without the full payload");
+}
+
+#[test]
+fn over_cap_guard_payload_fails_closed_when_anonymous_spool_write_fails() {
+    let e = Env::new("stdin-spool-write-guard");
+    let mark = e.dir.join("pretool-ran");
+    let map = e.map(&[("command-guard", r#"touch "$AH_TEST_MARK""#)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run_with_file_size_limit(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())], 1024 * 1024);
+
+    assert_eq!((code, out.as_str()), (2, ""), "{err:?}");
+    assert!(err.contains("could not run the guards") && err.contains("could not be spooled"), "{err:?}");
+    assert!(!mark.exists(), "Node must not run after the anonymous payload spool write fails");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
+fn over_cap_non_guard_payload_reports_when_anonymous_spool_write_fails() {
+    let e = Env::new("stdin-spool-write-session");
+    let mark = e.dir.join("session-ran");
+    let map = session_map(&e, r#"touch "$AH_TEST_MARK""#, "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run_with_file_size_limit(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())], 1024 * 1024);
+
+    assert_eq!((code, out.as_str()), (0, ""), "{err:?}");
+    assert!(err.contains("skipped SessionStart Node hooks") && err.contains("could not be spooled"), "{err:?}");
+    let log = std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).unwrap();
+    assert!(log.contains("dispatch_spool_unavailable"), "{log}");
+    assert!(!mark.exists(), "Node must not run after the anonymous payload spool write fails");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+fn wait_for(path: &Path, within: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < within {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
+fn kill_hook_group(pid_file: &Path) {
+    if let Ok(pid) = std::fs::read_to_string(pid_file).map(|s| s.trim().parse::<i32>().unwrap()) {
+        unsafe {
+            libc::killpg(pid, libc::SIGKILL);
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+}
+
+fn killed_dispatcher_leaves_no_spool_file(signal: i32, tag: &str) {
+    let e = Env::new(tag);
+    let hook_pid = e.dir.join("hook.pid");
+    let cmd = format!(r#"echo $$ > {}; exec sleep 30"#, hook_pid.display());
+    let map = session_map(&e, &cmd, "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(args)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", e.dir.join("home"))
+        .env("AH_ENGINE_DIR", e.state())
+        .env("AH_ENGINE_VERSION", "dispatch-e2e")
+        .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+        .env("CLAUDE_PLUGIN_ROOT", &e.dir)
+        .current_dir(&e.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || stdin.write_all(payload.as_bytes()));
+    wait_for(&hook_pid, Duration::from_secs(10));
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, signal);
+    }
+    let _ = child.wait();
+    let _ = writer.join();
+    kill_hook_group(&hook_pid);
+    assert!(e.dispatch_temp_files().is_empty(), "{tag}: temp payload files left behind: {:?}", e.dispatch_temp_names());
+}
+
+#[test]
+fn anonymous_stdin_spool_disappears_after_sigterm() {
+    killed_dispatcher_leaves_no_spool_file(libc::SIGTERM, "stdin-sigterm");
+}
+
+#[test]
+fn anonymous_stdin_spool_disappears_after_sigkill() {
+    killed_dispatcher_leaves_no_spool_file(libc::SIGKILL, "stdin-sigkill");
+}
+
+#[test]
+fn startup_sweep_removes_only_stale_dispatch_stdin_files() {
+    let e = Env::new("stdin-sweep");
+    std::fs::create_dir_all(e.state()).unwrap();
+    let stale = e.state().join("dispatch-stdin-1000-2000-0.tmp");
+    let fresh = e.state().join("dispatch-stdin-1000-2000-1.tmp");
+    let other = e.state().join("other.tmp");
+    std::fs::write(&stale, "old").unwrap();
+    std::fs::write(&fresh, "new").unwrap();
+    std::fs::write(&other, "other").unwrap();
+    let stale_age = Duration::from_secs(ah_engine::defaults::num("dispatch.spool_stale_s") + 1);
+    std::fs::File::options().write(true).open(&stale).unwrap().set_modified(std::time::SystemTime::now() - stale_age).unwrap();
+    #[cfg(unix)]
+    {
+        let link = e.state().join("dispatch-stdin-1000-2000-2.tmp");
+        std::os::unix::fs::symlink(&stale, &link).unwrap();
+    }
+
+    let map = session_map(&e, "true", "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let payload = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
+    assert_eq!(e.run(&args, true, &payload, true).0, 0);
+    assert!(!stale.exists(), "stale dispatch stdin file was not swept");
+    assert!(fresh.exists(), "fresh dispatch stdin file should be kept");
+    assert!(other.exists(), "non-matching file should be kept");
+    #[cfg(unix)]
+    assert!(std::fs::symlink_metadata(e.state().join("dispatch-stdin-1000-2000-2.tmp")).is_ok(), "symlink should be kept");
+}
+
+#[test]
+fn over_cap_payload_feeder_handles_slow_reader() {
+    let e = Env::new("stdin-slow-reader");
+    let mark = e.dir.join("ran");
+    let map = session_map(&e, r#"(dd bs=65536 count=1 2>/dev/null; sleep 1; cat) | wc -c > "$AH_TEST_MARK""#, "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
 fn dispatcher_stdin_cap_boundaries_are_exact() {
     let e = Env::new("stdin-boundaries");
     let map = session_map(&e, "wc -c", "true");
@@ -315,9 +652,10 @@ fn dispatcher_stdin_cap_boundaries_are_exact() {
     let map = e.map(&[]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     assert_eq!(e.run(&args, true, &pretool_payload_len(max), true).0, 0);
+    let map = event_map(&e, "PreToolUse", "true", "true");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run(&args, true, &pretool_payload_len(max + 1), true);
-    assert_eq!((code, out.as_str()), (2, ""));
-    assert!(err.contains("larger than"), "{err}");
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
 }
 
 #[test]

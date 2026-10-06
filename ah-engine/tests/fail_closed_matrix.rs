@@ -613,8 +613,10 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
                     (label("allowing hook"), run(case, &row, MARK, MARK2), Want::Closed),
                     (label("blocking hook"), run(case, &row, BLOCK, MARK2), Want::Closed),
                 ],
-                // a valid payload: every hook runs, so the outcome is exact (the hook's own allow or block, never the engine's)
-                Hook::Crossed if matches!(row.stdin, Stdin::Valid) => vec![
+                // A complete in-cap payload, and an over-cap UTF-8 payload whose full bytes are available to Node,
+                // run every hook. The outcome is exact: the hook's own allow or block, never the engine's prefix-based
+                // fail-closed answer.
+                Hook::Crossed if matches!(row.stdin, Stdin::Valid | Stdin::OverCapUtf8) => vec![
                     (label("allowing hook"), run(case, &row, MARK, MARK2), Want::Allow),
                     (label("blocking hook"), run(case, &row, BLOCK, MARK2), Want::Blocks("BLOCKME")),
                 ],

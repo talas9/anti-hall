@@ -9,8 +9,8 @@ use super::table::Entry;
 use crate::defaults;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::os::unix::fs::FileExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -110,10 +110,10 @@ pub fn start(entry: &Entry, payload: &[u8]) -> Running {
     start_with_input(entry, Some(Input::Bytes(payload.to_vec())))
 }
 
-/// Start `entry`'s command with stdin copied from `payload`. The file is opened before spawning so an unreadable payload is
-/// treated like a hook that could not start, not like an empty input.
-pub fn start_file(entry: &Entry, payload: &Path) -> Running {
-    start_with_input(entry, File::open(payload).ok().map(Input::File))
+/// Start `entry`'s command with stdin copied from `payload`. Each child gets an independent descriptor and the feeder
+/// uses positional reads, so concurrent hooks never share or race a file offset.
+pub fn start_file(entry: &Entry, payload: &File) -> Running {
+    start_with_input(entry, payload.try_clone().ok().map(Input::File))
 }
 
 fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
@@ -131,14 +131,14 @@ fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
             .map(|child| (child, input))
     });
     let (mut child, mut out, mut err) = (None, None, None);
-    if let Some((mut c, mut input)) = spawned {
+    if let Some((mut c, input)) = spawned {
         if let Some(mut stdin) = c.stdin.take() {
             std::thread::spawn(move || match input {
                 Input::Bytes(ref data) => {
-                    let _ = stdin.write_all(data);
+                    let _ = write_stdin(&mut stdin, data);
                 }
-                Input::File(ref mut file) => {
-                    let _ = std::io::copy(file, &mut stdin);
+                Input::File(ref file) => {
+                    let _ = feed_file(file, &mut stdin);
                 }
             });
         }
@@ -156,6 +156,35 @@ fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
         ),
         started: Instant::now(),
     }
+}
+
+fn write_stdin(stdin: &mut impl Write, data: &[u8]) -> std::io::Result<()> {
+    match stdin.write_all(data) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn feed_file(file: &File, stdin: &mut impl Write) -> std::io::Result<()> {
+    let len = file.metadata()?.len();
+    let mut off = 0;
+    let mut buf = [0u8; 64 * 1024];
+    while off < len {
+        let want = ((len - off) as usize).min(buf.len());
+        let n = match file.read_at(&mut buf[..want], off) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        match stdin.write_all(&buf[..n]) {
+            Ok(()) => off += n as u64,
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// How the wait for one hook ended.
@@ -327,5 +356,28 @@ mod tests {
         assert_eq!(f.fate, Fate::Incomplete);
         assert_eq!(f.result.code, Some(1));
         assert!(f.result.out.is_empty(), "{f:?}");
+    }
+
+    struct BrokenPipeWriter;
+
+    impl Write for BrokenPipeWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "reader closed"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn file_feeder_treats_a_closed_child_stdin_as_success() {
+        let path = std::env::temp_dir().join(format!("ah-engine-feed-{}-{}.tmp", std::process::id(), crate::health::now_ms()));
+        std::fs::write(&path, b"payload").unwrap();
+        let file = File::open(&path).unwrap();
+        let mut writer = BrokenPipeWriter;
+        let result = feed_file(&file, &mut writer);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok(), "{result:?}");
     }
 }

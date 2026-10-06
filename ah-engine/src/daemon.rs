@@ -786,6 +786,7 @@ pub fn serve() {
     health::clear_env_failure();
     let starts = next_start_count();
     health::log_event("start", "-", &defaults::render("msg.log_start", &[("version", &crate::version()), ("pid", &std::process::id()), ("rlimit", &rlimit)]));
+    crate::dispatch::sweep_stale_spool();
 
     let rules_path = paths::rules_file();
     let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);

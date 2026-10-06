@@ -28,8 +28,8 @@ use native::{Answer, Meta};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The dispatcher's arguments.
@@ -79,67 +79,105 @@ fn guarded(event: &str) -> bool {
     defaults::list("dispatch.guard_events").contains(&event)
 }
 
-struct PayloadFile {
-    path: PathBuf,
-    prefix: Vec<u8>,
-    read: std::io::Result<()>,
+struct PayloadInput {
+    raw: Vec<u8>,
+    file: Option<File>,
 }
 
-impl PayloadFile {
-    fn create() -> std::io::Result<(PayloadFile, File)> {
-        crate::limits::ensure_private_dir(&crate::paths::dir()).map_err(|e| std::io::Error::other(e.to_string()))?;
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        for _ in 0..100 {
-            let name = format!("dispatch-stdin-{}-{}-{}.tmp", crate::health::now_ms(), std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst));
-            let path = crate::paths::dir().join(name);
-            match OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path) {
-                Ok(file) => return Ok((PayloadFile { path, prefix: Vec::new(), read: Ok(()) }, file)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "could not create unique dispatch stdin file"))
-    }
-
-    fn read_stdin(max: u64) -> std::io::Result<PayloadFile> {
-        let (mut payload, mut file) = PayloadFile::create()?;
-        let keep = max.saturating_add(1) as usize;
+impl PayloadInput {
+    fn read_stdin(max: u64) -> std::io::Result<PayloadInput> {
+        let keep = max as usize;
+        let mut raw = Vec::with_capacity(keep.min(64 * 1024));
+        let mut file: Option<File> = None;
         let mut stdin = std::io::stdin().lock();
         let mut chunk = [0u8; 64 * 1024];
         loop {
             match stdin.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
-                    file.write_all(&chunk[..n])?;
-                    if payload.prefix.len() < keep {
-                        let take = n.min(keep - payload.prefix.len());
-                        payload.prefix.extend_from_slice(&chunk[..take]);
+                    if let Some(f) = file.as_mut() {
+                        f.write_all(&chunk[..n])?;
+                    } else if raw.len() + n <= keep {
+                        raw.extend_from_slice(&chunk[..n]);
+                    } else {
+                        let take = keep - raw.len();
+                        raw.extend_from_slice(&chunk[..take]);
+                        let mut f = create_anonymous_payload()?;
+                        f.write_all(&raw)?;
+                        f.write_all(&chunk[take..n])?;
+                        file = Some(f);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => {
-                    payload.read = Err(e);
-                    break;
-                }
+                Err(e) => return Err(e),
             }
         }
-        let _ = file.sync_all();
-        Ok(payload)
+        if let Some(f) = file.as_mut() {
+            let _ = f.sync_all();
+        }
+        Ok(PayloadInput { raw, file })
     }
 
-    fn path(&self) -> &Path {
-        &self.path
+    fn over_cap(&self) -> bool {
+        self.file.is_some()
     }
 
-    fn prefix_at_cap(&self, max: u64) -> &[u8] {
-        let end = self.prefix.len().min(max as usize);
-        &self.prefix[..end]
+    fn bytes_for_engine(&self, max: u64) -> &[u8] {
+        let end = self.raw.len().min(max as usize);
+        &self.raw[..end]
     }
 }
 
-impl Drop for PayloadFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+fn create_anonymous_payload() -> std::io::Result<File> {
+    let dir = crate::paths::dir();
+    crate::limits::ensure_private_dir(&dir).map_err(|e| std::io::Error::other(e.to_string()))?;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..100 {
+        let name = format!("dispatch-stdin-{}-{}-{}.tmp", crate::health::now_ms(), std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst));
+        let path = dir.join(name);
+        let mut opts = OpenOptions::new();
+        opts.read(true).write(true).create_new(true).mode(0o600);
+        opts.custom_flags(libc::O_NOFOLLOW);
+        match opts.open(&path) {
+            Ok(file) => {
+                std::fs::remove_file(&path)?;
+                return Ok(file);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "could not create unique dispatch stdin file"))
+}
+
+fn is_dispatch_spool_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("dispatch-stdin-") else { return false };
+    let Some(mid) = rest.strip_suffix(".tmp") else { return false };
+    !mid.is_empty() && mid.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+}
+
+/// Remove named raw-payload spool files left by older builds or by an unlink failure. Anonymous in-flight payloads never
+/// appear in the directory.
+pub fn sweep_stale_spool() {
+    let dir = crate::paths::dir();
+    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    let stale = std::time::Duration::from_secs(defaults::num("dispatch.spool_stale_s"));
+    let uid = crate::paths::uid();
+    let mut removed = 0u64;
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(_) = name.to_str().filter(|n| is_dispatch_spool_name(n)) else { continue };
+        let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
+        if !m.file_type().is_file() || m.uid() != uid {
+            continue;
+        }
+        let old = m.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > stale);
+        if old && std::fs::remove_file(e.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        health::log_event("dispatch_spool_sweep", "-", &defaults::render("dispatch.msg_spool_sweep", &[("n", &removed)]));
     }
 }
 
@@ -197,13 +235,13 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
     run_inner(raw, args, None, true)
 }
 
-fn start_node(e: &table::Entry, raw: &[u8], payload: Option<&Path>) -> node::Running {
+fn start_node(e: &table::Entry, raw: &[u8], payload: Option<&File>) -> node::Running {
     payload.map_or_else(|| node::start(e, raw), |p| node::start_file(e, p))
 }
 
-fn run_inner(raw: &str, args: &Args, payload: Option<&Path>, complete: bool) -> Outcome {
+fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> Outcome {
     let guard = guarded(&args.event);
-    let parsed = serde_json::from_str::<Value>(raw).ok();
+    let parsed = complete.then(|| serde_json::from_str::<Value>(raw).ok()).flatten();
     let p = parsed.clone().unwrap_or(Value::Null);
     let mut entries = if guard {
         table::select_guarded(&args.host, &args.event, &p, args.tool.as_deref())
@@ -336,6 +374,7 @@ pub fn hook_main(args: &[String]) -> i32 {
     let event = flag(args, "--event").unwrap_or_default();
     let guard = guarded(&event);
     let res = std::panic::catch_unwind(|| {
+        sweep_stale_spool();
         let a = match parse_args(args) {
             Ok(a) => a,
             Err(e) if guard => {
@@ -349,41 +388,36 @@ pub fn hook_main(args: &[String]) -> i32 {
             }
         };
         let max = defaults::num("client.max_stdin");
-        let payload = match PayloadFile::read_stdin(max) {
+        let payload = match PayloadInput::read_stdin(max) {
             Ok(p) => p,
             Err(e) if guard => {
-                let why = defaults::render("dispatch.msg_stdin_read", &[("err", &e)]);
+                let why = defaults::render("msg.dispatch_stdin_spool", &[("err", &e)]);
                 let o = fail_closed(&event, &why);
                 let _ = std::io::stderr().write_all(o.err.as_bytes());
                 return o.code;
             }
             Err(e) => {
-                let _ = writeln!(std::io::stderr(), "{}", defaults::render("dispatch.msg_stdin_read", &[("err", &e)]));
+                let note = defaults::render("msg.dispatch_stdin_spool_note", &[("event", &event), ("err", &e)]);
+                health::log_event_or_stderr("dispatch_spool_unavailable", &event, &note);
+                let _ = writeln!(std::io::stderr(), "{note}");
                 return 0;
             }
         };
-        let cut = payload.prefix.len() as u64 > max;
-        let raw_bytes = payload.prefix_at_cap(max);
+        let over_cap = payload.over_cap();
+        let raw_bytes = payload.bytes_for_engine(max);
         let utf8 = std::str::from_utf8(raw_bytes);
-        let lossy_payload =
-            (guard && stoploop::is_stop_event(&a.event)).then(|| serde_json::from_str::<Value>(&String::from_utf8_lossy(raw_bytes)).ok()).flatten();
-        if guard {
-            // The full stdin is spooled for Node hooks, but the in-process routing/check path only has a capped prefix.
-            let failure = match &payload.read {
-                Err(e) => Some(defaults::render("dispatch.msg_stdin_read", &[("err", &e)])),
-                Ok(_) if cut => Some(defaults::render("dispatch.msg_stdin_truncated", &[("max", &max)])),
-                Ok(_) if utf8.is_err() => Some(defaults::text("msg.dispatch_stdin_utf8").to_string()),
-                Ok(_) => None,
-            };
-            if let Some(why) = failure {
-                let o = closed(&a.event, lossy_payload.as_ref(), &why);
-                let _ = std::io::stderr().write_all(o.err.as_bytes());
-                return o.code;
-            }
+        if guard && !over_cap && utf8.is_err() {
+            let lossy_stop = stoploop::is_stop_event(&a.event).then(|| serde_json::from_str::<Value>(&String::from_utf8_lossy(raw_bytes)).ok()).flatten();
+            let o = closed(&a.event, lossy_stop.as_ref(), defaults::text("msg.dispatch_stdin_utf8"));
+            let _ = std::io::stderr().write_all(o.err.as_bytes());
+            return o.code;
+        }
+        if over_cap {
+            health::log_event("dispatch_stdin_spooled", &a.event, &defaults::render("dispatch.msg_stdin_over_cap", &[("max", &max)]));
         }
         // Non-guard events cannot block; keep matching Node's replacement-character decode there.
         let raw = String::from_utf8_lossy(raw_bytes).to_string();
-        let o = run_inner(&raw, &a, Some(payload.path()), payload.read.is_ok() && !cut && utf8.is_ok());
+        let o = run_inner(&raw, &a, payload.file.as_ref(), !over_cap && utf8.is_ok());
         let _ = std::io::stderr().write_all(o.err.as_bytes());
         let mut so = std::io::stdout();
         let _ = so.write_all(o.out.as_bytes());
