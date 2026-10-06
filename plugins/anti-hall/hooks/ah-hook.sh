@@ -629,7 +629,7 @@ run_fallback() {
     fallback_note "$reason"
     exit 0
   fi
-  selected=0; ran=0; noted=0; first_block_err=; hard_failure=0; code=0; in_event=0
+  selected=0; ran=0; first_block_err=; hard_failure=0; code=0; in_event=0
   timeout_default=$(event_timeout)
   [ -n "$timeout_default" ] || timeout_default=$timeout_env
   validate_positive_int "$timeout_default" event_timeout
@@ -657,7 +657,6 @@ run_fallback() {
       124) continue ;;
       125|12[9-9]|13[0-9]|14[0-9]|15[0-9]|16[0-9]|17[0-9]|18[0-9]|19[0-9]|20[0-9]|21[0-9]|22[0-9]|23[0-9]|24[0-9]|25[0-5]) hard_failure=1; continue ;;
     esac
-    if [ "$noted" -eq 0 ]; then fallback_note "$reason"; noted=1; fi
     ran=1
     if [ "$rc" -eq 2 ]; then
       cat "$out"
@@ -676,13 +675,14 @@ run_fallback() {
     exit 2
   fi
   if [ "$hard_failure" -eq 1 ] && [ "$guard_event" -eq 1 ]; then
+    fallback_note "$reason"
     fail_closed "fallback hook failed before producing a complete answer"
   fi
   if [ "$ran" -eq 0 ] && [ "$guard_event" -eq 1 ]; then
     [ "$selected" -eq 0 ] && fail_closed "no matching fallback hooks"
     fail_closed "fallback hooks did not run"
   fi
-  [ "$noted" -eq 0 ] && fallback_note "$reason"
+  fallback_note "$reason"
   exit 0
 }
 

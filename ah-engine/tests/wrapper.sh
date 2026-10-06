@@ -943,6 +943,26 @@ test_hanging_engine_is_cut_at_timeout_not_before() {
   return 0
 }
 
+test_block_stderr_is_exactly_the_hooks_text_every_shell() {
+  slow=$(hook_script blockslow 'sleep 30')
+  blocker=$(hook_script blocker 'printf "BLOCK-MSG: no\n" >&2; printf "{\"x\":1}"; exit 2')
+  printf '@PreToolUse\t%s\nBash\t1\t%s\nBash\t%s\t%s\n' "$large_timeout" "$slow" "$large_timeout" "$blocker" >"$tmp/blockexact.list"
+  e=$(make_engine blockexact-engine seventyfive)
+  for shname in sh dash bash; do
+    command -v "$shname" >/dev/null 2>&1 || continue
+    set +e
+    AH_KILL_GRACE_S=0 AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/blockexact.list" "$shname" "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/blockexact.out" 2>"$tmp/blockexact.err"
+    rc=$?
+    set -e
+    printf 'BLOCK-MSG: no\n' >"$tmp/blockexact.want"
+    if [ "$rc" -ne 2 ] || ! cmp -s "$tmp/blockexact.want" "$tmp/blockexact.err"; then
+      printf 'block stderr under %s: rc=%s err=[%s]\n' "$shname" "$rc" "$(cat "$tmp/blockexact.err")" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -990,6 +1010,7 @@ check ah_knobs_honored_with_wrapper_test test_ah_knobs_honored_with_wrapper_test
 check temp_base_prefers_home_then_xdg test_temp_base_prefers_home_then_xdg
 check healthy_engine_returns_immediately_every_shell test_healthy_engine_returns_immediately_every_shell
 check hanging_engine_is_cut_at_timeout_not_before test_hanging_engine_is_cut_at_timeout_not_before
+check block_stderr_is_exactly_the_hooks_text_every_shell test_block_stderr_is_exactly_the_hooks_text_every_shell
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
