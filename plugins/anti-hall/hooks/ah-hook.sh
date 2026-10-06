@@ -11,12 +11,29 @@
 # - Node hook timeout: host discards that hook; other hooks still decide the event.
 # - Node hook signal death, spawn failure, known-unrunnable command, or incomplete output:
 #   fail closed on guard events, ignored on non-guards.
-# Test-only AH_* overrides: AH_ENGINE_BIN, AH_FALLBACK_LIST, AH_FALLBACK_MAP,
-# AH_HOOK_TIMEOUT_S, AH_KILL_GRACE_S, AH_HOOK_SWEEP_AGE_S. They are validated so
-# bad values cannot turn a guard into a silent allow.
+# Test-only knobs (honored ONLY when AH_WRAPPER_TEST=1 is also set; otherwise ignored with a one-line
+# stderr note): AH_ENGINE_BIN, AH_FALLBACK_LIST, AH_FALLBACK_MAP, AH_HOOK_TIMEOUT_S, AH_KILL_GRACE_S,
+# AH_HOOK_SWEEP_AGE_S. The engine is otherwise located only at $HOME/.anti-hall/ah-engine/bin/ah-engine
+# or on PATH. Honored values are validated so bad values cannot turn a guard into a silent allow.
 
 event=$1
 shift 1 2>/dev/null || true
+
+# The test-only knobs are honored only when AH_WRAPPER_TEST=1 is also set (the test suite exports it).
+# A stray AH_ENGINE_BIN=/usr/bin/true in a user's shell must not turn the safety net into a silent allow.
+if [ "${AH_WRAPPER_TEST:-}" != 1 ]; then
+  ignored_knobs=
+  for knob in AH_ENGINE_BIN AH_FALLBACK_LIST AH_FALLBACK_MAP AH_HOOK_TIMEOUT_S AH_KILL_GRACE_S AH_HOOK_SWEEP_AGE_S; do
+    eval "knob_val=\${$knob:-}"
+    if [ -n "$knob_val" ]; then
+      ignored_knobs="$ignored_knobs $knob"
+    fi
+    unset "$knob"
+  done
+  if [ -n "$ignored_knobs" ]; then
+    printf 'anti-hall: ignoring test-only variables (need AH_WRAPPER_TEST=1):%s\n' "$ignored_knobs" >&2
+  fi
+fi
 tool_from_payload=0
 if [ "${1:-}" = "--tool-from-payload" ]; then
   tool_from_payload=1

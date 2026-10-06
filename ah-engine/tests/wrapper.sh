@@ -827,6 +827,31 @@ test_fallback_node_module_not_found_exit1_guard_only() {
   [ "$rc1" -eq 2 ] && [ "$rc2" -eq 0 ]
 }
 
+test_ah_knobs_ignored_without_wrapper_test() {
+  e=$tmp/engine-marker.sh
+  printf '#!/bin/sh\ncat >/dev/null; : >"%s/knob-engine-ran"; exit 0\n' "$tmp" >"$e"
+  chmod +x "$e"
+  home=$tmp/knob-home
+  mkdir -p "$home"
+  : >"$tmp/knob-empty.list"
+  rm -f "$tmp/knob-engine-ran"
+  set +e
+  env -u AH_WRAPPER_TEST AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/knob-empty.list" HOME="$home" PATH="/usr/bin:/bin" /bin/sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/knob.out" 2>"$tmp/knob.err"
+  set -e
+  # production: the knobs are ignored with a one-line note and the planted engine never runs
+  [ ! -e "$tmp/knob-engine-ran" ] && grep -q 'ignoring test-only' "$tmp/knob.err"
+}
+
+test_ah_knobs_honored_with_wrapper_test() {
+  e=$tmp/engine-marker2.sh
+  printf '#!/bin/sh\ncat >/dev/null; : >"%s/knob2-engine-ran"; exit 0\n' "$tmp" >"$e"
+  chmod +x "$e"
+  : >"$tmp/knob2-empty.list"
+  rm -f "$tmp/knob2-engine-ran"
+  AH_WRAPPER_TEST=1 AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/knob2-empty.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/knob2.out" 2>"$tmp/knob2.err"
+  [ -e "$tmp/knob2-engine-ran" ] && ! grep -q 'ignoring test-only' "$tmp/knob2.err"
+}
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -869,6 +894,8 @@ check engine_lookup_uses_path test_engine_lookup_uses_path
 check fallback_unrunnable_plugin_root_fails_closed test_fallback_unrunnable_plugin_root_fails_closed
 check fallback_missing_module_exit1_fails_closed_own_exit1_does_not test_fallback_missing_module_exit1_fails_closed_own_exit1_does_not
 check fallback_node_module_not_found_exit1_guard_only test_fallback_node_module_not_found_exit1_guard_only
+check ah_knobs_ignored_without_wrapper_test test_ah_knobs_ignored_without_wrapper_test
+check ah_knobs_honored_with_wrapper_test test_ah_knobs_honored_with_wrapper_test
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
