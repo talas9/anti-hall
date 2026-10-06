@@ -1031,6 +1031,47 @@ test_sweep_removes_dead_owner_dirs_keeps_live_owner() {
   [ ! -e "$root/ah-wrapper-run.$dead.AAAA" ] && [ -d "$root/ah-wrapper-run.$$.BBBB" ]
 }
 
+run_signal_cleanup_case() {
+  # run_signal_cleanup_case <label> <signal|NONE> <expected-rc>: the private run dir must be gone afterwards
+  sc_label=$1; sc_sig=$2; sc_rc=$3
+  sc_parent=$tmp/sig-$sc_label
+  mkdir "$sc_parent"
+  sc_started=$tmp/sig-$sc_label.started
+  sc_pidfile=$tmp/sig-$sc_label.pid
+  if [ "$sc_sig" = NONE ]; then
+    e=$(make_engine "sig-$sc_label" normal)
+    set +e
+    TMPDIR="$sc_parent" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/empty.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >/dev/null 2>&1
+    got=$?
+    set -e
+  else
+    e=$(make_engine "sig-$sc_label" hang)
+    # job control so the background wrapper does not start with SIGINT ignored
+    set -m
+    TMPDIR="$sc_parent" AH_STARTED="$sc_started" AH_PIDFILE="$sc_pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/empty.list" AH_HOOK_TIMEOUT_S="$large_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >/dev/null 2>&1 &
+    sc_pid=$!
+    set +m
+    wait_for_file "$sc_started" "$poll_limit" && [ -s "$sc_pidfile" ] || {
+      kill_test_tree "$sc_pid"
+      return 1
+    }
+    sc_engine=$(cat "$sc_pidfile")
+    kill -"$sc_sig" "$sc_pid" 2>/dev/null || true
+    set +e
+    wait "$sc_pid" 2>/dev/null
+    got=$?
+    set -e
+    wait_for_pids_gone "$poll_limit" "$sc_engine" || return 1
+  fi
+  sc_root=$sc_parent/ah-hook-$(id -u)
+  set -- "$sc_root"/ah-wrapper-run.*
+  [ "$got" -eq "$sc_rc" ] && [ "$1" = "$sc_root/ah-wrapper-run.*" ]
+}
+
+test_temp_removed_on_normal_exit() { run_signal_cleanup_case normal NONE 2; }
+test_temp_removed_on_hup() { run_signal_cleanup_case hup HUP 129; }
+test_temp_removed_on_int() { run_signal_cleanup_case int INT 130; }
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -1082,6 +1123,9 @@ check block_stderr_is_exactly_the_hooks_text_every_shell test_block_stderr_is_ex
 check unmatched_tool_runs_nothing_but_unparseable_selects_all test_unmatched_tool_runs_nothing_but_unparseable_selects_all
 check killed_wrapper_orphans_are_reaped test_killed_wrapper_orphans_are_reaped
 check sweep_removes_dead_owner_dirs_keeps_live_owner test_sweep_removes_dead_owner_dirs_keeps_live_owner
+check temp_removed_on_normal_exit test_temp_removed_on_normal_exit
+check temp_removed_on_hup test_temp_removed_on_hup
+check temp_removed_on_int test_temp_removed_on_int
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
