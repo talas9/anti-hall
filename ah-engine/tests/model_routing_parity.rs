@@ -804,8 +804,7 @@ fn same_home_repeated_handover_and_update_parity() {
 fn d74_unparsable_stdin_is_deferred_to_node_never_blocked() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut rows: Vec<(String, String)> =
-        cases().into_iter().filter(|case| case.expect_divergence).map(|c| (c.name.clone(), c.raw.clone().unwrap())).collect();
+    let mut rows: Vec<(String, String)> = cases().into_iter().filter(|case| case.expect_divergence).map(|c| (c.name.clone(), c.raw.clone().unwrap())).collect();
     assert_eq!(rows.len(), 2);
     // valid for JS.JSON.parse, rejected by serde_json: Node decides normally (here an allow), so the engine must defer
     rows.push((

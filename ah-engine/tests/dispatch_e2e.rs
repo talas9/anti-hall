@@ -416,10 +416,19 @@ fn unparsable_spawn_payload_blocks_only_when_node_cannot_run_model_routing() {
 #[test]
 fn a_payload_only_js_can_parse_is_deferred_to_node_not_blocked() {
     let e = Env::new("mr-surrogate");
-    let mut m: serde_json::Map<String, serde_json::Value> = ["compact-declaration-guard", "swarm-guard", "phase-tracker", "swarm-guard#2", "phase-tracker#2", "orch-on-spawn", "model-routing-guard", "model-routing-guard#2"]
-        .into_iter()
-        .map(|id| (id.to_string(), "true".into()))
-        .collect();
+    let mut m: serde_json::Map<String, serde_json::Value> = [
+        "compact-declaration-guard",
+        "swarm-guard",
+        "phase-tracker",
+        "swarm-guard#2",
+        "phase-tracker#2",
+        "orch-on-spawn",
+        "model-routing-guard",
+        "model-routing-guard#2",
+    ]
+    .into_iter()
+    .map(|id| (id.to_string(), "true".into()))
+    .collect();
     let node_ok = e.dir.join("node-ok-map.json");
     std::fs::write(&node_ok, serde_json::json!({ "PreToolUse": m.clone() }).to_string()).unwrap();
     m.insert("model-routing-guard".into(), r#"printf '{"decision":"block","reason":"node decided"}\n'; exit 2"#.into());

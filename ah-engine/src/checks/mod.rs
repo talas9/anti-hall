@@ -69,6 +69,8 @@ pub struct RouteMeta {
     pub spawn_key: String,
     /// Whether this deny forces delegation to another model.
     pub delegate: bool,
+    /// Whether the verdict this route rides on blocks the spawn (exit 2), forced delegation or not.
+    pub blocked: bool,
 }
 
 impl Exact {

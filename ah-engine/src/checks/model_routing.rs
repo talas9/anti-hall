@@ -318,7 +318,8 @@ fn routed(v: Verdict, payload: &Value, input: RouteInput<'_>, class: &str, recom
         input.model.to_string()
     };
     let selected = selected_model(&requested, &parent, recommended, outcome);
-    let delegate = outcome == "down" && (matches!(&v, Verdict::Exact(x) if x.code == 2) || matches!(&v, Verdict::Block(_)));
+    let blocked = matches!(&v, Verdict::Exact(x) if x.code == 2) || matches!(&v, Verdict::Block(_));
+    let delegate = outcome == "down" && blocked;
     Verdict::Routed(
         Box::new(v),
         vec![RouteMeta {
@@ -330,6 +331,7 @@ fn routed(v: Verdict, payload: &Value, input: RouteInput<'_>, class: &str, recom
             outcome: outcome.to_string(),
             spawn_key: route_key(payload, input.subagent_type),
             delegate,
+            blocked,
         }],
     )
 }
@@ -444,11 +446,11 @@ fn handover_advisory(payload: &Value, corpus: &str, st: &Settings) -> Option<Ver
     )))
 }
 
-fn decide_inner(payload: &Value, env: &RequestEnv, tool_override: Option<&str>) -> Option<Verdict> {
-    decide_inner_with_jev(payload, env, None, tool_override)
+fn decide_inner(payload: &Value, env: &RequestEnv) -> Option<Verdict> {
+    decide_inner_with_jev(payload, env, None)
 }
 
-fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, _tool_override: Option<&str>) -> Option<Verdict> {
+fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>) -> Option<Verdict> {
     let st = st(env);
     if is_skipped(&st, defaults::text("model_routing.guard_name")) {
         return None;
@@ -673,7 +675,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, _
 
 #[cfg(test)]
 fn decide(payload: &Value, env: &RequestEnv) -> Option<Verdict> {
-    match std::panic::catch_unwind(|| decide_inner(payload, env, None)) {
+    match std::panic::catch_unwind(|| decide_inner(payload, env)) {
         Ok(v) => v,
         Err(_) => Some(fail_closed()),
     }
@@ -692,8 +694,8 @@ impl Check for ModelRouting {
         None
     }
 
-    fn run_env(&self, subject: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        match std::panic::catch_unwind(|| decide_inner(payload, env, subject.tool)) {
+    fn run_env(&self, _subject: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        match std::panic::catch_unwind(|| decide_inner(payload, env)) {
             Ok(v) => v,
             Err(_) => Some(fail_closed()),
         }

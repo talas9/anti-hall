@@ -399,7 +399,7 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
             kind: Kind::Route,
             h: Token::sanitize(check),
             e: Token::sanitize(event),
-            o: if route.delegate {
+            o: if route.delegate || route.blocked {
                 Outcome::Block
             } else if outcome == RouteOutcome::Allow {
                 Outcome::Allow
@@ -1112,6 +1112,7 @@ mod tests {
             outcome: "down".into(),
             spawn_key: "spawn-key1".into(),
             delegate: true,
+            blocked: true,
         };
         crate::hookio::Observer::route(&obs, "model-routing", "PreToolUse", &route);
         let routes = t.telemetry_json("events", "1d", "route", 10);
@@ -1127,6 +1128,27 @@ mod tests {
         assert_eq!(d["requested_model"], "opus");
         assert_eq!(d["selected_model"], "haiku");
         assert_eq!(d["task_class"], "mechanical");
+    }
+
+    #[test]
+    fn a_blocking_route_without_delegation_is_serialized_as_a_block() {
+        let t = Telemetry::new();
+        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse" };
+        let route = crate::checks::RouteMeta {
+            requested_model: "sonnet".into(),
+            parent_model: "opus".into(),
+            task_class: "unknown".into(),
+            recommended_tier: "sonnet".into(),
+            selected_model: "sonnet".into(),
+            outcome: "exempt".into(),
+            spawn_key: "spawn-key2".into(),
+            delegate: false,
+            blocked: true,
+        };
+        crate::hookio::Observer::route(&obs, "model-routing", "PreToolUse", &route);
+        let routes = t.telemetry_json("events", "1d", "route", 10);
+        assert_eq!(routes["events"][0]["o"], "block");
+        assert_eq!(t.telemetry_json("events", "1d", "delegate", 10)["count"], 0, "no delegation, no delegate event");
     }
 
     #[test]

@@ -242,7 +242,7 @@ fn routing_off_bypasses_update_handover_state_and_jev() {
     for prompt in ["Run /anti-hall:update", "write the session handover", "fetch and download dump"] {
         let mut payload = mechanical_payload(Some("opus"));
         payload["tool_input"]["prompt"] = json!(prompt);
-        let Some(Verdict::Routed(inner, routes)) = decide_inner_with_jev(&payload, &env, Some(&lane), None) else { panic!("expected routed allow") };
+        let Some(Verdict::Routed(inner, routes)) = decide_inner_with_jev(&payload, &env, Some(&lane)) else { panic!("expected routed allow") };
         assert!(matches!(*inner, Verdict::Allow), "{prompt}");
         assert_eq!(routes[0].outcome, "allow");
     }
@@ -330,16 +330,7 @@ fn an_opus_deny_then_a_haiku_retry_in_one_session_join_on_one_key() {
             spawn_key: Token::sanitize(&meta.spawn_key),
         })
     };
-    let event = |ts_ms, kind, o, extras| Event {
-        ts_ms,
-        kind,
-        h: Token::sanitize("model-routing"),
-        e: Token::sanitize("PreToolUse"),
-        o,
-        ms: 0,
-        ib: 0,
-        extras,
-    };
+    let event = |ts_ms, kind, o, extras| Event { ts_ms, kind, h: Token::sanitize("model-routing"), e: Token::sanitize("PreToolUse"), o, ms: 0, ib: 0, extras };
     let events = vec![
         event(1, Kind::Route, Outcome::Block, route(&original[0], RouteOutcome::Deny)),
         event(2, Kind::Route, Outcome::Allow, route(&rerouted[0], RouteOutcome::Allow)),
@@ -372,7 +363,7 @@ fn jev_on_relaxes_row1_block_to_advisory() {
     let p = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":"/tmp","tool_input":{
         "model":"opus","subagent_type":"general-purpose","prompt":"fetch and download the dump, tail the logs"
     }});
-    let Some(Verdict::Routed(inner, route)) = decide_inner_with_jev(&p, &env, Some(&lane), None) else { panic!("expected routed verdict") };
+    let Some(Verdict::Routed(inner, route)) = decide_inner_with_jev(&p, &env, Some(&lane)) else { panic!("expected routed verdict") };
     assert!(matches!(*inner, Verdict::Exact(ref x) if x.code == 0 && x.out.contains("Jev judged it non-mechanical")));
     assert!(!route[0].delegate);
     let _ = std::fs::remove_dir_all(home);
@@ -448,7 +439,7 @@ fn jev_shadow_consults_and_logs_rows_one_and_two_but_only_on_relaxes() {
         let home = temp_home(mode);
         let (env, lane, transport, log) = jev_lane(&home, mode, 0.99);
         for model in [Some("opus"), None] {
-            let (exact, _) = routed_exact(decide_inner_with_jev(&mechanical_payload(model), &env, Some(&lane), None));
+            let (exact, _) = routed_exact(decide_inner_with_jev(&mechanical_payload(model), &env, Some(&lane)));
             assert_eq!(exact.code, expected_code, "{mode} {model:?}");
         }
         assert_eq!(transport.calls.load(Ordering::Relaxed), expected_calls, "{mode}");
@@ -475,7 +466,7 @@ fn jev_routing_uses_inclusive_threshold_and_node_legacy_threshold_precedence() {
             std::fs::write(home.join(".anti-hall/jev.json"), json!({"confidenceThreshold":legacy}).to_string()).unwrap();
         }
         let (env, lane, transport, _) = jev_lane(&home, "on", confidence);
-        let (exact, _) = routed_exact(decide_inner_with_jev(&mechanical_payload(Some("opus")), &env, Some(&lane), None));
+        let (exact, _) = routed_exact(decide_inner_with_jev(&mechanical_payload(Some("opus")), &env, Some(&lane)));
         assert_eq!(exact.code, expected_code, "threshold={threshold} legacy={legacy:?} confidence={confidence}");
         assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
     }
