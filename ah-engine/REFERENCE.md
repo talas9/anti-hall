@@ -395,7 +395,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `telemetry.flush_ms` | `10000` | `AH_ENGINE_TELEMETRY_FLUSH_MS` | ms | How often the recorder's counters and events are stored in hot.db, and at shutdown. A kill -9 loses at most this much (the data recorded since the last flush). |
 | `telemetry.hook_label` | `hook` |  |  | The `h` label of the whole-hook telemetry row (one per hook request, whatever checks ran inside it). |
 | `telemetry.impact_persisted_note` | `stored in hot.db: totals and events survive a restart` |  |  | Printed with impact output when the events are stored in hot.db. |
-| `telemetry.inherit_prefix` | `inherit:` |  |  | Prefix the Node routing log puts on a model name that was inherited from the parent rather than named; ignored when pricing. |
+| `telemetry.inherit_prefix` | `inherit:` |  |  | Prefix used when a route event records an inherited model. The model-routing hook can use a parent_model field from the hook payload; otherwise it records inherit:unknown because no current settings source exposes the parent model. |
 | `telemetry.latency_buckets_us` | `10 items` |  | us | Upper bounds of the latency histogram buckets; a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate. |
 | `telemetry.link_window_s` | `7200` |  | s | How long before a spawn result a routing decision with the same spawn key still belongs to it (D77). |
 | `telemetry.max_event_rows` | `200000` |  |  | Most events kept in hot.db; the oldest beyond this are removed when `telemetry rollup` runs. |
@@ -700,6 +700,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `model_routing.handover_state_suffix` | `.json` |  |  | Suffix of the per-session handover-delegation advisory cap file. |
 | `model_routing.handover_verb_re` | `\b(write\|prepare\|create\|author\|draft)\b` |  |  | Handover write-verb regex for the handover-delegation advisory. |
 | `model_routing.hard_execution` | `run script, install, build, run tests, git push, deploy` |  |  | Mechanical signals that suppress the row-1 research exemption. |
+| `model_routing.id_fields` | `tool_use_id, tool_call_id, id` |  |  | Hook payload id fields, in priority order, that can identify a spawn without hashing prompt or description text. |
 | `model_routing.inline_code_re` | ``[^`]*`` |  |  | Regex for inline code spans stripped before planning and reasoning regexes. |
 | `model_routing.jev_budget_ms` | `1200` |  | ms | Synchronous Jev budget for model-routing relaxation, matching the Node hook. |
 | `model_routing.jev_choice_authoring` | `Writing or editing substantial code/content that requires judgment.` |  |  | Jev choice description for authoring tasks. |
@@ -778,7 +779,6 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `model_routing.tier_inherit` | `inherit` |  |  | Pseudo-tier used in telemetry when an omitted model inherits from the parent. |
 | `model_routing.tier_main` | `main` |  |  | Pseudo-tier used when the guard forces work back to the main session. |
 | `model_routing.tier_opus` | `opus` |  |  | The planning advisory's default stronger tier. |
-| `model_routing.tools` | `Agent, Task` |  |  | Tool names answered by the model-routing check. |
 | `model_routing.unknown_session` | `unknown-session` |  |  | Fallback session id used in the handover advisory state file name. |
 | `model_routing.update_node_re` | `\bnode\s+["']?\S*update\.js\b` |  |  | Regex for node commands that run an update.js script. |
 | `model_routing.update_qualifier` | `anti-hall` |  |  | Lowercase qualifier required with a generic update.js command before it is treated as an anti-hall update-in-session. |
@@ -1209,7 +1209,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `block` | A check or rule blocked a call. The reason is the check or rule id. |
 | `context` | A context-action rule matched and injected text for the agent. |
 | `fallback` | The engine could not or would not answer (a check deferred, or the request failed) and the client ran the Node hook instead. |
-| `route` | A model-routing decision at agent spawn (D78/D86). The check is the routing check and the reason is what it did: down, up, allow, exempt, advise, deny, or delegate; a forced-delegation deny records a deny route event plus a delegate event. |
+| `route` | A model-routing decision at agent spawn (D78/D86). Route events carry requested_model, parent_model, task_class, recommended_tier, selected_model, outcome and spawn_key; legacy route rows without selected_model are read with a deterministic fallback. A forced cheaper-model delegation also records a delegate event with spawn_key, requested_model, selected_model and task_class, never prompt or description text. |
 | `warning` | A warn-action rule matched and added a warning for the agent. |
 
 ## Error codes

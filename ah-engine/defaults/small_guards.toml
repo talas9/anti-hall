@@ -537,9 +537,9 @@ value = "general-purpose"
 doc = "Subagent type recommended for read-only research-shaped generic spawns."
 value = "Explore"
 
-[model_routing.tools]
-doc = "Tool names answered by the model-routing check."
-value = ["Agent", "Task"]
+[model_routing.id_fields]
+doc = "Hook payload id fields, in priority order, that can identify a spawn without hashing prompt or description text."
+value = ["tool_use_id", "tool_call_id", "id"]
 
 [model_routing.flagship_models]
 doc = "Explicit model enum values treated as flagship tiers for row 1 and row 3."

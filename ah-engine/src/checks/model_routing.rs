@@ -85,8 +85,8 @@ fn as_obj(v: &Value) -> Option<&serde_json::Map<String, Value>> {
     v.as_object()
 }
 
-fn input_str<'a>(input: &'a Value, key: &str) -> &'a str {
-    input.get(key).and_then(Value::as_str).unwrap_or("")
+fn input_str<'a>(input: Option<&'a serde_json::Map<String, Value>>, key: &str) -> &'a str {
+    input.and_then(|m| m.get(key)).and_then(Value::as_str).unwrap_or("")
 }
 
 fn lower_trim(s: &str) -> String {
@@ -248,29 +248,79 @@ fn advise(text: String) -> Verdict {
     Verdict::Exact(Exact { code: 0, out: format!("{}\n", msg::advisory_json("PreToolUse", &text)), err: String::new() })
 }
 
-fn route_key(payload: &Value) -> String {
-    let mut input = payload.get("tool_input").and_then(as_obj).cloned().unwrap_or_default();
-    input.remove("model");
-    // Link the logical task, not a tool invocation: blocked retries receive new tool_use_id/turn_id values.
-    // No upstream retry identity is available, so identical logical requests share a key; chains() separates
-    // sequential results by timestamp. Concurrent identical tasks cannot be distinguished by this payload.
-    let identity = serde_json::json!([payload.get("session_id"), payload.get("agent_id"), payload.get("tool_name"), input]);
-    // Hash the session too: sanitizing or truncating a long session prefix can otherwise collide in telemetry.
+fn first_str<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| v.get(*k).and_then(Value::as_str).filter(|s| !js_trim(s).is_empty()))
+}
+
+fn bounded_component(s: &str) -> String {
+    let limit = defaults::num("telemetry.token_max_len") as usize;
+    let mut out = String::new();
+    for c in s.chars() {
+        if out.len() + c.len_utf8() > limit {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn route_key(payload: &Value, subagent_type: &str, requested_model: &str) -> String {
+    let id_fields = defaults::list("model_routing.id_fields");
+    if let Some(id) = first_str(payload, &id_fields) {
+        return format!("spawn-{:016x}", crate::health::fnv(&format!("id:{}", bounded_component(id))));
+    }
+    // No prompt, description, or other payload text: this fallback is O(1) and content-free.
+    let identity = [
+        bounded_component(payload.get("session_id").and_then(Value::as_str).unwrap_or("")),
+        bounded_component(payload.get("agent_id").and_then(Value::as_str).unwrap_or("")),
+        bounded_component(subagent_type),
+        bounded_component(requested_model),
+    ]
+    .join("\u{1f}");
     format!("spawn-{:016x}", crate::health::fnv(&identity.to_string()))
 }
 
-fn routed(v: Verdict, payload: &Value, model: &str, omitted: bool, class: &str, recommended: &str, outcome: &str) -> Verdict {
-    let requested = if omitted { format!("{}unknown", defaults::text("telemetry.inherit_prefix")) } else { model.to_string() };
-    let delegate = matches!(&v, Verdict::Exact(x) if x.code == 2) || matches!(&v, Verdict::Block(_));
+fn parent_model(payload: &Value) -> String {
+    // There is no resolved settings key for the parent model in the current engine or Node guard; when the hook payload
+    // does not carry one, keep the documented unknown sentinel instead of inventing a source.
+    first_str(payload, &["parent_model", "model"]).map(lower_trim).unwrap_or_else(|| format!("{}unknown", defaults::text("telemetry.inherit_prefix")))
+}
+
+fn selected_model(requested: &str, parent: &str, recommended: &str, outcome: &str) -> String {
+    match outcome {
+        "down" | "up" if rank(recommended).is_some() => recommended.to_string(),
+        "exempt" if rank(recommended).is_some() && recommended != requested => recommended.to_string(),
+        _ if requested.starts_with(defaults::text("telemetry.inherit_prefix")) => parent.to_string(),
+        _ => requested.to_string(),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RouteInput<'a> {
+    model: &'a str,
+    omitted: bool,
+    subagent_type: &'a str,
+}
+
+fn routed(v: Verdict, payload: &Value, input: RouteInput<'_>, class: &str, recommended: &str, outcome: &str) -> Verdict {
+    let parent = parent_model(payload);
+    let requested = if input.omitted {
+        format!("{}{}", defaults::text("telemetry.inherit_prefix"), parent.strip_prefix(defaults::text("telemetry.inherit_prefix")).unwrap_or(&parent))
+    } else {
+        input.model.to_string()
+    };
+    let selected = selected_model(&requested, &parent, recommended, outcome);
+    let delegate = outcome == "down" && (matches!(&v, Verdict::Exact(x) if x.code == 2) || matches!(&v, Verdict::Block(_)));
     Verdict::Routed(
         Box::new(v),
         vec![RouteMeta {
             requested_model: requested.clone(),
-            parent_model: format!("{}unknown", defaults::text("telemetry.inherit_prefix")),
+            parent_model: parent,
             task_class: class.to_string(),
             recommended_tier: recommended.to_string(),
+            selected_model: selected,
             outcome: outcome.to_string(),
-            spawn_key: route_key(payload),
+            spawn_key: route_key(payload, input.subagent_type, &requested),
             delegate,
         }],
     )
@@ -303,7 +353,7 @@ pub(crate) fn fail_closed() -> Verdict {
         ))
     })
     .unwrap_or_else(|_| fallback_block("model-routing fail-closed"));
-    routed(v, &Value::Null, "", true, "unknown", tier("model_routing.tier_main"), "deny")
+    routed(v, &Value::Null, RouteInput { model: "", omitted: true, subagent_type: "" }, "unknown", tier("model_routing.tier_main"), "deny")
 }
 
 fn model_routing_question() -> Question {
@@ -390,19 +440,16 @@ fn decide_inner(payload: &Value, env: &RequestEnv, tool_override: Option<&str>) 
     decide_inner_with_jev(payload, env, None, tool_override)
 }
 
-fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, tool_override: Option<&str>) -> Option<Verdict> {
-    let subject_tool = tool_override.or_else(|| payload.get("tool_name").and_then(Value::as_str))?;
-    if !defaults::list("model_routing.tools").contains(&subject_tool) {
-        return None;
-    }
+fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, _tool_override: Option<&str>) -> Option<Verdict> {
     let st = st(env);
     if is_skipped(&st, defaults::text("model_routing.guard_name")) {
         return None;
     }
-    let input = Value::Object(payload.get("tool_input").and_then(as_obj).cloned().unwrap_or_default());
-    let model = lower_trim(input_str(&input, "model"));
-    let model_omitted = !input.get("model").and_then(Value::as_str).is_some_and(|s| !js_trim(s).is_empty());
-    let subagent_type = js_trim(input_str(&input, "subagent_type")).to_string();
+    let input = payload.get("tool_input").and_then(as_obj);
+    let model = lower_trim(input_str(input, "model"));
+    let model_omitted = !input.and_then(|m| m.get("model")).and_then(Value::as_str).is_some_and(|s| !js_trim(s).is_empty());
+    let subagent_type = js_trim(input_str(input, "subagent_type")).to_string();
+    let route_input = RouteInput { model: &model, omitted: model_omitted, subagent_type: &subagent_type };
     let routing_mode = setting_enum(
         &st,
         defaults::text("model_routing.mode_env"),
@@ -413,18 +460,10 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
         "model_routing.mode_values",
     );
     if routing_mode == defaults::text("model_routing.off_mode") {
-        return Some(routed(
-            Verdict::Allow,
-            payload,
-            &model,
-            model_omitted,
-            "unknown",
-            if model_omitted { tier("model_routing.tier_inherit") } else { &model },
-            "allow",
-        ));
+        return Some(routed(Verdict::Allow, payload, route_input, "unknown", if model_omitted { tier("model_routing.tier_inherit") } else { &model }, "allow"));
     }
-    let description = input_str(&input, "description");
-    let prompt = input_str(&input, "prompt");
+    let description = input_str(input, "description");
+    let prompt = input_str(input, "prompt");
     let joined = format!("{description}\n{prompt}");
     let corpus = js_slice_utf16(&joined, defaults::num("model_routing.scan_limit") as usize);
     let corpus = corpus.as_str();
@@ -438,15 +477,14 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
                 "",
             )),
             payload,
-            &model,
-            model_omitted,
+            route_input,
             "update",
             tier("model_routing.tier_main"),
             "exempt",
         ));
     }
     if let Some(v) = handover_advisory(payload, corpus, &st) {
-        return Some(routed(v, payload, &model, model_omitted, "handover", tier("model_routing.tier_main"), "exempt"));
+        return Some(routed(v, payload, route_input, "handover", tier("model_routing.tier_main"), "exempt"));
     }
 
     let tokens = tokenize(corpus);
@@ -478,8 +516,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
             return Some(routed(
                 tip(defaults::text("model_routing.msg_deploy_omitted_what").to_string(), &instead, defaults::text("model_routing.msg_deploy_why")),
                 payload,
-                &model,
-                model_omitted,
+                route_input,
                 "deploy",
                 floor,
                 "up",
@@ -494,7 +531,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
                 };
             let what = one_pass("model_routing.msg_deploy_low_what", &[("model", &model)]);
             let instead = one_pass("model_routing.msg_deploy_low_instead", &[("floor", floor), ("extra", extra)]);
-            return Some(routed(tip(what, &instead, defaults::text("model_routing.msg_deploy_why")), payload, &model, model_omitted, "deploy", floor, "up"));
+            return Some(routed(tip(what, &instead, defaults::text("model_routing.msg_deploy_why")), payload, route_input, "deploy", floor, "up"));
         }
         suppress_haiku_rows = true;
     }
@@ -510,8 +547,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
             return Some(routed(
                 tip(one_pass("model_routing.msg_row1_role_what", &[("model", &model)]), defaults::text("model_routing.msg_row1_role_instead"), ""),
                 payload,
-                &model,
-                model_omitted,
+                route_input,
                 "mechanical",
                 tier("model_routing.tier_haiku"),
                 "down",
@@ -521,8 +557,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
             return Some(routed(
                 tip(one_pass("model_routing.msg_row1_research_what", &[("model", &model)]), "", ""),
                 payload,
-                &model,
-                model_omitted,
+                route_input,
                 "research",
                 &model,
                 "exempt",
@@ -532,14 +567,13 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
             return Some(routed(
                 tip(one_pass("model_routing.msg_row1_jev_what", &[("model", &model)]), defaults::text("model_routing.msg_row1_jev_instead"), ""),
                 payload,
-                &model,
-                model_omitted,
+                route_input,
                 "mechanical",
                 tier("model_routing.tier_haiku"),
                 "exempt",
             ));
         }
-        return Some(routed(block(reason), payload, &model, model_omitted, "mechanical", tier("model_routing.tier_haiku"), "down"));
+        return Some(routed(block(reason), payload, route_input, "mechanical", tier("model_routing.tier_haiku"), "down"));
     }
 
     if is_mechanical_only && model_omitted && is_generic {
@@ -548,8 +582,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
                 return Some(routed(
                     tip(defaults::text("model_routing.msg_row2_jev_what").to_string(), defaults::text("model_routing.msg_row2_jev_instead"), ""),
                     payload,
-                    &model,
-                    model_omitted,
+                    route_input,
                     "mechanical",
                     tier("model_routing.tier_haiku"),
                     "exempt",
@@ -563,8 +596,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
                     defaults::text("model_routing.msg_row2_block_override"),
                 )),
                 payload,
-                &model,
-                model_omitted,
+                route_input,
                 "mechanical",
                 tier("model_routing.tier_haiku"),
                 "down",
@@ -577,8 +609,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
                 defaults::text("model_routing.msg_row2_adv_why"),
             ),
             payload,
-            &model,
-            model_omitted,
+            route_input,
             "mechanical",
             tier("model_routing.tier_haiku"),
             "down",
@@ -593,8 +624,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
                 "",
             ),
             payload,
-            &model,
-            model_omitted,
+            route_input,
             "mechanical",
             tier("model_routing.tier_haiku"),
             "down",
@@ -606,8 +636,7 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
         return Some(routed(
             tip(defaults::text("model_routing.msg_row4_what").to_string(), defaults::text("model_routing.msg_row4_instead"), ""),
             payload,
-            &model,
-            model_omitted,
+            route_input,
             "planning",
             tier("model_routing.tier_opus"),
             "up",
@@ -624,15 +653,14 @@ fn decide_inner_with_jev(payload: &Value, env: &RequestEnv, jev: Option<&Jev>, t
                 defaults::text("model_routing.msg_row6_why"),
             ),
             payload,
-            &model,
-            model_omitted,
+            route_input,
             "research",
             defaults::text("model_routing.explore_type"),
             "exempt",
         ));
     }
 
-    Some(routed(Verdict::Allow, payload, &model, model_omitted, "unknown", if model_omitted { tier("model_routing.tier_inherit") } else { &model }, "allow"))
+    Some(routed(Verdict::Allow, payload, route_input, "unknown", if model_omitted { tier("model_routing.tier_inherit") } else { &model }, "allow"))
 }
 
 #[cfg(test)]

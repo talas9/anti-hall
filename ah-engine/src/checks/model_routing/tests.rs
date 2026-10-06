@@ -88,6 +88,52 @@ fn row1_flagship_mechanical_blocks_with_node_shape() {
 }
 
 #[test]
+fn standalone_decision_ignores_missing_odd_and_foreign_tool_names() {
+    let env = RequestEnv::from_pairs([("HOME", "/tmp")]);
+    for tool_name in [None, Some("Agent "), Some("Workflow"), Some("codex:Task"), Some("spawn_agent")] {
+        let mut p = json!({"hook_event_name":"PreToolUse","session_id":"s","cwd":"/tmp","tool_input":{
+            "model":"opus","subagent_type":"general-purpose","description":"","prompt":"fetch logs and list files"
+        }});
+        if let Some(tool_name) = tool_name {
+            p["tool_name"] = json!(tool_name);
+        }
+        let (exact, routes) = routed_exact(decide(&p, &env));
+        assert_eq!(exact.code, 2, "{tool_name:?}");
+        assert!(exact.out.contains("\"decision\":\"block\""), "{tool_name:?}");
+        assert_eq!(routes[0].outcome, "down", "{tool_name:?}");
+    }
+}
+
+#[test]
+fn only_blocking_down_routes_delegate_update_handover_and_fail_closed_do_not() {
+    let env = RequestEnv::from_pairs([("HOME", "/tmp")]);
+    let update = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":"/tmp","tool_input":{
+        "model":"sonnet","subagent_type":"general-purpose","description":"update","prompt":"Please run /anti-hall:update and report"
+    }});
+    let (exact, routes) = routed_exact(decide(&update, &env));
+    assert_eq!(exact.code, 2);
+    assert!(exact.out.contains("update.js runs migrations"), "test must execute the real update-in-session block");
+    assert_eq!(routes[0].task_class, "update");
+    assert_eq!(routes[0].outcome, "exempt");
+    assert!(!routes[0].delegate, "update-in-session blocks are not D86 forced delegations");
+
+    let home = temp_home("handover-delegate");
+    let env = RequestEnv::from_pairs([("HOME", home.to_str().unwrap())]);
+    let handover = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":"/tmp","tool_input":{
+        "model":"opus","subagent_type":"general-purpose","description":"handover","prompt":"write the session handover"
+    }});
+    let (exact, routes) = routed_exact(decide(&handover, &env));
+    assert_eq!(exact.code, 0);
+    assert_eq!(routes[0].outcome, "exempt");
+    assert!(!routes[0].delegate, "handover advisory is not a forced delegation");
+
+    let (exact, routes) = routed_exact(Some(fail_closed()));
+    assert_eq!(exact.code, 2);
+    assert_eq!(routes[0].outcome, "deny");
+    assert!(!routes[0].delegate, "generic fail-closed deny is not a cheaper-model delegation");
+}
+
+#[test]
 fn row6_research_advises_explore() {
     let env = RequestEnv::from_pairs([("HOME", "/tmp")]);
     let p = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":"/tmp","tool_input":{
@@ -96,6 +142,45 @@ fn row6_research_advises_explore() {
     let Some(Verdict::Routed(inner, route)) = decide(&p, &env) else { panic!("expected routed verdict") };
     assert!(matches!(*inner, Verdict::Exact(ref x) if x.code == 0 && x.out.contains("subagent_type:'Explore'")));
     assert_eq!(route[0].task_class, "research");
+}
+
+#[test]
+fn delegate_is_only_for_blocking_routing_down_decisions() {
+    let env = RequestEnv::from_pairs([("HOME", "/tmp")]);
+    for (name, payload, outcome, delegate) in [
+        ("row1-block", mechanical_payload(Some("opus")), "down", true),
+        (
+            "row1-role-advice",
+            json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":"/tmp","tool_input":{
+                "model":"opus","subagent_type":"general-purpose","description":"Reviewer","prompt":"fetch and download the dump, tail the logs"
+            }}),
+            "down",
+            false,
+        ),
+        (
+            "update-block",
+            json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":"/tmp","tool_input":{
+                "model":"sonnet","subagent_type":"general-purpose","description":"update","prompt":"Please run /anti-hall:update and report"
+            }}),
+            "exempt",
+            false,
+        ),
+        (
+            "deploy-up-advice",
+            json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":"/tmp","tool_input":{
+                "model":"haiku","subagent_type":"general-purpose","description":"deploy","prompt":"firebase deploy --only functions"
+            }}),
+            "up",
+            false,
+        ),
+    ] {
+        let Some(Verdict::Routed(_, routes)) = decide(&payload, &env) else { panic!("{name}: expected routed verdict") };
+        assert_eq!(routes[0].outcome, outcome, "{name}: outcome");
+        if name == "update-block" {
+            assert_eq!(routes[0].task_class, "update", "{name}: must execute the update branch");
+        }
+        assert_eq!(routes[0].delegate, delegate, "{name}: delegate");
+    }
 }
 
 #[test]
@@ -167,42 +252,71 @@ fn routing_off_bypasses_update_handover_state_and_jev() {
 }
 
 #[test]
-fn parent_model_is_unknown_even_when_child_model_is_named() {
+fn parent_model_uses_payload_model_else_unknown_and_selected_model_is_recorded() {
     let env = RequestEnv::from_pairs([("HOME", "/tmp")]);
     for model in [Some("opus"), Some("fable"), None] {
-        let (_, routes) = routed_exact(decide(&mechanical_payload(model), &env));
+        let mut payload = mechanical_payload(model);
+        let (_, routes) = routed_exact(decide(&payload, &env));
         assert_eq!(routes[0].parent_model, "inherit:unknown");
         assert_eq!(routes[0].requested_model, model.unwrap_or("inherit:unknown"));
+        if model == Some("opus") || model.is_none() {
+            assert_eq!(routes[0].selected_model, "haiku");
+        }
+        payload["model"] = json!("sonnet");
+        let (_, routes) = routed_exact(decide(&payload, &env));
+        assert_eq!(routes[0].parent_model, "sonnet");
     }
 }
 
 #[test]
-fn spawn_identity_survives_routing_changes_and_distinguishes_requests() {
+fn spawn_key_prefers_tool_use_id_and_never_depends_on_prompt_text() {
     let mut payload = mechanical_payload(Some("opus"));
-    let original = route_key(&payload);
+    let subagent_type = "general-purpose";
+    let original = route_key(&payload, subagent_type, "opus");
     payload["tool_input"]["model"] = json!("haiku");
-    assert_eq!(original, route_key(&payload));
+    assert_ne!(original, route_key(&payload, subagent_type, "haiku"));
     payload["tool_input"]["prompt"] = json!("fetch another endpoint");
-    assert_ne!(original, route_key(&payload));
+    assert_eq!(original, route_key(&payload, subagent_type, "opus"));
     payload["session_id"] = json!("another-session");
-    assert_ne!(original, route_key(&payload));
+    assert_ne!(original, route_key(&payload, subagent_type, "opus"));
     payload["tool_use_id"] = json!("call-1");
     payload["turn_id"] = json!("turn-1");
-    let call = route_key(&payload);
+    let call = route_key(&payload, subagent_type, "opus");
     payload["tool_input"]["model"] = json!("opus");
-    assert_eq!(call, route_key(&payload));
+    assert_eq!(call, route_key(&payload, subagent_type, "opus"));
     payload["tool_use_id"] = json!("call-2");
     payload["turn_id"] = json!("turn-2");
-    assert_eq!(call, route_key(&payload));
+    assert_ne!(call, route_key(&payload, subagent_type, "opus"));
+    payload["tool_use_id"] = json!("call-1");
     payload["tool_input"]["prompt"] = json!("fetch a different task");
-    assert_ne!(call, route_key(&payload));
+    assert_eq!(call, route_key(&payload, subagent_type, "opus"));
     payload["agent_id"] = json!("another-parent-agent");
-    assert_ne!(original, route_key(&payload));
+    assert_eq!(call, route_key(&payload, subagent_type, "opus"));
+    payload.as_object_mut().unwrap().remove("tool_use_id");
+    payload.as_object_mut().unwrap().remove("agent_id");
+    payload["tool_input"]["prompt"] = json!(format!("SECRET_PROMPT_MARKER {}", "x".repeat(1024 * 1024)));
+    let huge = route_key(&payload, subagent_type, "opus");
+    payload["tool_input"]["prompt"] = json!("tiny different prompt");
+    payload["tool_input"]["description"] = json!("SECRET_DESCRIPTION_MARKER");
+    assert_eq!(huge, route_key(&payload, subagent_type, "opus"));
+    let huge_subagent = format!("{}{}", "s".repeat(defaults::num("telemetry.token_max_len") as usize), "SECRET_SUBAGENT_MARKER".repeat(1024));
+    let huge_model = format!("{}{}", "m".repeat(defaults::num("telemetry.token_max_len") as usize), "SECRET_MODEL_MARKER".repeat(1024));
+    let bounded = route_key(&payload, &huge_subagent, &huge_model);
+    assert_eq!(
+        bounded,
+        route_key(
+            &payload,
+            &huge_subagent[..defaults::num("telemetry.token_max_len") as usize],
+            &huge_model[..defaults::num("telemetry.token_max_len") as usize]
+        )
+    );
+    assert!(!huge.contains("SECRET"));
+    assert!(!bounded.contains("SECRET"));
     assert!(call.len() < defaults::num("telemetry.token_max_len") as usize);
 }
 
 #[test]
-fn respawn_with_new_call_and_turn_ids_links_to_the_first_requested_model() {
+fn route_events_with_different_tool_use_ids_do_not_join_to_the_same_spawn() {
     use crate::telemetry::event::{Event, Extras, Kind, Outcome, Route, RouteOutcome, Spawn, Token, Usage};
     let env = RequestEnv::from_pairs([("HOME", "/tmp")]);
     let mut payload = mechanical_payload(Some("opus"));
@@ -220,6 +334,7 @@ fn respawn_with_new_call_and_turn_ids_links_to_the_first_requested_model() {
             parent_model: Token::sanitize(&meta.parent_model),
             task_class: Token::sanitize(&meta.task_class),
             recommended_tier: Token::sanitize(&meta.recommended_tier),
+            selected_model: Token::sanitize(&meta.selected_model),
             outcome: RouteOutcome::Allow,
             spawn_key: Token::sanitize(&meta.spawn_key),
         })
@@ -244,10 +359,10 @@ fn respawn_with_new_call_and_turn_ids_links_to_the_first_requested_model() {
         ),
     ];
     let (chains, unlinked) = crate::telemetry::route::chains(&events, 10);
-    assert_eq!(unlinked, 0);
+    assert_eq!(unlinked, 1);
     assert_eq!(chains.len(), 1);
-    assert_eq!(chains[0].decisions, 2);
-    assert_eq!(chains[0].origin.requested_model.as_str(), "opus");
+    assert_eq!(chains[0].decisions, 1);
+    assert_eq!(chains[0].origin.requested_model.as_str(), "haiku");
 }
 
 #[test]
@@ -277,22 +392,23 @@ fn fail_closed_is_never_defer_or_silent_allow() {
     assert_eq!(x.code, 2);
     assert!(x.out.contains("\"decision\":\"block\"") && x.out.contains("model-routing"));
     assert_eq!(routes.len(), 1);
-    assert!(routes[0].delegate);
+    assert!(!routes[0].delegate);
     assert_eq!((&*routes[0].outcome, &*routes[0].task_class), ("deny", "unknown"));
 }
 
 #[test]
-fn subject_tool_overrides_payload_tool_and_missing_subject_uses_payload() {
+fn model_routing_ignores_subject_and_payload_tool_name_like_node() {
     let env = RequestEnv::from_pairs([("HOME", "/tmp")]);
     let mut payload = mechanical_payload(Some("opus"));
-    payload["tool_name"] = json!("Bash");
-    let subject = Subject { event: "PreToolUse", tool: Some("Agent"), cwd: None, tool_input: &payload["tool_input"], prompt: None };
-    assert_eq!(routed_exact(ModelRouting.run_env(&subject, &payload, &Value::Null, &env)).0.code, 2);
-    let subject = Subject { tool: Some("Bash"), ..subject };
-    let payload = mechanical_payload(Some("opus"));
-    assert!(ModelRouting.run_env(&subject, &payload, &Value::Null, &env).is_none());
-    let subject = Subject { tool: None, ..subject };
-    assert_eq!(routed_exact(ModelRouting.run_env(&subject, &payload, &Value::Null, &env)).0.code, 2);
+    for tool in [None, Some("Agent "), Some("Workflow"), Some("codex:Task"), Some("spawn_agent")] {
+        if let Some(tool) = tool {
+            payload["tool_name"] = json!(tool);
+        } else {
+            payload.as_object_mut().unwrap().remove("tool_name");
+        }
+        let subject = Subject { event: "PreToolUse", tool, cwd: None, tool_input: &payload["tool_input"], prompt: None };
+        assert_eq!(routed_exact(ModelRouting.run_env(&subject, &payload, &Value::Null, &env)).0.code, 2, "{tool:?}");
+    }
 }
 
 #[test]

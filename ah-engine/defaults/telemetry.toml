@@ -123,7 +123,7 @@ value = 200000
 min = 100
 
 [telemetry.inherit_prefix]
-doc = "Prefix the Node routing log puts on a model name that was inherited from the parent rather than named; ignored when pricing."
+doc = "Prefix used when a route event records an inherited model. The model-routing hook can use a parent_model field from the hook payload; otherwise it records inherit:unknown because no current settings source exposes the parent model."
 value = "inherit:"
 
 [telemetry.hook_label]
@@ -318,7 +318,7 @@ doc = "A context-action rule matched and injected text for the agent."
 value = { counted = "exact" }
 
 [impact.route]
-doc = "A model-routing decision at agent spawn (D78/D86). The check is the routing check and the reason is what it did: down, up, allow, exempt, advise, deny, or delegate; a forced-delegation deny records a deny route event plus a delegate event."
+doc = "A model-routing decision at agent spawn (D78/D86). Route events carry requested_model, parent_model, task_class, recommended_tier, selected_model, outcome and spawn_key; legacy route rows without selected_model are read with a deterministic fallback. A forced cheaper-model delegation also records a delegate event with spawn_key, requested_model, selected_model and task_class, never prompt or description text."
 value = { counted = "exact" }
 
 [impact.fallback]

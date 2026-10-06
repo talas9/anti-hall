@@ -61,6 +61,8 @@ pub struct RouteMeta {
     pub task_class: String,
     /// Recommended model tier.
     pub recommended_tier: String,
+    /// Model selected by the decision, or the inherited parent model when no child model was named.
+    pub selected_model: String,
     /// Route decision outcome (`allow`, `advise`, or `deny`).
     pub outcome: String,
     /// Opaque key for linking with spawn telemetry.
@@ -169,7 +171,7 @@ pub fn cli_main(name: &str) -> i32 {
     let null = Value::Null;
     let subject = Subject {
         event: p.get("hook_event_name").and_then(Value::as_str).unwrap_or("PreToolUse"),
-        tool: p.get("tool_name").and_then(Value::as_str),
+        tool: if name == "model-routing" { None } else { p.get("tool_name").and_then(Value::as_str) },
         cwd: p.get("cwd").and_then(Value::as_str),
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),

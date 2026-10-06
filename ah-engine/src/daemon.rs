@@ -392,7 +392,7 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
     }
 
     fn route(&self, check: &str, event: &str, route: &crate::checks::RouteMeta) {
-        use crate::telemetry::event::{Event, Extras, Kind, Outcome, Route, RouteOutcome, Token};
+        use crate::telemetry::event::{Delegate, Event, Extras, Kind, Outcome, Route, RouteOutcome, Token};
         let outcome = if route.delegate { RouteOutcome::Deny } else { RouteOutcome::parse(&route.outcome).unwrap_or(RouteOutcome::Advise) };
         let ev = Event {
             ts_ms: crate::health::now_ms(),
@@ -413,6 +413,7 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
                 parent_model: Token::sanitize(&route.parent_model),
                 task_class: Token::sanitize(&route.task_class),
                 recommended_tier: Token::sanitize(&route.recommended_tier),
+                selected_model: Token::sanitize(&route.selected_model),
                 outcome,
                 spawn_key: Token::sanitize(&route.spawn_key),
             }),
@@ -427,7 +428,12 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
                 o: Outcome::Block,
                 ms: 0,
                 ib: 0,
-                extras: Extras::None,
+                extras: Extras::Delegate(Delegate {
+                    spawn_key: Token::sanitize(&route.spawn_key),
+                    requested_model: Token::sanitize(&route.requested_model),
+                    selected_model: Token::sanitize(&route.selected_model),
+                    task_class: Token::sanitize(&route.task_class),
+                }),
             });
         }
     }
@@ -1091,6 +1097,36 @@ mod tests {
     fn malformed_payload_is_an_error_reply_never_an_allow() {
         assert!(matches!(call("V 0.1.0\nnot json at all", "0.1.0").0, Reply::Err(_)));
         assert!(matches!(call("V 0.1.0\n", "0.1.0").0, Reply::Err(_)));
+    }
+
+    #[test]
+    fn forced_delegation_route_and_delegate_events_are_linkable_and_ledger_ready() {
+        let t = Telemetry::new();
+        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse" };
+        let route = crate::checks::RouteMeta {
+            requested_model: "opus".into(),
+            parent_model: "opus".into(),
+            task_class: "mechanical".into(),
+            recommended_tier: "haiku".into(),
+            selected_model: "haiku".into(),
+            outcome: "down".into(),
+            spawn_key: "spawn-key1".into(),
+            delegate: true,
+        };
+        crate::hookio::Observer::route(&obs, "model-routing", "PreToolUse", &route);
+        let routes = t.telemetry_json("events", "1d", "route", 10);
+        let delegates = t.telemetry_json("events", "1d", "delegate", 10);
+        assert_eq!(routes["count"], 1);
+        assert_eq!(delegates["count"], 1);
+        let r = &routes["events"][0];
+        let d = &delegates["events"][0];
+        assert_eq!(r["spawn_key"], d["spawn_key"]);
+        assert_eq!(r["requested_model"], "opus");
+        assert_eq!(r["selected_model"], "haiku");
+        assert_eq!(r["outcome"], "deny");
+        assert_eq!(d["requested_model"], "opus");
+        assert_eq!(d["selected_model"], "haiku");
+        assert_eq!(d["task_class"], "mechanical");
     }
 
     #[test]

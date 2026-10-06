@@ -443,6 +443,7 @@ mod tests {
                 parent_model: tk("opus"),
                 task_class: tk("mechanical"),
                 recommended_tier: tk("haiku"),
+                selected_model: tk("haiku"),
                 outcome: RouteOutcome::Down,
                 spawn_key: tk("key1"),
             }),

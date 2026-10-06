@@ -26,6 +26,18 @@ fn payload(tool_input: Value) -> Value {
     json!({"hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":tool_input,"session_id":"t","cwd":std::env::current_dir().unwrap()})
 }
 
+fn payload_with_tool_name(tool_name: Option<&str>, tool_input: Value) -> Value {
+    let mut p = serde_json::Map::new();
+    p.insert("hook_event_name".into(), json!("PreToolUse"));
+    if let Some(tool_name) = tool_name {
+        p.insert("tool_name".into(), json!(tool_name));
+    }
+    p.insert("tool_input".into(), tool_input);
+    p.insert("session_id".into(), json!("t"));
+    p.insert("cwd".into(), json!(std::env::current_dir().unwrap()));
+    Value::Object(p)
+}
+
 fn payload_raw_tool_input(tool_input: Option<Value>) -> Value {
     let mut p = serde_json::Map::new();
     p.insert("hook_event_name".into(), json!("PreToolUse"));
@@ -133,6 +145,25 @@ fn cases() -> Vec<Case> {
         env: Vec::new(),
         skip: false,
     });
+    for (name, tool_name) in [
+        ("tool-name-missing-row1-opus-block", None),
+        ("tool-name-space-row1-opus-block", Some("Agent ")),
+        ("tool-name-workflow-row1-opus-block", Some("Workflow")),
+        ("tool-name-codex-task-row1-opus-block", Some("codex:Task")),
+        ("tool-name-spawn-agent-row1-opus-block", Some("spawn_agent")),
+    ] {
+        out.push(Case {
+            name: name.into(),
+            payload: payload_with_tool_name(
+                tool_name,
+                json!({"model":"opus","subagent_type":"general-purpose","description":"fetch logs","prompt":"fetch logs and list files"}),
+            ),
+            raw: None,
+            expect_divergence: false,
+            env: Vec::new(),
+            skip: false,
+        });
+    }
     add(
         &mut out,
         "row1-role-advice",
@@ -562,6 +593,25 @@ fn cases() -> Vec<Case> {
             }
         }
     }
+    for (label, tool_name) in [
+        ("tool-missing", None),
+        ("tool-space", Some("Agent ")),
+        ("tool-workflow", Some("Workflow")),
+        ("tool-codex-task", Some("codex:Task")),
+        ("tool-spawn-agent", Some("spawn_agent")),
+    ] {
+        out.push(Case {
+            name: format!("generated-{label}"),
+            payload: payload_with_tool_name(
+                tool_name,
+                json!({"model":"opus","subagent_type":"general-purpose","description":"generated tool-name parity","prompt":"fetch and download dump then tail logs"}),
+            ),
+            raw: None,
+            expect_divergence: false,
+            env: Vec::new(),
+            skip: false,
+        });
+    }
     out
 }
 
@@ -611,12 +661,17 @@ fn assert_route_metadata(case: &Case, home: &Path, node: &(i32, Vec<u8>, Vec<u8>
     use ah_engine::reqenv::RequestEnv;
     use ah_engine::rules::Subject;
     let expected = match case.name.as_str() {
-        "row1-opus-block" => ("mechanical", "haiku", "down", true, "opus"),
-        "row2-strict-block" => ("mechanical", "haiku", "down", true, "inherit:unknown"),
-        "row1-role-advice" => ("mechanical", "haiku", "down", false, "fable"),
-        "research-explore" => ("research", "Explore", "exempt", false, "sonnet"),
-        "deploy-haiku-advice" => ("deploy", "sonnet", "up", false, "haiku"),
-        "row5-haiku-mechanical" => ("unknown", "haiku", "allow", false, "haiku"),
+        "row1-opus-block" => ("mechanical", "haiku", "haiku", "down", true, "opus"),
+        "tool-name-missing-row1-opus-block" => ("mechanical", "haiku", "haiku", "down", true, "opus"),
+        "tool-name-space-row1-opus-block" => ("mechanical", "haiku", "haiku", "down", true, "opus"),
+        "tool-name-workflow-row1-opus-block" => ("mechanical", "haiku", "haiku", "down", true, "opus"),
+        "tool-name-codex-task-row1-opus-block" => ("mechanical", "haiku", "haiku", "down", true, "opus"),
+        "tool-name-spawn-agent-row1-opus-block" => ("mechanical", "haiku", "haiku", "down", true, "opus"),
+        "row2-strict-block" => ("mechanical", "haiku", "haiku", "down", true, "inherit:unknown"),
+        "row1-role-advice" => ("mechanical", "haiku", "haiku", "down", false, "fable"),
+        "research-explore" => ("research", "Explore", "sonnet", "exempt", false, "sonnet"),
+        "deploy-haiku-advice" => ("deploy", "sonnet", "sonnet", "up", false, "haiku"),
+        "row5-haiku-mechanical" => ("unknown", "haiku", "haiku", "allow", false, "haiku"),
         _ => return false,
     };
     let mut pairs = vec![("HOME".to_string(), home.to_string_lossy().into_owned())];
@@ -628,7 +683,14 @@ fn assert_route_metadata(case: &Case, home: &Path, node: &(i32, Vec<u8>, Vec<u8>
     assert_eq!(meta.len(), 1, "{}: exactly one route", case.name);
     let route = &meta[0];
     assert_eq!(
-        (route.task_class.as_str(), route.recommended_tier.as_str(), route.outcome.as_str(), route.delegate, route.requested_model.as_str()),
+        (
+            route.task_class.as_str(),
+            route.recommended_tier.as_str(),
+            route.selected_model.as_str(),
+            route.outcome.as_str(),
+            route.delegate,
+            route.requested_model.as_str()
+        ),
         expected,
         "{}: telemetry",
         case.name
@@ -651,7 +713,7 @@ fn node_and_engine_outputs_match_for_model_routing_table() {
     let rows: Vec<_> = cases().into_iter().filter(|case| !case.expect_divergence).collect();
     let generated = rows.iter().filter(|case| case.name.starts_with("generated-")).count();
     assert!(generated >= 200, "need at least 200 generated rows independently of fixtures, got {generated}");
-    assert_eq!(generated, 10 * 6 * 4, "generated Cartesian corpus must not silently shrink");
+    assert_eq!(generated, 10 * 6 * 4 + 5, "generated Cartesian corpus plus tool-name rows must not silently shrink");
     let mut mismatches = Vec::new();
     let mut telemetry_fixtures = 0;
     for (i, case) in rows.iter().enumerate() {
@@ -698,7 +760,7 @@ fn node_and_engine_outputs_match_for_model_routing_table() {
         let _ = std::fs::remove_dir_all(rust_home);
     }
     assert!(mismatches.is_empty(), "{} / {} parity rows mismatched:\n{}", mismatches.len(), rows.len(), mismatches.join("\n\n"));
-    assert_eq!(telemetry_fixtures, 6);
+    assert_eq!(telemetry_fixtures, 11);
     println!("model-routing parity: {} / {} exact matches ({generated} generated, {} fixtures); D74 excluded", rows.len(), rows.len(), rows.len() - generated);
     println!("model-routing telemetry: {telemetry_fixtures} route metadata fixtures preserve exact Node output");
 }

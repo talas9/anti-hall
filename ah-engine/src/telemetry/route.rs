@@ -269,6 +269,7 @@ mod tests {
                 parent_model: t(parent),
                 task_class: t("mechanical"),
                 recommended_tier: t("haiku"),
+                selected_model: t("haiku"),
                 outcome,
                 spawn_key: t(key),
             }),

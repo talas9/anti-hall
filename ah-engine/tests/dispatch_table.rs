@@ -101,3 +101,38 @@ fn every_registered_check_answers_an_entry_somewhere() {
         assert!(named.iter().any(|n| n == c.name()), "no table entry names the built-in check {}", c.name());
     }
 }
+
+#[test]
+fn model_routing_dispatch_entries_stay_scoped_to_agent_and_task() {
+    let mut registered_hosts = 0;
+    for host in table::hosts() {
+        let matchers: Vec<String> =
+            table::entries(host, "PreToolUse").into_iter().filter(|e| e.check.as_deref() == Some("model-routing")).map(|e| e.matcher).collect();
+        if !matchers.is_empty() {
+            registered_hosts += 1;
+            assert_eq!(matchers, vec!["Agent".to_string(), "Task".to_string()], "{host}: model-routing must remain registered only for Agent and Task");
+        }
+    }
+    assert!(registered_hosts > 0, "at least one host must register model-routing dispatch entries");
+}
+
+#[test]
+fn model_routing_dispatch_entries_still_match_only_agent_and_task() {
+    for host in table::hosts() {
+        let has_model_routing = table::entries(host, "PreToolUse").into_iter().any(|e| e.check.as_deref() == Some("model-routing"));
+        for (tool, expected_when_registered) in [
+            ("Agent", vec!["model-routing-guard"]),
+            ("Task", vec!["model-routing-guard#2"]),
+            ("Agent ", Vec::<&str>::new()),
+            ("Workflow", Vec::<&str>::new()),
+            ("codex:Task", Vec::<&str>::new()),
+            ("spawn_agent", Vec::<&str>::new()),
+        ] {
+            let p = serde_json::json!({"hook_event_name":"PreToolUse","tool_name":tool,"tool_input":{"model":"opus","prompt":"fetch logs"}});
+            let got: Vec<String> =
+                table::select(host, "PreToolUse", &p, None).into_iter().filter(|e| e.check.as_deref() == Some("model-routing")).map(|e| e.id).collect();
+            let expected = if has_model_routing { expected_when_registered } else { Vec::<&str>::new() };
+            assert_eq!(got, expected, "{host} {tool:?}");
+        }
+    }
+}

@@ -188,6 +188,15 @@ impl RouteOutcome {
     }
 }
 
+fn legacy_selected_model(requested: &Token, parent: &Token, recommended: &Token, outcome: RouteOutcome) -> Token {
+    match outcome {
+        RouteOutcome::Down | RouteOutcome::Up => recommended.clone(),
+        RouteOutcome::Exempt if recommended.as_str() != requested.as_str() => recommended.clone(),
+        _ if requested.as_str().starts_with(defaults::text("telemetry.inherit_prefix")) => parent.clone(),
+        _ => requested.clone(),
+    }
+}
+
 /// A short identifier: the only kind of string a telemetry event can hold. Built with [`Token::new`] (strict: refuses
 /// anything else) or [`Token::sanitize`] (lossy: for names that arrive from outside on the hot path).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -260,6 +269,8 @@ pub struct Route {
     pub task_class: Token,
     /// The tier the routing table recommends.
     pub recommended_tier: Token,
+    /// The model selected by the decision, or the inherited parent model when no child model was named.
+    pub selected_model: Token,
     /// What the check did.
     pub outcome: RouteOutcome,
     /// Opaque key linking this decision to the spawn result.
@@ -275,6 +286,19 @@ pub struct Spawn {
     pub actual_model: Token,
     /// What it used.
     pub usage: Usage,
+}
+
+/// A forced delegation decision linked to its route event (D86).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delegate {
+    /// The key of the route event this delegate belongs to.
+    pub spawn_key: Token,
+    /// The model requested by the spawn.
+    pub requested_model: Token,
+    /// The model selected by the routing decision.
+    pub selected_model: Token,
+    /// The task class the check assigned.
+    pub task_class: Token,
 }
 
 /// A Jev call (the call's latency is the event's `ms`).
@@ -303,6 +327,8 @@ pub enum Extras {
     Jev(Jev),
     /// A spilled injection: its size in bytes.
     Spill(u64),
+    /// A forced delegation decision.
+    Delegate(Delegate),
 }
 
 /// One telemetry event: the fixed short fields (`k`, `h`, `e`, `o`, `ms`, `ib`) plus typed extras.
@@ -332,11 +358,12 @@ const FIXED: &[&str] = &["ts", "k", "h", "e", "o", "ms", "ib"];
 /// The extra fields a kind's events carry; every other field name is refused.
 fn extra_fields(kind: Kind) -> &'static [&'static str] {
     match kind {
-        Kind::Route => &["requested_model", "parent_model", "task_class", "recommended_tier", "outcome", "spawn_key"],
+        Kind::Route => &["requested_model", "parent_model", "task_class", "recommended_tier", "selected_model", "outcome", "spawn_key"],
         Kind::Spawn => &["spawn_key", "actual_model", "in", "out", "cr", "cw"],
         Kind::Jev => &["integration", "mode", "verdict", "cost_uc"],
         Kind::Spill => &["bytes"],
-        Kind::Hook | Kind::Check | Kind::Delegate => &[],
+        Kind::Delegate => &["spawn_key", "requested_model", "selected_model", "task_class"],
+        Kind::Hook | Kind::Check => &[],
     }
 }
 
@@ -346,6 +373,7 @@ impl Event {
         match &self.extras {
             Extras::Route(r) => Some(r.spawn_key.as_str()),
             Extras::Spawn(s) => Some(s.spawn_key.as_str()),
+            Extras::Delegate(d) => Some(d.spawn_key.as_str()),
             _ => None,
         }
     }
@@ -367,6 +395,7 @@ impl Event {
                 m.insert("parent_model".into(), json!(r.parent_model.as_str()));
                 m.insert("task_class".into(), json!(r.task_class.as_str()));
                 m.insert("recommended_tier".into(), json!(r.recommended_tier.as_str()));
+                m.insert("selected_model".into(), json!(r.selected_model.as_str()));
                 m.insert("outcome".into(), json!(r.outcome.name()));
                 m.insert("spawn_key".into(), json!(r.spawn_key.as_str()));
             }
@@ -386,6 +415,12 @@ impl Event {
             }
             Extras::Spill(b) => {
                 m.insert("bytes".into(), json!(b));
+            }
+            Extras::Delegate(d) => {
+                m.insert("spawn_key".into(), json!(d.spawn_key.as_str()));
+                m.insert("requested_model".into(), json!(d.requested_model.as_str()));
+                m.insert("selected_model".into(), json!(d.selected_model.as_str()));
+                m.insert("task_class".into(), json!(d.task_class.as_str()));
             }
         }
         Value::Object(m)
@@ -416,14 +451,19 @@ impl Event {
         };
         let o = Outcome::parse(name_of("o")?).ok_or(TelemetryError::UnknownName)?;
         let extras = match kind {
-            Kind::Route => Extras::Route(Route {
-                requested_model: tok("requested_model")?,
-                parent_model: tok("parent_model")?,
-                task_class: tok("task_class")?,
-                recommended_tier: tok("recommended_tier")?,
-                outcome: RouteOutcome::parse(name_of("outcome")?).ok_or(TelemetryError::UnknownName)?,
-                spawn_key: tok("spawn_key")?,
-            }),
+            Kind::Route => {
+                let requested_model = tok("requested_model")?;
+                let parent_model = tok("parent_model")?;
+                let task_class = tok("task_class")?;
+                let recommended_tier = tok("recommended_tier")?;
+                let outcome = RouteOutcome::parse(name_of("outcome")?).ok_or(TelemetryError::UnknownName)?;
+                let selected_model = if m.contains_key("selected_model") {
+                    tok("selected_model")?
+                } else {
+                    legacy_selected_model(&requested_model, &parent_model, &recommended_tier, outcome)
+                };
+                Extras::Route(Route { requested_model, parent_model, task_class, recommended_tier, selected_model, outcome, spawn_key: tok("spawn_key")? })
+            }
             Kind::Spawn => Extras::Spawn(Spawn {
                 spawn_key: tok("spawn_key")?,
                 actual_model: tok("actual_model")?,
@@ -431,7 +471,13 @@ impl Event {
             }),
             Kind::Jev => Extras::Jev(Jev { integration: tok("integration")?, mode: tok("mode")?, verdict: tok("verdict")?, cost_uc: num("cost_uc")? }),
             Kind::Spill => Extras::Spill(num("bytes")?),
-            Kind::Hook | Kind::Check | Kind::Delegate => Extras::None,
+            Kind::Delegate => Extras::Delegate(Delegate {
+                spawn_key: tok("spawn_key")?,
+                requested_model: tok("requested_model")?,
+                selected_model: tok("selected_model")?,
+                task_class: tok("task_class")?,
+            }),
+            Kind::Hook | Kind::Check => Extras::None,
         };
         Ok(Event { ts_ms, kind, h: tok("h")?, e: tok("e")?, o, ms: num("ms")?.min(u32::MAX as u64) as u32, ib: num("ib")?, extras })
     }
@@ -490,6 +536,7 @@ mod tests {
                 parent_model: Token::new("opus").unwrap(),
                 task_class: Token::new("mechanical").unwrap(),
                 recommended_tier: Token::new("haiku").unwrap(),
+                selected_model: Token::new("haiku").unwrap(),
                 outcome: RouteOutcome::Down,
                 spawn_key: Token::new("0123456789abcdef").unwrap(),
             }),
@@ -513,12 +560,39 @@ mod tests {
                 }),
             ),
             (Kind::Spill, Extras::Spill(9000)),
-            (Kind::Delegate, Extras::None),
+            (
+                Kind::Delegate,
+                Extras::Delegate(Delegate {
+                    spawn_key: Token::new("k1").unwrap(),
+                    requested_model: Token::new("opus").unwrap(),
+                    selected_model: Token::new("haiku").unwrap(),
+                    task_class: Token::new("mechanical").unwrap(),
+                }),
+            ),
             (Kind::Hook, Extras::None),
         ] {
             let e = Event { kind, extras: ex, ..route() };
             assert_eq!(Event::from_json(&e.to_json()).unwrap(), e);
         }
+    }
+
+    #[test]
+    fn legacy_route_json_without_selected_model_gets_deterministic_fallback() {
+        let mut v = route().to_json();
+        v.as_object_mut().unwrap().remove("selected_model");
+        let parsed = Event::from_json(&v).unwrap();
+        let Extras::Route(r) = parsed.extras else { panic!("expected route extras") };
+        assert_eq!(r.selected_model.as_str(), "haiku");
+
+        let mut v = route().to_json();
+        v.as_object_mut().unwrap().remove("selected_model");
+        v["requested_model"] = json!("inherit:unknown");
+        v["parent_model"] = json!("sonnet");
+        v["recommended_tier"] = json!("inherit");
+        v["outcome"] = json!("allow");
+        let parsed = Event::from_json(&v).unwrap();
+        let Extras::Route(r) = parsed.extras else { panic!("expected route extras") };
+        assert_eq!(r.selected_model.as_str(), "sonnet");
     }
 
     #[test]
@@ -542,6 +616,42 @@ mod tests {
         let mut v = route().to_json();
         v["bytes"] = json!(1);
         assert_eq!(Event::from_json(&v), Err(TelemetryError::UnknownField));
+    }
+
+    #[test]
+    fn forced_delegation_route_and_delegate_json_join_on_spawn_key() {
+        let route = route();
+        let key = route.spawn_key().unwrap().to_string();
+        let delegate = Event {
+            ts_ms: route.ts_ms + 1,
+            kind: Kind::Delegate,
+            h: Token::new("model-routing").unwrap(),
+            e: Token::new("PreToolUse").unwrap(),
+            o: Outcome::Block,
+            ms: 0,
+            ib: 0,
+            extras: Extras::Delegate(Delegate {
+                spawn_key: Token::new(&key).unwrap(),
+                requested_model: Token::new("opus").unwrap(),
+                selected_model: Token::new("haiku").unwrap(),
+                task_class: Token::new("mechanical").unwrap(),
+            }),
+        };
+        let route_json = route.to_json();
+        let delegate_json = delegate.to_json();
+        assert_eq!(route_json["spawn_key"], delegate_json["spawn_key"]);
+        assert_eq!(route_json["requested_model"], "opus");
+        assert_eq!(route_json["selected_model"], "haiku");
+        assert_eq!(route_json["outcome"], "down");
+        assert_eq!(delegate_json["requested_model"], "opus");
+        assert_eq!(delegate_json["selected_model"], "haiku");
+        assert_eq!(delegate_json["task_class"], "mechanical");
+        for field in ["prompt", "description"] {
+            assert!(route_json.get(field).is_none());
+            assert!(delegate_json.get(field).is_none());
+        }
+        assert_eq!(Event::from_json(&route_json).unwrap(), route);
+        assert_eq!(Event::from_json(&delegate_json).unwrap(), delegate);
     }
 
     #[test]
