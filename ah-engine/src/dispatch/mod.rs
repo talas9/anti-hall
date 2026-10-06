@@ -523,9 +523,6 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         results[i] = Some(f.result);
     }
     let results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
-    if guard && stoploop::is_stop_event(&args.event) && results.iter().any(|r| r.code == Some(2)) {
-        return closed(&args.event, parsed.as_ref(), "mutated genuine Stop block");
-    }
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     match combine::combine(&results) {
         combine::Combined::Answer(mut o) => {
