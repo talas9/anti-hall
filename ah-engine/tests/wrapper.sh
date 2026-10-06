@@ -890,6 +890,59 @@ test_temp_base_prefers_home_then_xdg() {
   [ "$(cat "$tmp/preferxdg.out")" = xdg-ok ]
 }
 
+now_ms() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000'
+  else
+    printf '%s000\n' "$(date +%s)"
+  fi
+}
+
+test_healthy_engine_returns_immediately_every_shell() {
+  e=$tmp/engine-instant.sh
+  printf '#!/bin/sh\ncat >/dev/null; printf ok\nexit 0\n' >"$e"
+  chmod +x "$e"
+  : >"$tmp/instant.list"
+  ran_any=0
+  for shname in sh dash bash; do
+    command -v "$shname" >/dev/null 2>&1 || continue
+    ran_any=1
+    i=0
+    while [ "$i" -lt 50 ]; do
+      t0=$(now_ms)
+      AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/instant.list" "$shname" "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/instant.out" 2>"$tmp/instant.err"
+      rc=$?
+      t1=$(now_ms)
+      if [ "$rc" -ne 0 ] || [ "$(cat "$tmp/instant.out")" != ok ] || [ -s "$tmp/instant.err" ] || [ $((t1 - t0)) -ge 500 ]; then
+        printf 'instant engine under %s run %s: rc=%s ms=%s out=%s err=%s\n' "$shname" "$i" "$rc" "$((t1 - t0))" "$(cat "$tmp/instant.out")" "$(cat "$tmp/instant.err")" >&2
+        return 1
+      fi
+      i=$((i + 1))
+    done
+  done
+  [ "$ran_any" -eq 1 ]
+}
+
+test_hanging_engine_is_cut_at_timeout_not_before() {
+  e=$(make_engine cut hang)
+  : >"$tmp/cut.list"
+  for shname in sh dash bash; do
+    command -v "$shname" >/dev/null 2>&1 || continue
+    t0=$(now_ms)
+    set +e
+    AH_STARTED="$tmp/cut.started" AH_SLEEP_S=30 AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/cut.list" AH_HOOK_TIMEOUT_S=2 AH_KILL_GRACE_S=1 "$shname" "$wrapper" Notification --tool-from-payload <"$payload" >"$tmp/cut.out" 2>"$tmp/cut.err"
+    set -e
+    t1=$(now_ms)
+    ms=$((t1 - t0))
+    # cut no earlier than the 2 s timeout, and well before the engine's own 30 s sleep
+    if [ "$ms" -lt 2000 ] || [ "$ms" -gt 8000 ] || ! grep -q 'engine timed out' "$tmp/cut.err"; then
+      printf 'hanging engine under %s: ms=%s err=%s\n' "$shname" "$ms" "$(cat "$tmp/cut.err")" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -935,6 +988,8 @@ check fallback_node_module_not_found_exit1_guard_only test_fallback_node_module_
 check ah_knobs_ignored_without_wrapper_test test_ah_knobs_ignored_without_wrapper_test
 check ah_knobs_honored_with_wrapper_test test_ah_knobs_honored_with_wrapper_test
 check temp_base_prefers_home_then_xdg test_temp_base_prefers_home_then_xdg
+check healthy_engine_returns_immediately_every_shell test_healthy_engine_returns_immediately_every_shell
+check hanging_engine_is_cut_at_timeout_not_before test_hanging_engine_is_cut_at_timeout_not_before
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

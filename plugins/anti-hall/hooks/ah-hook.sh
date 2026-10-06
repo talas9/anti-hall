@@ -532,6 +532,34 @@ remove_child() {
   children=$(printf '%s\n' "$children" | awk -v p="$gone" '{ for (i=1;i<=NF;i++) if ($i != p) printf "%s%s", sep, $i; print "" }')
 }
 
+# Timeout watchdog. It never gets signalled: it polls once a second and leaves when the watched pid is
+# gone. (Root cause of the "engine timed out after ~11 s" bug under dash and macOS sh: the old timer was a
+# `( sleep N; ... ) &` subshell that the waiter killed. A TERM that lands in the window between the fork and
+# the subshell's own `trap -` is swallowed by the parent's inherited handler, the kill is lost, the timer
+# sleeps its full timeout, `wait` blocks on it, and a healthy instant engine is then judged timed out.)
+# Its stdio is detached so a lingering timer can never hold the host's pipes open.
+start_watchdog() {
+  w_pid=$1; w_timeout=$2; w_group=$3; w_timed=$4
+  (
+    trap - 0 HUP INT TERM
+    n=0
+    while [ "$n" -lt "$w_timeout" ]; do
+      sleep 1
+      kill -0 "$w_pid" 2>/dev/null || exit 0
+      n=$((n + 1))
+    done
+    : >"$w_timed"
+    terminate_process_group "$w_pid" "$w_group"
+  ) </dev/null >/dev/null 2>&1 &
+  watch=$!
+}
+
+# After the watched pid exited: if the watchdog already fired, let it finish its kill; else just leave it.
+settle_watchdog() {
+  [ -f "$1" ] && wait "$watch" 2>/dev/null
+  return 0
+}
+
 run_hook_command() {
   cmd=$1
   timeout=$2
@@ -576,12 +604,10 @@ run_hook_command() {
   pid=$(cat "$pid_file"); group_pid=$(cat "$group_file")
   children="$children $pid"
   rm -f "$pid_file" "$group_file"
-  ( trap - 0 HUP INT TERM; sleep "$timeout"; : >"$timed"; terminate_process_group "$pid" "$group_pid" ) &
-  watch=$!
+  start_watchdog "$pid" "$timeout" "$group_pid" "$timed"
   wait "$pid" 2>/dev/null
   wait_rc=$?
-  kill "$watch" 2>/dev/null || true
-  wait "$watch" 2>/dev/null || true
+  settle_watchdog "$timed"
   remove_child "$pid"
   if [ -f "$timed" ]; then
     return 124
@@ -673,12 +699,10 @@ run_engine() {
   pid=$(cat "$pid_file"); group_pid=$(cat "$group_file")
   children="$children $pid"
   rm -f "$pid_file" "$group_file"
-  ( trap - 0 HUP INT TERM; sleep "$timeout"; : >"$eng_timed"; terminate_process_group "$pid" "$group_pid" ) &
-  watch=$!
+  start_watchdog "$pid" "$timeout" "$group_pid" "$eng_timed"
   wait "$pid" 2>/dev/null
   rc=$?
-  kill "$watch" 2>/dev/null || true
-  wait "$watch" 2>/dev/null || true
+  settle_watchdog "$eng_timed"
   remove_child "$pid"
   if [ -f "$eng_timed" ]; then
     run_fallback "engine timed out"
