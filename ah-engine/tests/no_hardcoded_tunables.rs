@@ -22,6 +22,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/frame.rs", "const MAGIC", "reply frame magic: the wire format identifier"),
     ("src/frame.rs", "const END", "reply frame trailer: the wire format identifier"),
     ("src/spool.rs", "const MAGIC", "spool record magic: the on-disk spool format identifier, versioned with the format"),
+    (
+        "src/bin/ah-gen-fallback-list.rs",
+        "# Generated from hooks.json",
+        "banner comment of the generated ah-fallback.list file: a file-format header read by humans and ignored by the wrapper, not a user-facing message",
+    ),
     ("src/hookio.rs", "pub const EXIT2", "reply-body marker for an exit-2 block: internal wire contract between daemon and client"),
     ("src/hookio.rs", "pub const EXACT", "reply-body marker for a check's exact exit code and bytes: internal wire contract between daemon and client"),
     ("src/hookio.rs", "pub const FALLBACK", "reply-body marker for a deferral: internal wire contract between daemon and client"),

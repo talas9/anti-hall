@@ -45,6 +45,7 @@ never a submodule (D69).
 ```
 cargo build --release          # binary: target/release/ah-engine
 ./test.sh                      # the full suite, then proves no daemon survived it
+sh tests/wrapper-stress.sh     # wrapper flake check under 2x-core CPU load; slow, not in ./test.sh
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo run -q -- docs --format md > REFERENCE.md   # after changing a command, setting, metric or check

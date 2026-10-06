@@ -9,6 +9,10 @@ daemons() { ps -Ao pid,command | grep -F "$tree" | grep -F "ah-engine serve" | g
 before="$(daemons)"
 cargo test --release "$@"
 rc=$?
+if [ "$rc" -eq 0 ]; then
+  sh tests/wrapper.sh
+  rc=$?
+fi
 sleep 0.3
 survivors="$(comm -13 <(printf '%s\n' "$before") <(daemons))"
 if [ -n "$survivors" ]; then
