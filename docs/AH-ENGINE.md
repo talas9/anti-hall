@@ -29,7 +29,7 @@ labelled with how it was measured in the README of `ah-engine/`.
    v
  ah-engine serve                                 (daemon, one per user, ~5 MB)
    |-- rules (JSON file)        regex rules: deny / warn / context
-   |-- checks (compiled in)     real logic a regex cannot express: the git check
+   |-- checks (compiled in)     real logic a regex cannot express: the git and command checks
    |-- telemetry                metrics (snapshots + rollups), the impact ledger, and the lock-free telemetry recorder, stored
    |-- project state            per-project mailbox and key-value pairs, in hot.db
    |-- memory layer             active key-value items (budgeted, TTL) + pub/sub channels
@@ -52,6 +52,10 @@ labelled with how it was measured in the README of `ah-engine/`.
   memory until storage is wired in (planned, D22). Where the Node verdict cannot be reproduced exactly (a block whose
   stdout and stderr the reply cannot carry yet, a regex construct, a classifier that lives in another port) the check
   defers, so Node decides.
+- **Checks.** A check is Rust code behind the `Check` trait, registered by name. Today there are two: `git`, a port of the
+  git-guard hook with 100 percent agreement with the Node original on every corpus tried, and `command`, a port of the
+  command-guard hook that answers the commands Node allows in every context and defers the rest to the Node hook, also
+  at 100 percent agreement (see the README of `ah-engine/`).
 
 ## What works today
 
@@ -69,6 +73,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `coordinator-work-guard` check: answers every call the payload proves is not the main thread (88 percent of recorded Bash calls); the window itself defers to Node until the command classifier is ported (planned, D75) | implemented in part | D29-D31, D75 |
 | Built-in `scan-throttle` check (advisory throttle prefix for user-configured heavy scans) with exact parity; patterns it cannot match exactly defer | implemented | D29-D31, D75 |
 | Built-in `ship-it-guard` check (opt-in plan gate for Edit, Write and MultiEdit; Bash and apply_patch defer to Node) with exact parity | implemented | D29-D31, D75 |
+| Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
+| `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |
@@ -420,6 +426,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `messages.toml` | every message the engine produces (failure hints, advisories, replies, errors, command-line text) |
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
+| `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
 | `telemetry.toml` | the metric and impact-kind registries, the savings method and the telemetry settings (`telemetry.enabled`, `telemetry.flush_ms`, `telemetry.retention_days`, table sizes and window defaults) |
