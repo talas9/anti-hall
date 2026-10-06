@@ -144,34 +144,16 @@ pub fn cli_main(name: &str) -> i32 {
     };
     let mut raw = String::new();
     let _ = std::io::stdin().read_to_string(&mut raw);
-    // Most built-in parity checks mirror the daemon's decode-error deferral. Model-routing is a guardrail with a D74
-    // fail-closed requirement, so its standalone parity path blocks malformed stdin instead of silently allowing it.
+    // A payload serde_json rejects is deferred to Node, which may still parse it (a lone surrogate escape): the engine
+    // must not block what Node would decide on (D74).
     let Ok(p) = serde_json::from_str::<Value>(&raw) else {
-        if name == "model-routing" {
-            match model_routing::fail_closed() {
-                Verdict::Exact(x) => {
-                    let _ = std::io::stderr().write_all(x.err.as_bytes());
-                    let _ = std::io::stdout().write_all(x.out.as_bytes());
-                    return x.code;
-                }
-                Verdict::Routed(inner, _) => match *inner {
-                    Verdict::Exact(x) => {
-                        let _ = std::io::stderr().write_all(x.err.as_bytes());
-                        let _ = std::io::stdout().write_all(x.out.as_bytes());
-                        return x.code;
-                    }
-                    _ => return 2,
-                },
-                _ => return 2,
-            }
-        }
         let _ = writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK);
         return 0;
     };
     let null = Value::Null;
     let subject = Subject {
         event: p.get("hook_event_name").and_then(Value::as_str).unwrap_or("PreToolUse"),
-        tool: if name == "model-routing" { None } else { p.get("tool_name").and_then(Value::as_str) },
+        tool: p.get("tool_name").and_then(Value::as_str),
         cwd: p.get("cwd").and_then(Value::as_str),
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),

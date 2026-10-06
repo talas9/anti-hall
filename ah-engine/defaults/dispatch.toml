@@ -248,10 +248,6 @@ value = "the hook payload is larger than {max} bytes; built-in checks are skippe
 doc = "Event-log detail when stale named raw-payload spool files were removed. Placeholder: {n}."
 value = "removed {n} stale dispatch stdin spool file(s)"
 
-[dispatch.msg_malformed_model_routing]
-doc = "Reason in dispatch.msg_fail_closed when malformed JSON reaches a model-routing Agent/Task guard row."
-value = "model-routing could not parse the hook payload"
-
 # ---- GENERATED TABLE BELOW (parity/gen-dispatch.js from the plugin's hooks.json files; do not edit by hand) ----
 # tests/dispatch_table.rs fails when hooks.json changes and this part does not: run node parity/gen-dispatch.js.
 #

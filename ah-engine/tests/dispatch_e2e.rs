@@ -400,15 +400,45 @@ fn a_guard_node_module_resolution_exit_one_is_unrunnable_but_own_exit_one_is_not
 }
 
 #[test]
-fn malformed_spawn_payload_for_model_routing_fails_closed_before_node_fallback() {
+fn unparsable_spawn_payload_blocks_only_when_node_cannot_run_model_routing() {
     let e = Env::new("mr-malformed");
     let map = e.spawn_map();
     for tool in ["Agent", "Task"] {
         let args = ["hook", "--event", "PreToolUse", "--tool", tool, "--fallback-map", map.to_str().unwrap()];
-        let (code, out, err) = e.run(&args, true, "{bad", true);
+        let (code, out, err) = e.run(&args, true, "{bad", false);
         assert_eq!((code, out.as_str()), (2, ""), "{tool}: {out:?} {err:?}");
         assert!(err.contains("model-routing") && err.contains("blocked rather than allowed unguarded"), "{tool}: {err}");
     }
+}
+
+/// A payload JS parses but serde_json rejects (a lone surrogate escape) is deferred to Node, never hard-blocked: the
+/// engine must not be a worse guard than Node. Only a missing Node command blocks.
+#[test]
+fn a_payload_only_js_can_parse_is_deferred_to_node_not_blocked() {
+    let e = Env::new("mr-surrogate");
+    let mut m: serde_json::Map<String, serde_json::Value> = ["compact-declaration-guard", "swarm-guard", "phase-tracker", "swarm-guard#2", "phase-tracker#2", "orch-on-spawn", "model-routing-guard", "model-routing-guard#2"]
+        .into_iter()
+        .map(|id| (id.to_string(), "true".into()))
+        .collect();
+    let node_ok = e.dir.join("node-ok-map.json");
+    std::fs::write(&node_ok, serde_json::json!({ "PreToolUse": m.clone() }).to_string()).unwrap();
+    m.insert("model-routing-guard".into(), r#"printf '{"decision":"block","reason":"node decided"}\n'; exit 2"#.into());
+    m.insert("model-routing-guard#2".into(), r#"printf '{"decision":"block","reason":"node decided"}\n'; exit 2"#.into());
+    let node_blocks = e.dir.join("node-blocks-map.json");
+    std::fs::write(&node_blocks, serde_json::json!({ "PreToolUse": m }).to_string()).unwrap();
+    let agent = r#"{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":"/tmp","tool_input":{"model":"sonnet","subagent_type":"general-purpose","prompt":"implement the parser \ud83d"}}"#;
+    let bash_p = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"s","cwd":"/tmp","tool_input":{"command":"echo hi \ud83d"}}"#;
+    for (tool, payload) in [("Agent", agent), ("Bash", bash_p)] {
+        let args = ["hook", "--event", "PreToolUse", "--tool", tool, "--fallback-map", node_ok.to_str().unwrap()];
+        let (code, out, err) = e.run(&args, true, payload, true);
+        assert_eq!(code, 0, "{tool}: Node allows this payload, so must the dispatcher: {out:?} {err:?}");
+        assert!(!err.contains("could not parse"), "{tool}: {err}");
+    }
+    // and Node's own decision on such a payload is what the host gets
+    let args = ["hook", "--event", "PreToolUse", "--tool", "Agent", "--fallback-map", node_blocks.to_str().unwrap()];
+    let (code, out, _) = e.run(&args, true, agent, true);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("node decided"), "{out}");
 }
 
 /// Any other event goes on with what it can run, and a usage error there stays the host's non-blocking 64.

@@ -801,22 +801,27 @@ fn same_home_repeated_handover_and_update_parity() {
 }
 
 #[test]
-fn d74_malformed_stdin_divergence_is_intentional_and_separate() {
+fn d74_unparsable_stdin_is_deferred_to_node_never_blocked() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let rows: Vec<_> = cases().into_iter().filter(|case| case.expect_divergence).collect();
+    let mut rows: Vec<(String, String)> =
+        cases().into_iter().filter(|case| case.expect_divergence).map(|c| (c.name.clone(), c.raw.clone().unwrap())).collect();
     assert_eq!(rows.len(), 2);
-    for case in &rows {
+    // valid for JS.JSON.parse, rejected by serde_json: Node decides normally (here an allow), so the engine must defer
+    rows.push((
+        "lone-surrogate-escape".into(),
+        r#"{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"t","cwd":"/tmp","tool_input":{"model":"sonnet","subagent_type":"general-purpose","prompt":"implement the parser \ud83d"}}"#.into(),
+    ));
+    for (name, input) in &rows {
+        let case = Case { name: name.clone(), payload: Value::Null, raw: Some(input.clone()), expect_divergence: true, env: Vec::new(), skip: false };
         let node_home = temp_home("node-d74");
         let rust_home = temp_home("rust-d74");
-        let input = case.raw.as_deref().unwrap();
-        let node = run_node(&repo, &node_home, case, input);
-        let rust = run_engine(&rust_home, case, input);
-        assert_eq!(node, (0, Vec::new(), Vec::new()), "{}: legacy fail-open", case.name);
-        assert_eq!(decision(&rust), "block", "{}: D74 fail-closed", case.name);
-        assert!(rust.2.is_empty(), "{}: stderr must stay empty", case.name);
+        let node = run_node(&repo, &node_home, &case, input);
+        let rust = run_engine(&rust_home, &case, input);
+        assert_eq!(node, (0, Vec::new(), Vec::new()), "{name}: Node allows");
+        assert_eq!(rust, (0, format!("{}\n", ah_engine::hookio::FALLBACK).into_bytes(), Vec::new()), "{name}: the engine defers to Node, never blocks");
         let _ = std::fs::remove_dir_all(node_home);
         let _ = std::fs::remove_dir_all(rust_home);
     }
-    println!("D74 intentional divergence: {} / {} asserted; excluded from parity denominator", rows.len(), rows.len());
+    println!("unparsable stdin: {} / {} deferred to Node", rows.len(), rows.len());
 }
