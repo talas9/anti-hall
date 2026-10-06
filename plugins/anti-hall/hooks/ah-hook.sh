@@ -477,6 +477,28 @@ run_hook_command() {
   timed=$5
   validate_positive_int "$timeout" hook_timeout
   : >"$out"; : >"$err"; rm -f "$timed"
+  # A row that names ${CLAUDE_PLUGIN_ROOT}/... or ${PLUGIN_ROOT}/... must point at a readable script, or it
+  # is unrunnable (node would exit 1, which looks like the hook's own non-blocking failure).
+  ref=$(printf '%s\n' "$cmd" | sed -n 's/.*\${\(\(CLAUDE_\)\{0,1\}PLUGIN_ROOT\)}\(\/[^" 	]*\).*/\1 \3/p' | head -n 1)
+  if [ -n "$ref" ]; then
+    ref_var=${ref%% *}
+    ref_rel=${ref#* }
+    case "$ref_var" in
+      CLAUDE_PLUGIN_ROOT) ref_root=${CLAUDE_PLUGIN_ROOT:-} ;;
+      *) ref_root=${PLUGIN_ROOT:-} ;;
+    esac
+    if [ -z "$ref_root" ]; then
+      ref_root=$(CDPATH= cd -- "$dir/.." 2>/dev/null && pwd -P) || return 125
+      case "$ref_var" in
+        CLAUDE_PLUGIN_ROOT) CLAUDE_PLUGIN_ROOT=$ref_root; export CLAUDE_PLUGIN_ROOT ;;
+        *) PLUGIN_ROOT=$ref_root; export PLUGIN_ROOT ;;
+      esac
+    fi
+    if [ ! -f "$ref_root$ref_rel" ] || [ ! -r "$ref_root$ref_rel" ]; then
+      printf 'anti-hall: hook script not found: %s%s\n' "$ref_root" "$ref_rel" >&2
+      return 125
+    fi
+  fi
   first_word=${cmd%%[ 	]*}
   case "$first_word" in
     /*)
@@ -538,6 +560,10 @@ run_fallback() {
     out=$tmp/fb.out.$selected; err=$tmp/fb.err.$selected; timed=$tmp/fb.timed.$selected
     run_hook_command "$cmd" "$hook_timeout" "$out" "$err" "$timed"
     rc=$?
+    # node exits 1 when it cannot load the script or a module: unrunnable, not the hook's own decision.
+    if [ "$rc" -eq 1 ] && grep -q "MODULE_NOT_FOUND" "$err" 2>/dev/null && grep -q "Cannot find module" "$err" 2>/dev/null; then
+      rc=125
+    fi
     case "$rc" in
       124) continue ;;
       125|12[9-9]|13[0-9]|14[0-9]|15[0-9]|16[0-9]|17[0-9]|18[0-9]|19[0-9]|20[0-9]|21[0-9]|22[0-9]|23[0-9]|24[0-9]|25[0-5]) hard_failure=1; continue ;;

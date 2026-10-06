@@ -1,5 +1,7 @@
 #!/bin/sh
 set -eu
+AH_WRAPPER_TEST=1
+export AH_WRAPPER_TEST
 
 repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 wrapper=$repo/plugins/anti-hall/hooks/ah-hook.sh
@@ -752,6 +754,79 @@ test_engine_lookup_uses_path() {
   [ "$(cat "$out")" = path-bin ]
 }
 
+fake_node_bin() {
+  d=$tmp/fakenode-bin
+  mkdir -p "$d"
+  cat >"$d/node" <<'NODE'
+#!/bin/sh
+# Stand-in for node: runs the last argument as a shell script if it exists, else prints node's missing-module error and exits 1.
+for last do :; done
+if [ ! -f "$last" ]; then
+  printf "node:internal/modules/cjs/loader:1228\n  throw err;\nError: Cannot find module '%s'\n  code: 'MODULE_NOT_FOUND'\n" "$last" >&2
+  exit 1
+fi
+exec sh "$last"
+NODE
+  chmod +x "$d/node"
+  printf '%s\n' "$d"
+}
+
+root_case() {
+  # root_case <name> <event> <root-or-UNSET> <tool>; list rows in $tmp/<name>.list; prints rc
+  rcn=$1; ev=$2; root=$3
+  nb=$(fake_node_bin)
+  e=$(make_engine "$rcn" seventyfive)
+  if [ "$root" = UNSET ]; then
+    env -u CLAUDE_PLUGIN_ROOT -u PLUGIN_ROOT AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/$rcn.list" PATH="$nb:$PATH" sh "$wrapper" "$ev" --tool-from-payload <"$tmp/bashpush.json" >"$tmp/$rcn.out" 2>"$tmp/$rcn.err"
+  else
+    AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/$rcn.list" CLAUDE_PLUGIN_ROOT="$root" PATH="$nb:$PATH" sh "$wrapper" "$ev" --tool-from-payload <"$tmp/bashpush.json" >"$tmp/$rcn.out" 2>"$tmp/$rcn.err"
+  fi
+}
+
+test_fallback_unrunnable_plugin_root_fails_closed() {
+  printf '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}' >"$tmp/bashpush.json"
+  printf '@PreToolUse\t10\nBash\t10\tnode "${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js"\n@PostToolUse\t10\nBash\t10\tnode "${CLAUDE_PLUGIN_ROOT}/hooks/audit.js"\n' >"$tmp/rootbad.list"
+  sed "s/git-guard.js/no-such-guard.js/" "$tmp/rootbad.list" >"$tmp/rootunset.list"; cp "$tmp/rootbad.list" "$tmp/rootnon.list"
+  set +e
+  root_case rootbad PreToolUse "$tmp/no-such-root"; rc1=$?
+  root_case rootunset PreToolUse UNSET; rc2=$?
+  root_case rootnon PostToolUse "$tmp/no-such-root"; rc3=$?
+  set -e
+  [ "$rc1" -eq 2 ] && [ "$rc2" -eq 2 ] && [ "$rc3" -eq 0 ] && grep -q 'fail closed' "$tmp/rootbad.err" && grep -q "hook script not found" "$tmp/rootunset.err"
+}
+
+test_fallback_missing_module_exit1_fails_closed_own_exit1_does_not() {
+  printf '{"tool_name":"Bash","tool_input":{"command":"x"}}' >"$tmp/bashpush.json"
+  good=$tmp/plugin-root-good
+  mkdir -p "$good/hooks"
+  printf 'echo own-reason >&2; exit 1\n' >"$good/hooks/own.js"
+  printf 'echo blocked-by-guard >&2; exit 2\n' >"$good/hooks/block.js"
+  printf '@PreToolUse\t10\nBash\t10\tnode "${CLAUDE_PLUGIN_ROOT}/hooks/own.js"\n' >"$tmp/rootown.list"
+  printf '@PreToolUse\t10\nBash\t10\tnode "${CLAUDE_PLUGIN_ROOT}/hooks/block.js"\n' >"$tmp/rootblock.list"
+  printf '@PreToolUse\t10\nBash\t10\tnode "${CLAUDE_PLUGIN_ROOT}/hooks/own.js"\nBash\t10\tnode "${CLAUDE_PLUGIN_ROOT}/hooks/gone.js"\n' >"$tmp/rootgone.list"
+  set +e
+  root_case rootown PreToolUse "$good"; rc1=$?
+  root_case rootblock PreToolUse "$good"; rc2=$?
+  root_case rootgone PreToolUse "$good"; rc3=$?
+  set -e
+  [ "$rc1" -eq 0 ] && [ "$rc2" -eq 2 ] && grep -q 'blocked-by-guard' "$tmp/rootblock.err" && [ "$rc3" -eq 2 ]
+}
+
+test_fallback_node_module_not_found_exit1_guard_only() {
+  # script exists (so the target check passes) but node itself reports a missing module and exits 1
+  printf '{"tool_name":"Bash","tool_input":{"command":"x"}}' >"$tmp/bashpush.json"
+  good=$tmp/plugin-root-mnf
+  mkdir -p "$good/hooks"
+  printf 'echo "Error: Cannot find module dep" >&2; echo "  code: '"'"'MODULE_NOT_FOUND'"'"'" >&2; exit 1\n' >"$good/hooks/mnf.js"
+  printf '@PreToolUse\t10\nBash\t10\tnode "${CLAUDE_PLUGIN_ROOT}/hooks/mnf.js"\n@PostToolUse\t10\nBash\t10\tnode "${CLAUDE_PLUGIN_ROOT}/hooks/mnf.js"\n' >"$tmp/rootmnf.list"
+  cp "$tmp/rootmnf.list" "$tmp/rootmnfpost.list"
+  set +e
+  root_case rootmnf PreToolUse "$good"; rc1=$?
+  root_case rootmnfpost PostToolUse "$good"; rc2=$?
+  set -e
+  [ "$rc1" -eq 2 ] && [ "$rc2" -eq 0 ]
+}
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -791,6 +866,9 @@ check selected_exec_failure_does_not_override_runnable_hook test_selected_exec_f
 check engine_lookup_prefers_ah_engine_bin test_engine_lookup_prefers_ah_engine_bin
 check engine_lookup_prefers_home_install_over_path test_engine_lookup_prefers_home_install_over_path
 check engine_lookup_uses_path test_engine_lookup_uses_path
+check fallback_unrunnable_plugin_root_fails_closed test_fallback_unrunnable_plugin_root_fails_closed
+check fallback_missing_module_exit1_fails_closed_own_exit1_does_not test_fallback_missing_module_exit1_fails_closed_own_exit1_does_not
+check fallback_node_module_not_found_exit1_guard_only test_fallback_node_module_not_found_exit1_guard_only
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
