@@ -7,6 +7,7 @@ use crate::error::DispatchError;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// One hook entry of an event, as `hooks.json` registers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,7 +152,101 @@ pub fn plugin_root(host: &str) -> Option<String> {
     defaults::raw("dispatch.root_vars").get(host)?.strings().into_iter().find_map(|v| std::env::var(v).ok().filter(|s| !s.is_empty()))
 }
 
-/// Whether `command` can run here: it is not empty and every `${NAME}` / `$NAME` variable it names is set.
+/// Split enough shell words to recognize the generated `node [flags] "<script>" [args]` commands. This is not a shell
+/// parser: unclosed quotes or substitutions return `None`, and callers then treat the command as analyzable only by the
+/// shell.
+fn shell_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let (mut quote, mut esc) = (None::<char>, false);
+    for c in command.chars() {
+        if esc {
+            cur.push(c);
+            esc = false;
+            continue;
+        }
+        if c == '\\' {
+            esc = true;
+            continue;
+        }
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+            }
+            None if matches!(c, ';' | '|' | '&' | '<' | '>' | '(' | ')' | '`') => return None,
+            None => cur.push(c),
+        }
+    }
+    if esc || quote.is_some() {
+        return None;
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    Some(words)
+}
+
+fn expand_vars(s: &str) -> Option<String> {
+    let mut out = String::new();
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'$' {
+            let rest = &s[i + 1..];
+            let (name, used) = if let Some(r) = rest.strip_prefix('{') {
+                let end = r.find('}')?;
+                (&r[..end], end + 2)
+            } else {
+                let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+                (&rest[..end], end + 1)
+            };
+            if name.is_empty() {
+                out.push('$');
+            } else {
+                let v = std::env::var(name).ok().filter(|v| !v.is_empty())?;
+                out.push_str(&v);
+            }
+            i += used;
+        } else {
+            out.push(b[i] as char);
+            i += 1;
+        }
+    }
+    Some(out)
+}
+
+fn node_script(command: &str) -> Option<Option<String>> {
+    let words = match shell_words(command) {
+        Some(w) => w,
+        None => return Some(None),
+    };
+    if words.first().is_none_or(|w| w != "node") {
+        return Some(None);
+    }
+    for w in words.iter().skip(1) {
+        if w == "--no-concurrent-recompilation" || w == "--no-concurrent-sparkplug" || (w.starts_with("--") && w.contains('=')) {
+            continue;
+        }
+        if w.starts_with('-') {
+            return Some(None);
+        }
+        return Some(Some(expand_vars(w)?));
+    }
+    Some(None)
+}
+
+fn readable_file(path: &str) -> bool {
+    let p = Path::new(path);
+    p.is_file() && std::fs::File::open(p).is_ok()
+}
+
+/// Whether `command` can run here: it is not empty, every `${NAME}` / `$NAME` variable it names is set, and generated
+/// `node [flags] "<script>" [args]` commands point at a readable script file.
 ///
 /// Why: a hook command whose plugin-root variable is unset would run a script at the wrong path and report a
 /// "not found" error the host treats as no decision, which is a silent allow for a guard (D74).
@@ -159,27 +254,14 @@ pub fn runnable(command: &str) -> bool {
     if command.trim().is_empty() {
         return false;
     }
-    let b = command.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'$' {
-            let rest = &command[i + 1..];
-            let (name, used) = if let Some(r) = rest.strip_prefix('{') {
-                let end = r.find('}').unwrap_or(r.len());
-                (&r[..end], end + 2)
-            } else {
-                let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
-                (&rest[..end], end + 1)
-            };
-            if !name.is_empty() && std::env::var(name).map(|v| v.is_empty()).unwrap_or(true) {
-                return false;
-            }
-            i += used;
-        } else {
-            i += 1;
-        }
+    if expand_vars(command).is_none() {
+        return false;
     }
-    true
+    match node_script(command) {
+        Some(Some(path)) => readable_file(&path),
+        Some(None) => true,
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -240,9 +322,13 @@ mod tests {
     fn runnable_needs_every_named_variable() {
         unsafe { std::env::set_var("AH_DISPATCH_T_SET", "/x") };
         unsafe { std::env::remove_var("AH_DISPATCH_T_UNSET") };
-        assert!(runnable("node \"${AH_DISPATCH_T_SET}/hooks/a.js\" --post"));
-        assert!(runnable("node $AH_DISPATCH_T_SET/a.js"));
+        std::fs::create_dir_all("/tmp/ah-dispatch-t").unwrap();
+        std::fs::write("/tmp/ah-dispatch-t/a.js", "").unwrap();
+        unsafe { std::env::set_var("AH_DISPATCH_T_FILE", "/tmp/ah-dispatch-t") };
+        assert!(runnable("node \"${AH_DISPATCH_T_FILE}/a.js\" --post"));
+        assert!(runnable("node $AH_DISPATCH_T_FILE/a.js"));
         assert!(!runnable("node \"${AH_DISPATCH_T_UNSET}/hooks/a.js\""));
+        assert!(!runnable("node \"${AH_DISPATCH_T_SET}/hooks/a.js\""), "a missing Node script is unrunnable");
         assert!(!runnable("  "));
     }
 

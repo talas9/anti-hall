@@ -141,6 +141,15 @@ impl Env {
         names
     }
 
+    fn fake_node(&self, body: &str) -> PathBuf {
+        let bin = self.dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let node = bin.join("node");
+        std::fs::write(&node, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
+        bin
+    }
+
     fn stop(&self) {
         let st = self.state();
         common::reap(&st, || {
@@ -181,8 +190,30 @@ fn pretool_payload_len(len: usize) -> String {
     p
 }
 
+fn pretool_payload_with_padding(len: usize, tool: &str, tool_input: serde_json::Value) -> String {
+    let prefix = format!(r#"{{"session_id":"e2e","cwd":".","hook_event_name":"PreToolUse","tool_name":"{tool}","tool_input":{tool_input},"padding":""#);
+    let suffix = r#""}"#;
+    assert!(len >= prefix.len() + suffix.len());
+    let mut p = String::with_capacity(len);
+    p.push_str(&prefix);
+    p.extend(std::iter::repeat_n('x', len - prefix.len() - suffix.len()));
+    p.push_str(suffix);
+    p
+}
+
 fn stop_payload_len(len: usize) -> String {
     let prefix = r#"{"session_id":"e2e","cwd":".","hook_event_name":"Stop","stop_hook_active":true,"transcript_path":""#;
+    let suffix = r#""}"#;
+    assert!(len >= prefix.len() + suffix.len());
+    let mut p = String::with_capacity(len);
+    p.push_str(prefix);
+    p.extend(std::iter::repeat_n('x', len - prefix.len() - suffix.len()));
+    p.push_str(suffix);
+    p
+}
+
+fn stop_payload_with_padding(len: usize) -> String {
+    let prefix = r#"{"session_id":"e2e","cwd":".","hook_event_name":"Stop","stop_hook_active":true,"padding":""#;
     let suffix = r#""}"#;
     assert!(len >= prefix.len() + suffix.len());
     let mut p = String::with_capacity(len);
@@ -200,6 +231,15 @@ fn session_map(e: &Env, first: &str, rest: &str) -> PathBuf {
     map
 }
 
+fn pretool_map(e: &Env, outs: &[(&str, &str)], rest: &str) -> PathBuf {
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "PreToolUse").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().map(|id| (id.clone(), outs.iter().find(|(k, _)| k == id).map_or(rest.to_string(), |(_, c)| c.to_string()).into())).collect();
+    let map = e.dir.join("pretool-map.json");
+    std::fs::write(&map, serde_json::json!({ "PreToolUse": m }).to_string()).unwrap();
+    map
+}
+
 fn event_map(e: &Env, event: &str, first: &str, rest: &str) -> PathBuf {
     let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", event).into_iter().map(|x| x.id).collect();
     let m: serde_json::Map<String, serde_json::Value> = ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == 0 { first } else { rest }.into())).collect();
@@ -208,6 +248,12 @@ fn event_map(e: &Env, event: &str, first: &str, rest: &str) -> PathBuf {
     events.insert(event.to_string(), serde_json::Value::Object(m));
     std::fs::write(&map, serde_json::Value::Object(events).to_string()).unwrap();
     map
+}
+
+fn assert_no_stop_counters(e: &Env) {
+    let dir = e.state().join(ah_engine::defaults::text("dispatch.stop_state_dir"));
+    let count = std::fs::read_dir(&dir).into_iter().flatten().flatten().count();
+    assert_eq!(count, 0, "genuine Stop blocks must not write stop-counter files in {}", dir.display());
 }
 
 const CTX_MERGE_GATE: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from merge-gate"}}\n'"#;
@@ -276,6 +322,70 @@ fn a_guard_event_that_cannot_run_its_node_hooks_fails_closed() {
     assert_eq!(code, 2, "{err}");
     let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
     assert_eq!(log.matches("dispatch_defer").count(), 3, "{log}");
+}
+
+#[test]
+fn a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node() {
+    let e = Env::new("missing-script-guard");
+    let mark = e.dir.join("fake-node-ran");
+    let body = format!(r#": > {}; echo MODULE_NOT_FOUND >&2; exit 1"#, mark.display());
+    let bin = e.fake_node(&body);
+    let empty_root = e.dir.join("empty-plugin");
+    std::fs::create_dir_all(&empty_root).unwrap();
+    let (code, out, err) = e.run_with(
+        &["hook", "--event", "PreToolUse"],
+        true,
+        &bash("ls", &e.dir),
+        false,
+        &[("CLAUDE_PLUGIN_ROOT", empty_root.to_str().unwrap()), ("PATH", bin.to_str().unwrap())],
+    );
+
+    assert_eq!((code, out.as_str()), (2, ""), "{err}");
+    assert!(err.contains("could not run the guards for PreToolUse") && err.contains("no runnable Node command"), "{err}");
+    assert!(!mark.exists(), "missing script should be classified before spawning node");
+}
+
+#[test]
+fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_node() {
+    let e = Env::new("missing-script-nonguard");
+    let mark = e.dir.join("fake-node-ran");
+    let body = format!(r#": > {}; echo MODULE_NOT_FOUND >&2; exit 1"#, mark.display());
+    let bin = e.fake_node(&body);
+    let empty_root = e.dir.join("empty-plugin");
+    std::fs::create_dir_all(&empty_root).unwrap();
+    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
+    let (code, out, err) = e.run_with(
+        &["hook", "--event", "SessionStart"],
+        true,
+        &p,
+        false,
+        &[("CLAUDE_PLUGIN_ROOT", empty_root.to_str().unwrap()), ("PATH", bin.to_str().unwrap())],
+    );
+
+    assert_eq!((code, out.as_str()), (0, ""), "{err}");
+    assert!(err.contains("skipped SessionStart Node hook") && err.contains("no runnable Node command"), "{err}");
+    assert!(!mark.exists(), "missing scripts should be skipped before spawning node");
+    let log = std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).unwrap();
+    assert!(log.contains("dispatch_defer") && log.contains("skipped"), "{log}");
+}
+
+#[test]
+fn a_guard_node_module_resolution_exit_one_is_unrunnable_but_own_exit_one_is_not() {
+    let e = Env::new("module-resolution");
+    let script = e.dir.join("hook.js");
+    std::fs::write(&script, "// exists for preflight").unwrap();
+    let bin = e.fake_node("echo MODULE_NOT_FOUND fake >&2; exit 1");
+    let cmd = format!("node \"{}\"", script.display());
+    let map = pretool_map(&e, &[("command-guard", &cmd)], "true");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let (code, out, err) = e.run_with(&args, true, &bash("ls", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
+    assert_eq!((code, out.as_str()), (2, ""), "{err}");
+    assert!(err.contains("could not run the guards for PreToolUse"), "{err}");
+
+    let bin = e.fake_node("echo OWN_REASON >&2; exit 1");
+    let (code, out, err) = e.run_with(&args, true, &bash("ls", &e.dir), true, &[("PATH", bin.to_str().unwrap())]);
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    assert_eq!(err, "OWN_REASON\n");
 }
 
 /// Any other event goes on with what it can run, and a usage error there stays the host's non-blocking 64.
@@ -433,6 +543,112 @@ fn over_cap_stop_active_runs_node_and_unrunnable_failures_are_capped() {
     let expect: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
     assert_eq!(codes, expect, "a Stop whose Node hooks cannot run must fail open only after the cap");
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
+fn stop_active_genuine_node_blocks_have_in_cap_and_over_cap_parity_without_counters() {
+    let e = Env::new("stdin-stop-genuine-parity");
+    let map = event_map(&e, "Stop", "echo NODEBLOCK >&2; exit 2", "true");
+    let args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    let in_cap = stop_payload_with_padding(max - 1024);
+    let over_cap = stop_payload_with_padding(max + 4097);
+
+    let run_results = |payload: &str| -> Vec<(i32, String)> {
+        (0..4)
+            .map(|_| {
+                let (code, out, err) = e.run(&args, true, payload, true);
+                assert_eq!(out, "");
+                (code, err)
+            })
+            .collect()
+    };
+    let in_results = run_results(&in_cap);
+    let over_results = run_results(&over_cap);
+    let in_codes: Vec<i32> = in_results.iter().map(|(code, _)| *code).collect();
+    let over_codes: Vec<i32> = over_results.iter().map(|(code, _)| *code).collect();
+
+    assert_eq!(in_codes, [2, 2, 2, 2], "in-cap genuine Stop blocks pass through");
+    assert_eq!(over_codes, in_codes, "same semantic Stop payload must behave the same across the stdin cap");
+    for (code, err) in in_results.iter().chain(over_results.iter()) {
+        assert_eq!(*code, 2);
+        assert!(err.contains("NODEBLOCK"), "genuine Node block stderr must pass through: {err:?}");
+    }
+    assert_no_stop_counters(&e);
+}
+
+fn tool_last_pretool_payload(len: usize, tool: &str, decoy: &str) -> String {
+    let prefix = format!(
+        r#"{{"session_id":"e2e","cwd":".","hook_event_name":"PreToolUse","tool_input":{{"command":"true","nested":{{"tool_name":"{decoy}"}},"prompt":"\"tool_name\":\"{decoy}\""}},"padding":""#
+    );
+    let suffix = format!(r#"","tool_name":"{tool}"}}"#);
+    assert!(len >= prefix.len() + suffix.len());
+    let mut p = String::with_capacity(len);
+    p.push_str(&prefix);
+    p.extend(std::iter::repeat_n('x', len - prefix.len() - suffix.len()));
+    p.push_str(&suffix);
+    p
+}
+
+fn assert_over_cap_bash_payload_does_not_run_agent_only_guard(e: &Env, payload: &str, extra_args: &[&str], ctx: &str) {
+    let map = pretool_map(e, &[("model-routing-guard", "echo AGENT BLOCK >&2; exit 2")], "true");
+    let mut args = vec!["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    args.extend_from_slice(extra_args);
+    let (code, out, err) = e.run(&args, true, payload, true);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "{ctx}: Agent-only guard was selected");
+}
+
+fn assert_over_cap_scan_failure_selects_all(e: &Env, payload: &str, ctx: &str) {
+    let map = pretool_map(e, &[("model-routing-guard", "echo AGENT BLOCK >&2; exit 2")], "true");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let (code, out, err) = e.run(&args, true, payload, true);
+    assert_eq!((code, out.as_str()), (2, ""), "{ctx}: scan failure must select all entries");
+    assert!(err.contains("AGENT BLOCK"), "{ctx}: Agent-only guard did not run: {err}");
+}
+
+#[test]
+fn over_cap_pretooluse_derives_top_level_tool_name_when_tool_flag_is_omitted() {
+    let e = Env::new("stdin-tool-scan");
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    let nested_decoy = pretool_payload_with_padding(max + 4097, "Bash", serde_json::json!({"command": "true", "tool_name": "Agent"}));
+    let prompt_decoy =
+        pretool_payload_with_padding(max + 4097, "Bash", serde_json::json!({"command": "true", "prompt": "literal \"tool_name\":\"Agent\" text"}));
+    let escaped_quote_decoy = pretool_payload_with_padding(max + 4097, "Bash", serde_json::json!({"command": "printf '\\\"tool_name\\\":\\\"Agent\\\"'"}));
+    let tool_last = tool_last_pretool_payload(8 * 1024 * 1024 + 256, "Bash", "Agent");
+
+    for (ctx, payload) in [
+        ("nested tool_name decoy", nested_decoy),
+        ("prompt text tool_name decoy", prompt_decoy),
+        ("escaped quote decoy", escaped_quote_decoy),
+        ("tool_name last after stdin cap", tool_last),
+    ] {
+        assert!(payload.len() > max, "{ctx} payload must exercise the over-cap path");
+        assert_over_cap_bash_payload_does_not_run_agent_only_guard(&e, &payload, &[], ctx);
+    }
+}
+
+#[test]
+fn over_cap_pretooluse_scan_failure_selects_all_entries() {
+    let e = Env::new("stdin-tool-scan-fallback");
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    let duplicate = format!(
+        r#"{{"session_id":"e2e","cwd":".","hook_event_name":"PreToolUse","tool_name":"Bash","padding":"{}","tool_name":"Agent","tool_input":{{"command":"true"}}}}"#,
+        "x".repeat(max + 1)
+    );
+    let non_string = format!(
+        r#"{{"session_id":"e2e","cwd":".","hook_event_name":"PreToolUse","tool_name":123,"padding":"{}","tool_input":{{"command":"true"}}}}"#,
+        "x".repeat(max + 1)
+    );
+
+    assert_over_cap_scan_failure_selects_all(&e, &duplicate, "duplicate differing top-level tool_name");
+    assert_over_cap_scan_failure_selects_all(&e, &non_string, "non-string top-level tool_name");
+}
+
+#[test]
+fn explicit_tool_flag_wins_over_over_cap_payload_tool_name() {
+    let e = Env::new("stdin-tool-explicit");
+    let payload = tool_last_pretool_payload(ah_engine::defaults::num("client.max_stdin") as usize + 4097, "Agent", "Bash");
+    assert_over_cap_bash_payload_does_not_run_agent_only_guard(&e, &payload, &["--tool", "Bash"], "explicit --tool Bash");
 }
 
 #[test]

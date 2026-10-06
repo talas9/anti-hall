@@ -513,19 +513,31 @@ stderr, and the stderr of all hooks is kept.
 that can never clear would stop it finishing. On those events (`dispatch.stop_events`) a payload with `stop_hook_active` true
 fails open (exit 0, a note on stderr, `dispatch_stop_open` in the log), and so does every fail-closed block after
 `dispatch.stop_block_cap` (2) consecutive ones in a session (counter files under `stop-blocks/` in the state dir, reset
-when the guards run fine again). A hook's own block is never affected.
+when the guards run fine again). For an over-cap payload the engine does not decide from a capped prefix: Node's Stop
+hooks receive the full bytes first, and the cap applies only if they cannot run or make no decision. A hook's own block is
+never affected.
 
 **Guards fail closed (D74).** The guard events (`dispatch.guard_events`: `PreToolUse`, `PermissionRequest`, `Stop`,
 `SubagentStop`) never turn a failure into a silent allow. The call answers exit 2 with `dispatch.msg_fail_closed` on stderr
 (the log has `dispatch_defer`) when a Node hook cannot run (no runnable command, an unreadable `--fallback-map`, a usage
 error such as an unknown host, a panic), cannot be started, is killed by a signal, or finishes with incomplete output, and
-when the payload is longer than `client.max_stdin` or cannot be read. A hook that exits 2 (or prints a JSON block) keeps its
-block even if a leftover process holds its pipes open. A payload the dispatcher cannot parse, or that names no tool,
-selects every entry of the event instead of none. A hook that runs past its timeout stays the host's own discard (no
-decision), and is logged (`dispatch_hook_timeout`). `tests/fail_closed_matrix.rs` crosses every guard event with every
-injected failure and asserts one invariant: exit 2 with a message, or the result Node's hooks would give, never exit 0 with
-nothing printed unless a hook that ran allowed. Any other event runs the hooks it can and logs `dispatch_defer` for the
-ones it cannot. The plugin is not wired to the dispatcher yet; that is planned (D75).
+when the payload cannot be read. A payload longer than `client.max_stdin` skips the engine's own checks and routes the full
+bytes to the matching Node hooks from the raw stdin spool; the engine fails closed only if those hooks cannot run or make
+no guard decision. A hook that exits 2 (or prints a JSON block) keeps its block even if a leftover process holds its pipes
+open. A payload the dispatcher cannot parse, or that names no tool, selects every entry of the event instead of none. A
+hook that runs past its timeout stays the host's own discard (no decision), and is logged (`dispatch_hook_timeout`).
+`tests/fail_closed_matrix.rs` crosses every guard event with every injected failure and asserts one invariant: exit 2 with
+a message, or the result Node's hooks would give, never exit 0 with nothing printed unless a hook that ran allowed. Any
+other event runs the hooks it can and logs `dispatch_defer` for the ones it cannot. The plugin is not wired to the
+dispatcher yet; that is planned (D75).
+
+**Raw stdin spool (D87).** Payloads within `client.max_stdin` are delivered from memory and do not touch the spool. Only an
+over-cap payload needs the raw stdin spool; if it cannot be created, a guard event fails closed with a clear stderr reason,
+while a non-guard event exits 0 with a stderr note and a log/telemetry record when the state dir is usable. The over-cap
+spool is anonymous on Unix: it is created in the private state dir and immediately unlinked, then each Node child receives
+stdin from a feeder using positional reads so children do not share file offsets. A startup sweep removes stale named
+`dispatch-stdin-*.tmp` regular files left by older builds or unlink failures after `dispatch.spool_stale_s`; it does not
+follow symlinks or remove fresh/non-matching files.
 
 **Parity.** `parity/run-dispatch.js` runs every matching Node hook of an event as its own process (as the host does),
 combines them with an independent model of the host (`parity/dispatch-lib.js`), and compares exit code, stdout and

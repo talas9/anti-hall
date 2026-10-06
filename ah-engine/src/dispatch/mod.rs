@@ -27,7 +27,7 @@ use crate::{defaults, health};
 use native::{Answer, Meta};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -126,6 +126,166 @@ impl PayloadInput {
         let end = self.raw.len().min(max as usize);
         &self.raw[..end]
     }
+
+    fn structural_tool_name(&self) -> Option<String> {
+        match &self.file {
+            Some(file) => {
+                let mut f = file.try_clone().ok()?;
+                f.seek(SeekFrom::Start(0)).ok()?;
+                scan_tool_name(&mut f).ok().flatten()
+            }
+            None => scan_tool_name(&mut self.raw.as_slice()).ok().flatten(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StringRole {
+    Key,
+    ToolValue,
+    Other,
+}
+
+fn decode_json_string(bytes: &[u8]) -> Result<String, ()> {
+    let mut s = Vec::with_capacity(bytes.len() + 2);
+    s.push(b'"');
+    s.extend_from_slice(bytes);
+    s.push(b'"');
+    serde_json::from_slice::<String>(&s).map_err(|_| ())
+}
+
+fn scan_tool_name(input: &mut impl Read) -> Result<Option<String>, ()> {
+    let mut buf = [0u8; 64 * 1024];
+    let mut depth = 0usize;
+    let mut started = false;
+    let mut done = false;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut role = StringRole::Other;
+    let mut collected = Vec::new();
+    let mut expect_key = false;
+    let mut expect_colon = false;
+    let mut expect_value = false;
+    let mut key: Option<String> = None;
+    let mut found: Option<String> = None;
+    loop {
+        let n = input.read(&mut buf).map_err(|_| ())?;
+        if n == 0 {
+            break;
+        }
+        for &b in &buf[..n] {
+            if in_string {
+                if escaped {
+                    if role != StringRole::Other {
+                        collected.push(b);
+                    }
+                    escaped = false;
+                    continue;
+                }
+                if b == b'\\' {
+                    if role != StringRole::Other {
+                        collected.push(b);
+                    }
+                    escaped = true;
+                    continue;
+                }
+                if b == b'"' {
+                    in_string = false;
+                    match role {
+                        StringRole::Key => {
+                            key = Some(decode_json_string(&collected)?);
+                            expect_key = false;
+                            expect_colon = true;
+                        }
+                        StringRole::ToolValue => {
+                            let value = decode_json_string(&collected)?;
+                            if found.as_ref().is_some_and(|old| old != &value) {
+                                return Err(());
+                            }
+                            found = Some(value);
+                            key = None;
+                            expect_value = false;
+                        }
+                        StringRole::Other => {
+                            expect_value = false;
+                        }
+                    }
+                    collected.clear();
+                    role = StringRole::Other;
+                    continue;
+                }
+                if role != StringRole::Other {
+                    collected.push(b);
+                }
+                continue;
+            }
+            if done {
+                if !b.is_ascii_whitespace() {
+                    return Err(());
+                }
+                continue;
+            }
+            if !started {
+                if b.is_ascii_whitespace() {
+                    continue;
+                }
+                if b != b'{' {
+                    return Err(());
+                }
+                started = true;
+                depth = 1;
+                expect_key = true;
+                continue;
+            }
+            match b {
+                b if b.is_ascii_whitespace() => {}
+                b'"' => {
+                    in_string = true;
+                    role = if depth == 1 && expect_key {
+                        StringRole::Key
+                    } else if depth == 1 && expect_value && key.as_deref() == Some("tool_name") {
+                        StringRole::ToolValue
+                    } else {
+                        StringRole::Other
+                    };
+                    if role != StringRole::Other {
+                        collected.clear();
+                    }
+                }
+                b':' if depth == 1 && expect_colon => {
+                    expect_colon = false;
+                    expect_value = true;
+                }
+                b',' if depth == 1 => {
+                    key = None;
+                    expect_key = true;
+                    expect_colon = false;
+                    expect_value = false;
+                }
+                b'{' | b'[' => {
+                    if depth == 1 && expect_value && key.as_deref() == Some("tool_name") {
+                        return Err(());
+                    }
+                    depth += 1;
+                }
+                b'}' | b']' => {
+                    if depth == 1 && expect_value && key.as_deref() == Some("tool_name") {
+                        return Err(());
+                    }
+                    depth = depth.checked_sub(1).ok_or(())?;
+                    if depth == 0 {
+                        done = true;
+                    }
+                }
+                _ if depth == 1 && expect_value && key.as_deref() == Some("tool_name") => return Err(()),
+                _ => {}
+            }
+        }
+    }
+    if in_string || depth != 0 || !started {
+        return Err(());
+    }
+    Ok(found)
 }
 
 fn create_anonymous_payload() -> std::io::Result<File> {
@@ -243,6 +403,7 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
     let guard = guarded(&args.event);
     let parsed = complete.then(|| serde_json::from_str::<Value>(raw).ok()).flatten();
     let p = parsed.clone().unwrap_or(Value::Null);
+    let mut pre_err = String::new();
     let mut entries = if guard {
         table::select_guarded(&args.host, &args.event, &p, args.tool.as_deref())
     } else if !complete && parsed.is_none() && args.tool.is_none() {
@@ -270,10 +431,18 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         entries.retain(|e| {
             let ok = e.check.is_some() || table::runnable(&e.command);
             if !ok {
-                health::log_event("dispatch_defer", &args.event, &defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]));
+                let note = defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]);
+                let stderr = defaults::render("dispatch.msg_skipped_entry_stderr", &[("event", &args.event), ("id", &e.id)]);
+                let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+                health::log_event("dispatch_defer", &args.event, &note);
+                pre_err.push_str(&stderr);
+                pre_err.push('\n');
             }
             ok
         });
+        if entries.is_empty() {
+            return Outcome { out: String::new(), code: 0, err: pre_err };
+        }
     }
     // the Node hooks start first, so they run while the built-in checks are answered
     let mut started: Vec<(usize, node::Running)> =
@@ -311,7 +480,11 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
                     }
                     return closed(&args.event, parsed.as_ref(), &no_command(&e.id));
                 }
-                health::log_event("dispatch_defer", &args.event, &defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]));
+                let note = defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]);
+                let stderr = defaults::render("dispatch.msg_skipped_entry_stderr", &[("event", &args.event), ("id", &e.id)]);
+                health::log_event("dispatch_defer", &args.event, &note);
+                pre_err.push_str(&stderr);
+                pre_err.push('\n');
             }
             _ => started.push((i, start_node(e, raw.as_bytes(), payload))),
         }
@@ -322,7 +495,10 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         // a hook that could not run says nothing, and on a guard event nothing must not read as an allow (a timeout is
         // the host's own discard, so it stays one; it is logged by `node`). A hook that DID finish and block still
         // decides: its block is handed back verbatim, and the fail-closed counter is not touched.
-        if let Some(bad) = finished.iter().find(|f| matches!(f.fate, node::Fate::Spawn | node::Fate::Died | node::Fate::Incomplete)) {
+        if let Some(bad) = finished.iter().find(|f| {
+            matches!(f.fate, node::Fate::Spawn | node::Fate::Died | node::Fate::Incomplete)
+                || (f.fate == node::Fate::Ran && node::module_resolution_error(&f.result))
+        }) {
             let mut done: Vec<Option<combine::HookResult>> = results.clone();
             for (i, f) in slots.iter().zip(&finished) {
                 if f.fate == node::Fate::Ran {
@@ -331,6 +507,9 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
             }
             if let Some(o) = genuine_block(done) {
                 return o;
+            }
+            if node::module_resolution_error(&bad.result) {
+                return closed(&args.event, parsed.as_ref(), &no_command(&bad.result.id));
             }
             let key = match bad.fate {
                 node::Fate::Spawn => "dispatch.msg_why_spawn",
@@ -344,9 +523,13 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         results[i] = Some(f.result);
     }
     let results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    if guard && stoploop::is_stop_event(&args.event) && results.iter().any(|r| r.code == Some(2)) {
+        return closed(&args.event, parsed.as_ref(), "mutated genuine Stop block");
+    }
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     match combine::combine(&results) {
-        combine::Combined::Answer(o) => {
+        combine::Combined::Answer(mut o) => {
+            o.err = format!("{}{}", pre_err, o.err);
             // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper
             // that does not exist yet, and exit 75 would lose it. A guard event therefore never gets 75 (its decisions
             // are delivered, the host spills the over-cap context itself).
@@ -357,13 +540,15 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
             if guard {
                 return combine::sequential(&results, &args.event);
             }
-            let err = defaults::render("dispatch.msg_defer_separately", &[("event", &args.event), ("len", &len), ("cap", &cap)]);
+            let err = format!("{}{}", pre_err, defaults::render("dispatch.msg_defer_separately", &[("event", &args.event), ("len", &len), ("cap", &cap)]));
             Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{err}\n") }
         }
         combine::Combined::Conflict(ids) => {
             let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
             health::log_event("dispatch_conflict", &args.event, &defaults::render("dispatch.msg_conflict", &[("ids", &ids.join(","))]));
-            combine::sequential(&results, &args.event)
+            let mut o = combine::sequential(&results, &args.event);
+            o.err = format!("{}{}", pre_err, o.err);
+            o
         }
     }
 }
@@ -375,7 +560,7 @@ pub fn hook_main(args: &[String]) -> i32 {
     let guard = guarded(&event);
     let res = std::panic::catch_unwind(|| {
         sweep_stale_spool();
-        let a = match parse_args(args) {
+        let mut a = match parse_args(args) {
             Ok(a) => a,
             Err(e) if guard => {
                 let o = fail_closed(&event, &e.to_string());
@@ -414,6 +599,14 @@ pub fn hook_main(args: &[String]) -> i32 {
         }
         if over_cap {
             health::log_event("dispatch_stdin_spooled", &a.event, &defaults::render("dispatch.msg_stdin_over_cap", &[("max", &max)]));
+        }
+        if over_cap
+            && a.tool.is_none()
+            && guarded(&a.event)
+            && defaults::raw("dispatch.matcher_field").get(&a.event).and_then(|v| v.as_str()) == Some("tool_name")
+            && let Some(tool) = payload.structural_tool_name()
+        {
+            a.tool = Some(tool);
         }
         // Non-guard events cannot block; keep matching Node's replacement-character decode there.
         let raw = String::from_utf8_lossy(raw_bytes).to_string();

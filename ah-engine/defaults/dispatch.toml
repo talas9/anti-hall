@@ -188,6 +188,10 @@ value = "anti-hall: the joined {event} context is {len} characters, over the {ca
 doc = "Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}."
 value = "entry {id} skipped: no runnable Node command"
 
+[dispatch.msg_skipped_entry_stderr]
+doc = "Printed on stderr when a non-guard event goes on without an entry that has no runnable Node command. Placeholders: {event}, {id}."
+value = "anti-hall: skipped {event} Node hook {id}: no runnable Node command"
+
 [dispatch.msg_defer]
 doc = "Event-log detail when the dispatcher cannot answer an event and defers the whole call."
 value = "dispatcher deferred the whole call: {why}"

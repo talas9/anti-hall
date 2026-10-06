@@ -231,6 +231,12 @@ pub fn finish(mut running: Vec<Running>) -> Vec<Finished> {
     running.into_iter().zip(waited).map(|(r, w)| conclude(r, w.unwrap_or(Waited::NotStarted))).collect()
 }
 
+/// True when Node itself says the script/module could not be resolved. On a guard event this is the same as an
+/// unrunnable hook: no guard decision exists.
+pub fn module_resolution_error(r: &HookResult) -> bool {
+    r.code == Some(1) && (r.err.starts_with("MODULE_NOT_FOUND") || r.err.starts_with("ERR_MODULE_NOT_FOUND"))
+}
+
 fn nothing(id: String) -> HookResult {
     HookResult { id, code: None, out: String::new(), err: String::new() }
 }
@@ -279,13 +285,31 @@ mod tests {
 
     #[test]
     fn hooks_run_at_once_with_the_payload_and_report_in_order() {
-        let started = Instant::now();
-        let es = [entry("a", "sleep 0.3; cat; echo err >&2; exit 2", 5), entry("b", "sleep 0.3; printf b", 5), entry("c", "exit 0", 5)];
+        let dir = std::env::temp_dir().join(format!("ah-engine-node-overlap-{}-{}", std::process::id(), crate::health::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let starts: Vec<String> = ["a", "b", "c"].iter().map(|id| dir.join(format!("start-{id}")).display().to_string()).collect();
+        let checked: Vec<String> = ["a", "b", "c"].iter().map(|id| dir.join(format!("checked-{id}")).display().to_string()).collect();
+        let finishes: Vec<String> = ["a", "b", "c"].iter().map(|id| dir.join(format!("finish-{id}")).display().to_string()).collect();
+        let wait_all = |paths: &[String]| {
+            let test = paths.iter().map(|p| format!("[ -e '{p}' ]")).collect::<Vec<_>>().join(" && ");
+            format!("n=0; until {test}; do n=$((n+1)); [ $n -ge 400 ] && echo overlap-timeout >&2 && exit 9; sleep 0.05; done")
+        };
+        let hook = |i: usize, body: &str| {
+            format!(": > '{}'; {}; : > '{}'; {}; {body}; : > '{}'", starts[i], wait_all(&starts), checked[i], wait_all(&checked), finishes[i])
+        };
+        let es = [
+            entry("a", &format!("{}; cat; echo err >&2; exit 2", hook(0, ":")), 25),
+            entry("b", &format!("{}; printf b", hook(1, ":")), 25),
+            entry("c", &hook(2, ":"), 25),
+        ];
         let rs: Vec<HookResult> = finish(es.iter().map(|e| start(e, b"{\"x\":1}")).collect()).into_iter().map(|f| f.result).collect();
-        assert!(started.elapsed() < Duration::from_millis(900), "the hooks ran one after another: {:?}", started.elapsed());
         assert_eq!(rs[0], HookResult { id: "a".into(), code: Some(2), out: "{\"x\":1}".into(), err: "err\n".into() });
         assert_eq!(rs[1].out, "b");
         assert_eq!(rs[2], HookResult::quiet("c"));
+        for path in starts.iter().chain(&checked).chain(&finishes) {
+            assert!(std::path::Path::new(path).exists(), "missing overlap marker {path}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
