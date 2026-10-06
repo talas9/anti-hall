@@ -7,8 +7,10 @@
 use super::combine::{self, HookResult};
 use super::table::Entry;
 use crate::defaults;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -97,30 +99,52 @@ fn reader<R: Read + Send + 'static>(r: Option<R>) -> Option<Capture> {
     Some(cap)
 }
 
-/// Start `entry`'s command with `payload` on stdin. A command that cannot start is a hook with no child (its fate is
-/// [`Fate::Spawn`]; the host's "could not run" is no decision either).
+enum Input {
+    Bytes(Vec<u8>),
+    File(File),
+}
+
+/// Start `entry`'s command with in-memory `payload` on stdin. A command that cannot start is a hook with no child (its
+/// fate is [`Fate::Spawn`]; the host's "could not run" is no decision either).
 pub fn start(entry: &Entry, payload: &[u8]) -> Running {
+    start_with_input(entry, Some(Input::Bytes(payload.to_vec())))
+}
+
+/// Start `entry`'s command with stdin copied from `payload`. The file is opened before spawning so an unreadable payload is
+/// treated like a hook that could not start, not like an empty input.
+pub fn start_file(entry: &Entry, payload: &Path) -> Running {
+    start_with_input(entry, File::open(payload).ok().map(Input::File))
+}
+
+fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
     let shell = defaults::list("dispatch.shell");
-    let child = Command::new(shell.first().copied().unwrap_or_default())
-        .args(&shell[1.min(shell.len())..])
-        .arg(&entry.command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .ok();
-    let mut child = child;
-    let (mut out, mut err) = (None, None);
-    if let Some(c) = child.as_mut() {
+    let spawned = input.and_then(|input| {
+        Command::new(shell.first().copied().unwrap_or_default())
+            .args(&shell[1.min(shell.len())..])
+            .arg(&entry.command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .ok()
+            .map(|child| (child, input))
+    });
+    let (mut child, mut out, mut err) = (None, None, None);
+    if let Some((mut c, mut input)) = spawned {
         if let Some(mut stdin) = c.stdin.take() {
-            let data = payload.to_vec();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(&data);
+            std::thread::spawn(move || match input {
+                Input::Bytes(ref data) => {
+                    let _ = stdin.write_all(data);
+                }
+                Input::File(ref mut file) => {
+                    let _ = std::io::copy(file, &mut stdin);
+                }
             });
         }
         out = reader(c.stdout.take());
         err = reader(c.stderr.take());
+        child = Some(c);
     }
     Running {
         id: entry.id.clone(),

@@ -105,6 +105,21 @@ fn a_hook_killed_by_a_signal_is_an_error_not_an_exit_0() {
 }
 
 #[test]
+fn forced_fallback_killed_by_a_signal_follows_the_event_fail_mode() {
+    let e = Env::new("forced-sig-guard", "cat >/dev/null\nkill -9 $$\n");
+    let input = b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm test \xff\"}}";
+    let (out, err, code) = e.call_bytes(input, 30_000);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("killed by signal 9"), "{err:?}");
+
+    let e = Env::new("forced-sig-nonguard", "cat >/dev/null\nkill -9 $$\n");
+    let input = b"{\"hook_event_name\":\"SessionStart\",\"source\":\"startup \xff\"}";
+    let (out, err, code) = e.call_bytes(input, 30_000);
+    assert_eq!((out.as_str(), code), ("", 0));
+    assert!(err.contains("killed by signal 9"), "{err:?}");
+}
+
+#[test]
 fn non_utf8_stdin_runs_the_fallback_with_the_original_bytes() {
     let e = Env::new("nonutf8", "cat > \"$(dirname \"$0\")/seen\"\necho BLOCKED >&2\nexit 2\n");
     let input = b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm test \xff\"}}";
@@ -217,6 +232,21 @@ fn forced_fallback_timeout_fails_closed() {
     assert_eq!((out.as_str(), code), ("", 2));
     assert!(err.contains("fallback unavailable"), "{err:?}");
     assert!(e.log().contains("fallback_fail"), "logged: {:?}", e.log());
+}
+
+#[test]
+fn forced_fallback_incomplete_output_follows_the_event_fail_mode() {
+    let e = Env::new("forced-incomplete-guard", "cat >/dev/null\n(exec sleep 5) &\necho EARLY\nexit 0\n");
+    let input = b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm test \xff\"}}";
+    let (out, err, code) = e.call_bytes(input, 500);
+    assert_eq!((out.as_str(), code), ("", 2));
+    assert!(err.contains("no decision was made"), "{err:?}");
+
+    let e = Env::new("forced-incomplete-nonguard", "cat >/dev/null\n(exec sleep 5) &\necho EARLY\nexit 0\n");
+    let input = b"{\"hook_event_name\":\"SessionStart\",\"source\":\"startup \xff\"}";
+    let (out, err, code) = e.call_bytes(input, 500);
+    assert_eq!((out.as_str(), code), ("", 0));
+    assert!(err.contains("no decision was made"), "{err:?}");
 }
 
 #[test]

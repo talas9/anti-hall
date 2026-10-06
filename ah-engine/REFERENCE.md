@@ -839,7 +839,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.msg_panic` | `the dispatcher hit an internal error` |  |  | Reason given in dispatch.msg_fail_closed when the dispatcher panicked. |
 | `dispatch.msg_skipped_entry` | `entry {id} skipped: no runnable Node command` |  |  | Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}. |
 | `dispatch.msg_stdin_read` | `the hook payload could not be read: {err}` |  |  | Reason in dispatch.msg_fail_closed when reading the payload from stdin failed. Placeholder: {err}. |
-| `dispatch.msg_stdin_truncated` | `the hook payload is larger than the {max} bytes the engine reads` |  |  | Reason in dispatch.msg_fail_closed when the payload on stdin is longer than client.max_stdin, so the dispatcher holds only part of it. Placeholder: {max}. |
+| `dispatch.msg_stdin_truncated` | `the hook payload is larger than the {max} bytes the engine can route or check...` |  |  | Reason in dispatch.msg_fail_closed when the payload on stdin is longer than client.max_stdin, so the dispatcher can route or check only its capped prefix; Node hooks still receive every byte from the spooled stdin file. Placeholder: {max}. |
 | `dispatch.msg_stop_active` | `anti-hall: the engine could not run the guards for {event} ({why}), and a Sto...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the host says a Stop hook already blocked this turn (stop_hook_active). Placeholders: {event}, {why}. |
 | `dispatch.msg_stop_capped` | `anti-hall: the engine could not run the guards for {event} ({why}) {cap} time...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed once more than dispatch.stop_block_cap times in a row. Placeholders: {event}, {cap}, {why}. |
 | `dispatch.msg_stop_uncounted` | `anti-hall: the engine could not run the guards for {event} ({why}) and cannot...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the consecutive-block count cannot be recorded, so the loop could not be bounded. Placeholders: {event}, {why}. |
@@ -876,7 +876,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.client_bad_frame` | Exchange failure when the reply frame was damaged. Placeholder: {err}. |
 | `msg.client_bad_socket` | Exchange failure when the socket path is not a socket owned by this user. |
 | `msg.client_connect` | Exchange failure when connecting failed. Placeholder: {err}. |
-| `msg.client_fallback_unavailable` | Printed on stderr (exit 2) when stdin cannot safely be sent to the engine and the Node fallback cannot answer. |
+| `msg.client_fallback_unavailable` | Printed on stderr when stdin cannot safely be sent to the engine and the Node fallback cannot answer. Guard events exit 2; non-guard events exit 0 with this note. |
 | `msg.client_io` | Exchange failure for another I/O step. Placeholders: {what}, {err}. |
 | `msg.client_timeout` | Exchange failure when the hard deadline passed. |
 | `msg.diagnostics` | Secret-scrubbed diagnostic block attached to a permanent-failure advisory. Placeholders: {version}, {os}, {arch}, {code}, {log}. |
@@ -912,8 +912,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.exit_reason_stuck` | Drain reason for a stuck worker. |
 | `msg.failure_stall` | Failure reason when the accept loop stalled. |
 | `msg.failure_stuck` | Failure reason when a worker is stuck. |
-| `msg.fallback_read_timeout` | Printed on stderr (exit 1) when the Node fallback finished but its output could not be read to the end in time, so no decision exists. |
-| `msg.fallback_signal` | Printed on stderr (exit 1) when the Node fallback was killed by a signal, so no decision exists. Placeholder: {signal}. |
+| `msg.fallback_read_timeout` | Printed on stderr when the Node fallback finished but its output could not be read to the end in time, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1. |
+| `msg.fallback_signal` | Printed on stderr when the Node fallback was killed by a signal, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1. Placeholder: {signal}. |
 | `msg.hint_disk_full` | Self-fix hint when the disk is full (error code os28). |
 | `msg.hint_fds` | Self-fix hint when the process ran out of file descriptors. |
 | `msg.hint_memory` | Self-fix hint when the OS killed or starved the daemon. Placeholder: {env_mem}. |

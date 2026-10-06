@@ -213,6 +213,11 @@ enum FallbackInput {
     BytesThenStdin(Vec<u8>, std::io::Stdin),
 }
 
+enum FallbackResult {
+    Answer(Outcome),
+    NoDecision(Outcome),
+}
+
 /// Run the Node hook: stdin = the payload; stdout, stderr and the exit code are returned. Both streams are read to EOF,
 /// bounded only by the overall deadline (`client.fallback_ms`), because a hook can exit before its output is complete
 /// (a background process of its own holds the pipe) and an empty stdout would read as an allow.
@@ -220,7 +225,7 @@ enum FallbackInput {
 /// `None` when it cannot run or does not finish in time (= the fallback is unavailable, as when the host's own timeout
 /// kills a hook). A hook that finished but whose output was still unread at the deadline is an explicit error outcome
 /// (exit 1, a message on stderr): never an empty stdout.
-fn run_fallback(input: FallbackInput, path: &Path, cfg: &ClientConfig) -> Option<Outcome> {
+fn run_fallback(input: FallbackInput, path: &Path, cfg: &ClientConfig) -> Option<FallbackResult> {
     let node = std::env::var_os(defaults::env_name("node")).unwrap_or_else(|| "node".into());
     // its own process group, so a timeout can take its helpers down with it (they would otherwise hold the pipes open)
     let mut child = Command::new(node).arg(path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn().ok()?;
@@ -247,9 +252,13 @@ fn run_fallback(input: FallbackInput, path: &Path, cfg: &ClientConfig) -> Option
                 // killed by a signal (out of memory, a crash): no decision, never an exit 0 that reads as an allow
                 let sig = st.signal().unwrap_or(0);
                 log_fallback("fallback_fail", &format!("sig{sig}"), &defaults::render("msg.log_fallback_signal", &[("signal", &sig)]));
-                return Some(Outcome { out: String::new(), code: 1, err: format!("{}\n", defaults::render("msg.fallback_signal", &[("signal", &sig)])) });
+                return Some(FallbackResult::NoDecision(Outcome {
+                    out: String::new(),
+                    code: 1,
+                    err: format!("{}\n", defaults::render("msg.fallback_signal", &[("signal", &sig)])),
+                }));
             };
-            return Some(Outcome { out: String::from_utf8_lossy(o).to_string(), code, err: String::from_utf8_lossy(e).to_string() });
+            return Some(FallbackResult::Answer(Outcome { out: String::from_utf8_lossy(o).to_string(), code, err: String::from_utf8_lossy(e).to_string() }));
         }
         if Instant::now() >= deadline {
             break;
@@ -269,7 +278,7 @@ fn run_fallback(input: FallbackInput, path: &Path, cfg: &ClientConfig) -> Option
         return None;
     }
     log_fallback("fallback_read_timeout", "-", defaults::text("msg.log_fallback_read_timeout"));
-    Some(Outcome { out: String::new(), code: 1, err: format!("{}\n", defaults::text("msg.fallback_read_timeout")) })
+    Some(FallbackResult::NoDecision(Outcome { out: String::new(), code: 1, err: format!("{}\n", defaults::text("msg.fallback_read_timeout")) }))
 }
 
 /// What an OK reply body means: exact bytes, an exit-2 block, or plain stdout. `None` when the body claims to be exact
@@ -421,7 +430,7 @@ fn run_bytes(raw: Vec<u8>, force_fallback: bool, fallback: Option<&Path>, rest: 
         Some(rest) => FallbackInput::BytesThenStdin(raw, rest),
         None => FallbackInput::Bytes(raw),
     };
-    let mut o = fallback.and_then(|p| run_fallback(input, p, &cfg)).unwrap_or_else(|| {
+    let unavailable = || {
         if fail_closed_unavailable {
             Outcome { out: String::new(), code: 2, err: defaults::text("msg.client_fallback_unavailable").into() }
         } else if force_fallback {
@@ -429,7 +438,20 @@ fn run_bytes(raw: Vec<u8>, force_fallback: bool, fallback: Option<&Path>, rest: 
         } else {
             Outcome { out: String::new(), code: 0, err: String::new() }
         }
-    });
+    };
+    let mut o = match fallback.and_then(|p| run_fallback(input, p, &cfg)) {
+        Some(FallbackResult::Answer(o)) => o,
+        Some(FallbackResult::NoDecision(mut o)) if force_fallback && fail_closed_unavailable => {
+            o.code = 2;
+            o
+        }
+        Some(FallbackResult::NoDecision(mut o)) if force_fallback => {
+            o.code = 0;
+            o
+        }
+        Some(FallbackResult::NoDecision(o)) => o,
+        None => unavailable(),
+    };
     // We are running on the built-in checks: tell the agent once per session if the engine is in a known-bad state.
     if o.code == 0
         && paths::dir().join(defaults::text("files.failure")).exists()

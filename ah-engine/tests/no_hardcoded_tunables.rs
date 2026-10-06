@@ -42,6 +42,16 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "const ",
         "field names of the host's hook output JSON (hookSpecificOutput, additionalContext, ...): the host protocol schema the merge reads, an adapter concern (D30)",
     ),
+    (
+        "src/dispatch/mod.rs",
+        "dispatch-stdin-",
+        "temporary stdin spool filename prefix: an internal file naming pattern under the private state dir, not a tunable",
+    ),
+    (
+        "src/dispatch/mod.rs",
+        "could not create unique dispatch stdin file",
+        "internal I/O error text for exhausting unique temp names; not user-facing configuration",
+    ),
     ("src/health.rs", "for key in [\"breaker_until\"", "keys of the files.* settings the operator reset clears: names of settings, not values"),
     // ---- the Jev lane: security grammar kept in code on purpose ----------------------------------------------
     (

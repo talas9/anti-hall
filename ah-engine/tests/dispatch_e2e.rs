@@ -73,6 +73,16 @@ impl Env {
         (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
     }
 
+    fn dispatch_temp_files(&self) -> Vec<PathBuf> {
+        std::fs::read_dir(self.state())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("dispatch-stdin-")))
+            .collect()
+    }
+
     fn stop(&self) {
         let st = self.state();
         common::reap(&st, || {
@@ -89,6 +99,36 @@ impl Drop for Env {
 
 fn bash(cmd: &str, cwd: &Path) -> String {
     serde_json::json!({"session_id": "e2e", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}).to_string()
+}
+
+fn session_payload_len(len: usize) -> String {
+    let prefix = r#"{"session_id":"e2e","cwd":".","hook_event_name":"SessionStart","source":""#;
+    let suffix = r#""}"#;
+    assert!(len >= prefix.len() + suffix.len());
+    let mut p = String::with_capacity(len);
+    p.push_str(prefix);
+    p.extend(std::iter::repeat_n('x', len - prefix.len() - suffix.len()));
+    p.push_str(suffix);
+    p
+}
+
+fn pretool_payload_len(len: usize) -> String {
+    let prefix = r#"{"session_id":"e2e","cwd":".","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":""#;
+    let suffix = r#""}}"#;
+    assert!(len >= prefix.len() + suffix.len());
+    let mut p = String::with_capacity(len);
+    p.push_str(prefix);
+    p.extend(std::iter::repeat_n('x', len - prefix.len() - suffix.len()));
+    p.push_str(suffix);
+    p
+}
+
+fn session_map(e: &Env, first: &str, rest: &str) -> PathBuf {
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "SessionStart").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> = ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == 0 { first } else { rest }.into())).collect();
+    let map = e.dir.join("session-map.json");
+    std::fs::write(&map, serde_json::json!({ "SessionStart": m }).to_string()).unwrap();
+    map
 }
 
 const CTX_MERGE_GATE: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from merge-gate"}}\n'"#;
@@ -133,7 +173,8 @@ fn an_event_no_entry_matches_says_nothing_and_starts_no_daemon() {
     let e = Env::new("nomatch");
     let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Glob", "tool_input": {}}).to_string();
     assert_eq!(e.run(&["hook", "--event", "PreToolUse"], false, &p, true), (0, String::new(), String::new()));
-    assert!(!e.state().exists(), "nothing matched, so the engine was not woken");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+    assert!(!e.state().join("failure.json").exists(), "nothing matched, so the daemon was not woken");
 }
 
 /// D74: a guard event whose Node hooks cannot run blocks (exit 2) with the fail-closed message; it is never a silent allow.
@@ -231,6 +272,52 @@ fn a_join_over_the_host_cap_on_another_event_is_handed_back_to_run_separately() 
     let (code, out, err) = e.run(&args, true, &p, true);
     assert_eq!((code, out.as_str()), (75, ""), "{err}");
     assert!(err.contains("over the 10000"), "{err}");
+}
+
+#[test]
+fn sessionstart_over_stdin_cap_reaches_node_hook_without_truncation() {
+    let e = Env::new("stdin-full");
+    let map = session_map(&e, "wc -c", "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    let payload = session_payload_len(max + 4097);
+    let (code, out, err) = e.run(&args, true, &payload, true);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim().parse::<usize>().unwrap(), payload.len());
+    assert_eq!(payload.len(), 8_392_705);
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
+fn dispatcher_stdin_temp_file_is_removed_after_hook_timeout() {
+    let e = Env::new("stdin-timeout");
+    let map = session_map(&e, "sleep 30", "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 1);
+    let (code, _, err) = e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DISPATCH_MAX_TIMEOUT_S", "1")]);
+    assert_eq!(code, 0, "{err}");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+#[test]
+fn dispatcher_stdin_cap_boundaries_are_exact() {
+    let e = Env::new("stdin-boundaries");
+    let map = session_map(&e, "wc -c", "true");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let max = ah_engine::defaults::num("client.max_stdin") as usize;
+    for len in [max, max + 1] {
+        let payload = session_payload_len(len);
+        let (code, out, err) = e.run(&args, true, &payload, true);
+        assert_eq!(code, 0, "{len}: {err}");
+        assert_eq!(out.trim().parse::<usize>().unwrap(), len);
+    }
+
+    let map = e.map(&[]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    assert_eq!(e.run(&args, true, &pretool_payload_len(max), true).0, 0);
+    let (code, out, err) = e.run(&args, true, &pretool_payload_len(max + 1), true);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.contains("larger than"), "{err}");
 }
 
 #[test]

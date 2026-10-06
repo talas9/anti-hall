@@ -230,8 +230,8 @@ doc = "Reason in dispatch.msg_fail_closed when a guard event's Node hook finishe
 value = "hook {id} finished with incomplete output"
 
 [dispatch.msg_stdin_truncated]
-doc = "Reason in dispatch.msg_fail_closed when the payload on stdin is longer than client.max_stdin, so the dispatcher holds only part of it. Placeholder: {max}."
-value = "the hook payload is larger than the {max} bytes the engine reads"
+doc = "Reason in dispatch.msg_fail_closed when the payload on stdin is longer than client.max_stdin, so the dispatcher can route or check only its capped prefix; Node hooks still receive every byte from the spooled stdin file. Placeholder: {max}."
+value = "the hook payload is larger than the {max} bytes the engine can route or check in-process"
 
 [dispatch.msg_stdin_read]
 doc = "Reason in dispatch.msg_fail_closed when reading the payload from stdin failed. Placeholder: {err}."

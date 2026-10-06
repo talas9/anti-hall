@@ -26,8 +26,11 @@ use crate::error::DispatchError;
 use crate::{defaults, health};
 use native::{Answer, Meta};
 use serde_json::Value;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The dispatcher's arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +77,70 @@ fn ask_daemon(meta: &Meta, raw: &str) -> Option<Vec<(String, Answer)>> {
 /// True for an event whose hooks can block: a deferral there fails closed.
 fn guarded(event: &str) -> bool {
     defaults::list("dispatch.guard_events").contains(&event)
+}
+
+struct PayloadFile {
+    path: PathBuf,
+    prefix: Vec<u8>,
+    read: std::io::Result<()>,
+}
+
+impl PayloadFile {
+    fn create() -> std::io::Result<(PayloadFile, File)> {
+        crate::limits::ensure_private_dir(&crate::paths::dir()).map_err(|e| std::io::Error::other(e.to_string()))?;
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        for _ in 0..100 {
+            let name = format!("dispatch-stdin-{}-{}-{}.tmp", crate::health::now_ms(), std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst));
+            let path = crate::paths::dir().join(name);
+            match OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path) {
+                Ok(file) => return Ok((PayloadFile { path, prefix: Vec::new(), read: Ok(()) }, file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "could not create unique dispatch stdin file"))
+    }
+
+    fn read_stdin(max: u64) -> std::io::Result<PayloadFile> {
+        let (mut payload, mut file) = PayloadFile::create()?;
+        let keep = max.saturating_add(1) as usize;
+        let mut stdin = std::io::stdin().lock();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            match stdin.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    file.write_all(&chunk[..n])?;
+                    if payload.prefix.len() < keep {
+                        let take = n.min(keep - payload.prefix.len());
+                        payload.prefix.extend_from_slice(&chunk[..take]);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    payload.read = Err(e);
+                    break;
+                }
+            }
+        }
+        let _ = file.sync_all();
+        Ok(payload)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn prefix_at_cap(&self, max: u64) -> &[u8] {
+        let end = self.prefix.len().min(max as usize);
+        &self.prefix[..end]
+    }
+}
+
+impl Drop for PayloadFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 fn log_defer(event: &str, why: &str) {
@@ -127,11 +194,21 @@ fn over_cap(args: &Args, results: &[combine::HookResult], joined: &str) -> Optio
 /// hooks and one process cannot join is delivered one after another, or (over the host's context cap) handed back to the
 /// wrapper with `dispatch.defer_exit`.
 pub fn run(raw: &str, args: &Args) -> Outcome {
+    run_inner(raw, args, None, true)
+}
+
+fn start_node(e: &table::Entry, raw: &[u8], payload: Option<&Path>) -> node::Running {
+    payload.map_or_else(|| node::start(e, raw), |p| node::start_file(e, p))
+}
+
+fn run_inner(raw: &str, args: &Args, payload: Option<&Path>, complete: bool) -> Outcome {
     let guard = guarded(&args.event);
     let parsed = serde_json::from_str::<Value>(raw).ok();
     let p = parsed.clone().unwrap_or(Value::Null);
     let mut entries = if guard {
         table::select_guarded(&args.host, &args.event, &p, args.tool.as_deref())
+    } else if !complete && parsed.is_none() && args.tool.is_none() {
+        table::entries(&args.host, &args.event)
     } else {
         table::select(&args.host, &args.event, &p, args.tool.as_deref())
     };
@@ -162,7 +239,7 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
     }
     // the Node hooks start first, so they run while the built-in checks are answered
     let mut started: Vec<(usize, node::Running)> =
-        entries.iter().enumerate().filter(|(_, e)| e.check.is_none()).map(|(i, e)| (i, node::start(e, raw.as_bytes()))).collect();
+        entries.iter().enumerate().filter(|(_, e)| e.check.is_none()).map(|(i, e)| (i, start_node(e, raw.as_bytes(), payload))).collect();
     let meta = Meta {
         host: args.host.clone(),
         event: args.event.clone(),
@@ -170,12 +247,12 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
         root: table::plugin_root(&args.host),
         env: crate::reqenv::RequestEnv::capture(),
     };
-    let answers = match &parsed {
+    let answers = match (&parsed, complete) {
         // a payload serde_json cannot read (JS may): every check defers, Node decides
-        None => Vec::new(),
-        Some(_) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
-        Some(p) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
-        Some(_) => ask_daemon(&meta, raw).unwrap_or_default(),
+        (_, false) | (None, _) => Vec::new(),
+        (Some(_), _) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
+        (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
+        (Some(_), _) => ask_daemon(&meta, raw).unwrap_or_default(),
     };
     let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_some()) {
@@ -198,7 +275,7 @@ pub fn run(raw: &str, args: &Args) -> Outcome {
                 }
                 health::log_event("dispatch_defer", &args.event, &defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]));
             }
-            _ => started.push((i, node::start(e, raw.as_bytes()))),
+            _ => started.push((i, start_node(e, raw.as_bytes(), payload))),
         }
     }
     let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
@@ -271,17 +348,28 @@ pub fn hook_main(args: &[String]) -> i32 {
                 return 64; // a usage error: the host reports it as a non-blocking hook error
             }
         };
-        // one byte more than the cap tells a payload that fits from one that was cut off
         let max = defaults::num("client.max_stdin");
-        let mut bytes = Vec::new();
-        let read = std::io::stdin().take(max + 1).read_to_end(&mut bytes);
-        let cut = bytes.len() as u64 > max;
-        let utf8 = std::str::from_utf8(&bytes);
+        let payload = match PayloadFile::read_stdin(max) {
+            Ok(p) => p,
+            Err(e) if guard => {
+                let why = defaults::render("dispatch.msg_stdin_read", &[("err", &e)]);
+                let o = fail_closed(&event, &why);
+                let _ = std::io::stderr().write_all(o.err.as_bytes());
+                return o.code;
+            }
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "{}", defaults::render("dispatch.msg_stdin_read", &[("err", &e)]));
+                return 0;
+            }
+        };
+        let cut = payload.prefix.len() as u64 > max;
+        let raw_bytes = payload.prefix_at_cap(max);
+        let utf8 = std::str::from_utf8(raw_bytes);
         let lossy_payload =
-            (guard && stoploop::is_stop_event(&a.event)).then(|| serde_json::from_str::<Value>(&String::from_utf8_lossy(&bytes)).ok()).flatten();
+            (guard && stoploop::is_stop_event(&a.event)).then(|| serde_json::from_str::<Value>(&String::from_utf8_lossy(raw_bytes)).ok()).flatten();
         if guard {
-            // a payload the dispatcher does not hold whole cannot be routed or checked: block, never allow unguarded
-            let failure = match &read {
+            // The full stdin is spooled for Node hooks, but the in-process routing/check path only has a capped prefix.
+            let failure = match &payload.read {
                 Err(e) => Some(defaults::render("dispatch.msg_stdin_read", &[("err", &e)])),
                 Ok(_) if cut => Some(defaults::render("dispatch.msg_stdin_truncated", &[("max", &max)])),
                 Ok(_) if utf8.is_err() => Some(defaults::text("msg.dispatch_stdin_utf8").to_string()),
@@ -293,10 +381,9 @@ pub fn hook_main(args: &[String]) -> i32 {
                 return o.code;
             }
         }
-        bytes.truncate(max as usize);
         // Non-guard events cannot block; keep matching Node's replacement-character decode there.
-        let raw = String::from_utf8_lossy(&bytes).to_string();
-        let o = run(&raw, &a);
+        let raw = String::from_utf8_lossy(raw_bytes).to_string();
+        let o = run_inner(&raw, &a, Some(payload.path()), payload.read.is_ok() && !cut && utf8.is_ok());
         let _ = std::io::stderr().write_all(o.err.as_bytes());
         let mut so = std::io::stdout();
         let _ = so.write_all(o.out.as_bytes());
