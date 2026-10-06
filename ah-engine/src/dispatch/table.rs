@@ -200,7 +200,7 @@ fn expand_vars(s: &str) -> Option<String> {
             let rest = &s[i + 1..];
             let (name, used) = if let Some(r) = rest.strip_prefix('{') {
                 let end = r.find('}')?;
-                (&r[..end], end + 2)
+                (&r[..end], end + 3)
             } else {
                 let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
                 (&rest[..end], end + 1)
@@ -213,8 +213,9 @@ fn expand_vars(s: &str) -> Option<String> {
             }
             i += used;
         } else {
-            out.push(b[i] as char);
-            i += 1;
+            let ch = s[i..].chars().next()?;
+            out.push(ch);
+            i += ch.len_utf8();
         }
     }
     Some(out)
