@@ -276,13 +276,10 @@ fn future() -> String {
 fn child_cases() -> Vec<Case> {
     let a = Want::Answer;
     let d = Want::Defer;
-    let settings = |s: &str| (".anti-hall/settings.json".to_string(), s.to_string());
     let mut v = vec![
         ch("claude-warm", a, &[]).warm(),
         ch("claude-rearm-off-env", a, &[("ANTIHALL_DEVSWARM_REARM_ON_TICK_ONLY", "0")]).warm(),
-        ch("claude-rearm-off-file", a, &[])
-            .seed(&settings("{\"devswarm\":{\"rearmOnTickOnly\":false}}").0, &settings("{\"devswarm\":{\"rearmOnTickOnly\":false}}").1)
-            .warm(),
+        ch("claude-rearm-off-file", a, &[]).seed(".anti-hall/settings.json", "{\"devswarm\":{\"rearmOnTickOnly\":false}}").warm(),
         ch("claude-rearm-option-false", a, &[("CLAUDE_PLUGIN_OPTION_DEVSWARM_REARM_ON_TICK_ONLY", "false")]).warm(),
         ch("claude-rearm-option-default-true", a, &[("CLAUDE_PLUGIN_OPTION_DEVSWARM_REARM_ON_TICK_ONLY", "true")]).warm(),
         ch("codex-agent", a, &[("DEVSWARM_AI_AGENT", "codex")]).warm(),
@@ -371,7 +368,6 @@ impl Case {
 fn gate_cases() -> Vec<Case> {
     let a = Want::Answer;
     let d = Want::Defer;
-    let skip = |body: String| (".anti-hall/skip.json".to_string(), body);
     let mut v = vec![
         gate("primary-active-defers", d, &[]),
         gate("child-silent", a, &[("DEVSWARM_SOURCE_BRANCH", "feature/x")]),
@@ -403,11 +399,10 @@ fn gate_cases() -> Vec<Case> {
             .seed(".claude/settings.json", "{\"pluginConfigs\":{\"anti-hall@anti-hall\":{\"options\":{\"devswarm_parent_gate\":false}}}}"),
         gate("parent-gate-file-garbage-defers", d, &[]).seed(".anti-hall/settings.json", "{\"devswarm\":{\"parentGate\":\"perhaps\"}}"),
         gate("settings-malformed-defers", d, &[]).seed(".anti-hall/settings.json", "{oops"),
-        gate("skip-named", a, &[])
-            .seed(&skip(format!("{{\"devswarm-parent-gate\":{}}}", future())).0, &skip(format!("{{\"devswarm-parent-gate\":{}}}", future())).1),
-        gate("skip-all", a, &[]).seed(&skip(format!("{{\"all\":{}}}", future())).0, &skip(format!("{{\"all\":{}}}", future())).1),
+        gate("skip-named", a, &[]).seed(".anti-hall/skip.json", &format!("{{\"devswarm-parent-gate\":{}}}", future())),
+        gate("skip-all", a, &[]).seed(".anti-hall/skip.json", &format!("{{\"all\":{}}}", future())),
         gate("skip-expired-defers", d, &[]).seed(".anti-hall/skip.json", "{\"devswarm-parent-gate\":1000,\"all\":2000}"),
-        gate("skip-other-guard-defers", d, &[]).seed(&skip(format!("{{\"git-guard\":{}}}", future())).0, &skip(format!("{{\"git-guard\":{}}}", future())).1),
+        gate("skip-other-guard-defers", d, &[]).seed(".anti-hall/skip.json", &format!("{{\"git-guard\":{}}}", future())),
         gate("skip-malformed-defers", d, &[]).seed(".anti-hall/skip.json", "{{{"),
         gate("skip-string-expiry-defers", d, &[]).seed(".anti-hall/skip.json", "{\"devswarm-parent-gate\":\"9999999999999\"}"),
         gate("judge-child", a, &[("ANTIHALL_JUDGE_CHILD", "1")]),
