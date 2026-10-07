@@ -56,3 +56,32 @@ impl Check for SpeculationJudge {
         (s.event == defaults::text("speculation_judge.event")).then(|| decide(env))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> RequestEnv {
+        let mut all = vec![("HOME", "/nonexistent-ah-home")];
+        all.extend_from_slice(pairs);
+        RequestEnv::from_pairs(all)
+    }
+
+    #[test]
+    fn off_by_default_and_for_the_judge_child() {
+        assert_eq!(decide(&env(&[])), Verdict::Allow);
+        assert_eq!(decide(&env(&[("ANTIHALL_SEMANTIC_JUDGE", "0")])), Verdict::Allow);
+        assert_eq!(decide(&env(&[("ANTIHALL_JUDGE_CHILD", "1"), ("ANTIHALL_SEMANTIC_JUDGE", "1")])), Verdict::Allow);
+    }
+
+    #[test]
+    fn opted_in_defers_to_the_node_hook() {
+        assert_eq!(decide(&env(&[("ANTIHALL_SEMANTIC_JUDGE", "1")])), Verdict::Defer);
+        assert_eq!(decide(&env(&[("ANTIHALL_JUDGE_CHILD", "0"), ("ANTIHALL_SEMANTIC_JUDGE", "true")])), Verdict::Defer);
+    }
+
+    #[test]
+    fn a_request_without_a_home_defers() {
+        assert_eq!(decide(&RequestEnv::from_pairs([("ANTIHALL_SEMANTIC_JUDGE", "0")])), Verdict::Defer);
+    }
+}

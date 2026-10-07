@@ -158,8 +158,9 @@ mod tests {
 
     #[test]
     fn a_hedge_inside_inline_code_or_quotes_is_blanked() {
-        assert_eq!(mask_quoted_text("see `must be x` and \"likely\" ok"), "see              and          ok");
-        assert_eq!(mask_quoted_text("a \u{1f600} `b`"), "a \u{1f600}    ");
+        let sp = |n: usize| " ".repeat(n);
+        assert_eq!(mask_quoted_text("see `must be x` and \"likely\" ok"), format!("see {} and {} ok", sp(11), sp(8)));
+        assert_eq!(mask_quoted_text("a \u{1f600} `b`"), format!("a \u{1f600} {}", sp(3)));
     }
 
     #[test]
@@ -170,8 +171,9 @@ mod tests {
 
     #[test]
     fn a_blockquote_is_blanked_up_to_its_separator() {
-        assert_eq!(mask_quoted_text("> probably \u{2014} so I think it is fine\nreal"), "                   so I think it is fine\nreal");
-        assert_eq!(mask_quoted_text("> quoted line\nreal text"), "             \nreal text");
+        let sp = |n: usize| " ".repeat(n);
+        assert_eq!(mask_quoted_text("> probably \u{2014} so I think it is fine\nreal"), format!("{} so I think it is fine\nreal", sp(12)));
+        assert_eq!(mask_quoted_text("> quoted line\nreal text"), format!("{}\nreal text", sp(13)));
     }
 
     #[test]
