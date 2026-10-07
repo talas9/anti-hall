@@ -354,6 +354,7 @@ pub(crate) fn json_depth(line: &str) -> usize {
 ///
 /// Mirrors `compact-advice.js` `readTurn` (the turn text only).
 pub(crate) fn turn_texts(lines: &[String]) -> Option<Vec<String>> {
+    let word = defaults::text("compact_decl.safe_word").as_bytes();
     let mut parts: Vec<String> = Vec::new();
     for line in lines.iter().filter(|l| !l.is_empty()) {
         let e: Value = match serde_json::from_str(line) {

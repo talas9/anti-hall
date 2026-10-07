@@ -14,10 +14,6 @@ pub fn allowed(name: &str) -> bool {
     defaults::list("request_env.allow").into_iter().any(|a| a.strip_suffix('*').map_or(a == name, |prefix| name.starts_with(prefix)))
 }
 
-/// The wire name of the "this environment is not the client's whole one" flag. It is not an allowlisted variable (the
-/// flag rides inside the forwarded map, because that is the only thing the daemon reads), so no real variable can set it.
-const INCOMPLETE_KEY: &str = "\u{1}incomplete";
-
 /// The allowlisted environment of one request.
 ///
 /// It is *incomplete* when the checks cannot trust it to say what the Node guards would read: the client's variables
@@ -36,7 +32,7 @@ impl Serialize for RequestEnv {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         let mut m = self.vars.clone();
         if self.incomplete {
-            m.insert(INCOMPLETE_KEY.into(), "1".into());
+            m.insert(defaults::text("request_env.incomplete_key").into(), "1".into());
         }
         m.serialize(ser)
     }
@@ -46,7 +42,7 @@ impl From<BTreeMap<String, String>> for RequestEnv {
     /// Keep only the allowlisted names (whatever sent the map, the daemon never evaluates with more), and none at all
     /// (flagged incomplete) when the rest would exceed `request_env.max_bytes`.
     fn from(m: BTreeMap<String, String>) -> Self {
-        let flagged = m.contains_key(INCOMPLETE_KEY);
+        let flagged = m.contains_key(defaults::text("request_env.incomplete_key"));
         let kept: BTreeMap<String, String> = m.into_iter().filter(|(k, _)| allowed(k)).collect();
         let size: usize = kept.iter().map(|(k, v)| k.len() + v.len()).sum();
         if size as u64 > defaults::num("request_env.max_bytes") {
@@ -160,7 +156,7 @@ mod tests {
         assert!(back.is_incomplete(), "the daemon must see that the client's environment was dropped");
         let (ok, _) = split_request(&format!("{}\n{{}}", RequestEnv::from_pairs([("HOME", "/h")]).to_line()));
         assert!(!ok.is_incomplete());
-        assert!(!allowed(INCOMPLETE_KEY), "the flag is not a forwardable variable");
+        assert!(!allowed(defaults::text("request_env.incomplete_key")), "the flag is not a forwardable variable");
     }
 
     #[test]
