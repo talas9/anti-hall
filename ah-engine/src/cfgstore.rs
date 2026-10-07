@@ -601,6 +601,8 @@ pub struct Snapshot {
     pub pending_restart: Vec<String>,
     /// The last rejected edit, as `code: text`, while the active snapshot is older than the files.
     pub last_error: Option<String>,
+    /// The user layers this snapshot was resolved from (kept so a changed default can be re-resolved when the user files are mid-edit).
+    pub layers: Layers,
 }
 
 impl Deref for Snapshot {
@@ -611,7 +613,9 @@ impl Deref for Snapshot {
 }
 
 impl Snapshot {
-    fn build(version: u64, mut effective: Effective, hooks: crate::hookcfg::Layer, prev: Option<&Snapshot>) -> Snapshot {
+    fn build(version: u64, layers: &Layers, env: &dyn Fn(&str) -> Option<String>, prev: Option<&Snapshot>) -> Snapshot {
+        let mut effective = Effective::resolve(layers, env);
+        let hooks = layers.hooks.clone();
         let mut pending = Vec::new();
         if let Some(prev) = prev {
             for (k, r) in effective.map.iter_mut() {
@@ -625,17 +629,30 @@ impl Snapshot {
             }
         }
         let config = Config::from_effective(&effective);
-        Snapshot { version, effective, config, hooks: crate::hookcfg::HookCfg::new(None, hooks), pending_restart: pending, last_error: None }
+        Snapshot {
+            version,
+            effective,
+            config,
+            hooks: crate::hookcfg::HookCfg::new(None, hooks),
+            pending_restart: pending,
+            last_error: None,
+            layers: layers.clone(),
+        }
     }
 }
 
-type Fingerprint = Vec<Option<(SystemTime, u64, u64)>>;
+/// What the watcher compares: the user files and the plugin's defaults files.
+#[derive(Debug, Clone, PartialEq)]
+struct Fingerprint {
+    files: Vec<Option<(SystemTime, u64, u64)>>,
+    defaults: defaults::Fingerprint,
+}
 
-fn fingerprint(p: &Paths) -> Fingerprint {
+fn fingerprint(p: &Paths, defaults_root: Option<&Path>) -> Fingerprint {
     let one = |path: &Path| std::fs::metadata(path).ok().and_then(|m| Some((m.modified().ok()?, m.len(), m.ino())));
     let mut v = vec![one(&p.user)];
     v.push(p.settings.as_deref().and_then(one));
-    v
+    Fingerprint { files: v, defaults: defaults_root.map(defaults::fingerprint).unwrap_or_default() }
 }
 
 struct Watch {
@@ -660,6 +677,8 @@ pub struct ConfigStore {
     cur: RwLock<Arc<Snapshot>>,
     paths: Option<Paths>,
     watch: Mutex<Watch>,
+    /// A plugin root a request named that differs from the active one (a plugin update): adopted at the next poll when it is newer.
+    offered: Mutex<Option<PathBuf>>,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -669,8 +688,21 @@ fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl ConfigStore {
     /// A store that never reads files: it serves `config` as given (unit tests).
     pub fn fixed(config: Config) -> ConfigStore {
-        let snap = Snapshot { version: 1, effective: Effective::defaults(), config, hooks: Default::default(), pending_restart: vec![], last_error: None };
-        ConfigStore { cur: RwLock::new(Arc::new(snap)), paths: None, watch: Mutex::new(Watch { seen: vec![], pending: None, last_poll: Instant::now() }) }
+        let snap = Snapshot {
+            version: 1,
+            effective: Effective::defaults(),
+            config,
+            hooks: Default::default(),
+            pending_restart: vec![],
+            last_error: None,
+            layers: Layers::default(),
+        };
+        ConfigStore {
+            cur: RwLock::new(Arc::new(snap)),
+            paths: None,
+            watch: Mutex::new(Watch { seen: Fingerprint { files: vec![], defaults: vec![] }, pending: None, last_poll: Instant::now() }),
+            offered: Mutex::new(None),
+        }
     }
 
     /// Load the files for this process. A rejected file is logged (`config_invalid`) and the shipped defaults run
@@ -681,15 +713,20 @@ impl ConfigStore {
 
     /// `load` for explicit paths.
     pub fn load_from(paths: Paths) -> ConfigStore {
-        let seen = fingerprint(&paths);
+        let seen = fingerprint(&paths, defaults::root().as_deref());
         let env = |n: &str| std::env::var(n).ok();
         let (layers, errs) = load_layers_cold(&paths);
         for e in &errs {
             health::log_event("config_invalid", e.code(), &e.to_string());
         }
-        let mut snap = Snapshot::build(1, Effective::resolve(&layers, &env), layers.hooks.clone(), None);
+        let mut snap = Snapshot::build(1, &layers, &env, None);
         snap.last_error = errs.first().map(|e| format!("{}: {e}", e.code()));
-        ConfigStore { cur: RwLock::new(Arc::new(snap)), paths: Some(paths), watch: Mutex::new(Watch { seen, pending: None, last_poll: Instant::now() }) }
+        ConfigStore {
+            cur: RwLock::new(Arc::new(snap)),
+            paths: Some(paths),
+            watch: Mutex::new(Watch { seen, pending: None, last_poll: Instant::now() }),
+            offered: Mutex::new(None),
+        }
     }
 
     /// The active snapshot. Take it once per request and use it throughout.
@@ -702,34 +739,86 @@ impl ConfigStore {
         self.paths.as_ref()
     }
 
-    /// Re-read the files now and swap if they are valid and different (`ctl reload`, and the watcher once settled).
+    /// Note the plugin root a request came from. A root that differs from the active one is adopted at a later poll when its defaults
+    /// are newer (a plugin update installs new files); an older or equal one is ignored, so two plugin versions in use at once cannot
+    /// make the daemon flip between them.
+    pub fn offer_root(&self, root: &str) {
+        if root.is_empty() || self.paths.is_none() || defaults::root().as_deref() == Some(Path::new(root)) {
+            return;
+        }
+        let mut o = lk(&self.offered);
+        if o.as_deref() != Some(Path::new(root)) {
+            *o = Some(PathBuf::from(root));
+        }
+    }
+
+    /// The plugin root the defaults should be read from now: the active one, or an offered one whose index is newer.
+    fn target_root(&self) -> Option<PathBuf> {
+        let cur = defaults::root();
+        let mtime = |r: &Path| std::fs::metadata(crate::bootstrap::index_path(r)).and_then(|m| m.modified()).ok();
+        let offered = lk(&self.offered).clone();
+        match (offered, &cur) {
+            (Some(o), Some(c)) if o != *c && mtime(&o).is_some_and(|new| mtime(c).is_none_or(|old| new > old)) => Some(o),
+            (Some(o), None) => Some(o),
+            _ => cur,
+        }
+    }
+
+    /// Re-read the files now and swap if they are valid and different (`ctl reload`, and the watcher once settled). The plugin's
+    /// defaults are read and validated first; an invalid set keeps EVERYTHING as it was (one snapshot, never a mixture).
     pub fn reload(&self) -> Reload {
         let Some(paths) = &self.paths else { return Reload::Unchanged };
-        lk(&self.watch).seen = fingerprint(paths);
+        let root = self.target_root();
+        lk(&self.watch).seen = fingerprint(paths, root.as_deref());
         let prev = self.snapshot();
         let env = |n: &str| std::env::var(n).ok();
-        match load_layers(paths) {
+        let defaults_applied = match defaults::reload(root.as_deref()) {
             Err(e) => {
-                health::log_event("config_invalid", e.code(), &e.to_string());
+                health::log_event("defaults_invalid", e.code, &e.to_string());
+                let mut s = (*prev).clone();
+                s.last_error = Some(format!("{}: {e}", e.code));
+                *self.cur.write().unwrap_or_else(|x| x.into_inner()) = Arc::new(s);
+                return Reload::Invalid(e.code);
+            }
+            Ok(r) => r == defaults::Reloaded::Applied,
+        };
+        if defaults_applied {
+            let root = defaults::root().map(|r| r.display().to_string()).unwrap_or_default();
+            health::log_event("defaults_applied", "ok", &root);
+            let mut o = lk(&self.offered);
+            if o.as_deref().is_some_and(|x| Some(x) == defaults::root().as_deref()) {
+                *o = None;
+            }
+        }
+        let (layers, user_err) = match load_layers(paths) {
+            Ok(l) => (l, None),
+            // the user's files are mid-edit: keep the layers the active snapshot has, but still adopt the new defaults
+            Err(e) => (prev.layers.clone(), Some(e)),
+        };
+        if let Some(e) = &user_err {
+            health::log_event("config_invalid", e.code(), &e.to_string());
+            if !defaults_applied {
                 let mut s = (*prev).clone();
                 s.last_error = Some(format!("{}: {e}", e.code()));
                 *self.cur.write().unwrap_or_else(|x| x.into_inner()) = Arc::new(s);
-                Reload::Invalid(e.code())
+                return Reload::Invalid(e.code());
             }
-            Ok(layers) => {
-                let next = Snapshot::build(prev.version + 1, Effective::resolve(&layers, &env), layers.hooks.clone(), Some(&prev));
-                let changed: Vec<&str> = next.effective.iter().filter(|(k, r)| prev.effective.get(k) != Some(*r)).map(|(k, _)| k).collect();
-                if changed.is_empty() && next.hooks == prev.hooks && next.pending_restart == prev.pending_restart && prev.last_error.is_none() {
-                    return Reload::Unchanged;
-                }
-                if !next.pending_restart.is_empty() && next.pending_restart != prev.pending_restart {
-                    health::log_event("config_pending", "restart", &defaults::render("msg.cfg_log_pending", &[("keys", &next.pending_restart.join(", "))]));
-                }
-                let v = next.version;
-                health::log_event("config_applied", "ok", &defaults::render("msg.cfg_log_applied", &[("version", &v), ("changed", &changed.len())]));
-                *self.cur.write().unwrap_or_else(|x| x.into_inner()) = Arc::new(next);
-                Reload::Applied(v)
-            }
+        }
+        let mut next = Snapshot::build(prev.version + 1, &layers, &env, Some(&prev));
+        next.last_error = user_err.as_ref().map(|e| format!("{}: {e}", e.code()));
+        let changed: Vec<&str> = next.effective.iter().filter(|(k, r)| prev.effective.get(k) != Some(*r)).map(|(k, _)| k).collect();
+        if !defaults_applied && changed.is_empty() && next.hooks == prev.hooks && next.pending_restart == prev.pending_restart && prev.last_error.is_none() {
+            return Reload::Unchanged;
+        }
+        if !next.pending_restart.is_empty() && next.pending_restart != prev.pending_restart {
+            health::log_event("config_pending", "restart", &defaults::render("msg.cfg_log_pending", &[("keys", &next.pending_restart.join(", "))]));
+        }
+        let v = next.version;
+        health::log_event("config_applied", "ok", &defaults::render("msg.cfg_log_applied", &[("version", &v), ("changed", &changed.len())]));
+        *self.cur.write().unwrap_or_else(|x| x.into_inner()) = Arc::new(next);
+        match user_err {
+            Some(e) => Reload::Invalid(e.code()),
+            None => Reload::Applied(v),
         }
     }
 
@@ -742,7 +831,8 @@ impl ConfigStore {
             return None;
         }
         w.last_poll = Instant::now();
-        let now = fingerprint(paths);
+        let root = self.target_root();
+        let now = fingerprint(paths, root.as_deref());
         if now == w.seen {
             w.pending = None;
             return None;
@@ -799,7 +889,7 @@ pub fn report_from_files() -> Json {
     let paths = Paths::from_env();
     let env = |n: &str| std::env::var(n).ok();
     let (layers, errs) = load_layers_cold(&paths);
-    let mut s = Snapshot::build(1, Effective::resolve(&layers, &env), layers.hooks.clone(), None);
+    let mut s = Snapshot::build(1, &layers, &env, None);
     s.last_error = errs.first().map(|e| format!("{}: {e}", e.code()));
     report_of(&s, Some(&paths))
 }

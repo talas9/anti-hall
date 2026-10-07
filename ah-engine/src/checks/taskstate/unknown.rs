@@ -97,7 +97,7 @@ pub fn unknown_note(tasks: &TaskMap, home: &str, session_id: &str, tag: &str) ->
     js_sort(&mut ids);
     let hash = sha1_hex(ids.join("\u{0}").as_bytes());
     let sid = safe_key(if session_id.is_empty() { "nosession" } else { session_id });
-    let dir = Path::new(home).join(".anti-hall");
+    let dir = Path::new(home).join(defaults::text("paths.base_dir"));
     let prefix = defaults::text("taskstate.unknown_file_prefix");
     let file = dir.join(format!("{prefix}-{tag}-{sid}.json"));
     let (mut last_hash, mut last_n) = (String::new(), 0f64);

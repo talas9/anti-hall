@@ -68,7 +68,7 @@ fn decide_inner(p: &Value, st: &Settings) -> R<Verdict> {
         None => sha1_hex(transcript.as_bytes())[..defaults::num("task_guard.session_hash_len") as usize].to_string(),
     };
     let safe_session = safe_key(&session_id);
-    let state_file = Path::new(&st.home).join(".anti-hall").join(format!("{}{safe_session}", defaults::text("task_guard.state_prefix")));
+    let state_file = Path::new(&st.home).join(defaults::text("paths.base_dir")).join(format!("{}{safe_session}", defaults::text("task_guard.state_prefix")));
 
     let tasks = parse_tasks(transcript)?;
     let done: Vec<&str> = defaults::list("taskstate.done_statuses");

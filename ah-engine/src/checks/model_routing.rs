@@ -16,7 +16,6 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::sync::OnceLock;
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
@@ -51,7 +50,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| {
         let ci = |k| jsre::compile(defaults::text(k), true);
         let re = |k| jsre::compile(defaults::text(k), false);
@@ -349,7 +348,7 @@ fn one_pass(template_key: &str, args: &[(&str, &str)]) -> String {
 }
 
 fn fallback_block(reason: &str) -> Verdict {
-    let reason = serde_json::to_string(reason).unwrap_or_else(|_| "\"model-routing fail-closed\"".to_string());
+    let reason = serde_json::to_string(reason).unwrap_or_else(|_| format!("\"{}\"", defaults::text("model_routing.fail_closed_marker")));
     Verdict::Exact(Exact { code: 2, out: format!("{{\"decision\":\"block\",\"reason\":{reason}}}\n"), err: String::new() })
 }
 
@@ -362,7 +361,7 @@ pub(crate) fn fail_closed() -> Verdict {
             "",
         ))
     })
-    .unwrap_or_else(|_| fallback_block("model-routing fail-closed"));
+    .unwrap_or_else(|_| fallback_block(defaults::text("model_routing.fail_closed_marker")));
     routed(v, &Value::Null, RouteInput { model: "", omitted: true, subagent_type: "" }, "unknown", tier("model_routing.tier_main"), "deny")
 }
 

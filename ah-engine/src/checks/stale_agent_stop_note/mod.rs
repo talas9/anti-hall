@@ -20,13 +20,12 @@ use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
 
 fn control_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(defaults::text("stale_note.control_re")))
 }
 

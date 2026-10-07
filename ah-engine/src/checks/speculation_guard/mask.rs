@@ -7,7 +7,6 @@ use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use regex::Regex;
-use std::sync::OnceLock;
 
 struct Pats {
     quote_line: Regex,
@@ -20,7 +19,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| Pats {
         quote_line: jsre::compile(defaults::text("speculation_guard.quote_line_re"), false),
         fence_line: jsre::compile(defaults::text("speculation_guard.fence_line_re"), false),

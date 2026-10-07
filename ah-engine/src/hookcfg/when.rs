@@ -290,19 +290,19 @@ fn parse_test(o: &serde_json::Map<String, Json>) -> Result<Test, WhenError> {
         "equals" => Test::Equals(Val::from_json(v).ok_or_else(|| bad(why("equals_value").into()))?),
         "in" => Test::In(
             v.as_array()
-                .ok_or_else(|| bad("in needs a list".into()))?
+                .ok_or_else(|| bad(why("in_needs_list").into()))?
                 .iter()
                 .map(|x| Val::from_json(x).ok_or_else(|| bad(why("in_values").into())))
                 .collect::<Result<_, _>>()?,
         ),
         "regex" => {
-            let p = v.as_str().ok_or_else(|| bad("regex needs a string".into()))?;
+            let p = v.as_str().ok_or_else(|| bad(why("regex_needs_string").into()))?;
             Test::Regex(Regex::new(p).map_err(|e| err("hooks.msg_when_bad_regex", &[("pattern", &p), ("err", &e)]))?)
         }
-        "glob" => Test::Glob(v.as_str().ok_or_else(|| bad("glob needs a string".into()))?.to_string()),
-        "exists" => Test::Exists(v.as_bool().ok_or_else(|| bad("exists needs true or false".into()))?),
-        "at_least" => Test::AtLeast(v.as_i64().ok_or_else(|| bad("at_least needs an integer".into()))?),
-        _ => Test::AtMost(v.as_i64().ok_or_else(|| bad("at_most needs an integer".into()))?),
+        "glob" => Test::Glob(v.as_str().ok_or_else(|| bad(why("glob_needs_string").into()))?.to_string()),
+        "exists" => Test::Exists(v.as_bool().ok_or_else(|| bad(why("exists_needs_bool").into()))?),
+        "at_least" => Test::AtLeast(v.as_i64().ok_or_else(|| bad(why("at_least_needs_int").into()))?),
+        _ => Test::AtMost(v.as_i64().ok_or_else(|| bad(why("at_most_needs_int").into()))?),
     })
 }
 
@@ -317,7 +317,7 @@ fn find_setting(key: &str) -> Option<SettingRef> {
             return Some(SettingRef::Switch(&e.value));
         }
     }
-    defaults::all().iter().find(|e| e.key == key).map(|e| SettingRef::Engine(e.key))
+    defaults::get(key).map(|e| SettingRef::Engine(e.key))
 }
 
 fn parse_session(o: &serde_json::Map<String, Json>) -> Result<When, WhenError> {
@@ -325,11 +325,11 @@ fn parse_session(o: &serde_json::Map<String, Json>) -> Result<When, WhenError> {
     let name = o.get("session").and_then(Json::as_str).filter(|n| !n.is_empty()).ok_or_else(|| bad(why("session_name")))?;
     let ops = defaults::list("hooks.session_ops");
     let given: Vec<&str> = ops.iter().copied().filter(|k| o.contains_key(*k)).collect();
-    let [op] = given.as_slice() else { return Err(bad(&format!("exactly one of {}", ops.join(", ")))) };
+    let [op] = given.as_slice() else { return Err(bad(&defaults::fill(why("exactly_one_of"), &[("ops", &ops.join(", "))]))) };
     let n = |k: &str| o.get(k).and_then(Json::as_u64).filter(|n| *n >= 1);
     let op = match *op {
         "first" if o.get("first").and_then(Json::as_bool) == Some(true) => SessionOp::First,
-        "first" => return Err(bad("first must be true")),
+        "first" => return Err(bad(why("first_must_be_true"))),
         "every" => SessionOp::Every(n("every").ok_or_else(|| bad(why("every_n")))?),
         _ => SessionOp::AtLeast(n("at_least").ok_or_else(|| bad(why("at_least_n")))?),
     };
@@ -355,7 +355,7 @@ impl When {
         if depth >= max {
             return Err(err("hooks.msg_when_depth", &[("max", &max)]));
         }
-        let o = v.as_object().ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &"a condition must be a table")]))?;
+        let o = v.as_object().ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &why("condition_table"))]))?;
         let kinds = defaults::list("hooks.when_kinds");
         let given: Vec<&str> = kinds.iter().copied().filter(|k| o.contains_key(*k)).collect();
         let found = o.keys().cloned().collect::<Vec<_>>().join(", ");
@@ -400,8 +400,7 @@ impl When {
                 When::Leaf(Source::Setting(r), test)
             }
             "env" => {
-                let n =
-                    o["env"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &"env needs a variable name")]))?;
+                let n = o["env"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &why("env_needs_name"))]))?;
                 if !crate::reqenv::allowed(n) {
                     return Err(err("hooks.msg_when_env_not_forwarded", &[("name", &n)]));
                 }

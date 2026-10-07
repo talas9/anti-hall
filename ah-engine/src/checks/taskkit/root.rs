@@ -10,7 +10,6 @@ use crate::checks::guardkit::paths::{is_absolute, resolve_abs};
 use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 /// The checkout (git directory, private or not) behind a `<root>/.git` entry: the real path of the git directory.
 /// `None` when the entry cannot be classified (Node's `gitdirOf` answers null).
@@ -20,7 +19,7 @@ fn git_dir_of(top: &Path) -> Option<PathBuf> {
     if meta.is_dir() {
         return std::fs::canonicalize(&dot).ok();
     }
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    static RE: crate::defaults::Cache<regex::Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| jsre::compile_multiline(defaults::text("taskkit.gitdir_line"), false));
     let text = String::from_utf8_lossy(&std::fs::read(&dot).ok()?).into_owned();
     let target = re.captures(&text)?.get(1)?.as_str().to_string();

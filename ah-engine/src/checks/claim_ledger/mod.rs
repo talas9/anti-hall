@@ -33,7 +33,6 @@ use regex::Regex;
 use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
-use std::sync::OnceLock;
 use unicode_normalization::UnicodeNormalization;
 
 #[cfg(test)]
@@ -49,7 +48,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| Pats {
         count: jsre::compile(defaults::text("claim_ledger.count_re"), true),
         sha: jsre::compile(defaults::text("claim_ledger.sha_re"), false),

@@ -10,7 +10,6 @@ use crate::checks::jsport::text::slice16_lossy;
 use crate::checks::jsport::{fsx, text as jstext};
 use crate::defaults;
 use regex::Regex;
-use std::sync::OnceLock;
 
 /// What the port cannot decide exactly; the check then answers "defer" and Node decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,19 +121,19 @@ pub fn record_quota(home: &str, until: Option<f64>, reason: &str, now: f64) -> R
 }
 
 fn re_quota() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("codex_handover.quota_re"), true))
 }
 fn re_try_again() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("codex_handover.try_again_re"), true))
 }
 fn re_until() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("codex_handover.until_re"), true))
 }
 fn re_ordinal() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("codex_handover.ordinal_re"), true))
 }
 

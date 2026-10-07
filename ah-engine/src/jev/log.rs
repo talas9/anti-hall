@@ -80,7 +80,7 @@ impl FileLog {
 impl DecisionLog for FileLog {
     fn append(&self, row: &Row) -> Result<(), JevError> {
         if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| self.io("create the directory of", e))?;
+            std::fs::create_dir_all(dir).map_err(|e| self.io(crate::defaults::text("jev.what_create_dir"), e))?;
         }
         self.rotate_if_needed();
         let mut f = OpenOptions::new().create(true).append(true).open(&self.path).map_err(|e| self.io("open", e))?;

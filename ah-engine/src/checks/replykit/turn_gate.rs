@@ -14,7 +14,6 @@ use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
 use std::path::Path;
-use std::sync::OnceLock;
 
 /// What the gate needs about one advisory.
 pub struct GateInput<'a> {
@@ -33,7 +32,7 @@ pub struct GateInput<'a> {
 }
 
 fn injected_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("reply_turn_gate.injected_re"), false))
 }
 

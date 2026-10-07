@@ -19,7 +19,6 @@ use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 /// A teammate that finished its work and was not stopped.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +44,7 @@ struct Res {
 }
 
 fn res() -> &'static Res {
-    static R: OnceLock<Res> = OnceLock::new();
+    static R: crate::defaults::Cache<Res> = crate::defaults::Cache::new();
     R.get_or_init(|| {
         let c = |k: &str, ci: bool| jsre::compile(defaults::text(k), ci);
         Res {

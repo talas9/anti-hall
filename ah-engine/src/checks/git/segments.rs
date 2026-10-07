@@ -12,7 +12,6 @@ use super::util::*;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 fn is_line_term(c: char) -> bool {
     c == '\n' || c == '\r' || c == '\u{2028}' || c == '\u{2029}'
@@ -117,7 +116,7 @@ fn scan_command_value(ctx: &mut Ctx, v: &str, d: usize) -> Option<String> {
 
 /// Mirrors `lib/handover-find.js` `isHandoverPath`.
 fn is_handover_path(p: &str) -> bool {
-    static ROOT: OnceLock<Regex> = OnceLock::new();
+    static ROOT: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let root = ROOT.get_or_init(|| lit_re(r"^(?:HANDOVER(?:-[^/]*)?\.md|CONTINUE-HERE\.md|[^/]*\.continue-here\.md)$"));
     let mut norm = p.replace('\\', "/");
     while let Some(r) = norm.strip_prefix("./") {
@@ -349,8 +348,9 @@ fn handover_commit_verdict(ctx: &mut Ctx, ev: &Ev, last_cd: Option<&str>) -> Opt
         return None;
     }
     let hits = committed_handovers(ctx, ev, last_cd)?;
-    let shown = hits.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
-    let shown = format!("{shown}{}", if hits.len() > 3 { tables().more_marker.as_str() } else { "" });
+    let shown_max = crate::defaults::num("git.shown_hits") as usize;
+    let shown = hits.iter().take(shown_max).cloned().collect::<Vec<_>>().join(", ");
+    let shown = format!("{shown}{}", if hits.len() > shown_max { tables().more_marker.as_str() } else { "" });
     Some(block("msg_handover", &[("shown", &shown), ("skip", &ctx.skip_cmd(&tables().guard_name))]))
 }
 
@@ -358,7 +358,8 @@ fn handover_commit_verdict(ctx: &mut Ctx, ev: &Ev, last_cd: Option<&str>) -> Opt
 
 fn cd_next(ctx: &Ctx, cd: Option<&str>, dir_tok: &str) -> Option<String> {
     if let Some(c) = cd
-        && (c.chars().count() > 4096 || c.split('/').count() > 64)
+        && (c.chars().count() > crate::defaults::num("git.path_arg_max_chars") as usize
+            || c.split('/').count() > crate::defaults::num("git.path_arg_max_segments") as usize)
     {
         return None;
     }
@@ -502,7 +503,7 @@ pub fn scan_command(ctx: &mut Ctx, cmd: &str, depth: usize, base_cwd: Option<&st
         if let Some(gv) = git_verdict(ctx, &ev, d, cmd, &heredoc_bodies, last_cd.as_deref(), true) {
             return Some(gv);
         }
-        if ctx.handover_adds.len() < 50 && ev.args.iter().any(|t| t.text == "add") {
+        if ctx.handover_adds.len() < crate::defaults::num("git.handover_adds_max") as usize && ev.args.iter().any(|t| t.text == "add") {
             let (add_sub, add_rest) = git_subcommand(&ev.args);
             if add_sub.as_deref() == Some("add") {
                 let specs: Vec<String> =
@@ -594,7 +595,7 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
             return Some(block("msg_delete_ref", &[("skip", &ctx.skip_cmd(&tables().guard_name))]));
         }
         if has_cmd_subst_arg(&rest) {
-            static HD: OnceLock<Regex> = OnceLock::new();
+            static HD: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
             let hd = HD.get_or_init(|| lit_re(r#"<<-?[ \t]*['"\\]?[A-Za-z_]"#));
             let mut m = block("msg_push_cmdsubst", &[]);
             if hd.is_match(&ctx.raw_cmd) {

@@ -49,9 +49,29 @@ pub fn lock_for(sock: &std::path::Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// The rules file: `AH_ENGINE_RULES` or `rules.json` in the state dir.
+/// The shipped rules file: `engine/rules.json` in the plugin (`paths.plugin_rules_file`), next to the defaults, so tuning a rule is
+/// editing the plugin. `None` when no plugin root is known.
+pub fn plugin_rules_file() -> Option<PathBuf> {
+    defaults::root().map(|r| r.join(defaults::text("paths.plugin_rules_file")))
+}
+
+/// The user's rules override in the state directory (`rules.json` there), which replaces the shipped file when it exists.
+pub fn user_rules_file() -> PathBuf {
+    dir().join(defaults::text("paths.rules_file"))
+}
+
+/// The rules file in effect: the `AH_ENGINE_RULES` override, else the user's file in the state dir when there is one (user
+/// overrides stay under `~/.anti-hall`), else the plugin's. A path that does not exist is returned as is (an unreadable rules
+/// file reads as the empty rule set, as before).
 pub fn rules_file() -> PathBuf {
-    defaults::env_var("rules").map(PathBuf::from).unwrap_or_else(|| dir().join(defaults::text("paths.rules_file")))
+    if let Some(p) = defaults::env_var("rules") {
+        return PathBuf::from(p);
+    }
+    let user = user_rules_file();
+    if user.is_file() {
+        return user;
+    }
+    plugin_rules_file().unwrap_or(user)
 }
 
 #[cfg(test)]

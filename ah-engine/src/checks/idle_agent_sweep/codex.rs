@@ -10,7 +10,6 @@ use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 /// An agent the rollout shows finished and still open.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,7 +36,7 @@ struct Agent {
 }
 
 fn id_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("idle_sweep.re_codex_id"), true))
 }
 

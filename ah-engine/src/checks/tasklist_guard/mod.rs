@@ -89,7 +89,7 @@ fn join_all(root: &str, segs: &[String]) -> String {
 
 /// `maintainSessionIndex(root, date, sid, kind)`.
 fn maintain_session_index(root: &str, date: &str, sid: &str, kind: &str) {
-    let index = join(&join(&join(root, ".anti-hall"), kind), "INDEX.md");
+    let index = join(&join(&join(root, defaults::text("paths.base_dir")), kind), defaults::text("task_lifecycle_log.index_file"));
     let sep = defaults::text("task_lifecycle_log.separator");
     let line = format!("- {date}{sep}{sid}{sep}[{kind}](../{date}/{sid}.md)");
     append_index_line_if_absent(&index, sid, &line);
@@ -116,7 +116,7 @@ fn check_resume_verification(home: &str, sid: &str, work: u64, threshold: f64) -
     if home.is_empty() || sid.is_empty() || (work as f64) < threshold {
         return Ok(None);
     }
-    let dir = Path::new(home).join(".anti-hall");
+    let dir = Path::new(home).join(defaults::text("paths.base_dir"));
     let marker_path = dir.join(format!("{}{sid}.json", defaults::text("tasklist_guard.resume_marker_prefix")));
     let Ok(raw) = std::fs::read(&marker_path) else { return Ok(None) };
     if crate::checks::guardkit::jsdiff::js_reads_differently(&raw) {

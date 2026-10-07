@@ -6,7 +6,6 @@
 use crate::defaults;
 use crate::defaults::V;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
 
 /// An ordered list of words with constant-time membership tests.
 #[derive(Debug, Default, Clone)]
@@ -443,7 +442,7 @@ fn build() -> Tables {
 
 /// The tables, built on first use and shared for the life of the process.
 pub fn tables() -> &'static Tables {
-    static T: OnceLock<Tables> = OnceLock::new();
+    static T: crate::defaults::Cache<Tables> = crate::defaults::Cache::new();
     T.get_or_init(build)
 }
 

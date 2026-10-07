@@ -63,9 +63,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
 
 /// Every command in the shipped registry data, in file order.
 pub fn commands() -> Vec<CommandInfo> {
-    defaults::all()
+    defaults::with_prefix("cmd.")
         .iter()
-        .filter(|e| e.key.starts_with("cmd."))
         .map(|e| CommandInfo {
             name: e.key["cmd.".len()..].to_string(),
             args: e.value.str_field("args").to_string(),
@@ -142,6 +141,21 @@ pub fn human(v: &Value) -> String {
 /// Run the command line (arguments after the program name); returns the process exit code.
 pub fn run(args: &[String]) -> i32 {
     let p = parse(args);
+    // the registry itself is a shipped table, so the defaults are loaded first. The thin hook client reads the daemon's snapshot
+    // cache (parsing the plugin's files per call would double its start-up, D17); everything else reads the files.
+    let hook = p.command == "hook";
+    // commands that only talk to the daemon or print a version need a few settings, not the docs of all of them
+    if hook || ["version", "status", "ping", "ctl", "stop"].contains(&p.command.as_str()) {
+        defaults::use_cache();
+    }
+    if hook || p.command == "serve" {
+        defaults::write_cache_on_load();
+    }
+    if let Err(e) = defaults::init() {
+        defaults::report_unavailable(&e);
+        // nothing can be answered without settings: a hook defers to Node through the wrapper, anything else is a plain failure
+        return if hook { crate::bootstrap::UNAVAILABLE_EXIT } else { 70 };
+    }
     let infos = commands();
     let Some(info) = infos.iter().find(|c| c.name == p.command) else {
         let names: Vec<String> = infos.iter().map(|c| c.name.clone()).collect();
@@ -307,7 +321,7 @@ fn cmd_schedule(p: &Parsed) -> i32 {
     let verb = match sub {
         "run" => match p.rest.get(1).filter(|j| !j.starts_with("--")) {
             Some(job) => format!("schedule run job={job}"),
-            None => return report_result(p, Err(defaults::render("msg.cli_usage", &[("commands", &"schedule run <job>")]))),
+            None => return report_result(p, Err(defaults::render("msg.cli_usage", &[("commands", &defaults::text("msg.cli_usage_schedule_run"))]))),
         },
         "history" => {
             let mut v = "schedule history".to_string();
@@ -357,7 +371,7 @@ fn cmd_backup(p: &Parsed) -> i32 {
 
 fn cmd_restore(p: &Parsed) -> i32 {
     let Some(from) = p.rest.first() else {
-        return report_result(p, Err(defaults::render("msg.cli_usage", &[("commands", &"restore <snapshot-dir>")])));
+        return report_result(p, Err(defaults::render("msg.cli_usage", &[("commands", &defaults::text("msg.cli_usage_restore"))])));
     };
     report_result(p, crate::backup::restore(&crate::paths::dir(), std::path::Path::new(from)).map_err(|e| e.to_string()))
 }

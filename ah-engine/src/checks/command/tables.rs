@@ -7,7 +7,6 @@ use crate::defaults;
 use crate::defaults::V;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
 
 /// A `LIGHT_EXCEPTIONS` entry with a trailing negative lookahead, split into the parts a Rust regex can run.
 pub struct NegLight {
@@ -210,6 +209,6 @@ fn build() -> Tables {
 
 /// The command check's tables (built on first use).
 pub fn tables() -> &'static Tables {
-    static T: OnceLock<Tables> = OnceLock::new();
+    static T: crate::defaults::Cache<Tables> = crate::defaults::Cache::new();
     T.get_or_init(build)
 }

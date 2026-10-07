@@ -34,7 +34,7 @@ never a submodule (D69).
 | `src/db.rs`, `src/sql.rs` | the SQLite pair (`hot.db`, `archive.db`): settings, versioned migrations, the group-committing writer; the schema and statements |
 | `src/transcript/` | the per-session transcript index (X1): incremental reader, record parser (each function cites the Node reader it mirrors), registry |
 | `src/gitcache/` | the per-repo git cache (X3, D61): repository discovery, the file signature, bounded git runs |
-| `src/defaults.rs`, `build.rs`, `defaults/*.toml` | shipped defaults, compiled into the binary from the TOML files |
+| `src/defaults.rs`, `src/defaults/load.rs`, `src/bootstrap.rs`, `build.rs` | the run-time loader of the plugin's `engine/defaults/*.toml` (validation, atomic snapshot, cache for the thin client, change watching) and the few names needed to find them; `build.rs` only collects the keys the source reads. The defaults themselves live in `plugins/anti-hall/engine/`, never in this crate |
 | `src/docs.rs` | the reference generator |
 | `tests/` | end-to-end and reliability tests against a real daemon, the no-hardcoding test, the defaults-keys test, the reference drift test, the agent CLI and residency tests |
 | `parity/` | the parity harnesses against the Node guards, and `transcript-facts.js` / `run-transcript.js` for the transcript index |
@@ -482,11 +482,11 @@ Same machine, same session, quiet, macOS, brew rust 1.99, release build (`opt-le
 | daemon RSS after 1000 commit-with-heredoc requests | 4.7 MB | 5.2 MB | n/a |
 | binary size | 1.35 MB | 1.57 MB | n/a |
 
-The extra daemon memory is the git check's tables (built once into sets) and the telemetry. Reading defaults costs
-nothing at run time: `build.rs` compiles `defaults/*.toml` into static data. The first version of the defaults parsed the
-TOML at every start; measured by alternating the two builds in the same minute, `ah-engine version` took 3.7 to 3.8 ms
+The extra daemon memory is the git check's tables (built once into sets) and the telemetry. Reading defaults is a snapshot lookup: the plugin's `engine/defaults/*.toml` are read at run time by the daemon, and the thin
+client reads a one-file validated cache of them. (Before the amendment of D17 they were compiled into the binary, because the
+first version of the defaults parsed the TOML at every start; measured by alternating the two builds in the same minute, `ah-engine version` took 3.7 to 3.8 ms
 with the parse and 1.9 to 2.1 ms with the compiled-in data (a plain `true` takes 1.2 ms on this machine), so the parse
-nearly doubled the client's start-up and was replaced.
+nearly doubled the client's start-up and was replaced; the cache keeps that win without compiling anything in, see D17.)
 
 ### Storage phase (D19-D27, D51, D52)
 

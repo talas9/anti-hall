@@ -26,7 +26,7 @@ pub fn is_stop_event(event: &str) -> bool {
 
 fn safe(payload: Option<&Value>, field: &str) -> String {
     let v = payload.and_then(|p| p.get(field)).and_then(Value::as_str).unwrap_or("");
-    v.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect()
+    v.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(defaults::num("dispatch.stop_id_max_chars") as usize).collect()
 }
 
 fn dir() -> PathBuf {

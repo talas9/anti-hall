@@ -61,7 +61,7 @@ pub fn entries(host: &str, event: &str) -> Vec<Entry> {
 /// Every event the table lists for `host`, in file order.
 pub fn events(host: &str) -> Vec<&'static str> {
     let prefix = key(host, "");
-    defaults::all().iter().filter_map(|e| e.key.strip_prefix(prefix.as_str())).collect()
+    defaults::with_prefix(&prefix).iter().filter_map(|e| e.key.strip_prefix(prefix.as_str())).collect()
 }
 
 /// Whether `matcher` selects a value of `subject` (with its aliases) on `host`.

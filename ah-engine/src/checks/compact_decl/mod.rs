@@ -27,7 +27,6 @@ use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
@@ -44,7 +43,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| Pats {
         handover: crate::checks::lit_re(defaults::text("compact_decl.handover_file")),
         work_always: defaults::list("compact_decl.bash_work_always").into_iter().map(|s| jsre::compile(s, true)).collect(),

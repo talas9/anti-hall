@@ -13,7 +13,6 @@ use crate::checks::taskkit::jsval::{R, Unsure, get, truthy};
 use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
-use std::sync::OnceLock;
 
 struct Pats {
     always: Regex,
@@ -28,7 +27,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| {
         let c = |k: &str, ci: bool| jsre::compile(defaults::text(k), ci);
         Pats {

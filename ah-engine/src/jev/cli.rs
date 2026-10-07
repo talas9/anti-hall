@@ -84,7 +84,7 @@ fn home() -> Result<PathBuf, JevError> {
 
 fn ask(p: &Parsed) -> Result<i32, JevError> {
     let mut text = String::new();
-    std::io::stdin().read_to_string(&mut text).map_err(|e| JevError::Io { what: "read the requests from stdin".into(), source: e })?;
+    std::io::stdin().read_to_string(&mut text).map_err(|e| JevError::Io { what: defaults::text("jev.what_read_requests").into(), source: e })?;
     // One Jev lane serves every line, so the answer cache works across the requests of one run.
     let jev = Jev::new(&home()?, Env::process());
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -100,7 +100,7 @@ fn ask(p: &Parsed) -> Result<i32, JevError> {
 
 fn scrub() -> Result<i32, JevError> {
     let mut text = String::new();
-    std::io::stdin().read_to_string(&mut text).map_err(|e| JevError::Io { what: "read the texts from stdin".into(), source: e })?;
+    std::io::stdin().read_to_string(&mut text).map_err(|e| JevError::Io { what: defaults::text("jev.what_read_texts").into(), source: e })?;
     let mut out = String::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let s: String = serde_json::from_str(line).map_err(|e| JevError::Request(e.to_string()))?;

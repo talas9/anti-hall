@@ -32,7 +32,6 @@ use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
 use std::path::Path;
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
@@ -72,7 +71,7 @@ fn signals(key: &str) -> Vec<Signal> {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| Pats {
         fail: signals("output_verify.fail_patterns"),
         pass: signals("output_verify.pass_patterns"),

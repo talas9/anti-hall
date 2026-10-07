@@ -28,7 +28,6 @@ use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use tables::{note, plain, tables};
 use util::Settings;
 
@@ -209,10 +208,10 @@ impl Ctx {
 
 /// Mirrors `git-guard.js` `looksLikeFileWriteShape`.
 fn looks_like_file_write_shape(cmd: &str) -> bool {
-    static HD: OnceLock<Regex> = OnceLock::new();
-    static RED: OnceLock<Regex> = OnceLock::new();
-    static TEE: OnceLock<Regex> = OnceLock::new();
-    static ECHO: OnceLock<Regex> = OnceLock::new();
+    static HD: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static RED: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static TEE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static ECHO: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let hd = HD.get_or_init(|| lit_re(r#"<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?"#));
     let red = RED.get_or_init(|| lit_re(r#"(?:^|[\s;&|(])>{1,2}\s*[^\s&;|<>()0-9][^\s&;|<>()]*"#));
     let tee = TEE.get_or_init(|| lit_re(r#"(?-u:\b)tee(?-u:\b)\s+(?:-a\s+)?[^\s&;|<>()-][^\s&;|<>()]*"#));

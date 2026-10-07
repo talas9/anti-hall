@@ -8,7 +8,6 @@ use super::util::*;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
 
 /// Environment assignments (`NAME=value`) that prefix a command, keyed by name.
 pub type Env = HashMap<String, String>;
@@ -452,7 +451,7 @@ fn commit_sources(rest: &[Tok]) -> Sources {
 }
 
 fn editor_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| {
         lit_re(r#"(?:^|[\s;&|(])(?:(?i-u:export)\s+)?(?i-u:GIT_EDITOR|EDITOR|VISUAL)=('[^']*'|"[^"]*"|\S*)|(?i-u:core\.editor)[\s=]+('[^']*'|"[^"]*"|\S*)"#)
     })
@@ -622,10 +621,10 @@ fn shell_defs(ctx: &mut Ctx) -> std::rc::Rc<HashMap<String, ShellDef>> {
     }
     let raw_owned = ctx.raw_cmd.clone();
     let raw = raw_owned.as_str();
-    static ALIAS_RE: OnceLock<Regex> = OnceLock::new();
-    static FN_RE: OnceLock<Regex> = OnceLock::new();
-    static FN_PAREN: OnceLock<Regex> = OnceLock::new();
-    static FN_KW: OnceLock<Regex> = OnceLock::new();
+    static ALIAS_RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static FN_RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static FN_PAREN: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static FN_KW: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let alias_re = ALIAS_RE.get_or_init(|| lit_re(r#"(?:^|[\s;&|(])alias[ \t]+([A-Za-z_][A-Za-z0-9_.-]*)=('[^']*'|"(?:[^"\\]|\\.)*"|[^\s;&|]*)"#));
     let fn_re = FN_RE.get_or_init(|| lit_re(r#"(?:^|[\s;&|('"`]|(?-u:\b)function[ \t]+)[ \t]*([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*(?:\([ \t]*\))?[ \t\n]*([{(])"#));
     let fn_paren = FN_PAREN.get_or_init(|| lit_re(r"\(\s*\)\s*[{(]$"));
@@ -658,9 +657,9 @@ fn var_ref(n: &str) -> Regex {
 
 /// Mirrors `lib/git-alias-scan.js` `varIsExecuted`.
 fn var_is_executed(body: &str, name: &str, names: &mut HashSet<String>) -> bool {
-    static PIPE_SH: OnceLock<Regex> = OnceLock::new();
-    static SHELL_WORD: OnceLock<Regex> = OnceLock::new();
-    static DERIVED: OnceLock<Regex> = OnceLock::new();
+    static PIPE_SH: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static SHELL_WORD: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static DERIVED: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let pipe_sh = PIPE_SH.get_or_init(|| lit_re(r"\|[ \t]*(?:\S*/)?(?:(?:ba|z|da|k|c)?sh)(?-u:\b)"));
     let shell_word =
         SHELL_WORD.get_or_init(|| lit_re(r"(?:^|[\s(])(?:eval|exec|source|\.|(?:ba|z|da|k|c)?sh|xargs|env|command|builtin|nohup|sudo|time)(?:\s|$)"));
@@ -693,7 +692,7 @@ fn var_is_executed(body: &str, name: &str, names: &mut HashSet<String>) -> bool 
 
 /// Mirrors `lib/git-alias-scan.js` `neutraliseDataArgAssignments`.
 fn neutralise_data_arg_assignments(body: &str) -> String {
-    static RE: OnceLock<Regex> = OnceLock::new();
+    static RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| {
         lit_re(r#"(^|[\s;&|({])((?:(?:local|declare|typeset|readonly|export)[ \t]+(?:-[A-Za-z]+[ \t]+)?)?([A-Za-z_][A-Za-z0-9_]*)=)("\$(?:[1-9]|\{[1-9]\})"|\$(?:[1-9]|\{[1-9]\}))"#)
     });
@@ -737,8 +736,8 @@ fn wrapper_expansion(def: &ShellDef, args: &[Tok]) -> String {
     if def.is_alias {
         return format!("{}{}", def.body, if words.is_empty() { String::new() } else { format!(" {words}") });
     }
-    static ALL: OnceLock<Regex> = OnceLock::new();
-    static NTH: OnceLock<Regex> = OnceLock::new();
+    static ALL: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static NTH: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let all = ALL.get_or_init(|| lit_re(r#""\$[@*]"|\$[@*]|"\$\{[@*]\}"|\$\{[@*]\}"#));
     let nth = NTH.get_or_init(|| lit_re(r#""?\$\{?([1-9])\}?"?"#));
     let b = neutralise_data_arg_assignments(&def.body);

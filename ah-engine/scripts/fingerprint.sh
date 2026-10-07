@@ -3,15 +3,15 @@
 #
 # Inputs covered (paths relative to ah-engine/; a missing input is skipped, not an error):
 #   src/**            Rust sources
-#   rules.json        embedded into the binary (include_str!)
 #   Cargo.toml        manifest and release profile
 #   Cargo.lock        resolved dependencies
 #   rust-toolchain.toml  pinned toolchain
 #   targets.json      the target set
-#   defaults/**       default settings data files (D17 location), included when present
 #   scripts/build.sh, scripts/package.sh, scripts/package-src.sh   build flags and archive layout
 #   README.md, ../LICENSE   packed into the archives
-# Not covered: tests/, other docs, CI workflows (they do not change the release assets).
+# Not covered: tests/, other docs, CI workflows (they do not change the release assets), and the engine's settings, tables,
+# messages and rules: those live in the plugin (plugins/anti-hall/engine/) and are read at run time, so editing them never
+# changes the binary (D17, amended).
 # Symlinks inside covered paths are rejected: they would hide content from the listing.
 #
 # Method: sha256 of each covered file, listed as "<hash>  <path>" in byte-wise path order,
@@ -21,7 +21,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-inputs=(src rules.json Cargo.toml Cargo.lock rust-toolchain.toml defaults targets.json scripts/build.sh scripts/package.sh scripts/package-src.sh README.md ../LICENSE)
+inputs=(src build.rs Cargo.toml Cargo.lock rust-toolchain.toml targets.json scripts/build.sh scripts/package.sh scripts/package-src.sh README.md ../LICENSE)
 present=()
 for p in "${inputs[@]}"; do [ -e "$p" ] && present+=("$p"); done
 

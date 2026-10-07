@@ -22,7 +22,7 @@ const HOST = arg('--host', 'claude'), EVENT = arg('--event', 'PreToolUse'), TOOL
 const MODE = arg('--mode', 'both'), LIMIT = +arg('--limit', 1e9), CONC = +arg('--conc', 6), SHOW = +arg('--show', 10);
 const OUT = arg('--out', path.join(__dirname, 'last-dispatch-mismatches.json'));
 const CAP = +arg('--context-cap', 10000);
-// the events whose hooks can block: defaults/dispatch.toml dispatch.guard_events
+// the events whose hooks can block: plugins/anti-hall/engine/defaults/dispatch.toml dispatch.guard_events
 const GUARD_EVENTS = ['PreToolUse', 'PermissionRequest', 'Stop', 'SubagentStop'];
 const MAP = arg('--fallback-map'), TIME = process.argv.includes('--time');
 // D87: hooks.json is one thin trigger per event now; the per-hook registry generated from the dispatch table has the old shape

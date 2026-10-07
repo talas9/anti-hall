@@ -9,7 +9,6 @@ use super::util::*;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
 
 fn all_digits(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
@@ -189,7 +188,9 @@ fn hd_denied_first_word(skel: &str) -> bool {
 /// Mirrors `git-guard.js` `hdBadPath`.
 fn hd_bad_path(p: &str) -> bool {
     let segs: Vec<String> = p.split('/').filter(|x| !x.is_empty()).map(|x| x.to_lowercase()).collect();
-    segs.iter().enumerate().any(|(k, x)| tables().hd_bad_dirs.has(x) || (x == ".anti-hall" && segs.get(k + 1).map(|s| s.as_str()) == Some("bin")))
+    segs.iter()
+        .enumerate()
+        .any(|(k, x)| tables().hd_bad_dirs.has(x) || (x == crate::defaults::text("paths.base_dir") && segs.get(k + 1).map(|s| s.as_str()) == Some("bin")))
 }
 
 fn at(s: &[char], i: usize) -> Option<char> {
@@ -793,8 +794,8 @@ fn mask_inner(ctx: &mut Ctx, cmd: &str, base_cwd: Option<&str>) -> Option<String
     let mut outer_of: HashMap<usize, Ev> = HashMap::new();
     let mut consumers: Vec<Consumer> = Vec::new();
     let mut seen_docs: HashSet<usize> = HashSet::new();
-    static SUB_RE: OnceLock<Regex> = OnceLock::new();
-    static DOC_RE: OnceLock<Regex> = OnceLock::new();
+    static SUB_RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static DOC_RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let sub_re = SUB_RE.get_or_init(|| lit_re(r"__AHSUB([0-9]+)__"));
     let doc_re = DOC_RE.get_or_init(|| lit_re(r"__AHDOC([0-9]+)__"));
     for lvl in &levels {

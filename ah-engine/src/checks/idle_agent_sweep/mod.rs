@@ -25,7 +25,6 @@ use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
-use std::sync::OnceLock;
 
 pub mod codex;
 pub mod scan;
@@ -49,7 +48,7 @@ struct Res {
 }
 
 fn res() -> &'static Res {
-    static R: OnceLock<Res> = OnceLock::new();
+    static R: crate::defaults::Cache<Res> = crate::defaults::Cache::new();
     R.get_or_init(|| Res {
         rollout: jsre::compile(defaults::text("idle_sweep.re_codex_rollout"), false),
         codex_dir: jsre::compile(defaults::text("idle_sweep.re_codex_dir"), false),

@@ -64,6 +64,13 @@ while [ "$#" -gt 0 ]; do
 done
 
 dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+# The engine reads its settings, tables, messages and rules from THIS plugin's engine/ directory at run time (nothing is compiled
+# into the binary), so it must be told which plugin is running: the one this wrapper lives in. An explicit
+# AH_ENGINE_PLUGIN_ROOT (an operator override) wins.
+if [ -z "${AH_ENGINE_PLUGIN_ROOT:-}" ] && [ -f "$dir/../engine/defaults/index.toml" ]; then
+  AH_ENGINE_PLUGIN_ROOT=$(CDPATH= cd -- "$dir/.." && pwd)
+  export AH_ENGINE_PLUGIN_ROOT
+fi
 case "$host" in
   codex) list_default=$dir/ah-fallback.codex.list; map_default=$dir/ah-fallback.codex.map.json ;;
   *) list_default=$dir/ah-fallback.list; map_default=$dir/ah-fallback.map.json ;;

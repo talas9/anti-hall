@@ -8,7 +8,6 @@ use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 /// One typed user message.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,11 +32,11 @@ pub struct Task {
 }
 
 fn not_typed() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("codex_handover.not_typed_re"), false))
 }
 fn created_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("codex_handover.task_created_re"), false))
 }
 

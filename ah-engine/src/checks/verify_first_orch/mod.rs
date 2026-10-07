@@ -34,7 +34,7 @@ pub fn is_codex(p: &Value) -> bool {
     if p.get("turn_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
         return true;
     }
-    static RES: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
+    static RES: crate::defaults::Cache<Vec<regex::Regex>> = crate::defaults::Cache::new();
     let tp = p.get("transcript_path").and_then(Value::as_str).unwrap_or("");
     RES.get_or_init(|| defaults::list("verify_first_orch.codex_transcript_patterns").into_iter().map(|s| jsre::compile(s, false)).collect())
         .iter()

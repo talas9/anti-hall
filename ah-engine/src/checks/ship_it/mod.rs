@@ -23,7 +23,6 @@ use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
@@ -43,7 +42,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| {
         let c = |k: &str, ci: bool| jsre::compile(defaults::text(k), ci);
         Pats {

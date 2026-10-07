@@ -296,7 +296,7 @@ mod shipped_rules {
 
     #[test]
     fn example_rules_json_behaves() {
-        let rs = RuleSet::parse(include_str!("../rules.json")).unwrap();
+        let rs = RuleSet::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall/engine/rules.json")).unwrap()).unwrap();
         assert_eq!(rs.rules.len(), 3);
         for c in ["git push --force origin main", "git push -f", "git push origin +main", "git push origin main --force-with-lease"] {
             assert_eq!(hit(&rs, c), ["git-no-force-push"], "{c}");

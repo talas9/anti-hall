@@ -5,7 +5,6 @@ use super::tokenize::*;
 use super::util::*;
 use crate::checks::lit_re;
 use regex::Regex;
-use std::sync::OnceLock;
 
 /// The block message for writing into the plugin launcher directory.
 ///
@@ -15,7 +14,7 @@ pub fn launcher_block_msg() -> String {
 }
 
 fn launcher_dir_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| lit_re(&tables().launcher_dir_pattern))
 }
 
@@ -57,7 +56,7 @@ fn path_has_launcher_segment(normalized: &str) -> bool {
         return false;
     }
     let segs: Vec<String> = normalized.split('/').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect();
-    (0..segs.len()).any(|i| segs[i] == ".anti-hall" && segs.get(i + 1).map(|s| s.as_str()) == Some("bin"))
+    (0..segs.len()).any(|i| segs[i] == crate::defaults::text("paths.base_dir") && segs.get(i + 1).map(|s| s.as_str()) == Some("bin"))
 }
 
 /// Mirrors `git-guard.js` `isLauncherDirRoot`.
@@ -297,7 +296,7 @@ fn glob_could_hit_launcher(ctx: &Ctx, p: &str, cd_dir: Option<&str>) -> bool {
 
 /// Mirrors `git-guard.js` `varTargetHitsLauncher`.
 fn var_target_hits_launcher(ctx: &mut Ctx, p: &str, cd_dir: Option<&str>, hops: usize) -> bool {
-    static RE: OnceLock<Regex> = OnceLock::new();
+    static RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| lit_re(r"(?s)^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(.*)$"));
     let Some(m) = re.captures(p) else { return false };
     if ctx.launcher_cmd_text.is_empty() || hops > 4 {
@@ -374,7 +373,7 @@ fn is_inplace_flag(w: &str) -> bool {
 ///
 /// Mirrors `git-guard.js` `writesLauncherDir`.
 pub fn writes_launcher_dir(ctx: &mut Ctx, tokens: &[Tok], ev: &Ev, cd_dir: Option<&str>) -> bool {
-    static VAR_WORD: OnceLock<Regex> = OnceLock::new();
+    static VAR_WORD: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let var_word = VAR_WORD.get_or_init(|| lit_re(r#"^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)(?:/[^`$(){}'"\\]*)?$"#));
     let mut targets: Vec<String> = Vec::new();
     for i in 0..tokens.len() {
@@ -591,7 +590,7 @@ pub fn launcher_backstop(ctx: &mut Ctx, raw_cmd: &str, base_cwd: Option<&str>) -
 ///
 /// Mirrors `git-guard.js` `callLiteralCommands`.
 pub fn call_literal_commands(cmd: &str) -> Vec<String> {
-    static RE: OnceLock<Regex> = OnceLock::new();
+    static RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| lit_re(r#"(?:\(|(?-u:\b)(?:system|exec)[ \t]+)[ \t]*['"\[]"#));
     // src = cmd.replace(/\\(['"])/g, '$1')
     let mut src = String::with_capacity(cmd.len());

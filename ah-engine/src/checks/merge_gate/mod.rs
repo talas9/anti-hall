@@ -29,7 +29,6 @@ use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
@@ -45,7 +44,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| Pats {
         split: jsre::compile(defaults::text("merge_gate.segment_split"), false),
         env_assign: jsre::compile(defaults::text("merge_gate.env_assign"), false),

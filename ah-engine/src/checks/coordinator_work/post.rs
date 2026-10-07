@@ -25,7 +25,6 @@ use crate::reqenv::RequestEnv;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 /// The counters a window file and the metrics share, in the order the metrics list them after `sessions`.
 fn counters() -> Vec<&'static str> {
@@ -49,10 +48,10 @@ fn int(v: f64, dflt: i64, min: i64) -> i64 {
 pub fn config(st: &Settings) -> Cfg {
     let g = |k: &str| get_num(st, defaults::raw(k));
     Cfg {
-        t_ms: int(g("coordinator_work.window_setting"), 10, 0) as f64 * 60_000.0,
-        nudge_at: int(g("coordinator_work.nudge_setting"), 4, 0),
-        block_at: int(g("coordinator_work.block_setting"), 7, 0),
-        cap: int(g("coordinator_work.cap_setting"), 50, 1) as usize,
+        t_ms: int(g("coordinator_work.window_setting"), defaults::num("coordinator_work.window_default") as i64, 0) as f64 * 60_000.0,
+        nudge_at: int(g("coordinator_work.nudge_setting"), defaults::num("coordinator_work.nudge_default") as i64, 0),
+        block_at: int(g("coordinator_work.block_setting"), defaults::num("coordinator_work.block_default") as i64, 0),
+        cap: int(g("coordinator_work.cap_setting"), defaults::num("coordinator_work.cap_default") as i64, 1) as usize,
     }
 }
 
@@ -366,7 +365,7 @@ fn log_trip(home: &str, event: &str, count: usize) {
 }
 
 fn session_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| {
         let pre = regex::escape(defaults::text("coordinator_work.session_file_prefix"));
         let ext = regex::escape(defaults::text("guardkit.state_ext"));
@@ -443,7 +442,7 @@ struct Safe {
 }
 
 fn safe() -> &'static Safe {
-    static S: OnceLock<Safe> = OnceLock::new();
+    static S: crate::defaults::Cache<Safe> = crate::defaults::Cache::new();
     S.get_or_init(|| {
         let c = |k: &str| jsre::compile(defaults::text(k), false);
         Safe {

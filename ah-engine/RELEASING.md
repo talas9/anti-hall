@@ -17,7 +17,7 @@ ah-engine has its own semver, separate from the plugin. A release is tagged `ah-
 
 ## Fingerprint
 
-`fingerprint.sh` prints the sha256 of a listing of per-file sha256 hashes, sorted by path. Inputs (relative to `ah-engine/`): `src/`, `rules.json`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `defaults/`, `targets.json`, `scripts/build.sh`, `scripts/package.sh`, `scripts/package-src.sh`, `README.md`, `../LICENSE`. Absent paths are skipped, and symlinks in these paths are rejected. Tests, other docs and CI workflows are not inputs. The result does not depend on mtimes, checkout path or OS.
+`fingerprint.sh` prints the sha256 of a listing of per-file sha256 hashes, sorted by path. Inputs (relative to `ah-engine/`): `src/`, `build.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `targets.json`, `scripts/build.sh`, `scripts/package.sh`, `scripts/package-src.sh`, `README.md`, `../LICENSE`. Absent paths are skipped, and symlinks in these paths are rejected. Tests, other docs and CI workflows are not inputs, and neither are the engine's settings, tables, messages and rules: they ship with the plugin (`plugins/anti-hall/engine/`) and are read at run time, so tuning them never changes the binary. The result does not depend on mtimes, checkout path or OS.
 
 ## Procedure
 

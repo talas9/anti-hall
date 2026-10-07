@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// Bytes of a signed file's content that are read (a HEAD or a loose ref is a few dozen bytes).
 fn content_cap() -> usize {
-    4096
+    defaults::num("gitcache.content_cap_bytes") as usize
 }
 
 /// The stat fields that change when git replaces or edits a file.

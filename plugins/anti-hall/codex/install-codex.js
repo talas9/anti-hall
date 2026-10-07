@@ -15,7 +15,7 @@ const hooksPath = path.join(targetRoot, 'hooks.json');
 const configPath = globalInstall ? path.join(os.homedir(), '.codex', 'config.toml') : path.join(targetRoot, 'config.toml');
 
 // The registration is GENERATED, not hand-listed: codex/hooks/hooks.json is one thin wrapper call per event, produced by
-// `ah-gen-fallback-list` from ah-engine/defaults/dispatch.toml (the table of record). Installing it means pointing
+// `ah-gen-fallback-list` from plugins/anti-hall/engine/defaults/dispatch.toml (the table of record). Installing it means pointing
 // ${PLUGIN_ROOT} at this checkout; the wrapper and the engine do the per-hook dispatch.
 const THIN_HOOKS = path.join(ROOT, 'codex', 'hooks', 'hooks.json');
 

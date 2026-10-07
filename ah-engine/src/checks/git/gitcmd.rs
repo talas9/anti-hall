@@ -228,10 +228,11 @@ fn skip_ht(t: &[char], mut p: usize) -> usize {
 
 fn coauthor_at(t: &[char], s: usize) -> bool {
     let mut p = skip_ht(t, s);
-    if !ci_starts_with(t, p, "co-authored-by") {
+    let coauthor = crate::defaults::text("git.self_credit_coauthor_key");
+    if !ci_starts_with(t, p, coauthor) {
         return false;
     }
-    p += "co-authored-by".len();
+    p += coauthor.chars().count();
     p = skip_ht(t, p);
     if p >= t.len() || (t[p] != ':' && t[p] != '=') {
         return false;
@@ -272,10 +273,11 @@ fn generated_at(t: &[char], s: usize) -> bool {
         p += 1;
     }
     p = skip_ht(t, p);
-    if !ci_starts_with(t, p, "generated with ") {
+    let generated = crate::defaults::text("git.self_credit_generated_prefix");
+    if !ci_starts_with(t, p, generated) {
         return false;
     }
-    p += "generated with ".len();
+    p += generated.chars().count();
     if t.get(p) == Some(&'[') {
         p += 1;
     }
@@ -342,7 +344,7 @@ pub fn has_self_credit(ctx: &mut Ctx, text: &str) -> bool {
 pub fn has_self_credit_trailer_key_remap(args: &[Tok]) -> bool {
     let key_ok = |v: &str| {
         let l = js_trim(v).to_lowercase();
-        l == "co-authored-by" || l == "generated-with" || l == "generated with"
+        crate::defaults::list("git.self_credit_trailer_keys").contains(&l.as_str())
     };
     for j in 0..args.len() {
         if args[j].text != "-c" {

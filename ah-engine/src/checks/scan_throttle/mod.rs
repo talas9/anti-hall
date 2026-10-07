@@ -25,7 +25,6 @@ use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
@@ -283,7 +282,7 @@ fn throttle_prefix(path_var: &str) -> Option<String> {
 ///
 /// Mirrors `scan-throttle.js` `stripLeadingAssignments`.
 fn strip_leading_assignments(cmd: &str) -> usize {
-    static ONE: OnceLock<Regex> = OnceLock::new();
+    static ONE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let one = ONE.get_or_init(|| jsre::compile(defaults::text("scan_throttle.assign_one"), false));
     let skip_ws = |s: &str, from: usize| from + s[from..].chars().take_while(|&c| is_js_space(c)).map(char::len_utf8).sum::<usize>();
     let mut i = skip_ws(cmd, 0);

@@ -16,7 +16,6 @@ use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 /// What a reconstruction found.
 #[derive(Clone, Debug)]
@@ -36,7 +35,7 @@ struct Res {
 }
 
 fn res() -> &'static Res {
-    static R: OnceLock<Res> = OnceLock::new();
+    static R: crate::defaults::Cache<Res> = crate::defaults::Cache::new();
     R.get_or_init(|| Res {
         created: jsre::compile(defaults::text("taskstate.re_created"), true),
         list_empty: jsre::compile(defaults::text("taskstate.re_list_empty"), true),

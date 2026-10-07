@@ -548,10 +548,32 @@ judgement calls do.
 
 ## Configuration and data files
 
-Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
+**Tune in the plugin files; the engine only runs them.** Every setting, table, message text, dispatch row and rule ships with
+the plugin in `plugins/anti-hall/engine/` (`defaults/*.toml`, listed by `defaults/index.toml`, and `rules.json`), is updated
+with the plugin, and is read by the engine AT RUN TIME. Nothing of it is compiled into the binary (a test scans the binary for
+the shipped texts), so tuning a hook, a rule or a message is an edit of a plugin file and never a rebuild.
+
+How it is loaded:
+
+| When | What happens |
+|---|---|
+| start-up | the daemon finds the plugin root (below), reads and validates every file (a malformed, undocumented or duplicated entry, a bad hook row, or a setting this engine version reads that the plugin lacks, is rejected with a reason code), and writes one small validated **snapshot cache** (`defaults.cache`) into the state directory |
+| a defaults file changes | the daemon polls the files (`config.watch_ms`, settled for `config.debounce_ms`), validates the whole set, and swaps in the new snapshot atomically: no restart, in-flight requests finish on the old one. An invalid edit keeps the last good snapshot and logs `defaults_invalid` with the reason code (`parse`, `doc`, `missing_key`, ...); `status` shows it as `config.last_error` |
+| the plugin is updated | a new directory at the same path shows as a changed file set; a new path arrives with the next request (`AH_ENGINE_PLUGIN_ROOT`, set by the wrapper from its own location, or the host's plugin-root variable) and is adopted when its index is newer than the active one, so two plugin versions in use at once cannot flip the daemon |
+| the thin hook client | reads the snapshot cache (one file, only the keys a call asks for) instead of parsing 28 files; it parses the plugin files itself only when the cache is missing or belongs to another plugin root |
+| nothing loadable | no plugin root, unreadable or invalid files and no cache: the engine answers "unavailable" (exit code 75, which the wrapper turns into the Node hooks), logs why (`defaults.error` in the state directory and stderr) and never falls back to built-in values |
+
+The plugin root is the first of: `AH_ENGINE_PLUGIN_ROOT` (an explicit choice: if it has no `engine/defaults/index.toml` the load
+fails), `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, the root recorded in the snapshot cache, a development checkout found by walking up
+from the executable. The rules file is the `AH_ENGINE_RULES` override, else `rules.json` in the state directory when the user put
+one there, else the plugin's `engine/rules.json`. The few fixed names this needs are in `src/bootstrap.rs`.
+
+Files:
 
 | File | Holds |
 |---|---|
+| `index.toml` | not settings: the list of the defaults files, in order, and the sub-directory (`hooks.d`) of further files |
+| `limits.toml` | limits, buffer sizes, phrases and short texts that were literals in the source (the late additions of the no-compiled-config sweep) |
 | `engine.toml` | environment variable names, paths and file names, daemon and client limits, project store caps, health policy, hook adapter, socket protocol |
 | `messages.toml` | every message the engine produces (failure hints, advisories, replies, errors, command-line text) |
 | `git.toml` | every table, limit, setting name and block message of the git check |
@@ -770,7 +792,7 @@ An offline build from the vendored source tarball published with each release (p
 ## Using a locally built binary
 
 A configuration key and environment variable that point the plugin at a locally built binary are planned (D71); they will
-be defined in `defaults/*.toml` like every other setting. Until then the plugin does not start the engine at all.
+be defined in the plugin's `engine/defaults/*.toml` like every other setting. Until then the plugin does not start the engine at all.
 
 ## Verifying release artifacts
 

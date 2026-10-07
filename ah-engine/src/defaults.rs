@@ -1,16 +1,34 @@
-//! Shipped defaults (D17): every tunable, table, message text, path, env-var name, limit and timeout lives in
-//! `defaults/*.toml` and is read through this module.
+//! Shipped defaults (D17, amended): every tunable, table, message text, path, env-var name, limit and timeout lives in the
+//! plugin's `engine/defaults/*.toml` and is read through this module AT RUN TIME. Nothing is compiled into the binary.
 //!
 //! File format: each setting is a table `[section.name]` with `value`, `doc` and optionally `env`, `min`, `max`
-//! and `unit` (see the header of `defaults/engine.toml`). Why one table per setting: the docs generator, the
-//! coverage tests and the (planned) config reload all enumerate settings, and a uniform shape makes every one of
+//! and `unit` (see the header of `engine.toml`). Why one table per setting: the docs generator, the
+//! coverage tests and the config reload all enumerate settings, and a uniform shape makes every one of
 //! them self-describing.
 //!
-//! The files are compiled into this binary by `build.rs` as static data, so reading a setting parses nothing and
-//! allocates nothing. (Parsing the TOML at every hook-client start was measured: `ah-engine version` took 3.7 to
-//! 3.8 ms with the parse and 1.9 to 2.1 ms without. The build fails on a malformed or undocumented entry, so the
-//! runtime never meets one.)
+//! # Where the data comes from
+//!
+//! The data is one immutable, validated snapshot behind an `Arc` that is swapped atomically (see [`load`]). The
+//! accessors below keep their signatures (`&'static` values), so call sites do not care that the backend is a snapshot:
+//! a value that changed in a reload is leaked once, an unchanged one is reused, and a request that already holds a value
+//! sees the old or the new one entirely.
+//!
+//! * **daemon and tooling** (`serve`, `docs`, `gen-hooks`, tests) read and validate the plugin's files ([`init`]), the
+//!   daemon watches them and swaps in a new snapshot on change ([`reload`]); an invalid edit keeps the last good one.
+//! * **the thin hook client** reads the daemon's snapshot cache instead (`load::Lazy`), because parsing the 28 files per
+//!   call nearly doubled its start-up (3.7 ms against 2.0 ms measured in D17); the measurement of this design is in
+//!   DECISIONS.md.
+//! * **no files, no cache** is an error ([`DefaultsError`]), never a silent default: the caller answers "unavailable"
+//!   and the wrapper falls back to Node.
+//!
+//! Where the plugin root is found is documented in [`crate::bootstrap`].
+mod load;
+pub use load::{DefaultsError, Fingerprint, fingerprint};
+
 use serde_json::{Value as Json, json};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 /// A default's value: the TOML types the defaults use, as static data.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -96,7 +114,7 @@ impl V {
 }
 
 /// One setting as shipped.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Entry {
     /// `section.name`.
     pub key: &'static str,
@@ -117,19 +135,195 @@ pub struct Entry {
 }
 
 mod generated {
-    #![allow(missing_docs)]
-    use super::{Entry, V};
-    include!(concat!(env!("OUT_DIR"), "/defaults_gen.rs"));
+    //! The keys this build reads (collected from the source by `build.rs`): a plugin whose defaults lack one is rejected at load.
+    include!(concat!(env!("OUT_DIR"), "/required_keys.rs"));
+}
+
+enum Backend {
+    Full(load::Data),
+    Lazy(load::Lazy),
+}
+
+static CUR: RwLock<Option<Arc<Backend>>> = RwLock::new(None);
+static CLIENT: AtomicBool = AtomicBool::new(false);
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+static CACHE_WRITES: AtomicBool = AtomicBool::new(false);
+
+/// Make [`init`] read the daemon's snapshot cache (the thin hook client) instead of parsing the plugin's files. Call before
+/// the first read.
+pub fn use_cache() {
+    CLIENT.store(true, Ordering::SeqCst);
+}
+
+/// Let loads write the snapshot cache (the daemon, and a client that had to parse the files itself). Off by default so
+/// in-process tests and one-off commands never touch the state directory.
+pub fn write_cache_on_load() {
+    CACHE_WRITES.store(true, Ordering::SeqCst);
+}
+
+fn current() -> Option<Arc<Backend>> {
+    CUR.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn cache_best_effort(d: &load::Data) {
+    if CACHE_WRITES.load(Ordering::SeqCst)
+        && let Some(p) = crate::bootstrap::cache_path()
+    {
+        let _ = load::write_cache(d, &p);
+    }
+}
+
+/// Load the defaults if nothing is loaded yet. Idempotent. In cache mode ([`use_cache`]) this reads the snapshot cache and
+/// parses the plugin's files only when the cache is missing or belongs to another plugin root.
+pub fn init() -> Result<(), DefaultsError> {
+    if current().is_some() {
+        return Ok(());
+    }
+    let cache = crate::bootstrap::cache_path();
+    if CLIENT.load(Ordering::SeqCst) {
+        let want = crate::bootstrap::env_root();
+        if let Some(lazy) = cache.as_deref().and_then(|c| load::Lazy::open(c, want.as_deref())) {
+            let mut w = CUR.write().unwrap_or_else(|e| e.into_inner());
+            w.get_or_insert_with(|| Arc::new(Backend::Lazy(lazy)));
+            return Ok(());
+        }
+    }
+    let cached = cache.as_deref().and_then(load::cache_root);
+    let root = crate::bootstrap::locate_root(cached.as_deref()).ok_or_else(|| DefaultsError {
+        code: "no_root",
+        file: String::new(),
+        key: String::new(),
+        detail: "no plugin root with engine/defaults/index.toml (see bootstrap)".into(),
+    })?;
+    let data = load::load(&root, None)?;
+    cache_best_effort(&data);
+    let mut w = CUR.write().unwrap_or_else(|e| e.into_inner());
+    w.get_or_insert_with(|| Arc::new(Backend::Full(data)));
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+/// A value derived from the defaults (a compiled regex, a parsed table) that stays valid until the defaults change. It is
+/// rebuilt on first use after each applied reload and the previous one is leaked, which is bounded by the number of reloads
+/// (a plugin update or an edit of a defaults file). Reads take a shared lock only.
+pub struct Cache<T: 'static> {
+    slot: RwLock<Option<(u64, &'static T)>>,
+}
+
+impl<T: 'static> Cache<T> {
+    /// An empty cache.
+    pub const fn new() -> Cache<T> {
+        Cache { slot: RwLock::new(None) }
+    }
+
+    /// The value built by `build` for the current defaults.
+    pub fn get_or_init(&self, build: impl FnOnce() -> T) -> &'static T {
+        let generation = generation();
+        if let Some((g, v)) = *self.slot.read().unwrap_or_else(|e| e.into_inner())
+            && g == generation
+        {
+            return v;
+        }
+        let mut w = self.slot.write().unwrap_or_else(|e| e.into_inner());
+        if let Some((g, v)) = *w
+            && g == generation
+        {
+            return v;
+        }
+        let v: &'static T = Box::leak(Box::new(build()));
+        *w = Some((generation, v));
+        v
+    }
+}
+
+impl<T: 'static> Default for Cache<T> {
+    fn default() -> Self {
+        Cache::new()
+    }
+}
+
+/// What a [`reload`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reloaded {
+    /// A new snapshot is active.
+    Applied,
+    /// The files read the same as the active snapshot.
+    Unchanged,
+}
+
+/// Read the plugin at `root` (the active root when `None`) and swap it in when it validates and differs from the active
+/// snapshot. On any error the active snapshot stays. Only a full (daemon / tooling) snapshot can be reloaded.
+pub fn reload(root: Option<&Path>) -> Result<Reloaded, DefaultsError> {
+    let prev = current();
+    let prev_data = match prev.as_deref() {
+        Some(Backend::Full(d)) => Some(d),
+        _ => None,
+    };
+    let root = root.map(Path::to_path_buf).or_else(|| prev_data.map(|d| d.root().to_path_buf())).ok_or_else(|| DefaultsError {
+        code: "no_root",
+        file: String::new(),
+        key: String::new(),
+        detail: "nothing to reload".into(),
+    })?;
+    let data = load::load(&root, prev_data)?;
+    if let Some(p) = prev_data
+        && p.root() == data.root()
+        && p.entries.len() == data.entries.len()
+        && p.entries.iter().zip(data.entries).all(|(a, b)| std::ptr::eq(*a, *b))
+    {
+        return Ok(Reloaded::Unchanged);
+    }
+    cache_best_effort(&data);
+    *CUR.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Backend::Full(data)));
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+    Ok(Reloaded::Applied)
+}
+
+/// Counts up by one per applied snapshot in this process.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::SeqCst)
+}
+
+/// The plugin root the active snapshot was read from.
+pub fn root() -> Option<PathBuf> {
+    match current()?.as_ref() {
+        Backend::Full(d) => Some(d.root().to_path_buf()),
+        Backend::Lazy(l) => Some(l.root().to_path_buf()),
+    }
+}
+
+/// Note a failed load where it can be found (see `load::report_unavailable`).
+pub fn report_unavailable(e: &DefaultsError) {
+    load::report_unavailable(e);
+}
+
+/// The snapshot, loading it on first use. Panics (a bug) when nothing can be loaded: entry points call [`init`] first and
+/// answer "unavailable" instead of getting here.
+fn backend() -> Arc<Backend> {
+    if let Some(b) = current() {
+        return b;
+    }
+    if let Err(e) = init() {
+        panic!("shipped defaults unavailable: {e}");
+    }
+    current().expect("init() installed a snapshot")
 }
 
 /// The entry for `key`, if shipped.
 fn find(key: &str) -> Option<&'static Entry> {
-    let i = generated::INDEX.binary_search_by(|(k, _)| (*k).cmp(key)).ok()?;
-    Some(&generated::ENTRIES[generated::INDEX[i].1])
+    match backend().as_ref() {
+        Backend::Full(d) => d.find(key),
+        Backend::Lazy(l) => l.find(key),
+    }
 }
 
 fn entry(key: &str) -> &'static Entry {
     find(key).unwrap_or_else(|| panic!("defaults key {key:?} is not shipped (a source reference the `defaults` tests should have caught)"))
+}
+
+/// The entry for `key`, if shipped (without panicking).
+pub fn get(key: &str) -> Option<&'static Entry> {
+    find(key)
 }
 
 /// True when `key` is shipped (without panicking, unlike the typed getters).
@@ -211,9 +405,20 @@ pub fn env_var(name: &str) -> Option<String> {
     std::env::var(env_name(name)).ok()
 }
 
-/// Every shipped setting, in file order (sorted by key within a file).
-pub fn all() -> &'static [Entry] {
-    generated::ENTRIES
+/// The settings whose key starts with `prefix`, without reading the rest (the thin client asks for `cmd.` and `dispatch.hooks_`).
+pub fn with_prefix(prefix: &str) -> Vec<&'static Entry> {
+    match backend().as_ref() {
+        Backend::Full(d) => d.entries.iter().copied().filter(|e| e.key.starts_with(prefix)).collect(),
+        Backend::Lazy(l) => l.with_prefix(prefix),
+    }
+}
+
+/// Every shipped setting, in file order (sorted by key within a file). A cache-backed snapshot has no docs and lists by key.
+pub fn all() -> &'static [&'static Entry] {
+    match backend().as_ref() {
+        Backend::Full(d) => d.entries,
+        Backend::Lazy(l) => l.all(),
+    }
 }
 
 #[cfg(test)]
@@ -235,7 +440,9 @@ mod tests {
         for e in all() {
             assert!(seen.insert(e.key), "duplicate setting {}", e.key);
         }
-        assert!(generated::INDEX.windows(2).all(|w| w[0].0 < w[1].0));
+        for e in all() {
+            assert!(find(e.key).is_some_and(|f| std::ptr::eq(f, find(e.key).unwrap())), "{} is not findable by key", e.key);
+        }
     }
 
     #[test]

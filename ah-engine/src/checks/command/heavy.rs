@@ -13,7 +13,6 @@ use super::tables::{NegLight, tables};
 use crate::checks::git::tokenize::basename;
 use crate::checks::lit_re;
 use regex::Regex;
-use std::sync::OnceLock;
 
 /// True when `text[..e]` ends where JavaScript `\b` holds after a word character.
 fn word_boundary_after(text: &str, e: usize) -> bool {
@@ -146,8 +145,8 @@ struct GcloudRead {
 /// Mirrors `command-guard.js` `gcloudReadGrammar`.
 fn gcloud_read_grammar(rest: &[String], sep_values: bool) -> Option<GcloudRead> {
     let t = tables();
-    static PATH_WORD: OnceLock<Regex> = OnceLock::new();
-    static FLAG_EQ: OnceLock<Regex> = OnceLock::new();
+    static PATH_WORD: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static FLAG_EQ: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let path_word = PATH_WORD.get_or_init(|| lit_re(r"^[a-z][a-z0-9-]*$"));
     let flag_eq = FLAG_EQ.get_or_init(|| lit_re(r"^--[a-z][a-z0-9-]*="));
     let mut i = 0;
@@ -213,7 +212,7 @@ fn gcloud_read_ok(g: &GcloudRead) -> bool {
 
 /// Mirrors `command-guard.js` `stripGcloudStderrMerge`.
 fn strip_gcloud_stderr_merge(segment: &str) -> String {
-    static RE: OnceLock<Regex> = OnceLock::new();
+    static RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     RE.get_or_init(|| lit_re(r"(^|[^\\])\s+2>&1\s*$")).replacen(segment, 1, "$1").into_owned()
 }
 
@@ -242,11 +241,11 @@ fn is_read_only_cloud_inspect(segment: &str) -> bool {
 
 /// Mirrors `command-guard.js` `closedSinkTokens`.
 fn closed_sink_tokens(t: &[String]) -> bool {
-    static HEAD1: OnceLock<Regex> = OnceLock::new();
-    static NUM: OnceLock<Regex> = OnceLock::new();
-    static WC: OnceLock<Regex> = OnceLock::new();
-    static GREPF: OnceLock<Regex> = OnceLock::new();
-    static DIGITS: OnceLock<Regex> = OnceLock::new();
+    static HEAD1: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static NUM: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static WC: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static GREPF: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static DIGITS: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let Some(first) = t.first() else { return false };
     let rest = &t[1..];
     if first == "head" || first == "tail" {
@@ -319,8 +318,8 @@ fn is_whole_command_read_only_form(command: &str) -> bool {
         return false;
     }
     let first = trim(&segs[0]);
-    static STRIP_TAIL: OnceLock<Regex> = OnceLock::new();
-    static VERSION_TAIL: OnceLock<Regex> = OnceLock::new();
+    static STRIP_TAIL: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static VERSION_TAIL: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let vq = STRIP_TAIL.get_or_init(|| lit_re(r"\s+2>(?:&1|/dev/null)$")).replacen(first, 1, "").into_owned();
     let ok = if starts_with_cli(&vq).is_some_and(|c| VERSION_TAIL.get_or_init(|| lit_re(r"(?i)^\s+(?:--version|-V)$")).is_match(&vq[c..])) {
         !has_unquoted_redirect_char(&vq)
@@ -358,9 +357,9 @@ fn node_eval_payload(segment: &str) -> Option<String> {
 /// Mirrors `command-guard.js` `isReadOnlyGhGraphql`.
 fn is_read_only_gh_graphql(tokens: &[String], gh_idx: usize) -> bool {
     let t = tables();
-    static GQL: OnceLock<Regex> = OnceLock::new();
-    static MUT: OnceLock<Regex> = OnceLock::new();
-    static QSTART: OnceLock<Regex> = OnceLock::new();
+    static GQL: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static MUT: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static QSTART: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let gql = GQL.get_or_init(|| lit_re(r"(?i)^/?graphql$"));
     if !tokens.get(gh_idx + 2).is_some_and(|x| gql.is_match(x)) {
         return false;
@@ -422,9 +421,9 @@ pub fn is_heavy_gh_segment(segment: &str, command: &str) -> bool {
         return true;
     }
     if group == "api" {
-        static GQL: OnceLock<Regex> = OnceLock::new();
-        static FSHORT: OnceLock<Regex> = OnceLock::new();
-        static FLONG: OnceLock<Regex> = OnceLock::new();
+        static GQL: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+        static FSHORT: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+        static FLONG: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
         if is_read_only_gh_graphql(&tokens, gh_idx) && !command.contains('`') {
             return false;
         }

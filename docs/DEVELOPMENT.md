@@ -159,7 +159,7 @@ The plugin does not start or call the engine today: the engine is off by default
 ```sh
 E="$PWD/ah-engine/target/release/ah-engine"
 export AH_ENGINE_DIR="$(mktemp -d /tmp/ah-dev.XXXXXX)"
-export AH_ENGINE_RULES="$PWD/ah-engine/rules.json"
+export AH_ENGINE_RULES="$PWD/plugins/anti-hall/engine/rules.json"
 PAYLOAD='{"session_id":"dev","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}'
 
 # one check, in-process, no daemon: exit 2 and the reason on stderr is a block
@@ -203,7 +203,7 @@ State lives in `~/.anti-hall/ah-engine/`, or in `AH_ENGINE_DIR` when set. The ev
 ```sh
 E="$PWD/ah-engine/target/release/ah-engine"
 export AH_ENGINE_DIR="$(mktemp -d /tmp/ah-dev.XXXXXX)"
-export AH_ENGINE_RULES="$PWD/ah-engine/rules.json"
+export AH_ENGINE_RULES="$PWD/plugins/anti-hall/engine/rules.json"
 "$E" serve >"$AH_ENGINE_DIR/serve.out" 2>&1 &
 DAEMON=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do "$E" ctl ping >/dev/null 2>&1 && break; sleep 0.5; done
@@ -223,7 +223,7 @@ If hooks seem slow or the engine seems absent, read `running`, `breaker` and `cr
 The workflow is the one in D31 and D57: port check by check, each through parity, shadow and review. The plugin stays Node and live until a guard has passed all three.
 
 1. **Read the Node guard** and its tests under `plugins/anti-hall/hooks/` and `tests/hooks/`. The guard's `evaluate(payload, env)` is the authority; a mismatch is a Rust bug, never a reason to change the Node guard.
-2. **Implement `Check`** in its own module under `ah-engine/src/checks/`, and list it in the registry. Put every table, limit and message in `ah-engine/defaults/*.toml` (the `no_hardcoded_tunables` test fails otherwise) and cite the Node function each Rust function mirrors. Where the engine cannot decide exactly, return a deferral so Node decides; never guess.
+2. **Implement `Check`** in its own module under `ah-engine/src/checks/`, and list it in the registry. Put every table, limit and message in `plugins/anti-hall/engine/defaults/*.toml` (the `no_hardcoded_tunables` test fails otherwise) and cite the Node function each Rust function mirrors. Where the engine cannot decide exactly, return a deferral so Node decides; never guess.
 3. **Parity.** Add `ah-engine/parity/run-<name>.js`, modelled on `run-git.js`. Its corpus is the guard's own Node test cases, real recorded commands and adversarial and fuzz cases. It must reach 100 percent in oneshot and daemon mode, and `run-git.js` must stay at 100 percent.
 4. **Gates.** Format, clippy, docs and `./test.sh` green, then regenerate `REFERENCE.md` ([Run the tests](#run-the-tests)).
 5. **Shadow** period (the engine runs beside Node and the two are compared on live traffic, before cutover): **planned**, see D31 and D41. The engine stays off by default (`engine.enabled`) until parity and the shadow period pass.
@@ -260,7 +260,8 @@ The plugin and the engine have separate versions and separate release procedures
 | `plugins/anti-hall/codex/` | the Codex port: its `hooks.json`, skills, scripts and `install-codex.js` |
 | `plugins/anti-hall/skills/`, `agents/`, `scripts/`, `companion/`, `monitors/`, `statusline/` | skills, agents, CLIs, opt-in companions, monitors, statusline |
 | `ah-engine/` | the Rust engine: its own Cargo workspace, docs, tests and CI. Layout in [`ah-engine/README.md`](../ah-engine/README.md) |
-| `ah-engine/src/`, `defaults/`, `parity/`, `tests/`, `scripts/` | engine source, shipped defaults (TOML), parity harnesses, tests, build and release scripts |
+| `ah-engine/src/`, `parity/`, `tests/`, `scripts/` | engine source, parity harnesses, tests, build and release scripts |
+| `plugins/anti-hall/engine/` | the engine's configuration, which ships with the plugin: `defaults/*.toml` (every setting, table, message and the dispatch table, listed by `defaults/index.toml`) and `rules.json`. **Tune in these files; the engine only runs them.** It reads them at run time (start-up, plugin update, file change), never from `ah-engine/` and never from the binary |
 | `tests/` | the plugin suite: `hooks/`, `hygiene/`, `codex/`, `scripts/`, `skills/`, `e2e/`, `helpers/`, `fixtures/` |
 | `evals/anti-hall/`, `eval/` | the benchmark suite (`claude plugin eval`) and the older fabrication A/B harness |
 | `tools/` | generators and the docs-site builder (`gen-protocol.js`, `gen-agents-catalog.js`, `gen-kb-counts.js`, `build-site.js`) |
@@ -271,7 +272,7 @@ The plugin and the engine have separate versions and separate release procedures
 - **Plugin:** Node built-ins only, no dependencies, cross-platform. Hooks fail open: a parse, read or state error exits 0 and never blocks a turn. A guard blocks only on a positive match of the dangerous form. Large hook JSON goes out with `fs.writeSync(1, ...)`, not `process.stdout.write`.
 - **Both ports:** a change to a hook, skill or model-routing doc lands on the Claude side and the Codex mirror, or the pull request says why one side does not apply ([AGENTS.md](../AGENTS.md)).
 - **Settings:** every feature has a key in `plugins/anti-hall/hooks/lib/settings-schema.js`; change settings through `/anti-hall:settings`, never by hand.
-- **Engine:** no hardcoded tunables, tables or messages (D17): they live in `defaults/*.toml` with a `doc`. Every public item has `//!` or `///` docs, errors are typed, and `rustfmt.toml` sets the width. Clippy and `cargo doc` run with warnings denied. Tests take no timing dependence (CI runners are slower), never touch the real home, and reap every daemon they start.
+- **Engine:** no hardcoded tunables, tables or messages (D17): they live in the plugin's `engine/defaults/*.toml` with a `doc`, read at run time, never compiled in. Every public item has `//!` or `///` docs, errors are typed, and `rustfmt.toml` sets the width. Clippy and `cargo doc` run with warnings denied. Tests take no timing dependence (CI runners are slower), never touch the real home, and reap every daemon they start.
 - **Dependencies:** a Rust crate you add is at its latest released version, and an old pin needs a written reason in `ah-engine/DECISIONS.md` (D84).
 - **Docs:** a new hook, skill or setting is documented in `docs/GUIDE.md`, `llms.txt` and the briefing skill; the hygiene tests name what is missing. Mark unbuilt work "planned (D-n)".
 - **Public repo:** shipped files stay project- and user-agnostic: no private names, paths or emails, other than the author credit.

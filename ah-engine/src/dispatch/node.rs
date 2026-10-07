@@ -78,7 +78,7 @@ fn reader<R: Read + Send + 'static>(r: Option<R>) -> Option<Capture> {
     let cap = Capture { buf: Arc::new(Mutex::new(Vec::new())), done: Arc::new(AtomicBool::new(false)), failed: Arc::new(AtomicBool::new(false)) };
     let (buf, done, failed) = (cap.buf.clone(), cap.done.clone(), cap.failed.clone());
     std::thread::spawn(move || {
-        let mut chunk = [0u8; 8192];
+        let mut chunk = vec![0u8; defaults::num("io.small_chunk_bytes") as usize];
         loop {
             match r.read(&mut chunk) {
                 Ok(0) => break,
@@ -169,7 +169,7 @@ fn write_stdin(stdin: &mut impl Write, data: &[u8]) -> std::io::Result<()> {
 fn feed_file(file: &File, stdin: &mut impl Write) -> std::io::Result<()> {
     let len = file.metadata()?.len();
     let mut off = 0;
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = vec![0u8; defaults::num("io.chunk_bytes") as usize];
     while off < len {
         let want = ((len - off) as usize).min(buf.len());
         let n = match file.read_at(&mut buf[..want], off) {

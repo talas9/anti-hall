@@ -15,7 +15,7 @@ use crate::checks::taskkit::jsval::Unsure;
 use crate::defaults;
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 /// What `firstThisTurn` is asked about.
 pub struct Ask<'a> {
@@ -32,7 +32,7 @@ pub struct Ask<'a> {
 }
 
 fn injected_re() -> &'static regex::Regex {
-    static R: OnceLock<regex::Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<regex::Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("turn_gate.injected_re"), false))
 }
 

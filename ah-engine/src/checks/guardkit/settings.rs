@@ -88,7 +88,7 @@ pub fn unreadable_settings_file(home: &str) -> bool {
         let bad = std::fs::read(&path).ok().is_some_and(|b| crate::checks::guardkit::jsdiff::js_reads_differently(&b));
         let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
         let seen = g.get_or_insert_with(Default::default);
-        if seen.len() > 256 {
+        if seen.len() > defaults::num("guardkit.settings_seen_max") as usize {
             seen.clear();
         }
         seen.insert(path, (mtime, len, bad));

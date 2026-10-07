@@ -15,7 +15,6 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::OnceLock;
 
 struct Res {
     terminal: Regex,
@@ -23,7 +22,7 @@ struct Res {
 }
 
 fn res() -> &'static Res {
-    static R: OnceLock<Res> = OnceLock::new();
+    static R: crate::defaults::Cache<Res> = crate::defaults::Cache::new();
     R.get_or_init(|| Res {
         terminal: jsre::compile(defaults::text("taskstate.terminal_status_re"), true),
         created: jsre::compile(defaults::text("taskstate.re_created"), true),
@@ -444,7 +443,7 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
             if stopped {
                 break;
             }
-            if !line.contains("Task") && !line.contains("TodoWrite") && !line.contains("No tasks found") {
+            if !line.contains("Task") && !line.contains("TodoWrite") && !line.contains(defaults::text("taskstate.no_tasks_marker")) {
                 continue;
             }
             let r = classify(line)?;

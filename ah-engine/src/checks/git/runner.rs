@@ -263,7 +263,7 @@ pub fn stdin_script_verdict(ctx: &mut Ctx, cmd: &str, d: usize, cwd: Option<&str
     if d >= 3 {
         return None;
     }
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| lit_re(r#"'([^']*)'|"((?:[^"\\]|\\(?s:.))*)""#));
     let mut texts: Vec<String> = Vec::new();
     for m in re.captures_iter(cmd) {
@@ -310,7 +310,7 @@ fn shell_script_is_input(sh_tokens: &[Tok], repls: &[Repl]) -> bool {
             Repl::R(re) => re.replace_all(&script, " ").to_string(),
         };
     }
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| lit_re(r#"\$\{?[0-9@*]\}?|(?-u:\b)(?:eval|exec)(?-u:\b)|["'\s;]"#));
     re.replace_all(&script, "").is_empty()
 }
@@ -336,7 +336,7 @@ pub fn runner_verdict(
     repls: &[Repl],
 ) -> Option<String> {
     // `xargs xargs xargs ...` recurses once per word; JS overflows its stack (and then allows). Bound it and defer to Node.
-    if ctx.rec > 1500 {
+    if ctx.rec > crate::defaults::num("git.max_recursion") as usize {
         ctx.overflow = true;
         return None;
     }

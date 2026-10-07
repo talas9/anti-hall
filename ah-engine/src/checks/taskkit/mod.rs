@@ -13,7 +13,6 @@ use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{collapse_ws, js_trim, slice_utf16};
 use crate::defaults;
 use serde_json::Value;
-use std::sync::OnceLock;
 
 /// `String(v)` for a JSON value, as JavaScript prints it. `None` for a number whose JavaScript text differs from the Rust
 /// one (a fraction below 1e-6, or 1e21 and up), which the caller defers.
@@ -52,7 +51,7 @@ pub fn js_string(v: &Value) -> Option<String> {
 /// The session id as it becomes a file name part: every character outside `[A-Za-z0-9_-]` is removed, and an empty
 /// result becomes the unknown-session id (`sanitizeSessionId` of the Node hook).
 pub fn session_path_id(raw: &str) -> String {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    static RE: crate::defaults::Cache<regex::Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| jsre::compile(defaults::text("taskkit.session_id_unsafe"), false));
     let safe = re.replace_all(raw, "");
     if safe.is_empty() { defaults::text("taskkit.unknown_session").to_string() } else { safe.into_owned() }
@@ -63,7 +62,7 @@ pub fn session_path_id(raw: &str) -> String {
 /// surrogate pair (JavaScript would keep a lone surrogate, which a Rust string cannot hold).
 pub fn sanitize_text(s: &Value, max: usize) -> Option<String> {
     let Value::String(s) = s else { return Some(String::new()) };
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    static RE: crate::defaults::Cache<regex::Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| jsre::compile(defaults::text("taskkit.control_chars"), false));
     let spaced = re.replace_all(s, " ");
     let out = js_trim(&collapse_ws(&spaced)).to_string();
@@ -85,7 +84,7 @@ pub fn is_codex_platform(p: &Value) -> bool {
         return true;
     }
     let tp = jsval::get(p, "transcript_path").and_then(Value::as_str).unwrap_or("");
-    static RE: OnceLock<(regex::Regex, regex::Regex)> = OnceLock::new();
+    static RE: crate::defaults::Cache<(regex::Regex, regex::Regex)> = crate::defaults::Cache::new();
     let (rollout, dotcodex) =
         RE.get_or_init(|| (jsre::compile(defaults::text("taskkit.codex_rollout"), false), jsre::compile(defaults::text("taskkit.codex_dir"), false)));
     rollout.is_match(tp) || dotcodex.is_match(tp)

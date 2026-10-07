@@ -24,18 +24,17 @@ use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
 
 fn agent_id_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("devswarm_comms.agent_id_re"), true))
 }
 
 fn ref_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("devswarm_comms.ref_re"), true))
 }
 

@@ -5,8 +5,8 @@
 #   doc    what it is, in one sentence (a test fails if it is missing)
 #   env    optional: the environment variable that overrides a numeric value for one process
 #   min / max  optional clamps for a numeric value
-# Code reads these through `ah_engine::defaults`; nothing here is repeated in Rust. The same file is
-# embedded in the binary with `include_str!`, so a build always carries its own defaults.
+# Code reads these through `ah_engine::defaults`; nothing here is repeated in Rust. The engine reads these files from the plugin
+# at run time (start-up, plugin update, file change) and nothing is compiled into the binary: tune the engine by editing here.
 
 # ---- environment variable names -------------------------------------------------------------------------
 
@@ -81,8 +81,12 @@ doc = "Suffix appended to the socket path for the singleton lock file."
 value = ".lock"
 
 [paths.rules_file]
-doc = "Rules file name inside the state directory."
+doc = "Name of the user's rules override inside the state directory; when that file exists it replaces the plugin's rules file."
 value = "rules.json"
+
+[paths.plugin_rules_file]
+doc = "The shipped rules file, relative to the plugin root (the engine reads it from the plugin, never from its own install)."
+value = "engine/rules.json"
 
 [paths.fallback_tmp]
 doc = "Last-resort base for the short-path socket when TMPDIR is unset or too long."

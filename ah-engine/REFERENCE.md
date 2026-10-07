@@ -117,7 +117,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 
 ## Settings
 
-Defaults ship in `defaults/*.toml`; a numeric setting with an environment variable can be overridden for one process.
+Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run time; a numeric setting with an environment variable can be overridden for one process.
 
 
 ### engine.toml / client
@@ -244,8 +244,9 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `paths.base_dir` | `.anti-hall` |  |  | Directory under the home directory that holds all anti-hall state. |
 | `paths.fallback_tmp` | `/tmp` |  |  | Last-resort base for the short-path socket when TMPDIR is unset or too long. |
 | `paths.lock_suffix` | `.lock` |  |  | Suffix appended to the socket path for the singleton lock file. |
+| `paths.plugin_rules_file` | `engine/rules.json` |  |  | The shipped rules file, relative to the plugin root (the engine reads it from the plugin, never from its own install). |
 | `paths.private_dir_prefix` | `anti-hall-` |  |  | Prefix of the private per-user directory that holds a short-path socket (the uid is appended). |
-| `paths.rules_file` | `rules.json` |  |  | Rules file name inside the state directory. |
+| `paths.rules_file` | `rules.json` |  |  | Name of the user's rules override inside the state directory; when that file exists it replaces the plugin's rules file. |
 | `paths.short_socket_ext` | `.sock` |  |  | Extension of a short-path socket file (its name is a stable hash of the state directory). |
 | `paths.socket_file` | `e.sock` |  |  | Socket file name inside the state directory. |
 | `paths.socket_max_len` | `100` |  | bytes | Longest socket path used as is; unix socket paths are capped at 104 bytes on macOS (108 on Linux), so this leaves headroom. |
@@ -1422,7 +1423,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `hooks.msg_when_unknown_setting` | `{key} is not a setting the engine has loaded` |  |  | Config error detail: a `setting` condition names a setting the engine's loaded settings do not have. Placeholder: {key}. |
 | `hooks.outcomes` | `ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed, off` |  |  | The words the telemetry uses for what happened to a table entry in one dispatch, in this order: ran, skipped_predicate (its `when` was false), skipped_max_rules (cut by max_rules), skipped_budget (the event's budget had passed), shadowed (ran, never changed the outcome) and off (configured off, or a guard entry's engine check turned off so its Node hook decides). |
 | `hooks.project_file` | `.anti-hall/engine.toml` |  |  | The project-level hook configuration file, relative to the payload's cwd; read when it exists, below the user file in precedence. It may not configure guard events or guard entries. |
-| `hooks.reasons` | `11 entries` |  |  | Short reasons the config errors above quote in their {what} placeholder. |
+| `hooks.reasons` | `23 entries` |  |  | Short reasons the config errors above quote in their {what} placeholder. |
 | `hooks.session_max_keys` | `4096` |  |  | The most session-condition counters kept at once; past it the oldest are dropped (a dropped counter starts again, which only makes its condition fire sooner). |
 | `hooks.session_ops` | `first, every, at_least` |  |  | The per-session counters a `session` condition may use: first (true the first time per session within the TTL), every (true on the 1st, then every Nth evaluation: a once-per-N-turns dedupe) and at_least (true once the evaluation count in the session reaches N). |
 | `hooks.session_ttl_s` | `3600` |  | s | How long the engine keeps a `session` condition's state after its last evaluation (a condition's own `ttl_s` overrides it). |
@@ -2609,6 +2610,91 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `devswarm_gates.source_branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable DevSwarm sets only on a child workspace; non-empty means this session is a child. |
 | `devswarm_gates.supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode; headline plugin option). |
 
+### limits.toml / agent_scan
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `agent_scan.reader_buf_bytes` | `1048576` |  | bytes | Capacity of the buffered reader over the tail of a transcript the agent scan reads. |
+
+### limits.toml / codex_handover
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `codex_handover.nudge_shown_files` | `3` |  |  | How many edited file names the Codex handover nudge lists before it adds the more-marker. |
+
+### limits.toml / coordinator_work
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `coordinator_work.block_default` | `7` |  |  | Default of the coordinator work block threshold when the setting is absent or unusable. |
+| `coordinator_work.cap_default` | `50` |  |  | Default of the coordinator work tracked-call cap when the setting is absent or unusable. |
+| `coordinator_work.nudge_default` | `4` |  |  | Default of the coordinator work nudge threshold when the setting is absent or unusable. |
+| `coordinator_work.window_default` | `10` |  |  | Default of the coordinator work window setting, in minutes, when the setting is absent or unusable. |
+
+### limits.toml / dispatch
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `dispatch.stop_id_max_chars` | `64` |  |  | Longest session or agent id the stop-loop guard keeps in a state file name; the rest is cut. |
+
+### limits.toml / git
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `git.handover_adds_max` | `50` |  |  | Most `git add` commands the git check remembers in one command line when it looks for a staged handover file. |
+| `git.max_recursion` | `1500` |  |  | Deepest nesting of wrapper commands (`xargs xargs ...`) the git check follows before it defers to Node, whose own stack overflows at about this depth. |
+| `git.path_arg_max_chars` | `4096` |  |  | Longest directory argument (in characters) the git check tracks through a `cd`; a longer one is left to Node. |
+| `git.path_arg_max_segments` | `64` |  |  | Most path segments in a directory argument the git check tracks through a `cd`; a deeper one is left to Node. |
+| `git.self_credit_coauthor_key` | `co-authored-by` |  |  | The trailer key (lowercase) that credits a co-author; an AI tool named after it is a self-credit. |
+| `git.self_credit_generated_prefix` | `generated with ` |  |  | The footer prefix (lowercase, with its trailing space) after which an AI tool name is a self-credit. |
+| `git.self_credit_trailer_keys` | `co-authored-by, generated-with, generated with` |  |  | The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under. |
+| `git.shown_hits` | `3` |  |  | How many commit hashes the handover message names before it adds the more-marker. |
+
+### limits.toml / gitcache
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `gitcache.content_cap_bytes` | `4096` |  | bytes | Bytes of a signed file read when the cache fingerprints a repository (a HEAD or a loose ref is a few dozen bytes). |
+
+### limits.toml / guardkit
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `guardkit.settings_seen_max` | `256` |  |  | Most settings files the guard kit remembers the validity of before it starts over. |
+
+### limits.toml / io
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `io.chunk_bytes` | `65536` |  | bytes | Size of the buffer used to copy a hook payload between pipes and files: spooling stdin, scanning it for the tool name, feeding a spooled file to a hook. |
+| `io.small_chunk_bytes` | `8192` |  | bytes | Size of the buffer used to read a request from the daemon socket and a hook child's output. |
+
+### limits.toml / jev
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `jev.what_create_dir` | `create the directory of` |  |  | What the decision log was doing when creating its directory failed. |
+| `jev.what_read_requests` | `read the requests from stdin` |  |  | What the Jev `ask` command was doing when reading its stdin failed. |
+| `jev.what_read_texts` | `read the texts from stdin` |  |  | What the Jev `scrub` command was doing when reading its stdin failed. |
+
+### limits.toml / model_routing
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `model_routing.fail_closed_marker` | `model-routing fail-closed` |  |  | The reason carried by the last-resort block when even the fail-closed message could not be built. |
+
+### limits.toml / task_lifecycle_log
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `task_lifecycle_log.index_file` | `INDEX.md` |  |  | Name of the per-kind session index file the lifecycle log maintains under the state directory. |
+
+### limits.toml / taskstate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `taskstate.no_tasks_marker` | `No tasks found` |  |  | The text in a task tool result that says the list is empty. |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -2782,6 +2868,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.jev_no_home` | Printed by `ah-engine jev` when the home directory variable is not set, because the settings and the log live under it. |
 | `msg.jev_unknown_question_type` | Why a Jev request was refused: its question type is neither noul nor choice. Placeholder: kind. |
 | `msg.jev_usage` | Usage line of `ah-engine jev`. |
+| `msg.cli_usage_restore` | The usage line of `restore`. |
+| `msg.cli_usage_schedule_run` | The usage line of `schedule run`. |
+| `msg.client_what_timeout` | What the client was doing when a socket option could not be set (the {what} of msg.client_io). |
 
 ## Metrics
 

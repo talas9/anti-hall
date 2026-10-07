@@ -10,7 +10,6 @@
 use crate::defaults;
 use regex::Regex;
 use serde_json::{Map, Value};
-use std::sync::OnceLock;
 
 /// Which of the three transcript shapes carried a task-notification
 /// (`companion/lib/devswarm-idle.js` `notificationTexts`).
@@ -318,12 +317,12 @@ fn collect_tool_uses<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
 // ---- task-notifications -----------------------------------------------------------------------------------------
 
 fn block_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(r"(?s)<task-notification>(.*?)</task-notification>"))
 }
 
 fn wrapped_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(r"<system-reminder>[\s\x{feff}]*<task-notification>"))
 }
 
@@ -363,7 +362,7 @@ fn notification_texts(e: &Value) -> Vec<(Shape, String)> {
 }
 
 fn final_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| {
         let alt = defaults::words("transcript.final_statuses").iter().map(|w| regex::escape(w)).collect::<Vec<_>>().join("|");
         crate::checks::lit_re(&format!(r"(?i)<status>[\s\x{{feff}}]*(?:{alt})[\s\x{{feff}}]*</status>"))
@@ -387,7 +386,7 @@ struct TagRes {
 }
 
 fn tag_res() -> &'static TagRes {
-    static R: OnceLock<TagRes> = OnceLock::new();
+    static R: crate::defaults::Cache<TagRes> = crate::defaults::Cache::new();
     R.get_or_init(|| TagRes {
         task_raw: tag_re("task-id", false),
         status_raw: tag_re("status", false),

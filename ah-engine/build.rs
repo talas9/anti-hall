@@ -1,148 +1,57 @@
-//! Compiles `defaults/*.toml` into static Rust data (D17).
+//! Collects the settings keys this build reads, so a plugin whose defaults lack one is rejected when the engine loads
+//! them (a plugin and an engine of different versions) instead of panicking later in a hook call.
 //!
-//! Why at build time: the defaults are the single source of truth for every tunable, table and message, but parsing
-//! the TOML at every hook-client start nearly doubled its start-up (3.7 to 3.8 ms against 1.9 to 2.1 ms, measured),
-//! which defeats the thin client (D1). So the same files are parsed here, validated, and emitted as `static` data the
-//! binary reads without parsing or allocating. A malformed or undocumented entry fails the build instead of a user's
-//! hook call.
+//! This is the ONLY thing the build derives from the source about configuration, and it is a schema, not configuration:
+//! no value, table, message or default is compiled in (the defaults are read from the plugin's files at run time, D17).
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// The shipped defaults files, in the order their entries are listed.
-const FILES: [&str; 28] = [
-    "engine.toml",
-    "messages.toml",
-    "git.toml",
-    "command.toml",
-    "commands.toml",
-    "telemetry.toml",
-    "storage.toml",
-    "config.toml",
-    "transcript.toml",
-    "gitcache.toml",
-    "schedules.toml",
-    "small_guards.toml",
-    "spawn_context.toml",
-    "jev.toml",
-    "dispatch.toml",
-    "hooks.toml",
-    "verify_first.toml",
-    "prompt_emit.toml",
-    "ctxbudget.toml",
-    "session.toml",
-    "response_guards.toml",
-    "agent_controls.toml",
-    "spawn_guards.toml",
-    "session_gates.toml",
-    "codex_handover.toml",
-    "task_guards.toml",
-    "devswarm_role.toml",
-    "devswarm_gates.toml",
-];
+const CALLERS: [&str; 9] = ["num", "millis", "secs", "text", "list", "words", "render", "raw", "env_of"];
 
-fn value(v: &toml::Value, out: &mut String) {
-    match v {
-        toml::Value::Integer(n) => {
-            let _ = write!(out, "V::Int({n})");
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            rust_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs") && p.file_name().is_some_and(|n| n != "tests.rs") {
+            out.push(p);
         }
-        toml::Value::Boolean(b) => {
-            let _ = write!(out, "V::Bool({b})");
-        }
-        toml::Value::String(s) => {
-            let _ = write!(out, "V::Str({s:?})");
-        }
-        toml::Value::Array(a) => {
-            out.push_str("V::List(&[");
-            for x in a {
-                value(x, out);
-                out.push_str(", ");
-            }
-            out.push_str("])");
-        }
-        toml::Value::Table(t) => {
-            out.push_str("V::Table(&[");
-            for (k, x) in t {
-                let _ = write!(out, "({k:?}, ");
-                value(x, out);
-                out.push_str("), ");
-            }
-            out.push_str("])");
-        }
-        other => panic!("defaults: unsupported TOML value {other:?} (use integers, booleans, strings, arrays and tables)"),
-    }
-}
-
-fn opt_str(t: &toml::Table, k: &str) -> String {
-    match t.get(k).and_then(toml::Value::as_str) {
-        Some(s) => format!("Some({s:?})"),
-        None => "None".into(),
-    }
-}
-
-fn opt_int(t: &toml::Table, k: &str) -> String {
-    match t.get(k).and_then(toml::Value::as_integer) {
-        Some(n) => format!("Some({n})"),
-        None => "None".into(),
     }
 }
 
 fn main() {
-    let root = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("defaults");
-    let mut entries = String::new();
-    let mut keys: Vec<(String, usize)> = Vec::new();
-    let mut n = 0usize;
-    // `defaults/hooks.d/*.toml` (D87): one file per batch of ported hooks, each holding that batch's `[events.<Event>]` and
-    // `[entries."<id>"]` defaults, so parallel lanes add files instead of editing a shared one. Sorted by name, after FILES.
-    let mut files: Vec<String> = FILES.iter().map(|f| f.to_string()).collect();
-    println!("cargo:rerun-if-changed={}", root.join("hooks.d").display());
-    if let Ok(rd) = std::fs::read_dir(root.join("hooks.d")) {
-        let mut extra: Vec<String> =
-            rd.flatten().filter_map(|e| e.file_name().to_str().filter(|n| n.ends_with(".toml")).map(|n| format!("hooks.d/{n}"))).collect();
-        extra.sort();
-        files.extend(extra);
-    }
-    for file in files.iter().map(String::as_str) {
-        let path = root.join(file);
-        println!("cargo:rerun-if-changed={}", path.display());
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        let table: toml::Table = text.parse().unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
-        for (section, body) in &table {
-            let body = body.as_table().unwrap_or_else(|| panic!("{file}: [{section}] must be a table of settings"));
-            for (name, e) in body {
-                let key = format!("{section}.{name}");
-                let e = e.as_table().unwrap_or_else(|| panic!("{file}: {key} must be a table with `value` and `doc`"));
-                let doc = e.get("doc").and_then(toml::Value::as_str).unwrap_or_else(|| panic!("{file}: {key} has no `doc`"));
-                assert!(doc.trim().ends_with('.'), "{file}: {key}: doc must be a sentence ending in a period: {doc:?}");
-                let v = e.get("value").unwrap_or_else(|| panic!("{file}: {key} has no `value`"));
-                for k in e.keys() {
-                    assert!(["value", "doc", "env", "min", "max", "unit"].contains(&k.as_str()), "{file}: {key}: unknown field {k:?}");
+    let src = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("src");
+    println!("cargo:rerun-if-changed={}", src.display());
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    let mut keys = BTreeSet::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap();
+        // test modules may name keys on purpose, including in negative tests
+        let text = text.split("#[cfg(test)]\nmod tests {").next().unwrap_or("");
+        for c in CALLERS {
+            let needle = format!("defaults::{c}(\"");
+            let mut rest = text;
+            while let Some(p) = rest.find(&needle) {
+                let after = &rest[p + needle.len()..];
+                if let Some(end) = after.find('"') {
+                    let k = &after[..end];
+                    if k.contains('.') && k.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '.') {
+                        keys.insert(k.to_string());
+                    }
                 }
-                let mut vs = String::new();
-                value(v, &mut vs);
-                let _ = writeln!(
-                    entries,
-                    "    Entry {{ key: {key:?}, file: {file:?}, value: {vs}, doc: {doc:?}, env: {}, min: {}, max: {}, unit: {} }},",
-                    opt_str(e, "env"),
-                    opt_int(e, "min"),
-                    opt_int(e, "max"),
-                    opt_str(e, "unit")
-                );
-                keys.push((key, n));
-                n += 1;
+                rest = after;
             }
         }
     }
-    keys.sort();
-    for w in keys.windows(2) {
-        assert!(w[0].0 != w[1].0, "defaults: duplicate key {}", w[0].0);
-    }
-    let mut index = String::new();
-    for (k, i) in &keys {
-        let _ = writeln!(index, "    ({k:?}, {i}),");
-    }
-    let code = format!(
-        "// @generated by build.rs from defaults/*.toml; do not edit.\n/// Every shipped setting, in file order.\npub static ENTRIES: &[Entry] = &[\n{entries}];\n/// (key, position in `ENTRIES`), sorted by key for binary search.\npub static INDEX: &[(&str, usize)] = &[\n{index}];\n"
+    let mut code = String::from(
+        "// @generated by build.rs from the source; do not edit.\n/// The settings keys the source reads, sorted.\npub static REQUIRED: &[&str] = &[\n",
     );
-    let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("defaults_gen.rs");
-    std::fs::write(out, code).unwrap();
+    for k in &keys {
+        let _ = writeln!(code, "    {k:?},");
+    }
+    code.push_str("];\n");
+    std::fs::write(Path::new(&std::env::var("OUT_DIR").unwrap()).join("required_keys.rs"), code).unwrap();
 }

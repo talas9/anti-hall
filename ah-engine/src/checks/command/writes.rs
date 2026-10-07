@@ -14,7 +14,6 @@ use crate::checks::git::tokenize::basename;
 use crate::checks::git::util::path_join;
 use crate::checks::lit_re;
 use regex::Regex;
-use std::sync::OnceLock;
 
 /// `${NAME}` (not followed by an identifier character) rewritten to `$NAME`, as classifyBashWork does before
 /// splitting (the splitter cuts at braces).
@@ -95,10 +94,10 @@ fn keep(out: &mut Vec<String>, t: Option<String>) {
 ///
 /// Mirrors `command-guard.js` `bashWriteTargets`.
 pub fn bash_write_targets(segment: &str) -> Vec<String> {
-    static OP: OnceLock<Regex> = OnceLock::new();
-    static REDIR_TOK: OnceLock<Regex> = OnceLock::new();
-    static BARE_REDIR_TOK: OnceLock<Regex> = OnceLock::new();
-    static ALPHA_FLAG: OnceLock<Regex> = OnceLock::new();
+    static OP: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static REDIR_TOK: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static BARE_REDIR_TOK: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
+    static ALPHA_FLAG: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let mut out = Vec::new();
     if trim(segment).is_empty() {
         return out;

@@ -13,7 +13,6 @@ use crate::checks::guardkit::text::{is_js_space, js_trim};
 use crate::defaults;
 use regex::Regex;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 struct Tables {
     predicate_verbs: HashSet<&'static str>,
@@ -34,7 +33,7 @@ struct Tables {
 }
 
 fn t() -> &'static Tables {
-    static T: OnceLock<Tables> = OnceLock::new();
+    static T: crate::defaults::Cache<Tables> = crate::defaults::Cache::new();
     T.get_or_init(|| {
         let c = |k: &str| jsre::compile(defaults::text(k), false);
         Tables {

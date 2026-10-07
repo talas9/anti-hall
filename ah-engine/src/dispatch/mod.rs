@@ -88,10 +88,11 @@ struct PayloadInput {
 impl PayloadInput {
     fn read_stdin(max: u64) -> std::io::Result<PayloadInput> {
         let keep = max as usize;
-        let mut raw = Vec::with_capacity(keep.min(64 * 1024));
+        let chunk_len = defaults::num("io.chunk_bytes") as usize;
+        let mut raw = Vec::with_capacity(keep.min(chunk_len));
         let mut file: Option<File> = None;
         let mut stdin = std::io::stdin().lock();
-        let mut chunk = [0u8; 64 * 1024];
+        let mut chunk = vec![0u8; chunk_len];
         loop {
             match stdin.read(&mut chunk) {
                 Ok(0) => break,
@@ -156,7 +157,7 @@ fn decode_json_string(bytes: &[u8]) -> Result<String, ()> {
 }
 
 fn scan_tool_name(input: &mut impl Read) -> Result<Option<String>, ()> {
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = vec![0u8; defaults::num("io.chunk_bytes") as usize];
     let mut depth = 0usize;
     let mut started = false;
     let mut done = false;

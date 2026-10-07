@@ -23,18 +23,17 @@ use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
 use std::io::Write;
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
 
 fn marker_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(defaults::text("ask_guard.marker_re")))
 }
 
 fn control_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(defaults::text("ask_guard.note_control_re")))
 }
 

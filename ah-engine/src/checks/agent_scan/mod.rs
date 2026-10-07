@@ -16,7 +16,6 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, SeekFrom};
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
@@ -169,7 +168,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| Pats {
         block: crate::checks::lit_re(defaults::text("agent_scan.re_notification_block")),
         task_id: crate::checks::lit_re(defaults::text("agent_scan.re_task_id")),
@@ -404,7 +403,7 @@ impl Tail {
         }
         let n = size.min(max);
         f.seek(SeekFrom::Start(size - n)).ok()?;
-        Some(Tail { r: std::io::BufReader::with_capacity(1 << 20, f.take(n)), drop_first: size > n })
+        Some(Tail { r: std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, f.take(n)), drop_first: size > n })
     }
 
     /// The next line without its newline; `Ok(false)` at the end; `Err` when the read fails (`readTail` then returns null).

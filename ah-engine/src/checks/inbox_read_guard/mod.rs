@@ -35,7 +35,7 @@ pub enum Class {
 
 /// `isStoreDenyTarget(rest)`: the store-relative path is the database, a sidecar or a journal file.
 fn is_store_target(rest: &str) -> bool {
-    static RES: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
+    static RES: crate::defaults::Cache<Vec<regex::Regex>> = crate::defaults::Cache::new();
     RES.get_or_init(|| defaults::list("inbox_read.store_patterns").into_iter().map(|p| jsre::compile(p, false)).collect()).iter().any(|re| re.is_match(rest))
 }
 

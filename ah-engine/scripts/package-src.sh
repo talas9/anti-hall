@@ -17,8 +17,8 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/$name/.cargo" "$out"
 cp -R "$root/src" "$stage/$name/src"
-cp "$root/Cargo.toml" "$root/Cargo.lock" "$root/rules.json" "$stage/$name/"
-for opt in rust-toolchain.toml defaults README.md; do
+cp "$root/Cargo.toml" "$root/Cargo.lock" "$root/build.rs" "$stage/$name/"
+for opt in rust-toolchain.toml README.md; do
   [ -e "$root/$opt" ] && cp -R "$root/$opt" "$stage/$name/$opt"
 done
 cp "$root/../LICENSE" "$stage/$name/LICENSE"

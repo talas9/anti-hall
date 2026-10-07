@@ -30,18 +30,17 @@ use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
 
 fn ext_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("api_guard.extension_pattern"), true))
 }
 
 fn code_name_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("api_guard.code_name_pattern"), true))
 }
 

@@ -44,8 +44,8 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration) -> Exch {
         Err(e) => return Exch::Failed(defaults::render("msg.client_connect", &[("err", &e)])),
     };
     let io = |r: std::io::Result<()>, what: &str| r.map_err(|e| Exch::Failed(defaults::render("msg.client_io", &[("what", &what), ("err", &e)])));
-    if let Err(e) = io(s.set_read_timeout(Some(deadline)), "set timeout")
-        .and_then(|_| io(s.set_write_timeout(Some(deadline)), "set timeout"))
+    if let Err(e) = io(s.set_read_timeout(Some(deadline)), defaults::text("msg.client_what_timeout"))
+        .and_then(|_| io(s.set_write_timeout(Some(deadline)), defaults::text("msg.client_what_timeout")))
         .and_then(|_| io(s.write_all(payload), "write"))
         .and_then(|_| io(s.shutdown(std::net::Shutdown::Write), "shutdown"))
     {

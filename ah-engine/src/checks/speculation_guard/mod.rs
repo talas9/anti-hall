@@ -38,7 +38,6 @@ use regex::Regex;
 use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
-use std::sync::OnceLock;
 
 pub(crate) mod mask;
 #[cfg(test)]
@@ -54,7 +53,7 @@ struct Pats {
 }
 
 fn pats() -> &'static Pats {
-    static P: OnceLock<Pats> = OnceLock::new();
+    static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| {
         let ci = |key: &str| defaults::list(key).into_iter().map(|s| jsre::compile(s, true)).collect::<Vec<_>>();
         let mut acks = ci("speculation_guard.ack_ci");
@@ -121,7 +120,7 @@ struct Frame {
 }
 
 fn frame() -> &'static Frame {
-    static F: OnceLock<Frame> = OnceLock::new();
+    static F: crate::defaults::Cache<Frame> = crate::defaults::Cache::new();
     F.get_or_init(|| {
         let label = defaults::text("speculation_guard.frame_label");
         Frame {

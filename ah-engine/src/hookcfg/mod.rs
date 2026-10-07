@@ -19,7 +19,6 @@ use crate::dispatch::table;
 use serde_json::{Map, Value as Json, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::OnceLock;
 use when::When;
 
 /// What a layer may be: the project file is untrusted (a repository ships it), the others are the user's own.
@@ -169,7 +168,7 @@ fn event_ids(event: &str) -> BTreeSet<String> {
 }
 
 fn bound(key: &str) -> (i64, i64) {
-    let e = defaults::all().iter().find(|e| e.key == key);
+    let e = defaults::get(key);
     (e.and_then(|e| e.min).unwrap_or(0), e.and_then(|e| e.max).unwrap_or(i64::MAX))
 }
 
@@ -206,7 +205,9 @@ fn mode_of(path: &Path, key: &str, o: &Map<String, Json>) -> Result<Option<Mode>
 fn number(path: &Path, key: &str, field: &str, o: &Map<String, Json>, setting: &str) -> Result<Option<u64>, ConfigError> {
     let Some(v) = o.get(field) else { return Ok(None) };
     let full = format!("{key}.{field}");
-    let n = v.as_i64().ok_or_else(|| bad(path, &full, "hooks.msg_cfg_bad_type", &[("field", &field), ("expected", &"an integer")]))?;
+    let n = v.as_i64().ok_or_else(|| {
+        bad(path, &full, "hooks.msg_cfg_bad_type", &[("field", &field), ("expected", &defaults::raw("hooks.reasons").str_field("type_integer"))])
+    })?;
     let (min, max) = bound(setting);
     if n < min || n > max {
         return Err(bad(path, &full, "hooks.msg_cfg_range", &[("field", &field), ("value", &n), ("min", &min), ("max", &max)]));
@@ -227,10 +228,14 @@ fn parse_event(path: &Path, origin: Origin, event: &str, v: &Json) -> Result<Eve
     let order = match o.get("order") {
         None => None,
         Some(a) => {
-            let ids: Vec<String> = a
-                .as_array()
-                .and_then(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect())
-                .ok_or_else(|| bad(path, &format!("{key}.order"), "hooks.msg_cfg_bad_type", &[("field", &"order"), ("expected", &"a list of entry ids")]))?;
+            let ids: Vec<String> = a.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect()).ok_or_else(|| {
+                bad(
+                    path,
+                    &format!("{key}.order"),
+                    "hooks.msg_cfg_bad_type",
+                    &[("field", &"order"), ("expected", &defaults::raw("hooks.reasons").str_field("type_entry_list"))],
+                )
+            })?;
             let known = event_ids(event);
             if let Some(id) = ids.iter().find(|i| !known.contains(*i)) {
                 return Err(bad(path, &format!("{key}.order"), "hooks.msg_cfg_unknown_order", &[("id", id), ("event", &event)]));
@@ -310,19 +315,32 @@ fn parse_layer_with(path: &Path, origin: Origin, events: Option<&Json>, entries:
     Ok(layer)
 }
 
-/// The shipped layer: every `events.*` and `entries.*` table of the defaults.
-fn shipped() -> &'static Layer {
-    static L: OnceLock<Layer> = OnceLock::new();
-    L.get_or_init(|| {
-        let (mut ev, mut en) = (Map::new(), Map::new());
-        for e in defaults::all() {
-            if let Some(n) = e.key.strip_prefix("events.") {
-                ev.insert(n.to_string(), e.value.to_json());
-            } else if let Some(n) = e.key.strip_prefix("entries.") {
-                en.insert(n.to_string(), e.value.to_json());
-            }
+/// The shipped layer of `entries`: every `events.*` and `entries.*` table of the defaults.
+fn shipped_of(entries: &[&defaults::Entry]) -> Result<Layer, ConfigError> {
+    let (mut ev, mut en) = (Map::new(), Map::new());
+    for e in entries {
+        if let Some(n) = e.key.strip_prefix("events.") {
+            ev.insert(n.to_string(), e.value.to_json());
+        } else if let Some(n) = e.key.strip_prefix("entries.") {
+            en.insert(n.to_string(), e.value.to_json());
         }
-        parse_layer(Path::new("defaults/hooks.d"), Origin::Shipped, Some(&Json::Object(ev)), Some(&Json::Object(en))).unwrap_or_else(|e| panic!("{e}"))
+    }
+    parse_layer(Path::new("defaults/hooks.d"), Origin::Shipped, Some(&Json::Object(ev)), Some(&Json::Object(en)))
+}
+
+/// Check the hook sections of a candidate set of defaults before it is swapped in (a plugin edit with a bad row is rejected
+/// at load, with the reason, instead of failing in a hook call).
+pub(crate) fn check_shipped(entries: &[&defaults::Entry]) -> Result<(), String> {
+    shipped_of(entries).map(|_| ()).map_err(|e| format!("{e:?}"))
+}
+
+/// The shipped layer for the active defaults.
+fn shipped() -> &'static Layer {
+    static L: crate::defaults::Cache<Layer> = crate::defaults::Cache::new();
+    L.get_or_init(|| {
+        let mut entries = defaults::with_prefix("events.");
+        entries.extend(defaults::with_prefix("entries."));
+        shipped_of(&entries).unwrap_or_else(|e| panic!("{e:?}"))
     })
 }
 

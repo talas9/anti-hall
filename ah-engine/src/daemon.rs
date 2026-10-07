@@ -96,7 +96,7 @@ pub struct Shared {
     pub own: String,
     /// The active rule set; swapped whole on reload, so a request sees one consistent set.
     pub rules: RwLock<Arc<RuleSet>>,
-    rules_path: std::path::PathBuf,
+    rules_path: Mutex<std::path::PathBuf>,
     seen: Mutex<Option<(SystemTime, u64)>>,
     sessions: Mutex<Buckets>,
     projects: Mutex<Buckets>,
@@ -153,7 +153,7 @@ impl Shared {
             own: own.to_string(),
             rules: RwLock::new(Arc::new(rules)),
             seen: Mutex::new(mtime(&rules_path)),
-            rules_path,
+            rules_path: Mutex::new(rules_path),
             store: Store::new(None),
             keys: Mutex::new(KeyCache::default()),
             stats: Stats::default(),
@@ -268,10 +268,11 @@ impl Shared {
 
     /// Re-read the rules file; a file that fails to parse keeps the previous rules.
     fn reload(&self) {
-        if let Ok(r) = RuleSet::load(&self.rules_path) {
+        let path = lk(&self.rules_path).clone();
+        if let Ok(r) = RuleSet::load(&path) {
             *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(r);
         }
-        *lk(&self.seen) = mtime(&self.rules_path);
+        *lk(&self.seen) = mtime(&path);
     }
 
     fn status(&self) -> String {
@@ -324,6 +325,9 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
     let (head, body) = text.split_once('\n').unwrap_or((&text, ""));
     if let Some(v) = head.strip_prefix("V ") {
         let (env, payload) = crate::reqenv::split_request(body);
+        if let Some(root) = crate::bootstrap::ROOT_ENVS.iter().find_map(|n| env.get(n)) {
+            sh.config.offer_root(root);
+        }
         let reply = hook(payload, &env, sh, cfg);
         let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
@@ -515,6 +519,9 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
         sh.telemetry.fallback("malformed", "");
         return Reply::Err(defaults::text("msg.reply_malformed").into());
     };
+    if let Some(root) = meta.root.as_deref() {
+        sh.config.offer_root(root);
+    }
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
@@ -621,7 +628,7 @@ pub fn drain_spool(sh: &Shared) -> crate::spool::Drained {
 fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static str> {
     s.set_read_timeout(Some(defaults::millis("daemon.read_poll_ms"))).ok();
     let start = Instant::now();
-    let (mut buf, mut chunk) = (Vec::new(), [0u8; 8192]);
+    let (mut buf, mut chunk) = (Vec::new(), vec![0u8; defaults::num("io.small_chunk_bytes") as usize]);
     loop {
         if start.elapsed() > cfg.read_deadline {
             return Err(defaults::text("msg.reply_read_deadline"));
@@ -1015,8 +1022,14 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         // every ~200 ms: SIGHUP or a rules-file change
         if !draining && last_check.elapsed() >= defaults::millis("daemon.rules_check_ms") {
             last_check = Instant::now();
-            let now = mtime(&sh.rules_path);
-            if HUP.swap(false, SeqCst) || now != *lk(&sh.seen) {
+            // the rules file can move with the plugin (an update installs a new root) or appear as a user override
+            let wanted = paths::rules_file();
+            let moved = wanted != *lk(&sh.rules_path);
+            if moved {
+                *lk(&sh.rules_path) = wanted.clone();
+            }
+            let now = mtime(&wanted);
+            if moved || HUP.swap(false, SeqCst) || now != *lk(&sh.seen) {
                 sh.reload();
                 sh.reload_config();
             }

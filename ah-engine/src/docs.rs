@@ -68,8 +68,10 @@ pub fn markdown() -> String {
         let _ = writeln!(o, "| `{}` | {} |", c.name(), esc(c.summary()));
     }
 
-    let _ =
-        writeln!(o, "\n## Settings\n\nDefaults ship in `defaults/*.toml`; a numeric setting with an environment variable can be overridden for one process.\n");
+    let _ = writeln!(
+        o,
+        "\n## Settings\n\nDefaults ship with the plugin in `engine/defaults/*.toml` and are read at run time; a numeric setting with an environment variable can be overridden for one process.\n"
+    );
     let mut last = String::new();
     for e in all.iter().filter(|e| is_setting(e.key)) {
         let section = format!("{} / {}", e.file, e.key.split('.').next().unwrap_or(""));

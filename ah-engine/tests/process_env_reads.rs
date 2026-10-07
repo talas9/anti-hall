@@ -10,6 +10,10 @@ const ALLOW: &[(&str, &str)] = &[
     ("src/client.rs", "the hook client process: its environment IS the host's; reads the Node path and the fallback command"),
     ("src/reqenv.rs", "`RequestEnv::capture`, run by the client (or an in-process check) to forward the host's environment"),
     ("src/dispatch/table.rs", "the dispatcher is the hook client process: the plugin-root variable the host exported to this hook"),
+    (
+        "src/bootstrap.rs",
+        "locates the plugin root and the state directory before any defaults can be read: the root and state-dir variables are the one environment the bootstrap needs",
+    ),
     ("src/defaults.rs", "`AH_ENGINE_*` tunable overrides and names: settings of the engine process itself"),
     ("src/cfgstore.rs", "integer `AH_ENGINE_*` engine tunables only (test `only_engine_tunables_read_the_process_environment`)"),
     (

@@ -3,7 +3,6 @@ use super::tables::tables;
 use super::tokenize::*;
 use crate::checks::lit_re;
 use regex::Regex;
-use std::sync::OnceLock;
 
 /// The script text `eval` receives from a segment (its arguments joined the way the shell does).
 ///
@@ -64,7 +63,7 @@ fn shq(w: &str) -> String {
 }
 
 fn fp_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| lit_re(r#""\$(?:\{([0-9]+|[@*])\}|([0-9@*]))"|\$(?:\{([0-9]+|[@*])\}|([0-9@*]))"#))
 }
 

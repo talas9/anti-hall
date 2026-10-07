@@ -22,14 +22,13 @@ use crate::rules::Subject;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 fn code_ext() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("codex_handover.nudge_code_ext_re"), true))
 }
 fn agent_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("codex_handover.nudge_agent_re"), true))
 }
 
@@ -363,8 +362,9 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
         return Ok(None);
     }
     prune_stale(&dir, &posix_basename(&state), date::now_ms());
-    let shown: Vec<&str> = scan.files.iter().take(3).map(String::as_str).collect();
-    let more = if scan.files.len() > 3 { defaults::text("codex_handover.nudge_more") } else { "" };
+    let shown_max = defaults::num("codex_handover.nudge_shown_files") as usize;
+    let shown: Vec<&str> = scan.files.iter().take(shown_max).map(String::as_str).collect();
+    let more = if scan.files.len() > shown_max { defaults::text("codex_handover.nudge_more") } else { "" };
     let what = msg::render(
         "codex_handover.nudge_what",
         &[

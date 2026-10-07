@@ -12,6 +12,11 @@
 //!  4. message-like string literals: 30+ characters and 4+ words, not a raw regex pattern.
 //!  5. `matches!(.., "a" | "b" | "c" ..)`: a table written as a pattern.
 //!  6. array literals of three or more strings: a table.
+//!  7. a size, cap or threshold written as a number in a call that bounds something (`.take(n)`, `.truncate(n)`, a buffer
+//!     `[0u8; n]`, `with_capacity(n)`, a shift `1 << n`, a `len()`/`count()`/depth compared with a number of 7 or more),
+//!     and a default written into a settings read (`int(.., default, min)`).
+//!  8. short message text: two or more words and 12 or more characters, not a format string, pattern or SQL.
+//!  9. a file or directory name (`.anti-hall`, `x.json`, ...).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -86,6 +91,72 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "static ZONE_OK",
         "a thread-local cell holding whether the local time zone matches the request's: per-check scratch state, structural",
     ),
+    // ---- bootstrap: what must be known to find the configuration (D17 amended) -------------------------------------
+    (
+        "src/bootstrap.rs",
+        "",
+        "the fixed layout the engine needs to find the plugin's files, which no file can say about itself: the plugin-relative index path, the root environment variables, the cache and error file names, the wrapper's fallback exit code, the dev-checkout search depth",
+    ),
+    (
+        "src/defaults.rs",
+        "",
+        "the loader's own diagnostics and storage: they report on the very files that supply every other text, so they cannot come from them",
+    ),
+    (
+        "src/defaults/load.rs",
+        "",
+        "the loader's validation diagnostics and the snapshot-cache format identifiers (magic and trailer): they describe the files that would supply every other text, and the cache layout is a file format versioned with the binary",
+    ),
+    (
+        "src/cli.rs",
+        "[\"version\", \"status\"",
+        "the commands that start with the daemon's snapshot cache instead of parsing the files: decided before any defaults are loaded, so it cannot be a shipped setting",
+    ),
+    ("src/cli.rs", "schedule history", "control-verb grammar of the daemon socket (like CTL ping): a protocol word, not a message"),
+    ("src/cli.rs", "schedule list", "control-verb grammar of the daemon socket (like CTL ping): a protocol word, not a message"),
+    // ---- JavaScript parity: formats and error names that mirror V8, compared with Node ------------------------------
+    ("src/checks/agent_scan/mod.rs", ".take(3)", "the three-letter zone abbreviation of a JavaScript Date string (a format)"),
+    ("src/checks/ctxbudget/limit.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),
+    ("src/transcript/record.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),
+    ("src/transcript/record.rs", "b.len() < 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
+    ("src/jev/keep.rs", "b.len() < 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
+    ("src/checks/taskstate/tail.rs", "b.len() >= 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
+    ("src/checks/ctxbudget/mod.rs", "#[doc = concat!", "a generated rustdoc attribute, not run-time text"),
+    ("src/checks/emit_dedupe/mod.rs", "[0u8; 4]", "the encoding buffer of one UTF-8 character (at most 4 bytes)"),
+    ("src/checks/jsport/json.rs", "[0u8; 4]", "the encoding buffer of one UTF-8 character (at most 4 bytes)"),
+    ("src/checks/guardkit/filelock.rs", "[0u8; 256]", "the hostname buffer of gethostname (HOST_NAME_MAX is 255 on every supported system)"),
+    ("src/checks/guardkit/nodelock.rs", "[0u8; 256]", "the hostname buffer of gethostname (HOST_NAME_MAX is 255 on every supported system)"),
+    ("src/checks/guardkit/nodelock.rs", "out.len() < 11", "a base-36 u32 is at most 7 digits plus the separators of Node's lock name (a format)"),
+    ("src/checks/jsport/home.rs", "16384", "the buffer of getpwuid_r, sized by the C library's recommendation"),
+    ("src/checks/guardkit/jsval/mod.rs", "b.len() > 10", "a JavaScript array index is at most 10 digits (4294967294): the language's own limit"),
+    ("src/checks/guardkit/ojson.rs", "k.len() > 10", "a JavaScript array index is at most 10 digits (4294967294): the language's own limit"),
+    (
+        "src/checks/guardkit/jsdiff.rs",
+        "m.contains(",
+        "the names serde_json uses for the errors JavaScript's JSON.parse does not give: the parity boundary, compared with Node",
+    ),
+    (
+        "src/checks/session/jval.rs",
+        "m.contains(",
+        "the names serde_json uses for the errors JavaScript's JSON.parse does not give: the parity boundary, compared with Node",
+    ),
+    (
+        "src/checks/guardkit/jsdiff_sites.rs",
+        "",
+        "the corpus of inputs JavaScript reads differently, run through every local classifier: test data in a shared helper file",
+    ),
+    ("src/checks/guardkit/jsval/mod.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
+    ("src/checks/guardkit/ojson.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
+    ("src/checks/session/jval.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
+    ("src/jev/question.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
+    ("src/checks/guardkit/turn_gate.rs", "t.jsonl", "a file name in a unit-test fixture"),
+    // ---- git output and flag layouts ------------------------------------------------------------------------------
+    ("src/checks/git/segments.rs", ".take(2)", "the XY status columns of `git status --porcelain` (a format)"),
+    ("src/checks/git/segments.rs", ".skip(3)", "the path starts after the XY columns and a space of `git status --porcelain` (a format)"),
+    ("src/checks/git/runner.rs", "chars().count() > 10", "a `--replace=` flag carries a value when it is longer than the flag name (a flag's own shape)"),
+    // ---- layouts of generated output and the wire --------------------------------------------------------------------
+    ("src/docs.rs", "chars().count() > 80", "the width a value is cut to in the generated Markdown reference (the generator's format)"),
+    ("src/frame.rs", ".take(64)", "the longest reply-frame header scanned: a bound of the wire format"),
     // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
     (
         "src/sql.rs",
@@ -93,6 +164,44 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the SQL schema migrations and statements: the schema is code, versioned with the binary, and every tunable value is bound as a parameter at run time",
     ),
 ];
+
+/// The shapes of rule 7: a bound or threshold written as a literal number.
+fn bound_literal(line: &str) -> bool {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static RES: OnceLock<Vec<Regex>> = OnceLock::new();
+    let res = RES.get_or_init(|| {
+        [
+            r"\.(take|truncate|skip)\(\s*(?:[2-9]|\d{2,})\b",
+            r"with_capacity\([^)]*\d",
+            r"\[\s*0u8\s*;\s*[^\]]*\d",
+            r"\b1\s*<<\s*\d{2}\b",
+            r"(?:len\(\)|count\(\)|\.rec|\.depth)\s*(?:>=|<=|>|<)\s*(?:[7-9]|\d{2,})\b",
+            r"\bint\([^;]*\),\s*\d+\s*,\s*\d+\)",
+        ]
+        .iter()
+        .map(|p| Regex::new(p).unwrap())
+        .collect()
+    });
+    res.iter().any(|r| r.is_match(line))
+}
+
+/// Rule 8: a short message (two or more words, 12 or more characters) that is not a format string, a pattern or SQL.
+fn short_message(s: &str) -> bool {
+    s.chars().count() >= 12
+        && s.split_whitespace().count() >= 2
+        && s.chars().filter(|c| c.is_alphabetic()).count() >= 6
+        && !s.contains(['{', '}', '\\', '^', '$', '|', '[', ']', '(', ')', '+', '*', '?', '<', '>', '=', ';', ':'])
+        && !s.contains("PRAGMA")
+}
+
+/// Rule 9: a file or directory name.
+fn file_name_literal(s: &str) -> bool {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    s == ".anti-hall" || RE.get_or_init(|| Regex::new(r"^[\w.-]+\.(json|toml|md|log|lock|db|sock|txt|jsonl|ndjson|sh)$").unwrap()).is_match(s)
+}
 
 /// Files that are not engine code paths (test helpers).
 const SKIP_FILES: &[&str] = &["tests.rs"];
@@ -225,7 +334,7 @@ fn violations(file: &Path, text: &str) -> Vec<String> {
             }
         }
         let is_item = ["const ", "static "].iter().any(|k| t.starts_with(k) || t.starts_with(&format!("pub {k}")) || t.starts_with(&format!("pub(crate) {k}")));
-        if is_item && !t.contains("OnceLock") && !t.contains("Atomic") && !t.contains("Mutex") {
+        if is_item && !t.contains("defaults::Cache") && !t.contains("OnceLock") && !t.contains("Atomic") && !t.contains("Mutex") {
             hit("const/static literal");
         }
         let lits = string_literals(&line);
@@ -239,6 +348,15 @@ fn violations(file: &Path, text: &str) -> Vec<String> {
             if alts >= 2 {
                 hit("matches! table");
             }
+        }
+        if !is_item && !line.contains("assert") && bound_literal(&line) {
+            hit("bound literal");
+        }
+        if !is_item && !dev_diag && lits.iter().any(|s| short_message(s)) {
+            hit("short message");
+        }
+        if !is_item && !line.contains("defaults::") && lits.iter().any(|s| file_name_literal(s)) {
+            hit("file name");
         }
         if !is_item && lits.len() >= 3 && !line.contains("format!") && !line.contains("assert") && has_array_literal(&line) {
             hit("string array");
@@ -268,4 +386,51 @@ fn allowlist_entries_are_justified_and_still_needed() {
         let used = files.iter().filter(|f| f.to_string_lossy().ends_with(suffix)).any(|f| fs::read_to_string(f).unwrap().contains(sub));
         assert!(used, "stale allowlist entry: {suffix} no longer contains {sub:?}");
     }
+}
+
+/// Owner rule: model values are family aliases (`haiku`, `sonnet`, `opus`, `fable`), never a versioned id, so a request always
+/// routes to the latest. Doc text (comments, `doc = ` lines) is exempt.
+#[test]
+fn no_versioned_model_ids_in_source_or_plugin_config() {
+    let re = regex::Regex::new(r"claude-(haiku|sonnet|opus|fable)-\d|claude-\d|gpt-\d+(\.\d+)?(-\w+)?").unwrap();
+    // (file, why): text that mirrors a Node hook byte for byte (parity-tested) and still names a Codex slug there; each goes when the Node
+    // side switches to tier words. Price tables key on exact model names without the vendor prefix, so they are not matched at all.
+    let mirrors_node: &[(&str, &str)] = &[
+        (
+            "defaults/spawn_context.toml",
+            "the Codex routing hints (rules B, F, N and the M/N line) mirror hooks/lib/host-text.js, which still names the slug; tests/spawn_ctx_parity.rs compares them",
+        ),
+        (
+            "defaults/verify_first.toml",
+            "the M/N line mirrors hooks/verify-first-core.js, which still names the slug; the verify-first parity test compares them",
+        ),
+    ];
+    let mut hits = Vec::new();
+    let mut files = Vec::new();
+    rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    for f in &files {
+        for (n, line) in code_lines(&fs::read_to_string(f).unwrap()) {
+            if re.is_match(&line) {
+                hits.push(format!("{}:{n}: {}", f.display(), line.trim()));
+            }
+        }
+    }
+    let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine");
+    let mut stack = vec![engine];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "toml" || x == "json") {
+                for (i, l) in fs::read_to_string(&p).unwrap().lines().enumerate() {
+                    let allowed = mirrors_node.iter().any(|(f, why)| p.ends_with(f) && !why.is_empty());
+                    if re.is_match(l) && !l.trim_start().starts_with("doc") && !l.trim_start().starts_with('#') && !allowed {
+                        hits.push(format!("{}:{}: {}", p.display(), i + 1, l.trim().chars().take(120).collect::<String>()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(hits.is_empty(), "versioned model ids (use the alias haiku/sonnet/opus/fable, or a tier word):\n{}", hits.join("\n"));
 }

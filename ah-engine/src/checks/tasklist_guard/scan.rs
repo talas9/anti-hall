@@ -12,7 +12,6 @@ use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 /// A TaskCreate waiting for its result: subject, status and priority.
 type CreateRec = (String, String, Option<String>);
@@ -37,7 +36,7 @@ pub struct Scan {
 }
 
 fn created_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
+    static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("taskstate.re_created"), true))
 }
 
