@@ -1,5 +1,5 @@
 //! Unit tests of the session-maintenance checks. The full comparison with the Node hooks is `parity/run-session.js` (about
-//! 1,300 scenarios, exit code, stdout and state files); these tests pin the pieces and the ordering rules that matter most.
+//! 2,400 scenarios, exit code, stdout and state files); these tests pin the pieces and the ordering rules that matter most.
 //! Every test runs against its own temporary home directory, never the real one.
 use super::drift::{self, Drift};
 use super::jval::{J, Parsed, js_num, parse};

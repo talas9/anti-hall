@@ -146,7 +146,7 @@ node run-merge-side-pick.js --engine ../target/release/ah-engine --hooks ../../p
 
 The six session-maintenance ports (`version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge`, `progress-prune`) are scripts that read and write files, so their harness `run-session.js` needs no recorded commands: every scenario is a fixture directory (home, project, plugin root). It runs the real Node hook (with a spy that records and suppresses any process it would start), then the engine, on the same paths and fresh copies of the fixture, and compares exit code, stdout and every file under home and project. It takes a few minutes and needs `git` and `node` on the `PATH`.
 
-<!-- doc-check: skip (about 1,300 scenarios; run on demand) -->
+<!-- doc-check: skip (about 2,400 scenarios; run on demand) -->
 ```sh
 cd ah-engine/parity
 node run-session.js --engine ../target/release/ah-engine --repo ../.. --hook all
