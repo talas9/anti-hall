@@ -285,7 +285,7 @@ fn extract_flags(text: &str, evidence: &str, tools_this_turn: usize) -> Result<V
 }
 
 /// The Jev shadow question for one flag (Node: the `askDetached` call at the end of `main`).
-fn ask_jev(home: &Path, env: &RequestEnv, session: &str, turn_ref: Option<&str>, f: &Flag) {
+fn ask_jev(home: &Path, env: &RequestEnv, payload: &Value, session: &str, turn_ref: Option<&str>, f: &Flag) {
     let mut req = AskRequest::new(
         defaults::text("claim_ledger.jev_id"),
         Question::noul(defaults::text("claim_ledger.jev_instructions"), defaults::text("claim_ledger.jev_true"), defaults::text("claim_ledger.jev_false")),
@@ -296,6 +296,7 @@ fn ask_jev(home: &Path, env: &RequestEnv, session: &str, turn_ref: Option<&str>,
     req.cache_key = Some(format!("{}\u{1}{}\u{1}{}", f.kind, f.token, f.context));
     req.session_id = Some(session.to_string());
     req.turn_ref = turn_ref.map(str::to_string);
+    req.project = crate::jev::shared::project_for(payload.get("cwd").and_then(Value::as_str));
     crate::jev::shared::ask_detached(home, &JevEnv::from_pairs(env.to_map()), req);
 }
 
@@ -375,7 +376,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
     // the transcript's last line may then belong to the previous message, and a wrong pointer is worse than none.
     let turn_ref = if from_payload { None } else { crate::jev::shared::turn_ref_from_transcript(transcript) };
     for f in &flags {
-        ask_jev(Path::new(&home), env, &session_raw, turn_ref.as_deref(), f);
+        ask_jev(Path::new(&home), env, payload, &session_raw, turn_ref.as_deref(), f);
     }
     Ok(Verdict::Allow)
 }

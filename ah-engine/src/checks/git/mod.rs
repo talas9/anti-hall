@@ -193,6 +193,7 @@ impl Ctx {
         let mut req = AskRequest::new(crate::defaults::text("git.jev_id"), q, &state, Trust::AddBlock, Value::Bool(false));
         req.budget_ms = Some(budget);
         req.session_id = self.session_id.clone();
+        req.project = crate::jev::shared::project_for(Some(&self.proc_cwd));
         req.env = Some(env.clone());
         let verdict = crate::jev::shared::lane(std::path::Path::new(&self.home), &env).ask(&req).outcome == Value::Bool(true);
         self.jev_memo.insert(text.to_string(), verdict);

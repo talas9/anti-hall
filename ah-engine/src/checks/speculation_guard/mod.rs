@@ -255,19 +255,15 @@ fn judge_line(e: &JudgeEntry, verdict: &str) -> String {
     )
 }
 
-/// The project label of a decision row: the session's working directory when the engine is resident (its own is not the
-/// session's), else the process's own, as Node's `defaultProject` reads it.
+/// The project label of a decision row: see [`crate::jev::shared::project_for`].
 fn project_of(payload: &Value) -> Option<String> {
-    let cwd = payload.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty())?;
-    Path::new(cwd).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty())
+    crate::jev::shared::project_for(payload.get("cwd").and_then(Value::as_str))
 }
 
 fn ask_request(id: &str, q: Question, state: &str, trust: Trust, baseline: bool, session: &str, payload: &Value) -> AskRequest {
     let mut r = AskRequest::new(id, q, state, trust, Value::Bool(baseline));
     r.session_id = Some(session.to_string());
-    if crate::jev::shared::is_resident() {
-        r.project = project_of(payload);
-    }
+    r.project = project_of(payload);
     r
 }
 
@@ -344,7 +340,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
             None
         };
         if let Some(o) = outcome {
-            let project = if crate::jev::shared::is_resident() { project_of(payload) } else { None };
+            let project = project_of(payload);
             crate::jev::shared::lane(Path::new(&home), &jev_env).record_outcome(
                 defaults::text("speculation_guard.jev_id"),
                 h,

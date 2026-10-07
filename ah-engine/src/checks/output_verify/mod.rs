@@ -279,7 +279,7 @@ fn scan(payload: &Value, blob: &Blob) -> Result<Found, Defer> {
 }
 
 /// The Jev shadow question for one test-runner output (Node: the `askDetached` call before the advisory).
-fn ask_jev(home: &str, env: &RequestEnv, session: Option<String>, text: &str, mismatch: bool) {
+fn ask_jev(home: &str, env: &RequestEnv, cwd: Option<&str>, session: Option<String>, text: &str, mismatch: bool) {
     let mut req = AskRequest::new(
         defaults::text("output_verify.jev_id"),
         Question::noul(defaults::text("output_verify.jev_instructions"), defaults::text("output_verify.jev_true"), defaults::text("output_verify.jev_false")),
@@ -288,6 +288,7 @@ fn ask_jev(home: &str, env: &RequestEnv, session: Option<String>, text: &str, mi
         Value::Bool(mismatch),
     );
     req.session_id = session;
+    req.project = crate::jev::shared::project_for(cwd);
     crate::jev::shared::ask_detached(Path::new(home), &JevEnv::from_pairs(env.to_map()), req);
 }
 
@@ -295,6 +296,7 @@ fn ask_jev(home: &str, env: &RequestEnv, session: Option<String>, text: &str, mi
 /// deferral must leave no trace, and Node asks (and logs) when it runs.
 struct PendingAsk {
     home: String,
+    cwd: Option<String>,
     session: Option<String>,
     window: String,
     mismatch: bool,
@@ -304,7 +306,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
     let mut pending = None;
     let v = decide_inner(payload, env, &mut pending)?;
     if let Some(a) = pending {
-        ask_jev(&a.home, env, a.session, &a.window, a.mismatch);
+        ask_jev(&a.home, env, a.cwd.as_deref(), a.session, &a.window, a.mismatch);
     }
     Ok(v)
 }
@@ -335,7 +337,13 @@ fn decide_inner(payload: &Value, env: &RequestEnv, pending: &mut Option<PendingA
         Some(s) => Some(crate::checks::replykit::io::js_id_string(s).ok_or(Defer)?),
         None => None,
     };
-    *pending = Some(PendingAsk { home: home.clone(), session, window, mismatch: found.pass.is_some() && (found.fail.is_some() || non_zero) });
+    *pending = Some(PendingAsk {
+        home: home.clone(),
+        cwd: payload.get("cwd").and_then(Value::as_str).map(str::to_string),
+        session,
+        window,
+        mismatch: found.pass.is_some() && (found.fail.is_some() || non_zero),
+    });
     let (Some(pass), true) = (found.pass.as_ref(), found.fail.is_some() || non_zero) else { return Ok(Verdict::Allow) };
     let mut bits: Vec<String> = vec![msg::render("output_verify.bit_pass", &[("hit", &quote(pass))])];
     if let Some(f) = &found.fail {

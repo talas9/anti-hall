@@ -43,6 +43,18 @@ pub fn lane(home: &Path, env: &Env) -> Arc<Jev> {
     jev
 }
 
+/// The project label of a decision row for a session whose working directory is `cwd`: the directory's name when the engine
+/// is resident (its own working directory is not the session's), else `None`, so the lane takes the process's own as Node's
+/// `defaultProject` does.
+pub fn project_for(cwd: Option<&str>) -> Option<String> {
+    if is_resident() { dir_label(cwd) } else { None }
+}
+
+/// The name of the last component of `cwd`, when there is one.
+fn dir_label(cwd: Option<&str>) -> Option<String> {
+    Path::new(cwd.filter(|c| !c.is_empty())?).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty())
+}
+
 /// Start a detached ask on the shared lane for `home`, as Node's `askDetached` does: it returns at once, the answer lands in
 /// the log (and the lane's cache) and never reaches the caller. `req.env` is set to the calling session's environment.
 pub fn ask_detached(home: &Path, env: &Env, mut req: super::AskRequest) {
@@ -117,6 +129,15 @@ mod tests {
         assert_eq!(turn_ref_from_transcript(&tmp("empty", " \n\n")), None);
         assert_eq!(turn_ref_from_transcript("/nonexistent/ah/t.jsonl"), None);
         assert_eq!(turn_ref_from_transcript(""), None);
+    }
+
+    #[test]
+    fn a_project_label_is_the_last_directory_name_and_a_one_shot_process_has_none() {
+        assert_eq!(dir_label(Some("/work/proj/")).as_deref(), Some("proj"));
+        assert_eq!(dir_label(Some("/")), None);
+        assert_eq!(dir_label(Some("")), None);
+        assert_eq!(dir_label(None), None);
+        assert_eq!(project_for(Some("/work/proj")), None, "a test process is not the resident engine");
     }
 
     #[test]

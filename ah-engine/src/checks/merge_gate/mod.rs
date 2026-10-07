@@ -280,6 +280,7 @@ fn ask_jev(st: &Settings, p: &Value, tp: &str, window: &str, unresolved: bool) {
     );
     req.session_id = p.get("session_id").filter(|s| crate::checks::replykit::io::truthy(s)).and_then(crate::checks::replykit::io::js_id_string);
     req.turn_ref = crate::jev::shared::turn_ref_from_transcript(tp);
+    req.project = crate::jev::shared::project_for(p.get("cwd").and_then(Value::as_str));
     crate::jev::shared::ask_detached(std::path::Path::new(&st.home), &crate::jev::Env::from_pairs(st.env.clone()), req);
 }
 
