@@ -185,6 +185,19 @@ fn bash(cmd: &str, cwd: &Path) -> String {
     serde_json::json!({"session_id": "e2e", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}).to_string()
 }
 
+/// A Bash payload on which the built-in `merge-gate` and `api-guard` checks both defer to their Node hooks, which these
+/// tests replace with shell stand-ins: an auto-merge command that names a code file, with the gate switched on in the
+/// test home and a transcript whose assistant text carries a self-hedge.
+fn node_only_bash(e: &Env) -> String {
+    let home = e.dir.join("home");
+    std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+    std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
+    let tp = e.dir.join("hedged.jsonl");
+    std::fs::write(&tp, "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"do not merge\"}]}}\n").unwrap();
+    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py"}, "transcript_path": tp})
+        .to_string()
+}
+
 fn session_payload_len(len: usize) -> String {
     let prefix = r#"{"session_id":"e2e","cwd":".","hook_event_name":"SessionStart","source":""#;
     let suffix = r#""}"#;
@@ -281,7 +294,7 @@ fn several_advisories_merge_in_hooks_json_order() {
     let e = Env::new("merge");
     let map = e.map(&[("api-guard", CTX_API_GUARD), ("merge-gate", CTX_MERGE_GATE)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
+    let (code, out, err) = e.run(&args, true, &node_only_bash(&e), true);
     assert_eq!((code, err.as_str()), (0, ""));
     assert_eq!(out, "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"from merge-gate\\n\\nfrom api-guard\"}}\n");
 }
@@ -506,7 +519,7 @@ fn a_conflict_delivers_every_output_in_order() {
     let e = Env::new("conflict");
     let map = e.map(&[("merge-gate", CTX_MERGE_GATE), ("api-guard", "echo plain text; echo warn >&2")]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
+    let (code, out, err) = e.run(&args, true, &node_only_bash(&e), true);
     assert_eq!(code, 0);
     // the JSON keeps stdout (the host reads stdout as one object or as text); the plain text goes to stderr after the warning
     assert_eq!(out, format!("{}\n", r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"from merge-gate"}}"#));
@@ -530,7 +543,7 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     // coordinator-work-guard defers a main-session Bash call to Node (merge-side-pick answers it natively), so its map entry runs
     let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str()), ("api-guard", c.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
+    let (code, out, err) = e.run(&args, true, &node_only_bash(&e), true);
     assert_eq!((code, err.as_str()), (0, ""));
     let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask", "the decision survives the join");
@@ -540,7 +553,7 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     // two of them fit joined: delivered as one, nothing logged
     let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    assert_eq!(e.run(&args, true, &bash("ls", &e.dir), true).0, 0);
+    assert_eq!(e.run(&args, true, &node_only_bash(&e), true).0, 0);
 }
 
 /// An event that cannot block still hands an over-cap join back to the wrapper with `dispatch.defer_exit`.
@@ -1015,11 +1028,18 @@ fn two_clients_with_different_environments_get_answers_for_their_own() {
 #[test]
 fn a_finished_hooks_genuine_block_survives_a_check_whose_node_command_cannot_run() {
     let e = Env::new("deferred-block");
-    // compact-declaration-guard has no runnable Node command, and with no daemon (NOSPAWN) its built-in check defers; merge-gate is a Node
-    // hook that ran, finished and blocked: its block must be handed back, not replaced by the generic fail-closed text
-    let map = e.map(&[("compact-declaration-guard", ""), ("merge-gate", "echo sibling-blocks >&2; exit 2")]);
+    // On an Agent spawn compact-declaration-guard has no runnable Node command, and with no daemon (NOSPAWN) its built-in
+    // check defers; swarm-guard is a Node-only hook that ran, finished and blocked: its block must be handed back, not
+    // replaced by the generic fail-closed text. (Every Bash entry has a built-in check now, so the spawn event is the one
+    // that still has Node-only hooks next to a check.)
+    let ids = ["compact-declaration-guard", "model-routing-guard", "swarm-guard", "phase-tracker", "orch-on-spawn"];
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().map(|id| (id.to_string(), if *id == "swarm-guard" { "echo sibling-blocks >&2; exit 2" } else if *id == "compact-declaration-guard" { "" } else { "true" }.into())).collect();
+    let map = e.dir.join("agent-map.json");
+    std::fs::write(&map, serde_json::json!({ "PreToolUse": m }).to_string()).unwrap();
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run_with(&args, false, &bash("ls", &e.dir), true, &[("AH_ENGINE_NOSPAWN", "1")]);
+    let spawn = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"prompt": "x", "subagent_type": "general-purpose"}}).to_string();
+    let (code, out, err) = e.run_with(&args, false, &spawn, true, &[("AH_ENGINE_NOSPAWN", "1")]);
     assert_eq!(code, 2, "{out:?} {err:?}");
     assert!(err.contains("sibling-blocks"), "the finished hook's own block text: {err:?}");
 }

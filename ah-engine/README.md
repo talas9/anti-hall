@@ -192,6 +192,24 @@ Deliberate differences from the Node guard:
   `cwd`, a date that depends on the time zone, a `.git` file in an unusual shape, JSON with a lone surrogate escape, a git
   probe slower than `session.gitignore_probe_ms`). A deferral always comes before the first write, so Node then sees the
   state it would have seen. Switches and the home directory come from the client's forwarded environment (D76).
+- `merge-gate` (opt-in, `guards.mergeGate`): decided here only where Node exits 0 with no output and no side effect: the
+  gate is off or skipped, the command is not an auto-merge intent, the payload has no absolute transcript path, the
+  transcript cannot be read, or no hedge phrase occurs anywhere in the recent assistant text (Node tests the quote-masked
+  text, which only blanks characters). A hedge phrase, a transcript line the engine cannot parse and a relative transcript
+  path defer: the block, its quote mask and resolution scan, and the fire-and-forget Jev shadow ask stay with Node.
+- `api-guard`: decided here only where Node reaches no interpreter probe: the guard or skip switch, a tool that carries no
+  code, a target that is not a Python or JavaScript file (by extension, as Node), and code in which no candidate can exist
+  (a conservative superset of Node's candidate extraction: no `import` word or no stdlib module name in Python, no global
+  followed by a dot and no `require` of a verifiable module in JavaScript). A Bash command or `apply_patch` text that
+  names any code file (`.py`, `.js`, `.ts` and the other extensions) defers, whatever the write shape (redirect, `tee`,
+  heredoc, `sed -i`, `python -c`), so the engine is never weaker than Node's shell-write parser. The probes and the
+  runtime versions in the block text stay with Node.
+- `edit-guard`: the launcher-directory deny (`~/.anti-hall/bin`, literal path or an existing symlink into it) is decided
+  here for every agent with the Node block's exact bytes (stdout JSON, exit 2, nothing on stderr). A call that is not the
+  main thread (subagent marker, `agent_tool` entry point or no recognised entry point, from the request environment) is
+  allowed as Node allows it. Every main-thread call, every `apply_patch` (no patch parser), a relative cwd or home, a
+  non-string path and a request environment without a home directory defer; the allowlists, symlink and hard-link honesty
+  checks, plan mode, the trusted per-project allowlist and the DevSwarm wording stay with Node.
 - `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
   exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
   current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both

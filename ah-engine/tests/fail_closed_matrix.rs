@@ -48,7 +48,7 @@ enum Stdin {
 /// Whether the wiring passes `--tool`.
 #[derive(Clone, Copy)]
 enum Tool {
-    /// The tool the payload names (`Bash`).
+    /// The tool the payload names (`tool_of`).
     Given,
     /// No `--tool` argument.
     Omitted,
@@ -340,33 +340,39 @@ impl Drop for Case {
     }
 }
 
-fn payload(event: &str, dir: &std::path::Path) -> Value {
+/// The tool the PreToolUse rows use: one that still has a Node-only hook next to the built-in checks (every Bash hook has
+/// a built-in check since the edit and shell guards were ported), so the rows keep a hook that really runs. A spawn.
+fn tool_of(host: &str) -> &'static str {
+    if host == "codex" { "spawn_agent" } else { "Agent" }
+}
+
+fn payload(host: &str, event: &str, dir: &std::path::Path) -> Value {
     if event == "PreToolUse" {
-        serde_json::json!({"session_id": "fc", "cwd": dir, "hook_event_name": event, "tool_name": "Bash", "tool_input": {"command": "ls"}})
+        serde_json::json!({"session_id": "fc", "cwd": dir, "hook_event_name": event, "tool_name": tool_of(host), "tool_input": {"description": "ls", "prompt": "ls", "subagent_type": "Explore", "model": "haiku"}})
     } else {
         serde_json::json!({"session_id": "fc", "cwd": dir, "hook_event_name": event})
     }
 }
 
-fn stdin_bytes(s: Stdin, event: &str, dir: &std::path::Path) -> Vec<u8> {
+fn stdin_bytes(s: Stdin, host: &str, event: &str, dir: &std::path::Path) -> Vec<u8> {
     match s {
-        Stdin::Valid => payload(event, dir).to_string().into_bytes(),
+        Stdin::Valid => payload(host, event, dir).to_string().into_bytes(),
         Stdin::Truncated => {
-            let mut b = br#"{"tool_name":"Bash","tool_input":{"command":"git push --force "#.to_vec();
+            let mut b = format!(r#"{{"tool_name":"{}","tool_input":{{"command":"git push --force "#, tool_of(host)).into_bytes();
             b.resize(ah_engine::defaults::num("client.max_stdin") as usize + 4096, b'x');
             b
         }
         Stdin::OverCapUtf8 => {
-            let mut b = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test "#.to_vec();
+            let mut b = format!(r#"{{"hook_event_name":"PreToolUse","tool_name":"{}","tool_input":{{"command":"npm test "#, tool_of(host)).into_bytes();
             while b.len() <= ah_engine::defaults::num("client.max_stdin") as usize + 4096 {
                 b.extend_from_slice(b"\xc3\xa9");
             }
             b.extend_from_slice(br#""}}"#);
             b
         }
-        Stdin::NotJson => br#"{"tool_name":"Bash","tool_input":{"command":"git push --force"#.to_vec(),
+        Stdin::NotJson => format!(r#"{{"tool_name":"{}","tool_input":{{"command":"git push --force"#, tool_of(host)).into_bytes(),
         Stdin::NotUtf8 => {
-            let mut b = br#"{"tool_name":"Bash","tool_input":{"command":"ls "#.to_vec();
+            let mut b = format!(r#"{{"tool_name":"{}","tool_input":{{"command":"ls "#, tool_of(host)).into_bytes();
             b.extend_from_slice(&[0xff, 0xfe, 0xfd]);
             b.extend_from_slice(br#""}}"#);
             b
@@ -384,7 +390,7 @@ fn stdin_bytes(s: Stdin, event: &str, dir: &std::path::Path) -> Vec<u8> {
         Stdin::NoToolName => br#"{"session_id":"fc"}"#.to_vec(),
         Stdin::ReadError => Vec::new(),
         Stdin::StopActive => {
-            let mut v = payload(event, dir);
+            let mut v = payload(host, event, dir);
             v["stop_hook_active"] = true.into();
             v.to_string().into_bytes()
         }
@@ -402,8 +408,8 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     std::fs::create_dir_all(case.dir.join("home")).unwrap();
     let mark = case.dir.join("mark");
     let mark2 = case.dir.join("mark2");
-    let valid = payload(&case.event, &case.dir);
-    let selected = table::select(case.host, &case.event, &valid, Some("Bash"));
+    let valid = payload(case.host, &case.event, &case.dir);
+    let selected = table::select(case.host, &case.event, &valid, Some(tool_of(case.host)));
     let mut node_only = selected.iter().filter(|e| e.check.is_none()).map(|e| e.id.clone());
     let (id1, id2) = (node_only.next(), node_only.next());
     let second_expected = id2.is_some() && second.contains("AH_TEST_MARK2");
@@ -426,7 +432,7 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     let event_arg = row.event_arg.unwrap_or(&case.event).to_string();
     let mut args: Vec<String> = vec!["hook".into(), "--event".into(), event_arg, "--host".into(), row.host_arg.unwrap_or(case.host).into()];
     match row.tool {
-        Tool::Given if case.event == "PreToolUse" => args.extend(["--tool".into(), "Bash".into()]),
+        Tool::Given if case.event == "PreToolUse" => args.extend(["--tool".into(), tool_of(case.host).into()]),
         Tool::Unknown => args.extend(["--tool".into(), "NoSuchTool".into()]),
         _ => {}
     }
@@ -459,7 +465,7 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
         }
         s => {
             c.stdin(Stdio::piped());
-            Some(stdin_bytes(s, &case.event, &case.dir))
+            Some(stdin_bytes(s, case.host, &case.event, &case.dir))
         }
     };
     let fake = fake_daemon(case, row.daemon);
@@ -512,8 +518,8 @@ fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
         Daemon::InProcess | Daemon::Down => return None,
         Daemon::Garbage => "this is not a dispatch reply".to_string(),
         Daemon::Blocks => {
-            let valid = payload(&case.event, &case.dir);
-            let answers: Vec<(String, Answer)> = table::select(case.host, &case.event, &valid, Some("Bash"))
+            let valid = payload(case.host, &case.event, &case.dir);
+            let answers: Vec<(String, Answer)> = table::select(case.host, &case.event, &valid, Some(tool_of(case.host)))
                 .into_iter()
                 .filter(|e| e.check.is_some())
                 .map(|e| {
@@ -605,6 +611,13 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
     for case in &cases {
         for row in rows() {
             if !row.events.is_empty() && !row.events.contains(&case.event.as_str()) {
+                continue;
+            }
+            // The dispatcher's merge and daemon-answer logic does not depend on the host; these two rows need a second Node-only
+            // hook and a built-in check on the same tool, which Codex has on no PreToolUse tool since the shell and edit guards
+            // were ported (its spawn tool has one Node-only hook and no check). Claude's rows cover them.
+            const NEEDS_NODE_PAIR_AND_CHECK: &[&str] = &["two hooks print JSON that cannot be merged field by field", "daemon decides a block"];
+            if case.host == "codex" && case.event == "PreToolUse" && NEEDS_NODE_PAIR_AND_CHECK.contains(&row.name) {
                 continue;
             }
             let label = |v: &str| format!("[{}/{}] {} ({v})", case.host, case.event, row.name);

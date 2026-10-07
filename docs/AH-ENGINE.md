@@ -87,7 +87,7 @@ labelled with how it was measured in the README of `ah-engine/`.
   still append a `mode: "off"` row to the Jev decision log per consult; the engine's Jev layer never does (D35), and
   neither do these checks.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  thirty-seven: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  forty: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -100,7 +100,10 @@ labelled with how it was measured in the README of `ah-engine/`.
   short rotating reminder), `idle-agent-sweep` (agents that finished but were never stopped) and `emit-dedupe-reset`
   (marks a context loss at SessionStart); the four context-budget gates; and the six session maintenance ports above:
   `version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge` and `progress-prune`; and the three agent and transcript controls `ask-guard`, `silent-agent-nudge`
-  and `stale-agent-stop-note`, which share one streaming port of the transcript agent scan (see the README of `ah-engine/`).
+  and `stale-agent-stop-note`, which share one streaming port of the transcript agent scan (see the README of `ah-engine/`); and the three edit and shell guards `merge-gate`, `api-guard` and `edit-guard`, which answer only what
+  Node answers with no output and no side effect (for `edit-guard`, also the launcher-directory block byte for byte) and
+  defer the rest, so a possible block, a Jev shadow ask, an interpreter probe or a coordinator allowlist decision is always
+  the Node hook's.
 - **Spawn/path context ports.** `inbox-read-guard` (PreToolUse on Read), `phase-tracker` (PreToolUse on Agent and Task),
   `orch-on-spawn` (PreToolUse on spawns) and `verify-first-orch` (SessionStart, the Claude entry only). They share
   `checks/spawnctx`: the home directory the state files live under (with the test-run refusal of the real home), the
@@ -138,6 +141,9 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `ask-guard` check (PreToolUse on AskUserQuestion: the off, advise and block modes, the DESTRUCTIVE and CREDENTIAL markers and their log, the in-flight agents note) with exact parity; a transcript only JavaScript can read defers | implemented | D29-D31, D75 |
 | Built-in `stale-agent-stop-note` check (PreToolUse on TaskStop: the advisory for an agent sent a message or resumed after its last report) with exact parity | implemented | D29-D31, D75 |
 | Built-in `silent-agent-nudge` check (Stop): answers every Stop that does not nudge, including the rewrite of the nudge state file; a Stop that would nudge defers to Node, which words it and checks the running build | implemented in part | D29-D31, D75 |
+| Built-in `merge-gate` check (opt-in false-done backstop): allows every Bash call Node allows with no output (gate off, not an auto-merge command, no hedge phrase in the recent assistant text); a hedge phrase defers to Node, which owns the block and the Jev shadow ask | implemented | D29-D31, D74, D75 |
+| Built-in `api-guard` check: allows every call that reaches no interpreter probe (guard off, not Python or JavaScript, no verifiable module or global named, no code file named in a shell command or patch); everything else defers, so the probes stay with Node | implemented | D29-D31, D62, D74, D75 |
+| Built-in `edit-guard` check: the launcher-directory block (every agent) byte for byte, and every call that is not the main thread; every main-thread call and every `apply_patch` defers to Node, which owns the allowlists, honesty checks and DevSwarm wording | implemented | D29-D31, D74, D75 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |

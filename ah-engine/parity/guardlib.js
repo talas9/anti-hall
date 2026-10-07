@@ -51,7 +51,7 @@ function mkHome(tmp, n, ctx) {
   for (const [rel, body] of Object.entries(ctx.files || {})) { const f = path.join(home, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body); }
   if (ctx.setup) ctx.setup(home);
   // ctx.links: {rel: target} symlinks created after the files; $HOME in a target is the ctx home
-  for (const [rel, target] of Object.entries(ctx.links || {})) { const f = path.join(home, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.symlinkSync(target.split('$HOME').join(home), f); }
+  for (const [rel, target] of Object.entries(ctx.links || {})) { const f = path.join(home, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); try { fs.rmdirSync(f); } catch { /* absent or not an empty directory */ } fs.symlinkSync(target.split('$HOME').join(home), f); }
   return home;
 }
 
@@ -98,7 +98,9 @@ process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.ex
   const basePath = process.env.PATH;
   const stats = { postSteps: 0, scenarios: 0, steps: 0, compared: 0, same: 0, deferred: 0, unneeded: 0, skipped: 0, mismatch: 0, nodeBlocks: 0, nodeAdvisories: 0 };
   const mism = [];
-  const nodeEnv = (home, ctx) => Object.assign({ PATH: basePath, HOME: home, USERPROFILE: home, ANTIHALL_TEST_ISOLATION: '1' }, ctx.env || {});
+  // a value may name the ctx home with __HOME__ (a HOME that is the home plus a suffix); an undefined value drops the variable
+  const homed = (e, home) => Object.fromEntries(Object.entries(e).map(([k, v]) => [k, typeof v === 'string' ? v.split('__HOME__').join(home) : v]));
+  const nodeEnv = (home, ctx) => homed(Object.assign({ PATH: basePath, HOME: home, USERPROFILE: home, ANTIHALL_TEST_ISOLATION: '1' }, ctx.env || {}), home);
   const nodeStep = (payload, step, home, ctx) => {
     if (o.nodeCli) {
       const r = cp.spawnSync(process.execPath, [path.join(HOOKS, o.hookFile), ...(step.argv || (o.nodeArgv ? o.nodeArgv(step) : []))], { input: step.raw !== undefined ? step.raw : JSON.stringify(payload), env: nodeEnv(home, ctx), cwd: '/tmp', encoding: 'utf8', timeout: 60000 });
@@ -120,7 +122,7 @@ process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.ex
     const dir = path.join(tmp, 'e' + gi), rf = path.join(tmp, `rules${gi}.json`);
     const events = o.events || ['PreToolUse', 'PostToolUse'];
     fs.writeFileSync(rf, JSON.stringify({ version: 1, rules: [Object.assign({ id: o.name, events, tools: o.tools || ['Bash'], check: o.check, action: 'deny', options: { plugin_root: PLUGIN_ROOT } }, o.engineRule || {})] }));
-    const eenv = Object.assign({ PATH: basePath, HOME: homeE, USERPROFILE: homeE, ANTIHALL_TEST_ISOLATION: '1' }, ctx.env || {});
+    const eenv = homed(Object.assign({ PATH: basePath, HOME: homeE, USERPROFILE: homeE, ANTIHALL_TEST_ISOLATION: '1' }, ctx.env || {}), homeE);
     const deferLog = path.join(tmp, 'defer' + gi + '.log');
     const denv = Object.assign({}, eenv, { AH_PARITY_DEFER_LOG: deferLog, AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity', AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_NODE: process.execPath, AH_ENGINE_BREAKER_N: '1000000' });
     const oenv = Object.assign({}, eenv, { AH_ENGINE_PLUGIN_ROOT: PLUGIN_ROOT });
@@ -161,7 +163,7 @@ process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.ex
         }
         for (const [mode, r] of Object.entries(results)) {
           stats.compared++;
-          if (r === 'same') stats.same++;
+          if (r === 'same') { stats.same++; if (n.code === 2) stats.sameBlocks = (stats.sameBlocks || 0) + 1; }
           else if (r === 'deferred' && o.strictDeferPrefix && String(sc.id).startsWith(o.strictDeferPrefix) && !n.out && n.code === 0) { stats.mismatch++; if (mism.length < 2000) mism.push({ scenario: sc.id, step: si, mode, payload, node: n, engine: { code: 'deferred', out: 'AHDEFER', err: 'engine deferred where Node allowed (classification divergence)' } }); }
           else if (r === 'deferred') { stats.deferred++; (stats.deferredIds = stats.deferredIds || new Set()).add(sc.id); if (!n.out && n.code === 0) stats.unneeded++; if (mode === 'daemon' || MODE === 'oneshot') stopped = true; }
           else { stats.mismatch++; if (mism.length < 2000) mism.push({ scenario: sc.id, step: si, mode, payload, node: n, engine: r }); }
@@ -185,6 +187,7 @@ process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.ex
   if (o.fallbackReal) console.log(`  PostToolUse steps: ${stats.postSteps}`);
   if (o.fallbackReal) console.log(`  engine-side Node fallback runs (deferrals the engine could not decide): ${stats.nodeRuns || 0} ${JSON.stringify(stats.nodeRunsBy || {})}`);
   console.log(`  compared=${stats.compared} same=${stats.same} (${pc(stats.same)}) deferred=${stats.deferred} (${pc(stats.deferred)}; unneeded: Node allowed silently = ${stats.unneeded}) skipped-after-defer=${stats.skipped} MISMATCH=${stats.mismatch}`);
+  console.log(`  blocks the engine itself printed identically to Node: ${stats.sameBlocks || 0} of ${stats.nodeBlocks} Node blocks (the rest deferred)`);
   if (stats.deferredIds) {
     const by = {};
     for (const id of stats.deferredIds) { const k = String(id).split('-')[0]; by[k] = (by[k] || 0) + 1; }

@@ -150,7 +150,17 @@ mod tests {
         let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(
             ids,
-            ["compact-declaration-guard", "git-guard", "command-guard", "coordinator-work-guard", "merge-side-pick", "scan-throttle", "ship-it-guard"],
+            [
+                "compact-declaration-guard",
+                "git-guard",
+                "command-guard",
+                "coordinator-work-guard",
+                "merge-side-pick",
+                "merge-gate",
+                "scan-throttle",
+                "api-guard",
+                "ship-it-guard"
+            ],
             "the Bash entries a built-in check answers, in hooks.json order"
         );
         let (id, a) = got.iter().find(|(id, _)| id == "git-guard").unwrap();
