@@ -8,6 +8,7 @@
 //! Node original, so a guard module holds only its own decision logic.
 pub mod filelock;
 pub mod fsio;
+pub mod jsdiff;
 pub mod jsre;
 pub mod jsval;
 pub mod msg;

@@ -347,6 +347,20 @@ mod tests {
         // text both parsers reject is a missing file for both: the check answers (with the defaults)
         write("{oops");
         assert_ne!(run(), Some(Verdict::Defer), "a syntax error is missing for Node too");
+        // review 3: the legacy Jev file (`jev.json`) is read below settings.json by Node's resolver, so it counts too
+        write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
+        let jev = home.join(".anti-hall/jev.json");
+        for (name, body) in [
+            ("jev 1e400", r#"{"enabled":true,"integrations":{"dispatchTier":"on"},"x":1e400}"#.to_string()),
+            ("jev bigint", format!(r#"{{"enabled":true,"x":1{}}}"#, "0".repeat(400))),
+            ("jev surrogate", r#"{"enabled":true,"x":"\ud800"}"#.to_string()),
+        ] {
+            std::fs::write(&jev, body).unwrap();
+            assert_eq!(run(), Some(Verdict::Defer), "{name}");
+        }
+        std::fs::write(&jev, r#"{"enabled":true}"#).unwrap();
+        assert_ne!(run(), Some(Verdict::Defer), "a readable jev.json is answered");
+        let _ = std::fs::remove_file(&jev);
         // the host's settings file and the skip file are read by the same chain
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
         std::fs::create_dir_all(home.join(".claude")).unwrap();

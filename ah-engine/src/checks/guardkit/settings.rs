@@ -57,23 +57,6 @@ pub(crate) fn read_object(st: &Settings, rel: &str) -> Option<serde_json::Map<St
     }
 }
 
-/// Whether `txt` is text `serde_json` refuses but JavaScript's `JSON.parse` may accept: a number outside the f64 range (JS reads
-/// `1e400` as `Infinity`), nesting past serde's recursion limit, or a lone surrogate escape. Any other parse error is one
-/// JavaScript has too (it then treats the file as missing, as the readers here do).
-fn js_may_read_differently(txt: &str) -> bool {
-    match serde_json::from_str::<Value>(txt) {
-        Ok(_) => false,
-        Err(e) => {
-            let m = e.to_string();
-            m.contains("out of range")
-                || m.contains("recursion limit")
-                || m.contains("surrogate")
-                || m.contains("hex escape")
-                || m.contains("unicode code point")
-        }
-    }
-}
-
 type FileVerdicts = std::collections::HashMap<String, (std::time::SystemTime, u64, bool)>;
 
 /// D74: a settings file that EXISTS but that `serde_json` cannot parse while JavaScript could (a number outside the f64 range, nesting past serde's limit, a lone surrogate escape) must
@@ -85,7 +68,8 @@ pub fn unreadable_settings_file(home: &str) -> bool {
     if home.is_empty() {
         return false;
     }
-    for key in ["guardkit.settings_file", "guardkit.claude_settings_file", "guardkit.skip_file", "guardkit.migration_markers_file"] {
+    for key in ["guardkit.settings_file", "guardkit.claude_settings_file", "guardkit.skip_file", "guardkit.migration_markers_file", "guardkit.jev_legacy_file"]
+    {
         let path = format!("{home}/{}", defaults::text(key));
         let Ok(meta) = std::fs::metadata(&path) else { continue };
         let (mtime, len) = (meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len());
@@ -101,7 +85,7 @@ pub fn unreadable_settings_file(home: &str) -> bool {
             continue;
         }
         drop(g);
-        let bad = std::fs::read(&path).ok().is_some_and(|b| js_may_read_differently(&String::from_utf8_lossy(&b)));
+        let bad = std::fs::read(&path).ok().is_some_and(|b| crate::checks::guardkit::jsdiff::js_reads_differently(&b));
         let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
         let seen = g.get_or_insert_with(Default::default);
         if seen.len() > 256 {

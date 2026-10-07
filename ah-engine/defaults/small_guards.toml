@@ -69,6 +69,10 @@ value = ".claude-plugin/plugin.json"
 doc = "The per-migration marker file, relative to the home directory."
 value = ".anti-hall/update-sweep-state.json"
 
+[guardkit.jev_legacy_file]
+doc = "The legacy Jev settings file (settings.js reads it below settings.json for the Jev keys), relative to the home directory."
+value = ".anti-hall/jev.json"
+
 [guardkit.settings_migration_key]
 doc = "Key of the marker that says the legacy settings were forward-migrated into settings.json for a plugin version."
 value = "migrateSettingsFromLegacy"
