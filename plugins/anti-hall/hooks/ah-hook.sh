@@ -511,7 +511,10 @@ launch_shell_group() {
   fi
   if ( set -m ) 2>/dev/null; then
     set -m 2>/dev/null || true
-    sh -c "$cmd" <"$payload" >"$out" 2>"$err" &
+    # bash-as-sh (macOS) prints "child setpgid: Operation not permitted" from the forked child before its own
+    # redirections apply, when parent and child race to create the group (the group still exists; the kill path
+    # also walks the process tree). The braces keep that line off the host-visible stderr.
+    { sh -c "$cmd" <"$payload" >"$out" 2>"$err" & } 2>/dev/null
     printf '%s\n' "$!" >"$pid_file"
     printf '1\n' >"$group_file"
     set +m 2>/dev/null || true
@@ -536,7 +539,7 @@ launch_argv_group() {
   fi
   if ( set -m ) 2>/dev/null; then
     set -m 2>/dev/null || true
-    "$@" <"$payload" >"$out" 2>"$err" &
+    { "$@" <"$payload" >"$out" 2>"$err" & } 2>/dev/null
     printf '%s\n' "$!" >"$pid_file"
     printf '1\n' >"$group_file"
     set +m 2>/dev/null || true
