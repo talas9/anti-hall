@@ -39,7 +39,7 @@
 //                            // PATH-only probe and this script has no filesystem access, so
 //                            // the coordinator must thread its result in here — same pattern
 //                            // as fableAvailable. Fail-open default: true (attempt Codex).
-//     codexCriticModel: "gpt-6-astra", // OPTIONAL. Resolved by the coordinator via
+//     codexCriticModel: "<resolved-slug>", // OPTIONAL. Resolved by the coordinator via
 //                            // companion/lib/codex-models.js's resolveCodexModel('frontier')
 //                            // (reads ~/.codex/models_cache.json — this script has no fs
 //                            // access, same threading reason as codexAvailable). Never a

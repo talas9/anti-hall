@@ -62,7 +62,7 @@ for (const [name, env] of Object.entries(ENVS)) {
 
 test('Codex text: command-guard names the Codex cheap tier', () => withCwd((home, cwd) => {
   const r = testHook('command-guard.js', cmdPayload(cwd, CODEX), { home, env: CODEX_ENVS.coord });
-  assert.match(r.json.reason, /gpt-5\.6-luna/);
+  assert.match(r.json.reason, /fast-tier model/);
 }));
 
 for (const [name, env] of Object.entries(CODEX_ENVS)) {

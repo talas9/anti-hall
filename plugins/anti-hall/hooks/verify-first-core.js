@@ -138,7 +138,7 @@ const CORE_FULL = CORE_LINES;
 // ---------------------------------------------------------------------------
 // Codex variants. A Codex session has no Haiku/Sonnet/Opus, no run_in_background flag, no
 // Agent/Task/Workflow/Explore tools: its sub-agent tool is spawn_agent and its model tiers are the
-// gpt-5.6 family (docs/KB-gpt-5.6.md; codex/README.md routes by category: frontier / workhorse /
+// Codex model-tier family (docs/KB-gpt-5.6.md; codex/README.md routes by category: frontier / workhorse /
 // fast). Claude text above is untouched; these are used only when the caller proves a Codex payload.
 // ---------------------------------------------------------------------------
 function swap(line, from, to) {
@@ -146,14 +146,14 @@ function swap(line, from, to) {
   return line.split(from).join(to);
 }
 const CODEX_ORCH_OVERRIDES = {
-  B: (l) => swap(l, '(Haiku)', '(fast-tier sub-agent, e.g. gpt-5.6-luna)'),
-  F: (l) => swap(swap(l, '(Haiku, or Codex when available)', '(fast-tier sub-agent, e.g. gpt-5.6-luna)'),
+  B: (l) => swap(l, '(Haiku)', '(fast-tier sub-agent)'),
+  F: (l) => swap(swap(l, '(Haiku, or Codex when available)', '(fast-tier sub-agent)'),
     'pass run_in_background so the user never has to background it manually',
     'spawn it with spawn_agent so the user never has to background it manually'),
   G: (l) => swap(l, 'pass a schema to the Agent/Task tool so the structured return is validated', 'state the exact return shape in the spawn_agent brief'),
   I: () => '  I. WATCH/BABYSIT agents: check each spawned agent\'s status/result on an interval. No new output for ~20 min = stalled: stop it, re-dispatch tighter. "running" is not progress - verify via process/output evidence. Bounded horizon.',
   M: () => '  M. PREFER SHALLOW+WIDE. Delegation rules are for the ORCHESTRATOR; a spawned sub-agent is a WORKER - it does the work itself and does NOT re-delegate unless its task says to (deep sub-agent chains cost ~7x tokens by depth 5, drift intent each hop, add no quality). Route read-only research to a read-only sub-agent. When a task is breadth-first/parallelizable and would otherwise need 3+ sub-agents or a nested chain, run one flat fan-out of spawn_agent workers instead of ad-hoc nesting - it keeps intermediate output off the main context. Trigger it deliberately on that SHAPE, never as a blanket rule for routine work.',
-  N: () => '  N. DISTRIBUTE MODELS - NEVER ALL-FRONTIER. An OMITTED model inherits the orchestrator (a flagship), so a fan-out of omitted seats silently becomes an all-flagship swarm that torches the usage limit. Set model/reasoning EXPLICITLY per seat by task shape: planning/architecture/validation/debate and correctness/subtle-bug review -> frontier tier (e.g. gpt-5.6-sol, reasoning xhigh); implementation -> workhorse tier (e.g. gpt-5.6-terra, reasoning medium); mechanical/leaf/navigation -> fast tier (e.g. gpt-5.6-luna). Resolve the tier from the live model catalog when you act; if it cannot be resolved with confidence, omit the model and let the CLI use its configured default. Get an independent SECOND OPINION on substantial code changes from a separate frontier-tier reviewer sub-agent, never from the author. If a model is unavailable or rate-limited, fall back one tier down for the review - NEVER retry-loop it, and do not strand the main agent waiting on it.',
+  N: () => '  N. DISTRIBUTE MODELS - NEVER ALL-FRONTIER. An OMITTED model inherits the orchestrator (a flagship), so a fan-out of omitted seats silently becomes an all-flagship swarm that torches the usage limit. Set model/reasoning EXPLICITLY per seat by task shape: planning/architecture/validation/debate and correctness/subtle-bug review -> frontier tier (reasoning xhigh); implementation -> workhorse tier (reasoning medium); mechanical/leaf/navigation -> fast tier. Resolve the tier from the live model catalog when you act; if it cannot be resolved with confidence, omit the model and let the CLI use its configured default. Get an independent SECOND OPINION on substantial code changes from a separate frontier-tier reviewer sub-agent, never from the author. If a model is unavailable or rate-limited, fall back one tier down for the review - NEVER retry-loop it, and do not strand the main agent waiting on it.',
 };
 const ORCH_LINES_CODEX = ORCH_LINES.map((l) => {
   const f = CODEX_ORCH_OVERRIDES[l.slice(2, 3)];
@@ -162,7 +162,7 @@ const ORCH_LINES_CODEX = ORCH_LINES.map((l) => {
 const ORCH_FULL_CODEX = [ORCH_HEADER, ...ORCH_LINES_CODEX].join('\n');
 const ORCH_FULL_PRIMARY_CODEX = [ORCH_HEADER, ORCH_DEVSWARM_PRIMARY, ...ORCH_LINES_CODEX].join('\n');
 const DISCIPLINES_INDEX_CODEX = DISCIPLINES_INDEX.map((l) => (l.startsWith('  - model-routing:')
-  ? '  - model-routing: orchestration rules M+N. Shallow+wide over deep nesting; set model EXPLICITLY per seat (planning/architecture/validation and correctness review->frontier tier, implementation->workhorse tier, mechanical->fast tier; e.g. gpt-5.6-sol/terra/luna) - never an all-frontier fan-out (it inherits the flagship and burns the limit). A separate frontier-tier reviewer sub-agent gives the independent second opinion.'
+  ? '  - model-routing: orchestration rules M+N. Shallow+wide over deep nesting; set model EXPLICITLY per seat (planning/architecture/validation and correctness review->frontier tier, implementation->workhorse tier, mechanical->fast tier) - never an all-frontier fan-out (it inherits the flagship and burns the limit). A separate frontier-tier reviewer sub-agent gives the independent second opinion.'
   : l));
 
 // ORCH_FULL pieces: header + (optional rule W) + rules A-N. The two composed forms are
@@ -222,7 +222,7 @@ const ORCH_COMPACT_BODY = [
 // The M/N line alone: appended to the compact core when the orchestration switch is off, so model routing
 // and the no-re-delegation rule are not lost with the (switched-off) orchestration hook.
 const ORCH_MN_LINE = ORCH_COMPACT_BODY.find((l) => l.startsWith('M/N.'));
-const ORCH_MN_LINE_CODEX = 'M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent; 3+ parallel/nested spawns -> one flat spawn_agent fan-out. Set the model per seat (planning/review: frontier tier, build: workhorse tier, mechanical: fast tier; e.g. gpt-5.6-sol/terra/luna); never all-frontier.';
+const ORCH_MN_LINE_CODEX = 'M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent; 3+ parallel/nested spawns -> one flat spawn_agent fan-out. Set the model per seat (planning/review: frontier tier, build: workhorse tier, mechanical: fast tier); never all-frontier.';
 const ORCH_DELIVERY_SPAWN = '; sent in full on your first spawn';
 
 const WORKER = 'WORKER: do the task yourself; do not re-delegate unless told to. Your assignment is your authorization: run it to verified done; EXPANDING scope past your assignment still needs confirmation. Return a tight, scannable summary (findings only, no transcript or pasted file bodies). Background/teammate agent: SendMessage the report before finishing - a bare turn-end silently loses it; never end a turn waiting on a background task (its completion notification routes to the main session, not to you): run long commands in the foreground or poll the output file.';

@@ -56,7 +56,7 @@
 //     respawnQuota: 1,                  // drift respawns allowed PER SEAT this round
 //     seats: [ ... ],                   // OPTIONAL formation override (verbatim); else derived
 //     codexAvailable: true,             // false => Codex critic becomes Opus adversarial persona
-//     codexCriticModel: "gpt-6-astra",  // OPTIONAL. Resolved by the coordinator via
+//     codexCriticModel: "<resolved-slug>",  // OPTIONAL. Resolved by the coordinator via
 //                                        // companion/lib/codex-models.js's
 //                                        // resolveCodexModel('frontier') (reads
 //                                        // ~/.codex/models_cache.json — this script has
