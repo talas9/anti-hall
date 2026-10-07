@@ -203,11 +203,34 @@ fn run_side(sc: &Scenario, engine: bool) -> Side {
         .iter()
         .map(|rel| {
             let text = std::fs::read_to_string(home.join(rel)).unwrap_or_else(|_| "<absent>".into());
+            let text = mask_clock_numbers(&text);
             text.lines().map(|l| serde_json::from_str::<Value>(l).map_or(l.to_string(), |v| normalise_row(&v, &[]).to_string())).collect::<Vec<_>>().join("\n")
         })
         .collect();
     let _ = std::fs::remove_dir_all(&home);
     Side { out, requests, rows, files }
+}
+
+/// A run of 13 digits is a millisecond clock reading (`Date.now()`); the two sides read the clock at different moments.
+fn mask_clock_numbers(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_digit() {
+            let mut j = i;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            out.push_str(if j - i == 13 && b[i] == b'1' { "<ms>" } else { &text[i..j] });
+            i = j;
+        } else {
+            let c = text[i..].chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
 }
 
 fn normalise_request(s: &Seen) -> (String, BTreeMap<String, String>, String) {
@@ -335,6 +358,45 @@ fn edit_line(file: &str) -> String {
     json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":format!("{{HOME}}/proj/{file}")}}]}}).to_string()
 }
 
+const TIER_FILES: &[&str] = &[".anti-hall/dispatch-tier-state.json"];
+
+fn tier(
+    name: &'static str,
+    payload: Value,
+    transcript: Vec<String>,
+    modes: &'static str,
+    seed: &'static [(&'static str, &'static str)],
+    requests: usize,
+    rows: usize,
+) -> Scenario {
+    Scenario {
+        name,
+        hook: "dispatch-tier.js",
+        check: "dispatch-tier",
+        env: vec![],
+        transcript,
+        payload,
+        requests,
+        rows,
+        noul: 0.97,
+        deviation: &[],
+        modes,
+        files: TIER_FILES,
+        seed,
+    }
+}
+
+/// A request marker for the text of `task_create("Ship the parser")`, far in the future so it is inside the window.
+fn marker_seed() -> &'static [(&'static str, &'static str)] {
+    let h = ah_engine::jev::assist::content_hash(&["dispatchTier", "v1", "Ship the parser\nsplit it"]);
+    let body: &'static str = Box::leak(format!(r#"{{"requested":{{"{h}":9999999999999}},"sessions":{{}}}}"#).into_boxed_str());
+    Box::leak(vec![(".anti-hall/dispatch-tier-state.json", body)].into_boxed_slice())
+}
+
+fn task_create(subject: &str) -> Value {
+    json!({"hook_event_name":"PostToolUse","tool_name":"TaskCreate","session_id":"dt","cwd":"{HOME}/proj","tool_input":{"subject":subject,"description":"split it"}})
+}
+
 fn nudge(name: &'static str, modes: &'static str, noul: f64, requests: usize, rows: usize) -> Scenario {
     Scenario {
         name,
@@ -355,7 +417,43 @@ fn nudge(name: &'static str, modes: &'static str, noul: f64, requests: usize, ro
 
 fn scenarios() -> Vec<Scenario> {
     let mixed = "Tests:  2 failed, 8 passed, 10 total\nPASS src/a.test.js\nFAIL src/b.test.js";
+    let created = |subject: &str| {
+        json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"TaskCreate","input":{"subject":subject,"description":"first words"}}]}}).to_string()
+    };
+    let created_ok =
+        || json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Task #1 created successfully: x"}]}}).to_string();
     vec![
+        tier("dispatchTier shadow (default): a new task is asked once, the marker is written", task_create("Ship the parser"), vec![user("go")], "", &[], 1, 1),
+        tier("dispatchTier on", task_create("Ship the parser"), vec![user("go")], r#"{"jevIntegrations":{"dispatchTier":"on"}}"#, &[], 1, 1),
+        tier(
+            "dispatchTier off: nothing is read or asked",
+            task_create("Ship the parser"),
+            vec![user("go")],
+            r#"{"jevIntegrations":{"dispatchTier":"off"}}"#,
+            &[],
+            0,
+            0,
+        ),
+        tier("dispatchTier: an owner-blocked subject is never asked", task_create("OWNER: choose the vendor"), vec![user("go")], "", &[], 0, 0),
+        tier("dispatchTier: a request marker inside the window stops a repeat", task_create("Ship the parser"), vec![user("go")], "", marker_seed(), 0, 0),
+        tier(
+            "dispatchTier: an update asks about the reconstructed task with the new description",
+            json!({"hook_event_name":"PostToolUse","tool_name":"TaskUpdate","session_id":"dt","cwd":"{HOME}/proj","tool_input":{"taskId":"1","description":"new words"}}),
+            vec![user("go"), created("Port the guard"), created_ok()],
+            "",
+            &[],
+            1,
+            1,
+        ),
+        tier(
+            "dispatchTier: an update that carries no text asks nothing",
+            json!({"hook_event_name":"PostToolUse","tool_name":"TaskUpdate","session_id":"dt","cwd":"{HOME}/proj","tool_input":{"taskId":"1","status":"completed"}}),
+            vec![user("go"), created("Port the guard"), created_ok()],
+            "",
+            &[],
+            0,
+            0,
+        ),
         nudge("codexNudgeSubstantial shadow (default): asked, logged, the nudge stands", "", 0.03, 1, 1),
         nudge("codexNudgeSubstantial on: a confident trivial verdict skips the nudge", r#"{"jevIntegrations":{"codexNudgeSubstantial":"on"}}"#, 0.03, 1, 1),
         nudge("codexNudgeSubstantial on: a substantial verdict keeps the nudge", r#"{"jevIntegrations":{"codexNudgeSubstantial":"on"}}"#, 0.97, 1, 1),

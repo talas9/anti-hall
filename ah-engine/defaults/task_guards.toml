@@ -87,7 +87,7 @@ value = ".md"
 
 [dispatch_tier.summary]
 doc = "One-line description of the dispatch-tier check in the generated reference."
-value = "Does nothing while the Jev dispatchTier integration is off (the Node hook would do nothing too); with Jev on, the Node hook asks Jev and writes its state (port of dispatch-tier.js)."
+value = "Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off (port of dispatch-tier.js)."
 
 [dispatch_tier.jev_id]
 doc = "The Jev integration id the dispatch-tier hook asks."
@@ -96,6 +96,59 @@ value = "dispatchTier"
 [dispatch_tier.tools]
 doc = "The task tools whose text changes the hook classifies."
 value = ["TaskCreate", "TaskUpdate"]
+
+[dispatch_tier.owner_marker_setting]
+doc = "Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
+value = { section = "guards", key = "taskGuardOwnerBlockedMarker", env = "ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER", aliases = [], option = "guards_task_guard_owner_blocked_marker", default = true }
+
+[dispatch_tier.owner_values]
+doc = "The blockedOn values (trimmed, lowercase) that mark a task as waiting on the owner."
+value = ["owner", "user", "human", "external"]
+
+[dispatch_tier.owner_subject_re]
+doc = "JavaScript regex source (case-insensitive) of a subject that marks a task as waiting on the owner (OWNER: ... or OWNER DECISION ...)."
+value = '^\s*owner(:|\s+decision\b)'
+
+[dispatch_tier.text_cap]
+doc = "Most UTF-16 units of a task's text (subject, newline, description) that Jev is asked about."
+value = 600
+min = 1
+
+[dispatch_tier.request_ttl_ms]
+doc = "How long a request marker stops the same task text from being asked again while the first ask may still be in flight; older markers are dropped when the state is written."
+value = 600000
+min = 1
+unit = "ms"
+
+[dispatch_tier.max_sessions]
+doc = "Sessions the state file keeps recommendation tracking for; the longest untouched go first."
+value = 50
+min = 1
+
+[dispatch_tier.state_file]
+doc = "The state file (requested markers and per-session tracking), inside the anti-hall directory of the home."
+value = "dispatch-tier-state.json"
+
+[dispatch_tier.json_max_depth]
+doc = "Deepest JSON nesting the state file parser reads; deeper input is left to the Node hook."
+value = 128
+min = 8
+
+[dispatch_tier.question_instructions]
+doc = "The question put to Jev (a choice question over the three tiers)."
+value = "Classify how an orchestrating agent should dispatch this task."
+
+[dispatch_tier.tier_workspace]
+doc = "The description of the workspace tier in the question."
+value = "a large multi-step feature, migration or release spanning several files or components over a long stretch of work, that needs its own branch and its own review (a separate child workspace). NOT a bug fix, UI text or copy change, or any task confined to one file or one component"
+
+[dispatch_tier.tier_workflow]
+doc = "The description of the workflow tier in the question."
+value = "breadth-first or parallelisable work: 3 or more clearly independent or nested agent spawns, or a review fan-out over many targets, best lifted into one deterministic workflow. NOT a single-file or single-component change, however important its priority label"
+
+[dispatch_tier.tier_subagent]
+doc = "The description of the subagent tier in the question."
+value = "the DEFAULT when unsure: a lookup, a bug fix, a UI text or copy change, any change confined to one file or one component, a single command, or a single review pass that one background agent can finish. A priority label (P0, P1, P2) says nothing about size"
 
 # ---- task fact model (checks::taskstate: lib/task-state.js, task-guard.js parseTasksFromFile, lib/task-subject-backfill.js) ----
 

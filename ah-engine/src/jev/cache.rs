@@ -69,6 +69,19 @@ impl FileCache {
         FileCache::new(path, defaults::num("jev.cache_max_entries") as usize)
     }
 
+    /// Whether a truthy entry is stored under `hash`, whatever its shape (what `dispatch-tier.js` `readCacheEntry` tests).
+    /// `None` when the file is one only JavaScript reads.
+    pub fn contains(&self, hash: &str) -> Option<bool> {
+        let truthy = |v: &J| match v {
+            J::Null => false,
+            J::Bool(b) => *b,
+            J::Num(n) => *n != 0.0 && !n.is_nan(),
+            J::Str(s) => !s.is_empty(),
+            J::Arr(_) | J::Obj(_) => true,
+        };
+        Some(self.read()?.iter().any(|(k, v)| k == hash && truthy(v)))
+    }
+
     /// The file as Node's `readCache` sees it: a missing, unparsable or non-object file is an empty cache. `None` when
     /// the file is JSON that only JavaScript reads (nesting, lone surrogate): then it is left alone.
     fn read(&self) -> Option<Vec<(String, J)>> {
