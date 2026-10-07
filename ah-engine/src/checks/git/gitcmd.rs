@@ -552,8 +552,10 @@ pub fn gh_self_credit_message(ctx: &mut Ctx, args: &[Tok]) -> Option<String> {
             }
         }
     }
-    if vals.iter().any(|v| !v.is_empty()) {
-        ctx.jev_wanted = true;
+    for v in &vals {
+        if !v.is_empty() && ctx.jev_consult(v) {
+            return Some(block("msg_gh_jev", &[]));
+        }
     }
     None
 }

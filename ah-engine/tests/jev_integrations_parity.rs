@@ -295,9 +295,45 @@ fn spec(name: &'static str, reply: &str, noul: f64, modes: &'static str, request
     }
 }
 
+const GIT_ON: &str = r#"{"jevIntegrations":{"gitGuardSelfCredit":"on"}}"#;
+
+fn git(name: &'static str, command: &str, noul: f64, modes: &'static str, requests: usize, rows: usize) -> Scenario {
+    Scenario {
+        name,
+        hook: "git-guard.js",
+        check: "git",
+        env: vec![],
+        transcript: vec![user("go")],
+        payload: json!({"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"gg","cwd":"/tmp","tool_input":{"command":command}}),
+        requests,
+        rows,
+        noul,
+        deviation: &[],
+        modes,
+        files: &[],
+        seed: &[],
+    }
+}
+
 fn scenarios() -> Vec<Scenario> {
     let mixed = "Tests:  2 failed, 8 passed, 10 total\nPASS src/a.test.js\nFAIL src/b.test.js";
     vec![
+        git("gitGuardSelfCredit on: a confident paraphrase blocks the commit", r#"git commit -m "written with help from the assistant""#, 0.97, GIT_ON, 1, 1),
+        git("gitGuardSelfCredit shadow (default) logs and allows", r#"git commit -m "written with help from the assistant""#, 0.97, "", 1, 1),
+        git("gitGuardSelfCredit on: a not-credit answer allows", r#"git commit -m "fix the parser""#, 0.03, GIT_ON, 1, 1),
+        git("gitGuardSelfCredit: the same text three times is asked once", r#"git commit -m "same words"; git commit -m "same words"; git commit -m "same words""#, 0.03, GIT_ON, 1, 1),
+        git(
+            "gitGuardSelfCredit: nine distinct texts, the cap is eight",
+            r#"git commit -m "a1"; git commit -m "a2"; git commit -m "a3"; git commit -m "a4"; git commit -m "a5"; git commit -m "a6"; git commit -m "a7"; git commit -m "a8"; git commit -m "a9""#,
+            0.03,
+            GIT_ON,
+            8,
+            8,
+        ),
+        git("gitGuardSelfCredit on: a gh body is consulted", r#"gh pr create --title t --body "co-written by an assistant""#, 0.97, GIT_ON, 1, 1),
+        git("gitGuardSelfCredit: a regex hit never asks", &format!(r#"git commit -m "x\n\n{}: Claude <noreply@anthropic.com>""#, "Co-Authored-By"), 0.97, GIT_ON, 0, 0),
+        git("gitGuardSelfCredit off logs the off row", r#"git commit -m "written with help from the assistant""#, 0.97, r#"{"jevIntegrations":{"gitGuardSelfCredit":"off"}}"#, 0, 1),
+        git("gitGuardSelfCredit: a long message is cut to 4000 units", &format!(r#"git commit -m "{}""#, "word ".repeat(1200)), 0.03, GIT_ON, 1, 1),
         spec("speculation: a long reply is cut to the same 8000 units", &format!("{} it is probably fine", "word ".repeat(1700)), 0.97, "", 1, 1, &[]),
         spec("speculation: Jev confidently adds a block", "All done, it works.", 0.97, "", 1, 1, &[]),
         spec("speculation: Jev says grounded, the regex block stands", "It is probably the cache.", 0.03, "", 1, 1, &[]),

@@ -81,27 +81,6 @@ pub struct Switch {
     pub option: String,
 }
 
-/// Names the Jev add-block consult is switched by.
-#[derive(Debug, Default, Clone)]
-pub struct JevNames {
-    /// Global enable environment variable.
-    pub env_enabled: String,
-    /// Per-integration environment variable.
-    pub env_integration: String,
-    /// Integration key.
-    pub integration: String,
-    /// Mode value that makes the consult decisive.
-    pub mode_on: String,
-    /// settings.json section of the global switch.
-    pub section: String,
-    /// Key of the global switch inside that section.
-    pub enabled_key: String,
-    /// settings.json key holding the per-integration modes.
-    pub integrations_key: String,
-    /// jev.json key holding the per-integration modes.
-    pub jev_json_integrations: String,
-}
-
 /// Every table, limit and name of the git check.
 #[derive(Debug, Default)]
 pub struct Tables {
@@ -241,8 +220,6 @@ pub struct Tables {
     pub guard_name: String,
     /// Settings file, relative to home.
     pub settings_file: String,
-    /// Jev file, relative to home.
-    pub jev_file: String,
     /// Skip file, relative to home.
     pub skip_file: String,
     /// Plugin option variable prefix.
@@ -257,8 +234,6 @@ pub struct Tables {
     pub setting_reused_message: Switch,
     /// Handover guard switch.
     pub setting_handover_guard: Switch,
-    /// Jev setting names.
-    pub jev: JevNames,
     /// Launcher directory pattern.
     pub launcher_dir_pattern: String,
     /// Skip command template.
@@ -371,7 +346,6 @@ fn build() -> Tables {
                 .collect()
         })
         .unwrap_or_default();
-    let jev_t = defaults::raw(&key("jev_settings"));
     let gpt = defaults::raw(&key("credit_gpt"));
     Tables {
         wrappers: words("wrappers"),
@@ -445,7 +419,6 @@ fn build() -> Tables {
         stack_bytes: (num("stack_mb") as usize) << 20,
         guard_name: text("guard_name"),
         settings_file: text("settings_file"),
-        jev_file: text("jev_file"),
         skip_file: text("skip_file"),
         plugin_option_prefix: text("plugin_option_prefix"),
         setting_git_guard: switch("setting_git_guard"),
@@ -453,16 +426,6 @@ fn build() -> Tables {
         setting_alias_resolve: switch("setting_alias_resolve"),
         setting_reused_message: switch("setting_reused_message"),
         setting_handover_guard: switch("setting_handover_guard"),
-        jev: JevNames {
-            env_enabled: field(jev_t, "env_enabled"),
-            env_integration: field(jev_t, "env_integration"),
-            integration: field(jev_t, "integration"),
-            mode_on: field(jev_t, "mode_on"),
-            section: field(jev_t, "section"),
-            enabled_key: field(jev_t, "enabled_key"),
-            integrations_key: field(jev_t, "integrations_key"),
-            jev_json_integrations: field(jev_t, "jev_json_integrations"),
-        },
         launcher_dir_pattern: text("launcher_dir_pattern"),
         skip_command: text("skip_command"),
         handover_dir_prefix: text("handover_dir_prefix"),
