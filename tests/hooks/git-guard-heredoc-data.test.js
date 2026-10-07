@@ -230,3 +230,34 @@ block('diff -wb cluster', CDOC + 'git diff -wb');
 block('log -n <non-number> --output', CDOC + 'git log -n x --output=.git/config');
 allow('log -U3 -M50% -5 -p -n 2 -n3', CDOC + 'git log -U3 -M50% -5 -p -n 2 -n3 --oneline');
 allow('diff -w -b -p', CDOC + 'git diff -w -b -p');
+
+// ---- 7. a data heredoc is not vetoed by unrelated read-only neighbours -----
+// (field 2026-10-07: a report heredoc whose line above was `S=<dir>; sed -n 200,211p $S/x.log | cut -c1-200`
+// was scanned as shell because the assignment, `sed` and the `$S/` target each vetoed the whole command.)
+const SP = work + '/sp';
+const FIELD = `S=${SP}; sed -n 200,211p $S/deploy.log | cut -c1-200\ncat > $S/reports/deploy.md <<'E'\n- ${BT}${PUSH} origin HEAD:main${BT} OK (non-force)\nE`;
+allow('field: literal S=, sed print-range | cut, then a report heredoc to $S/...', FIELD);
+allow('literal assignment then a $NAME/ target', `S=${SP}; cat > $S/n.md <<'EOF'\n${NOTE}EOF`);
+allow('two assignments, one used in the target', `A=${SP}; B=sub; cat > $A/n.md <<'EOF'\n${NOTE}EOF`);
+allow('read-only filter neighbours', `wc -l notes.md | cut -c1-9\ncat > n.md <<'EOF'\n${NOTE}EOF`);
+allow('tr / nl / tac / rev / fold neighbours', `ls | tr a b | nl | tac | rev | fold -w 40\ncat > n.md <<'EOF'\n${NOTE}EOF`);
+allow('sed -n 5p file neighbour', `sed -n 5p log.txt\ncat > n.md <<'EOF'\n${NOTE}EOF`);
+block('field shape but the body is a shell script target', FIELD.replace('deploy.md', 'deploy.sh'));
+block('unresolved $NAME target (no assignment)', `cat > $S/n.md <<'EOF'\n${NOTE}EOF`);
+block('assignment value is a substitution', `S=$(echo ${SP}); cat > $S/n.md <<'EOF'\n${NOTE}EOF`);
+block('assignment value has a space', `S='a b'; cat > $S/n.md <<'EOF'\n${NOTE}EOF`);
+block('assignment in front of the consumer', `S=${SP} cat > $S/n.md <<'EOF'\n${NOTE}EOF`);
+block('assignment resolves into the launcher dir', `S=~/.anti-hall/bin; cat > $S/n.md <<'EOF'\n${NOTE}EOF`);
+block('assignment resolves into .git/hooks', `S=.git/hooks; cat > $S/n.md <<'EOF'\n${NOTE}EOF`);
+block('PATH assignment', `PATH=${SP}; cat > n.md <<'EOF'\n${NOTE}EOF`);
+block('GIT_PAGER assignment', `GIT_PAGER=${SP}/x; cat > n.md <<'EOF'\n${NOTE}EOF`);
+block('LD_PRELOAD assignment', `LD_PRELOAD=${SP}/x; cat > n.md <<'EOF'\n${NOTE}EOF`);
+block('variable reassigned after the consumer is not trusted for a later body', `cat > $S/n.md <<'EOF'\n${NOTE}EOF\nS=${SP}`);
+block('assignment inside a substitution', `echo "$(S=${SP}; cat > $S/n.md <<'EOF'\n${NOTE}EOF\n)"`);
+block('sed e on the written file', `S=${SP}; cat > $S/n.md <<'EOF'\n${FP}\nEOF\nsed e $S/n.md`);
+block('sed -n with -e script', `sed -n 1p -e e n.md\ncat > n.md <<'EOF'\n${FP}\nEOF`);
+block('sed -n print-range with a redirect', `sed -n 1p a > b.md\ncat > n.md <<'EOF'\n${FP}\nEOF`);
+block('sed -i beside a data heredoc', `sed -i s/a/b/ x\ncat > n.md <<'EOF'\n${FP}\nEOF`);
+block('sed -n script with a w command', `sed -n '1w x' a\ncat > n.md <<'EOF'\n${FP}\nEOF`);
+block('grep neighbour keeps the body scanned', `grep -c x a.log\ncat > n.md <<'EOF'\n${FP}\nEOF`);
+block('filter neighbour then the written file is run', `S=${SP}; cat > $S/n.md <<'EOF'\n${FP}\nEOF\ncut -c1-9 a | sh $S/n.md`);
