@@ -137,6 +137,10 @@ Skip switches, remaining limits, hook latency and the opt-in judge numbers are i
 
 On Codex, shell writes (`cat >`, `tee`, `sed -i` and similar) reach `edit-guard`, `api-guard` and `ship-it-guard` as well as `apply_patch` edits (Codex 0.134 or later). Variable or glob targets, `dd`, `install`, `rsync` and scripts that write when run still fail open.
 
+## Roadmap
+
+**Later: native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is planned for a future release, once the Rust engine has a Windows process-control layer and a non-shell hook wrapper.
+
 ## Documentation
 
 Everything else starts at the

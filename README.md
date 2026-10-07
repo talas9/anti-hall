@@ -87,6 +87,10 @@ Escape hatches, remaining limits and hook latency: [Limits and escape hatches](d
 - [Support](https://github.com/talas9/anti-hall/issues)
 - [Privacy](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md)
 
+## Roadmap
+
+**Later: native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is planned for a future release, once the Rust engine has a Windows process-control layer and a non-shell hook wrapper.
+
 ## License
 
 MIT © Mohammed Talas. See [LICENSE](LICENSE).
