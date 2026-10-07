@@ -14,7 +14,8 @@
 //   table    the shipped integration table against hooks/lib/settings-schema.js
 //   loopback which test-endpoint URLs may receive a key (WHATWG host forms, credentials, ports); plus an engine-stricter list
 // Deliberate deviations (D36, documented in DECISIONS.md) are asserted separately, never silently skipped:
-//   relax-block is observe-only, a `true` advisory baseline is never lowered, and an off call writes no log row.
+//   a `true` advisory baseline is never lowered (D36: Jev never removes a block or advisory). relax-block is NOT a deviation: it
+//   relaxes exactly as Node's (decisions and rows compared in full). An off call writes the same row as Node.
 // Mode: the Jev lane is not yet wired into the daemon (the dispatcher lane does that), so only the one-shot CLI path exists.
 const fs = require('fs'), os = require('os'), path = require('path'), http = require('http'), cp = require('child_process');
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
@@ -125,7 +126,6 @@ for (const id of ['speculation', 'modelRouting', 'postHandoverGate', 'someFuture
       for (const [an, resp] of Object.entries(ANSWERS)) {
         const ignore = [];
         const mode = { speculation: 'on', modelRouting: 'shadow', postHandoverGate: 'off', someFutureThing: 'shadow', triage: 'on' }[id];
-        if (trust === 'relax-block' && mode === 'on') ignore.push('final', 'changed', 'wouldChange', 'mode');
         if (trust === 'advisory' && baseline === true) ignore.push('final', 'changed', 'wouldChange');
         add(`A ${id} ${trust} base=${baseline} ${an}`, { server: { vercel: [resp] }, requests: [baseReq({ id, trust, baseline })], ignore, mode, deviation: ignore.length > 0 });
       }
@@ -237,9 +237,8 @@ async function decisionCase(c, idx) {
   tally('redirect-not-followed', !hits[`node/${cid}`] && !hits[`rust/${cid}`], { ...info, node: hits[`node/${cid}`], rust: hits[`rust/${cid}`] });
   // log rows
   const nr = readRows(homes.node), rr = readRows(homes.rust);
-  if (off) {
-    tally('row', rr.length === 0 && nr.every((x) => x.mode === 'off'), { ...info, why: 'an off call must write no row in the engine', node: nr.length, rust: rr.length });
-  } else {
+  {
+    // an off call writes the same `mode: "off"` row in the engine as in Node, so the owner's `jev report` is unchanged
     const drop = c.ignore || [];
     const ok = nr.length === rr.length && nr.every((x, k) => {
       const A = nullish(strip(x, drop)), B = nullish(strip(rr[k], drop));
@@ -250,7 +249,6 @@ async function decisionCase(c, idx) {
   // deviation invariants (D36)
   if (c.deviation) {
     const rq = c.requests[0];
-    if (rq.trust === 'relax-block') tally('deviation-relax', rd.every((d) => JSON.stringify(d.final) === JSON.stringify(rq.baseline)), { ...info, rust: rd });
     if (rq.trust === 'advisory' && rq.baseline === true) tally('deviation-advisory', rd.every((d) => d.final === true), { ...info, rust: rd });
   }
   // a block is never removed, whatever Jev says (D36)

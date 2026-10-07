@@ -9,7 +9,16 @@
 use super::{Env, Jev};
 use crate::defaults;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+static RESIDENT: AtomicBool = AtomicBool::new(false);
+
+/// Mark this process as the resident engine (the daemon): detached asks then run on a thread of the shared lane. In any
+/// other process (a one-shot hook) a detached ask is a detached child process, because the process ends with the check.
+pub fn set_resident() {
+    RESIDENT.store(true, Ordering::SeqCst);
+}
 
 static LANES: Mutex<Vec<(PathBuf, Arc<Jev>)>> = Mutex::new(Vec::new());
 
@@ -33,7 +42,12 @@ pub fn lane(home: &Path, env: &Env) -> Arc<Jev> {
 /// the log (and the lane's cache) and never reaches the caller. `req.env` is set to the calling session's environment.
 pub fn ask_detached(home: &Path, env: &Env, mut req: super::AskRequest) {
     req.env = Some(env.clone());
-    lane(home, env).ask_async(req);
+    let jev = lane(home, env);
+    if RESIDENT.load(Ordering::SeqCst) || cfg!(test) {
+        jev.ask_async(req);
+    } else {
+        jev.ask_detached_process(req);
+    }
 }
 
 /// Put a prepared lane in place of the shared one for `home` (tests only: a lane over a scripted transport).

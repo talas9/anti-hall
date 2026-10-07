@@ -148,11 +148,10 @@ item cites its Node source in its doc comment; the module doc has the file-by-fi
   variables in the environment (the Node `fetch` does not use them either; `ureq` would by default). The test endpoint
   override (`ANTIHALL_JEV_TEST_ENDPOINT*`) is honoured only for a loopback host without credentials (rules in the review-fixes
   paragraph below).
-- **Trust (D36), deliberately stricter than Node in two places.** `add-block` is identical. `advisory` never lowers a
-  baseline of `true` (Node's can). `relax-block`, which lets Jev turn a block into a non-block in Node, is observe-only: the
-  call is consulted and logged like a shadow call and never changes the outcome. A caller that needs a block removed
-  decides that itself, deterministically. These are the only differences in the decision rows (the harness asserts them
-  separately).
+- **Trust (D36), stricter than Node in one place.** `add-block` and `relax-block` are identical to Node's `computeFinal` (the
+  harness compares their decisions and rows in full; an earlier text called `relax-block` observe-only, which the code never
+  was). `advisory` never lowers a baseline of `true` (Node's can): D36, "Jev may add a block or advisory but never remove
+  one". That is the only difference in the decision rows (the harness asserts it separately).
 - **Hot path.** With Jev disabled or the integration off, `ask` returns after one clock read and one settings snapshot: no
   hashing, no cache lookup, no network, no thread and, unlike Node, no log row (the key `jev.log_off_rows` restores it). The
   settings files are re-checked at most every `jev.settings_recheck_ms`: the exact I/O of an off call is at most one `stat` of

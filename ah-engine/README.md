@@ -408,9 +408,9 @@ node run-jev.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti
 | resolved settings and modes over a settings matrix | 418 | **100%** |
 | shipped integration table against `settings-schema.js` | 43 | **100%** |
 
-The three deliberate differences (relax-block is observe-only, a `true` advisory baseline is never lowered, an off call
-writes no row) are asserted separately, not skipped. Only the one-shot CLI exists for Jev, so there is no daemon mode until
-the dispatcher lane wires it in. A mutation run (a changed scrub rule and breaker threshold) drops agreement to 99.7%, so the
+The one deliberate difference (a `true` advisory baseline is never lowered, D36) is asserted separately, not skipped;
+relax-block and the `mode: "off"` row of a skipped call are identical to Node's and compared in full. The breaker state is
+Node's own file (`cache/jev-breaker.json`), so hooks and engine share one breaker. A mutation run (a changed scrub rule and breaker threshold) drops agreement to 99.7%, so the
 harness is not vacuous.
 
 `parity/run.js` is the phase-2 decision-agreement harness for the regex rules; the force-push and AI-credit regex rules

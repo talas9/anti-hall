@@ -548,6 +548,73 @@ impl Jev {
         self.finish(&s, req, mode, Some(r), false, true)
     }
 
+    /// The budget of a call nobody waits for: the request's own, else the configured timeout when the owner changed it, else
+    /// the asynchronous default (Node: `askDetached`'s `detachedBudgetMs`).
+    fn detached_budget(s: &JevSettings, req: &AskRequest) -> u64 {
+        match req.budget_ms {
+            Some(b) if b > 0 => b,
+            _ if s.timeout_ms != defaults::num("jev.timeout_ms") => s.timeout_ms,
+            _ => defaults::num("jev.async_budget_ms"),
+        }
+    }
+
+    /// The request as the `jev ask` command reads it (one JSON line); the question and the baseline keep their key order.
+    pub fn wire_line(req: &AskRequest, budget_ms: u64) -> String {
+        let q = |s: &str| super::question::json_str(s);
+        let trust = match req.trust {
+            Trust::AddBlock => "add-block",
+            Trust::Advisory => "advisory",
+            Trust::RelaxBlock => "relax-block",
+        };
+        let mut f = vec![
+            format!("\"id\":{}", q(&req.id)),
+            format!("\"question\":{}", req.question.to_wire()),
+            format!("\"state\":{}", q(&req.state)),
+            format!("\"trust\":{}", q(trust)),
+            format!("\"baseline\":{}", req.baseline),
+            format!("\"budgetMs\":{budget_ms}"),
+            format!("\"recordDisagreement\":{}", req.record_disagreement),
+        ];
+        if let Some(c) = &req.cache_key {
+            f.push(format!("\"cacheKey\":{}", q(c)));
+        }
+        if let Some(c) = req.compare {
+            f.push(format!("\"compare\":{c}"));
+        }
+        for (k, v) in [("project", &req.project), ("sessionId", &req.session_id), ("turnRef", &req.turn_ref)] {
+            if let Some(v) = v {
+                f.push(format!("\"{k}\":{}", q(v)));
+            }
+        }
+        format!("{{{}}}", f.join(","))
+    }
+
+    /// Ask without waiting from a process that will exit before an in-process thread could finish (a one-shot hook): the
+    /// check that cannot wait starts a detached `ah-engine jev ask` and returns at once, as Node's `askDetached` starts its
+    /// detached worker. A call that needs no network (the integration is off, or a relax-block guard on a baseline that
+    /// is not blocking) is logged here and no process is started. Never fails: a spawn error is swallowed.
+    pub fn ask_detached_process(&self, req: AskRequest) {
+        let s = self.settings.get(req.env.as_ref());
+        let mode = s.mode(&req.id, false);
+        if mode == Mode::Off || (req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true)) {
+            self.finish(&s, &req, mode, None, false, true);
+            return;
+        }
+        let line = Jev::wire_line(&req, Jev::detached_budget(&s, &req));
+        let Some(exe) = std::env::current_exe().ok() else { return };
+        let _ = (|| -> std::io::Result<()> {
+            use std::os::unix::process::CommandExt;
+            use std::process::{Command, Stdio};
+            let mut child = Command::new(exe); // inherits the hook's own environment, as Node's `env || process.env`
+            child.args(defaults::list("jev.detached_args")).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+            let mut c = child.spawn()?;
+            if let Some(mut stdin) = c.stdin.take() {
+                let _ = std::io::Write::write_all(&mut stdin, format!("{line}\n").as_bytes());
+            }
+            Ok(()) // the child is not waited for; it ends when its one ask has finished
+        })();
+    }
+
     /// Queue the call and return at once; the answer lands in the cache and the log for a later turn. A full queue is
     /// logged as busy and costs the caller nothing. When the integration is off the call is not even queued.
     pub fn ask_async(&self, req: AskRequest) {
@@ -557,9 +624,7 @@ impl Jev {
             return;
         }
         let mut req = req;
-        if req.budget_ms.is_none() {
-            req.budget_ms = Some(if s.timeout_ms != defaults::num("jev.timeout_ms") { s.timeout_ms } else { defaults::num("jev.async_budget_ms") });
-        }
+        req.budget_ms = Some(Jev::detached_budget(&s, &req));
         let tx = self.queue.get_or_init(|| self.start_worker());
         self.pending.fetch_add(1, Ordering::SeqCst);
         match tx.try_send(req) {

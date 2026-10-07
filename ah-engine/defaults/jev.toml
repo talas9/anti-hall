@@ -344,3 +344,7 @@ doc = "How much of the end of a transcript is scanned for the turn pointer on a 
 value = 65536
 unit = "bytes"
 min = 1024
+
+[jev.detached_args]
+doc = "The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does)."
+value = ["jev", "ask", "--json"]

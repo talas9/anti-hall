@@ -168,6 +168,23 @@ mod tests {
     }
 
     #[test]
+    fn the_detached_wire_line_round_trips_through_the_ask_command() {
+        let q = Question::choice("pick \"one\"\n", vec![("b".into(), "B".into()), ("a".into(), "A \u{e9}".into())]);
+        let mut req = AskRequest::new("claimLedger", q, "state \\ \u{1}", Trust::RelaxBlock, json!(true));
+        req.cache_key = Some("k\u{1}x".into());
+        req.compare = Some(false);
+        req.project = Some("p".into());
+        req.session_id = Some("s".into());
+        req.turn_ref = Some("L3".into());
+        req.record_disagreement = true;
+        let line = Jev::wire_line(&req, 3000);
+        let back = parse(&line).unwrap();
+        assert_eq!((back.id.as_str(), back.state.as_str(), back.trust, back.baseline.clone(), back.budget_ms), ("claimLedger", "state \\ \u{1}", Trust::RelaxBlock, json!(true), Some(3000)));
+        assert_eq!((back.cache_key.as_deref(), back.compare, back.project.as_deref(), back.session_id.as_deref(), back.turn_ref.as_deref(), back.record_disagreement), (Some("k\u{1}x"), Some(false), Some("p"), Some("s"), Some("L3"), true));
+        assert_eq!(back.question.to_wire(), req.question.to_wire(), "the criteria keep their order");
+    }
+
+    #[test]
     fn bad_requests_are_typed_errors() {
         assert!(parse("not json").is_err());
         assert!(parse(r#"{"id":"x","question":{"type":"weird"},"state":"s"}"#).is_err());
