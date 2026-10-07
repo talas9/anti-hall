@@ -76,7 +76,7 @@ fn js_may_read_differently(txt: &str) -> bool {
 
 type FileVerdicts = std::collections::HashMap<String, (std::time::SystemTime, u64, bool)>;
 
-/// D74: a settings file that EXISTS but that `serde_json` cannot parse while JavaScript could (see [`js_may_read_differently`]) must
+/// D74: a settings file that EXISTS but that `serde_json` cannot parse while JavaScript could (a number outside the f64 range, nesting past serde's limit, a lone surrogate escape) must
 /// not be read as missing: the opt-in modes it carries (a block mode, say) would be ignored and the engine would allow what Node
 /// blocks. True when any of the files the switch chain reads is such a file; every check then defers to Node (the dispatcher asks
 /// before it runs a check). Cached per file by modification time and length, so a request costs one `stat` per file.
