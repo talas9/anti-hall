@@ -537,7 +537,10 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
         let check = e.check.as_deref().unwrap_or("");
         let v = match a {
             Answer::Defer => Verdict::Defer,
-            Answer::Decided(r, routes) if r.code == Some(2) => Verdict::Routed(Box::new(Verdict::Block(r.err.trim_end().to_string())), routes.clone()),
+            // a block is exit 2, or exit 0 with a blocking JSON decision (the Stop guards answer that way)
+            Answer::Decided(r, routes) if r.code == Some(2) || (r.code == Some(0) && crate::dispatch::combine::json_blocks(&r.out)) => {
+                Verdict::Routed(Box::new(Verdict::Block(r.err.trim_end().to_string())), routes.clone())
+            }
             Answer::Decided(r, routes) if !r.out.is_empty() => Verdict::Routed(Box::new(Verdict::Advisory(r.out.trim_end().to_string())), routes.clone()),
             Answer::Decided(_, routes) => Verdict::Routed(Box::new(Verdict::Allow), routes.clone()),
         };
