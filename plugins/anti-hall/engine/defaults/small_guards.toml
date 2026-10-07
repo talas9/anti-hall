@@ -929,10 +929,6 @@ value = ".anti-hall"
 doc = "Extension of a per-session state file."
 value = ".json"
 
-[guardkit.tmp_suffix]
-doc = "Suffix of the temporary file a state file is written through before the rename."
-value = "tmp"
-
 [guardkit.prune_ttl_ms]
 doc = "How old, in milliseconds, a per-session state file must be before the pruning sweep removes it (7 days)."
 value = 604800000

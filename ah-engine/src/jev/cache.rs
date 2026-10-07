@@ -21,7 +21,6 @@ use crate::defaults;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A cached answer.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,13 +53,12 @@ pub struct FileCache {
     path: PathBuf,
     cap: usize,
     write: Mutex<()>,
-    tmp_seq: AtomicU64,
 }
 
 impl FileCache {
     /// The cache stored at `path`, bounded at `cap` entries.
     pub fn new(path: PathBuf, cap: usize) -> FileCache {
-        FileCache { path, cap: cap.max(1), write: Mutex::new(()), tmp_seq: AtomicU64::new(0) }
+        FileCache { path, cap: cap.max(1), write: Mutex::new(()) }
     }
 
     /// Node's cache for `home`, bounded by the shipped default.
@@ -151,12 +149,8 @@ impl JevCache for FileCache {
         if std::fs::create_dir_all(dir).is_err() {
             return;
         }
-        let mut tmp = self.path.as_os_str().to_os_string();
-        tmp.push(format!(".tmp.{}.{}", std::process::id(), self.tmp_seq.fetch_add(1, Ordering::Relaxed)));
-        let tmp = PathBuf::from(tmp);
-        if std::fs::write(&tmp, json::stringify(&cache)).is_err() || std::fs::rename(&tmp, &self.path).is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
+        // best effort: a lost write only means the verdict is asked again
+        let _ = crate::atomic::write(&self.path, json::stringify(&cache));
     }
 
     fn len(&self) -> usize {
@@ -240,8 +234,8 @@ mod tests {
         assert_eq!(m.get("b"), None, "b was the oldest after a was rewritten");
     }
     fn tmp(tag: &str) -> PathBuf {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let d = std::env::temp_dir().join(format!("ah-jev-cache-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!("ah-jev-cache-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         std::fs::create_dir_all(&d).unwrap();
         d.join("cache").join("jev-assist.json")
     }

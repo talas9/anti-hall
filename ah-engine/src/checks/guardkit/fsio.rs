@@ -5,7 +5,6 @@
 //! command it cannot decide exactly, Node then runs), so both must read and write one record. The files are also what
 //! survives an engine restart.
 use crate::defaults;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The state directory under a home directory (`~/.anti-hall`).
 pub fn state_dir(home: &str) -> String {
@@ -15,17 +14,11 @@ pub fn state_dir(home: &str) -> String {
 /// Write `body` to `path` through a temporary file in the same directory and a rename, so a reader never sees half a
 /// file. Creates the parent directory.
 pub fn write_atomic(path: &str, body: &str) -> std::io::Result<()> {
-    static N: AtomicU64 = AtomicU64::new(0);
     let p = std::path::Path::new(path);
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = format!("{path}.{}.{}.{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed), defaults::text("guardkit.tmp_suffix"));
-    let r = std::fs::write(&tmp, body).and_then(|()| std::fs::rename(&tmp, path));
-    if r.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    r
+    crate::atomic::write(p, body)
 }
 
 fn now_ms() -> f64 {

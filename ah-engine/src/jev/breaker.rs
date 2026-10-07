@@ -160,11 +160,7 @@ impl Breakers {
                 if let Some(d) = p.parent() {
                     std::fs::create_dir_all(d)?;
                 }
-                let mut tmp = p.as_os_str().to_os_string();
-                tmp.push(format!(".tmp.{}", std::process::id()));
-                let tmp = std::path::PathBuf::from(tmp);
-                std::fs::write(&tmp, serde_json::Value::Object(m).to_string())?;
-                std::fs::rename(&tmp, p)
+                crate::atomic::write(p, serde_json::Value::Object(m).to_string())
             })(); // best effort: a lost write only delays the breaker
             return;
         }

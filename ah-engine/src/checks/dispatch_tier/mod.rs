@@ -211,10 +211,8 @@ fn write_state(path: &str, s: &mut J, now: f64) -> R<()> {
     if let Some(d) = dir
         && std::fs::create_dir_all(d).is_ok()
     {
-        let tmp = format!("{path}.{}.tmp", std::process::id());
-        if std::fs::write(&tmp, json::stringify(s)).is_err() || std::fs::rename(&tmp, path).is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
+        // best effort: a lost write only means the tier question is asked again
+        let _ = crate::atomic::write(path, json::stringify(s));
     }
     Ok(())
 }

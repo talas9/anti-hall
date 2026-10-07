@@ -115,26 +115,6 @@ fn finite(e: Option<&Js>, field: &str) -> Option<f64> {
     e.and_then(|j| j.get(field)).and_then(Js::as_f64).filter(|n| n.is_finite())
 }
 
-/// A unique suffix for the temporary file: the process id and four random bytes in hex.
-fn tmp_suffix() -> String {
-    use ring::rand::SecureRandom;
-    let mut b = [0u8; 4];
-    if ring::rand::SystemRandom::new().fill(&mut b).is_err() {
-        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-        b = n.to_be_bytes();
-    }
-    format!(".{}.{}{}", std::process::id(), b.iter().map(|x| format!("{x:02x}")).collect::<String>(), defaults::text("emit_dedupe.tmp_suffix"))
-}
-
-/// Write `text` to `path` through a unique temporary file and a rename.
-fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(tmp_suffix());
-    let tmp = std::path::PathBuf::from(tmp);
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
-}
-
 /// `writeEntry`: merge one key into the session file (re-read just before the write), drop keys unseen for the TTL, write
 /// atomically, then run the throttled sweep of idle session files. `Err` is an I/O failure (the caller swallows it, as
 /// Node's `try`/`catch` does) or [`Defer`] for a state file it cannot read.
@@ -149,7 +129,7 @@ fn write_entry(home: &str, session: &str, key: &str, entry: Js, now: f64) -> Res
     }
     let ttl = num("emit_dedupe.key_ttl_ms");
     state.retain(|(_, e)| now - finite(Some(e), "lastSeenAt").unwrap_or(0.0) <= ttl);
-    write_atomic(&path, &Js::Obj(state).stringify()).map_err(|_| WriteErr::Io)?;
+    crate::atomic::write(&path, Js::Obj(state).stringify()).map_err(|_| WriteErr::Io)?;
     prune_stale(&dir, &path);
     Ok(())
 }

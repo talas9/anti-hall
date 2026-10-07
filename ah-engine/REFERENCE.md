@@ -120,6 +120,12 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run time; a numeric setting with an environment variable can be overridden for one process.
 
 
+### engine.toml / atomic
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `atomic.tmp_suffix` | `.tmp` |  |  | Suffix of the temporary file every atomic state write goes through before the rename (a `.json` target keeps a `.json` ending after it). |
+
 ### engine.toml / client
 
 | Key | Default | Env override | Unit | What it is |
@@ -903,7 +909,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guardkit.state_cap` | `4096` |  |  | How many per-session state entries the in-memory guard state keeps before it evicts the least recently written one. |
 | `guardkit.state_dir_name` | `.anti-hall` |  |  | Name of the directory under the home directory that holds the per-session state files the Node guards share with the engine. |
 | `guardkit.state_ext` | `.json` |  |  | Extension of a per-session state file. |
-| `guardkit.tmp_suffix` | `tmp` |  |  | Suffix of the temporary file a state file is written through before the rename. |
 | `guardkit.true_tokens` | `1, on, true, yes` |  |  | Environment or settings strings that mean on (compared after trimming and lower-casing). |
 
 ### small_guards.toml / merge_gate
@@ -1513,7 +1518,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `emit_dedupe.sw_enabled` | `5 entries` |  |  | Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing. |
 | `emit_dedupe.tail_bytes` | `262144` |  | bytes | The first transcript window searched for a block's delivery. |
 | `emit_dedupe.tail_bytes_wide` | `4194304` |  | bytes | The wider transcript window searched once when the first has no delivery and the file is larger than it. |
-| `emit_dedupe.tmp_suffix` | `.tmp` |  |  | Suffix of the temporary file a state write goes through before the atomic rename. |
 | `emit_dedupe.ts_tolerance_ms` | `1000` |  | ms | How far before a block's own timestamp a transcript attachment may be stamped and still count as its delivery. |
 | `emit_dedupe.window_default_ms` | `15000` |  | ms | The fallback window when the setting cannot be read, and the gap that counts as a new turn when the transcript is unusable. |
 

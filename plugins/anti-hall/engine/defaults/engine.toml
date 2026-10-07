@@ -626,3 +626,9 @@ unit = "ms"
 doc = "`status` reports the engine saturated while a saturated minute lies within this many minutes."
 value = 10
 unit = "min"
+
+# ---- atomic file writes ---------------------------------------------------------------------------------
+
+[atomic.tmp_suffix]
+doc = "Suffix of the temporary file every atomic state write goes through before the rename (a `.json` target keeps a `.json` ending after it)."
+value = ".tmp"

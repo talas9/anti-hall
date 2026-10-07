@@ -8,7 +8,6 @@ use crate::checks::spawnctx::{now_ms, sanitize_session};
 use crate::defaults;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A marker as read from disk.
 #[derive(Debug, PartialEq, Clone)]
@@ -44,8 +43,6 @@ pub fn read_marker(home: &str, session_id: &str) -> Option<Marker> {
     Some(Marker { epoch_id, decision: decision.to_string(), sent_at })
 }
 
-static SEQ: AtomicU32 = AtomicU32::new(0);
-
 /// `writeMarker(sessionId, decision)`: write the marker through a temporary file and a rename, then sweep stale state.
 /// `true` when the marker is in place.
 pub fn write_marker(home: &str, session_id: &str, decision: &str) -> bool {
@@ -55,11 +52,8 @@ pub fn write_marker(home: &str, session_id: &str, decision: &str) -> bool {
     }
     let sent_at = now_ms() as u64;
     let file = marker_path(home, session_id);
-    let stem = file.to_string_lossy().trim_end_matches(".json").to_string();
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-    let tmp = format!("{stem}.{}.{:08x}.tmp.json", std::process::id(), nanos ^ SEQ.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e37_79b9));
     let body = format!("{{\"epochId\":\"{sent_at}\",\"decision\":{},\"sentAt\":{sent_at}}}", serde_json::to_string(decision).unwrap_or_default());
-    if std::fs::write(&tmp, body).is_err() || std::fs::rename(&tmp, &file).is_err() {
+    if crate::atomic::write(&file, body).is_err() {
         return false;
     }
     prune_stale(&dir, &file);

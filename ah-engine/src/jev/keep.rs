@@ -353,9 +353,8 @@ pub fn write_daily_rollups(log_path: &Path) -> usize {
         if !complete && file.exists() {
             continue;
         }
-        let tmp = dir.join(format!("{day}.json.tmp.{}", std::process::id()));
         let text = format!("{{\"generatedAt\":{},\"complete\":{complete},{body}}}", quote(&generated));
-        if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &file).is_ok() {
+        if crate::atomic::write(&file, text).is_ok() {
             written += 1;
         }
     }

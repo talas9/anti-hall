@@ -162,13 +162,7 @@ pub fn first_this_turn(i: &GateInput<'_>) -> Result<bool, Defer> {
         None => state.push((slot, entry)),
     }
     let body = Oj::Obj(state).stringify();
-    let persisted = std::fs::create_dir_all(&dir).is_ok() && {
-        // pid + millisecond alone collides between two daemon threads in the same millisecond: add a per-process counter
-        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = dir.join(format!("{file_name}.{}.{}.{seq}.tmp", std::process::id(), io::now_ms() as u64));
-        std::fs::write(&tmp, &body).is_ok() && std::fs::rename(&tmp, &path).is_ok()
-    };
+    let persisted = std::fs::create_dir_all(&dir).is_ok() && crate::atomic::write(&path, &body).is_ok();
     if !persisted {
         return Ok(true);
     }

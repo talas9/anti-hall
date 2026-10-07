@@ -56,9 +56,7 @@ pub fn atomic_write(file: &str, data: &J) -> std::io::Result<()> {
     if let Some(dir) = Path::new(file).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let tmp = format!("{file}.tmp.{}", std::process::id());
-    std::fs::write(&tmp, data.stringify())?;
-    std::fs::rename(&tmp, file)
+    crate::atomic::write(file, data.stringify())
 }
 
 /// `persistAdvisedKey(file, cache, key)`: rewrite the cache with `lastAdvised` set to `key`; a failure is swallowed.

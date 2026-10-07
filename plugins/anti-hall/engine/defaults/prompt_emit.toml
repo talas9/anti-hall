@@ -74,10 +74,6 @@ value = "dedupe"
 doc = "Longest session part of a state file name, in UTF-16 units, after characters outside letters, digits, dot, underscore and hyphen become underscores."
 value = 128
 
-[emit_dedupe.tmp_suffix]
-doc = "Suffix of the temporary file a state write goes through before the atomic rename."
-value = ".tmp"
-
 [emit_dedupe.reset_key]
 doc = "The state key that records the last context loss."
 value = "__reset"

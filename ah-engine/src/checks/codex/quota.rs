@@ -79,8 +79,7 @@ pub fn write_merged(home: &str, patch: &[(&str, J)]) -> Result<bool, Unsure> {
     for (k, v) in patch {
         merged.set(k, v.clone());
     }
-    let tmp = format!("{p}.{}.{:08x}.tmp", std::process::id(), tmp_nonce());
-    Ok(std::fs::write(&tmp, json::stringify(&merged)).is_ok() && std::fs::rename(&tmp, &p).is_ok())
+    Ok(crate::atomic::write(&p, json::stringify(&merged)).is_ok())
 }
 
 /// The existing file for a merge: `Object.assign` would invoke the `__proto__` setter for such a key, which this port
@@ -91,11 +90,6 @@ pub fn read_raw_for_write(home: &str) -> Result<J, Unsure> {
         return Err(Unsure);
     }
     Ok(raw)
-}
-
-fn tmp_nonce() -> u32 {
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
-    t ^ std::process::id().rotate_left(16)
 }
 
 /// `recordQuota`: record an outage lasting until `until` (epoch ms, or `None`/unparseable for the default cooldown).
