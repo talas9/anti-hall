@@ -68,14 +68,13 @@ impl Env {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            // the codex-availability check probes PATH for a `codex` binary and answers with a context line when it finds one;
+            // these tests drive the mapped Node commands only
+            .env("PATH", path_without_codex())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
-            // the built-in SessionStart/Stop/PostToolUse checks (handover and Codex ports) say nothing for a judge child, so
-            // these tests see only the commands they mapped; tests/handover_codex_e2e.rs covers those checks
-            .env("ANTIHALL_JUDGE_CHILD", "1")
             // DevSwarm active makes the native verify-first-orch check defer to its mapped Node command, so the
             // SessionStart tests below keep driving Node hooks only (the check itself is covered by spawn_ctx_parity.rs)
             .env("DEVSWARM_REPO_ID", "e2e")
@@ -105,14 +104,13 @@ impl Env {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            // the codex-availability check probes PATH for a `codex` binary and answers with a context line when it finds one;
+            // these tests drive the mapped Node commands only
+            .env("PATH", path_without_codex())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
-            // the built-in SessionStart/Stop/PostToolUse checks (handover and Codex ports) say nothing for a judge child, so
-            // these tests see only the commands they mapped; tests/handover_codex_e2e.rs covers those checks
-            .env("ANTIHALL_JUDGE_CHILD", "1")
             // DevSwarm active makes the native verify-first-orch check defer to its mapped Node command, so the
             // SessionStart tests below keep driving Node hooks only (the check itself is covered by spawn_ctx_parity.rs)
             .env("DEVSWARM_REPO_ID", "e2e")
@@ -257,6 +255,12 @@ fn stop_payload_with_padding(len: usize) -> String {
     p.extend(std::iter::repeat_n('x', len - prefix.len() - suffix.len()));
     p.push_str(suffix);
     p
+}
+
+/// The test process's PATH minus every directory that holds a `codex` binary.
+fn path_without_codex() -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    path.split(':').filter(|d| !d.is_empty() && !std::path::Path::new(d).join("codex").exists()).collect::<Vec<_>>().join(":")
 }
 
 fn session_map(e: &Env, first: &str, rest: &str) -> PathBuf {

@@ -18,6 +18,9 @@ impl Env {
         let dir = std::env::temp_dir().join(format!("ahd-hc-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
+        // the verify-first SessionStart texts (a native check of their own) would push the joined context of a `compact`
+        // start past the 10000 inline cap; these tests are about the handover and Codex checks only
+        std::fs::write(dir.join("home/.anti-hall/settings.json"), r#"{"context":{"verifyFirstSession":false,"verifyFirstOrchestration":false}}"#).unwrap();
         Env { dir }
     }
 
