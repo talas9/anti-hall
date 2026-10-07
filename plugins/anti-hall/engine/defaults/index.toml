@@ -39,6 +39,7 @@ files = [
     "migrate_settings.toml",
     "doctor.toml",
     "setup.toml",
+    "mesh.toml",
     "limits.toml",
 ]
 extra_dir = "hooks.d"

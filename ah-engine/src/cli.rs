@@ -64,6 +64,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("capability-scan", crate::setup::cmd_capability_scan),
         ("harvest", crate::setup::cmd_harvest),
         ("briefing", crate::setup::cmd_briefing),
+        ("mesh", crate::mesh::run_cmd),
     ]
 }
 

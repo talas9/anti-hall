@@ -264,3 +264,44 @@ pub const TEL_DAILY_PUT: &str = "INSERT INTO tel_daily (day, k, h, e, o, n, us_s
 
 /// Daily rollup rows for days ?1 to ?2 inclusive.
 pub const TEL_DAILY_RANGE: &str = "SELECT day, k, h, e, o, n, us_sum, ib_sum, hist FROM tel_daily WHERE day >= ?1 AND day <= ?2 ORDER BY day, k, h, e, o";
+
+// ---- the DevSwarm mesh store reader (D45 S0): statements run against Node's per-repo store, read-only -------------
+// These mirror the statements in companion/lib/devswarm-store.js (sqlite backend) one for one, with the same explicit
+// column lists. The store's schema is Node's; nothing here creates, alters or writes it.
+
+/// Messages of one workspace in insertion order, from the n-th (`?2` rows skipped); the positional index of a row is
+/// its place in this order (Node's `listMessages`).
+pub const MESH_MESSAGES: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE workspace_id = ?1 ORDER BY id ASC LIMIT -1 OFFSET ?2";
+/// The newest `?2` messages of one workspace, newest first.
+pub const MESH_MESSAGES_LAST: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE workspace_id = ?1 ORDER BY id DESC LIMIT ?2";
+/// How many messages one workspace holds.
+pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?1";
+/// Every workspace id that has messages.
+pub const MESH_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages";
+/// Every registered workspace id.
+pub const MESH_IDS_REGISTRY: &str = "SELECT id FROM registry";
+/// Every workspace id that has a cursor row.
+pub const MESH_IDS_CURSORS: &str = "SELECT DISTINCT workspace_id AS id FROM cursors";
+/// Every workspace id that has a gate row.
+pub const MESH_IDS_GATES: &str = "SELECT DISTINCT workspace_id AS id FROM gates";
+/// The registry, in id order, every column (a store that predates a column simply lacks it).
+pub const MESH_REGISTRY: &str = "SELECT * FROM registry ORDER BY id ASC";
+/// One workspace's direct-inbox read position.
+pub const MESH_CURSOR: &str = "SELECT value FROM cursors WHERE workspace_id = ?1";
+/// Whether one workspace has a cursor row.
+pub const MESH_CURSOR_ROW: &str = "SELECT 1 FROM cursors WHERE workspace_id = ?1";
+/// One workspace's broadcast read position.
+pub const MESH_BROADCAST_CURSOR: &str = "SELECT value FROM broadcast_cursors WHERE workspace_id = ?1";
+/// A workspace's gate values, oldest row first (the last row per name is the current value).
+pub const MESH_GATES: &str = "SELECT gate_name, value FROM gates WHERE workspace_id = ?1 ORDER BY id ASC";
+/// A workspace's gate setters, oldest row first.
+pub const MESH_GATE_SET_BY: &str = "SELECT gate_name, set_by FROM gates WHERE workspace_id = ?1 ORDER BY id ASC";
+/// The direct rows of a workspace that need a reply, in insertion order.
+pub const MESH_NEEDS_REPLY: &str = "SELECT sender, ts, seq FROM messages WHERE workspace_id = ?1 AND needs_reply = 1 AND mtype = 'direct' ORDER BY id ASC";
+/// The first `?3` characters of one needs-reply row's body.
+pub const MESH_PREVIEW: &str =
+    "SELECT substr(body, 1, ?3) AS b FROM messages WHERE workspace_id = ?1 AND seq = ?2 AND needs_reply = 1 AND mtype = 'direct' LIMIT 1";
+/// Every reader-cursor row of one partition.
+pub const MESH_READER_CURSORS: &str = "SELECT partition, ns, reader, value, retired_line, updated_at FROM reader_cursors WHERE partition = ?1";
+/// The newest message of one workspace, without its body: when and what, for the unread summary.
+pub const MESH_LAST_META: &str = "SELECT ts, seq, sender, recipient, mtype FROM messages WHERE workspace_id = ?1 ORDER BY id DESC LIMIT 1";

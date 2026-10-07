@@ -31,6 +31,7 @@ pub mod limits;
 pub mod load;
 pub mod maintain;
 pub mod memstat;
+pub mod mesh;
 pub mod metrics;
 pub mod migrate;
 pub mod paths;

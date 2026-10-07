@@ -481,3 +481,23 @@ value = "telemetry rollup needs the database, and storage is not open"
 [msg.no_price_for_model]
 doc = "Said by `impact` for a model that is not in the price table, instead of a guessed figure. Placeholder: {model}."
 value = "no price for model {model}"
+
+[msg.err_mesh_missing]
+doc = "A mesh reader was pointed at a store file that does not exist (a reader never creates one). Placeholder: {path}."
+value = "{path}: no such store file"
+
+[msg.err_mesh_backend]
+doc = "A mesh reader refused a store directory whose BACKEND marker is not sqlite. Placeholders: {path}, {backend}."
+value = "{path}: the store backend is {backend}, not sqlite; Node owns it"
+
+[msg.err_mesh_sql]
+doc = "A mesh read failed in SQLite or hit a value it cannot read the way Node does. Placeholder: {err}."
+value = "store read failed: {err}"
+
+[msg.err_mesh_usage]
+doc = "The mesh command was called without a verb or without --db."
+value = "usage: ah-engine mesh <roster|unread|read|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]"
+
+[msg.err_mesh_range]
+doc = "A store value is an integer JavaScript cannot represent exactly, which Node's reader rejects too. Placeholder: {value}."
+value = "integer {value} is out of range for a JavaScript number"
