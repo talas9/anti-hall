@@ -317,6 +317,11 @@ value = "empty"
 #   when     (optional) a declarative predicate over the payload, the settings, the request environment, the session and
 #            the transcript facts; an entry whose predicate is false is skipped. Absent = always applies. See hooks.toml.
 
+# The `sibling-sweep` rows are ENGINE-ONLY: the check has no Node twin (zero new Node), so the command a deferral or a downed
+# engine falls back to is `hooks/sibling-sweep`, a shell no-op that does nothing; it exists so the entry keeps an id and a
+# readable script like every other entry (the wrapper refuses a plugin-root command whose file is missing) and the
+# unset-plugin-root behaviour every other entry has.
+
 # ---- claude ----
 
 [dispatch.hooks_claude_UserPromptSubmit]
@@ -348,6 +353,12 @@ value = [
 doc = "The claude SubagentStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-subagent", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"", timeout = 10, check = "verify-first-subagent" },
+]
+
+[dispatch.hooks_claude_SubagentStop]
+doc = "The claude SubagentStop hook entries, in dispatch order."
+value = [
+  { id = "sibling-sweep", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"", timeout = 10, check = "sibling-sweep" },
 ]
 
 [dispatch.hooks_claude_SessionStart]
@@ -385,6 +396,7 @@ value = [
   { id = "auto-handover-pause-nag", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"", timeout = 30, check = "auto-handover-pause-nag" },
   { id = "silent-agent-nudge", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"", timeout = 30, check = "silent-agent-nudge" },
   { id = "compact-advice-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js\"", timeout = 30, check = "compact-advice-guard" },
+  { id = "sibling-sweep", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"", timeout = 10, check = "sibling-sweep" },
 ]
 
 [dispatch.hooks_claude_PreToolUse]
@@ -506,6 +518,13 @@ value = [
   { id = "auto-handover-pause-nag", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"", timeout = 30, check = "auto-handover-pause-nag" },
   { id = "silent-agent-nudge", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"", timeout = 30, check = "silent-agent-nudge" },
   { id = "compact-advice-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/compact-advice-guard.js\"", timeout = 30, check = "compact-advice-guard" },
+  { id = "sibling-sweep", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\"", timeout = 10, check = "sibling-sweep" },
+]
+
+[dispatch.hooks_codex_SubagentStop]
+doc = "The codex SubagentStop hook entries, in dispatch order."
+value = [
+  { id = "sibling-sweep", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\"", timeout = 10, check = "sibling-sweep" },
 ]
 
 [dispatch.hooks_codex_PreCompact]

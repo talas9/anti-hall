@@ -82,6 +82,8 @@ test('all five hooks in this file are registered in codex/hooks/hooks.json under
   const stopFiles = new Set();
   for (const group of codexHooksJson.hooks.Stop || []) {
     for (const h of group.hooks || []) {
+      // an ENGINE-ONLY entry (no Node twin, e.g. sibling-sweep) falls back to an extensionless shell no-op
+      if (/^sh "\$\{PLUGIN_ROOT\}\/hooks\/[\w-]+"$/.test(h.command || '')) continue;
       const m = (h.command || '').match(/([\w.-]+\.js)/);
       assert.ok(m, 'codex hooks.json command names no .js script: ' + h.command);
       stopFiles.add(m[1]);

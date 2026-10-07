@@ -66,6 +66,7 @@
     "compact-advice-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js\"",
     "devswarm-child-gate": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"",
     "devswarm-parent-gate": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-gate.js\"",
+    "sibling-sweep": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"",
     "silent-agent-nudge": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"",
     "speculation-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-guard.js\"",
     "speculation-judge": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-judge.js\"",
@@ -74,6 +75,9 @@
   },
   "SubagentStart": {
     "verify-first-subagent": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\""
+  },
+  "SubagentStop": {
+    "sibling-sweep": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\""
   },
   "TaskCompleted": {
     "task-lifecycle-log": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\""

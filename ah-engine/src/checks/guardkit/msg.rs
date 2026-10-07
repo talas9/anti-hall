@@ -85,7 +85,11 @@ pub fn advisory_json(event: &str, text: &str) -> String {
 /// The message `key` with each `{name}` replaced by its value in one pass, so a value that itself contains `{other}`
 /// is never expanded again (`defaults::render` replaces name by name and would).
 pub fn render(key: &str, args: &[(&str, &str)]) -> String {
-    let t = defaults::text(key);
+    render_with(defaults::text(key), args)
+}
+
+/// [`render`] for a template that did not come from the shipped defaults (one resolved from the user's config layers).
+pub fn render_with(t: &str, args: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(t.len() + 32);
     let mut rest = t;
     while let Some(open) = rest.find('{') {

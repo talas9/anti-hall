@@ -43,6 +43,9 @@ apply_patch	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${P
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/silent-agent-nudge.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/compact-advice-guard.js"
+*	10	sh "${PLUGIN_ROOT}/hooks/sibling-sweep"
+@SubagentStop	10
+*	10	sh "${PLUGIN_ROOT}/hooks/sibling-sweep"
 @UserPromptSubmit	10
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/verify-first.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/task-tracker.js"
@@ -55,4 +58,3 @@ apply_patch	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${P
 @PermissionRequest	10	empty
 @PostCompact	10	empty
 @SubagentStart	10	empty
-@SubagentStop	10	empty

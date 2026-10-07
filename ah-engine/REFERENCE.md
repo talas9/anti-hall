@@ -121,6 +121,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `devswarm-child-gate` | DevSwarm child Stop gate: allows the stop when the hook cannot act (switch off, skip recorded, not a DevSwarm child); a child workspace defers to the Node gate, which owns the heartbeat state, the stop budgets, the mailbox store and the hivecontrol probe (port of devswarm-child-gate.js). |
 | `devswarm-parent-reply-tracker` | DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm send (switch off, child workspace, other tool, command without the devswarm and send words); a plausible send defers to the Node hook, which records the reply state (port of devswarm-parent-reply-tracker.js). |
 | `devswarm-child-drain` | DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child); a child workspace defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js). |
+| `sibling-sweep` | Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and the turn shows no search for other occurrences of the same pattern, asks once per cause to search, fix or list every occurrence and state the search run; counts reminders and follow-through (engine-only, no Node twin). |
 
 ## Settings
 
@@ -1354,8 +1355,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PreToolUse` | `21 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `5 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `16 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
-| `dispatch.hooks_claude_Stop` | `11 items` |  |  | The claude Stop hook entries, in dispatch order. |
+| `dispatch.hooks_claude_Stop` | `12 items` |  |  | The claude Stop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStart` | `5 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SubagentStop` | `5 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `5 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCreated` | `5 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
 | `dispatch.hooks_claude_UserPromptSubmit` | `8 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
@@ -1363,7 +1365,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreToolUse` | `9 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `15 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
-| `dispatch.hooks_codex_Stop` | `10 items` |  |  | The codex Stop hook entries, in dispatch order. |
+| `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
+| `dispatch.hooks_codex_SubagentStop` | `5 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_UserPromptSubmit` | `8 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |

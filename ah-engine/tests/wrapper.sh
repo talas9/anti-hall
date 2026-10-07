@@ -1133,20 +1133,25 @@ test_temp_removed_on_hup() { run_signal_cleanup_case hup HUP 129; }
 test_temp_removed_on_int() { run_signal_cleanup_case int INT 130; }
 
 test_no_node_hook_events_allow_without_engine() {
-  # D87: the shipped lists give PermissionRequest and SubagentStop an event row marked "empty" (a thin trigger and no Node hook):
-  # nothing to run and nothing to guard, so an absent engine allows them. A row that is NOT marked empty and whose hook cannot run
-  # still fails closed (the next test). Both hosts' lists.
+  # D87: the shipped lists give PermissionRequest an event row marked "empty" (a thin trigger and no Node hook): nothing to run and
+  # nothing to guard, so an absent engine allows it. A row that is NOT marked empty and whose hook cannot run still fails closed
+  # (the next test). SubagentStop has one engine-only entry (sibling-sweep, advisory) whose Node command is the no-op `true`, so
+  # with the engine absent that no-op runs and the event allows too. Both hosts' lists.
   for list in ah-fallback.list ah-fallback.codex.list; do
     host=claude
     [ "$list" = ah-fallback.codex.list ] && host=codex
-    for ev in PermissionRequest SubagentStop; do
-      grep -q "^@$ev	[0-9][0-9]*	empty$" "$repo/plugins/anti-hall/hooks/$list" || return 1
-      set +e
-      AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$repo/plugins/anti-hall/hooks/$list" sh "$wrapper" "$ev" --host "$host" <"$payload" >"$tmp/nohook-$ev.out" 2>"$tmp/nohook-$ev.err"
-      rc=$?
-      set -e
-      [ "$rc" -eq 0 ] || return 1
-    done
+    grep -q "^@PermissionRequest	[0-9][0-9]*	empty$" "$repo/plugins/anti-hall/hooks/$list" || return 1
+    set +e
+    AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$repo/plugins/anti-hall/hooks/$list" sh "$wrapper" PermissionRequest --host "$host" <"$payload" >"$tmp/nohook-PermissionRequest.out" 2>"$tmp/nohook-PermissionRequest.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || return 1
+    grep -q "^@SubagentStop	[0-9][0-9]*$" "$repo/plugins/anti-hall/hooks/$list" || return 1
+    set +e
+    CLAUDE_PLUGIN_ROOT="$repo/plugins/anti-hall" PLUGIN_ROOT="$repo/plugins/anti-hall" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$repo/plugins/anti-hall/hooks/$list" sh "$wrapper" SubagentStop --host "$host" <"$payload" >"$tmp/nohook-SubagentStop.out" 2>"$tmp/nohook-SubagentStop.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || return 1
   done
 }
 

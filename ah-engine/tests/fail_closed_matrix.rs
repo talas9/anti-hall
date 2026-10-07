@@ -633,8 +633,8 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
     // Every guard event is either asserted here or known to have no hook registered on it; a table that grows an entry on
     // one of the latter fails until the matrix covers it. PermissionRequest stays a guard event although Claude ignores
     // its exit 2 (docs/KB-claude-code-hooks.md): a fail-closed block there is harmless, and a hook added later is guarded.
-    const ASSERTED: &[&str] = &["PreToolUse", "Stop"];
-    const UNREGISTERED: &[&str] = &["PermissionRequest", "SubagentStop"];
+    const ASSERTED: &[&str] = &["PreToolUse", "Stop", "SubagentStop"];
+    const UNREGISTERED: &[&str] = &["PermissionRequest"];
     for event in ah_engine::defaults::list("dispatch.guard_events") {
         assert!(ASSERTED.contains(&event) || UNREGISTERED.contains(&event), "guard event {event} is neither asserted nor listed as unregistered");
     }

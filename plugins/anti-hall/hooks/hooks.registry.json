@@ -396,6 +396,11 @@
             "type": "command",
             "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"",
+            "timeout": 10
           }
         ]
       }
@@ -406,6 +411,17 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"",
             "timeout": 10
           }
         ]

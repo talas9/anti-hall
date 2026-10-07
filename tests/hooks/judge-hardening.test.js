@@ -75,7 +75,11 @@ const hooksJson = JSON.parse(fs.readFileSync(path.join(HOOKS, 'hooks.registry.js
 const GUARDED = new Set();
 for (const ev of ['Stop', 'SessionStart', 'UserPromptSubmit']) {
   for (const g of hooksJson[ev] || []) {
-    for (const x of g.hooks) GUARDED.add(x.command.match(/hooks\/([\w.-]+\.js)/)[1]);
+    for (const x of g.hooks) {
+      // an ENGINE-ONLY entry (no Node twin, e.g. sibling-sweep) falls back to an extensionless shell no-op: no Node hook to guard
+      const m = x.command.match(/hooks\/([\w.-]+\.js)/);
+      if (m) GUARDED.add(m[1]);
+    }
   }
 }
 

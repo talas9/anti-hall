@@ -40,6 +40,7 @@ files = [
     "doctor.toml",
     "setup.toml",
     "mesh.toml",
+    "sibling_sweep.toml",
     "limits.toml",
 ]
 extra_dir = "hooks.d"

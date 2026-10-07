@@ -65,8 +65,11 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/silent-agent-nudge.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep"
 @SubagentStart	10
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js"
+@SubagentStop	10
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep"
 @TaskCompleted	10
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js"
 @TaskCreated	10
@@ -97,6 +100,5 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 @PostModelSwitch	10	empty
 @Notification	10	empty
 @MessageDisplay	10	empty
-@SubagentStop	10	empty
 @Elicitation	10	empty
 @ElicitationResult	10	empty

@@ -238,6 +238,22 @@
             "type": "command",
             "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/compact-advice-guard.js\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\"",
+            "timeout": 10
           }
         ]
       }

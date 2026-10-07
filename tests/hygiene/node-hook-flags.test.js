@@ -58,6 +58,8 @@ function check(cmds, root, isCodex) {
   const bad = [];
   const flagged = new Set();
   for (const c of cmds) {
+    // An ENGINE-ONLY entry (no Node twin, e.g. sibling-sweep) falls back to an extensionless shell no-op, not a node command.
+    if (/^sh "\$\{(?:CLAUDE_)?PLUGIN_ROOT\}\/hooks\/[\w-]+"$/.test(c)) continue;
     const isFlagged = c.startsWith(PREFIX);
     const m = (isFlagged ? 'node ' + c.slice(PREFIX.length) : c).match(plain);
     if (!m) { bad.push(c); continue; }

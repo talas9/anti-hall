@@ -88,6 +88,17 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ah-hook.sh\" SubagentStop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "TaskCompleted": [
       {
         "hooks": [
@@ -303,17 +314,6 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ah-hook.sh\" MessageDisplay",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ah-hook.sh\" SubagentStop",
             "timeout": 10
           }
         ]

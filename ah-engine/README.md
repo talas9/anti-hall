@@ -274,6 +274,12 @@ needs, plus the answers to `TaskOutput` and `SendMessage` calls for the delivere
   flight. A block is the JSON decision on stdout with exit 2, as Node writes it.
 - `stale-agent-stop-note` (PreToolUse on TaskStop, `guards.staleAgentStopNote`): the advisory line for an agent that was sent
   a message or resumed after its last report. Reads the last 64 MiB.
+- `sibling-sweep` (Stop and SubagentStop, `guards.siblingSweep`; engine-only, no Node twin): a reply that states the cause of
+  a bug in a fix context with no search for other occurrences of the same pattern in the turn gets one reminder to search,
+  fix or list every occurrence and state the search (once per cause per turn, capped per scope). Every phrase, message, limit
+  and the follow-through window is a `sibling_sweep.*` setting read from the config files at call time (`settings.json`
+  section `sibling_sweep`, the engine's `config.toml`, the shipped `defaults/sibling_sweep.toml`): tuning is a file edit,
+  not a rebuild. Telemetry: `~/.anti-hall/logs/sibling-sweep.ndjson` (`cause` and `followthrough` rows, hashes and counts only).
 - `silent-agent-nudge` (Stop, `guards.silentAgentNudge`, `guards.silentAgentNudgeMin`): every Stop that does not nudge is
   answered here, including the rewrite of `~/.anti-hall/silent-agent-nudge-state.json` (pruned to the agents still live,
   the same bytes Node writes, the order of its keys kept). A Stop that WOULD nudge is deferred before anything is written:

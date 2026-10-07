@@ -13,8 +13,8 @@ right and this document gets a fix.
 | Settings keys | 273 in 14 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
-| Hook scripts | 62 (70 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.json` |
-| Codex hook scripts | 44 (47 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
+| Hook scripts | 62 (72 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.json` |
+| Codex hook scripts | 44 (49 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.json` |
 | Skills | 18 Claude, 21 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys

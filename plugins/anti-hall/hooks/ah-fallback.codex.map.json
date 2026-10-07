@@ -42,11 +42,15 @@
     "compact-advice-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/compact-advice-guard.js\"",
     "devswarm-child-gate": "node \"${PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"",
     "devswarm-parent-gate": "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-gate.js\"",
+    "sibling-sweep": "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\"",
     "silent-agent-nudge": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"",
     "speculation-guard": "node \"${PLUGIN_ROOT}/hooks/speculation-guard.js\"",
     "speculation-judge": "node \"${PLUGIN_ROOT}/hooks/speculation-judge.js\"",
     "task-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-guard.js\"",
     "tasklist-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/tasklist-guard.js\""
+  },
+  "SubagentStop": {
+    "sibling-sweep": "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\""
   },
   "UserPromptSubmit": {
     "auto-handover": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"",

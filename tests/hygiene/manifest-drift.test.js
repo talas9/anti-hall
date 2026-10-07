@@ -49,6 +49,8 @@ function hookFilesByEvent(hooksObj) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
         const command = (h && h.command) || '';
+        // An ENGINE-ONLY entry (no Node twin, e.g. sibling-sweep) falls back to an extensionless shell no-op: no .js script to compare.
+        if (/^sh "\$\{(?:CLAUDE_)?PLUGIN_ROOT\}\/hooks\/[\w-]+"$/.test(command)) continue;
         // First unanchored script token (as hooks/doctor.js): trailing args such as `--host=claude` are allowed.
         const m = command.match(/([\w.-]+\.js)/);
         assert.ok(m, 'hooks.json command names no .js script: ' + command);
@@ -179,7 +181,9 @@ test('manifest-drift: every file referenced by either hooks.json exists on disk'
       for (const g of Array.isArray(groups) ? groups : []) {
         for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
           const command = (h && h.command) || '';
-          const m = command.match(/([\w.-]+\.js)/);
+          // ENGINE-ONLY entry (no Node twin): its extensionless shell no-op must exist on disk too.
+          const eo = command.match(/^sh "\$\{(?:CLAUDE_)?PLUGIN_ROOT\}\/hooks\/([\w-]+)"$/);
+          const m = eo || command.match(/([\w.-]+\.js)/);
           assert.ok(m, 'hooks.json command names no .js script: ' + command);
           const file = m[1];
           const abs = path.join(hooksDir, file);

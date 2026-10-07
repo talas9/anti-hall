@@ -45,6 +45,7 @@ pub mod scan_throttle;
 pub mod session;
 pub mod session_gates;
 pub mod ship_it;
+pub mod sibling_sweep;
 pub mod silent_agent_nudge;
 pub mod spawnctx;
 pub mod speculation_guard;
@@ -177,7 +178,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 61] = [
+    static ALL: [&dyn Check; 62] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -239,6 +240,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &devswarm_gates::DevswarmChildGate,
         &devswarm_gates::DevswarmParentReplyTracker,
         &devswarm_gates::DevswarmChildDrain,
+        &sibling_sweep::SiblingSweep,
     ];
     &ALL
 }
