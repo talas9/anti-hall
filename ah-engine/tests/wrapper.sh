@@ -1099,9 +1099,13 @@ run_signal_cleanup_case() {
     set -e
   else
     e=$(make_engine "sig-$sc_label" hang)
+    # The wrapper's own hook timeout and the stand-in's sleep must outlast the test's polling (20 x 1 s sleeps) on a starved
+    # machine: with the 10 s timeout the wrapper gave up first and answered its fail-closed exit 2 instead of the signal's 129/130
+    # (seen under load; reproduced with a CPU-saturated host and a nice 19 test run).
+    sc_timeout=$((poll_limit * 5)); sc_sleep=$((poll_limit * 6))
     # job control so the background wrapper does not start with SIGINT ignored
     set -m
-    TMPDIR="$sc_parent" AH_STARTED="$sc_started" AH_PIDFILE="$sc_pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/empty.list" AH_HOOK_TIMEOUT_S="$large_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >/dev/null 2>&1 &
+    TMPDIR="$sc_parent" AH_STARTED="$sc_started" AH_PIDFILE="$sc_pidfile" AH_SLEEP_S="$sc_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/empty.list" AH_HOOK_TIMEOUT_S="$sc_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >/dev/null 2>&1 &
     sc_pid=$!
     set +m
     wait_for_file "$sc_started" "$poll_limit" && wait_for_nonempty_file "$sc_pidfile" "$poll_limit" || {
@@ -1114,11 +1118,14 @@ run_signal_cleanup_case() {
     wait "$sc_pid" 2>/dev/null
     got=$?
     set -e
-    wait_for_pids_gone "$poll_limit" "$sc_engine" || return 1
+    wait_for_pids_gone "$poll_limit" "$sc_engine" || { printf 'signal cleanup %s: engine %s still alive\n' "$sc_label" "$sc_engine" >&2; return 1; }
   fi
   sc_root=$sc_parent/ah-hook-$(id -u)
   set -- "$sc_root"/ah-wrapper-run.*
-  [ "$got" -eq "$sc_rc" ] && [ "$1" = "$sc_root/ah-wrapper-run.*" ]
+  [ "$got" -eq "$sc_rc" ] && [ "$1" = "$sc_root/ah-wrapper-run.*" ] || {
+    printf 'signal cleanup %s: exit %s (want %s), run dir left: %s\n' "$sc_label" "$got" "$sc_rc" "$1" >&2
+    return 1
+  }
 }
 
 test_temp_removed_on_normal_exit() { run_signal_cleanup_case normal NONE 2; }
