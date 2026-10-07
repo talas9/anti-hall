@@ -134,6 +134,17 @@ pub trait Check: Send + Sync {
     }
 }
 
+/// Evaluate `check` for one request: the one place every dispatcher goes through. When the request's environment is
+/// incomplete (dropped over the cap, absent, or no usable `HOME`) the check is not evaluated at all and the answer is
+/// [`Verdict::Defer`], so Node, which sees the real environment, decides. Evaluating with no home and default switches
+/// would read a gate that is on as off and allow what Node blocks.
+pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+    if env.is_incomplete() {
+        return Some(Verdict::Defer);
+    }
+    check.run_env(subject, payload, opts, env)
+}
+
 /// Compile a regular expression that is a literal in this source.
 ///
 /// Why this exists instead of `Regex::new(..).unwrap()` at every call site: the pattern is fixed text compiled
@@ -226,7 +237,7 @@ pub fn cli_main(name: &str) -> i32 {
         prompt: p.get("prompt").and_then(Value::as_str),
     };
     let opts = serde_json::json!({ "payload_sha1": emit_dedupe::sha1_hex(raw.as_bytes()) });
-    match check.run_env(&subject, &p, &opts, &RequestEnv::capture()) {
+    match run_env_guarded(check, &subject, &p, &opts, &RequestEnv::capture()) {
         None | Some(Verdict::Allow) => 0,
         Some(Verdict::Block(m)) => {
             let _ = writeln!(std::io::stderr(), "{m}");

@@ -1125,3 +1125,71 @@ fn wrapper_and_engine_agree_on_unparsable_guard_payloads() {
         assert!(err.contains("not valid UTF-8"), "{err}");
     }
 }
+
+const NODE_SHIPIT: &str = "echo NODE-RAN >&2; exit 2";
+
+fn shipit_edit(e: &Env) -> String {
+    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "migrations/a.sql"}}).to_string()
+}
+
+/// Review P1: when the forwarded environment cannot stand for the client's (dropped over the cap, or no usable HOME),
+/// the checks that read it must defer to Node, never evaluate with no home and default switches (a gate that is on
+/// would read as off and the engine would allow what Node blocks).
+fn assert_env_incomplete_defers(name: &str, in_process: bool) {
+    let e = Env::new(name);
+    let map = pretool_map(&e, &[("ship-it-guard", NODE_SHIPIT)], "true");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let p = shipit_edit(&e);
+    let gate = [("ANTIHALL_SHIPIT_GATE", "1")];
+    let pad = "x".repeat(70_000);
+    let broken = |env: &Env| env.run_with(&args, in_process, &p, true, &[("ANTIHALL_SHIPIT_GATE", "1"), ("ANTIHALL_PAD", pad.as_str())]);
+    if in_process {
+        let (code, _, err) = e.run_with(&args, true, &p, true, &gate);
+        assert!(code == 2 && !err.contains("NODE-RAN"), "control: with a whole environment the engine answers itself: {code} {err:?}");
+        let (code, _, err) = broken(&e);
+        e.stop();
+        assert_eq!((code, err.contains("NODE-RAN")), (2, true), "an incomplete environment defers to Node: {err:?}");
+        return;
+    }
+    // warm the daemon: the first call goes through Node, later ones are answered by the daemon
+    let mut native = false;
+    for _ in 0..50 {
+        let (code, _, err) = e.run_with(&args, false, &p, true, &gate);
+        if code == 2 && !err.contains("NODE-RAN") {
+            native = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(native, "control: the warm daemon answers the gated Edit natively");
+    let (code, _, err) = broken(&e);
+    e.stop();
+    assert_eq!((code, err.contains("NODE-RAN")), (2, true), "daemon: an incomplete environment defers to Node: {err:?}");
+}
+
+#[test]
+fn an_environment_dropped_over_the_cap_defers_the_env_reading_checks_in_process() {
+    assert_env_incomplete_defers("capdrop-ip", true);
+}
+
+#[test]
+fn an_environment_dropped_over_the_cap_defers_the_env_reading_checks_through_the_daemon() {
+    assert_env_incomplete_defers("capdrop-d", false);
+}
+
+#[test]
+fn an_empty_home_defers_the_env_reading_checks_in_process_and_through_the_daemon() {
+    for in_process in [true, false] {
+        let e = Env::new(if in_process { "emptyhome-ip" } else { "emptyhome-d" });
+        let map = pretool_map(&e, &[("ship-it-guard", NODE_SHIPIT)], "true");
+        let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+        let p = shipit_edit(&e);
+        let extra = [("ANTIHALL_SHIPIT_GATE", "1"), ("HOME", "")];
+        for _ in 0..if in_process { 1 } else { 12 } {
+            let (code, _, err) = e.run_with(&args, in_process, &p, true, &extra);
+            assert_eq!((code, err.contains("NODE-RAN")), (2, true), "an empty HOME defers to Node (in_process={in_process}): {err:?}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        e.stop();
+    }
+}

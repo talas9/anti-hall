@@ -14,28 +14,72 @@ pub fn allowed(name: &str) -> bool {
     defaults::list("request_env.allow").into_iter().any(|a| a.strip_suffix('*').map_or(a == name, |prefix| name.starts_with(prefix)))
 }
 
+/// The wire name of the "this environment is not the client's whole one" flag. It is not an allowlisted variable (the
+/// flag rides inside the forwarded map, because that is the only thing the daemon reads), so no real variable can set it.
+const INCOMPLETE_KEY: &str = "\u{1}incomplete";
+
 /// The allowlisted environment of one request.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// It is *incomplete* when the checks cannot trust it to say what the Node guards would read: the client's variables
+/// were dropped (over `request_env.max_bytes`), the request carried no environment line, or the client had no usable
+/// `HOME`. An incomplete environment makes every check that reads the environment defer to Node (see
+/// [`crate::checks::run_env_guarded`]), because evaluating with no home and default switches would answer for a
+/// different session (a gate that is on would read as off, and the engine would allow what Node blocks).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(from = "BTreeMap<String, String>")]
-pub struct RequestEnv(BTreeMap<String, String>);
+pub struct RequestEnv {
+    vars: BTreeMap<String, String>,
+    incomplete: bool,
+}
+
+impl Serialize for RequestEnv {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let mut m = self.vars.clone();
+        if self.incomplete {
+            m.insert(INCOMPLETE_KEY.into(), "1".into());
+        }
+        m.serialize(ser)
+    }
+}
 
 impl From<BTreeMap<String, String>> for RequestEnv {
     /// Keep only the allowlisted names (whatever sent the map, the daemon never evaluates with more), and none at all
-    /// when the rest would exceed `request_env.max_bytes`.
+    /// (flagged incomplete) when the rest would exceed `request_env.max_bytes`.
     fn from(m: BTreeMap<String, String>) -> Self {
+        let flagged = m.contains_key(INCOMPLETE_KEY);
         let kept: BTreeMap<String, String> = m.into_iter().filter(|(k, _)| allowed(k)).collect();
         let size: usize = kept.iter().map(|(k, v)| k.len() + v.len()).sum();
         if size as u64 > defaults::num("request_env.max_bytes") {
-            return RequestEnv::default();
+            return RequestEnv { vars: BTreeMap::new(), incomplete: true };
         }
-        RequestEnv(kept)
+        RequestEnv { vars: kept, incomplete: flagged }
     }
 }
 
 impl RequestEnv {
     /// The current process's allowlisted variables: what a client forwards, and what an in-process check sees.
+    ///
+    /// A process with no usable `HOME` (unset or empty) is incomplete too: Node falls back to the account's home
+    /// directory there, which the engine does not read, so the checks must not evaluate against "no home".
     pub fn capture() -> RequestEnv {
-        RequestEnv::from(std::env::vars().collect::<BTreeMap<_, _>>())
+        RequestEnv::from_process_vars(std::env::vars().collect())
+    }
+
+    fn from_process_vars(vars: BTreeMap<String, String>) -> RequestEnv {
+        let no_home = vars.get("HOME").is_none_or(|h| h.is_empty());
+        let mut e = RequestEnv::from(vars);
+        e.incomplete |= no_home;
+        e
+    }
+
+    /// An environment the checks must not evaluate with (see the type's docs): they defer to Node instead.
+    pub fn incomplete() -> RequestEnv {
+        RequestEnv { vars: BTreeMap::new(), incomplete: true }
+    }
+
+    /// True when the checks that read the environment must defer to Node.
+    pub fn is_incomplete(&self) -> bool {
+        self.incomplete
     }
 
     /// An environment from explicit pairs (tests, `ah-engine check`); filtered like any other.
@@ -45,12 +89,12 @@ impl RequestEnv {
 
     /// The value of `name`.
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.0.get(name).map(String::as_str)
+        self.vars.get(name).map(String::as_str)
     }
 
     /// The variables as an owned map.
     pub fn to_map(&self) -> std::collections::HashMap<String, String> {
-        self.0.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     /// The request line that carries this environment (without the trailing newline).
@@ -59,12 +103,13 @@ impl RequestEnv {
     }
 }
 
-/// Split a hook request body into its environment and the payload. A body without the environment line has an empty
-/// environment: the daemon never fills the gap from its own.
+/// Split a hook request body into its environment and the payload. A body without the environment line (or with one
+/// that does not parse) has an incomplete, empty environment: the daemon never fills the gap from its own, and its
+/// checks defer.
 pub fn split_request(body: &str) -> (RequestEnv, &str) {
-    let Some(rest) = body.strip_prefix(defaults::text("request_env.line_prefix")) else { return (RequestEnv::default(), body) };
+    let Some(rest) = body.strip_prefix(defaults::text("request_env.line_prefix")) else { return (RequestEnv::incomplete(), body) };
     let (line, payload) = rest.split_once('\n').unwrap_or((rest, ""));
-    (serde_json::from_str(line).unwrap_or_default(), payload)
+    (serde_json::from_str(line).unwrap_or_else(|_| RequestEnv::incomplete()), payload)
 }
 
 #[cfg(test)]
@@ -97,13 +142,39 @@ mod tests {
         let (back, payload) = split_request(&body);
         assert_eq!((back, payload), (e, "{\"a\":1}"));
         let (none, payload) = split_request("{\"a\":1}");
-        assert_eq!((none, payload), (RequestEnv::default(), "{\"a\":1}"));
+        assert_eq!((none, payload), (RequestEnv::incomplete(), "{\"a\":1}"));
     }
 
     #[test]
     fn an_oversized_environment_is_dropped_whole() {
         let big = "x".repeat(defaults::num("request_env.max_bytes") as usize);
-        assert_eq!(RequestEnv::from_pairs([("HOME", big)]), RequestEnv::default());
+        let e = RequestEnv::from_pairs([("HOME", big)]);
+        assert_eq!((e.get("HOME"), e.is_incomplete()), (None, true), "dropped whole, and flagged so the checks defer");
+    }
+
+    #[test]
+    fn the_incomplete_flag_survives_the_wire() {
+        let big = "x".repeat(defaults::num("request_env.max_bytes") as usize);
+        let dropped = RequestEnv::from_pairs([("HOME", big)]);
+        let (back, _) = split_request(&format!("{}\n{{}}", dropped.to_line()));
+        assert!(back.is_incomplete(), "the daemon must see that the client's environment was dropped");
+        let (ok, _) = split_request(&format!("{}\n{{}}", RequestEnv::from_pairs([("HOME", "/h")]).to_line()));
+        assert!(!ok.is_incomplete());
+        assert!(!allowed(INCOMPLETE_KEY), "the flag is not a forwardable variable");
+    }
+
+    #[test]
+    fn a_bare_or_garbled_request_line_is_incomplete() {
+        assert!(split_request("{}").0.is_incomplete());
+        assert!(split_request("E not-json\n{}").0.is_incomplete());
+    }
+
+    #[test]
+    fn a_missing_or_empty_home_makes_the_captured_environment_incomplete() {
+        let vars = |h: Option<&str>| h.map(|h| ("HOME".to_string(), h.to_string())).into_iter().collect::<BTreeMap<_, _>>();
+        assert!(RequestEnv::from_process_vars(vars(None)).is_incomplete());
+        assert!(RequestEnv::from_process_vars(vars(Some(""))).is_incomplete());
+        assert!(!RequestEnv::from_process_vars(vars(Some("/h"))).is_incomplete());
     }
 
     #[test]
