@@ -50,7 +50,7 @@ make_engine() {
       exit127) printf 'cat >/dev/null; exit 127\n' ;;
       seventyfive) printf 'cat >/dev/null; exit 75\n' ;;
       signal) printf 'kill -9 $$\n' ;;
-      hang) printf 'printf started >"$AH_STARTED"; [ -z "${AH_PIDFILE:-}" ] || printf "%%s\\n" "$$" >"$AH_PIDFILE"; sleep "$AH_SLEEP_S"\n' ;;
+      hang) printf 'printf started >"$AH_STARTED"; [ -z "${AH_PID_DELAY_S:-}" ] || sleep "$AH_PID_DELAY_S"; [ -z "${AH_PIDFILE:-}" ] || printf "%%s\\n" "$$" >"$AH_PIDFILE"; sleep "$AH_SLEEP_S"\n' ;;
       late_marker) printf 'printf started >"$AH_STARTED"; ( sleep "$AH_SLEEP_S"; printf late >"$AH_MARKER" ) & child=$!; ( sleep "$AH_SLEEP_S"; printf grand >"$AH_GRAND_MARKER" ) & grand=$!; printf "%%s %%s\\n" "$child" "$grand" >"$AH_PIDFILE"; wait\n' ;;
     esac
   } >"$p"
@@ -103,6 +103,20 @@ wait_for_file() {
   i=0
   while [ "$i" -lt "$limit" ]; do
     [ -e "$path" ] && return 0
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# wait_for_nonempty_file <path> [limit]: the engine stand-ins create a marker file and only then write into it (a pid), so the
+# file existing is not the file being complete; under load the gap between the two writes is whole seconds.
+wait_for_nonempty_file() {
+  path=$1
+  limit=${2:-$poll_limit}
+  i=0
+  while [ "$i" -lt "$limit" ]; do
+    [ -s "$path" ] && return 0
     sleep 1
     i=$((i + 1))
   done
@@ -1090,7 +1104,7 @@ run_signal_cleanup_case() {
     TMPDIR="$sc_parent" AH_STARTED="$sc_started" AH_PIDFILE="$sc_pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/empty.list" AH_HOOK_TIMEOUT_S="$large_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >/dev/null 2>&1 &
     sc_pid=$!
     set +m
-    wait_for_file "$sc_started" "$poll_limit" && [ -s "$sc_pidfile" ] || {
+    wait_for_file "$sc_started" "$poll_limit" && wait_for_nonempty_file "$sc_pidfile" "$poll_limit" || {
       kill_test_tree "$sc_pid"
       return 1
     }
