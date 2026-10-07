@@ -1072,6 +1072,39 @@ test_temp_removed_on_normal_exit() { run_signal_cleanup_case normal NONE 2; }
 test_temp_removed_on_hup() { run_signal_cleanup_case hup HUP 129; }
 test_temp_removed_on_int() { run_signal_cleanup_case int INT 130; }
 
+test_no_node_hook_events_allow_without_engine() {
+  # The shipped list registers no Node hook for PermissionRequest or SubagentStop (D74: Node alone allows).
+  for ev in PermissionRequest SubagentStop; do
+    if grep -q "^@$ev" "$repo/plugins/anti-hall/hooks/ah-fallback.list"; then return 1; fi
+    set +e
+    AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$repo/plugins/anti-hall/hooks/ah-fallback.list" sh "$wrapper" "$ev" <"$payload" >"$tmp/nohook-$ev.out" 2>"$tmp/nohook-$ev.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || return 1
+  done
+}
+
+test_event_with_node_guards_stays_fail_closed_without_engine() {
+  # A list lacking the PreToolUse/Stop section is damaged: still fail closed. SubagentStop with a section whose
+  # hook cannot run also fails closed (the allow applies only when the event has no Node hooks at all).
+  h=$(hook_script evguard 'exit 0')
+  printf '@PostToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/missing-section.list"
+  for ev in PreToolUse Stop; do
+    set +e
+    AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/missing-section.list" sh "$wrapper" "$ev" <"$payload" >"$tmp/ms.out" 2>"$tmp/ms.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || return 1
+  done
+  printf '@SubagentStop\t%s\n*\t%s\t/no/such/hook-cmd-xyz\n' "$large_timeout" "$large_timeout" >"$tmp/subagent-row.list"
+  set +e
+  AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/subagent-row.list" sh "$wrapper" SubagentStop <"$payload" >"$tmp/sr.out" 2>"$tmp/sr.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || return 1
+  grep -q '^@Stop' "$repo/plugins/anti-hall/hooks/ah-fallback.list"
+}
+
 check normal_passthrough test_normal_passthrough
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
@@ -1126,6 +1159,8 @@ check sweep_removes_dead_owner_dirs_keeps_live_owner test_sweep_removes_dead_own
 check temp_removed_on_normal_exit test_temp_removed_on_normal_exit
 check temp_removed_on_hup test_temp_removed_on_hup
 check temp_removed_on_int test_temp_removed_on_int
+check no_node_hook_events_allow_without_engine test_no_node_hook_events_allow_without_engine
+check event_with_node_guards_stays_fail_closed_without_engine test_event_with_node_guards_stays_fail_closed_without_engine
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

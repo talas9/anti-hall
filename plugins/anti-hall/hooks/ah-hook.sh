@@ -652,14 +652,14 @@ run_fallback() {
     fallback_note "$reason"
     exit 0
   fi
-  selected=0; ran=0; first_block_err=; hard_failure=0; code=0; in_event=0
+  selected=0; ran=0; first_block_err=; hard_failure=0; code=0; in_event=0; event_seen=0
   timeout_default=$(event_timeout)
   [ -n "$timeout_default" ] || timeout_default=$timeout_env
   validate_positive_int "$timeout_default" event_timeout
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       ""|"#"*) continue ;;
-      @*) header=${line#@}; ev=${header%%	*}; [ "$ev" = "$event" ] && in_event=1 || in_event=0; continue ;;
+      @*) header=${line#@}; ev=${header%%	*}; [ "$ev" = "$event" ] && { in_event=1; event_seen=1; } || in_event=0; continue ;;
     esac
     [ "$in_event" -eq 1 ] || continue
     matcher=${line%%	*}
@@ -703,6 +703,16 @@ run_fallback() {
   fi
   if [ "$ran" -eq 0 ] && [ "$guard_event" -eq 1 ]; then
     if [ "$selected" -eq 0 ]; then
+      # D74: PermissionRequest and SubagentStop are guard events, but hooks.json registers no Node hook for them, so the
+      # generated list has no section. Node alone would allow; the section must exist for PreToolUse and Stop (a list
+      # missing those means a damaged list, which stays fail-closed).
+      case "$event" in
+        PermissionRequest|SubagentStop)
+          if [ "$event_seen" -eq 0 ]; then
+            fallback_note "$reason"
+            exit 0
+          fi ;;
+      esac
       # The tool name was read structurally and no row names it: the host would have run nothing.
       if [ "$tool_from_payload" -eq 1 ] && [ "$tool_match_all" -eq 0 ] && [ -n "$tool" ]; then
         fallback_note "$reason"
