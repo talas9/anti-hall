@@ -221,9 +221,7 @@ pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now:
     let log = format!("{dir}/{}", defaults::text("swarm_guard.log_file"));
     let _local = IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
     // Could not lock: allow without recording, and without the advisory, exactly as Node does.
-    // (the Node hook may get the lock where this one could not, and then records the spawn: a spawn this check did not record is
-    // Node's)
-    let Some(lock) = nodelock::acquire(&format!("{dir}/{}", defaults::text("swarm_guard.lock_file")), Params::swarm()) else { return Some(Verdict::Defer) };
+    let lock = nodelock::acquire(&format!("{dir}/{}", defaults::text("swarm_guard.lock_file")), Params::swarm())?;
 
     let cutoff = now as f64 - defaults::num("swarm_guard.window_ms") as f64;
     let mut recent: Vec<f64> = read_timestamps(&log).into_iter().filter(|t| *t > cutoff).collect();
