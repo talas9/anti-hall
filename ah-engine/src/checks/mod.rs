@@ -16,6 +16,7 @@ pub mod compact_decl;
 pub mod coordinator_work;
 pub mod ctxbudget;
 pub mod devswarm_comms;
+pub mod devswarm_gates;
 pub mod devswarm_prompt;
 pub mod devswarm_role;
 pub mod dispatch_tier;
@@ -167,7 +168,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 58] = [
+    static ALL: [&dyn Check; 61] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -226,6 +227,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &devswarm_prompt::DevswarmChildTurn,
         &devswarm_role::DevswarmChildRole,
         &devswarm_role::DevswarmParentGate,
+        &devswarm_gates::DevswarmChildGate,
+        &devswarm_gates::DevswarmParentReplyTracker,
+        &devswarm_gates::DevswarmChildDrain,
     ];
     &ALL
 }

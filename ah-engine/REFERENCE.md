@@ -111,6 +111,9 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `devswarm-child-turn` | DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js). |
 | `devswarm-child-role` | SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace (port of devswarm-child-role.js); a Primary session, a stale stable launcher or anything else it cannot prove byte-identical defers to Node. |
 | `devswarm-parent-gate` | Stop: allows without running Node when the Node gate would exit silently before reading any mailbox (switch off, user skip, supervisor inactive, child workspace, judge child); every other session defers to the Node gate (port of devswarm-parent-gate.js, early exits only). |
+| `devswarm-child-gate` | DevSwarm child Stop gate: allows the stop when the hook cannot act (switch off, skip recorded, not a DevSwarm child); a child workspace defers to the Node gate, which owns the heartbeat state, the stop budgets, the mailbox store and the hivecontrol probe (port of devswarm-child-gate.js). |
+| `devswarm-parent-reply-tracker` | DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm send (switch off, child workspace, other tool, command without the devswarm and send words); a plausible send defers to the Node hook, which records the reply state (port of devswarm-parent-reply-tracker.js). |
+| `devswarm-child-drain` | DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child); a child workspace defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js). |
 
 ## Settings
 
@@ -2498,6 +2501,27 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `devswarm_role.sw_supervisor_mode` | `6 entries` |  |  | Setting devswarm.supervisorMode (auto, on or off): force the supervisor context on or off, or detect it from the environment. default is also the manifest default the plugin option is compared with. |
 | `devswarm_role.sw_wake_cron` | `4 entries` |  |  | Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected. |
 | `devswarm_role.test_markers` | `ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; with one of them set and the home equal to the real home the Node settings reader refuses, so the check defers rather than guess what Node does. |
+
+### devswarm_gates.toml / devswarm_gates
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_gates.bash_tool` | `Bash` |  |  | The tool name the reply tracker and the drain nudge observe. |
+| `devswarm_gates.child_drain_setting` | `6 entries` |  |  | Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable). |
+| `devswarm_gates.child_drain_summary` | `DevSwarm child mailbox drain nudge: allows the call when the hook cannot act ...` |  |  | One-line description of the devswarm-child-drain check in the generated reference. |
+| `devswarm_gates.child_gate_guard_name` | `devswarm-child-gate` |  |  | The guard id the devswarm-child-gate check answers to in skip.json. |
+| `devswarm_gates.child_gate_setting` | `6 entries` |  |  | Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable). |
+| `devswarm_gates.child_gate_summary` | `DevSwarm child Stop gate: allows the stop when the hook cannot act (switch of...` |  |  | One-line description of the devswarm-child-gate check in the generated reference. |
+| `devswarm_gates.kill_env` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Environment variable that, set to exactly `1`, turns the DevSwarm integration off for the process. |
+| `devswarm_gates.kill_env_value` | `1` |  |  | The value of the kill variable that turns the integration off. |
+| `devswarm_gates.mode_off` | `off` |  |  | Supervisor mode value that forces the integration off. |
+| `devswarm_gates.mode_on` | `on` |  |  | Supervisor mode value that forces the integration on. |
+| `devswarm_gates.reply_tracker_setting` | `6 entries` |  |  | Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable). |
+| `devswarm_gates.reply_tracker_summary` | `DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm...` |  |  | One-line description of the devswarm-parent-reply-tracker check in the generated reference. |
+| `devswarm_gates.repo_id_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable DevSwarm sets on a workspace's processes; non-empty means the supervisor is in play in auto mode. |
+| `devswarm_gates.send_words` | `devswarm, send` |  |  | Words that must both appear (ASCII case-insensitive, at word boundaries, in any order) in a Bash command for it to plausibly be a devswarm send; `devswarm` also matches before `.js`. |
+| `devswarm_gates.source_branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable DevSwarm sets only on a child workspace; non-empty means this session is a child. |
+| `devswarm_gates.supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode; headline plugin option). |
 
 ## Messages
 
