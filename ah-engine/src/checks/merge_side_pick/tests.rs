@@ -231,3 +231,27 @@ fn a_node_written_state_file_is_read_natively_and_an_unreadable_one_defers() {
     assert_eq!(run_check("PostToolUse", &payload("PostToolUse", "n3", "git checkout --theirs ."), &h), Some(Verdict::Defer));
     assert_eq!(std::fs::read(&bad).unwrap(), vec![0x7b, 0xff, 0xfe, 0x7d]);
 }
+
+/// Review 3 P2: a record Node wrote that serde rejects but JavaScript parses (the lone `\ud83d` JSON.stringify emits for a cut astral
+/// character, `1e400`, a 400-digit integer, nesting past 128) was read as a fresh record, so the Pre pass gave no advisory where Node does.
+#[test]
+fn a_record_only_javascript_can_parse_defers_both_passes() {
+    let h = tmp_home("js-only");
+    let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+    let big = format!("1{}", "0".repeat(400));
+    for (i, body) in [
+        r#"{"seq":1,"pickSeq":1,"testSeq":0,"cmd":"git checkout --theirs a\ud83d"}"#.to_string(),
+        r#"{"seq":1,"pickSeq":1,"testSeq":0,"cmd":"c","x":1e400}"#.to_string(),
+        format!(r#"{{"seq":1,"pickSeq":1,"testSeq":0,"cmd":"c","x":{big}}}"#),
+        format!(r#"{{"seq":1,"pickSeq":1,"testSeq":0,"cmd":"c","d":{deep}}}"#),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let sid = format!("js{i}");
+        std::fs::write(format!("{h}/.anti-hall/merge-side-pick-{sid}.json"), &body).unwrap();
+        assert_eq!(run_check("PreToolUse", &payload("PreToolUse", &sid, "git push"), &h), Some(Verdict::Defer), "pre {i}");
+        assert_eq!(run_check("PostToolUse", &payload("PostToolUse", &sid, "git checkout --theirs ."), &h), Some(Verdict::Defer), "post {i}");
+        assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/merge-side-pick-{sid}.json")).unwrap(), body, "nothing written {i}");
+    }
+}

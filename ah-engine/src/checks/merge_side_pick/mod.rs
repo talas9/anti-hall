@@ -227,15 +227,17 @@ pub fn decide_as(p: &Value, st: &Settings, store: &dyn SessionState, post: bool)
 
 /// Whether the shared state file of this session can be read exactly as Node reads it. A missing file is a fresh record (as in
 /// Node) and so is unparseable text (`Rec::load`); a file that exists but cannot be read as UTF-8 text is not provable here
-/// (Node would replace the bad bytes and might still parse it), so the pass is Node's, before anything is written.
+/// (Node would replace the bad bytes and might still parse it), and neither is one serde rejects where JavaScript may parse it
+/// (`jsdiff`), so the pass is Node's, before anything is written.
 fn state_provable(home: &str, sid: &str) -> bool {
     let key = session_key(sid);
     if key.is_empty() {
         return true;
     }
     let path = format!("{home}/.anti-hall/{}-{key}.json", defaults::text("merge_side_pick.state_ns"));
-    match std::fs::read_to_string(path) {
-        Ok(_) => true,
+    match std::fs::read(path) {
+        // a file serde rejects but JavaScript may parse is a record Node reads and the engine would not
+        Ok(b) => !crate::checks::guardkit::jsdiff::js_reads_differently(&b) && std::str::from_utf8(&b).is_ok(),
         Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     }
 }
