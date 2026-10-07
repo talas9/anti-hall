@@ -17,7 +17,14 @@
 //!     and a default written into a settings read (`int(.., default, min)`).
 //!  8. short message text: two or more words and 12 or more characters, not a format string, pattern or SQL.
 //!  9. a file or directory name (`.anti-hall`, `x.json`, ...).
-
+//!
+//! The ratchet (`no_new_hardcoded_literals`, owner rule: no hardcoding): three broader shapes that the checks above let
+//! through, held against `tests/hardcoded_baseline.txt`. A line in the baseline is known debt waiting to move to
+//! the plugin's `engine/defaults/*.toml`; a NEW line is a failure, and a baseline line that no longer occurs is a failure too, so the list only
+//! shrinks. Regenerate it with `AH_BLESS_BASELINE=1 cargo test --test no_hardcoded_tunables` (review the diff).
+//! 10. a number of 10 or more in a limit or comparison context (`.take(N)`, `[..N]`, `.min(N)`, `> N`, `with_capacity(N)`...);
+//! 11. a short message: a string literal of 3+ words and 15+ characters that is not a developer diagnostic;
+//! 12. a duration built from arithmetic on literals (`Duration::from_secs(5 * 60)`, `sleep(Duration::...)`).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::fs;
@@ -53,6 +60,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "layout of the generated Markdown reference (headings, table headers): the generator's own format, not a tunable and not a message the engine shows at run time",
     ),
     ("src/docs.rs", "\"| `{}` |", "row layout of the generated Markdown reference"),
+    ("src/docs.rs", "\\n## ", "section headings and intro lines of the generated Markdown reference: the generator's own format"),
     ("src/checks/git/tokenize.rs", "pub const CMDSUBST", "internal sentinel the tokenizer inserts for a command substitution; never shown to a user"),
     ("src/memstat.rs", "static INNER", "the allocator the counters wrap: a compile-time choice by target, code not configuration"),
     ("src/main.rs", "static ALLOC", "the global allocator item: a language construct, not a value"),
@@ -449,4 +457,124 @@ fn no_versioned_model_ids_in_source_or_plugin_config() {
         }
     }
     assert!(hits.is_empty(), "versioned model ids (use the alias haiku/sonnet/opus/fable, or a tier word):\n{}", hits.join("\n"));
+}
+
+// ---- the ratchet ---------------------------------------------------------------------------------------------------
+
+/// Numbers that are unit conversions or format widths, not tunables.
+const STRUCTURAL_NUMBERS: &[&str] = &["1000", "1_000", "1_000_000", "1000000", "1024", "60", "3600", "24", "255", "256"];
+
+fn numeric_literals(line: &str) -> Vec<String> {
+    // strip string literals first so digits inside text are not counted
+    let mut code = String::new();
+    let mut in_str = false;
+    let b: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            '\\' if in_str => i += 1,
+            '"' => in_str = !in_str,
+            c if !in_str => code.push(c),
+            _ => {}
+        }
+        i += 1;
+    }
+    let mut out = Vec::new();
+    let cs: Vec<char> = code.chars().collect();
+    let mut j = 0;
+    while j < cs.len() {
+        if cs[j].is_ascii_digit() && !(j > 0 && (cs[j - 1].is_alphanumeric() || cs[j - 1] == '_' || cs[j - 1] == '.' || cs[j - 1] == '\'')) {
+            let mut k = j;
+            while k < cs.len() && (cs[k].is_ascii_digit() || cs[k] == '_') {
+                k += 1;
+            }
+            // hex, floats and suffixed forms are left to the other rules
+            if !(k < cs.len() && (cs[k] == 'x' || cs[k] == '.' && cs.get(k + 1).is_some_and(|c| c.is_ascii_digit()))) {
+                out.push(cs[j..k].iter().collect::<String>());
+            }
+            j = k;
+        } else {
+            j += 1;
+        }
+    }
+    out
+}
+
+fn ratchet_violations(file: &Path, text: &str) -> Vec<String> {
+    let name = file.to_string_lossy().replace('\\', "/");
+    let rel = name.split("/src/").last().map(|s| format!("src/{s}")).unwrap_or(name.clone());
+    let mut v = Vec::new();
+    for (_, line) in code_lines(text) {
+        let t = line.trim();
+        if t.is_empty()
+            || t.starts_with("#[")
+            || t.starts_with("use ")
+            || t.contains("assert")
+            || ALLOW.iter().any(|(f, sub, _)| name.ends_with(f) && line.contains(sub))
+        {
+            continue;
+        }
+        let limit_ctx = [".take(", ".truncate(", "with_capacity(", "[..", ".min(", ".max(", ".saturating_sub(", ".clamp("].iter().any(|k| line.contains(k))
+            || line.contains(" > ")
+            || line.contains(" >= ")
+            || line.contains(" < ")
+            || line.contains(" <= ");
+        let is_item = t.starts_with("const ") || t.starts_with("static ") || t.starts_with("pub const ") || t.starts_with("pub static ");
+        if limit_ctx
+            && !is_item
+            && numeric_literals(&line).iter().any(|n| n.replace('_', "").parse::<u64>().is_ok_and(|x| x >= 10) && !STRUCTURAL_NUMBERS.contains(&n.as_str()))
+        {
+            v.push(format!("[number] {rel}: {t}"));
+        }
+        let dev_diag = ["panic!(", ".expect(", "unreachable!(", "debug_assert"].iter().any(|k| line.contains(k));
+        if !is_item
+            && !dev_diag
+            && string_literals(&line)
+                .iter()
+                .any(|s| s.chars().count() >= 15 && s.split_whitespace().filter(|w| w.chars().filter(|c| c.is_alphabetic()).count() >= 2).count() >= 3)
+        {
+            v.push(format!("[message] {rel}: {t}"));
+        }
+        if line.contains("Duration::from_") && line.contains(" * ") && numeric_literals(&line).len() >= 2 {
+            v.push(format!("[duration] {rel}: {t}"));
+        }
+    }
+    v
+}
+
+fn baseline_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/hardcoded_baseline.txt")
+}
+
+#[test]
+fn no_new_hardcoded_literals() {
+    let mut files = Vec::new();
+    rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    files.sort();
+    let mut now: Vec<String> = Vec::new();
+    for f in &files {
+        now.extend(ratchet_violations(f, &fs::read_to_string(f).unwrap()));
+    }
+    now.sort();
+    now.dedup();
+    if std::env::var("AH_BLESS_BASELINE").is_ok() {
+        fs::write(baseline_path(), now.join("\n") + "\n").unwrap();
+        return;
+    }
+    let known: std::collections::BTreeSet<String> = fs::read_to_string(baseline_path()).unwrap_or_default().lines().map(str::to_string).collect();
+    let current: std::collections::BTreeSet<String> = now.into_iter().collect();
+    let new: Vec<&String> = current.difference(&known).collect();
+    let gone: Vec<&String> = known.difference(&current).collect();
+    assert!(
+        new.is_empty(),
+        "{} NEW hard-coded literals (move them to the plugin's engine/defaults/*.toml; the baseline only shrinks):\n{}",
+        new.len(),
+        new.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        gone.is_empty(),
+        "{} baseline lines no longer occur (good: delete them from tests/hardcoded_baseline.txt, or re-bless):\n{}",
+        gone.len(),
+        gone.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
+    );
 }

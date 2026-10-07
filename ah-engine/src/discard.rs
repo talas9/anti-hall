@@ -6,14 +6,11 @@
 //! - [`logged`], [`logged_ok`], [`logged_or_default`], [`note`]: the operation is best-effort (the engine fails open), but
 //!   a lost write or read is a fact an operator needs, so one reason-coded line goes to the event log. Repeats of the same
 //!   reason inside `discard.log_interval_ms` are dropped, so a failing disk cannot flood the log.
-use crate::{defaults, health};
+use crate::defaults;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Mutex;
 use std::time::Instant;
-
-/// Event-log kind of every line this module writes; the reason code is the line's code.
-const KIND: &str = "discard";
 
 static LAST: Mutex<Option<HashMap<&'static str, Instant>>> = Mutex::new(None);
 
@@ -36,27 +33,19 @@ pub fn note(code: &'static str, detail: &str) {
     emit(code, detail);
 }
 
-#[cfg(not(test))]
+/// Write one line to the event log: kind `discard.log_kind`, the reason code as the line's code. Unit tests never write to
+/// the real event log (it lives under the user's home): they capture the lines in `tests` instead.
 fn emit(code: &str, detail: &str) {
-    health::log_event(KIND, code, detail);
-}
-
-// Unit tests never write to the real event log (it lives under the user's home): they capture the lines instead.
-#[cfg(test)]
-thread_local! {
-    static CAPTURED: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    #[cfg(not(test))]
+    crate::health::log_event(defaults::text("discard.log_kind"), code, detail);
+    #[cfg(test)]
+    tests::capture(code, detail);
 }
 
 /// The lines this thread's tests have logged so far (test builds only).
 #[cfg(test)]
 pub(crate) fn captured() -> Vec<(String, String)> {
-    CAPTURED.with(|c| c.borrow().clone())
-}
-
-#[cfg(test)]
-fn emit(code: &str, detail: &str) {
-    let _ = (KIND, health::log_event as fn(&str, &str, &str));
-    CAPTURED.with(|c| c.borrow_mut().push((code.to_string(), detail.to_string())));
+    tests::captured()
 }
 
 /// A best-effort operation whose failure is logged under `code` and otherwise ignored.
@@ -108,6 +97,18 @@ impl<T, E: Display> Logged<T, E> for Result<T, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static CAPTURED: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn capture(code: &str, detail: &str) {
+        CAPTURED.with(|c| c.borrow_mut().push((code.to_string(), detail.to_string())));
+    }
+
+    pub(super) fn captured() -> Vec<(String, String)> {
+        CAPTURED.with(|c| c.borrow().clone())
+    }
 
     #[test]
     fn values_pass_through_and_a_failure_is_logged_once_with_its_code_and_text() {

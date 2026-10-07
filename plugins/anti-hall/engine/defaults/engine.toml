@@ -640,3 +640,7 @@ doc = "A best-effort operation that fails (a state write the engine fails open o
 value = 60000
 unit = "ms"
 min = 1000
+
+[discard.log_kind]
+doc = "The event-log kind of every line a best-effort operation writes when it fails; the reason code is the line's code."
+value = "discard"

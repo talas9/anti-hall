@@ -189,6 +189,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `discard.log_interval_ms` | `60000` |  | ms | A best-effort operation that fails (a state write the engine fails open on) is logged once per reason code in this many milliseconds; repeats inside the window are dropped so a failing disk cannot flood the event log. |
+| `discard.log_kind` | `discard` |  |  | The event-log kind of every line a best-effort operation writes when it fails; the reason code is the line's code. |
 
 ### engine.toml / env
 
