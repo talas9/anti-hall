@@ -13,7 +13,9 @@ fn write(file: &str, code: &str) -> Value {
 
 #[test]
 fn language_follows_the_extension_like_node() {
-    for (f, l) in [("a.py", Some(Lang::Python)), ("a.PYI", Some(Lang::Python)), ("x/a.b.js", Some(Lang::Js)), ("a.TSX", Some(Lang::Js)), ("a.mjs", Some(Lang::Js))] {
+    for (f, l) in
+        [("a.py", Some(Lang::Python)), ("a.PYI", Some(Lang::Python)), ("x/a.b.js", Some(Lang::Js)), ("a.TSX", Some(Lang::Js)), ("a.mjs", Some(Lang::Js))]
+    {
         assert_eq!(lang_for(f), l, "{f}");
     }
     for f in ["a.rs", "a.py.txt", "a.pyc", "a.js ", "a.py\n", ""] {
@@ -50,8 +52,13 @@ fn a_call_that_reaches_no_probe_is_allowed_and_one_that_may_defers() {
     assert_eq!(decide(&write("a.py", "import os\nos.fakefn()\n"), &st), Verdict::Defer);
     assert_eq!(decide(&write("a.js", "Array.fakeStatic()\n"), &st), Verdict::Defer);
     assert_eq!(decide(&json!({"tool_name": "Read", "tool_input": {"file_path": "a.py"}}), &st), Verdict::Allow);
-    assert_eq!(decide(&json!({"tool_name": "Write", "tool_input": {"file_path": ["a.py"], "content": "import os\n"}}), &st), Verdict::Defer, "an array path stringifies in JavaScript");
-    let multi = json!({"tool_name": "MultiEdit", "tool_input": {"file_path": "a.py", "edits": [{"new_string": "x = 1"}, null, {"new_string": "import os\nos.x"}]}});
+    assert_eq!(
+        decide(&json!({"tool_name": "Write", "tool_input": {"file_path": ["a.py"], "content": "import os\n"}}), &st),
+        Verdict::Defer,
+        "an array path stringifies in JavaScript"
+    );
+    let multi =
+        json!({"tool_name": "MultiEdit", "tool_input": {"file_path": "a.py", "edits": [{"new_string": "x = 1"}, null, {"new_string": "import os\nos.x"}]}});
     assert_eq!(decide(&multi, &st), Verdict::Defer);
 }
 

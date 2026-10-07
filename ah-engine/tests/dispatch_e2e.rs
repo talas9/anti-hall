@@ -1033,8 +1033,22 @@ fn a_finished_hooks_genuine_block_survives_a_check_whose_node_command_cannot_run
     // replaced by the generic fail-closed text. (Every Bash entry has a built-in check now, so the spawn event is the one
     // that still has Node-only hooks next to a check.)
     let ids = ["compact-declaration-guard", "model-routing-guard", "swarm-guard", "phase-tracker", "orch-on-spawn"];
-    let m: serde_json::Map<String, serde_json::Value> =
-        ids.iter().map(|id| (id.to_string(), if *id == "swarm-guard" { "echo sibling-blocks >&2; exit 2" } else if *id == "compact-declaration-guard" { "" } else { "true" }.into())).collect();
+    let m: serde_json::Map<String, serde_json::Value> = ids
+        .iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                if *id == "swarm-guard" {
+                    "echo sibling-blocks >&2; exit 2"
+                } else if *id == "compact-declaration-guard" {
+                    ""
+                } else {
+                    "true"
+                }
+                .into(),
+            )
+        })
+        .collect();
     let map = e.dir.join("agent-map.json");
     std::fs::write(&map, serde_json::json!({ "PreToolUse": m }).to_string()).unwrap();
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];

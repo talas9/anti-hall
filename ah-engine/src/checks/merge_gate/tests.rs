@@ -46,7 +46,18 @@ fn auto_merge_shapes_match_the_node_scan() {
     ] {
         assert!(is_auto_merge(c), "{c:?}");
     }
-    for c in ["echo gh pr merge 5", "git merge feature", "git merge --no-ff feature", "gh pr view 3", "gh pr review 3 --comment", "gh", "git merge", "", "GH pr merge 1", "gh pr 'merge' 1"] {
+    for c in [
+        "echo gh pr merge 5",
+        "git merge feature",
+        "git merge --no-ff feature",
+        "gh pr view 3",
+        "gh pr review 3 --comment",
+        "gh",
+        "git merge",
+        "",
+        "GH pr merge 1",
+        "gh pr 'merge' 1",
+    ] {
         assert!(!is_auto_merge(c), "{c:?}");
     }
 }

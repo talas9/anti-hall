@@ -162,11 +162,9 @@ fn assistant_text(tail: &str) -> Scan {
         }
         let content = entry.get("message").and_then(|m| m.get("content"));
         let blocks: Vec<&str> = match content {
-            Some(Value::Array(a)) => a
-                .iter()
-                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(Value::as_str))
-                .collect(),
+            Some(Value::Array(a)) => {
+                a.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("text")).filter_map(|b| b.get("text").and_then(Value::as_str)).collect()
+            }
             Some(Value::String(s)) => vec![s.as_str()],
             _ => Vec::new(),
         };

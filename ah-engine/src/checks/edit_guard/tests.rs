@@ -45,7 +45,15 @@ fn a_write_into_the_launcher_directory_is_blocked_for_every_agent_with_the_node_
 fn spellings_that_reach_the_launcher_directory_are_blocked_and_the_rest_are_not() {
     let h = home("paths");
     let e = env(&h, Some("agent_tool"));
-    for f in [".anti-hall/bin/x.sh", "./.anti-hall/bin", ".anti-hall/bin/", "proj/../.anti-hall/bin/y", &format!("{h}/.anti-hall/bin"), &format!("{h}//.anti-hall//bin//z"), &format!("{h}/.anti-hall\\bin\\z")] {
+    for f in [
+        ".anti-hall/bin/x.sh",
+        "./.anti-hall/bin",
+        ".anti-hall/bin/",
+        "proj/../.anti-hall/bin/y",
+        &format!("{h}/.anti-hall/bin"),
+        &format!("{h}//.anti-hall//bin//z"),
+        &format!("{h}/.anti-hall\\bin\\z"),
+    ] {
         assert!(matches!(decide(&edit(f, &h), &e), Verdict::Exact(_)), "{f}");
     }
     for f in [".anti-hall/other", ".anti-hall/binx/x", "bin/x", "", "/etc/passwd", &format!("{h}/.anti-hall/BIN/x")] {
@@ -86,7 +94,11 @@ fn what_the_engine_cannot_see_defers() {
     assert_eq!(decide(&json!({"tool_name": "Edit", "tool_input": {"file_path": "x.sh"}}), &e), Verdict::Defer, "no cwd");
     assert_eq!(decide(&json!({"tool_name": "Edit", "tool_input": {"file_path": "/x.sh"}}), &e), Verdict::Allow, "an absolute path needs no cwd");
     assert_eq!(decide(&json!({"tool_name": "Edit", "cwd": h, "tool_input": {"file_path": ["a"]}}), &e), Verdict::Defer, "an array path");
-    assert_eq!(decide(&edit("x.sh", &h), &RequestEnv::from_pairs([("CLAUDE_CODE_ENTRYPOINT", "agent_tool")])), Verdict::Defer, "no home directory: the environment may have been cut off");
+    assert_eq!(
+        decide(&edit("x.sh", &h), &RequestEnv::from_pairs([("CLAUDE_CODE_ENTRYPOINT", "agent_tool")])),
+        Verdict::Defer,
+        "no home directory: the environment may have been cut off"
+    );
 }
 
 #[test]
