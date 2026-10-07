@@ -57,7 +57,12 @@ test('Codex has no SubagentStart hook (subagent compact cannot reach Codex)', ()
       if (e.name === 'node_modules') continue;
       const f = path.join(d, e.name);
       if (e.isDirectory()) walk(f);
-      else if (/\.(json|js|toml)$/.test(e.name) && /SubagentStart|verify-first-subagent/.test(fs.readFileSync(f, 'utf8')) && !/\.test\.js$/.test(e.name)) hits.push(path.relative(dir, f));
+      else if (/\.(json|js|toml)$/.test(e.name) && !/\.test\.js$/.test(e.name)) {
+        // D87: the thin hooks.json has a trigger for every event the host documents, SubagentStart included, with no hook behind it;
+        // what must not exist on Codex is the verify-first-subagent hook itself (so only the thin file may name the bare event)
+        const re = e.name === 'hooks.json' ? /verify-first-subagent/ : /SubagentStart|verify-first-subagent/;
+        if (re.test(fs.readFileSync(f, 'utf8'))) hits.push(path.relative(dir, f));
+      }
     }
   })(dir);
   assert.deepStrictEqual(hits, [], 'Codex port references SubagentStart: ' + hits.join(', '));
