@@ -413,11 +413,11 @@ value = [
 doc = "The claude PostToolUse hook entries, in dispatch order."
 value = [
   { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "merge-side-pick" },
-  { id = "git-guard:audit", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "" },
+  { id = "git-guard:audit", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "git-audit" },
   { id = "output-verify-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/output-verify-guard.js\"", timeout = 10, check = "" },
   { id = "devswarm-parent-reply-tracker", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", timeout = 10, check = "" },
   { id = "devswarm-child-drain", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"", timeout = 10, check = "" },
-  { id = "coordinator-work-guard:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post", timeout = 10, check = "" },
+  { id = "coordinator-work-guard:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post", timeout = 10, check = "coordinator-work-guard" },
   { id = "codex-quota-detect", matcher = "Agent", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js\"", timeout = 10, check = "" },
   { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js\"", timeout = 10, check = "" },
 ]
@@ -425,7 +425,7 @@ value = [
 [dispatch.hooks_claude_PostToolUseFailure]
 doc = "The claude PostToolUseFailure hook entries, in dispatch order."
 value = [
-  { id = "failure-root-cause-nudge", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/failure-root-cause-nudge.js\"", timeout = 10, check = "" },
+  { id = "failure-root-cause-nudge", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/failure-root-cause-nudge.js\"", timeout = 10, check = "failure-root-cause-nudge" },
 ]
 
 [dispatch.hooks_claude_PreCompact]
@@ -514,7 +514,7 @@ value = [
 doc = "The codex PostToolUse hook entries, in dispatch order."
 value = [
   { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "merge-side-pick" },
-  { id = "git-guard:audit", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "" },
+  { id = "git-guard:audit", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "git-audit" },
   { id = "devswarm-parent-reply-tracker", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", timeout = 10, check = "" },
   { id = "devswarm-child-drain", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"", timeout = 10, check = "" },
 ]

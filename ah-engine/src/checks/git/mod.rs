@@ -3,9 +3,10 @@
 //!
 //! Differences from the Node guard (deliberate, listed in the README): the Jev add-block consult is not
 //! performed (Node falls back to the regex verdict when Jev has no key, which is the default); the
-//! PostToolUse `--audit` pass is not ported; plugin options stored in Claude's own settings are not read
+//! PostToolUse `--audit` pass is the separate `git-audit` check ([`audit`]); plugin options stored in Claude's own settings are not read
 //! (only the `CLAUDE_PLUGIN_OPTION_*` environment variable form).
 pub mod aliases;
+pub mod audit;
 pub mod gitcmd;
 pub mod heredoc;
 pub mod launcher;

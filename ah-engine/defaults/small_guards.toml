@@ -351,7 +351,7 @@ value = "re-run it background-throttled: `{throttled}`."
 
 [coordinator_work.summary]
 doc = "One-line description of the coordinator-work-guard check in the generated reference."
-value = "Main-thread work window: allows subagent Bash calls in the engine; the window itself (classification, counters, block) stays with the Node guard until the command-guard port lands (port of coordinator-work-guard.js)."
+value = "Main-thread work window. PreToolUse: allows subagent Bash calls in the engine and defers the rest (the classification and the block stay with Node). PostToolUse: records the call in the window, nudges once per crossing and folds stale session files, when the call's classification is already known (the Node pre-verdict of the same tool call) or provably not work; otherwise defers (port of coordinator-work-guard.js)."
 
 [coordinator_work.agent_markers]
 doc = "Payload fields the host puts on a subagent's hook payload and never on the main thread's."
@@ -932,3 +932,349 @@ value = ".prune-stamp-{prefix}.json"
 [guardkit.prune_stamp_key]
 doc = "Key of the stamp file that holds the time of the last sweep."
 value = "lastSweep"
+
+# ---- turn gate (hooks/lib/turn-gate.js) ---------------------------------------------------------------------
+
+[turn_gate.dir]
+doc = "Directory under the state directory that holds the per-session turn-gate files."
+value = "turn-gate"
+
+[turn_gate.prefix]
+doc = "File-name prefix of a turn-gate state file (the Node code also hands it to the pruning sweep as the family name)."
+value = "tg-"
+
+[turn_gate.session_max]
+doc = "Longest session id part, in UTF-16 units, of a turn-gate file name."
+value = 80
+
+[turn_gate.tail_bytes]
+doc = "How many bytes at the end of the transcript are read to find the newest human prompt."
+value = 524288
+min = 4096
+max = 67108864
+
+[turn_gate.max_sigs]
+doc = "How many distinct advisory signatures one key remembers per turn."
+value = 16
+min = 1
+max = 1024
+
+[turn_gate.injected_re]
+doc = "Regex source (JavaScript syntax) of the text an injected, non-human user entry starts with."
+value = '^\s*<(?:task-notification|system-reminder|local-command|command-name|command-message)'
+
+[turn_gate.agent_prefix]
+doc = "Prefix of the turn id of a subagent (its whole run is one turn)."
+value = "agent:"
+
+[turn_gate.main_label]
+doc = "The slot label used for the main thread."
+value = "main"
+
+# ---- expected-failure classifier (hooks/lib/expected-failure.js) -------------------------------------------
+
+[expected_failure.predicate_verbs]
+doc = "Verbs whose exit status 1 means no, different or false rather than broken."
+value = ["grep", "egrep", "fgrep", "ugrep", "rg", "ag", "ack", "test", "[", "[[", "diff", "cmp", "pgrep", "which", "type"]
+
+[expected_failure.trivial_verbs]
+doc = "Statements that cannot fail on their own and may sit in an && chain."
+value = ["echo", "printf", "true", ":"]
+
+[expected_failure.pass_through]
+doc = "Wrappers that pass the inner command's exit status through unchanged."
+value = ["command", "builtin", "env", "time", "nice", "nohup"]
+
+[expected_failure.predicate_exit]
+doc = "The only exit code (as text) that counts as a predicate's answer."
+value = "1"
+
+[expected_failure.command_v_verb]
+doc = "The verb name reported for the command -v form."
+value = "command -v"
+
+[expected_failure.git_verb]
+doc = "The verb whose read-only predicate forms are recognised by git_predicates."
+value = "git"
+
+[expected_failure.git_predicates]
+doc = "Regex sources (JavaScript syntax) over the arguments of a git command that make it a predicate (exit 1 is the answer)."
+value = [
+  '^(?:-C\s+\S+\s+)?diff\b.*(?:--quiet|--exit-code)\b',
+  '^(?:-C\s+\S+\s+)?merge-base\b.*--is-ancestor\b',
+  '^(?:-C\s+\S+\s+)?grep\b',
+  '^(?:-C\s+\S+\s+)?cat-file\b.*\s-e\b',
+  '^(?:-C\s+\S+\s+)?ls-files\b.*--error-unmatch\b',
+  '^(?:-C\s+\S+\s+)?show-ref\b.*(?:--verify|--quiet|-q)\b',
+]
+
+[expected_failure.bail]
+doc = "Regex source of the constructs that make the last statement not decide the exit status (heredocs, set -e, pipefail, trap, exec, eval, shells run with -e)."
+value = '<<|\bset\s+-[A-Za-z]*e|\bset\s+-o\b|\bpipefail\b|\berrexit\b|\btrap\b|\bexec\b|\beval\b|\bbash\s+-[A-Za-z]*e\b|\bsh\s+-[A-Za-z]*e\b'
+
+[expected_failure.assign]
+doc = "Regex source of a leading VAR=value assignment word."
+value = '^[A-Za-z_][A-Za-z0-9_]*='
+
+[expected_failure.command_v]
+doc = "Regex source of the command -v / command -V form (with optional leading assignments)."
+value = '^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*command\s+-[vV]\b'
+
+[expected_failure.control]
+doc = "Regex source of a statement that starts a shell control construct (never classified)."
+value = '^(?:if|for|while|until|case|select|function|do|then|else|fi|done|esac)\b'
+
+[expected_failure.trailing_bg]
+doc = "Regex source of a statement ending in an ampersand."
+value = '&\s*$'
+
+[expected_failure.trailing_and]
+doc = "Regex source of a statement ending in a double ampersand."
+value = '&&\s*$'
+
+[expected_failure.comment_or_empty]
+doc = "Regex source of a statement that is a comment or empty."
+value = '^\s*(?:#|$)'
+
+[expected_failure.subst]
+doc = "Regex source of a command substitution (dollar-parenthesis or backtick)."
+value = '\$\(|`'
+
+[expected_failure.redirect_split]
+doc = "Regex source that finds the first redirection in a deciding command."
+value = '\s(?:2?>|&>|<)'
+
+[expected_failure.exit_code]
+doc = "Regex source of the exit code stated in a failed tool call's error text; group 1 is the number."
+value = '^\s*Exit code (\d+)\b'
+
+[expected_failure.refusal]
+doc = "Regex source of an error text that is a harness refusal: the command never ran."
+value = '^\s*This (?:agent|session) is isolated in the worktree\b'
+
+# ---- failure-root-cause-nudge (hooks/failure-root-cause-nudge.js) -------------------------------------------
+
+[failure_nudge.summary]
+doc = "One-line description of the failure-root-cause-nudge check in the generated reference."
+value = "Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals and repeats within a turn (port of failure-root-cause-nudge.js)."
+
+[failure_nudge.guard_name]
+doc = "The skip.json key that silences this hook."
+value = "failure-root-cause-nudge"
+
+[failure_nudge.message_guard]
+doc = "The guard label shown in the advisory."
+value = "root-cause"
+
+[failure_nudge.setting]
+doc = "Where the on/off switch is read from (guards.failureRootCauseNudge, default on)."
+value = { section = "guards", key = "failureRootCauseNudge", env = "ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE", aliases = [], option = "guards_failure_root_cause_nudge", default = true }
+
+[failure_nudge.filter_setting]
+doc = "Where the noise-filter switch is read from (guards.failureNudgeFilter, default on)."
+value = { section = "guards", key = "failureNudgeFilter", env = "ANTIHALL_FAILURE_NUDGE_FILTER", aliases = [], option = "", default = true }
+
+[failure_nudge.gate_key]
+doc = "The turn-gate key under which the once-per-turn state of this advisory is kept."
+value = "failure-root-cause-nudge"
+
+[failure_nudge.event]
+doc = "The hook event name in the advisory's output."
+value = "PostToolUseFailure"
+
+[failure_nudge.max_cmd_len]
+doc = "Longest command text, in UTF-16 units, shown in the advisory before it is cut."
+value = 80
+min = 8
+max = 1000
+
+[failure_nudge.ellipsis]
+doc = "Text appended to a cut command."
+value = "…"
+
+[failure_nudge.cmd_open]
+doc = "Text before the shown command in the advisory headline."
+value = " (`"
+
+[failure_nudge.cmd_close]
+doc = "Text after the shown command in the advisory headline."
+value = "`)"
+
+[failure_nudge.msg_what]
+doc = "Advisory headline; {cmd} is the shown command part or empty."
+value = "this command failed{cmd}."
+
+[failure_nudge.msg_instead]
+doc = "Advisory advice."
+value = "before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) rather than guessing a fix from the symptom."
+
+# ---- coordinator-work-guard, PostToolUse pass (hooks/coordinator-work-guard.js --post, hooks/lib/coordinator-work.js) ----
+
+[coordinator_work.post_event]
+doc = "The event name of the pass that records calls into the window."
+value = "PostToolUse"
+
+[coordinator_work.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "coordinator-work-guard"
+
+[coordinator_work.command_guard_name]
+doc = "The skip.json key of command-guard, which also silences the work window."
+value = "command-guard"
+
+[coordinator_work.command_guard_setting]
+doc = "Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it."
+value = { section = "safety", key = "commandGuard", env = "ANTIHALL_COMMAND_GUARD", aliases = [], option = "safety_command_guard", default = true }
+
+[coordinator_work.window_setting]
+doc = "Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns the window off."
+value = { section = "guards", key = "coordinatorWorkWindowMinutes", env = "ANTIHALL_COORDINATOR_WORK_WINDOW_MINUTES", default = 10, min = 0 }
+
+[coordinator_work.nudge_setting]
+doc = "Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory."
+value = { section = "guards", key = "coordinatorWorkNudgeAt", env = "ANTIHALL_COORDINATOR_WORK_NUDGE_AT", default = 4, min = 0 }
+
+[coordinator_work.block_setting]
+doc = "The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never."
+value = { section = "guards", key = "coordinatorWorkBlockAt", env = "ANTIHALL_COORDINATOR_WORK_BLOCK_AT", default = 7, min = 0 }
+
+[coordinator_work.cap_setting]
+doc = "Safety cap on the stored window timestamps per session (guards.coordinatorWorkMaxEntries)."
+value = { section = "guards", key = "coordinatorWorkMaxEntries", env = "ANTIHALL_COORDINATOR_WORK_MAX_ENTRIES", default = 50, min = 1 }
+
+[coordinator_work.coordinator_entrypoints]
+doc = "CLAUDE_CODE_ENTRYPOINT values that mean the interactive main thread."
+value = ["cli", "vscode", "jetbrains", "vim", "emacs"]
+
+[coordinator_work.coordinator_entrypoint_prefix]
+doc = "Prefix of the CLAUDE_CODE_ENTRYPOINT values (IDE terminals) that also mean the main thread."
+value = "terminal_ide_"
+
+[coordinator_work.subagent_entrypoint]
+doc = "CLAUDE_CODE_ENTRYPOINT value of a subagent process."
+value = "agent_tool"
+
+[coordinator_work.entrypoint_env]
+doc = "The environment variable that names the host entry point."
+value = "CLAUDE_CODE_ENTRYPOINT"
+
+[coordinator_work.session_file_prefix]
+doc = "Prefix of a per-session window file under the state directory."
+value = "coordinator-work-session-"
+
+[coordinator_work.session_id_max]
+doc = "Longest session id part, in UTF-16 units, of a window file name."
+value = 80
+
+[coordinator_work.metrics_file]
+doc = "Name of the metrics file under the state directory."
+value = "coordinator-work-metrics.json"
+
+[coordinator_work.fold_stamp_file]
+doc = "Name of the stamp file that throttles folding stale window files into the metrics."
+value = ".coordinator-work-fold-stamp.json"
+
+[coordinator_work.trips_file]
+doc = "Name of the JSONL log of nudges and blocks."
+value = "coordinator-work-trips.log"
+
+[coordinator_work.trips_max_bytes]
+doc = "Size at which the trips log is rotated to its .1 file."
+value = 1048576
+min = 1024
+
+[coordinator_work.fold_throttle_ms]
+doc = "Minimum time between two folds of stale window files into the metrics (6 hours)."
+value = 21600000
+min = 0
+
+[coordinator_work.pre_cap]
+doc = "How many pre-call verdicts (kept until the matching post-call) a window file holds."
+value = 20
+min = 1
+
+[guardkit.lock_stale_ms]
+doc = "Age, in milliseconds, after which another process's lock on a window file or the metrics is considered abandoned and is taken over (the same limit for a live, a dead and an unknown holder)."
+value = 5000
+
+[coordinator_work.lock_wait_ms]
+doc = "How long a lock held by another process is waited for before the call is handed to the Node hook."
+value = 250
+min = 0
+
+[coordinator_work.lock_wait_env]
+doc = "Test-only variable that overrides the lock wait (honoured only with the isolation flag set)."
+value = "ANTIHALL_COORDINATOR_WORK_LOCK_WAIT_MS"
+
+[coordinator_work.lock_isolation_env]
+doc = "The variable that marks an isolated test home (enables the lock wait override)."
+value = "ANTIHALL_TEST_HOME_ISOLATED"
+
+[guardkit.lock_step_ms]
+doc = "Pause between two attempts to take a held lock."
+value = 5
+min = 1
+
+[coordinator_work.lock_suffix]
+doc = "Suffix of a lock file next to the file it guards."
+value = ".lock"
+
+[coordinator_work.plugin_json]
+doc = "Path of the plugin manifest, relative to the plugin root; its version stamps new window files."
+value = ".claude-plugin/plugin.json"
+
+[coordinator_work.unknown_version]
+doc = "The version text used when the manifest cannot be read."
+value = "unknown"
+
+[coordinator_work.safe_command]
+doc = "Regex source (JavaScript syntax) of the only characters a command may hold to be provably not work."
+value = '^[A-Za-z0-9 \t\n_.\/:=@%+,&|;-]*$'
+
+[coordinator_work.safe_arg]
+doc = "Regex source of an argument word of a command that is provably not work."
+value = '^[A-Za-z0-9_.\/:=@%+,-]+$'
+
+[coordinator_work.safe_verb]
+doc = "Regex source of the verb word of a command that is provably not work."
+value = '^[a-z-]+$'
+
+[coordinator_work.segment_split]
+doc = "Regex source that splits a provably-not-work candidate into segments (&&, ||, ;, |, newline)."
+value = '&&|\|\||;|\||\n'
+
+[coordinator_work.safe_max_len]
+doc = "Longest command, in UTF-16 units, that is tested for being provably not work."
+value = 4096
+
+[coordinator_work.readonly_verbs]
+doc = "Verbs that only read; a command built from these is not work."
+value = ["ls", "cat", "head", "tail", "pwd", "wc", "grep", "rg", "which", "whoami", "stat", "du", "df", "basename", "dirname", "realpath", "readlink", "id", "uname", "hostname", "true", "false"]
+
+[coordinator_work.readonly_git_subs]
+doc = "git subcommands that only read."
+value = ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe"]
+
+[coordinator_work.git_verb]
+doc = "The verb of a git command."
+value = "git"
+
+[coordinator_work.git_output_flag]
+doc = "Regex source of a git argument that writes output to a file (so the command is not read-only)."
+value = 'output|^-o'
+
+[coordinator_work.nudge_what]
+doc = "Advisory headline; {count} is the number of work calls in the window and {minutes} the window length."
+value = "{count} state-changing calls in the main thread within {minutes} min."
+
+[coordinator_work.nudge_instead]
+doc = "Advisory advice without a block threshold."
+value = "delegate the rest to a subagent now."
+
+[coordinator_work.nudge_instead_block]
+doc = "Advisory advice with a block threshold; {block_at} is the call that is blocked."
+value = "delegate the rest to a subagent now; call {block_at} in the window is blocked."
+
+[coordinator_work.trip_nudge]
+doc = "The event name a nudge is logged under in the trips log."
+value = "nudge"

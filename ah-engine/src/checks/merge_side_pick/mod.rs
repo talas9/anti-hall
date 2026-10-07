@@ -246,7 +246,7 @@ impl Check for MergeSidePick {
         let st = Settings::from_env(env);
         // No home directory: Node would fall back to the process home, which the engine cannot name. Defer.
         let Some(store) = FileState::new(&st.home) else { return (s.tool == Some("Bash")).then_some(Verdict::Defer) };
-        // `None` from decide_as is "nothing to say": answer it natively as Allow (dispatch reads None as Defer).
+        // a silent answer is an answer: `None` would hand the call to the Node hook, which would record the call a second time
         Some(decide_as(payload, &st, &store, s.event == "PostToolUse").unwrap_or(Verdict::Allow))
     }
 }

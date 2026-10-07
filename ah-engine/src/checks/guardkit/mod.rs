@@ -6,13 +6,16 @@
 //! per-session state (through [`state::SessionState`], files shared with the Node guards) and use JavaScript regexes whose
 //! semantics differ from Rust's in a few places ([`jsre`]). Each of those is written once here and tested against the
 //! Node original, so a guard module holds only its own decision logic.
+pub mod filelock;
 pub mod fsio;
 pub mod jsre;
 pub mod msg;
+pub mod ojson;
 pub mod paths;
 pub mod settings;
 pub mod state;
 pub mod text;
+pub mod turn_gate;
 
 #[cfg(test)]
 mod tests;

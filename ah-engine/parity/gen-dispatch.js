@@ -30,6 +30,9 @@ const CHECKS = [
 ].map(([script, check]) => ({ event: 'PreToolUse', script: script + '.js', args: '', check })).concat([
   // the PostToolUse / PostToolUseFailure companions of the Pre guards (the same script run with --post or --audit)
   ['PostToolUse', 'merge-side-pick.js', '--post', 'merge-side-pick'],
+  ['PostToolUse', 'git-guard.js', '--audit', 'git-audit'],
+  ['PostToolUse', 'coordinator-work-guard.js', '--post', 'coordinator-work-guard'],
+  ['PostToolUseFailure', 'failure-root-cause-nudge.js', '', 'failure-root-cause-nudge'],
 ].map(([event, script, args, check]) => ({ event, script, args, check })));
 
 const q = s => JSON.stringify(s); // TOML basic strings accept JSON string escapes for this content

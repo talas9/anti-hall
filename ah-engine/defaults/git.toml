@@ -620,3 +620,78 @@ value = { what = "a commit message (via `-F`/`--file`, from a heredoc body or fi
 doc = "Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}."
 value = { what = "a command that creates a commit (git {sub}) and carries an AI/assistant self-credit trailer line is blocked.", why = "Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).", instead = "remove the trailer line and re-run." }
 
+
+# ---- PostToolUse audit (git-guard.js --audit) --------------------------------------------------------------------
+
+[git_audit.summary]
+doc = "One-line description of the git-audit check in the generated reference."
+value = "Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer (port of git-guard.js --audit)."
+
+[git_audit.window_s]
+doc = "How recent, in seconds, a commit must be for the audit to look at it."
+value = 900
+min = 1
+max = 86400
+
+[git_audit.commits]
+doc = "How many commits at HEAD the audit reads."
+value = 20
+min = 1
+max = 1000
+
+[git_audit.timeout_ms]
+doc = "Timeout of the git log the audit runs in each repository."
+value = 4000
+unit = "ms"
+
+[git_audit.argv_log]
+doc = "git arguments of the audit's log query; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e)."
+value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%h%x1f%ct%x1f%B%x1e", "HEAD"]
+
+[git_audit.record_sep]
+doc = "The character that ends one commit record of the audit's log output (RS)."
+value = "\u001e"
+
+[git_audit.field_sep]
+doc = "The character that separates the fields of one commit record (US)."
+value = "\u001f"
+
+[git_audit.max_depth]
+doc = "How deep eval and shell -c payloads are followed when looking for commit-creating git commands."
+value = 3
+min = 0
+max = 16
+
+[git_audit.msg]
+doc = "Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes)."
+value = "anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last {window_min} min) {hits} carry an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") - added by a git hook, template, cherry-pick/rebase, or an editor. Commits carry no AI co-author credit: reword them now (`git commit --amend` for HEAD, `git rebase -i` for older ones) BEFORE pushing."
+
+[git_audit.cd_verb]
+doc = "The verb whose directory argument moves the audit's working directory."
+value = "cd"
+
+[git_audit.eval_verb]
+doc = "The verb whose payload is scanned as a command."
+value = "eval"
+
+[git_audit.git_verb]
+doc = "The verb of a git command."
+value = "git"
+
+[git_audit.opts_with_value]
+doc = "Global git options that take a value in the next word (skipped when looking for the repository directory)."
+value = ["-c", "--git-dir", "--work-tree", "--namespace", "--config-env"]
+
+[git_audit.dir_opt]
+doc = "The global git option that changes the repository directory."
+value = "-C"
+
+[git_audit.event]
+doc = "The hook event name in the audit's output."
+value = "PostToolUse"
+
+[git_audit.max_buffer]
+doc = "Largest log output, in bytes, the audit accepts from one repository (Node's child-process buffer cap: a larger output is dropped)."
+value = 1048576
+min = 1024
+max = 268435456

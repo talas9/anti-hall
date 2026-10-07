@@ -131,3 +131,47 @@ pub fn is_skipped(st: &Settings, guard: &str) -> bool {
     }
     !defaults::list("guardkit.destructive_guards").contains(&guard) && live(defaults::text("guardkit.skip_all_key"))
 }
+
+/// `coerceValue` for a number entry on a JSON value or string: `None` when the value does not count (so the next source is
+/// asked). Strings are trimmed, an empty one is nothing, anything that is not a finite number is nothing; a value below the
+/// entry's `min` is nothing (`rejectBelowMin`), the others are clamped.
+fn coerce_number(v: &Value, entry: &V) -> Option<f64> {
+    let n = match v {
+        Value::Number(n) => n.as_f64()?,
+        Value::String(s) => {
+            let t = js_trim(s);
+            if t.is_empty() {
+                return None;
+            }
+            crate::checks::guardkit::text::js_number_of_str(t)
+        }
+        _ => return None,
+    };
+    if !n.is_finite() {
+        return None;
+    }
+    let min = entry.get("min").and_then(V::as_integer).map(|m| m as f64);
+    if min.is_some_and(|m| n < m) {
+        return None;
+    }
+    Some(entry.get("max").and_then(V::as_integer).map_or(n, |m| n.min(m as f64)))
+}
+
+/// The effective value of a number switch: environment variable, then `settings.json`, then the default. The entry's `min`
+/// rejects a smaller value (it falls through to the next source, as `rejectBelowMin` does); a number setting here has no
+/// plugin option.
+///
+/// Mirrors `hooks/lib/settings.js` `get` for a number entry with `rejectBelowMin`.
+pub fn get_num(st: &Settings, entry: &V) -> f64 {
+    let env_name = entry.str_field("env");
+    if !env_name.is_empty()
+        && let Some(n) = st.env.get(env_name).and_then(|v| coerce_number(&Value::String(v.clone()), entry))
+    {
+        return n;
+    }
+    let (section, key) = (entry.str_field("section"), entry.str_field("key"));
+    if let Some(n) = read_object(st, defaults::text("guardkit.settings_file")).and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|v| coerce_number(v, entry))) {
+        return n;
+    }
+    entry.get("default").and_then(V::as_integer).map_or(0.0, |d| d as f64)
+}

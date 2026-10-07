@@ -1,4 +1,4 @@
-//! Built-in `check = "coordinator-work-guard"`: the part of the Node coordinator-work-guard (PreToolUse and PostToolUse
+//! Built-in `check = "coordinator-work-guard"` (the PostToolUse window pass is in [`post`]): the part of the Node coordinator-work-guard (PreToolUse and PostToolUse
 //! on Bash) that can be decided exactly without the command classifier.
 //!
 //! The Node guard keeps a per-session window of the main thread's state-changing Bash calls, nudges once per crossing
@@ -11,12 +11,15 @@
 //!
 //! Mirrors `hooks/coordinator-work-guard.js` `main` (the early exits) and `hooks/coordinator-detect.js` `isCoordinator`
 //! (the payload-only part).
+use crate::checks::git::util::Settings;
 use crate::checks::guardkit::text::js_trim;
+use crate::reqenv::RequestEnv;
 use crate::checks::{Check, Verdict};
 use crate::defaults;
 use crate::rules::Subject;
 use serde_json::Value;
 
+pub mod post;
 #[cfg(test)]
 mod tests;
 
@@ -40,7 +43,7 @@ fn present(p: &Value, key: &str) -> bool {
 /// but this check only sees Bash).
 ///
 /// Mirrors `coordinator-detect.js` `isCodexPayload`.
-fn is_codex(p: &Value) -> bool {
+pub(crate) fn payload_is_codex(p: &Value) -> bool {
     defaults::list("coordinator_work.codex_markers").iter().all(|k| p.get(k).and_then(Value::as_str).is_some_and(|s| !s.is_empty()))
 }
 
@@ -51,7 +54,7 @@ fn is_codex(p: &Value) -> bool {
 /// Mirrors `coordinator-detect.js` `isCoordinator` (payload part), `isSubagent` and `isSubagentByPayload`.
 pub(crate) fn subagent_by_payload(p: &Value) -> bool {
     let markers = defaults::list("coordinator_work.agent_markers");
-    if is_codex(p) { markers.iter().any(|k| present(p, k)) } else { markers.iter().any(|k| truthy(p.get(k))) }
+    if payload_is_codex(p) { markers.iter().any(|k| present(p, k)) } else { markers.iter().any(|k| truthy(p.get(k))) }
 }
 
 /// The check's decision on one payload. `None`: nothing to say.
@@ -87,6 +90,16 @@ impl Check for CoordinatorWorkGuard {
     }
 
     fn run_payload(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value) -> Option<Verdict> {
+        Some(decide(payload).unwrap_or(Verdict::Allow))
+    }
+
+    /// PostToolUse records the call in the window ([`post`]); PreToolUse is [`decide`]. A silent answer is an answer
+    /// (`Allow`): `None` would hand the call to the Node hook, which for the PostToolUse pass would record it twice.
+    fn run_env(&self, s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        if s.event == defaults::text("coordinator_work.post_event") {
+            let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(defaults::env_name("plugin_root"))).unwrap_or_default();
+            return Some(post::decide_post(payload, &Settings::from_env(env), env, root).unwrap_or(Verdict::Allow));
+        }
         Some(decide(payload).unwrap_or(Verdict::Allow))
     }
 }

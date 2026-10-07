@@ -70,7 +70,7 @@ fn js_number_string(n: f64) -> String {
 
 /// `Number(s)` for a JavaScript string: white space trimmed, empty is 0, `0x`/`0o`/`0b` prefixes, `Infinity`, decimal and
 /// exponent forms; anything else is NaN.
-fn js_number_of_str(s: &str) -> f64 {
+pub fn js_number_of_str(s: &str) -> f64 {
     let t = js_trim(s);
     if t.is_empty() {
         return 0.0;
