@@ -46,6 +46,10 @@ value = "TYPESAFE_API_KEY"
 doc = "Prefix of the per-integration kill switch: the integration id in upper snake case is appended and a value of 0 forces that one integration off (Node: ANTIHALL_JEV_<ID>)."
 value = "ANTIHALL_JEV_"
 
+[env.jev_audit_snippets]
+doc = "Switch variable of the audit snippets: a boolean word turns them on or off ahead of the settings (Node: ANTIHALL_JEV_AUDIT_SNIPPETS)."
+value = "ANTIHALL_JEV_AUDIT_SNIPPETS"
+
 [env.jev_option_prefix]
 doc = "Prefix Claude Code gives the plugin options it exports to hook processes; the option name in upper case is appended."
 value = "CLAUDE_PLUGIN_OPTION_"
@@ -216,6 +220,10 @@ value = "0"
 
 # ---- the decision log ----------------------------------------------------------------------------------------
 
+[jev.log_dir]
+doc = "The directory of the Jev logs (decision log, audit log, daily rollups), relative to the anti-hall home directory."
+value = "logs"
+
 [jev.log_file]
 doc = "The decision log, relative to the anti-hall home directory, in the row shape the Node jev report reads (Node: logs/jev-assist.ndjson)."
 value = "logs/jev-assist.ndjson"
@@ -348,3 +356,49 @@ min = 1024
 [jev.detached_args]
 doc = "The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does)."
 value = ["jev", "ask", "--json"]
+
+[jev.state_dir]
+doc = "Directory of the Jev budget-watch state, relative to the anti-hall home directory (Node: state/)."
+value = "state"
+
+[jev.budget_file]
+doc = "The budget-watch state file in jev.state_dir: the day, the spend so far and the day a warning was last given (Node: jev-budget.json)."
+value = "jev-budget.json"
+
+[jev.audit_file]
+doc = "The opt-in audit-snippet log, relative to the log directory (Node: jev-audit.ndjson); redacted snippets of decisions that changed the outcome."
+value = "jev-audit.ndjson"
+
+[jev.audit_max_bytes]
+doc = "The audit log rotates (one backup) once it is larger than this (Node: LOG_MAX_BYTES)."
+value = 1048576
+unit = "bytes"
+min = 1024
+
+[jev.audit_head_chars]
+doc = "Characters kept from the start of an audit snippet (Node: SNIPPET_HEAD)."
+value = 200
+min = 1
+
+[jev.audit_tail_chars]
+doc = "Characters kept from the end of a tail-weighted audit snippet, whose verdict sits at the end of the text (Node: SNIPPET_TAIL)."
+value = 400
+min = 1
+
+[jev.audit_tail_ids]
+doc = "Integrations whose audit snippet keeps head and tail (the verdict is at the end of the judged text)."
+value = ["outputVerifyGuard"]
+
+[jev.audit_scrub_chars]
+doc = "Characters of the judged text scrubbed for a head-only audit snippet (Node: state.slice(0, 2000))."
+value = 2000
+min = 1
+
+[jev.audit_plain_chars]
+doc = "Characters kept of a head-only audit snippet after the scrub (Node: slice(0, 200))."
+value = 200
+min = 1
+
+[jev.rollup_dir]
+doc = "Directory of the daily rollups, relative to the log directory (Node: jev-daily); one JSON file per UTC day."
+value = "jev-daily"

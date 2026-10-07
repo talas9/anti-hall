@@ -306,6 +306,12 @@ pub struct JevSettings {
     pub allow_legacy_key_read: bool,
     /// Rotated decision-log generations to keep.
     pub log_rotated_files: u64,
+    /// `jev.budget.mode` is `watch`: warn when the day's spend passes `budget_usd_per_day` (never disables Jev).
+    pub budget_watch: bool,
+    /// `jev.budget.usdPerDay`: the daily spend that raises the warning, when set and positive.
+    pub budget_usd_per_day: Option<f64>,
+    /// `jev.audit.snippets`: keep a redacted snippet of a decision that changed (or would change) the outcome.
+    pub audit_snippets: bool,
     /// The `prices` table (`{model: {inPerMTok, outPerMTok}}`), if the owner set one.
     pub prices: Value,
     /// USD per million input tokens when no price entry applies.
@@ -366,6 +372,15 @@ impl JevSettings {
             Some(n) => (n.clamp(1.0, 100.0).floor()) as u64,
             None => defaults::num("jev.log_rotated_files"),
         };
+        let budget_watch = file_value("budget.mode", Some("JEV_BUDGET_MODE")).as_ref().and_then(coerce_str).as_deref() == Some("watch");
+        let budget_usd_per_day = file_value("budget.usdPerDay", Some("JEV_BUDGET_USD_PER_DAY")).as_ref().and_then(coerce_num).filter(|n| *n > 0.0);
+        let audit_snippets = sources
+            .env
+            .get(defaults::text("env.jev_audit_snippets"))
+            .map(str::trim)
+            .and_then(bool_token)
+            .or_else(|| file_value("audit.snippets", None).as_ref().and_then(coerce_bool))
+            == Some(true);
         let prices = file_value("prices", None).filter(|v| v.as_object().is_some_and(|m| !m.is_empty())).unwrap_or(Value::Null);
         let price =
             |key: &str, dflt: &str| file_value(key, None).as_ref().and_then(coerce_num).filter(|n| *n >= 0.0).unwrap_or_else(|| dflt.parse().unwrap_or(0.0));
@@ -385,6 +400,9 @@ impl JevSettings {
             generic_key_vendor,
             allow_legacy_key_read,
             log_rotated_files,
+            budget_watch,
+            budget_usd_per_day,
+            audit_snippets,
             prices,
             price_in,
             price_out,

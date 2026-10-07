@@ -5,8 +5,8 @@
 //! never prompt text and never a credential. Writing is best effort: a failure is returned for the caller to count but
 //! must never change a decision (D35).
 //!
-//! Folding the rows of the oldest generation into the daily rollups just before it is replaced (Node:
-//! `writeDailyRollups`) is planned (D38); until then the rotation only shifts generations.
+//! Just before the oldest generation is replaced the rows are folded into the daily rollups (`keep::write_daily_rollups`,
+//! Node: `writeDailyRollups`).
 use super::error::JevError;
 use serde_json::Value;
 use std::fs::OpenOptions;
@@ -64,6 +64,7 @@ impl FileLog {
         if meta.len() <= self.max_bytes {
             return;
         }
+        super::keep::write_daily_rollups(&self.path); // before the oldest generation is replaced
         let r#gen = |n: u64| {
             let mut s = self.path.as_os_str().to_os_string();
             s.push(format!(".{n}"));

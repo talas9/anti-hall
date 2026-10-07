@@ -320,6 +320,7 @@ impl SettingsCache {
 
 /// The Jev lane: settings, client, cache, log, stats and the asynchronous queue.
 pub struct Jev {
+    home: PathBuf,
     settings: SettingsCache,
     client: JevClient,
     cache: Arc<dyn JevCache>,
@@ -476,6 +477,7 @@ impl Jev {
             Arc::new(FileLog::new(path, defaults::num("jev.log_max_bytes"), snapshot.log_rotated_files))
         });
         let jev = Arc::new(Jev {
+            home: home.to_path_buf(),
             settings,
             client: match breakers {
                 Some(b) => JevClient::with_breakers(transport, clock.clone(), b),
@@ -749,6 +751,20 @@ impl Jev {
             }
         }
         if log {
+            // budget watch and audit snippet come before the row, as in Node's `finalize`
+            if r.is_some()
+                && let Some((spent, limit)) = super::keep::maybe_warn_budget(&self.home, s.budget_watch, s.budget_usd_per_day, cost_usd)
+            {
+                let mut w = Row::default();
+                w.put("ts", json!(iso_ms(now_unix_ms())));
+                w.put("type", json!("budget-warning"));
+                w.put("window", json!("daily"));
+                w.put("spentUsd", json!(spent));
+                w.put("budgetUsd", json!(limit));
+                self.write(&w);
+            }
+            let (ch, wc) = (direction(req.trust, changed), would_change.clone());
+            super::keep::maybe_write_audit_snippet(&self.home.join(defaults::text("paths.base_dir")).join(defaults::text("jev.log_dir")), s.audit_snippets, &req.id, &hash, &req.state, &ch, &wc);
             self.write(&self.row(
                 s,
                 req,
