@@ -165,6 +165,47 @@ const withSet = (c, settings) => merge(c, { settings });
   for (const hook of Object.keys(AH)) add(hook, 'handover-present', AH[hook]({ transcript_path: TP }), merge(states.fired, { files: { 'proj/.anti-hall/handovers/2026-10-07/sess1/HANDOVER.md': '# handover\n' } }));
 }
 
+// ---- settings-value fuzz: every env / settings.json / plugin-option spelling of a number, boolean or enum -------------
+{
+  const WEIRD = ['85', ' 85 ', '0x55', '8.5e1', '+85', '.85e2', '1_0', '\u0661\u0662', 'Infinity', '-Infinity', 'NaN', '85abc', '', '  ', '0', '-1', '1e999', '0b101', '0o17', '50', '99', '100', '1', '0.5', '1.', '.5', '5e', '--5', '\u00a050\u00a0', '\ufeff50', '50\n', '2e1', '١٢', 'true', 'false', 'on', 'OFF', ' Yes ', 'null'];
+  const JS = [85, 50, 0, -1, 1e999 === Infinity ? 1e9 : 0, 50.5, '50', ' 50 ', true, false, null, [50], { a: 1 }, 'on', 'off', 1, 'abc', '', 99, 100, 101, 1e300];
+  const base = tr(user('go'), asstU(usage(120000))); // 60 percent of 200000
+  for (let i = 0; i < 150; i++) {
+    const k = i % 3;
+    const ctx = { files: base.files, env: {}, settings: { autoHandover: {}, limitConserve: {}, guards: {} } };
+    if (R() < 0.5) ctx.env.ANTIHALL_AUTO_HANDOVER_PCT = pick(WEIRD);
+    if (R() < 0.3) ctx.env.ANTIHALL_AUTO_HANDOVER_MAX_TOKENS = pick(WEIRD);
+    if (R() < 0.3) ctx.env.ANTIHALL_CONTEXT_WINDOW_TOKENS = pick(WEIRD);
+    if (R() < 0.3) ctx.env.CLAUDE_PLUGIN_OPTION_AUTO_HANDOVER_PCT = pick(WEIRD);
+    if (R() < 0.3) ctx.env.CLAUDE_PLUGIN_OPTION_AUTO_HANDOVER_ENABLED = pick(WEIRD);
+    if (R() < 0.4) ctx.settings.autoHandover.pct = pick(JS);
+    if (R() < 0.3) ctx.settings.autoHandover.enabled = pick(JS);
+    if (R() < 0.3) ctx.settings.autoHandover.maxTokens = pick(JS);
+    if (R() < 0.3) ctx.settings.autoHandover.nag = pick(JS);
+    if (R() < 0.3) ctx.settings.autoHandover.nagStepPct = pick(JS);
+    if (R() < 0.3) ctx.settings.autoHandover.nagQuietMin = pick(JS);
+    if (R() < 0.15) ctx.claude = { pluginConfigs: { [pick(['anti-hall', 'anti-hall@anti-hall'])]: pick([{ options: { auto_handover_pct: pick(JS), auto_handover_enabled: pick(JS) } }, { auto_handover_pct: pick(JS) }, 5, 'x']) } };
+    if (R() < 0.4) ctx.files = Object.assign({}, ctx.files, latchFile({ fired: true, firedPct: 85, lastNagPct: pick([80, 85, 90, 'x', null]), lastNagAt: NOW - pick([1e3, 60e3, 20 * 60e3, 'x']), lastPauseNagPct: pick([60, 61, 'x']) }));
+    add('auto-handover', `fuzzset-${i}`, ups({ transcript_path: TP }), ctx);
+    add('auto-handover-pause-nag', `fuzzset-${i}`, stop({ transcript_path: TP }), ctx);
+    // limit-conserve
+    const lc = { files: { '.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json': J({ timestamp: NOW - 60e3, data: { fiveHourPercent: pick([10, 49, 50, 60, 84, 85]), fiveHourResetsAt: iso(NOW + 3600e3) } }) }, env: {}, settings: { limitConserve: {} } };
+    if (R() < 0.6) lc.env.ANTIHALL_LIMIT_THRESHOLD = pick(WEIRD);
+    if (R() < 0.3) lc.env.ANTIHALL_LIMIT_CONSERVE = pick(WEIRD.concat(['auto', 'on', 'off', 'AUTO', ' On ']));
+    if (R() < 0.3) lc.env.CLAUDE_PLUGIN_OPTION_LIMIT_CONSERVE_THRESHOLD = pick(WEIRD);
+    if (R() < 0.3) lc.env.CLAUDE_PLUGIN_OPTION_LIMIT_CONSERVE_MODE = pick(['auto', 'on', 'off', 'Off', '']);
+    if (R() < 0.4) lc.settings.limitConserve.threshold = pick(JS);
+    if (R() < 0.3) lc.settings.limitConserve.mode = pick(['auto', 'on', 'off', ' OFF ', 5, null, true, 'x']);
+    add('limit-conserve-inject', `fuzzset-${i}`, ups(), lc);
+    // compact-advice-guard
+    const cg = { files: file('t/tr.jsonl', [user('go'), asst('safe to compact', usage(20000))]), env: { ANTIHALL_CONTEXT_WINDOW_TOKENS: '200000' }, settings: { guards: {}, autoHandover: {} } };
+    if (R() < 0.5) cg.settings.guards.compactAdviceGuard = pick(JS.concat(['off', 'no', 'true']));
+    if (R() < 0.3) cg.env.CLAUDE_PLUGIN_OPTION_GUARDS_COMPACT_ADVICE_GUARD = pick(WEIRD);
+    if (R() < 0.3) cg.settings.autoHandover.pct = pick(JS);
+    add('compact-advice-guard', `fuzzset-${i}`, stop({ transcript_path: TP }), cg);
+  }
+}
+
 // ---- 4. compact-advice-guard -----------------------------------------------------------------------------------
 {
   const H = 'compact-advice-guard';
