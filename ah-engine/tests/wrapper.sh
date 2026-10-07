@@ -319,7 +319,7 @@ test_timeout_fallback() {
   out=$tmp/timeout.out
   err=$tmp/timeout.err
   AH_STARTED="$started" AH_PIDFILE="$pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/timeout.list" AH_HOOK_TIMEOUT_S="$short_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err" || return 1
-  wait_for_file "$started" "$poll_limit" && [ -s "$pidfile" ] || return 1
+  wait_for_file "$started" "$poll_limit" && wait_for_nonempty_file "$pidfile" "$poll_limit" || return 1
   pid=$(cat "$pidfile")
   wait_for_pids_gone "$poll_limit" "$pid" &&
     [ "$(cat "$out")" = timeout ] && grep -q 'timed out' "$err"
@@ -336,7 +336,7 @@ test_timeout_kills_engine_process() {
   out=$tmp/timeout-kill.out
   err=$tmp/timeout-kill.err
   run_with_cap timeout-kill 15 "$out" "$err" env AH_STARTED="$started" AH_SLEEP_S="$long_sleep" AH_MARKER="$marker" AH_GRAND_MARKER="$grand_marker" AH_PIDFILE="$pidfile" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/timeout-kill.list" AH_HOOK_TIMEOUT_S="$short_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" || return 1
-  wait_for_file "$started" "$poll_limit" && [ -s "$pidfile" ] || return 1
+  wait_for_file "$started" "$poll_limit" && wait_for_nonempty_file "$pidfile" "$poll_limit" || return 1
   set -- $(cat "$pidfile")
   wait_for_pids_gone "$poll_limit" "$1" "$2" &&
     [ "$(cat "$out")" = fallback ] && [ ! -e "$marker" ] && [ ! -e "$grand_marker" ] && ! grep -q 'Terminated\|Killed' "$err"
@@ -354,7 +354,7 @@ test_timeout_kills_fallback_process() {
   out=$tmp/fallback-timeout-kill.out
   err=$tmp/fallback-timeout-kill.err
   run_with_cap fallback-timeout-kill 15 "$out" "$err" env AH_STARTED="$started" AH_SLEEP_S="$long_sleep" AH_MARKER="$marker" AH_GRAND_MARKER="$grand_marker" AH_PIDFILE="$pidfile" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/fallback-timeout-kill.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" || return 1
-  wait_for_file "$started" "$poll_limit" && [ -s "$pidfile" ] || return 1
+  wait_for_file "$started" "$poll_limit" && wait_for_nonempty_file "$pidfile" "$poll_limit" || return 1
   set -- $(cat "$pidfile")
   wait_for_pids_gone "$poll_limit" "$1" "$2" &&
     [ "$(cat "$out")" = fast ] && [ ! -e "$marker" ] && [ ! -e "$grand_marker" ] && ! grep -q 'Terminated\|Killed' "$err"
@@ -619,7 +619,7 @@ test_temp_term_cleanup_kills_child() {
   err=$tmp/term.err
   TMPDIR="$parent" AH_STARTED="$started" AH_PIDFILE="$pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/term.list" AH_HOOK_TIMEOUT_S="$large_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err" &
   wrapper_pid=$!
-  wait_for_file "$started" "$poll_limit" && [ -s "$pidfile" ] || {
+  wait_for_file "$started" "$poll_limit" && wait_for_nonempty_file "$pidfile" "$poll_limit" || {
     kill_test_tree "$wrapper_pid"
     return 1
   }
@@ -1042,7 +1042,7 @@ test_killed_wrapper_orphans_are_reaped() {
   e=$(make_engine orphan-engine hang)
   TMPDIR="$parent" AH_STARTED="$started" AH_PIDFILE="$pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/orphan.list" AH_HOOK_TIMEOUT_S=60 sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/orphan.out" 2>"$tmp/orphan.err" &
   wrapper_pid=$!
-  wait_for_file "$started" "$poll_limit" && [ -s "$pidfile" ] || {
+  wait_for_file "$started" "$poll_limit" && wait_for_nonempty_file "$pidfile" "$poll_limit" || {
     kill_test_tree "$wrapper_pid"
     return 1
   }
