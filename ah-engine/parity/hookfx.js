@@ -102,7 +102,8 @@ async function runFx(o) {
   const mask = o.maskOut || (s => s);
   const baseEnv = (home, extra) => Object.assign({ PATH: process.env.PATH, HOME: home, USERPROFILE: home, ANTIHALL_TEST_ISOLATION: '1', ANTIHALL_INGEST_DRY_RUN: '1' }, o.extraEnv || {}, extra || {});
   let n = 0;
-  await pool(o.scenarios, o.conc || 6, async sc => {
+  const only = arg('--only') ? new RegExp(arg('--only')) : null;
+  await pool(only ? o.scenarios.filter(sc => only.test(sc.id)) : o.scenarios, o.conc || 6, async sc => {
     const id = n++;
     const WN = path.join(tmp, 'n' + id), WE = path.join(tmp, 'e' + id);
     for (const W of [WN, WE]) { fs.mkdirSync(W, { recursive: true }); build(W, sc.world); }
@@ -125,6 +126,10 @@ async function runFx(o) {
       if (e1.out.trim() === 'AHFALLBACK') { deferred = true; e1 = await nodeRun(WE); }
       if (deferred && sc.answerWhenSilent && n1.code === 0 && !n1.out.trim()) {
         stats.mismatch++; mism.push({ scenario: sc.id, step: si, node: n1, engine: e1, treeDiff: [], note: 'engine deferred where Node allowed silently', payload: step.payload !== undefined ? step.payload : step.raw });
+        continue;
+      }
+      if (deferred && sc.answerWhenNoBlock && n1.code === 0 && !/"decision"\s*:\s*"block"/.test(n1.out)) {
+        stats.mismatch++; mism.push({ scenario: sc.id, step: si, node: n1, engine: e1, treeDiff: [], note: 'engine deferred where Node did not block', payload: step.payload !== undefined ? step.payload : step.raw });
         continue;
       }
       if (deferred && o.mayDefer && !sc.expectDefer && !o.mayDefer(sc, step)) {

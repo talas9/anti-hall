@@ -39,6 +39,7 @@ H.updateNoStatus = [...T.update(5, { description: 'only text' })];
 H.updateOwnerOnly = [...T.update(5, { owner: 'agent-1' })];
 H.updateThenCreate = [...T.update(1, { description: 'd' }), ...c(1, 'created later').lines];
 H.restartNumbering = [...c(1, 'old').lines, ...c(2, 'old2').lines, ...c(1, 'new after restart').lines];
+H.restartCompletedByCreate = [...c(1, 'old').lines, ...T.create(1, { subject: 'new', status: 'completed' }).lines];
 H.restartDone = [...c(1, 'old').lines, ...c(1, 'new').lines, ...T.update(1, { status: 'completed' })];
 H.listEmpty = [...c(1, 'x').lines, ...T.list(true)];
 H.listNotEmpty = [...c(1, 'x').lines, ...T.list(false)];
@@ -156,7 +157,7 @@ scenarios.push({ id: 'prune-stamp-garbage', world: { files: { 'home/.anti-hall/.
 
 // ---- truncated transcripts: the window holds only part of the history and the backfill reads before it ----------------------------------------------
 const filler = Array.from({ length: 4200 }, (_, i) => T.asst([T.text('filler ' + i + ' ' + 'x'.repeat(380))]));
-const big = (id, before, inside) => { const f = put([T.prompt('go'), ...before, ...filler, ...inside], 'big-' + id); add(`big-${id}`, stop(f), W); return f; };
+const big = (id, before, inside) => { const f = put([T.prompt('go'), ...before, ...filler, ...inside], 'big-' + id); add(`big-${id}`, stop(f), W, { answerWhenNoBlock: true }); return f; };
 const C = (n, s, extra) => c(n, s, extra).lines;
 big('open-before-desc-inside', [...C(1, 'early')], [...T.update(1, { description: 'later text' })]);
 big('closed-before-desc-inside', [...C(1, 'early'), ...T.update(1, { status: 'completed' })], [...T.update(1, { description: 'later text' })]);
@@ -190,7 +191,7 @@ big('window-cuts-a-line', [...C(1, 'a'), ...T.update(1, { status: 'completed' })
 { // far before the window: beyond what the engine scans exactly (it must defer, never guess)
   const ff = Array.from({ length: 24000 }, (_, i) => T.asst([T.text('far ' + i + ' ' + 'y'.repeat(380))]));
   const f = put([T.prompt('go'), ...C(1, 'ancient'), ...T.update(1, { status: 'completed' }), ...ff, ...T.update(1, { description: 'x' })], 'big-far');
-  add('big-far-before', stop(f), W);
+  add('big-far-before', stop(f), W, { answerWhenNoBlock: false });
 }
 
 // ---- real transcripts ------------------------------------------------------------------------------------------------------------------------
@@ -221,4 +222,4 @@ for (let i = 0; i < +arg('--fuzz', 200); i++) {
 console.error(`scenarios=${scenarios.length} shared=${shared}`);
 const must = new Set(scenarios.filter(s => s.mustAnswer).map(s => s.id));
 runFx({ name: 'task-guard', hookFile: 'task-guard.js', check: 'task-guard', engine: ENGINE, hooks: HOOKS, scenarios, conc: +arg('--conc', 6), mayDefer: sc => !must.has(sc.id) })
-  .then(() => fs.rmSync(shared, { recursive: true, force: true }));
+  .then(() => { if (!process.argv.includes('--keep')) fs.rmSync(shared, { recursive: true, force: true }); });

@@ -90,7 +90,7 @@ for (const n of [3, 4]) {
   track(`tracked-tasks-n${n}-history-file`, [...task(1, 'a'), ...works(n)], { gitdirs: ['proj'], files: { [PROG]: 'p', [HIST]: '- x\n' } }, { answer: true });
   track(`tracked-tasks-n${n}-history-only`, [...task(1, 'a'), ...works(n)], { gitdirs: ['proj'], files: { [HIST]: '- x\n' } });
   track(`tracked-tasks-n${n}-index-present`, [...task(1, 'a'), ...works(n)], { gitdirs: ['proj'], files: { [PROG]: 'p', 'proj/.anti-hall/progress/INDEX.md': '- sess-1 already\n' } }, { answer: true });
-  track(`tracked-tasks-n${n}-progress-write-in-transcript`, [...task(1, 'a'), ...works(n), write('$PROJ/.anti-hall/progress/' + today + '/sess-1.md')], STALE, { stale: true, answer: true });
+  
 }
 track('tracked-inprogress-one', [...task(1, 'a'), ...T.update(1, { status: 'in_progress' }), ...works(3)], FRESH, { answer: true });
 track('tracked-inprogress-two-agentscan', [...task(1, 'a'), ...task(2, 'b'), ...T.update(1, { status: 'in_progress' }), ...T.update(2, { status: 'in_progress' }), ...works(3)], FRESH);
@@ -127,13 +127,17 @@ track('fresh-file-older-than-work', [...task(1, 'a'), ...works(3)], STALE, { sta
   scenarios.push({ id: 'fresh-ms-setting-large', world: { gitdirs: ['proj'], files: { [PROG]: 'p', 'home/.anti-hall/settings.json': JSON.stringify({ guards: { progressFreshMs: 1e12 } }) } }, steps: [{ payload: stop(put(nots, 'nots4')), before: W => fs.utimesSync(path.join(W, PROG), old, old) }], answerWhenSilent: true });
 }
 
-// a Bash command that writes the progress file counts as a fresh write (FIX 6); one that only reads it does not
+// a command or tool call that writes the progress file counts as a fresh write (FIX 6); one that only reads it does not.
+// The transcript lives in the world (its text names the world's own progress path through `$PROJ`).
 {
   const PA = '$PROJ/.anti-hall/progress/' + today + '/sess-1.md';
-  for (const [id, cmd, answer] of [['redirect-append', `echo done >> ${PA}`, true], ['redirect-truncate', `echo done > ${PA}`, true], ['redirect-dq', `echo done > "${PA}"`, true], ['redirect-sq', `echo done > '${PA}'`, true], ['tee', `echo done | tee ${PA}`, true], ['tee-flag', `echo done | tee -a ${PA}`, true], ['cp', `cp /x/a ${PA}`, true], ['mv', `mv /x/a ${PA}`, true],
-    ['read-only', `cat ${PA} >> /elsewhere/log`, false], ['other-file', `echo done >> /elsewhere/log`, false], ['fd-dup', `cmd 2>&1 ${PA}`, false], ['quoted-text', `echo "write > ${PA}"`, false], ['two-redirects', `echo a > /x/y; echo b > ${PA}`, false], ['heredoc', `cat >> ${PA} <<EOF\nx\nEOF`, true]]) {
-    const lines = [T.prompt('go'), ...task(1, 'a'), ...works(3), ...T.bash(cmd)];
-    scenarios.push({ id: `fresh-bash-write-${id}`, world: STALE, answerWhenSilent: answer, steps: [Object.assign({ payload: stop(put(lines, 'bw' + id)) }, staleStep)] });
+  const staleWorld = lines => ({ gitdirs: ['proj'], files: { [PROG]: '# progress\n', 't.jsonl': lines.join('\n') + '\n' } });
+  const cases = [['redirect-append', () => T.bash(`echo done >> ${PA}`), true], ['redirect-truncate', () => T.bash(`echo done > ${PA}`), true], ['redirect-dq', () => T.bash(`echo done > "${PA}"`), true], ['redirect-sq', () => T.bash(`echo done > '${PA}'`), true], ['tee', () => T.bash(`echo done | tee ${PA}`), true], ['tee-flag', () => T.bash(`echo done | tee -a ${PA}`), true],
+    ['cp', () => T.bash(`cp /x/a ${PA}`), true], ['mv', () => T.bash(`mv /x/a ${PA}`), true], ['heredoc', () => T.bash(`cat >> ${PA} <<EOF\nx\nEOF`), true], ['write-tool', () => [write(PA)], true], ['edit-tool', () => [edit(PA)], true],
+    ['read-only', () => T.bash(`cat ${PA} >> /elsewhere/log`), false], ['other-file', () => T.bash(`echo done >> /elsewhere/log`), false], ['fd-dup', () => T.bash(`cmd 2>&1 ${PA}`), false], ['quoted-text', () => T.bash(`echo "write > ${PA}"`), false], ['two-redirects', () => T.bash(`echo a > /x/y; echo b > ${PA}`), false], ['other-session', () => T.bash(`echo done >> $PROJ/.anti-hall/progress/${today}/sess-2.md`), false], ['other-day', () => T.bash(`echo done >> $PROJ/.anti-hall/progress/2020-01-01/sess-1.md`), false]];
+  for (const [id, tail, answer] of cases) {
+    const lines = [T.prompt('go'), ...task(1, 'a'), ...works(3), ...tail()];
+    scenarios.push({ id: `fresh-write-${id}`, world: staleWorld(lines), answerWhenSilent: answer, steps: [Object.assign({ payload: stop('$W/t.jsonl') }, staleStep)] });
   }
 }
 // the grace boundary: work exactly 1000 ms newer than the file still counts as covered, 1 ms more does not
@@ -207,4 +211,4 @@ for (const f of realSmall) { add(`real-fresh-${path.basename(f, '.jsonl').slice(
 const realBig = T.realFiles({ needle: '"name":"TaskCreate"', min: 600e3, max: 60e6, limit: +arg('--big', 30), seed: 23 });
 for (const f of realBig) { add(`real-big-fresh-${path.basename(f, '.jsonl').slice(0, 8)}`, stop(f), FRESH, { answerWhenSilent: true }); add(`real-big-nofile-${path.basename(f, '.jsonl').slice(0, 8)}`, stop(f), REPO); }
 console.error(`scenarios=${scenarios.length} shared=${shared}`);
-runFx({ name: 'tasklist-guard', hookFile: 'tasklist-guard.js', check: 'tasklist-guard', engine: ENGINE, hooks: HOOKS, scenarios, conc: +arg('--conc', 6) }).then(() => fs.rmSync(shared, { recursive: true, force: true }));
+runFx({ name: 'tasklist-guard', hookFile: 'tasklist-guard.js', check: 'tasklist-guard', engine: ENGINE, hooks: HOOKS, scenarios, conc: +arg('--conc', 6) }).then(() => { if (!process.argv.includes('--keep')) fs.rmSync(shared, { recursive: true, force: true }); });
