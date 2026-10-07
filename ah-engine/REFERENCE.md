@@ -77,6 +77,12 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `auto-handover` | UserPromptSubmit: answers the cases that write no state and inject nothing (a subagent, a skipped or disabled feature, context below the threshold with the latch not set); a threshold crossing, a nag, the new-work gate and a latch reset defer to the Node hook (port of auto-handover.js). |
 | `auto-handover-pause-nag` | Stop: answers the cases that block nothing and write no state (a subagent, a continued stop, a skipped or disabled feature, context below the threshold with the latch not set, a nag inside its step and quiet window); a fire, a re-arm and a nag defer to the Node hook (port of auto-handover-pause-nag.js). |
 | `compact-advice-guard` | Stop: allows every turn whose final text cannot hold a compact recommendation (no wording a recommendation needs); a possible recommendation defers to the Node hook, which owns the phrase analysis, the context rules and the block (port of compact-advice-guard.js). |
+| `version-alert` | SessionStart advisory: a newer anti-hall release is available or already mirrored locally (port of version-alert.js); a stale remote cache defers to Node, which starts the refresh. |
+| `devswarm-version` | SessionStart advisory: the DevSwarm CLI drifted by major or minor from the verified version (port of devswarm-version.js); a stale cache defers to Node, which starts the probe. |
+| `claude-cli-version` | SessionStart advisory: the Claude Code CLI drifted by major or minor from the audited version (port of claude-cli-version.js); a stale cache defers to Node, which starts the probe. |
+| `repo-self-drift` | SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago (port of repo-self-drift.js). |
+| `defect-nudge` | SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported (port of defect-nudge.js); counts and ages only. |
+| `progress-prune` | SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/ (port of progress-prune.js). |
 
 ## Settings
 
@@ -1485,6 +1491,125 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `ctxbudget.usage_cache` | `.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |  |  | The OMC usage cache file, relative to the home directory. |
 | `ctxbudget.usage_marker` | `"usage"` |  |  | Substring that a Claude transcript line must hold to be parsed as an assistant usage reading. |
 | `ctxbudget.usage_max_stale_ms` | `21600000` |  | ms | Snapshot age beyond which a bucket without a usable reset time counts as 0 percent (hooks/limit-conserve.js MAX_STALE_MS). |
+
+### session.toml / session
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `session.anti_hall_dir` | `.anti-hall` |  |  | The per-project directory that holds progress, history and handovers. |
+| `session.anti_hall_marker` | `plugins/anti-hall/.claude-plugin/plugin.json` |  |  | The file whose presence in the working directory marks the anti-hall repository itself (the maintainer's view). |
+| `session.archive_dir` | `archive` |  |  | Archived defects, relative to the defect store; one directory per month. |
+| `session.archive_entry` | `\n## Archived progress (pruned {pruned_at})\n\n{quote}\n` |  |  | What is appended to the history ledger for one pruned progress file; {pruned_at} is the UTC time and {quote} the quoted content. |
+| `session.case_reload` | `reload` |  |  | The case name stored in the reload advisory's dedupe key. |
+| `session.case_update` | `update` |  |  | The case name stored in the update advisory's dedupe key. |
+| `session.changelog_file` | `CHANGELOG.md` |  |  | The changelog of a mirrored release, relative to its directory. |
+| `session.check_ignore_args` | `check-ignore, -q, .anti-hall/probe` |  |  | The git arguments (after -C <root>) that ask whether .anti-hall/ is ignored: exit 0 ignored, 1 not ignored. |
+| `session.claim_max_digits` | `15` |  |  | The most digits of a claimed count compared here; a longer one is rounded by JavaScript, so the hook defers. |
+| `session.claude_cli_baseline` | `2.1.238` |  |  | The Claude Code version the harness KB was last audited against (hooks/lib/claude-cli-baseline.js); a test keeps the two equal. |
+| `session.claude_cli_cache` | `.anti-hall/claude-cli-version.json` |  |  | The Claude CLI version cache the background probe writes, under the home directory. |
+| `session.claude_cli_guard` | `claude-cli-version` |  |  | The guard id of claude-cli-version, in its messages and in the skip file. |
+| `session.claude_cli_instead` | `see docs/KB-claude-code-harness-features.md.` |  |  | Advice of the Claude CLI drift advisory. |
+| `session.claude_cli_summary` | `SessionStart advisory: the Claude Code CLI drifted by major or minor from the...` |  |  | One-line description of the claude-cli-version check in the generated reference. |
+| `session.claude_cli_what` | `Claude Code CLI {installed} is installed; anti-hall's harness KB is audited a...` |  |  | Headline of the Claude CLI drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing). |
+| `session.cwd_key_prefix` | `cwd_` |  |  | Prefix of the throttle key made from a working directory. |
+| `session.day_ms` | `86400000` |  | ms | Milliseconds in a day, for the UTC date arithmetic of the hooks. |
+| `session.defect_backfill` | `backfill` |  |  | The line type of a defect imported from git history. |
+| `session.defect_closed` | `fixed, wontfix, notabug, dup` |  |  | The statuses that mean a defect is finished (everything else is unfinished work). |
+| `session.defect_ext` | `.jsonl` |  |  | The extension of a defect file. |
+| `session.defect_fixed` | `fixed` |  |  | The ruling status that opens the regression cycle. |
+| `session.defect_maintainer_instead` | `run /anti-hall:defects.` |  |  | Advice of the maintainer's nudge. |
+| `session.defect_maintainer_what` | `{active} unfinished defect reports ({regressed} regressed), oldest {oldest}d.` |  |  | Headline of the maintainer's nudge; {active}, {regressed} and {oldest} are counts and days. |
+| `session.defect_nudge_guard` | `defect-nudge` |  |  | The guard id of defect-nudge, in its messages and in the skip file. |
+| `session.defect_nudge_summary` | `SessionStart advisory, at most daily: unfinished defect reports (in the anti-...` |  |  | One-line description of the defect-nudge check in the generated reference. |
+| `session.defect_open` | `open` |  |  | The status of a defect nobody has ruled on. |
+| `session.defect_regressed` | `regressed` |  |  | The derived status of a fixed defect reported again by a build at or after its fix. |
+| `session.defect_report` | `report` |  |  | The line type of a report. |
+| `session.defect_reporter_instead` | `run /anti-hall:defects mine.` |  |  | Advice of the reporter's nudge. |
+| `session.defect_reporter_what` | `rulings on {count} defects you reported.` |  |  | Headline of the reporter's nudge; {count} is the number of defects with a later ruling. |
+| `session.defect_ruling` | `ruling` |  |  | The line type of a ruling. |
+| `session.defect_stamp` | `.defects-nudge-stamp.json` |  |  | The once-a-day stamp of the defect sweep, relative to the state directory. |
+| `session.defect_throttle_ms` | `86400000` |  | ms | The least time between two defect sweeps. |
+| `session.defects_dir` | `defects` |  |  | The defect store, relative to the state directory. |
+| `session.devswarm_baseline` | `2.5.1` |  |  | The DevSwarm CLI version anti-hall's integration was verified against (hooks/lib/devswarm-baseline.js); a test keeps the two equal. |
+| `session.devswarm_cache` | `.anti-hall/devswarm-version.json` |  |  | The DevSwarm version cache the background probe writes, under the home directory. |
+| `session.devswarm_guard` | `devswarm-version` |  |  | The guard id of devswarm-version, in its messages and in the skip file. |
+| `session.devswarm_instead` | `see docs/KB-devswarm-hivecontrol.md.` |  |  | Advice of the DevSwarm drift advisory. |
+| `session.devswarm_summary` | `SessionStart advisory: the DevSwarm CLI drifted by major or minor from the ve...` |  |  | One-line description of the devswarm-version check in the generated reference. |
+| `session.devswarm_what` | `DevSwarm {installed} is installed; anti-hall's integration is verified agains...` |  |  | Headline of the DevSwarm drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing). |
+| `session.dot_git` | `.git` |  |  | The name that marks a git checkout's root. |
+| `session.drift_cache_ttl_ms` | `86400000` |  | ms | How long a drift probe's cache (claude-cli-version, devswarm-version, repo-self-drift) counts as fresh; an older one makes Node refresh it, which defers the engine's answer. |
+| `session.drift_counts_line` | `anti-hall repo self-drift — {parts} (docs/KB.md)` |  |  | The count-drift advisory line; {parts} are the differing counts. |
+| `session.drift_hooks_part` | `hooks: KB.md claims {claimed}, actual {actual}` |  |  | The hook-count part of the count-drift line. |
+| `session.drift_skills_part` | `skills: KB.md claims {claimed}, actual {actual}` |  |  | The skill-count part of the count-drift line. |
+| `session.drift_stale_line` | `anti-hall model KBs last audited {date} ({age}d ago, threshold {threshold}d) ...` |  |  | The model-KB staleness advisory line; {date}, {age} and {threshold} are the audit date and the days. |
+| `session.drift_why` | `Behavior may have drifted.` |  |  | The Why line of the DevSwarm and Claude CLI drift advisories. |
+| `session.event` | `SessionStart` |  |  | The only event these hooks run on, and the event name in the advisory envelope they print. |
+| `session.git_binary` | `git` |  |  | The git program the gitignore probe runs, found on the PATH the client forwarded. |
+| `session.git_poll_ms` | `5` |  | ms | How often the gitignore probe checks whether git has finished. |
+| `session.git_scrub_env` | `GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_PREFIX` |  |  | Environment variables removed before git runs, so the answer derives from the project directory alone. |
+| `session.gitdir_tag` | `gitdir:` |  |  | The prefix of the single line of a `.git` file that points at the real git directory. |
+| `session.gitignore_guard` | `gitignore-hint` |  |  | The guard id of the gitignore reminder in its message. |
+| `session.gitignore_instead` | `add `.anti-hall/` to .gitignore (or run /anti-hall:doctor --repair).` |  |  | Advice of the gitignore reminder. |
+| `session.gitignore_probe_ms` | `1000` | `AH_ENGINE_GITIGNORE_PROBE_MS` | ms | The longest the engine waits for the gitignore probe before it hands the hook to Node. Node waits 3000 ms, but the client gives up on the engine after client.deadline_ms, so a longer wait here could answer after the client has already left; a test keeps the shipped value below that deadline. |
+| `session.gitignore_remind_ms` | `604800000` |  | ms | The least time between two gitignore reminders for one project. |
+| `session.gitignore_state_file` | `gitignore-hint-state.json` |  |  | The per-project gitignore reminder state, relative to the state directory. |
+| `session.gitignore_what` | `.anti-hall/ is not git-ignored in this repo.` |  |  | Headline of the gitignore reminder. |
+| `session.gitignore_why` | `Session notes must never be committed.` |  |  | Why line of the gitignore reminder. |
+| `session.headline_max` | `160` |  |  | The longest changelog highlight quoted, in UTF-16 units. |
+| `session.highlight_prefix` | `Highlight: ` |  |  | The prefix of the changelog highlight line. |
+| `session.history_dir` | `history` |  |  | Backfilled history, relative to the defect store or to the project's .anti-hall directory (the progress ledger). |
+| `session.hooks_claim_re` | `Hooks:\s*\*\*(\d+)\*\*\s*`\.js`\s*files` |  |  | Regex source (JavaScript syntax) of the hook count docs/KB.md claims; the first group is the number. |
+| `session.hooks_dir` | `hooks` |  |  | The hooks directory, relative to the plugin root. |
+| `session.js_ext` | `.js` |  |  | The extension that makes a file in the hooks directory count as a hook. |
+| `session.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable that marks the judge child process, inside which every hook is a silent no-op (judge-child-exit.js). |
+| `session.judge_child_on` | `1` |  |  | The value of the judge-child variable that turns the no-op on. |
+| `session.kb_installed` | `docs/KB.md` |  |  | Where docs/KB.md sits in an installed plugin, relative to the plugin root. |
+| `session.kb_repo` | `../../docs/KB.md` |  |  | Where docs/KB.md sits in the development repository (three levels above the hooks directory), relative to the plugin root. |
+| `session.marketplace_dir` | `.claude/plugins/marketplaces/anti-hall` |  |  | The marketplace clone, under the home directory; the host's plugin registry sits two levels above it. |
+| `session.marketplace_env` | `ANTIHALL_MARKETPLACE_DIR` |  |  | The environment variable that points the update skill at another marketplace directory (used by its tests); honoured only for an absolute path to an existing directory. |
+| `session.md_ext` | `.md` |  |  | The extension of a progress or history file. |
+| `session.mirror_cache_root` | `.claude/plugins/cache/anti-hall/anti-hall` |  |  | Where the update skill mirrors each release, one version-named directory each, under the home directory. |
+| `session.model_kb_audit_date` | `2026-09-03` |  |  | The UTC date (YYYY-MM-DD) the model KBs were last audited (hooks/lib/repo-audit-baseline.js); a test keeps the two equal. |
+| `session.older_suffix` | ` (newer)` |  |  | Appended to a drift advisory when the installed version is OLDER than the audited baseline. |
+| `session.parts_sep` | `; ` |  |  | Separator between the parts of the count-drift line. |
+| `session.plugin_json` | `.claude-plugin/plugin.json` |  |  | The running plugin's manifest, relative to the plugin root. |
+| `session.progress_dir` | `progress` |  |  | Per-session progress files, relative to the project's .anti-hall directory; one directory per UTC date. |
+| `session.progress_prune_summary` | `SessionStart maintenance: archives stale per-session progress files into the ...` |  |  | One-line description of the progress-prune check in the generated reference. |
+| `session.progress_skip` | `legacy, INDEX.md` |  |  | Entries of the progress directory that are never pruned. |
+| `session.progress_state_file` | `progress-prune-state.json` |  |  | The per-directory prune throttle state, relative to the state directory. |
+| `session.prune_safety_ms` | `21600000` |  | ms | A progress file modified more recently than this is never archived. |
+| `session.prune_throttle_ms` | `86400000` |  | ms | The least time between two prune passes of one working directory. |
+| `session.quote_prefix` | `> ` |  |  | Prefix of every archived line (a Markdown block quote). |
+| `session.registry_file` | `installed_plugins.json` |  |  | The host's plugin registry, relative to the plugins root. |
+| `session.registry_key` | `anti-hall@anti-hall` |  |  | The registry key of this plugin. |
+| `session.registry_max_bytes` | `4194304` |  | bytes | The largest registry file read (a bigger one counts as unreadable). |
+| `session.reload_instead` | `tell the user now: run /reload-plugins (Claude; restart Claude Code if a hook...` |  |  | Advice for that case when the registry does not name a newer build than the running one. |
+| `session.reload_instead_ahead` | `tell the user now: run /reload-plugins to load it (if a hook or skill path st...` |  |  | Advice for that case when the registry already names a newer build than the running one ({running} is the running version). |
+| `session.reload_mark_file` | `.anti-hall/version-alert-reload.json` |  |  | The once-per-session marker of the reload advisory, under the home directory (separate from the remote-latest cache). |
+| `session.reload_what` | `v{mirrored} is already downloaded (you are running v{running}).` |  |  | Headline when a newer release is already mirrored and the registry is up to date; {mirrored} and {running} are the two versions. |
+| `session.repo_self_drift_cache` | `.anti-hall/repo-self-drift.json` |  |  | The repo-self-drift scan cache, under the home directory. |
+| `session.repo_self_drift_guard` | `repo-self-drift` |  |  | The guard id of repo-self-drift, in the skip file. |
+| `session.repo_self_drift_summary` | `SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from...` |  |  | One-line description of the repo-self-drift check in the generated reference. |
+| `session.setting_claude_cli` | `5 entries` |  |  | Switch: alert when the Claude Code CLI drifted from the audited version (versionAlerts.claudeCli). |
+| `session.setting_defect_nudge` | `5 entries` |  |  | Switch: the once-a-day note about the defect channel (context.defectNudge); it has no environment variable. |
+| `session.setting_devswarm` | `5 entries` |  |  | Switch: alert when the DevSwarm CLI drifted from the verified version (versionAlerts.devswarm). |
+| `session.setting_gitignore_hint` | `5 entries` |  |  | Switch: the weekly reminder to git-ignore .anti-hall/ (guards.gitignoreHint). |
+| `session.setting_progress_prune` | `5 entries` |  |  | Switch: archive stale per-session progress files into the history ledger (maintenance.progressPrune); it has no environment variable. |
+| `session.setting_repo_self_drift` | `5 entries` |  |  | Switch: anti-hall's own repo-drift self-check (guards.repoSelfDrift). |
+| `session.setting_version_alert` | `5 entries` |  |  | Switch: alert when a newer anti-hall release is available (versionAlerts.antiHall). |
+| `session.skills_claim_re` | `Claude\s*\n?>?\s*skills:\s*\*\*(\d+)\*\*` |  |  | Regex source (JavaScript syntax) of the skill count docs/KB.md claims; the first group is the number. |
+| `session.skills_dir` | `skills` |  |  | The skills directory, relative to the plugin root. |
+| `session.staleness_threshold_days` | `60` |  |  | How many days after the audit the model KBs count as stale (hooks/lib/repo-audit-baseline.js); a test keeps the two equal. |
+| `session.state_dir` | `.anti-hall` |  |  | The anti-hall state directory, under the home directory. |
+| `session.unregistered_instead` | `tell the user now: run /anti-hall:update (Claude; syncs the cache AND the har...` |  |  | Advice for that case. |
+| `session.unregistered_what` | `v{mirrored} is downloaded locally (you are running v{running}) but the Claude...` |  |  | Headline when a newer release is mirrored but the host has not registered it. |
+| `session.unregistered_why` | `A reload alone will not pick it up until the harness registers it.` |  |  | Why line for that case. |
+| `session.update_instead` | `tell the user now: run /anti-hall:update (Claude) or the anti-hall-update ski...` |  |  | Advice for that case. |
+| `session.update_what` | `v{latest} is available (you are running v{running}).` |  |  | Headline when the remote-latest cache names a newer release; {latest} and {running} are the two versions. |
+| `session.version_alert_guard` | `version-alert` |  |  | The guard id of version-alert, in its messages and in the skip file. |
+| `session.version_alert_summary` | `SessionStart advisory: a newer anti-hall release is available or already mirr...` |  |  | One-line description of the version-alert check in the generated reference. |
+| `session.version_alert_ttl_ms` | `7200000` |  | ms | How long the remote-latest cache counts as fresh (a release can ship within a day, so this is short). |
+| `session.version_check_file` | `.anti-hall/version-check.json` |  |  | The remote-latest cache the background refresh writes, under the home directory. |
 
 ## Messages
 

@@ -245,8 +245,8 @@ mod tests {
         let env = crate::reqenv::RequestEnv::from_pairs([("HOME", d.join("home").to_string_lossy().to_string())]);
         let p = json!({"session_id": "s", "hook_event_name": "SessionStart"});
         for (host, event, ids) in [
-            ("claude", "SessionStart", vec!["verify-first-full", "verify-first-orch:host=claude", "fable-availability", "emit-dedupe-reset"]),
-            ("codex", "SessionStart", vec!["verify-first-full", "emit-dedupe-reset"]),
+            ("claude", "SessionStart", vec!["verify-first-full", "fable-availability"]),
+            ("codex", "SessionStart", vec!["verify-first-full"]),
             ("claude", "SubagentStart", vec!["verify-first-subagent"]),
         ] {
             let meta = Meta {
@@ -260,14 +260,13 @@ mod tests {
                 cfg: String::new(),
                 payload_sha1: None,
             };
-            let got = evaluate(&meta, &p, &|_, _, _| {});
+            // the other batches' checks of the same event answer here too (their own tests pin their bytes): only the verify-first
+            // family and fable-availability are looked at
+            let got: Vec<_> = evaluate(&meta, &p, &|_, _, _| {}).into_iter().filter(|(id, _)| ids.contains(&id.as_str())).collect();
             assert_eq!(got.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ids, "{host} {event}");
             for (id, a) in &got {
                 let Answer::Decided(r, _) = a else { panic!("{id} deferred") };
                 assert_eq!(r.code, Some(0), "{id}");
-                if id == "emit-dedupe-reset" || id.starts_with("verify-first-orch") {
-                    continue; // other batches' checks: their own tests pin their bytes
-                }
                 if id != "fable-availability" {
                     assert!(
                         r.out.starts_with(&format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"{event}\",\"additionalContext\":\"ANTI-HALL VERIFY-FIRST"))
