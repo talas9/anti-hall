@@ -1,0 +1,504 @@
+# ah-engine shipped defaults for the session-maintenance checks ported from Node (version-alert, devswarm-version,
+# claude-cli-version, repo-self-drift, defect-nudge, progress-prune) and the helpers they share (D17, D30).
+#
+# Every file name, limit, switch, regex and message of these checks lives here. A relative path is under the home
+# directory unless its doc says otherwise. Regex sources use JavaScript syntax (the Node hooks are the authority) and are
+# translated by `checks::guardkit::jsre`; they are written as TOML literal strings so no backslash is doubled. Format: see
+# the header of engine.toml.
+
+# ---- shared ------------------------------------------------------------------------------------------------
+
+[session.event]
+doc = "The only event these hooks run on, and the event name in the advisory envelope they print."
+value = "SessionStart"
+
+[session.judge_child_env]
+doc = "The environment variable that marks the judge child process, inside which every hook is a silent no-op (judge-child-exit.js)."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[session.judge_child_on]
+doc = "The value of the judge-child variable that turns the no-op on."
+value = "1"
+
+[session.state_dir]
+doc = "The anti-hall state directory, under the home directory."
+value = ".anti-hall"
+
+[session.day_ms]
+doc = "Milliseconds in a day, for the UTC date arithmetic of the hooks."
+value = 86400000
+unit = "ms"
+min = 1000
+
+[session.drift_cache_ttl_ms]
+doc = "How long a drift probe's cache (claude-cli-version, devswarm-version, repo-self-drift) counts as fresh; an older one makes Node refresh it, which defers the engine's answer."
+value = 86400000
+unit = "ms"
+min = 1000
+
+[session.older_suffix]
+doc = "Appended to a drift advisory when the installed version is OLDER than the audited baseline."
+value = " (newer)"
+
+[session.drift_why]
+doc = "The Why line of the DevSwarm and Claude CLI drift advisories."
+value = "Behavior may have drifted."
+
+[session.git_binary]
+doc = "The git program the gitignore probe runs, found on the PATH the client forwarded."
+value = "git"
+
+# ---- switches (resolved like the Node settings: env, settings.json, plugin option, default) -----------------------------
+
+[session.setting_version_alert]
+doc = "Switch: alert when a newer anti-hall release is available (versionAlerts.antiHall)."
+value = { section = "versionAlerts", key = "antiHall", env = "ANTIHALL_VERSION_ALERT", option = "version_alerts_anti_hall", default = true }
+
+[session.setting_claude_cli]
+doc = "Switch: alert when the Claude Code CLI drifted from the audited version (versionAlerts.claudeCli)."
+value = { section = "versionAlerts", key = "claudeCli", env = "ANTIHALL_CLAUDE_CLI_VERSION_ALERT", option = "version_alerts_claude_cli", default = true }
+
+[session.setting_devswarm]
+doc = "Switch: alert when the DevSwarm CLI drifted from the verified version (versionAlerts.devswarm)."
+value = { section = "versionAlerts", key = "devswarm", env = "ANTIHALL_DEVSWARM_VERSION_ALERT", option = "version_alerts_devswarm", default = true }
+
+[session.setting_repo_self_drift]
+doc = "Switch: anti-hall's own repo-drift self-check (guards.repoSelfDrift)."
+value = { section = "guards", key = "repoSelfDrift", env = "ANTIHALL_REPO_SELF_DRIFT", option = "guards_repo_self_drift", default = true }
+
+[session.setting_gitignore_hint]
+doc = "Switch: the weekly reminder to git-ignore .anti-hall/ (guards.gitignoreHint)."
+value = { section = "guards", key = "gitignoreHint", env = "ANTIHALL_GITIGNORE_HINT", option = "guards_gitignore_hint", default = true }
+
+[session.setting_progress_prune]
+doc = "Switch: archive stale per-session progress files into the history ledger (maintenance.progressPrune); it has no environment variable."
+value = { section = "maintenance", key = "progressPrune", env = "", option = "maintenance_progress_prune", default = true }
+
+[session.setting_defect_nudge]
+doc = "Switch: the once-a-day note about the defect channel (context.defectNudge); it has no environment variable."
+value = { section = "context", key = "defectNudge", env = "", option = "context_defect_nudge", default = true }
+
+# ---- version-alert (hooks/version-alert.js) --------------------------------------------------------------------
+
+[session.version_alert_summary]
+doc = "One-line description of the version-alert check in the generated reference."
+value = "SessionStart advisory: a newer anti-hall release is available or already mirrored locally (port of version-alert.js); a stale remote cache defers to Node, which starts the refresh."
+
+[session.version_alert_guard]
+doc = "The guard id of version-alert, in its messages and in the skip file."
+value = "version-alert"
+
+[session.version_alert_ttl_ms]
+doc = "How long the remote-latest cache counts as fresh (a release can ship within a day, so this is short)."
+value = 7200000
+unit = "ms"
+min = 1000
+
+[session.version_check_file]
+doc = "The remote-latest cache the background refresh writes, under the home directory."
+value = ".anti-hall/version-check.json"
+
+[session.reload_mark_file]
+doc = "The once-per-session marker of the reload advisory, under the home directory (separate from the remote-latest cache)."
+value = ".anti-hall/version-alert-reload.json"
+
+[session.plugin_json]
+doc = "The running plugin's manifest, relative to the plugin root."
+value = ".claude-plugin/plugin.json"
+
+[session.mirror_cache_root]
+doc = "Where the update skill mirrors each release, one version-named directory each, under the home directory."
+value = ".claude/plugins/cache/anti-hall/anti-hall"
+
+[session.marketplace_dir]
+doc = "The marketplace clone, under the home directory; the host's plugin registry sits two levels above it."
+value = ".claude/plugins/marketplaces/anti-hall"
+
+[session.marketplace_env]
+doc = "The environment variable that points the update skill at another marketplace directory (used by its tests); honoured only for an absolute path to an existing directory."
+value = "ANTIHALL_MARKETPLACE_DIR"
+
+[session.registry_file]
+doc = "The host's plugin registry, relative to the plugins root."
+value = "installed_plugins.json"
+
+[session.registry_key]
+doc = "The registry key of this plugin."
+value = "anti-hall@anti-hall"
+
+[session.registry_max_bytes]
+doc = "The largest registry file read (a bigger one counts as unreadable)."
+value = 4194304
+unit = "bytes"
+min = 1024
+
+[session.changelog_file]
+doc = "The changelog of a mirrored release, relative to its directory."
+value = "CHANGELOG.md"
+
+[session.headline_max]
+doc = "The longest changelog highlight quoted, in UTF-16 units."
+value = 160
+min = 1
+
+[session.highlight_prefix]
+doc = "The prefix of the changelog highlight line."
+value = "Highlight: "
+
+[session.case_reload]
+doc = "The case name stored in the reload advisory's dedupe key."
+value = "reload"
+
+[session.case_update]
+doc = "The case name stored in the update advisory's dedupe key."
+value = "update"
+
+[session.reload_what]
+doc = "Headline when a newer release is already mirrored and the registry is up to date; {mirrored} and {running} are the two versions."
+value = "v{mirrored} is already downloaded (you are running v{running})."
+
+[session.reload_instead]
+doc = "Advice for that case when the registry does not name a newer build than the running one."
+value = "tell the user now: run /reload-plugins (Claude; restart Claude Code if a hook or skill path still shows the old version afterwards) or restart Codex / start a fresh session (Codex)."
+
+[session.reload_instead_ahead]
+doc = "Advice for that case when the registry already names a newer build than the running one ({running} is the running version)."
+value = "tell the user now: run /reload-plugins to load it (if a hook or skill path still shows v{running} afterwards, restart Claude Code: exit and resume the session). Codex: restart Codex / start a fresh session."
+
+[session.unregistered_what]
+doc = "Headline when a newer release is mirrored but the host has not registered it."
+value = "v{mirrored} is downloaded locally (you are running v{running}) but the Claude Code harness has not registered it yet."
+
+[session.unregistered_why]
+doc = "Why line for that case."
+value = "A reload alone will not pick it up until the harness registers it."
+
+[session.unregistered_instead]
+doc = "Advice for that case."
+value = "tell the user now: run /anti-hall:update (Claude; syncs the cache AND the harness registration) or the anti-hall-update skill (Codex), then /reload-plugins (Claude) or restart (Codex)."
+
+[session.update_what]
+doc = "Headline when the remote-latest cache names a newer release; {latest} and {running} are the two versions."
+value = "v{latest} is available (you are running v{running})."
+
+[session.update_instead]
+doc = "Advice for that case."
+value = "tell the user now: run /anti-hall:update (Claude) or the anti-hall-update skill (Codex), then do what it ends with: /reload-plugins (Claude; restart Claude Code only if a hook or skill path still shows the old version afterwards); restart Codex / start a fresh session (Codex)."
+
+# ---- devswarm-version (hooks/devswarm-version.js, hooks/lib/devswarm-baseline.js) --------------------------------------
+
+[session.devswarm_summary]
+doc = "One-line description of the devswarm-version check in the generated reference."
+value = "SessionStart advisory: the DevSwarm CLI drifted by major or minor from the verified version (port of devswarm-version.js); a stale cache defers to Node, which starts the probe."
+
+[session.devswarm_guard]
+doc = "The guard id of devswarm-version, in its messages and in the skip file."
+value = "devswarm-version"
+
+[session.devswarm_cache]
+doc = "The DevSwarm version cache the background probe writes, under the home directory."
+value = ".anti-hall/devswarm-version.json"
+
+[session.devswarm_baseline]
+doc = "The DevSwarm CLI version anti-hall's integration was verified against (hooks/lib/devswarm-baseline.js); a test keeps the two equal."
+value = "2.5.1"
+
+[session.devswarm_what]
+doc = "Headline of the DevSwarm drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing)."
+value = "DevSwarm {installed} is installed; anti-hall's integration is verified against {baseline}{newer}."
+
+[session.devswarm_instead]
+doc = "Advice of the DevSwarm drift advisory."
+value = "see docs/KB-devswarm-hivecontrol.md."
+
+# ---- claude-cli-version (hooks/claude-cli-version.js, hooks/lib/claude-cli-baseline.js) --------------------------------
+
+[session.claude_cli_summary]
+doc = "One-line description of the claude-cli-version check in the generated reference."
+value = "SessionStart advisory: the Claude Code CLI drifted by major or minor from the audited version (port of claude-cli-version.js); a stale cache defers to Node, which starts the probe."
+
+[session.claude_cli_guard]
+doc = "The guard id of claude-cli-version, in its messages and in the skip file."
+value = "claude-cli-version"
+
+[session.claude_cli_cache]
+doc = "The Claude CLI version cache the background probe writes, under the home directory."
+value = ".anti-hall/claude-cli-version.json"
+
+[session.claude_cli_baseline]
+doc = "The Claude Code version the harness KB was last audited against (hooks/lib/claude-cli-baseline.js); a test keeps the two equal."
+value = "2.1.238"
+
+[session.claude_cli_what]
+doc = "Headline of the Claude CLI drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing)."
+value = "Claude Code CLI {installed} is installed; anti-hall's harness KB is audited against {baseline}{newer}."
+
+[session.claude_cli_instead]
+doc = "Advice of the Claude CLI drift advisory."
+value = "see docs/KB-claude-code-harness-features.md."
+
+# ---- repo-self-drift (hooks/repo-self-drift.js, hooks/lib/repo-audit-baseline.js) ----------------------------------------
+
+[session.repo_self_drift_summary]
+doc = "One-line description of the repo-self-drift check in the generated reference."
+value = "SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago (port of repo-self-drift.js)."
+
+[session.repo_self_drift_guard]
+doc = "The guard id of repo-self-drift, in the skip file."
+value = "repo-self-drift"
+
+[session.repo_self_drift_cache]
+doc = "The repo-self-drift scan cache, under the home directory."
+value = ".anti-hall/repo-self-drift.json"
+
+[session.hooks_dir]
+doc = "The hooks directory, relative to the plugin root."
+value = "hooks"
+
+[session.skills_dir]
+doc = "The skills directory, relative to the plugin root."
+value = "skills"
+
+[session.js_ext]
+doc = "The extension that makes a file in the hooks directory count as a hook."
+value = ".js"
+
+[session.kb_installed]
+doc = "Where docs/KB.md sits in an installed plugin, relative to the plugin root."
+value = "docs/KB.md"
+
+[session.kb_repo]
+doc = "Where docs/KB.md sits in the development repository (three levels above the hooks directory), relative to the plugin root."
+value = "../../docs/KB.md"
+
+[session.hooks_claim_re]
+doc = "Regex source (JavaScript syntax) of the hook count docs/KB.md claims; the first group is the number."
+value = 'Hooks:\s*\*\*(\d+)\*\*\s*`\.js`\s*files'
+
+[session.skills_claim_re]
+doc = "Regex source (JavaScript syntax) of the skill count docs/KB.md claims; the first group is the number."
+value = 'Claude\s*\n?>?\s*skills:\s*\*\*(\d+)\*\*'
+
+[session.claim_max_digits]
+doc = "The most digits of a claimed count compared here; a longer one is rounded by JavaScript, so the hook defers."
+value = 15
+min = 1
+max = 15
+
+[session.model_kb_audit_date]
+doc = "The UTC date (YYYY-MM-DD) the model KBs were last audited (hooks/lib/repo-audit-baseline.js); a test keeps the two equal."
+value = "2026-09-03"
+
+[session.staleness_threshold_days]
+doc = "How many days after the audit the model KBs count as stale (hooks/lib/repo-audit-baseline.js); a test keeps the two equal."
+value = 60
+min = 1
+
+[session.drift_counts_line]
+doc = "The count-drift advisory line; {parts} are the differing counts."
+value = "anti-hall repo self-drift — {parts} (docs/KB.md)"
+
+[session.drift_hooks_part]
+doc = "The hook-count part of the count-drift line."
+value = "hooks: KB.md claims {claimed}, actual {actual}"
+
+[session.drift_skills_part]
+doc = "The skill-count part of the count-drift line."
+value = "skills: KB.md claims {claimed}, actual {actual}"
+
+[session.parts_sep]
+doc = "Separator between the parts of the count-drift line."
+value = "; "
+
+[session.drift_stale_line]
+doc = "The model-KB staleness advisory line; {date}, {age} and {threshold} are the audit date and the days."
+value = "anti-hall model KBs last audited {date} ({age}d ago, threshold {threshold}d) — re-verify model lineup/pricing"
+
+# ---- defect-nudge (hooks/defect-nudge.js, hooks/lib/defect-store.js) -------------------------------------------------
+
+[session.defect_nudge_summary]
+doc = "One-line description of the defect-nudge check in the generated reference."
+value = "SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported (port of defect-nudge.js); counts and ages only."
+
+[session.defect_nudge_guard]
+doc = "The guard id of defect-nudge, in its messages and in the skip file."
+value = "defect-nudge"
+
+[session.defects_dir]
+doc = "The defect store, relative to the state directory."
+value = "defects"
+
+[session.archive_dir]
+doc = "Archived defects, relative to the defect store; one directory per month."
+value = "archive"
+
+[session.history_dir]
+doc = "Backfilled history, relative to the defect store or to the project's .anti-hall directory (the progress ledger)."
+value = "history"
+
+[session.defect_ext]
+doc = "The extension of a defect file."
+value = ".jsonl"
+
+[session.defect_stamp]
+doc = "The once-a-day stamp of the defect sweep, relative to the state directory."
+value = ".defects-nudge-stamp.json"
+
+[session.defect_throttle_ms]
+doc = "The least time between two defect sweeps."
+value = 86400000
+unit = "ms"
+min = 1000
+
+[session.anti_hall_marker]
+doc = "The file whose presence in the working directory marks the anti-hall repository itself (the maintainer's view)."
+value = "plugins/anti-hall/.claude-plugin/plugin.json"
+
+[session.defect_open]
+doc = "The status of a defect nobody has ruled on."
+value = "open"
+
+[session.defect_report]
+doc = "The line type of a report."
+value = "report"
+
+[session.defect_ruling]
+doc = "The line type of a ruling."
+value = "ruling"
+
+[session.defect_backfill]
+doc = "The line type of a defect imported from git history."
+value = "backfill"
+
+[session.defect_fixed]
+doc = "The ruling status that opens the regression cycle."
+value = "fixed"
+
+[session.defect_regressed]
+doc = "The derived status of a fixed defect reported again by a build at or after its fix."
+value = "regressed"
+
+[session.defect_closed]
+doc = "The statuses that mean a defect is finished (everything else is unfinished work)."
+value = ["fixed", "wontfix", "notabug", "dup"]
+
+[session.defect_maintainer_what]
+doc = "Headline of the maintainer's nudge; {active}, {regressed} and {oldest} are counts and days."
+value = "{active} unfinished defect reports ({regressed} regressed), oldest {oldest}d."
+
+[session.defect_maintainer_instead]
+doc = "Advice of the maintainer's nudge."
+value = "run /anti-hall:defects."
+
+[session.defect_reporter_what]
+doc = "Headline of the reporter's nudge; {count} is the number of defects with a later ruling."
+value = "rulings on {count} defects you reported."
+
+[session.defect_reporter_instead]
+doc = "Advice of the reporter's nudge."
+value = "run /anti-hall:defects mine."
+
+# ---- progress-prune (hooks/progress-prune.js, hooks/lib/gitignore-hint.js) -----------------------------------------------
+
+[session.progress_prune_summary]
+doc = "One-line description of the progress-prune check in the generated reference."
+value = "SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/ (port of progress-prune.js)."
+
+[session.progress_state_file]
+doc = "The per-directory prune throttle state, relative to the state directory."
+value = "progress-prune-state.json"
+
+[session.gitignore_state_file]
+doc = "The per-project gitignore reminder state, relative to the state directory."
+value = "gitignore-hint-state.json"
+
+[session.anti_hall_dir]
+doc = "The per-project directory that holds progress, history and handovers."
+value = ".anti-hall"
+
+[session.progress_dir]
+doc = "Per-session progress files, relative to the project's .anti-hall directory; one directory per UTC date."
+value = "progress"
+
+[session.progress_skip]
+doc = "Entries of the progress directory that are never pruned."
+value = ["legacy", "INDEX.md"]
+
+[session.md_ext]
+doc = "The extension of a progress or history file."
+value = ".md"
+
+[session.prune_safety_ms]
+doc = "A progress file modified more recently than this is never archived."
+value = 21600000
+unit = "ms"
+min = 1000
+
+[session.prune_throttle_ms]
+doc = "The least time between two prune passes of one working directory."
+value = 86400000
+unit = "ms"
+min = 1000
+
+[session.cwd_key_prefix]
+doc = "Prefix of the throttle key made from a working directory."
+value = "cwd_"
+
+[session.quote_prefix]
+doc = "Prefix of every archived line (a Markdown block quote)."
+value = "> "
+
+[session.archive_entry]
+doc = "What is appended to the history ledger for one pruned progress file; {pruned_at} is the UTC time and {quote} the quoted content."
+value = "\n## Archived progress (pruned {pruned_at})\n\n{quote}\n"
+
+[session.dot_git]
+doc = "The name that marks a git checkout's root."
+value = ".git"
+
+[session.gitdir_tag]
+doc = "The prefix of the single line of a `.git` file that points at the real git directory."
+value = "gitdir:"
+
+[session.check_ignore_args]
+doc = "The git arguments (after -C <root>) that ask whether .anti-hall/ is ignored: exit 0 ignored, 1 not ignored."
+value = ["check-ignore", "-q", ".anti-hall/probe"]
+
+[session.git_scrub_env]
+doc = "Environment variables removed before git runs, so the answer derives from the project directory alone."
+value = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_PREFIX"]
+
+[session.gitignore_probe_ms]
+doc = "How long the gitignore probe may run before it is stopped (the hook's own timeout is 10 s)."
+value = 3000
+unit = "ms"
+min = 10
+
+[session.git_poll_ms]
+doc = "How often the gitignore probe checks whether git has finished."
+value = 5
+unit = "ms"
+min = 1
+max = 100
+
+[session.gitignore_remind_ms]
+doc = "The least time between two gitignore reminders for one project."
+value = 604800000
+unit = "ms"
+min = 1000
+
+[session.gitignore_guard]
+doc = "The guard id of the gitignore reminder in its message."
+value = "gitignore-hint"
+
+[session.gitignore_what]
+doc = "Headline of the gitignore reminder."
+value = ".anti-hall/ is not git-ignored in this repo."
+
+[session.gitignore_why]
+doc = "Why line of the gitignore reminder."
+value = "Session notes must never be committed."
+
+[session.gitignore_instead]
+doc = "Advice of the gitignore reminder."
+value = "add `.anti-hall/` to .gitignore (or run /anti-hall:doctor --repair)."

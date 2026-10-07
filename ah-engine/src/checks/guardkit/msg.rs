@@ -12,6 +12,8 @@ pub enum Kind {
     Warn,
     /// Tip or nudge.
     Tip,
+    /// An update is available.
+    Update,
 }
 
 impl Kind {
@@ -20,6 +22,7 @@ impl Kind {
             Kind::Block => "block",
             Kind::Warn => "warn",
             Kind::Tip => "tip",
+            Kind::Update => "update",
         }
     }
 }
@@ -37,6 +40,8 @@ pub struct Parts<'a> {
     pub allowed: &'a str,
     /// The exact override, if any.
     pub override_: &'a str,
+    /// Extra plain lines appended last (`extra` of `block-message.js`); an empty one is left out.
+    pub extra: &'a [&'a str],
 }
 
 /// `clean()` of block-message.js: collapse white space runs and trim.
@@ -46,7 +51,7 @@ fn clean(s: &str) -> String {
 
 /// Build the message text.
 ///
-/// Mirrors `hooks/lib/block-message.js` `message` (the `extra` lines are not used by these guards).
+/// Mirrors `hooks/lib/block-message.js` `message`.
 pub fn message(kind: Kind, guard: &str, p: &Parts<'_>) -> String {
     let icon = defaults::raw("guardkit.icons").str_field(kind.key());
     let labels = defaults::raw("guardkit.msg_labels");
@@ -55,6 +60,9 @@ pub fn message(kind: Kind, guard: &str, p: &Parts<'_>) -> String {
         if !text.is_empty() {
             lines.push(format!("{}{}", labels.str_field(label), clean(text)));
         }
+    }
+    for l in p.extra.iter().filter(|l| !l.is_empty()) {
+        lines.push(clean(l));
     }
     lines.join("\n")
 }

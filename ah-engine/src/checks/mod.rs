@@ -22,6 +22,7 @@ pub mod model_routing;
 pub mod orch_on_spawn;
 pub mod phase_tracker;
 pub mod scan_throttle;
+pub mod session;
 pub mod ship_it;
 pub mod spawnctx;
 pub mod verify_first;
@@ -129,7 +130,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 24] = [
+    static ALL: [&dyn Check; 30] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -154,6 +155,12 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &ctxbudget::handover::AutoHandover,
         &ctxbudget::handover::AutoHandoverPauseNag,
         &ctxbudget::advice::CompactAdviceGuard,
+        &session::version_alert::VersionAlert,
+        &session::devswarm_version::DevswarmVersion,
+        &session::claude_cli_version::ClaudeCliVersion,
+        &session::repo_self_drift::RepoSelfDrift,
+        &session::defect_nudge::DefectNudge,
+        &session::progress_prune::ProgressPrune,
     ];
     &ALL
 }
