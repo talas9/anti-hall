@@ -1589,12 +1589,12 @@ test('doctor --fix: EXISTING Codex install upgraded past a new hook event -> re-
 
     const afterCfg = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
     const postCommands = (afterCfg.hooks.PostToolUse || []).flatMap((g) => (g.hooks || []).map((h) => h.command));
-    assert.ok(postCommands.some((c) => /devswarm-parent-reply-tracker\.js/.test(c)), 'the missing PostToolUse reply-tracker hook must be added by the repair-triggered re-install:\n' + JSON.stringify(afterCfg.hooks, null, 2));
+    assert.ok(postCommands.some((c) => /ah-hook\.sh" PostToolUse --host codex/.test(c)), 'the missing PostToolUse trigger must be added by the repair-triggered re-install:\n' + JSON.stringify(afterCfg.hooks, null, 2));
 
     // The pre-existing (older) events must survive the re-install untouched in
     // shape (mergeHooks() is additive per-event — re-running the installer on
     // an existing install must not clobber events it already knew about).
     const preCommands = (afterCfg.hooks.PreToolUse || []).flatMap((g) => (g.hooks || []).map((h) => h.command));
-    assert.ok(preCommands.some((c) => /git-guard\.js/.test(c)), 'pre-existing PreToolUse hooks must survive the repair-triggered re-install');
+    assert.ok(preCommands.some((c) => /ah-hook\.sh" PreToolUse --host codex/.test(c)), 'pre-existing PreToolUse trigger must survive the repair-triggered re-install');
   } finally { rm(home); rm(cwd); }
 });
