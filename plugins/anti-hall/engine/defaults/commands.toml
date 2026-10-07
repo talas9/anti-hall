@@ -76,6 +76,22 @@ value = { args = "[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]
 doc = "The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON."
 value = { args = "[--check] [--repair|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]", read_only = false, status = "implemented" }
 
+[cmd.jev-setup]
+doc = "Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on|shadow|off`; `test` and the review verbs stay in the Node script."
+value = { args = "<status|enable|disable|set-key|bind-generic-key|mode> [--transport vercel|typesafe] [--fallback vercel|typesafe|none] [--role fallback] [--vendor vercel|typesafe]", read_only = false, status = "implemented" }
+
+[cmd.capability-scan]
+doc = "A read-only gap report (D81, the port of scripts/capability-scan.js): for each opt-in capability of a plugin tree, whether it is shipped and whether it is active on this machine, and how to enable it; prints the JSON report, then one line per capability."
+value = { args = "[--root <plugin dir>]", read_only = true, status = "implemented" }
+
+[cmd.harvest]
+doc = "Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of scripts/harvest-debt.js), and flag the ones with no payback trigger or in files untouched for the stale window."
+value = { args = "[--dir <path>] [--stale-days <n>]", read_only = true, status = "implemented" }
+
+[cmd.briefing]
+doc = "A derived inventory of a plugin tree (D81, the port of scripts/briefing.js): every registered hook by event with the purpose from its own header comment, the skills, the DevSwarm substrate and the docs map."
+value = { args = "[--root <plugin dir>]", read_only = true, status = "implemented" }
+
 [cmd.schedule]
 doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."
 value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, status = "implemented" }

@@ -60,6 +60,10 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("jev", crate::jev::cli::run_cmd),
         ("migrate", crate::migrate::cli::run_migrate),
         ("doctor", crate::doctor::run_doctor),
+        ("jev-setup", crate::setup::cmd_jev_setup),
+        ("capability-scan", crate::setup::cmd_capability_scan),
+        ("harvest", crate::setup::cmd_harvest),
+        ("briefing", crate::setup::cmd_briefing),
     ]
 }
 

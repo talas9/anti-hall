@@ -37,6 +37,7 @@ pub mod paths;
 pub mod reqenv;
 pub mod rules;
 pub mod schedule;
+pub mod setup;
 pub mod spool;
 pub mod sql;
 pub mod storage;
