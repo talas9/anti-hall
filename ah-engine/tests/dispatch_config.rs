@@ -13,9 +13,9 @@ struct Env {
 
 const POST_BASH: [&str; 6] =
     ["merge-side-pick:post", "git-guard:audit", "output-verify-guard", "devswarm-parent-reply-tracker", "devswarm-child-drain", "coordinator-work-guard:post"];
-/// Entries the engine answers itself (an allow) in these tests' environment, so no Node command runs for them: the
-/// DevSwarm tracker and drain are inert outside a DevSwarm child workspace.
-const POST_NATIVE: [&str; 2] = ["devswarm-parent-reply-tracker", "devswarm-child-drain"];
+/// Entries the engine answers itself in these tests' environment, so no Node command runs for them. None: the tests run with
+/// the checks down (`AH_ENGINE_NOSPAWN=1`), so every entry runs as its Node command.
+const POST_NATIVE: [&str; 0] = [];
 const PRE_BASH: [&str; 9] = [
     "compact-declaration-guard",
     "git-guard",
@@ -239,12 +239,12 @@ fn config_validate_enforces_the_guard_rule_on_the_real_command() {
             .unwrap();
         (o.status.code().unwrap(), String::from_utf8_lossy(&o.stdout).to_string())
     };
+    // (the rule for a guard entry with no built-in check is unit-tested in src/hookcfg: every guard entry of the table has a check now)
     for bad in [
         "[events.PreToolUse]\nmode = \"off\"\n",
         "[events.Stop]\nenabled = false\n",
         "[events.SubagentStop]\nmode = \"shadow\"\n",
         "[events.PermissionRequest]\nmax_rules = 1\n",
-        "[entries.\"devswarm-child-gate\"]\nmode = \"off\"\n",
     ] {
         let (code, out) = validate(bad);
         assert_eq!(code, 1, "{bad}: {out}");

@@ -684,7 +684,9 @@ fn stop_active_genuine_node_blocks_have_in_cap_and_over_cap_parity_without_count
     let run_results = |payload: &str| -> Vec<(i32, String)> {
         (0..4)
             .map(|_| {
-                let (code, out, err) = e.run(&args, true, payload, true);
+                // checks down (no daemon, none started): every Stop entry has a built-in check by now, so the mapped Node block
+                // only runs when the checks cannot answer
+                let (code, out, err) = e.run_with(&args, false, payload, true, &[("AH_ENGINE_NOSPAWN", "1")]);
                 assert_eq!(out, "");
                 (code, err)
             })

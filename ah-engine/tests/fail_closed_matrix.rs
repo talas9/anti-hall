@@ -412,15 +412,21 @@ fn node_only_count(case: &Case) -> usize {
     table::select(case.host, &case.event, &valid, Some(tool_of(case.host))).iter().filter(|e| e.check.is_none()).count()
 }
 
+/// Whether the row's payload is one the checks can read and answer: a valid one, or (on a Stop event, where no tool selects the
+/// entries) one without a tool name or with the re-entry flag.
+fn readable(case: &Case, row: &Row) -> bool {
+    matches!(row.stdin, Stdin::Valid) || (matches!(row.stdin, Stdin::NoToolName | Stdin::StopActive) && matches!(case.event.as_str(), "Stop" | "SubagentStop"))
+}
+
 /// The daemon mode a row really runs in: a row that needs its injected hook(s) to run (a valid payload answered in the client)
 /// runs with the checks down when the case has too few Node-only entries to hold them.
 fn effective_daemon(case: &Case, row: &Row) -> Daemon {
     let wants_run = |cmd: &str| cmd != "true";
     let needed = match row.hook {
-        Hook::Crossed => usize::from(matches!(row.stdin, Stdin::Valid)) * 2,
+        Hook::Crossed => usize::from(readable(case, row)) * 2,
         Hook::Cmd { first, second } => usize::from(wants_run(first)) + usize::from(wants_run(second)),
     };
-    if row.daemon == Daemon::InProcess && matches!(row.stdin, Stdin::Valid) && node_only_count(case) < needed { Daemon::Down } else { row.daemon }
+    if row.daemon == Daemon::InProcess && readable(case, row) && node_only_count(case) < needed { Daemon::Down } else { row.daemon }
 }
 
 /// Run the real binary for one row with one hook pair; the fallback map replaces every Node hook of the event.
@@ -443,10 +449,7 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     // the second hook must have run unless it is a checked entry the engine answered itself (a valid payload answered in the
     // client, or by the daemon)
     let id2_node_only = id2.as_ref().is_some_and(|id| selected.iter().any(|e| &e.id == id && e.check.is_none()));
-    // a Stop payload without a tool name, or with the re-entry flag, is just as readable (no tool selects the entries)
-    let readable = matches!(row.stdin, Stdin::Valid)
-        || (matches!(row.stdin, Stdin::NoToolName | Stdin::StopActive) && matches!(case.event.as_str(), "Stop" | "SubagentStop"));
-    let checks_answer = readable && matches!(row.daemon, Daemon::InProcess | Daemon::Blocks);
+    let checks_answer = readable(case, row) && matches!(row.daemon, Daemon::InProcess | Daemon::Blocks);
     let second_expected = id2.is_some() && second.contains("AH_TEST_MARK2") && (id2_node_only || !checks_answer);
     let events: serde_json::Map<String, Value> = table::entries(case.host, &case.event)
         .into_iter()
@@ -733,13 +736,15 @@ fn consecutive_stops_with_a_broken_install_end_in_an_exit_0_within_the_cap() {
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
             let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-fl-{host}-{event}-{}", std::process::id())) };
-            let broken = Row { name: "broken install", runnable: false, ..BASE };
+            // checks down: every Stop entry has a built-in check by now, which would answer in the client without needing the install;
+            // the count is about hooks that cannot run
+            let broken = Row { name: "broken install", runnable: false, daemon: Daemon::Down, ..BASE };
             let _ = std::fs::remove_dir_all(&case.dir);
             let codes: Vec<i32> = (0..cap + 2).map(|_| run_kept(&case, &broken, MARK, MARK).code).collect();
             let expect: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
             assert_eq!(codes, expect, "[{host}/{event}] consecutive Stops, broken install");
             // a healthy run in between resets the count
-            let healthy = Row { name: "healthy", ..BASE };
+            let healthy = Row { name: "healthy", daemon: Daemon::Down, ..BASE };
             assert_eq!(run_kept(&case, &healthy, MARK, MARK).code, 0, "[{host}/{event}] healthy Stop");
             assert_eq!(run_kept(&case, &broken, MARK, MARK).code, 2, "[{host}/{event}] the count restarted after a healthy Stop");
         }
@@ -774,7 +779,8 @@ fn a_stop_hooks_genuine_block_survives_a_failed_sibling_at_the_cap() {
                         std::fs::create_dir_all(&counters).unwrap();
                         std::fs::write(counters.join(format!("{event}-fc")), &cap).unwrap();
                     }
-                    let row = Row { name: "genuine block", stdin: active, ..BASE };
+                    // checks down: the hooks under test are the Node commands, which a built-in check would otherwise answer first
+                    let row = Row { name: "genuine block", stdin: active, daemon: Daemon::Down, ..BASE };
                     let r = run_kept(&case, &row, BLOCK, second);
                     let ctx = format!("[{host}/{event}] {what}, {state}: code {} err {:?}", r.code, r.err);
                     assert!(
