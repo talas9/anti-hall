@@ -85,7 +85,7 @@ pub fn registry_json(host: &str) -> String {
     let evs = table::events(host);
     for (i, ev) in evs.iter().enumerate() {
         let entries = table::entries(host, ev);
-        let _ = write!(out, "    {}: [\n", q(ev));
+        let _ = writeln!(out, "    {}: [", q(ev));
         let gs = groups(&entries);
         for (gi, (matcher, g)) in gs.iter().enumerate() {
             out.push_str("      {\n");

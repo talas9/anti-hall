@@ -128,6 +128,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `env.dir` | `AH_ENGINE_DIR` |  |  | Overrides the state directory (default: base_dir/state_dir under the home directory). |
+| `env.done_file` | `AH_ENGINE_DONE_FILE` |  |  | A file the dispatcher creates once it has dispatched an event and decided its exit code (D87). The reliability wrapper sets it, so that an engine exit code of a hook's own (1, say) is told from an engine failure and is not answered by running every hook a second time. |
 | `env.fallback` | `AH_ENGINE_FALLBACK` |  |  | Path of the Node hook the client runs when the engine cannot answer (the `--fallback` argument wins). |
 | `env.home` | `HOME` |  |  | Home directory variable. |
 | `env.home_alt` | `USERPROFILE` |  |  | Fallback home directory variable (used by the git check when the home variable is unset). |
@@ -993,6 +994,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `hooks.cfg_default_label` | `default` |  |  | The `cfg` label of the dispatch_entries metric when the hook configuration is the shipped default. |
 | `hooks.entry_enabled` | `true` |  |  | Default of `enabled` in `[entries.<id>]`: whether the entry runs (false is the same as mode = off; on a guard entry only allowed when it has a built-in check). |
 | `hooks.entry_fields` | `enabled, mode, when` |  |  | The fields an `[entries.<id>]` section may hold. |
 | `hooks.entry_mode` | `on` |  |  | Default of `mode` in `[entries.<id>]`: on, shadow (runs and is logged, never changes the outcome) or off (skipped). On a guard-event entry shadow and off are allowed only when the entry has a built-in check, whose Node hook then stays the real decider. |
@@ -1228,7 +1230,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `db_hot_wal_bytes` | gauge | bytes |  | Size of hot.db's write-ahead log. |
 | `db_writes` | gauge | writes |  | Writes carried by those transactions since the daemon started. |
 | `dispatch_checks` | counter | entries | event, check, answer | Built-in check entries the dispatcher sent to the daemon, by event, check and answer (decided, or defer = its Node hook ran instead) (D58). |
-| `dispatch_entries` | counter | entries | event, entry, outcome | What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry and outcome. |
+| `dispatch_entries` | counter | entries | event, entry, outcome, cfg | What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry, outcome and the hash of the non-default hook configuration the plan was made under (`default` when none). |
 | `errors` | counter | requests |  | Requests answered ERR. |
 | `hook_calls` | counter | requests | event | Hook requests served, by hook event. |
 | `hook_latency_us` | histogram | us | event | Wall time to serve a hook request inside the daemon, by hook event. |

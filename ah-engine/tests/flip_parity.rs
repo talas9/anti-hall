@@ -182,6 +182,8 @@ fn json_blocks(out: &str) -> bool {
     })
 }
 
+type Fields = Vec<(String, Value)>;
+
 enum Merged {
     Answer(Res),
     Conflict,
@@ -191,7 +193,7 @@ const PRECEDENCE: [&str; 4] = ["deny", "defer", "ask", "allow"];
 
 /// `mergeObjects` of the model; `lenient` keeps the first value of a field two answers set differently.
 fn merge_objects(active: &[&Res], lenient: bool) -> Merged {
-    let (mut top, mut hso): (Vec<(String, Value)>, Vec<(String, Value)>) = (vec![], vec![]);
+    let (mut top, mut hso): (Fields, Fields) = (vec![], vec![]);
     let (mut contexts, mut messages): (Vec<String>, Vec<String>) = (vec![], vec![]);
     let mut decision: Option<(usize, String, Option<Value>)> = None;
     let mut err = String::new();
@@ -735,7 +737,7 @@ fn fake_targets(host: &str) -> Vec<(String, Value)> {
                 }
             }
             for tool in tools {
-                let sel = table::entries(host, ev).into_iter().filter(|e| matches(host, &e.matcher, &[tool.clone()])).collect::<Vec<_>>();
+                let sel = table::entries(host, ev).into_iter().filter(|e| matches(host, &e.matcher, std::slice::from_ref(&tool))).collect::<Vec<_>>();
                 if sel.iter().any(|e| e.check.is_some()) || sel.is_empty() {
                     continue; // a built-in check answers there: the recorded-command corpus covers it with the real hooks
                 }

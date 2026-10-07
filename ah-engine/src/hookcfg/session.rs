@@ -65,7 +65,7 @@ impl SessionStore {
         slot.count = slot.count.saturating_add(1);
         match cond.op {
             SessionOp::First => slot.count == 1,
-            SessionOp::Every(n) => (slot.count - 1) % n == 0,
+            SessionOp::Every(n) => (slot.count - 1).is_multiple_of(n),
             SessionOp::AtLeast(n) => slot.count >= n,
         }
     }
