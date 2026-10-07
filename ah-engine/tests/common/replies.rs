@@ -40,6 +40,8 @@ pub struct Step {
 pub struct Case {
     pub name: String,
     pub files: Vec<(String, String)>,
+    /// Files seeded with a modification time 30 days in the past.
+    pub aged: Vec<(String, String)>,
     pub env: Vec<(String, String)>,
     pub transcript: Option<String>,
     pub steps: Vec<Step>,
@@ -47,10 +49,14 @@ pub struct Case {
 
 impl Case {
     pub fn new(name: &str) -> Case {
-        Case { name: name.into(), files: Vec::new(), env: Vec::new(), transcript: None, steps: Vec::new() }
+        Case { name: name.into(), files: Vec::new(), aged: Vec::new(), env: Vec::new(), transcript: None, steps: Vec::new() }
     }
     pub fn file(mut self, rel: &str, body: &str) -> Case {
         self.files.push((rel.into(), body.into()));
+        self
+    }
+    pub fn aged(mut self, rel: &str, body: &str) -> Case {
+        self.aged.push((rel.into(), body.into()));
         self
     }
     pub fn env(mut self, k: &str, v: &str) -> Case {
@@ -223,6 +229,13 @@ fn mkhome(tag: &str, case: &Case) -> PathBuf {
         let f = d.join(rel);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(f, body).unwrap();
+    }
+    for (rel, body) in &case.aged {
+        let f = d.join(rel);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, body).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(30 * 86_400);
+        std::fs::OpenOptions::new().write(true).open(&f).unwrap().set_modified(old).unwrap();
     }
     d
 }

@@ -157,7 +157,7 @@ fn output_verify_cases() -> Vec<Case> {
     v.push(c("ov-once-state-garbage").file(".anti-hall/turn-gate/tg-s1.json", "not json").transcript(&turn).same(post("npm test", json!(mixed))));
     v.push(c("ov-once-state-null").file(".anti-hall/turn-gate/tg-s1.json", "null").transcript(&turn).same(post("npm test", json!(mixed))));
     v.push(c("ov-once-sigs-capped").transcript(&turn).file(".anti-hall/turn-gate/tg-s1.json", &format!(r#"{{"output-verify-guard|main":{{"turn":"u1","sigs":[{}]}}}}"#, (0..20).map(|i| format!("\"s{i}\"")).collect::<Vec<_>>().join(","))).same(post("npm test", json!(mixed))));
-    v.push(c("ov-once-prune-stale").transcript(&turn).file(".anti-hall/turn-gate/tg--old.json", "{}").same(post("npm test", json!(mixed))));
+    v.push(c("ov-once-prune-stale").transcript(&turn).aged(".anti-hall/turn-gate/tg--old.json", "{}").same(post("npm test", json!(mixed))));
     // payload shapes
     v.push(c("ov-payload-null").same(Value::Null));
     v.push(c("ov-payload-array").same(json!([1, 2])));
@@ -295,4 +295,229 @@ fn claim_ledger_matches_node() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let t = run_all("claim-ledger.js", "claim-ledger", &claim_ledger_cases());
     assert!(t.steps >= 30 && t.same >= 25);
+}
+
+// ---- speculation-guard ----------------------------------------------------------------------------------------
+
+fn sha1(s: &str) -> String {
+    ah_engine::checks::replykit::io::sha1_hex(s)
+}
+
+fn spec_cases() -> Vec<Case> {
+    let c = |n: &str| Case::new(&format!("sg-{n}"));
+    let mut v: Vec<Case> = Vec::new();
+    let future = 4_102_444_800_000u64;
+    // hedges and acknowledgments in the payload text
+    let texts: &[(&str, &str)] = &[
+        ("probably", "This is probably a cache problem."),
+        ("should-be-fine", "It should be fine."),
+        ("must-be", "That must be the reason."),
+        ("plausibly", "That is plausibly the cause."),
+        ("very-plausibly", "That is very plausibly the cause."),
+        ("presumably", "Presumably the build is green."),
+        ("i-suspect", "I suspect the config."),
+        ("my-guess", "My guess is the cache."),
+        ("id-guess", "I'd guess it passes."),
+        ("id-guess-no-apostrophe", "Id guess it passes."),
+        ("i-bet", "I bet it works."),
+        ("likely", "It is likely done."),
+        ("seems-to-be", "It seems to be working."),
+        ("appears-to-be", "It appears to be fixed."),
+        ("i-think-its", "I think it's the cache."),
+        ("my-hunch", "My hunch is the cache."),
+        ("uppercase", "PROBABLY the cache."),
+        ("mixed-case", "ProBably the cache."),
+        ("not-a-word-boundary", "improbably unlikely probablyish"),
+        ("no-hedge", "All done, nothing to add."),
+        ("ack-verified", "It is probably the cache, verified with the test run."),
+        ("ack-dont-know", "It is probably the cache, I don't know yet."),
+        ("ack-havent-checked", "It is probably the cache; I haven't checked."),
+        ("ack-not-verified", "It is probably the cache (not verified)."),
+        ("ack-unverified", "Unverified: probably the cache."),
+        ("ack-let-me-verify", "Probably the cache, let me verify."),
+        ("ack-ill-check", "Probably the cache, I'll check."),
+        ("ack-will-check", "Probably the cache, I will check."),
+        ("ack-need-to-confirm", "Probably the cache, need to confirm."),
+        ("ack-to-confirm", "Probably the cache, to confirm run it."),
+        ("ack-file-line", "Probably the cache, see main.js:42."),
+        ("ack-running", "Probably the cache, running it now."),
+        ("ack-per-the-data", "Probably the cache per the data."),
+        ("ack-the-data-shows", "Probably the cache, the data shows it."),
+        ("ack-case-sensitive-file-line", "Probably the cache, see MAIN.JS:42."),
+        ("not-ack-file-no-line", "Probably the cache, see main.js."),
+        ("requirement-line", "Requirement: the build must be green."),
+        ("acceptance-line", "- Acceptance criteria: the list must be sorted"),
+        ("ac-line", "AC: it should be fast"),
+        ("spec-line-bullet", "* Spec: output should be stable"),
+        ("numbered-spec", "1. spec: x must be small"),
+        ("requirement-midline", "per the spec: this should be fine"),
+        ("obligation-participle", "The build must be tested before ship."),
+        ("obligation-participle-newline", "It must be\n  measured on device."),
+        ("obligation-participle-far", "It must be                                        measured"),
+        ("state-word-done", "This should be done by now."),
+        ("two-modals-second-not-exempt", "X must be measured. Later it should be fine."),
+        ("modal-then-other-hedge", "X must be verified. Probably wrong."),
+        ("modal-exempt-plus-other-order", "The cache is probably full. X must be measured."),
+        ("inline-code", "See `probably` and `must be` in the docs."),
+        ("straight-quotes", "The docs say \"probably\" and \"likely\" here."),
+        ("odd-straight-quotes", "The docs say \"probably here."),
+        ("curly-quotes", "The docs say \u{201c}probably\u{201d} and \u{2018}likely\u{2019} here."),
+        ("blockquote-only", "> probably fine\n> likely right"),
+        ("blockquote-plus-text", "> probably fine\nSome plain words."),
+        ("blockquote-separator-hedge", "> it is done \u{2014} so I think it is likely right"),
+        ("blockquote-separator-dashes", "> quoted -- probably mine"),
+        ("blockquote-semicolon-so", "> quoted; so it is probably mine"),
+        ("blockquote-comma-so-upper", "> quoted, SO it is probably mine"),
+        ("fence-closed", "Result:\n```\nprobably\nmust be\n```\nDone."),
+        ("fence-unclosed", "Result:\n```\nprobably"),
+        ("fence-tilde", "Result:\n~~~\nprobably\n~~~\nDone."),
+        ("fence-mismatch", "Result:\n```\nprobably\n~~~\nDone."),
+        ("fence-only", "```\nprobably\n```"),
+        ("unicode-astral", "😀 probably 😀"),
+        ("unicode-masked-astral", "`😀 probably` and then likely 😀"),
+        ("unicode-cjk", "多分 probably 日本語"),
+        ("crlf", "line one\r\nIt is probably fine\r\n"),
+        ("long-text", &"filler words here. ".repeat(20000)),
+        ("long-text-with-hedge", &format!("{} probably", "filler words here. ".repeat(20000))),
+        ("whitespace-heavy", "   \t probably \n\n  "),
+    ];
+    for (n, t) in texts {
+        v.push(c(n).same(msg(t)));
+    }
+    // loop safety and state
+    v.push(c("block-then-pending-defers").same(msg("It is probably the cache.")).defer(msg("It is probably the cache.")));
+    v.push(c("block-then-other-text-defers").same(msg("It is probably the cache.")).defer(msg("It is likely something else.")));
+    v.push(c("seeded-same-hash-allows").file(".anti-hall/speculation-guard-state-s1.json", &format!(r#"{{"hash":"{}","blocks":1}}"#, sha1("It is probably the cache."))).same(msg("It is probably the cache.")));
+    v.push(c("seeded-other-hash-blocks").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1}"#).same(msg("It is probably the cache.")));
+    v.push(c("seeded-blocks-cap").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":3}"#).same(msg("It is probably the cache.")));
+    v.push(c("seeded-blocks-float").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1.5}"#).same(msg("It is probably the cache.")));
+    v.push(c("seeded-blocks-string").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":"9"}"#).same(msg("It is probably the cache.")));
+    v.push(c("seeded-legacy-hash-text").file(".anti-hall/speculation-guard-state-s1.json", "3f2a9c").same(msg("It is probably the cache.")));
+    v.push(c("seeded-legacy-numeric").file(".anti-hall/speculation-guard-state-s1.json", "12345678").same(msg("It is probably the cache.")));
+    v.push(c("seeded-legacy-string-json").file(".anti-hall/speculation-guard-state-s1.json", "\"abc\"").same(msg("It is probably the cache.")));
+    v.push(c("seeded-array").file(".anti-hall/speculation-guard-state-s1.json", "[1,2]").same(msg("It is probably the cache.")));
+    v.push(c("seeded-null").file(".anti-hall/speculation-guard-state-s1.json", "null").same(msg("It is probably the cache.")));
+    v.push(c("seeded-empty").file(".anti-hall/speculation-guard-state-s1.json", "  \n").same(msg("It is probably the cache.")));
+    v.push(c("seeded-pending-defers").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"regex"}}"#).defer(msg("It is probably the cache.")));
+    v.push(c("seeded-pending-incomplete-ok").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz"}}"#).same(msg("It is probably the cache.")));
+    v.push(c("seeded-pending-non-hedge-defers").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"jev"}}"#).defer(msg("All fine.")));
+    v.push(c("seeded-unsure-state-defers").file(".anti-hall/speculation-guard-state-s1.json", r#"{"7":1}"#).defer(msg("It is probably the cache.")));
+    v.push(c("prune-stale-files").file(".anti-hall/speculation-guard-state-old.json", "{}").same(msg("It is probably the cache.")));
+    v.push(c("prune-removes-aged").aged(".anti-hall/speculation-guard-state-old.json", "{}").aged(".anti-hall/speculation-guard-state-old2.json", "{}").same(msg("It is probably the cache.")));
+    v.push(c("prune-keeps-other-prefix").aged(".anti-hall/other-state-old.json", "{}").aged(".anti-hall/speculation-guard-state-old.txt", "{}").same(msg("It is probably the cache.")));
+    v.push(c("prune-bad-stamp-sweeps").aged(".anti-hall/speculation-guard-state-old.json", "{}").file(".anti-hall/.prune-stamp-speculation-guard-state.json", "garbage").same(msg("It is probably the cache.")));
+    v.push(c("prune-future-stamp-sweeps").aged(".anti-hall/speculation-guard-state-old.json", "{}").file(".anti-hall/.prune-stamp-speculation-guard-state.json", r#"{"lastSweep":99999999999999}"#).same(msg("It is probably the cache.")));
+    v.push(c("prune-throttled").file(".anti-hall/.prune-stamp-speculation-guard-state.json", &format!(r#"{{"lastSweep":{}}}"#, 4_102_444_800_000u64)).file(".anti-hall/speculation-guard-state-old.json", "{}").same(msg("It is probably the cache.")));
+    // sessions
+    v.push(c("no-session-id").same(without(msg("It is probably the cache."), "session_id")));
+    v.push(c("numeric-session-id").same(with(msg("It is probably the cache."), "session_id", json!(7))));
+    v.push(c("weird-session-id").same(with(msg("It is probably the cache."), "session_id", json!("../a b😀"))));
+    v.push(c("zero-session-id").same(with(msg("It is probably the cache."), "session_id", json!(0))));
+    v.push(c("object-session-id-defers").defer(with(msg("It is probably the cache."), "session_id", json!({"a":1}))));
+    // switches
+    v.push(c("settings-off").file(".anti-hall/settings.json", r#"{"guards":{"speculationGuard":false}}"#).same(msg("It is probably the cache.")));
+    v.push(c("option-off").env("CLAUDE_PLUGIN_OPTION_GUARDS_SPECULATION_GUARD", "false").same(msg("It is probably the cache.")));
+    v.push(c("settings-on-string").file(".anti-hall/settings.json", r#"{"guards":{"speculationGuard":"yes"}}"#).same(msg("It is probably the cache.")));
+    v.push(c("skip").file(".anti-hall/skip.json", &format!(r#"{{"speculation-guard": {future}}}"#)).same(msg("It is probably the cache.")));
+    v.push(c("skip-all").file(".anti-hall/skip.json", &format!(r#"{{"all": {future}}}"#)).same(msg("It is probably the cache.")));
+    v.push(c("skip-expired").file(".anti-hall/skip.json", r#"{"speculation-guard": 5}"#).same(msg("It is probably the cache.")));
+    v.push(c("jev-env-defers").env("ANTIHALL_JEV", "1").defer(msg("It is probably the cache.")));
+    v.push(c("jev-env-defers-no-hedge").env("ANTIHALL_JEV", "1").defer(msg("All fine.")));
+    v.push(c("jev-settings-defers").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).defer(msg("It is probably the cache.")));
+    v.push(c("jev-legacy-file-defers").file(".anti-hall/jev.json", r#"{"enabled":true}"#).defer(msg("It is probably the cache.")));
+    v.push(c("jev-env-zero-wins").env("ANTIHALL_JEV", "0").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).same(msg("It is probably the cache.")));
+    v.push(c("inference-on-no-hedge-defers").env("ANTIHALL_INFERENCE_CHECK", "1").defer(msg("The root cause is the cache.")));
+    v.push(c("inference-on-hedge-blocks").env("ANTIHALL_INFERENCE_CHECK", "1").same(msg("It is probably the cache.")));
+    v.push(c("inference-on-loop-safe-allows").env("ANTIHALL_INFERENCE_CHECK", "1").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":3}"#).same(msg("The root cause is the cache.")));
+    v.push(c("inference-off-no-hedge").same(msg("The root cause is the cache.")));
+    // transcript fallback
+    v.push(c("transcript-only-hedge").transcript(&[user("go"), asst("It is probably the cache.")]).same(stop(json!({}))));
+    v.push(c("transcript-only-no-hedge").transcript(&[user("go"), asst("All fine.")]).same(stop(json!({}))));
+    v.push(c("transcript-only-masked").transcript(&[asst("See `probably` here.")]).same(stop(json!({}))));
+    v.push(c("transcript-whitespace-payload").transcript(&[asst("It is probably the cache.")]).same(msg("   ")));
+    v.push(c("transcript-last-wins").transcript(&[asst("probably old"), user("x"), asst("All fine now.")]).same(stop(json!({}))));
+    v.push(c("transcript-empty").transcript_raw("").same(stop(json!({}))));
+    v.push(c("transcript-no-assistant").transcript(&[user("hello")]).same(stop(json!({}))));
+    v.push(c("transcript-missing-file").same(stop(json!({"transcript_path": "/nonexistent/t.jsonl"}))));
+    v.push(c("transcript-relative-defers").defer(stop(json!({"transcript_path": "rel/t.jsonl", "last_assistant_message": "probably"}))));
+    v.push(c("transcript-lone-surrogate-defers").transcript_raw("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"probably \\ud800\"}}\n").defer(stop(json!({}))));
+    v.push(c("transcript-duplicated-message-text").transcript(&[json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"prob"},{"type":"text","text":"ably"}]}}).to_string()]).same(stop(json!({}))));
+    v.push(c("transcript-role-direct").transcript(&[json!({"role":"assistant","content":"It is probably the cache."}).to_string()]).same(stop(json!({}))));
+    v.push(c("transcript-empty-message-string").transcript(&[json!({"role":"assistant","content":"","message":"","text":"probably"}).to_string()]).same(stop(json!({}))));
+    v.push(c("transcript-masked-blockquote").transcript(&[asst("> probably fine\nreal words")]).same(stop(json!({}))));
+    v.push(c("transcript-big-window").transcript(&{
+        let mut l = vec![asst("It is probably early.")];
+        l.extend((0..3000).map(|i| tool_result(&format!("{i} {}", "x".repeat(400)))));
+        l.push(asst("Final: all good."));
+        l
+    }).same(stop(json!({}))));
+    // payload shapes
+    v.push(c("no-transcript-path").same(without(msg("It is probably the cache."), "transcript_path")));
+    v.push(c("transcript-path-number").same(with(msg("It is probably the cache."), "transcript_path", json!(5))));
+    v.push(c("transcript-path-empty").same(with(msg("It is probably the cache."), "transcript_path", json!(""))));
+    v.push(c("payload-null").same(Value::Null));
+    v.push(c("payload-array").same(json!([1])));
+    v.push(c("payload-number-message").same(stop(json!({"last_assistant_message": 5}))));
+    v.push(c("payload-empty-message-transcript").transcript(&[asst("probably")]).same(stop(json!({"last_assistant_message": ""}))));
+    v
+}
+
+#[test]
+fn speculation_guard_matches_node() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let t = run_all("speculation-guard.js", "speculation-guard", &spec_cases());
+    assert!(t.steps >= 30 && t.same >= 25);
+}
+
+// ---- speculation-judge ----------------------------------------------------------------------------------------
+
+fn judge_cases() -> Vec<Case> {
+    let c = |n: &str| Case::new(&format!("sj-{n}"));
+    let mut v: Vec<Case> = Vec::new();
+    let future = 4_102_444_800_000u64;
+    let payloads = [
+        msg("It is probably the cache."),
+        msg("The cause is the stale build artifact."),
+        stop(json!({})),
+        Value::Null,
+        json!([1]),
+        stop(json!({"transcript_path": 5})),
+        stop(json!({"transcript_path": "rel.jsonl", "last_assistant_message": "x"})),
+        json!({"hook_event_name":"Stop"}),
+    ];
+    for (i, p) in payloads.iter().enumerate() {
+        v.push(c(&format!("default-off-{i}")).transcript(&[asst("The cause is the stale build artifact.")]).same(p.clone()));
+        v.push(c(&format!("env-off-{i}")).env("ANTIHALL_SEMANTIC_JUDGE", "0").transcript(&[asst("The cause is x.")]).same(p.clone()));
+        v.push(c(&format!("settings-false-{i}")).file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":false}}"#).same(p.clone()));
+    }
+    for (n, val) in [("junk", "maybe"), ("empty", ""), ("space", "  "), ("zero-word", "off"), ("no", "no")] {
+        v.push(c(&format!("env-{n}-stays-off")).env("ANTIHALL_SEMANTIC_JUDGE", val).same(msg("The cause is x.")));
+    }
+    v.push(c("settings-string-off").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":"no"}}"#).same(msg("x")));
+    v.push(c("settings-corrupt").file(".anti-hall/settings.json", "{{").same(msg("x")));
+    v.push(c("option-false").env("CLAUDE_PLUGIN_OPTION_JEV_SEMANTIC_JUDGE", "false").same(msg("x")));
+    v.push(c("option-true-defers").env("CLAUDE_PLUGIN_OPTION_JEV_SEMANTIC_JUDGE", "true").step(msg("x"), Expect::DeferNoNode));
+    // opted in: Node decides (it would call a model)
+    for (n, val) in [("1", "1"), ("true", "true"), ("on", "on"), ("yes", "YES"), ("spaced", " 1 ")] {
+        v.push(c(&format!("env-on-{n}-defers")).env("ANTIHALL_SEMANTIC_JUDGE", val).step(msg("The cause is x."), Expect::DeferNoNode));
+    }
+    v.push(c("settings-true-defers").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#).step(msg("x"), Expect::DeferNoNode));
+    v.push(c("settings-string-true-defers").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":"on"}}"#).step(msg("x"), Expect::DeferNoNode));
+    v.push(c("env-zero-beats-settings-true").env("ANTIHALL_SEMANTIC_JUDGE", "0").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#).same(msg("x")));
+    v.push(c("env-on-beats-settings-false").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":false}}"#).step(msg("x"), Expect::DeferNoNode));
+    // the judge's own child never recurses
+    v.push(c("child-exits").env("ANTIHALL_JUDGE_CHILD", "1").env("ANTIHALL_SEMANTIC_JUDGE", "1").same(msg("The cause is x.")));
+    v.push(c("child-other-value-defers").env("ANTIHALL_JUDGE_CHILD", "0").env("ANTIHALL_SEMANTIC_JUDGE", "1").step(msg("x"), Expect::DeferNoNode));
+    // skip
+    v.push(c("skip-when-on").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", &format!(r#"{{"speculation-judge": {future}}}"#)).same(msg("x")));
+    v.push(c("skip-all-when-on").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", &format!(r#"{{"all": {future}}}"#)).same(msg("x")));
+    v.push(c("skip-expired-when-on-defers").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", r#"{"speculation-judge": 3}"#).step(msg("x"), Expect::DeferNoNode));
+    v
+}
+
+#[test]
+fn speculation_judge_matches_node() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let t = run_all("speculation-judge.js", "speculation-judge", &judge_cases());
+    assert!(t.steps >= 30 && t.same >= 25 && t.deferred >= 8);
 }
