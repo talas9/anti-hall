@@ -6,9 +6,9 @@
 //!
 //! Why a trait plus a registry instead of a `match` on names: rules refer to checks by name from data
 //! files, so the set of valid names must be discoverable at runtime (rule validation, `docs`, `status`).
-pub mod claim_ledger;
 pub mod agent_scan;
 pub mod ask_guard;
+pub mod claim_ledger;
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
@@ -29,14 +29,14 @@ pub mod replykit;
 pub mod scan_throttle;
 pub mod session;
 pub mod ship_it;
+pub mod silent_agent_nudge;
 pub mod spawnctx;
 pub mod speculation_guard;
 pub mod speculation_judge;
+pub mod stale_agent_stop_note;
 pub mod verify_first;
 pub mod verify_first_orch;
 pub mod verify_first_prompt;
-pub mod silent_agent_nudge;
-pub mod stale_agent_stop_note;
 
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;

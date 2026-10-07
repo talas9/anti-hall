@@ -87,6 +87,9 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `speculation-judge` | Stop: answers the off path of the opt-in semantic judge (switch off, judge child, skip) and leaves every opted-in call, a model call, to Node (port of speculation-judge.js). |
 | `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; leaves the optional Jev shadow question to Node (port of claim-ledger.js). |
 | `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; leaves the optional Jev shadow question to Node (port of output-verify-guard.js). |
+| `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
+| `silent-agent-nudge` | Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js). |
+| `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
 
 ## Settings
 
@@ -228,7 +231,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `request_env.allow` | `34 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. |
+| `request_env.allow` | `34 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. |
 | `request_env.line_prefix` | `E ` |  |  | Prefix of the request line that carries the forwarded environment as one JSON object. |
 | `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them, and the checks that read the environment then see an empty one. |
 
@@ -1760,6 +1763,148 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `speculation_judge.guard_name` | `speculation-judge` |  |  | The guard id this check answers to in skip.json. |
 | `speculation_judge.setting` | `6 entries` |  |  | Where the opt-in switch is read from (jev.semanticJudge, default off). |
 | `speculation_judge.summary` | `Stop: answers the off path of the opt-in semantic judge (switch off, judge ch...` |  |  | One-line description of the speculation-judge check in the generated reference. |
+
+### agent_controls.toml / agent_scan
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `agent_scan.agent_tool` | `Agent` |  |  | Name of the tool whose input carries the description of a launched agent. |
+| `agent_scan.delivery_tools` | `TaskOutput, SendMessage` |  |  | Tools whose tool_result can deliver an agent's result. |
+| `agent_scan.empty_object` | `{}` |  |  | What JSON.stringify gives for a missing tool input. |
+| `agent_scan.inbox_phrase` | `'s inbox` |  |  | Phrase of the result of a message sent to a teammate's inbox. |
+| `agent_scan.json_unsupported` | `recursion limit, out of range` |  |  | Fragments of a JSON parser error that mean the text is JSON to JavaScript but not to serde (nesting past the parser's limit, a number past f64 range); such a line defers to the Node hook. |
+| `agent_scan.launch_text` | `Async agent launched successfully` |  |  | Text a launch tool_result begins with. |
+| `agent_scan.launch_tools` | `Agent, Task` |  |  | Tools whose tool_result can be a launch of an agent. |
+| `agent_scan.not_a_report_keys` | `12 items` |  |  | Keys the host stamps on records that come from a person, a queue, a tool result or a compaction, and never on a real teammate report (NOT_A_REPORT_KEYS). |
+| `agent_scan.notification_tag` | `<task-notification>` |  |  | The opening tag of a completion notice. |
+| `agent_scan.object_string` | `[object Object]` |  |  | What String() gives for an object. |
+| `agent_scan.pending_silence_ms` | `1200000` |  | ms | How long a teammate with an unanswered message still counts as running without a sign of life (PENDING_MESSAGE_SILENCE_MS of hooks/lib/agent-scan.js). |
+| `agent_scan.prefilter` | `10 entries` |  |  | Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment and a teammate idle notice. |
+| `agent_scan.queued_phrase` | `Message queued for delivery to` |  |  | Phrase of the result of a message queued for a running agent. |
+| `agent_scan.re_agent_id` | `agentId:\s*([0-9a-fA-F]{6,40})` |  |  | JavaScript regex source of the agent id in a launch result. |
+| `agent_scan.re_hex_id` | `^[0-9a-fA-F]{6,40}$` |  |  | Rust regex source of a whole agent id. |
+| `agent_scan.re_hex_run` | `[0-9a-fA-F]{7,40}` |  |  | Rust regex source of a run of hex digits that may name an agent by prefix. |
+| `agent_scan.re_inbox_send` | `^Message sent to (.+)'s inbox$` |  |  | JavaScript regex source of the message of a send to a teammate's inbox. |
+| `agent_scan.re_iso_date` | `^([0-9]{4})-([0-9]{2})-([0-9]{2})$` |  |  | Rust regex source of the ISO date alone (read as UTC midnight). |
+| `agent_scan.re_iso_datetime` | `^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0...` |  |  | Rust regex source of the ISO date-time with an explicit zone that the scan reads itself; other timestamp forms defer to the Node hook. |
+| `agent_scan.re_notification_block` | `(?s)<task-notification>(.*?)</task-notification>` |  |  | Rust regex source of one completion notice block, lazily to the first closing tag. |
+| `agent_scan.re_notification_in_reminder` | `<system-reminder>\s*<task-notification>` |  |  | JavaScript regex source of a completion notice directly inside a system reminder. |
+| `agent_scan.re_output_file` | `output_file:\s*(\S+)` |  |  | JavaScript regex source of the output file in a launch result. |
+| `agent_scan.re_queued_message` | `^Message queued for delivery to\s` |  |  | JavaScript regex source of the message of a send to a running agent. |
+| `agent_scan.re_resume_message` | `^Resuming\s+agent\s+([0-9a-fA-F]{6,40})` |  |  | JavaScript regex source (case-insensitive) of the start of a resume message. |
+| `agent_scan.re_running_row` | `·\s*running\b` |  |  | JavaScript regex source (case-insensitive) of a status row that says an agent is still running. |
+| `agent_scan.re_status` | `<status>([^<]*)</status>` |  |  | Rust regex source of the status inside a notice. |
+| `agent_scan.re_surrogate_escape` | `\\u[dD][89a-fA-F][0-9a-fA-F]{2}` |  |  | Rust regex source of an escape for a UTF-16 surrogate half: JavaScript reads a lone one, serde does not, so text that holds one and fails to parse defers to the Node hook. |
+| `agent_scan.re_task_id` | `<task-id>([^<]*)</task-id>` |  |  | Rust regex source of the task id inside a notice. |
+| `agent_scan.re_teammate_block` | `(?s)\A<teammate-message teammate_id="([^"]+)"[^>]*>\n(.*?)\n</teammate-message>` |  |  | Rust regex source of one teammate message block at the start of the text, lazily to the first closing line. |
+| `agent_scan.report_future_skew_ms` | `5000` |  | ms | How far past its own entry a teammate report's inner timestamp may lie before the report is treated as forged (REPORT_FUTURE_SKEW_MS). |
+| `agent_scan.resume_skew_slack_ms` | `2000` |  | ms | How far before a resume record a terminal notice may be stamped and still stand (RESUME_SKEW_SLACK_MS). |
+| `agent_scan.resume_tools` | `SendMessage, Agent, Task` |  |  | Tools whose tool_result can be a resume of an agent. |
+| `agent_scan.resumed_key` | `resumedAgentId` |  |  | Field of a resume tool_result that holds the full agent id. |
+| `agent_scan.resuming_word` | `Resuming` |  |  | Word a resume tool_result carries. |
+| `agent_scan.retain_bytes` | `8388608` |  | bytes | Most text of tool results the scan keeps for its delivered-but-unnotified safety net; a scan that would keep more defers to the Node hook so the daemon's memory stays bounded. |
+| `agent_scan.safe_int` | `9007199254740991` |  |  | Largest integer JavaScript prints exactly (2^53 - 1); a tool input holding a number outside it is judged by the Node hook, whose number text differs. |
+| `agent_scan.send_tools` | `SendMessage` |  |  | Tools whose tool_result can be a message sent to a teammate's inbox. |
+| `agent_scan.sidechain_key` | `isSidechain` |  |  | The one key of the list above that only counts when it is true. |
+| `agent_scan.sidechain_prefix` | `agent-a` |  |  | Prefix of a subagent transcript's file name. |
+| `agent_scan.stop_tool` | `TaskStop` |  |  | Name of the tool that stops an agent. |
+| `agent_scan.subagents_dir` | `subagents` |  |  | Directory, beside a transcript's own name, that holds the transcripts of its subagents. |
+| `agent_scan.tail_bytes` | `1572864` |  | bytes | Bytes read from the end of a transcript by the default scan (MAX_TAIL_BYTES of hooks/lib/transcript-tail.js). |
+| `agent_scan.teammate_report_prefix` | `Another Claude session sent a message:` |  |  | Text a teammate report entry begins with. |
+| `agent_scan.transcript_ext` | `.jsonl` |  |  | Extension of a transcript file. |
+| `agent_scan.undefined_string` | `undefined` |  |  | What String() gives for a missing value. |
+| `agent_scan.utc_suffix` | ` UTC` |  |  | Suffix of a clock time in a note. |
+| `agent_scan.wide_tail_bytes` | `12582912` |  | bytes | Bytes read by the one widened scan that proves a zero running-agent count on a transcript longer than the default window (WIDE_TAIL_BYTES of hooks/lib/agent-scan.js). |
+
+### agent_controls.toml / ask_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `ask_guard.advise_instead` | `take the recommended option, say which you took, and continue; list anything ...` |  |  | What to do instead, in the standing-rule advice. |
+| `ask_guard.advise_what` | `do not hold work on a question.` |  |  | Headline of the standing-rule advice. |
+| `ask_guard.block_allowed` | `a question about a destructive or irreversible action, with the question head...` |  |  | What stays allowed, in the block message. |
+| `ask_guard.block_instead` | `decide the recommended option yourself, state it in your reply, and continue;...` |  |  | What to do instead, in the block message. |
+| `ask_guard.block_what` | `AskUserQuestion blocked by guards.noBlockingQuestions.` |  |  | Headline of the block message. |
+| `ask_guard.block_why` | `Work should not wait on a question.` |  |  | Why line of the block message. |
+| `ask_guard.child_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable whose non-blank value marks a child workspace. |
+| `ask_guard.child_text` | `\nChild workspace: send the question to your parent with `devswarm.js send --...` |  |  | Sentence appended in a child workspace, which asks its parent instead of the user. |
+| `ask_guard.guard_name` | `ask-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
+| `ask_guard.log_event` | `marker-allowed` |  |  | Event name of a logged marker. |
+| `ask_guard.log_file` | `.anti-hall/logs/ask-guard.ndjson` |  |  | NDJSON log of allowed question markers, relative to the home directory. |
+| `ask_guard.marker_re` | `^(DESTRUCTIVE\|CREDENTIAL):` |  |  | Rust regex source of the marker a question starts with when it is allowed in block mode. |
+| `ask_guard.mode_setting` | `7 entries` |  |  | Where the question mode is read from (guards.noBlockingQuestions: off, advise or block; default off). |
+| `ask_guard.note_control_re` | `[\x00-\x1f\x7f]+` |  |  | Rust regex source of the control characters collapsed to a space in an agent description. |
+| `ask_guard.note_desc_max` | `60` |  |  | Longest description, in UTF-16 units, the in-flight note shows for an agent. |
+| `ask_guard.note_head` | ` background agent` |  |  | Text after the count in the in-flight note. |
+| `ask_guard.note_join` | `; ` |  |  | Separator between agent names in the note. |
+| `ask_guard.note_many` | `s are` |  |  | Suffix and verb of the note for several agents. |
+| `ask_guard.note_max_listed` | `5` |  |  | Most agents the in-flight note names. |
+| `ask_guard.note_mid` | ` still in flight (` |  |  | Text between the verb and the agent names in the note. |
+| `ask_guard.note_more` | `, +{n} more` |  |  | Template of the tail of the agent list; {n} is how many more there are. |
+| `ask_guard.note_one` | ` is` |  |  | Verb of the note for one agent. |
+| `ask_guard.note_setting` | `6 entries` |  |  | Where the in-flight agents note switch is read from (guards.questionAgentsNote, default on). |
+| `ask_guard.note_tail` | `). They may act on one of these options before the answer arrives: pause them...` |  |  | Text that ends the in-flight note. |
+| `ask_guard.note_unnamed` | `unnamed agent` |  |  | Name the in-flight note gives an agent with no description. |
+| `ask_guard.summary` | `Advises on or blocks a question put to the user, and notes background agents ...` |  |  | One-line description of the ask-guard check in the generated reference. |
+| `ask_guard.tool` | `AskUserQuestion` |  |  | The tool this check answers. |
+
+### agent_controls.toml / guardkit
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `guardkit.js_decimal_re` | `^[+-]?(?:[0-9]+\.?[0-9]*\|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$` |  |  | Rust regex source of the text JavaScript's Number() reads as a decimal number (the hexadecimal, octal and binary forms are read separately). |
+
+### agent_controls.toml / silent_nudge
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `silent_nudge.agents_dir` | `.anti-hall/agents` |  |  | Directory of subagent heartbeat files, relative to the home directory. |
+| `silent_nudge.ever_key` | `everNudged` |  |  | Field of the state file that holds the once-per-agent records. |
+| `silent_nudge.ever_nudged_ttl_ms` | `2592000000` |  | ms | How long a once-per-agent nudge record is kept (30 days). |
+| `silent_nudge.ever_sep` | `::` |  |  | Separator between session id and agent id in a once-per-agent key. |
+| `silent_nudge.expecting` | `a JSON object` |  |  | Parser error text for a state file member that is not a JSON object. |
+| `silent_nudge.finished_words` | `done complete completed finished stopped success succeeded error failed` |  |  | Heartbeat statuses (case-insensitive, whole text) that mean the agent finished. |
+| `silent_nudge.guard_name` | `silent-agent-nudge` |  |  | The guard id this check answers to in skip.json. |
+| `silent_nudge.heartbeat_ext` | `.json` |  |  | Extension of a heartbeat file. |
+| `silent_nudge.heartbeat_skip_name` | `recent-spawn.json` |  |  | Name of the orchestration-live marker that shares the heartbeat directory and is never a heartbeat. |
+| `silent_nudge.heartbeat_skip_prefix` | `devswarm-` |  |  | Prefix of the DevSwarm tooling files that share the heartbeat directory and are never heartbeats. |
+| `silent_nudge.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable that, set to its marker value, makes every hook a no-op (the judge child's hooks must never run). |
+| `silent_nudge.judge_child_value` | `1` |  |  | Value of the judge-child variable that disables the hook. |
+| `silent_nudge.key_heartbeat` | `h:` |  |  | Prefix of a heartbeat-sourced nudge key. |
+| `silent_nudge.key_transcript` | `t:` |  |  | Prefix of a transcript-sourced nudge key. |
+| `silent_nudge.min_default` | `20` |  |  | Minutes of silence used when the setting is not a number of at least 1 (DEFAULT_MIN of the hook). |
+| `silent_nudge.min_setting` | `7 entries` |  |  | Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1). |
+| `silent_nudge.missing` | `missing` |  |  | Snapshot of an agent whose output file is missing. |
+| `silent_nudge.nudged_key` | `nudged` |  |  | Field of the state file that holds the per-snapshot records. |
+| `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
+| `silent_nudge.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES). |
+| `silent_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.silentAgentNudge, default on). |
+| `silent_nudge.sidechain_file_prefix` | `agent-` |  |  | Prefix of an agent's own sidechain transcript file name. |
+| `silent_nudge.state_file` | `.anti-hall/silent-agent-nudge-state.json` |  |  | Nudge state file, relative to the home directory. |
+| `silent_nudge.summary` | `Stop: keeps the nudge state of silent background agents and answers every Sto...` |  |  | One-line description of the silent-agent-nudge check in the generated reference. |
+
+### agent_controls.toml / stale_note
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `stale_note.control_re` | `[\x00-\x1f\x7f-\u{9f}]` |  |  | Rust regex source of the control characters turned into spaces in a name. |
+| `stale_note.ellipsis` | `…` |  |  | Text appended to a name that was cut. |
+| `stale_note.guard_name` | `stale-stop` |  |  | The guard id this check shows in its advisory. |
+| `stale_note.msg_instead` | `advisory only; the stop is not blocked.` |  |  | What the advisory says about the stop. |
+| `stale_note.msg_pending_a` | ` was sent a message at ` |  |  | Text between the quoted name and the send time in the headline for a teammate sent a message. |
+| `stale_note.msg_pending_b` | `, after its last report` |  |  | Text between the send time and the last report time in that headline. |
+| `stale_note.msg_pending_c` | `, and has not reported since.` |  |  | Text that ends that headline. |
+| `stale_note.msg_pending_last` | ` ({time})` |  |  | Template of the last report time, appended to the headline; {time} is the clock time. |
+| `stale_note.msg_pending_seen` | ` Its own transcript was last written {min} min ago.` |  |  | Template appended to the why line when the teammate's own transcript was written after the send; {min} is how many minutes ago. |
+| `stale_note.msg_pending_why` | `It may be working on that message.` |  |  | Why line for a teammate sent a message. |
+| `stale_note.msg_resumed_a` | ` was resumed at ` |  |  | Text between the quoted name and the resume time in the headline for a resumed background agent. |
+| `stale_note.msg_resumed_b` | `, after its last report, and has not reported since.` |  |  | Text that ends that headline. |
+| `stale_note.msg_resumed_why` | `It may be working.` |  |  | Why line for a resumed background agent. |
+| `stale_note.name_max` | `60` |  |  | Longest agent name or id, in UTF-16 units, the advisory shows. |
+| `stale_note.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check reads (the send can sit well before the shared 1.5 MB window). |
+| `stale_note.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.staleAgentStopNote, default on). |
+| `stale_note.summary` | `Advisory: a TaskStop on an agent that was sent a message or resumed after its...` |  |  | One-line description of the stale-agent-stop-note check in the generated reference. |
+| `stale_note.tool` | `TaskStop` |  |  | The tool this check answers. |
 
 ## Messages
 
