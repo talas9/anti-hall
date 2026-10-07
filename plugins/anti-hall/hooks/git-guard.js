@@ -898,6 +898,33 @@ function hasSelfCredit(text) {
   return result;
 }
 
+// Which COMMAND of the chain carries the whole-command self-credit text? The commit rule and the gh
+// rule both scan the WHOLE raw command (a message can reach git by a pipe, a variable, a file), so a
+// clean `git commit -m ok && gh pr create --body '<robot footer>'` trips the commit rule and used to say
+// the COMMIT carries the trailer. Returns "<verb> <words>" (e.g. `gh pr create`) when every segment that
+// carries the credit is a git/gh command other than `ownVerb`, else null (the credit is in the rule's own
+// command, in a heredoc/stdin body no segment shows, or in a wrapper we do not name): the plain message
+// stands. The label is built only from lowercase subcommand words, never from raw command text.
+function creditElsewhereLabel(ownVerb) {
+  try {
+    let label = null;
+    for (const seg of splitSegments(currentRawCommand)) {
+      if (!hasSelfCredit(seg)) continue;
+      const ev = effectiveVerb(tokenize(seg));
+      if (!ev || (ev.verb !== 'git' && ev.verb !== 'gh')) return null;
+      if (ev.verb === ownVerb) return null;
+      if (label !== null) continue;
+      const words = ev.verb === 'git'
+        ? [gitSubcommand(ev.args).sub]
+        : ev.args.map((t) => t.text).filter((w) => !w.startsWith('-')).slice(0, 2);
+      label = [ev.verb].concat(words.filter((w) => typeof w === 'string' && /^[a-z][a-z-]*$/.test(w))).join(' ');
+    }
+    return label;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Self-credit signature tokens used to flag a `-c trailer.<name>.key=<value>`
 // remap. `git -c trailer.ai.key=Co-Authored-By commit --trailer "ai: Claude
 // <...>"` makes a custom `ai:` token EMIT a `Co-Authored-By` trailer, so the
@@ -998,6 +1025,14 @@ function ghSelfCreditMessage(args) {
     const normalized = v.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
     for (const text of [v, normalized]) {
       if (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text) || SELF_CREDIT_GH_BODY.test(text)) {
+        const elsewhere = v === currentRawCommand ? creditElsewhereLabel('gh') : null;
+        if (elsewhere) {
+          return gm({
+            what: 'a gh pr/issue/release command is chained with `' + elsewhere + '`, which carries AI/assistant self-credit; blocked.',
+            why: 'The self-credit text is in the `' + elsewhere + '` part of this command, not in the gh body or title. Commits, PRs and issues carry no AI attribution.',
+            instead: 'remove the self-credit line from the `' + elsewhere + '` text and re-run.',
+          });
+        }
         return gm({
       what: 'a gh pr/issue/release body or title carries AI/assistant self-credit ("Generated with" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.',
       why: 'PRs and issues carry no AI attribution.',
@@ -3379,6 +3414,14 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
   // --- Rule 1 (whole command): any commit-creating git verb whose command
   // text carries a self-credit trailer line, however it reaches git ---
   if (COMMIT_CREATING.has(sub) && hasSelfCredit(currentRawCommand)) {
+    const elsewhere = creditElsewhereLabel('git');
+    if (elsewhere) {
+      return gm({
+        what: 'a command that creates a commit (git ' + sub + ') is chained with `' + elsewhere + '`, which carries AI/assistant self-credit; blocked.',
+        why: 'The self-credit text is in the `' + elsewhere + '` part of this command, not in the commit message. Commits, PRs and issues carry no AI attribution.',
+        instead: 'remove the self-credit line from the `' + elsewhere + '` text and re-run.',
+      });
+    }
     return gm({
       what: 'a command that creates a commit (git ' + sub + ') and carries an AI/assistant self-credit trailer line is blocked.',
       why: 'Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).',
