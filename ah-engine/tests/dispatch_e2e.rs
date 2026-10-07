@@ -281,8 +281,12 @@ fn pretool_map(e: &Env, outs: &[(&str, &str)], rest: &str) -> PathBuf {
 }
 
 fn event_map(e: &Env, event: &str, first: &str, rest: &str) -> PathBuf {
-    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", event).into_iter().map(|x| x.id).collect();
-    let m: serde_json::Map<String, serde_json::Value> = ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == 0 { first } else { rest }.into())).collect();
+    // `first` goes to the first entry that always runs its Node hook: an entry a built-in check answers never runs one.
+    let entries = ah_engine::dispatch::table::entries("claude", event);
+    let first_node = entries.iter().position(|x| x.check.is_none()).unwrap_or(0);
+    let ids: Vec<String> = entries.into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == first_node { first } else { rest }.into())).collect();
     let map = e.dir.join(format!("{event}-map.json"));
     let mut events = serde_json::Map::new();
     events.insert(event.to_string(), serde_json::Value::Object(m));
