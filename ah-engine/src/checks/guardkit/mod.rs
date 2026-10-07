@@ -10,6 +10,7 @@ pub mod filelock;
 pub mod fsio;
 pub mod jsre;
 pub mod jsval;
+pub mod nodelock;
 pub mod msg;
 pub mod ojson;
 pub mod paths;

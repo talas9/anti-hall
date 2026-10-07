@@ -382,3 +382,113 @@ fn devswarm_comms_guard_matches_node() {
     let (same, deferred) = check_rows("devswarm-comms-guard.js", "devswarm-comms-guard", rows);
     assert!(same >= 30 && deferred >= 1);
 }
+
+// ---- swarm-guard ---------------------------------------------------------------------------------------------
+
+fn spawn_payload(tool: &str, input: Value, transcript: Option<&str>) -> Value {
+    let mut p = json!({"hook_event_name":"PreToolUse","tool_name":tool,"tool_input":input,"session_id":"s","cwd":"/tmp"});
+    if let Some(t) = transcript {
+        p["transcript_path"] = json!(t);
+    }
+    p
+}
+
+fn log_of(ages_ms: &[u64]) -> String {
+    ages_ms.iter().map(|a| format!("{{NOW-{a}}}\n")).collect()
+}
+
+fn swarm_cases() -> Vec<Case> {
+    let ex = Expect::Same;
+    let explore = || json!({"subagent_type":"Explore","prompt":"look"});
+    let general = || json!({"subagent_type":"general-purpose","prompt":"do it"});
+    let fresh_lock = |age: u64| format!(r#"{{"pid":1,"host":"other","ts":{{NOW-{age}}},"token":"t:1:1:x"}}"#);
+    let log = ".anti-hall/swarm-spawns.log";
+    let lock = ".anti-hall/swarm-spawns.lock";
+    let recent = |n: usize| -> Vec<u64> { (0..n).map(|i| 1000 + i as u64 * 100).collect() };
+    let mut out = vec![
+        Case::json("empty-home-explore", spawn_payload("Agent", explore(), Some("/t.jsonl")), ex),
+        Case::json("empty-home-task-tool", spawn_payload("Task", explore(), Some("/t.jsonl")), ex),
+        Case::json("empty-home-general-no-transcript", spawn_payload("Agent", general(), None), ex),
+        Case::json("one-recent", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[2000])),
+        Case::json("nineteen-recent-allows", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&recent(19))),
+        Case::json("twenty-recent-blocks", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&recent(20))),
+        Case::json("twenty-five-recent-blocks", spawn_payload("Task", general(), Some("/t")), ex).file(log, &log_of(&recent(25))),
+        Case::json("twenty-with-one-old-allows", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[70_000, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800])),
+        Case::json("near-window-edge-counts", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[59_000; 20])),
+        Case::json("garbage-lines", spawn_payload("Agent", explore(), None), ex).file(log, "abc\n{NOW-1000}abc\n\n-5\n0\n+{NOW-500}\n 12 \n0x10\n1e3\n"),
+        Case::json("crlf-log", spawn_payload("Agent", explore(), None), ex).file(log, "{NOW-1000}\r\n{NOW-900}\r\n"),
+        Case::json("only-whitespace-log", spawn_payload("Agent", explore(), None), ex).file(log, "  \n\t\n"),
+        Case::json("no-trailing-newline", spawn_payload("Agent", explore(), None), ex).file(log, "{NOW-1000}"),
+        Case::json("log-is-a-directory", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/swarm-spawns.log/keep", "x"),
+        Case::json("huge-entry-defers", spawn_payload("Agent", explore(), None), Expect::Defer).file(log, "99999999999999999999\n"),
+        Case::json("huge-entry-but-capped-blocks", spawn_payload("Agent", explore(), None), ex).file(log, &format!("99999999999999999999\n{}", log_of(&recent(19)))),
+        Case::json("skip-file", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/skip.json", r#"{"swarm-guard":99999999999999}"#).file(log, &log_of(&recent(25))),
+        Case::json("skip-all", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/skip.json", r#"{"all":99999999999999}"#).file(log, &log_of(&recent(25))),
+        Case::json("skip-expired-still-blocks", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/skip.json", r#"{"swarm-guard":5}"#).file(log, &log_of(&recent(25))),
+        Case::json("switch-off-env", spawn_payload("Agent", explore(), None), ex).env("ANTIHALL_SWARM_GUARD", "0").file(log, &log_of(&recent(25))),
+        Case::json("switch-off-settings", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/settings.json", r#"{"safety":{"swarmGuard":false}}"#).file(log, &log_of(&recent(25))),
+        Case::json("switch-off-plugin-option", spawn_payload("Agent", explore(), None), ex).env("CLAUDE_PLUGIN_OPTION_SAFETY_SWARM_GUARD", "false").file(log, &log_of(&recent(25))),
+        Case::json("switch-plugin-option-default-ignored", spawn_payload("Agent", explore(), None), ex).env("CLAUDE_PLUGIN_OPTION_SAFETY_SWARM_GUARD", "true").file(log, &log_of(&recent(25))),
+        Case::json("switch-garbage-stays-on", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/settings.json", r#"{"safety":{"swarmGuard":"maybe"}}"#).file(log, &log_of(&recent(25))),
+        // the lock
+        Case::json("fresh-foreign-lock-fails-open-unrecorded", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(100)).file(log, &log_of(&recent(25))),
+        Case::json("stale-lock-is-taken-over", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(9000)),
+        Case::json("stale-lock-then-block", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(9000)).file(log, &log_of(&recent(21))),
+        Case::json("corrupt-fresh-lock-fails-open", spawn_payload("Agent", explore(), None), ex).file(lock, "{torn"),
+        Case::json("empty-fresh-lock-fails-open", spawn_payload("Agent", explore(), None), ex).file(lock, ""),
+        Case::json("stale-lock-with-stale-reclaim-marker", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(9000)).file(".anti-hall/swarm-spawns.lock.reclaim", &fresh_lock(9000)),
+        Case::json("stale-lock-with-fresh-reclaim-marker", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(9000)).file(".anti-hall/swarm-spawns.lock.reclaim", &fresh_lock(100)),
+        Case::json("lock-without-ts-record", spawn_payload("Agent", explore(), None), ex).file(lock, r#"{"pid":1,"token":"x"}"#),
+        // the advisory (needs the transcript scan, so the engine defers whenever it could be due)
+        Case::json("general-with-transcript-defers", spawn_payload("Agent", general(), Some("/t.jsonl")), Expect::Defer),
+        Case::json("task-general-with-transcript-defers", spawn_payload("Task", general(), Some("/t.jsonl")), Expect::Defer),
+        Case::json("no-type-with-transcript-defers", spawn_payload("Agent", json!({"prompt":"x"}), Some("/t.jsonl")), Expect::Defer),
+        Case::json("input-array-with-transcript-defers", spawn_payload("Agent", json!(["x"]), Some("/t.jsonl")), Expect::Defer),
+        Case::json("tools-with-edit-defers", spawn_payload("Agent", json!({"tools":["Read","Edit"]}), Some("/t.jsonl")), Expect::Defer),
+        Case::json("nested-tools-defers", spawn_payload("Agent", json!({"tools":[["Edit"]]}), Some("/t.jsonl")), Expect::Defer),
+        Case::json("general-with-transcript-at-cap-still-blocks", spawn_payload("Agent", general(), Some("/t.jsonl")), ex).file(log, &log_of(&recent(20))),
+        Case::json("isolated-worktree-silent", spawn_payload("Agent", json!({"subagent_type":"general-purpose","isolation":"Worktree"}), Some("/t.jsonl")), ex),
+        Case::json("isolated-remote-silent", spawn_payload("Agent", json!({"isolation":" remote "}), Some("/t.jsonl")), ex),
+        Case::json("isolation-other-defers", spawn_payload("Agent", json!({"isolation":"none"}), Some("/t.jsonl")), Expect::Defer),
+        Case::json("read-only-allowlist-silent", spawn_payload("Agent", json!({"tools":"Read, Grep"}), Some("/t.jsonl")), ex),
+        Case::json("empty-allowlist-silent", spawn_payload("Agent", json!({"tools":[]}), Some("/t.jsonl")), ex),
+        Case::json("camel-allowlist-silent", spawn_payload("Agent", json!({"allowedTools":["Read"]}), Some("/t.jsonl")), ex),
+        Case::json("deny-all-writes-silent", spawn_payload("Agent", json!({"disallowedTools":["Edit","Write","MultiEdit"]}), Some("/t.jsonl")), ex),
+        Case::json("deny-some-writes-defers", spawn_payload("Agent", json!({"disallowedTools":["Edit","Write"]}), Some("/t.jsonl")), Expect::Defer),
+        Case::json("omc-read-only-type-silent", spawn_payload("Agent", json!({"subagent_type":"oh-my-claudecode:Verifier"}), Some("/t.jsonl")), ex),
+        Case::json("shared-tree-switch-off-silent", spawn_payload("Agent", general(), Some("/t.jsonl")), ex).file(".anti-hall/settings.json", r#"{"guards":{"sharedTreeAgentNote":false}}"#),
+        Case::json("shared-tree-env-off-silent", spawn_payload("Agent", general(), Some("/t.jsonl")), ex).env("ANTIHALL_SHARED_TREE_AGENT_NOTE", "off"),
+        Case::json("transcript-empty-silent", spawn_payload("Agent", general(), Some("")), ex),
+        Case::json("transcript-number-silent", {
+            let mut p = spawn_payload("Agent", general(), None);
+            p["transcript_path"] = json!(5);
+            p
+        }, ex),
+        Case::json("tool-input-missing-silent", json!({"tool_name":"Agent","transcript_path":"/t"}), ex),
+        Case::json("tool-input-string-silent", spawn_payload("Agent", json!("x"), Some("/t")), ex),
+        Case::json("tool-input-null-silent", spawn_payload("Agent", Value::Null, Some("/t")), ex),
+        // payload shapes and trip-log labels
+        Case::json("label-camel-agent-type-at-cap", spawn_payload("Agent", json!({"agentType":"ünï","prompt":"x"}), None), ex).file(log, &log_of(&recent(20))),
+        Case::json("label-snake-agent-type-at-cap", spawn_payload("Task", json!({"agent_type":"snake"}), None), ex).file(log, &log_of(&recent(20))),
+        Case::json("label-empty-type-at-cap", spawn_payload("Task", json!({"subagent_type":"","agentType":"second"}), None), ex).file(log, &log_of(&recent(20))),
+        Case::json("label-no-tool-name-at-cap", json!({"tool_input":{"subagent_type":"x"}}), ex).file(log, &log_of(&recent(20))),
+        Case::json("label-numeric-type-at-cap", spawn_payload("Agent", json!({"subagent_type":5}), None), ex).file(log, &log_of(&recent(20))),
+        Case::json("payload-array", json!([1]), ex),
+        Case::new("payload-null", "null", ex),
+        Case::new("payload-number-at-cap", "7", ex).file(log, &log_of(&recent(20))),
+        Case::new("payload-empty-stdin", "", Expect::Defer),
+        Case::new("payload-garbage", "{nope", Expect::Defer),
+    ];
+    // a pre-existing trip log keeps its lines and gets one appended
+    out.push(Case::json("trip-log-appends", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&recent(20))).file(".anti-hall/swarm-trips.log", "old\tline\n"));
+    out
+}
+
+#[test]
+fn swarm_guard_matches_node() {
+    let rows = swarm_cases();
+    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    // the same rows drive both tools: `swarm-guard.js` is registered for Agent and for Task
+    let (same, deferred) = check_rows("swarm-guard.js", "swarm-guard", rows);
+    assert!(same >= 30 && deferred >= 5);
+}

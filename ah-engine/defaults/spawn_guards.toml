@@ -264,3 +264,19 @@ value = "A runaway swarm can make the OS unusable."
 [swarm_guard.msg_rate_instead]
 doc = "What to do instead of spawning past the cap."
 value = "pause new agents and let running ones finish, then launch the next wave; respect the concurrency cap (~min(16, cores-2))."
+
+[swarm_guard.sysctl_boottime]
+doc = "The macOS sysctl name that holds the boot time (the lock records it to tell machines apart)."
+value = "kern.boottime"
+
+[swarm_guard.sysctl_memsize]
+doc = "The macOS sysctl name that holds the total physical memory in bytes."
+value = "hw.memsize"
+
+[swarm_guard.proc_uptime]
+doc = "The Linux file that holds the uptime in seconds."
+value = "/proc/uptime"
+
+[swarm_guard.proc_pidns]
+doc = "The Linux link that names this process's pid namespace."
+value = "/proc/self/ns/pid"

@@ -32,6 +32,7 @@ pub mod phase_tracker;
 pub mod replykit;
 pub mod scan_throttle;
 pub mod session;
+pub mod swarm_guard;
 pub mod ship_it;
 pub mod silent_agent_nudge;
 pub mod spawnctx;
@@ -143,7 +144,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 41] = [
+    static ALL: [&dyn Check; 42] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -185,6 +186,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &api_guard::ApiGuard,
         &edit_guard::EditGuard,
         &devswarm_comms::DevswarmCommsGuard,
+        &swarm_guard::SwarmGuard,
     ];
     &ALL
 }
