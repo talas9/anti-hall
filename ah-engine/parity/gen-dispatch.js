@@ -27,13 +27,7 @@ const CHECKS = [
   ['scan-throttle', 'scan-throttle'],
   ['coordinator-work-guard', 'coordinator-work-guard'],
   ['compact-declaration-guard', 'compact-declaration-guard'],
-].map(([script, check]) => ({ event: 'PreToolUse', script: script + '.js', args: '', check })).concat([
-  ['SessionStart', 'codex-availability'],
-  ['SessionStart', 'handover-resume'],
-  ['Stop', 'codex-nudge'],
-  ['PostToolUse', 'codex-quota-detect'],
-  ['PreCompact', 'precompact-snapshot'],
-].map(([event, script]) => ({ event, script: script + '.js', args: '', check: script })));
+].map(([script, check]) => ({ event: 'PreToolUse', script: script + '.js', args: '', check }));
 
 const q = s => JSON.stringify(s); // TOML basic strings accept JSON string escapes for this content
 function entries(hooks, event) {
