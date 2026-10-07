@@ -205,7 +205,7 @@ async function runParity(o) {
     wipe(base);
     // 2. the engine, on a fresh copy of the same fixture
     build();
-    const engRes = await run(ENGINE, ['check', sc.hook], payloadText, Object.assign({}, env, { AH_ENGINE_PLUGIN_ROOT: sc._root }), '/tmp');
+    const engRes = await run(ENGINE, ['check', sc.hook], payloadText, Object.assign({}, env, { AH_ENGINE_PLUGIN_ROOT: sc._root, AH_ENGINE_GITIGNORE_PROBE_MS: '2200' }), '/tmp');
     const engTree = snapshot(base);
     wipe(base);
     if (nodeRes.out) stats.nodeOut++;

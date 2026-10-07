@@ -109,37 +109,41 @@ fn repo_root(cwd: &str, top: Option<&str>, home: &str) -> String {
     }
 }
 
-/// `git -C root check-ignore -q .anti-hall/probe`: its exit code, or `None` when git could not be run to completion within
-/// the time limit (Node's `spawnSync` reports an error then, and the hint stays quiet).
-fn check_ignore(root: &str, env: &RequestEnv) -> Option<i32> {
+/// What the gitignore probe came to.
+enum Probe {
+    /// git exited with this code (0 ignored, 1 not ignored).
+    Exit(i32),
+    /// git could not be run, or was killed by a signal: Node's `spawnSync` reports an error and the reminder stays quiet.
+    Failed,
+    /// git did not answer within the engine's limit: the client's whole exchange is shorter than Node's own probe limit, so
+    /// the hook goes back to Node (before anything is written) instead of answering after the client gave up.
+    Slow,
+}
+
+/// `git -C root check-ignore -q .anti-hall/probe` with the git environment the client forwarded.
+fn check_ignore(root: &str, env: &RequestEnv) -> Probe {
     let mut cmd = Command::new(defaults::text("session.git_binary"));
-    cmd.args(["-C", root])
-        .args(defaults::list("session.check_ignore_args"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .env_clear();
+    cmd.args(["-C", root]).args(defaults::list("session.check_ignore_args")).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).env_clear();
     let scrub = defaults::list("session.git_scrub_env");
     for (k, v) in env.to_map() {
         if !scrub.contains(&k.as_str()) {
             cmd.env(k, v);
         }
     }
-    let mut child = cmd.spawn().ok()?;
+    let Ok(mut child) = cmd.spawn() else { return Probe::Failed };
     let pid = child.id() as i32;
     let start = std::time::Instant::now();
     let limit = std::time::Duration::from_millis(defaults::num("session.gitignore_probe_ms"));
     let poll = std::time::Duration::from_millis(defaults::num("session.git_poll_ms"));
     loop {
         match child.try_wait() {
-            Ok(Some(st)) => return st.code(),
+            Ok(Some(st)) => return st.code().map_or(Probe::Failed, Probe::Exit),
             Ok(None) if start.elapsed() < limit => std::thread::sleep(poll),
             _ => {
                 // the whole group, so a git helper does not outlive the limit
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
                 let _ = child.wait();
-                return None;
+                return Probe::Slow;
             }
         }
     }
@@ -173,8 +177,10 @@ fn gitignore_hint(top: Option<&str>, home: &str, env: &RequestEnv, st: &Settings
     if !Path::new(&join(root, defaults::text("session.anti_hall_dir"))).is_dir() {
         return Ok(None);
     }
-    if check_ignore(root, env) != Some(1) {
-        return Ok(None);
+    match check_ignore(root, env) {
+        Probe::Exit(1) => {}
+        Probe::Slow => return Err(()),
+        Probe::Exit(_) | Probe::Failed => return Ok(None),
     }
     let file = join(&join(home, defaults::text("session.state_dir")), defaults::text("session.gitignore_state_file"));
     let mut state = read_state(&file)?;
@@ -351,4 +357,16 @@ fn decide(payload: &Value, env: &RequestEnv) -> Verdict {
         let _ = write_state(&state_file, &state);
     }
     verdict(hint)
+}
+
+/// Test access to `cwd_key`.
+#[cfg(test)]
+pub(super) fn cwd_key_for_test(cwd: &str) -> String {
+    cwd_key(cwd)
+}
+
+/// Test access to `blockquote`.
+#[cfg(test)]
+pub(super) fn blockquote_for_test(content: &str) -> String {
+    blockquote(content)
 }

@@ -469,8 +469,9 @@ doc = "Environment variables removed before git runs, so the answer derives from
 value = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_PREFIX"]
 
 [session.gitignore_probe_ms]
-doc = "How long the gitignore probe may run before it is stopped (the hook's own timeout is 10 s)."
-value = 3000
+doc = "The longest the engine waits for the gitignore probe before it hands the hook to Node. Node waits 3000 ms, but the client gives up on the engine after client.deadline_ms, so a longer wait here could answer after the client has already left; a test keeps the shipped value below that deadline."
+value = 1000
+env = "AH_ENGINE_GITIGNORE_PROBE_MS"
 unit = "ms"
 min = 10
 

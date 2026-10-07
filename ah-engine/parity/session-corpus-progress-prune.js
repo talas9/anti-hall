@@ -160,12 +160,18 @@ exports.build = function (ctx, h) {
   hint('settings-on-env-off', merge(anti, H('.anti-hall/settings.json', q({ guards: { gitignoreHint: true } }))), { env: { ANTIHALL_GITIGNORE_HINT: '0' } });
   hint('option-off', anti, { env: { CLAUDE_PLUGIN_OPTION_GUARDS_GITIGNORE_HINT: 'false' } });
   hint('stored-option-off', merge(anti, H('.claude/settings.json', q({ pluginConfigs: { 'anti-hall': { options: { guards_gitignore_hint: false } } } }))));
-  hint('prune-off-hint-on', merge(anti, prog(old, 's1')), { env: {}, afterGit: undefined, files2: undefined });
-  out.pop();
   hint('prune-off-hint-on', merge(anti, prog(old, 's1'), H('.anti-hall/settings.json', q({ maintenance: { progressPrune: false } }))));
   hint('prune-off-hint-off', merge(anti, prog(old, 's1'), H('.anti-hall/settings.json', q({ maintenance: { progressPrune: false }, guards: { gitignoreHint: false } }))));
   hint('prune-on-hint-on', merge(anti, prog(old, 's1')));
   hint('prune-on-hint-ignored', merge(anti, prog(old, 's1')), ignoreAll);
+  // a stand-in git that answers with a chosen exit code, after an optional pause: the probe's three outcomes
+  const fakeGit = (code, sleep) => ({ ['home/bin/git']: { content: `#!/bin/sh\n${sleep ? 'sleep ' + sleep + '\n' : ''}${code === 'kill' ? 'kill -9 $$' : 'exit ' + code}\n`, mode: 0o755 } });
+  const fakePath = { env: { PATH: '{{HOME}}/bin:' + process.env.PATH } };
+  for (const c of [0, 1, 2, 3, 127, 128, 255, 'kill']) hint('fake-git-exit-' + c, merge(anti, fakeGit(c)), fakePath);
+  hint('fake-git-slow-ignored', merge(anti, fakeGit(0, 2.7)), Object.assign({ expectDefer: true }, fakePath));
+  hint('fake-git-slow-not-ignored', merge(anti, fakeGit(1, 2.7)), Object.assign({ expectDefer: true }, fakePath));
+  hint('fake-git-fast-not-ignored', merge(anti, fakeGit(1, 0.2)), fakePath);
+  hint('fake-git-not-executable', merge(anti, { ['home/bin/git']: { content: '#!/bin/sh\nexit 1\n', mode: 0o644 } }), fakePath);
   // the weekly state
   const gs = (id, text, extra) => hint('state-' + id, merge(anti, H(GSTATE, text)), extra);
   gs('fresh', `{"{{PROJ}}":${off(-HOUR)}}`); gs('edge-in', `{"{{PROJ}}":${off(-7 * DAY + 10000)}}`); gs('edge-out', `{"{{PROJ}}":${off(-7 * DAY - 10000)}}`); gs('stale', `{"{{PROJ}}":${off(-30 * DAY)}}`);
