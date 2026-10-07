@@ -1,7 +1,7 @@
 //! D87 end to end: the per-event and per-entry hook configuration (`[events.*]`, `[entries.*]` in the engine's user file or a
 //! project file) as the real binary applies it to `ah-engine hook --event ...`, with the Node hooks replaced by small shell
-//! commands through `--fallback-map`. Each test has its own HOME and state directory; no daemon is started (checks run in
-//! the client with `AH_ENGINE_DISPATCH_IN_PROCESS=1`, or are refused with `AH_ENGINE_NOSPAWN=1`).
+//! commands through `--fallback-map`. Each test has its own HOME and state directory; no daemon is started (every check runs as its Node
+//! hook: `AH_ENGINE_DISPATCH_IN_PROCESS=0` with `AH_ENGINE_NOSPAWN=1`).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -65,6 +65,15 @@ impl Env {
     }
 
     fn run(&self, event: &str, map: &Path, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
+        self.run_as(false, event, map, payload, extra)
+    }
+
+    /// [`Env::run`] with the built-in checks answered in the client (`in_process`), as the shipped hooks run them.
+    fn run_native(&self, event: &str, map: &Path, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
+        self.run_as(true, event, map, payload, extra)
+    }
+
+    fn run_as(&self, in_process: bool, event: &str, map: &Path, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["hook", "--event", event, "--fallback-map", map.to_str().unwrap()])
             .env_clear()
@@ -72,7 +81,11 @@ impl Env {
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-config")
-            .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+            // the plan (which entries run, in which order, under which configuration) is what is tested here, with every hook a
+            // fake: the checks run as their Node hooks (no daemon and none to start), because a check the engine answers itself
+            // would not run its fake and the ported entries would drop out of the plan's output
+            .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
+            .env("AH_ENGINE_NOSPAWN", if in_process { "0" } else { "1" })
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
@@ -224,7 +237,7 @@ fn config_validate_enforces_the_guard_rule_on_the_real_command() {
         "[events.Stop]\nenabled = false\n",
         "[events.SubagentStop]\nmode = \"shadow\"\n",
         "[events.PermissionRequest]\nmax_rules = 1\n",
-        "[entries.\"merge-gate\"]\nmode = \"off\"\n",
+        "[entries.\"swarm-guard\"]\nmode = \"off\"\n",
     ] {
         let (code, out) = validate(bad);
         assert_eq!(code, 1, "{bad}: {out}");
@@ -241,18 +254,18 @@ fn shadowing_a_guard_check_never_changes_the_outcome_and_logs_the_disagreement()
     let e = Env::new("guard-shadow");
     let map = e.map("PreToolUse", &PRE_BASH, |_| "true".into());
     let payload = pre("git push --force origin main", &e.dir);
-    let (code, _, err) = e.run("PreToolUse", &map, &payload, &[]);
+    let (code, _, err) = e.run_native("PreToolUse", &map, &payload, &[]);
     assert_eq!(code, 2, "without the config the engine's git check blocks a force push: {err}");
     e.config("[entries.\"PreToolUse/git-guard\"]\nmode = \"shadow\"\n");
-    let (code, out, err) = e.run("PreToolUse", &map, &payload, &[]);
+    let (code, out, err) = e.run_native("PreToolUse", &map, &payload, &[]);
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "shadow: the Node hook (which allows) decides, the engine's block changes nothing");
     let log = e.log();
     assert!(log.contains("dispatch_shadow") && log.contains("git-guard agree=false engine_exit=2 node_exit=0"), "{log}");
     e.config("[entries.\"PreToolUse/git-guard\"]\nmode = \"off\"\n");
-    assert_eq!(e.run("PreToolUse", &map, &payload, &[]).0, 0, "off: the check does not run, the Node hook decides");
+    assert_eq!(e.run_native("PreToolUse", &map, &payload, &[]).0, 0, "off: the check does not run, the Node hook decides");
     // the Node hook that decides still blocks when it blocks
     let blocking = e.map("PreToolUse", &PRE_BASH, |id| if id == "git-guard" { "echo node-says-no >&2; exit 2".into() } else { "true".into() });
-    let (code, _, err) = e.run("PreToolUse", &blocking, &payload, &[]);
+    let (code, _, err) = e.run_native("PreToolUse", &blocking, &payload, &[]);
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("node-says-no"), "{err}");
 }
@@ -263,12 +276,12 @@ fn a_guard_events_budget_fails_closed_when_the_hooks_cannot_start_in_time() {
     e.config("[events.PreToolUse]\nbudget_ms = 1\n");
     let map = e.map("PreToolUse", &PRE_BASH, |_| "sleep 0.3".into());
     let payload = pre("ls", &e.dir);
-    let (code, _, err) = e.run("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]);
+    let (code, _, err) = e.run_native("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]);
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("budget"), "fails closed with the budget reason: {err}");
     // a budget that is not reached changes nothing
     e.config("[events.PreToolUse]\nbudget_ms = 600000\n");
-    assert_eq!(e.run("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]).0, 0);
+    assert_eq!(e.run_native("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]).0, 0);
 }
 
 #[test]

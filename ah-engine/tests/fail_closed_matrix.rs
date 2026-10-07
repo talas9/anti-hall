@@ -340,15 +340,24 @@ impl Drop for Case {
     }
 }
 
-/// The tool the PreToolUse rows use: one that still has a Node-only hook next to the built-in checks (every Bash hook has
-/// a built-in check since the edit and shell guards were ported), so the rows keep a hook that really runs. A spawn.
+/// The tool the PreToolUse rows use. Claude: a spawn, the one tool that still has a Node-only hook (`swarm-guard`) next to
+/// built-in checks. Codex: Bash, which has the most entries; every one of them has a built-in check since the shell and edit
+/// guards were ported, so its rows run the checks as their Node hooks (see `effective_daemon`).
 fn tool_of(host: &str) -> &'static str {
-    if host == "codex" { "spawn_agent" } else { "Agent" }
+    if host == "codex" { "Bash" } else { "Agent" }
+}
+
+fn tool_input_of(host: &str) -> Value {
+    if host == "codex" {
+        serde_json::json!({"command": "ls"})
+    } else {
+        serde_json::json!({"description": "ls", "prompt": "ls", "subagent_type": "Explore", "model": "haiku"})
+    }
 }
 
 fn payload(host: &str, event: &str, dir: &std::path::Path) -> Value {
     if event == "PreToolUse" {
-        serde_json::json!({"session_id": "fc", "cwd": dir, "hook_event_name": event, "tool_name": tool_of(host), "tool_input": {"description": "ls", "prompt": "ls", "subagent_type": "Explore", "model": "haiku"}})
+        serde_json::json!({"session_id": "fc", "cwd": dir, "hook_event_name": event, "tool_name": tool_of(host), "tool_input": tool_input_of(host)})
     } else {
         serde_json::json!({"session_id": "fc", "cwd": dir, "hook_event_name": event})
     }
@@ -397,6 +406,23 @@ fn stdin_bytes(s: Stdin, host: &str, event: &str, dir: &std::path::Path) -> Vec<
     }
 }
 
+/// How many Node-only entries (no built-in check) the row's tool has on this host and event.
+fn node_only_count(case: &Case) -> usize {
+    let valid = payload(case.host, &case.event, &case.dir);
+    table::select(case.host, &case.event, &valid, Some(tool_of(case.host))).iter().filter(|e| e.check.is_none()).count()
+}
+
+/// The daemon mode a row really runs in: a row that needs its injected hook(s) to run (a valid payload answered in the client)
+/// runs with the checks down when the case has too few Node-only entries to hold them.
+fn effective_daemon(case: &Case, row: &Row) -> Daemon {
+    let wants_run = |cmd: &str| cmd != "true";
+    let needed = match row.hook {
+        Hook::Crossed => usize::from(matches!(row.stdin, Stdin::Valid)) * 2,
+        Hook::Cmd { first, second } => usize::from(wants_run(first)) + usize::from(wants_run(second)),
+    };
+    if row.daemon == Daemon::InProcess && matches!(row.stdin, Stdin::Valid) && node_only_count(case) < needed { Daemon::Down } else { row.daemon }
+}
+
 /// Run the real binary for one row with one hook pair; the fallback map replaces every Node hook of the event.
 fn run(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     let _ = std::fs::remove_dir_all(&case.dir);
@@ -410,9 +436,15 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     let mark2 = case.dir.join("mark2");
     let valid = payload(case.host, &case.event, &case.dir);
     let selected = table::select(case.host, &case.event, &valid, Some(tool_of(case.host)));
-    let mut node_only = selected.iter().filter(|e| e.check.is_none()).map(|e| e.id.clone());
-    let (id1, id2) = (node_only.next(), node_only.next());
-    let second_expected = id2.is_some() && second.contains("AH_TEST_MARK2");
+    // The hook slots: the Node-only entries first, then the ones a built-in check answers (their Node hook runs whenever the
+    // check defers, the engine is down or the payload cannot be read, and the fallback map replaces its command all the same).
+    let mut slots = selected.iter().filter(|e| e.check.is_none()).chain(selected.iter().filter(|e| e.check.is_some())).map(|e| e.id.clone());
+    let (id1, id2) = (slots.next(), slots.next());
+    // the second hook must have run unless it is a checked entry the engine answered itself (a valid payload answered in the
+    // client, or by the daemon)
+    let id2_node_only = id2.as_ref().is_some_and(|id| selected.iter().any(|e| &e.id == id && e.check.is_none()));
+    let checks_answer = matches!(row.stdin, Stdin::Valid) && matches!(row.daemon, Daemon::InProcess | Daemon::Blocks);
+    let second_expected = id2.is_some() && second.contains("AH_TEST_MARK2") && (id2_node_only || !checks_answer);
     let events: serde_json::Map<String, Value> = table::entries(case.host, &case.event)
         .into_iter()
         .map(|e| {
@@ -613,13 +645,12 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
             if !row.events.is_empty() && !row.events.contains(&case.event.as_str()) {
                 continue;
             }
-            // The dispatcher's merge and daemon-answer logic does not depend on the host; these two rows need a second Node-only
-            // hook and a built-in check on the same tool, which Codex has on no PreToolUse tool since the shell and edit guards
-            // were ported (its spawn tool has one Node-only hook and no check). Claude's rows cover them.
-            const NEEDS_NODE_PAIR_AND_CHECK: &[&str] = &["two hooks print JSON that cannot be merged field by field", "daemon decides a block"];
-            if case.host == "codex" && case.event == "PreToolUse" && NEEDS_NODE_PAIR_AND_CHECK.contains(&row.name) {
-                continue;
-            }
+            // A row that needs injected hooks to RUN needs them to be Node-only: a hook a built-in check answers never runs while the
+            // checks answer in the client. Since the ports, a PreToolUse tool has at most one Node-only hook (Codex none), so such a
+            // row runs with the checks down: every check runs as its Node hook, which the fallback map replaces, and the
+            // dispatcher's merge, cap and decision logic is exercised the same. Rows that prove the daemon's own answer keep
+            // their daemon mode.
+            let row = Row { daemon: effective_daemon(case, &row), ..row };
             let label = |v: &str| format!("[{}/{}] {} ({v})", case.host, case.event, row.name);
             let attempts: Vec<(String, Run, Want)> = match row.hook {
                 Hook::Crossed if matches!(row.want, Want::Closed) => vec![

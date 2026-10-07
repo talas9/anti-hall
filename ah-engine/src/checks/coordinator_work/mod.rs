@@ -60,7 +60,7 @@ pub(crate) fn subagent_by_payload(p: &Value) -> bool {
 /// True when the payload is a Codex payload by `coordinator-detect.js` `isCodexPayload`: it names the Codex-only tool, or
 /// carries both Codex marker fields as non-empty strings. A payload that is not a JSON object is not.
 fn is_codex_payload(p: &Value) -> bool {
-    p.is_object() && (p.get("tool_name").and_then(Value::as_str) == Some(defaults::text("coordinator_work.codex_tool")) || is_codex(p))
+    p.is_object() && (p.get("tool_name").and_then(Value::as_str) == Some(defaults::text("coordinator_work.codex_tool")) || payload_is_codex(p))
 }
 
 /// True when the session is the main thread, by `coordinator-detect.js` `isCoordinator`: the payload carries no subagent

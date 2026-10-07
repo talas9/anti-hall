@@ -1464,14 +1464,6 @@ value = "the rest of .anti-hall/** (handovers, progress, history, state)."
 
 # ---- coordinator detection (hooks/coordinator-detect.js) --------------------------------------------------
 
-[coordinator_work.entrypoint_env]
-doc = "Environment variable the host sets to say how the session was started; it tells the main thread from a subagent."
-value = "CLAUDE_CODE_ENTRYPOINT"
-
-[coordinator_work.subagent_entrypoint]
-doc = "The entry point value of a subagent session."
-value = "agent_tool"
-
 [coordinator_work.main_entrypoints]
 doc = "Entry point values (exact) of a main-thread session."
 value = ["cli", "vscode", "jetbrains", "vim", "emacs"]

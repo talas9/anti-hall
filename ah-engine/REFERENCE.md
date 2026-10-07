@@ -90,6 +90,9 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
 | `silent-agent-nudge` | Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js). |
 | `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
+| `merge-gate` | Opt-in false-done backstop: answers every Bash call the Node merge-gate would allow (gate off, not an auto-merge command, no transcript, no hedge phrase in the recent assistant text) and defers the rest, so a possible block and its Jev shadow ask stay with the Node hook (port of merge-gate.js). |
+| `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
+| `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
 
 ## Settings
 
@@ -652,6 +655,30 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
 
+### small_guards.toml / api_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `api_guard.code_name_pattern` | `\.(?:py\|pyi\|js\|mjs\|cjs\|ts\|tsx\|jsx)` |  |  | Regex source (case-insensitive) that finds a code file name inside a Bash command or an apply_patch text. Written without a word boundary, so it finds every spelling the Node guard's own pattern finds, and more. |
+| `api_guard.extension_pattern` | `\.([a-z]+)$` |  |  | Regex source (case-insensitive) of a file name's extension, group 1. |
+| `api_guard.guard_name` | `api-guard` |  |  | The guard id this check answers to in skip.json. |
+| `api_guard.js_extensions` | `js, mjs, cjs, ts, tsx, jsx` |  |  | File extensions (lower-case) the guard checks as JavaScript or TypeScript. |
+| `api_guard.js_globals` | `17 items` |  |  | JavaScript global builtins whose members the Node guard verifies by default. |
+| `api_guard.js_require_word` | `require` |  |  | The text a JavaScript module reference needs before the guard can resolve an attribute against it. |
+| `api_guard.node_builtins` | `23 items` |  |  | Node built-in modules whose attributes the Node guard verifies by default. |
+| `api_guard.python_extensions` | `py, pyi` |  |  | File extensions (lower-case) the guard checks as Python. |
+| `api_guard.python_import_word` | `import` |  |  | The word a Python module reference needs before the guard can resolve an attribute against it. |
+| `api_guard.python_stdlib` | `46 items` |  |  | Python standard-library modules whose attributes the Node guard verifies by default. |
+| `api_guard.setting` | `6 entries` |  |  | Where the guard's own on/off switch is read from (guards.apiGuard, default on). |
+| `api_guard.shell_setting` | `6 entries` |  |  | Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on). |
+| `api_guard.summary` | `Fabricated-API guard: answers every call the Node api-guard would allow witho...` |  |  | One-line description of the api-guard check in the generated reference. |
+| `api_guard.thirdparty_setting` | `6 entries` |  |  | Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off). |
+| `api_guard.tool_edit` | `Edit` |  |  | Tool whose code is `tool_input.new_string`. |
+| `api_guard.tool_multi` | `MultiEdit` |  |  | Tool whose code is the `new_string` of each entry of `tool_input.edits`. |
+| `api_guard.tool_patch` | `apply_patch` |  |  | Codex tool whose patch text carries the code. |
+| `api_guard.tool_shell` | `Bash` |  |  | Tool whose command can write a code file. |
+| `api_guard.tool_write` | `Write` |  |  | Tool whose code is `tool_input.content`. |
+
 ### small_guards.toml / compact_decl
 
 | Key | Default | Env override | Unit | What it is |
@@ -682,6 +709,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `coordinator_work.block_setting` | `5 entries` |  |  | The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never. |
 | `coordinator_work.cap_setting` | `5 entries` |  |  | Safety cap on the stored window timestamps per session (guards.coordinatorWorkMaxEntries). |
 | `coordinator_work.codex_markers` | `turn_id, model` |  |  | Payload fields that, both non-empty strings, identify a Codex payload. |
+| `coordinator_work.codex_tool` | `apply_patch` |  |  | The tool name only Codex sends; a payload naming it is a Codex payload. |
 | `coordinator_work.command_guard_name` | `command-guard` |  |  | The skip.json key of command-guard, which also silences the work window. |
 | `coordinator_work.command_guard_setting` | `6 entries` |  |  | Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it. |
 | `coordinator_work.coordinator_entrypoint_prefix` | `terminal_ide_` |  |  | Prefix of the CLAUDE_CODE_ENTRYPOINT values (IDE terminals) that also mean the main thread. |
@@ -697,6 +725,8 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `coordinator_work.lock_suffix` | `.lock` |  |  | Suffix of a lock file next to the file it guards. |
 | `coordinator_work.lock_wait_env` | `ANTIHALL_COORDINATOR_WORK_LOCK_WAIT_MS` |  |  | Test-only variable that overrides the lock wait (honoured only with the isolation flag set). |
 | `coordinator_work.lock_wait_ms` | `250` |  |  | How long a lock held by another process is waited for before the call is handed to the Node hook. |
+| `coordinator_work.main_entrypoint_prefix` | `terminal_ide_` |  |  | Entry point prefix of a main-thread session started from a terminal inside an IDE. |
+| `coordinator_work.main_entrypoints` | `cli, vscode, jetbrains, vim, emacs` |  |  | Entry point values (exact) of a main-thread session. |
 | `coordinator_work.metrics_file` | `coordinator-work-metrics.json` |  |  | Name of the metrics file under the state directory. |
 | `coordinator_work.nudge_instead` | `delegate the rest to a subagent now.` |  |  | Advisory advice without a block threshold. |
 | `coordinator_work.nudge_instead_block` | `delegate the rest to a subagent now; call {block_at} in the window is blocked.` |  |  | Advisory advice with a block threshold; {block_at} is the call that is blocked. |
@@ -722,6 +752,22 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `coordinator_work.unknown_version` | `unknown` |  |  | The version text used when the manifest cannot be read. |
 | `coordinator_work.version_keys` | `sessions, calls, work, blocks, skippedWouldBlock` |  |  | The keys of one version's entry in the metrics file, in file order: the number of folded sessions, then the counters. |
 | `coordinator_work.window_setting` | `5 entries` |  |  | Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns the window off. |
+
+### small_guards.toml / edit_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `edit_guard.edit_tools` | `Edit, Write, MultiEdit, NotebookEdit` |  |  | The tools whose target file the guard checks. |
+| `edit_guard.guard_name` | `edit-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
+| `edit_guard.launcher_dir` | `.anti-hall, bin` |  |  | Path of the stable launcher directory under the home directory, as its parts. A write into it is blocked for every agent. |
+| `edit_guard.msg_launcher_allowed` | `the rest of .anti-hall/** (handovers, progress, history, state).` |  |  | What stays allowed next to the launcher directory. |
+| `edit_guard.msg_launcher_instead` | `leave that directory alone.` |  |  | Launcher-directory block advice. |
+| `edit_guard.msg_launcher_what` | `{tool} into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.` |  |  | Launcher-directory block headline; {tool} is the tool name. |
+| `edit_guard.msg_launcher_why` | `anti-hall installs and refreshes those files itself; overwriting one would ru...` |  |  | Launcher-directory block reason. |
+| `edit_guard.notebook_tool` | `NotebookEdit` |  |  | The tool whose target is `tool_input.notebook_path` instead of `tool_input.file_path`. |
+| `edit_guard.patch_tool` | `apply_patch` |  |  | The Codex tool whose targets are the files of a patch; the engine has no patch parser, so it defers. |
+| `edit_guard.setting` | `6 entries` |  |  | Where the guard's on/off switch is read from (safety.editGuard, default on). |
+| `edit_guard.summary` | `Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answ...` |  |  | One-line description of the edit-guard check in the generated reference. |
 
 ### small_guards.toml / expected_failure
 
@@ -793,6 +839,21 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `guardkit.state_ext` | `.json` |  |  | Extension of a per-session state file. |
 | `guardkit.tmp_suffix` | `tmp` |  |  | Suffix of the temporary file a state file is written through before the rename. |
 | `guardkit.true_tokens` | `1, on, true, yes` |  |  | Environment or settings strings that mean on (compared after trimming and lower-casing). |
+
+### small_guards.toml / merge_gate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `merge_gate.env_assign` | `^[A-Za-z_][A-Za-z0-9_]*=` |  |  | Regex source of a leading environment assignment the scan skips before the command word. |
+| `merge_gate.guard_name` | `merge-gate` |  |  | The guard id this check answers to in skip.json. |
+| `merge_gate.hedge_patterns` | `first[- ]pass, not pixel[- ]perfect` |  |  | Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output. |
+| `merge_gate.hedge_phrases` | `7 items` |  |  | Self-hedge phrases, matched case-insensitively as plain text in the recent assistant output. |
+| `merge_gate.merge_rules` | `2 entries, 3 entries, 4 entries, 2 entries, 2 entries` |  |  | The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target. |
+| `merge_gate.protected_target` | `^(main\|master\|develop\|origin\/(main\|master\|develop))$` |  |  | Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge. |
+| `merge_gate.segment_split` | `&&\|\\|\\|\|[;&\|\n]` |  |  | Regex source that splits a Bash command into the segments the auto-merge scan looks at (shell separators; quotes are not honoured, on purpose, as in the Node gate). |
+| `merge_gate.setting` | `6 entries` |  |  | Where the opt-in switch is read from (guards.mergeGate, default off). |
+| `merge_gate.summary` | `Opt-in false-done backstop: answers every Bash call the Node merge-gate would...` |  |  | One-line description of the merge-gate check in the generated reference. |
+| `merge_gate.window_bytes` | `131072` |  | bytes | How much of the end of the transcript is scanned for a self-hedge (the same bounded tail the Node gate reads). |
 
 ### small_guards.toml / merge_side_pick
 

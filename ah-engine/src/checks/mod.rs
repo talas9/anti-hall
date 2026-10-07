@@ -7,12 +7,14 @@
 //! Why a trait plus a registry instead of a `match` on names: rules refer to checks by name from data
 //! files, so the set of valid names must be discoverable at runtime (rule validation, `docs`, `status`).
 pub mod agent_scan;
+pub mod api_guard;
 pub mod ask_guard;
 pub mod claim_ledger;
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
 pub mod ctxbudget;
+pub mod edit_guard;
 pub mod emit_dedupe;
 pub mod fable_availability;
 pub mod failure_nudge;
@@ -20,8 +22,6 @@ pub mod git;
 pub mod guardkit;
 pub mod idle_agent_sweep;
 pub mod inbox_read_guard;
-pub mod api_guard;
-pub mod edit_guard;
 pub mod merge_gate;
 pub mod merge_side_pick;
 pub mod model_routing;
