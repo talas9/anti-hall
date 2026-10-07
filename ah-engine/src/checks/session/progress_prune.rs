@@ -24,6 +24,9 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// Serializes the passes of this process (see `decide`).
+static PASS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The registered `progress-prune` check.
 pub struct ProgressPrune;
 
@@ -337,6 +340,9 @@ fn decide(payload: &Value, env: &RequestEnv) -> Verdict {
         return Verdict::Defer;
     }
     let Ok(top) = toplevel_of(cwd) else { return Verdict::Defer };
+    // One pass at a time in this process: two sessions of one project starting together would otherwise both archive the same
+    // file, or both print the reminder (the Node hooks, separate processes, have that race; the engine does not need it).
+    let _one_at_a_time = PASS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let st = Settings::from_env(env);
     let now = now_ms();
     let state_file = join(&join(&home, defaults::text("session.state_dir")), defaults::text("session.progress_state_file"));

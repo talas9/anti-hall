@@ -184,6 +184,13 @@ Deliberate differences from the Node guard:
   escapes, which JSON.parse accepts) or nests deeper than its limit defers, so Node reads and writes it. The switches are the
   environment, `settings.json` and plugin options exactly as Node's `settings.js` resolves them; `DEVSWARM_SOURCE_BRANCH`
   joins the forwarded request environment for the child-workspace note.
+- Session maintenance (`version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge`,
+  `progress-prune`; SessionStart, never blocking): output bytes and state-file writes equal the Node hooks'
+  (`parity/run-session.js`). The engine never starts a background process, so a stale or absent version cache (Node starts a
+  detached probe) answers a deferral, and so does anything it cannot read exactly like JavaScript (a payload with no absolute
+  `cwd`, a date that depends on the time zone, a `.git` file in an unusual shape, JSON with a lone surrogate escape, a git
+  probe slower than `session.gitignore_probe_ms`). A deferral always comes before the first write, so Node then sees the
+  state it would have seen. Switches and the home directory come from the client's forwarded environment (D76).
 - `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
   exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
   current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both

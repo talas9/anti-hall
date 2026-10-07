@@ -543,12 +543,17 @@ fn progress_prune_archives_a_stale_progress_file_before_removing_it() {
     let recent = old_progress(&proj, "2026-09-01", "s2", "recent\n", 2);
     let today = old_progress(&proj, &iso_date(now()), "s3", "today\n", 30);
     let c = crate::checks::get("progress-prune").unwrap();
+    let before = now();
     assert_eq!(run(c, &h, &quiet_env(), json!({"cwd": proj.to_string_lossy()}), None), Verdict::Allow);
     assert!(!stale.exists() && recent.exists() && today.exists());
     let ledger = std::fs::read_to_string(proj.join(".anti-hall/history/2026-09-01/s1.md")).unwrap();
     assert!(ledger.starts_with("\n## Archived progress (pruned 20") && ledger.ends_with(")\n\n> line1\n> line2\n> \n\n"), "{ledger:?}");
     let state = h.read(".anti-hall/progress-prune-state.json").unwrap();
-    assert!(state.starts_with(&format!("{{\"{}\":{{\"lastPrunedAt\":", cwd_key_for_test(&proj.to_string_lossy()))), "{state}");
+    let key = cwd_key_for_test(&proj.to_string_lossy());
+    assert!(state.starts_with(&format!("{{\"{key}\":{{\"lastPrunedAt\":")), "{state}");
+    let Parsed::Ok(parsed) = parse(&state) else { panic!("state is not JSON: {state}") };
+    let marked = parsed.get(&key).and_then(|e| e.get("lastPrunedAt")).and_then(J::finite).unwrap();
+    assert!((before..=now()).contains(&marked), "the throttle mark is the time of the pass: {marked} not in {before}..");
     // the next call within the day does nothing, even for a new stale file
     let later = old_progress(&proj, "2026-09-02", "s4", "later\n", 40);
     assert_eq!(run(c, &h, &quiet_env(), json!({"cwd": proj.to_string_lossy()}), None), Verdict::Allow);

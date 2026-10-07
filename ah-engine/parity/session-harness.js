@@ -65,7 +65,8 @@ function expand(text, vars) {
 }
 
 function buildTree(base, files, vars) {
-  for (const [rel, spec] of Object.entries(files || {})) {
+  for (const [rel0, spec] of Object.entries(files || {})) {
+    const rel = expand(rel0, vars);
     const full = path.join(base, rel);
     if (rel.endsWith('/')) { fs.mkdirSync(full, { recursive: true }); continue; }
     fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -170,7 +171,8 @@ async function runParity(o) {
   const ENGINE = path.resolve(o.engine), REPO = path.resolve(o.repo);
   const tmp = fs.mkdtempSync(path.join(o.tmpdir || os.tmpdir(), `ah-par-${o.name}-`));
   fs.writeFileSync(path.join(tmp, 'spy.js'), SPY);
-  const stats = { scenarios: 0, same: 0, sameOut: 0, sameState: 0, deferExplained: 0, deferUnexplained: 0, unneeded: 0, mismatch: 0, nodeOut: 0, nodeState: 0, spawned: 0 };
+  pluginRoot.cache = new Map(); // roots live under this run's scratch directory
+  const stats = { scenarios: 0, same: 0, sameOut: 0, sameState: 0, deferExplained: 0, deferFuzz: 0, deferUnexplained: 0, unneeded: 0, mismatch: 0, nodeOut: 0, nodeState: 0, spawned: 0 };
   const mism = [], unexplained = [];
   const basePath = process.env.PATH;
   let counter = 0;
@@ -194,18 +196,19 @@ async function runParity(o) {
     for (const [k, v] of Object.entries(env)) if (v === null) delete env[k]; else env[k] = expand(v, vars);
     const fixtureText = JSON.stringify([sc.files, sc.afterGit, sc.payload, sc.raw]) + payloadText;
     const norm = normalizer(vars, fixtureText);
+    const runCwd = sc.cwd ? expand(sc.cwd, vars) : '/tmp';
     stats.scenarios++;
     // 1. Node
     build();
     const initTree = snapshot(base);
     const spyLog = path.join(tmp, `spy${n}.log`);
-    const nodeRes = await run(process.execPath, ['-r', path.join(tmp, 'spy.js'), path.join(sc._root, 'hooks', HOOKS[sc.hook])], payloadText, Object.assign({}, env, { ANTIHALL_SPY_LOG: spyLog }), '/tmp');
+    const nodeRes = await run(process.execPath, ['-r', path.join(tmp, 'spy.js'), path.join(sc._root, 'hooks', HOOKS[sc.hook])], payloadText, Object.assign({}, env, { ANTIHALL_SPY_LOG: spyLog }), runCwd);
     const spawned = fs.existsSync(spyLog) ? fs.readFileSync(spyLog, 'utf8').trim().split('\n').filter(Boolean) : [];
     const nodeTree = snapshot(base);
     wipe(base);
     // 2. the engine, on a fresh copy of the same fixture
     build();
-    const engRes = await run(ENGINE, ['check', sc.hook], payloadText, Object.assign({}, env, { AH_ENGINE_PLUGIN_ROOT: sc._root, AH_ENGINE_GITIGNORE_PROBE_MS: '2200' }), '/tmp');
+    const engRes = await run(ENGINE, ['check', sc.hook], payloadText, Object.assign({}, env, { AH_ENGINE_PLUGIN_ROOT: sc._root, AH_ENGINE_GITIGNORE_PROBE_MS: '2200' }), runCwd);
     const engTree = snapshot(base);
     wipe(base);
     if (nodeRes.out) stats.nodeOut++;
@@ -216,6 +219,7 @@ async function runParity(o) {
       const touched = diffTrees(initTree, engTree, norm);
       if (touched.length) { stats.mismatch++; mism.push({ id: sc.id, hook: sc.hook, problems: ['the engine deferred AND changed state: ' + touched.join(' ; ')], payload: payloadText.slice(0, 300) }); return; }
       if (spawned.length || sc.expectDefer) stats.deferExplained++;
+      else if (sc.deferOk) stats.deferFuzz++;
       else {
         stats.deferUnexplained++;
         if (!nodeRes.out && !nodeChanged) stats.unneeded++;
@@ -225,14 +229,14 @@ async function runParity(o) {
     }
     if (o.verbose) console.log(`  ${sc.id}: node=${JSON.stringify(nodeRes.out).slice(0, 300)} engine=${JSON.stringify(engRes.out).slice(0, 300)}`);
     const problems = [];
-    if (String(nodeRes.code) !== String(engRes.code)) problems.push(`exit node=${nodeRes.code} engine=${engRes.code}`);
+    if (String(nodeRes.code) !== String(engRes.code)) problems.push(`exit node=${nodeRes.code} engine=${engRes.code} nodeStderr=${JSON.stringify(nodeRes.err).slice(0, 400)}`);
     if (nodeRes.out !== engRes.out) problems.push(`stdout node=${JSON.stringify(nodeRes.out).slice(0, 400)} engine=${JSON.stringify(engRes.out).slice(0, 400)}`);
     if (spawned.length) problems.push(`node started a background process (${spawned.join('; ').slice(0, 200)}) but the engine decided`);
     problems.push(...diffTrees(nodeTree, engTree, norm));
     if (problems.length) { stats.mismatch++; mism.push({ id: sc.id, hook: sc.hook, problems, payload: payloadText.slice(0, 300) }); }
     else { stats.same++; if (nodeRes.out) stats.sameOut++; if (nodeChanged) stats.sameState++; }
   });
-  console.log(`${o.name}: scenarios=${stats.scenarios} same=${stats.same} (with advisory: ${stats.sameOut}, with state change: ${stats.sameState}) deferred(explained)=${stats.deferExplained} deferred(unexplained)=${stats.deferUnexplained} (node silent&unchanged: ${stats.unneeded}) MISMATCH=${stats.mismatch}`);
+  console.log(`${o.name}: scenarios=${stats.scenarios} same=${stats.same} (with advisory: ${stats.sameOut}, with state change: ${stats.sameState}) deferred(explained)=${stats.deferExplained} deferred(fuzz, shapes the engine hands to Node)=${stats.deferFuzz} deferred(unexplained)=${stats.deferUnexplained} (node silent&unchanged: ${stats.unneeded}) MISMATCH=${stats.mismatch}`);
   console.log(`  node: with-output=${stats.nodeOut} state-changed=${stats.nodeState} started-a-probe=${stats.spawned}`);
   if (unexplained.length) console.log('  unexplained deferrals: ' + unexplained.slice(0, 40).join(' | '));
   for (const m of mism.slice(0, o.show === undefined ? 25 : o.show)) console.log(JSON.stringify(m));

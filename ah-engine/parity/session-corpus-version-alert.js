@@ -179,6 +179,7 @@ exports.build = function (ctx, h) {
   add('marketplace-override-abs', alt, { env: { ANTIHALL_MARKETPLACE_DIR: '{{HOME}}/mk/marketplaces/anti-hall' } });
   add('marketplace-override-trailing-slash', alt, { env: { ANTIHALL_MARKETPLACE_DIR: '{{HOME}}/mk/marketplaces/anti-hall/' } });
   add('marketplace-override-relative', alt, { env: { ANTIHALL_MARKETPLACE_DIR: 'mk/marketplaces/anti-hall' } });
+  add('marketplace-override-relative-from-cwd', merge(alt, H('mk2/marketplaces/anti-hall/', ''), H('mk2/installed_plugins.json', q(regv('1.2.3', 'user')))), { cwd: '{{HOME}}', env: { ANTIHALL_MARKETPLACE_DIR: 'mk/marketplaces/anti-hall' } });
   add('marketplace-override-missing', alt, { env: { ANTIHALL_MARKETPLACE_DIR: '{{HOME}}/nope' } });
   add('marketplace-override-file', merge(alt, H('mk/afile', 'x')), { env: { ANTIHALL_MARKETPLACE_DIR: '{{HOME}}/mk/afile' } });
   add('marketplace-override-empty', alt, { env: { ANTIHALL_MARKETPLACE_DIR: '' } });
@@ -191,6 +192,8 @@ exports.build = function (ctx, h) {
   const mrk = (la, rest) => `{${rest || ''}"checkedAt":${off(-HOUR)},"lastAdvised":${la}}`;
   mark('match', mrk(mkey('sess-1'))); mark('other-session', mrk(mkey('sess-2'))); mark('other-mirrored', mrk(mkey('sess-1', 'v1.2.9'))); mark('other-running', mrk(mkey('sess-1', 'v1.2.4', '1.0.0')));
   mark('match-no-session-id', mrk(mkey('sess-1')), { payload: { session_id: undefined } }); mark('match-extra-fields', mrk(mkey('sess-1'), '"keep":{"a":1,"b":[1,2]},'));
+  mark('match-empty-session-no-dedupe', mrk(mkey('')), { payload: { session_id: undefined } });
+  mark('match-empty-session-string-no-dedupe', mrk(mkey('')), { payload: { session_id: '' } });
   mark('no-checkedAt', `{"lastAdvised":${mkey('sess-1')}}`); mark('checkedAt-string', `{"checkedAt":"x","lastAdvised":${mkey('sess-1')}}`);
   mark('array', '[]'); mark('null', 'null'); mark('empty', ''); mark('malformed', '{'); mark('empty-object', '{}'); mark('no-lastAdvised', `{"checkedAt":${off(-HOUR)}}`);
   mark('lastAdvised-array', mrk('[]')); mark('lastAdvised-string', mrk('"x"')); mark('lastAdvised-update-case', mrk(key('sess-1')));

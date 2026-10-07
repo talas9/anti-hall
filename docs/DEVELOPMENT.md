@@ -144,6 +144,14 @@ cd ah-engine/parity
 node run-merge-side-pick.js --engine ../target/release/ah-engine --hooks ../../plugins/anti-hall/hooks --cmds <recorded-commands.jsonl>
 ```
 
+The six session-maintenance ports (`version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge`, `progress-prune`) are scripts that read and write files, so their harness `run-session.js` needs no recorded commands: every scenario is a fixture directory (home, project, plugin root). It runs the real Node hook (with a spy that records and suppresses any process it would start), then the engine, on the same paths and fresh copies of the fixture, and compares exit code, stdout and every file under home and project. It takes a few minutes and needs `git` and `node` on the `PATH`.
+
+<!-- doc-check: skip (about 1,300 scenarios; run on demand) -->
+```sh
+cd ah-engine/parity
+node run-session.js --engine ../target/release/ah-engine --repo ../.. --hook all
+```
+
 ## Run the plugin against a local engine
 
 The plugin does not start or call the engine today: the engine is off by default, and the plugin runs its Node hooks. The configuration key and environment variable that point the plugin at a locally built binary are **planned (D71)**. Until then, exercise the engine directly, in a throwaway state directory (keep its path short, because the daemon's socket lives there):

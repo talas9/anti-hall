@@ -141,12 +141,17 @@ const devswarm = () => driftProbe('devswarm-version', 'devswarm-version.json', '
   { section: 'versionAlerts', key: 'devswarm', env: ['ANTIHALL_DEVSWARM_VERSION_ALERT'], option: 'version_alerts_devswarm', guard: 'devswarm-version' });
 
 function build(hook, ctx) {
+  const helpers = { H, P, merge, off, HOUR, DAY, switchMatrix };
+  let list;
   switch (hook) {
-    case 'claude-cli-version': return claudeCli();
-    case 'devswarm-version': return devswarm();
+    case 'claude-cli-version': list = claudeCli(); break;
+    case 'devswarm-version': list = devswarm(); break;
     default: {
-      try { return require('./session-corpus-' + hook + '.js').build(ctx, { H, P, merge, off, HOUR, DAY, switchMatrix }); } catch (e) { if (e.code === 'MODULE_NOT_FOUND') return null; throw e; }
+      try { list = require('./session-corpus-' + hook + '.js').build(ctx, helpers); } catch (e) { if (e.code === 'MODULE_NOT_FOUND') return null; throw e; }
     }
   }
+  const fuzz = require('./session-corpus-fuzz.js');
+  const n = { 'claude-cli-version': 160, 'devswarm-version': 160, 'version-alert': 200, 'repo-self-drift': 140, 'defect-nudge': 140, 'progress-prune': 120 }[hook] || 0;
+  return list.concat(fuzz.build(hook, helpers, 20261007, n));
 }
 module.exports = { build, H, P, merge, off, HOUR, DAY, switchMatrix };

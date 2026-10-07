@@ -100,7 +100,7 @@ exports.build = function (ctx, h) {
   rep('nested-repo-uses-inner', merge(body, P('inner/' + PR + old + '/s9.md', { content: 'inner\n', mtimeOffset: -30 * HOUR })), { git: ['proj', 'proj/inner'], payload: { cwd: '{{PROJ}}/inner' }, afterGit: { 'proj/inner/.gitignore': '.anti-hall/\n', 'proj/.gitignore': '.anti-hall/\n' } });
   rep('nested-plain-subdir-of-repo', merge(body, P('plain/x', '')), Object.assign({ payload: { cwd: '{{PROJ}}/plain' } }, ignoreAll));
   // HOME is a repository (a dotfiles repo): the prune root falls back to cwd, the reminder does not
-  add('home-is-repo-cwd-in-home', merge(P(PR + old + '/s1.md', { content: 'x\n', mtimeOffset: -30 * HOUR }), H(PR + old2 + '/h1.md', { content: 'home\n', mtimeOffset: -30 * HOUR })), { git: ['home'], payload: { cwd: '{{HOME}}/work' }, afterGit: { 'home/.gitignore': '.anti-hall/\n' } });
+  add('home-is-repo-cwd-in-home', merge(H('work/' + PR + old + '/w1.md', { content: 'work\n', mtimeOffset: -30 * HOUR }), H(PR + old2 + '/h1.md', { content: 'home\n', mtimeOffset: -30 * HOUR })), { git: ['home'], payload: { cwd: '{{HOME}}/work' }, afterGit: { 'home/.gitignore': '.anti-hall/\n' } });
   add('home-is-repo-cwd-is-home', merge(H(PR + old + '/h1.md', { content: 'home\n', mtimeOffset: -30 * HOUR })), { git: ['home'], payload: { cwd: '{{HOME}}' }, afterGit: { 'home/.gitignore': '.anti-hall/\n' } });
   add('home-is-repo-hint', merge(H(PR + old + '/h1.md', { content: 'home\n', mtimeOffset: -30 * HOUR })), { git: ['home'], payload: { cwd: '{{HOME}}' } });
   add('repo-inside-home-dir', merge(body), { git: ['proj'], afterGit: ignoreAll.afterGit });
