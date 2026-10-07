@@ -191,6 +191,14 @@ Deliberate differences from the Node guard:
   block (a JSON decision on stdout, the reason on stderr, exit 2) is a shape the engine's reply cannot carry yet, so
   every block is a deferral. A transcript line serde rejects but JavaScript may accept (lone surrogate escape, extreme
   nesting or exponent) also defers.
+- `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard` (`src/checks/ctxbudget/`): each
+  answers the case in which its Node hook prints nothing and writes nothing (see `defaults/ctxbudget.toml` for every file
+  name, setting and limit) and defers every other case. The settings the hooks read (`limitConserve.*`, `autoHandover.*`,
+  `guards.compactAdviceGuard`) resolve environment, then `settings.json`, then the plugin option, then the default, with
+  JavaScript's number and string coercions. The home directory is `HOME` (Node's `os.homedir()`); a request without an
+  absolute one defers. A reading that needs a state write (the inferred one-million-token window), a tag that is a hash of
+  the transcript path, and a relative `transcript_path` defer to Node. Parity: `node parity/run-ctxbudget.js --engine
+  target/release/ah-engine --hooks ../plugins/anti-hall/hooks`.
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 ## Built-in checks: the command check
