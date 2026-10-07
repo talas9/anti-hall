@@ -22,6 +22,7 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod combine;
+pub mod inject;
 pub mod native;
 pub mod node;
 pub mod plan;
@@ -630,7 +631,10 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             );
         }
     }
-    let results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    let mut results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    if parsed.is_some() {
+        inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
+    }
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     match combine::combine(&results) {
         combine::Combined::Answer(mut o) => {

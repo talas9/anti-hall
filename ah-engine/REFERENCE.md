@@ -1670,6 +1670,48 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.usage_marker` | `"usage"` |  |  | Substring that a Claude transcript line must hold to be parsed as an assistant usage reading. |
 | `ctxbudget.usage_max_stale_ms` | `21600000` |  | ms | Snapshot age beyond which a bucket without a usable reset time counts as 0 percent (hooks/limit-conserve.js MAX_STALE_MS). |
 
+### inject_gate.toml / inject_gate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `inject_gate.comms_hooks` | `devswarm-child-turn, devswarm-parent-inbox` |  |  | Dispatch entry ids whose output carries the DevSwarm comms-override line. |
+| `inject_gate.comms_markers` | `💡 anti-hall · devswarm-comms: mesh only, When mentioning a workspace to the h...` |  |  | Segment prefixes (segments are separated by a blank line) of the static DevSwarm comms lines the comms cut gates. |
+| `inject_gate.cut_comms` | `comms` |  |  | Telemetry label of cut 3. |
+| `inject_gate.cut_limit` | `limit` |  |  | Telemetry label of cut 1. |
+| `inject_gate.cut_swarm` | `swarm` |  |  | Telemetry label of cut 4. |
+| `inject_gate.cut_task` | `task` |  |  | Telemetry label of cut 2. |
+| `inject_gate.field_ctx` | `additionalContext` |  |  | The field of that object the gate rewrites. |
+| `inject_gate.field_hso` | `hookSpecificOutput` |  |  | The object of a hook's JSON output that carries the context. |
+| `inject_gate.hash_chars` | `16` |  |  | Hex characters of the SHA-1 kept as a block's fingerprint. |
+| `inject_gate.id_max` | `128` |  |  | Characters of a session or agent id kept (longer ids are cut). |
+| `inject_gate.iso_re` | `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z\|[+-]\d{2}:\d{2})` |  |  | An ISO 8601 timestamp (a reset time whose milliseconds jitter from one reading to the next); the hash sees it rounded to the minute. |
+| `inject_gate.limit_hook` | `limit-conserve-inject` |  |  | Dispatch entry id of the limit-conservation injector. |
+| `inject_gate.limit_keepalive` | `⚠️ anti-hall · limit-conserve: still active (directive unchanged since it was...` |  |  | What an unchanged limit-conservation directive becomes on its keepalive turn (the full directive was injected earlier in the same context). |
+| `inject_gate.max_sessions` | `128` |  |  | Sessions the gate remembers; past it the least recently used session is evicted (an evicted session simply gets its next injection whole). |
+| `inject_gate.max_slots` | `32` |  |  | Gated blocks remembered per session (the oldest is dropped past it). |
+| `inject_gate.note_sep` | ` ` |  |  | Separator task-tracker puts between its reminder and its freshness note. |
+| `inject_gate.num_comms_every` | `6 entries` |  |  | Turns between keepalives of the unchanged comms-override line (context.injectGateCommsEvery). |
+| `inject_gate.num_limit_every` | `6 entries` |  |  | Turns between keepalives of an unchanged limit-conservation directive (context.injectGateLimitEvery). |
+| `inject_gate.num_swarm_every` | `6 entries` |  |  | Turns between repeats of an unchanged shared-tree advisory (context.injectGateSwarmEvery). |
+| `inject_gate.num_task_every` | `6 entries` |  |  | Turns between short task-tracker reminders and unchanged freshness notes (context.injectGateTaskEvery). |
+| `inject_gate.reply_emit` | `e` |  |  | Reply word: pass the block on as it is. |
+| `inject_gate.reply_keepalive` | `k` |  |  | Reply word: pass the block's short keepalive form instead. |
+| `inject_gate.reply_suppress` | `s` |  |  | Reply word: drop the block (the model already holds it). |
+| `inject_gate.segment_sep` | `\n\n` |  |  | Separator the gated hooks put between the segments of one additionalContext. |
+| `inject_gate.slot_overhead_bytes` | `96` |  |  | Bytes counted per remembered block besides its name, for the memory figure shown beside the cap. |
+| `inject_gate.start_event` | `SessionStart` |  |  | The event whose dispatch means the context may have been lost (start, resume, clear, compaction): the session's gate state is cleared so the next injection is whole. |
+| `inject_gate.sw_comms` | `5 entries` |  |  | Cut 3 (context.injectGateComms, default on): the DevSwarm comms-override line and the workspace-title instruction are passed on once per session, when changed, and as a keepalive every N turns. |
+| `inject_gate.sw_limit` | `5 entries` |  |  | Cut 1 (context.injectGateLimit, default on): limit-conserve-inject is passed on only when the conservation directive changed (usage band, reset time to the minute), else a short keepalive every N turns. |
+| `inject_gate.sw_master` | `5 entries` |  |  | Master switch of the injection gate (context.injectGate, default on): off hands every gated hook's Node output through unchanged. |
+| `inject_gate.sw_swarm` | `5 entries` |  |  | Cut 4 (context.injectGateSwarm, default on): swarm-guard's shared-tree advisory is passed on when new or changed, and again only after N turns. |
+| `inject_gate.sw_task` | `5 entries` |  |  | Cut 2 (context.injectGateTask, default on): task-tracker's short reminder is passed on only every N turns (its long form always passes), and its freshness note only when it changed. |
+| `inject_gate.swarm_hooks` | `swarm-guard, swarm-guard#2` |  |  | Dispatch entry ids of swarm-guard (Agent and Task matchers). |
+| `inject_gate.swarm_marker` | `anti-hall · shared-tree` |  |  | Text that marks a swarm-guard advisory as the shared-tree one (any other advisory passes untouched). |
+| `inject_gate.task_hook` | `task-tracker` |  |  | Dispatch entry id of the task tracker. |
+| `inject_gate.task_long_prefix` | `💡 anti-hall · task-tracker: capture EVERY user request` |  |  | How the long task-tracker directive starts (it is always passed on and restarts the short reminder's turn count). |
+| `inject_gate.task_short` | `💡 anti-hall · task-tracker: capture every request as a priority-sorted task; ...` |  |  | The exact short task-tracker reminder hooks/task-tracker.js prints on a turn that is not the long form (a test keeps it equal to the Node text). |
+| `inject_gate.ups_event` | `UserPromptSubmit` |  |  | The event whose dispatch counts as one turn of the session. |
+
 ### session.toml / session
 
 | Key | Default | Env override | Unit | What it is |
@@ -2925,6 +2967,15 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `errors` | counter | requests |  | Requests answered ERR. |
 | `hook_calls` | counter | requests | event | Hook requests served, by hook event. |
 | `hook_latency_us` | histogram | us | event | Wall time to serve a hook request inside the daemon, by hook event. |
+| `inject_emitted` | counter | blocks | cut | Gated hook blocks passed on whole, by cut (injection gate). |
+| `inject_emitted_bytes` | counter | bytes | cut | Bytes of the gated hook blocks that were injected (whole blocks, and the short keepalive forms), by cut. |
+| `inject_gate_bytes` | gauge | bytes |  | Estimated memory of the injection gate state. |
+| `inject_gate_evictions` | gauge | items |  | Sessions or blocks the gate dropped to stay within its bounds since the daemon started. |
+| `inject_gate_sessions` | gauge | sessions |  | Sessions the injection gate holds state for (bounded by inject_gate.max_sessions). |
+| `inject_gate_slots` | gauge | blocks |  | Gated blocks remembered across all sessions. |
+| `inject_keepalive` | counter | blocks | cut | Unchanged gated blocks passed on again because their keepalive turn came, by cut. |
+| `inject_suppressed` | counter | blocks | cut | Gated hook blocks the model already held and the gate dropped, by cut. |
+| `inject_suppressed_bytes` | counter | bytes | cut | Bytes the gate kept out of the context (the dropped blocks, and what a keepalive form saved over the whole block), by cut. |
 | `maintain_last_ms` | gauge | ms |  | When the last maintenance run happened, in ms since the epoch (0: never). |
 | `maintain_runs` | gauge | runs |  | Maintenance runs recorded in hot.db (D26). |
 | `panics` | counter | panics |  | Request-handler panics that were contained. |

@@ -1376,6 +1376,15 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `context.handoverResume` | `true` | — | handover-resume (SessionStart): point a fresh or compacted session at the newest handover. |
 | `context.defectNudge` | `true` | — | defect-nudge (SessionStart): the once-a-day note about the defect channel. |
 | `context.dedupeWindowMin` adv | `20` [0..] | `ANTIHALL_DEDUPE_WINDOW_MIN` | Fallback per-session suppression window (minutes) for repeated UserPromptSubmit injection blocks (LIMIT CONSERVATION, TASK-LIST, DEVSWARM COMMS OVERRIDE, DEVSWARM WORKSPACES) when a burst of queued prompts is delivered in one turn and the transcript cannot confirm the earlier copy was already read; content that changed always re-emits. `0` disables emit-dedupe entirely (same as `guards.emitDedupe=false`). Suppression counts surface in `/anti-hall:doctor`. |
+| `context.injectGate` | `true` | `ANTIHALL_INJECT_GATE` | Master switch of the engine's injection gate: the hooks that re-send the same context every turn (limit conservation, task-tracker, the DevSwarm comms-override line, swarm-guard's shared-tree advisory) are injected only when the model does not already hold it. Off: every hook's output passes through unchanged. Counters: `ah-engine metrics` (`inject_*`), per session `ah-engine ctl gate`. |
+| `context.injectGateLimit` | `true` | `ANTIHALL_INJECT_GATE_LIMIT` | Cut 1: the limit-conservation directive on a usage-band or reset-window change, else a short keepalive. |
+| `context.injectGateLimitEvery` adv | `10` [1..] | `ANTIHALL_INJECT_GATE_LIMIT_EVERY` | Turns between keepalives of an unchanged limit-conservation directive. |
+| `context.injectGateTask` | `true` | `ANTIHALL_INJECT_GATE_TASK` | Cut 2: task-tracker's long form always passes; its short reminder and an unchanged freshness note pass every N turns. |
+| `context.injectGateTaskEvery` adv | `10` [1..] | `ANTIHALL_INJECT_GATE_TASK_EVERY` | Turns between short task-tracker reminders and unchanged freshness notes. |
+| `context.injectGateComms` | `true` | `ANTIHALL_INJECT_GATE_COMMS` | Cut 3: the DevSwarm comms-override line and the workspace-title instruction once per session, when changed, and as a keepalive. |
+| `context.injectGateCommsEvery` adv | `30` [1..] | `ANTIHALL_INJECT_GATE_COMMS_EVERY` | Turns between keepalives of the unchanged comms-override line. |
+| `context.injectGateSwarm` | `true` | `ANTIHALL_INJECT_GATE_SWARM` | Cut 4: swarm-guard's shared-tree advisory when new or changed, and again only after N turns. |
+| `context.injectGateSwarmEvery` adv | `20` [1..] | `ANTIHALL_INJECT_GATE_SWARM_EVERY` | Turns between repeats of an unchanged shared-tree advisory. |
 | `maintenance.repairOnReload` | `true` | `ANTIHALL_REPAIR_ON_RELOAD` | repair-on-reload (SessionStart/UserPromptSubmit): re-apply safe doctor repairs after a plugin update. |
 | `maintenance.progressPrune` | `true` | — | progress-prune (SessionStart): archive stale per-session progress files into the history ledger. |
 | `maintenance.precompactSnapshot` | `true` | — | precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction. |

@@ -18,6 +18,7 @@ pub mod dispatch;
 pub mod docs;
 pub mod error;
 pub mod frame;
+pub mod gate;
 pub mod gitcache;
 pub mod health;
 pub mod hookcfg;

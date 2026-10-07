@@ -89,6 +89,12 @@ fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
 
 /// Every matching entry with a built-in check, answered; entries without one are not listed.
 pub fn evaluate(meta: &Meta, p: &Value, observe: &dyn Fn(&Entry, &Answer, u64)) -> Vec<(String, Answer)> {
+    // one dispatch of the prompt event is one turn of the session, which is what the injection gate counts keepalives in
+    if meta.event == crate::defaults::text("inject_gate.ups_event")
+        && let Some(sid) = p.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty())
+    {
+        crate::gate::global().turn(sid);
+    }
     table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
         .into_iter()
         .filter(|e| e.check.is_some() && meta.only.as_ref().is_none_or(|ids| ids.contains(&e.id)))

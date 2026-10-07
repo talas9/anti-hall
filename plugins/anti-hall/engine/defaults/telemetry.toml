@@ -228,6 +228,42 @@ value = { kind = "gauge", unit = "reads", labels = [] }
 doc = "Key-value reads that went to SQLite since the daemon started."
 value = { kind = "gauge", unit = "reads", labels = [] }
 
+[metric.inject_emitted]
+doc = "Gated hook blocks passed on whole, by cut (injection gate)."
+value = { kind = "counter", unit = "blocks", labels = ["cut"] }
+
+[metric.inject_emitted_bytes]
+doc = "Bytes of the gated hook blocks that were injected (whole blocks, and the short keepalive forms), by cut."
+value = { kind = "counter", unit = "bytes", labels = ["cut"] }
+
+[metric.inject_keepalive]
+doc = "Unchanged gated blocks passed on again because their keepalive turn came, by cut."
+value = { kind = "counter", unit = "blocks", labels = ["cut"] }
+
+[metric.inject_suppressed]
+doc = "Gated hook blocks the model already held and the gate dropped, by cut."
+value = { kind = "counter", unit = "blocks", labels = ["cut"] }
+
+[metric.inject_suppressed_bytes]
+doc = "Bytes the gate kept out of the context (the dropped blocks, and what a keepalive form saved over the whole block), by cut."
+value = { kind = "counter", unit = "bytes", labels = ["cut"] }
+
+[metric.inject_gate_sessions]
+doc = "Sessions the injection gate holds state for (bounded by inject_gate.max_sessions)."
+value = { kind = "gauge", unit = "sessions", labels = [] }
+
+[metric.inject_gate_slots]
+doc = "Gated blocks remembered across all sessions."
+value = { kind = "gauge", unit = "blocks", labels = [] }
+
+[metric.inject_gate_bytes]
+doc = "Estimated memory of the injection gate state."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.inject_gate_evictions]
+doc = "Sessions or blocks the gate dropped to stay within its bounds since the daemon started."
+value = { kind = "gauge", unit = "items", labels = [] }
+
 [metric.tier_evictions]
 doc = "Items dropped from memory to stay within the budget since the daemon started (SQLite keeps them)."
 value = { kind = "gauge", unit = "items", labels = [] }

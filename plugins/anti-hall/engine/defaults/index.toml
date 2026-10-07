@@ -25,6 +25,7 @@ files = [
     "verify_first.toml",
     "prompt_emit.toml",
     "ctxbudget.toml",
+    "inject_gate.toml",
     "session.toml",
     "response_guards.toml",
     "agent_controls.toml",

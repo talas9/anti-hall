@@ -1265,3 +1265,72 @@ fn one_agent_call_records_exactly_one_spawn_per_log() {
         assert_eq!(lines(".anti-hall/agent-spawns.log"), calls, "agent-spawns.log, {mode}");
     }
 }
+
+// ---- token cuts: the injection gate, through the real daemon -------------------------------------------------------------
+
+fn ups_payload(session: &str) -> String {
+    serde_json::json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "hi"}).to_string()
+}
+
+fn short_reminder() -> &'static str {
+    ah_engine::defaults::text("inject_gate.task_short")
+}
+
+/// The additionalContext a UserPromptSubmit dispatch handed the host (empty when it said nothing).
+fn context_of(out: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(out.trim())
+        .ok()
+        .and_then(|v| v["hookSpecificOutput"]["additionalContext"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// A daemon that answers (the first call only starts it and is answered by Node, D5): ping until it does.
+fn warm(e: &Env, args: &[&str], extra: &[(&str, &str)]) {
+    for _ in 0..100 {
+        let metrics = e.run(&["metrics", "--json"], false, "", true).1;
+        if metrics.contains("\"requests\"") {
+            return;
+        }
+        let _ = e.run_with(args, false, &ups_payload("warm"), true, extra);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("the daemon never came up");
+}
+
+#[test]
+fn the_gate_cuts_a_repeated_reminder_through_the_daemon_and_off_it_is_the_node_output_byte_for_byte() {
+    let e = Env::new("inject-gate");
+    // task-tracker's Node command is replaced by a stand-in that prints the short reminder every turn
+    let say = format!(r#"printf '{{"hookSpecificOutput":{{"hookEventName":"UserPromptSubmit","additionalContext":"{}"}}}}\n'"#, short_reminder());
+    let map = event_map(&e, "UserPromptSubmit", &say, "true");
+    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    warm(&e, &args, &on);
+    let seen: Vec<String> = (0..5).map(|_| context_of(&e.run_with(&args, false, &ups_payload("sess-on"), true, &on).1)).collect();
+    // turn 1 is the first injection of the session; 2 and 3 are suppressed; 4 is the keepalive; 5 suppressed again
+    let short = short_reminder();
+    assert!(seen[0].contains(short) && seen[3].contains(short), "{seen:?}");
+    assert!(!seen[1].contains(short) && !seen[2].contains(short) && !seen[4].contains(short), "{seen:?}");
+    // a new session starts whole again
+    assert!(context_of(&e.run_with(&args, false, &ups_payload("sess-new"), true, &on).1).contains(short));
+    // a SessionStart dispatch (compaction) clears the session: the next prompt is whole again
+    let start = serde_json::json!({"session_id": "sess-on", "cwd": "/tmp", "hook_event_name": "SessionStart", "source": "compact"}).to_string();
+    let start_map = session_map(&e, "true", "true");
+    let _ = e.run_with(&["hook", "--event", "SessionStart", "--fallback-map", start_map.to_str().unwrap()], false, &start, true, &on);
+    assert!(context_of(&e.run_with(&args, false, &ups_payload("sess-on"), true, &on).1).contains(short), "re-injected after compaction");
+    // what it measured: the daemon counts the dropped bytes, and the memory is reported
+    let metrics = e.run(&["metrics", "--json"], false, "", true).1;
+    let status = e.run(&["status", "--json"], false, "", true).1;
+    let report = e.run(&["ctl", "gate"], false, "", true).1;
+    assert!(metrics.contains("inject_suppressed_bytes") && metrics.contains("inject_gate_bytes"), "{metrics}");
+    assert!(status.contains("inject_gate"), "{status}");
+    assert!(report.contains("sess-on") && report.contains("suppressed_bytes"), "{report}");
+    // switched off, every turn is the hook's own output, byte for byte
+    let off = [("ANTIHALL_INJECT_GATE", "0")];
+    let node_bytes = e.run_with(&args, true, &ups_payload("sess-off"), true, &off).1;
+    for _ in 0..4 {
+        assert_eq!(e.run_with(&args, false, &ups_payload("sess-off"), true, &off).1, node_bytes);
+    }
+    assert!(context_of(&node_bytes).contains(short));
+    e.stop();
+}

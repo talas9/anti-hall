@@ -67,6 +67,12 @@ labelled with how it was measured in the README of `ah-engine/`.
   a possible recommendation) defers, so the files those hooks write (the per-session latch, the account-switch file, the
   emit-dedupe state, the once-per-declaration hash) are only ever written by the Node implementation (`checks/ctxbudget`,
   `defaults/ctxbudget.toml`).
+- **Injection gate (token cuts).** After the Node hooks have run, the dispatcher passes on `limit-conserve-inject`,
+  `task-tracker`, the DevSwarm comms-override line and `swarm-guard`'s shared-tree advisory only when the model does not
+  already hold them (new, changed, or due again as a keepalive), per session and agent. State lives in the daemon, bounded
+  (`inject_gate.max_sessions`, `inject_gate.max_slots`) and shown in `status` and the `inject_gate_*` gauges; `ah-engine ctl gate` prints
+  per-session injected and kept-out bytes. Each cut is a setting (`context.injectGate*`); off, the Node output passes unchanged
+  (`dispatch/inject.rs`, `gate.rs`, `defaults/inject_gate.toml`).
 - **Session maintenance ports.** `version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`,
   `defect-nudge` and `progress-prune` are the six SessionStart hooks that keep a small cache or ledger under the home
   directory. They are not guards (D74: non-guard hooks fail open) and they share `checks/session`: an order-preserving JSON
@@ -273,7 +279,7 @@ memory layer `tier_items`, `tier_bytes`, `tier_hits`, `tier_misses`, `tier_evict
 and `bus_dropped`, for the writer `db_commits` and `db_writes` (fewer commits than writes means group commit is sharing syncs), and for
 the spool `spool_applied` and `spool_quarantined`, for the scheduler `schedule_runs` and `schedule_missed`, and for
 size control `db_hot_bytes`, `db_hot_wal_bytes`,
-`db_archive_bytes`, `db_archive_wal_bytes`, `maintain_runs` and `maintain_last_ms`, and for the Jev lane `jev_calls`, `jev_verdicts`, `jev_cost_micro_usd`, `jev_timeouts`, `jev_cooldowns`, `jev_changed` and `jev_latency_us`.
+`db_archive_bytes`, `db_archive_wal_bytes`, `maintain_runs` and `maintain_last_ms`, and for the Jev lane `jev_calls`, `jev_verdicts`, `jev_cost_micro_usd`, `jev_timeouts`, `jev_cooldowns`, `jev_changed` and `jev_latency_us`, and for the injection gate `inject_emitted`, `inject_emitted_bytes`, `inject_keepalive`, `inject_suppressed`, `inject_suppressed_bytes` (by cut) and the memory gauges `inject_gate_sessions`, `inject_gate_slots`, `inject_gate_bytes` and `inject_gate_evictions`.
 
 **Impact events** record what the engine did to a call: `block`, `advisory`, `warning`, `context` and `fallback`. They
 are stored in `hot.db` with exact per-combination totals, so counts survive a restart; the project is only ever a short
@@ -582,6 +588,7 @@ Files:
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
+| `inject_gate.toml` | the injection gate: its settings (`context.injectGate*`), what it recognises in the hooks' output, its state bounds and wire words |
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
 | `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
 | `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |

@@ -228,6 +228,13 @@ impl Shared {
         let check = kv(args, "check");
         let mut gauges =
             vec![("rss_kb", limits::rss_kb() as f64), ("queue_depth", self.depth.load(SeqCst) as f64), ("uptime_s", self.started.elapsed().as_secs() as f64)];
+        let gs = crate::gate::global().stats();
+        gauges.extend([
+            ("inject_gate_sessions", gs.sessions as f64),
+            ("inject_gate_slots", gs.slots as f64),
+            ("inject_gate_bytes", gs.bytes as f64),
+            ("inject_gate_evictions", gs.evictions as f64),
+        ]);
         if let Some(db) = &self.db {
             let t = lk(&db.mem.kv);
             gauges.extend([
@@ -321,6 +328,7 @@ impl Shared {
         let cfg = self.cfg();
         let b = health::breaker_remaining();
         let c = health::crashloop_remaining();
+        let gs = crate::gate::global().stats();
         serde_json::json!({
             "running": true,
             "pid": std::process::id(),
@@ -351,6 +359,8 @@ impl Shared {
             "mem_limit": self.rlimit,
             "storage": self.storage,
             "rss_cap_kb": cfg.rss_cap_kb,
+            "inject_gate": {"sessions": gs.sessions, "slots": gs.slots, "bytes": gs.bytes, "evictions": gs.evictions,
+                "max_sessions": defaults::num("inject_gate.max_sessions"), "max_slots": defaults::num("inject_gate.max_slots")},
             "config": {"version": cfg.version, "pending_restart": cfg.pending_restart, "last_error": cfg.last_error},
         })
         .to_string()
@@ -383,6 +393,11 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
+    if let Some(v) = head.strip_prefix("G ") {
+        let reply = inject_gate(body, sh);
+        let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
+        return (reply, if newer { After::Exit } else { After::Continue });
+    }
     if let Some(cwd) = head.strip_prefix("P ") {
         return (project_op(cwd.trim(), body, sh), After::Continue);
     }
@@ -392,6 +407,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("metrics") => (Reply::Ok(sh.metrics_json(args).to_string()), After::Continue),
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
+        Some("gate") => (Reply::Ok(crate::gate::global().report().to_string()), After::Continue),
         Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
         Some("reload") => {
@@ -612,6 +628,47 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     let answers = crate::dispatch::native::evaluate(&meta, &p, &observe);
     sh.telemetry.observe_hook(&meta.event, started.elapsed().as_micros() as u64);
     Reply::Ok(crate::dispatch::native::encode(&answers))
+}
+
+/// `G <version>\n{"s":session,"a":agent,"r":reset,"q":[question, ...]}`: the injection gate (`crate::gate`). Each question is
+/// answered with one word (pass on, drop, or keepalive), and what was passed on and kept out is counted by cut. A request that
+/// cannot be read is answered ERR, which the client reads as "pass everything on".
+fn inject_gate(body: &str, sh: &Shared) -> Reply {
+    use crate::gate::Decision;
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        sh.stats.errors.fetch_add(1, SeqCst);
+        return Reply::Err(defaults::text("msg.reply_malformed").into());
+    };
+    let sid = v.get("s").and_then(|x| x.as_str()).unwrap_or("");
+    let agent = v.get("a").and_then(|x| x.as_str()).unwrap_or("");
+    let gate = crate::gate::global();
+    if v.get("r").and_then(|x| x.as_bool()).unwrap_or(false) {
+        gate.reset(sid);
+    }
+    let qs: Option<Vec<crate::gate::Query>> = v.get("q").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(crate::dispatch::inject::read_query).collect());
+    let Some(qs) = qs else { return Reply::Err(defaults::text("msg.reply_malformed").into()) };
+    let decisions: Vec<Decision> = qs.iter().map(|q| gate.decide(sid, agent, q)).collect();
+    sh.telemetry.with_metrics(|m| {
+        for (q, d) in qs.iter().zip(&decisions) {
+            let l = [("cut", q.cut.as_str())];
+            match d {
+                Decision::Emit => {
+                    m.inc("inject_emitted", &l);
+                    m.add("inject_emitted_bytes", &l, q.len as u64);
+                }
+                Decision::Keepalive => {
+                    m.inc("inject_keepalive", &l);
+                    m.add("inject_emitted_bytes", &l, q.keep_len as u64);
+                    m.add("inject_suppressed_bytes", &l, q.len.saturating_sub(q.keep_len) as u64);
+                }
+                Decision::Suppress => {
+                    m.inc("inject_suppressed", &l);
+                    m.add("inject_suppressed_bytes", &l, q.len as u64);
+                }
+            }
+        }
+    });
+    Reply::Ok(crate::dispatch::inject::encode_reply(&decisions))
 }
 
 /// `P <cwd>\n[W <write-id>\n]<verb> <args>`: the partition is derived here from `cwd`; the request cannot name a key. The
