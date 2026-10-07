@@ -58,7 +58,7 @@ fn a_new_task_text_is_asked_once_and_leaves_one_request_marker() {
     assert!(st["requested"][&hash].as_f64().is_some_and(|t| t > 1.0e12), "{st}");
     assert_eq!(st["sessions"], json!({}));
     let rows = log_rows(&h);
-    assert_eq!((rows.len(), rows[0]["id"].clone(), rows[0]["trust"].clone()), (1, json!("dispatchTier"), json!("advisory")));
+    assert_eq!((rows.len(), rows[0]["id"].clone(), rows[0]["mode"].clone()), (1, json!("dispatchTier"), json!("on")));
     // the same text again, inside the window: no second ask
     assert_eq!(decide(&create("Fix the parser"), &e), Verdict::Allow);
     assert!(jev.drain(std::time::Duration::from_secs(5)));
