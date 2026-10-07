@@ -120,23 +120,58 @@ impl PartialEq for Test {
 /// Glob matching: `*` any run of characters except `/`, `**` any run including `/`, `?` one character except `/`; every
 /// other character matches itself.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
-    fn go(p: &[char], t: &[char]) -> bool {
-        match p.first() {
-            None => t.is_empty(),
-            Some('*') if p.get(1) == Some(&'*') => {
-                let rest = &p[2..];
-                (0..=t.len()).any(|i| go(rest, &t[i..]))
+    // Linear in pattern x text (a set of reachable text positions is carried across the pattern), where a backtracking
+    // matcher is exponential on `**/**/**/..` against a text that cannot match: a pattern comes from a settings file
+    // and must never be able to stall a hook.
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let n = t.len();
+    // reach[i]: the pattern consumed so far can end with the text consumed up to position i.
+    let mut reach = vec![false; n + 1];
+    reach[0] = true;
+    let mut next = vec![false; n + 1];
+    let mut k = 0;
+    while k < p.len() {
+        next.iter_mut().for_each(|x| *x = false);
+        match p[k] {
+            '*' if p.get(k + 1) == Some(&'*') => {
+                // Any run of characters: every position at or after the first reachable one.
+                if let Some(first) = reach.iter().position(|&x| x) {
+                    next[first..].iter_mut().for_each(|x| *x = true);
+                }
+                k += 2;
             }
-            Some('*') => {
-                let rest = &p[1..];
-                (0..=t.len()).take_while(|&i| i == 0 || t[i - 1] != '/').any(|i| go(rest, &t[i..]))
+            '*' => {
+                // Any run that does not cross a `/`: carry a reachable position forward until a `/` is consumed.
+                let mut live = false;
+                for i in 0..=n {
+                    live = live || reach[i];
+                    next[i] = live;
+                    if i < n && t[i] == '/' {
+                        live = false;
+                    }
+                }
+                k += 1;
             }
-            Some('?') => t.first().is_some_and(|c| *c != '/') && go(&p[1..], &t[1..]),
-            Some(c) => t.first() == Some(c) && go(&p[1..], &t[1..]),
+            '?' => {
+                for i in 0..n {
+                    next[i + 1] = reach[i] && t[i] != '/';
+                }
+                k += 1;
+            }
+            c => {
+                for i in 0..n {
+                    next[i + 1] = reach[i] && t[i] == c;
+                }
+                k += 1;
+            }
+        }
+        std::mem::swap(&mut reach, &mut next);
+        if !reach.iter().any(|&x| x) {
+            return false;
         }
     }
-    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
-    go(&p, &t)
+    reach[n]
 }
 
 /// A transcript-index fact a `transcript` condition may read.

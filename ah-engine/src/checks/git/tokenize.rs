@@ -636,7 +636,8 @@ pub fn in_arithmetic_at(cmd: &[char], pos: usize, st: &mut ArithScan) -> bool {
     if st.j > pos {
         *st = ArithScan::new();
     }
-    while st.j < pos {
+    // `pos` past the end scans to the end: JavaScript reads `undefined` there and moves on, it never throws.
+    while st.j < pos && st.j < n {
         if let Some(sf) = st.skip_from
             && st.j >= sf
         {

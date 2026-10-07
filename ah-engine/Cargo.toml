@@ -38,6 +38,8 @@ diag = ["dep:dhat"]
 # Node stays the byte-parity oracle; a snapshot only pins the Rust wording. Review changes with `cargo insta review`
 # (cargo install --locked cargo-insta) or accept with INSTA_UPDATE=always.
 insta = "1.49.0"
+# Correctness tooling (tests/prop_*.rs): never linked into the release binary.
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [profile.release]
 opt-level = "z"
