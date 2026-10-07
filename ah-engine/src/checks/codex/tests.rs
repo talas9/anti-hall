@@ -1,4 +1,4 @@
-//! Unit tests of the Codex checks. The full Node-vs-engine comparison is `parity/run-b78.js`; these pin the behavior a
+//! Unit tests of the Codex checks. The full Node-vs-engine comparison is `tests/node_parity` (the Rust Node-parity test); these pin the behavior a
 //! regression would break. Every test works in its own temporary home and never touches the real one.
 use super::quota::{self, Unsure};
 use super::{availability, detect, nudge};

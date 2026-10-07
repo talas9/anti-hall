@@ -61,7 +61,7 @@ fn run_without_the_payload_defers_for_bash() {
     assert!(CoordinatorWorkGuard.run(&s(Some("Read")), &Value::Null).is_none());
 }
 
-// ---- the PostToolUse pass (post.rs). The full Node-vs-engine comparison is `parity/run-coordinator-post.js`.
+// ---- the PostToolUse pass (post.rs). The full Node-vs-engine comparison is `tests/node_parity` (the Rust Node-parity test).
 mod post_pass {
     use super::super::post::{decide_post, provably_not_work};
     use super::*;

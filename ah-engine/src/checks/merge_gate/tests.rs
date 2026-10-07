@@ -1,4 +1,4 @@
-//! Unit tests of the merge-gate check. The full Node-vs-engine comparison is `parity/run-merge-gate.js`.
+//! Unit tests of the merge-gate check. The full Node-vs-engine comparison is `tests/node_parity` (the Rust Node-parity test).
 use super::*;
 use serde_json::json;
 use std::collections::HashMap;

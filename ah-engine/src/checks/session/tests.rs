@@ -1,4 +1,4 @@
-//! Unit tests of the session-maintenance checks. The full comparison with the Node hooks is `parity/run-session.js` (about
+//! Unit tests of the session-maintenance checks. The full comparison with the Node hooks is `tests/node_parity` (the Rust Node-parity test) (about
 //! 2,400 scenarios, exit code, stdout and state files); these tests pin the pieces and the ordering rules that matter most.
 //! Every test runs against its own temporary home directory, never the real one.
 use super::drift::{self, Drift};

@@ -2,7 +2,7 @@
 //! of the event replaced by a small shell command through `--fallback-map`, so a built-in answer and a Node answer are told
 //! apart by what they print. Each test has its own HOME and state directory and reaps any daemon it starts.
 //!
-//! What this adds to the unit tests and `parity/run-session.js` (which call the checks directly): the daemon path (a
+//! What this adds to the unit tests and `tests/node_parity` (the Rust Node-parity test) (which call the checks directly): the daemon path (a
 //! request carries the CLIENT's HOME and switches, never the daemon's, D76), the in-process path, and the deferral
 //! contract (a deferred hook runs as Node and the files are exactly as they were).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests

@@ -37,7 +37,8 @@ never a submodule (D69).
 | `src/defaults.rs`, `src/defaults/load.rs`, `src/bootstrap.rs`, `build.rs` | the run-time loader of the plugin's `engine/defaults/*.toml` (validation, atomic snapshot, cache for the thin client, change watching) and the few names needed to find them; `build.rs` only collects the keys the source reads. The defaults themselves live in `plugins/anti-hall/engine/`, never in this crate |
 | `src/docs.rs` | the reference generator |
 | `tests/` | end-to-end and reliability tests against a real daemon, the no-hardcoding test, the defaults-keys test, the reference drift test, the agent CLI and residency tests |
-| `parity/` | the parity harnesses against the Node guards, and `transcript-facts.js` / `run-transcript.js` for the transcript index |
+| `tests/node_parity/` | one test binary of Node-vs-engine parity lanes (the ported hook checks: each runs the real Node hook as the reference); corpora are Rust, or JSON data under `session_corpus/` and `ctxbudget_corpus/` |
+| `parity/` | the parity harnesses of the older lanes (git, command, Jev, dispatcher, merge-side-pick, scan-throttle, ship-it, compact declaration), and `transcript-facts.js` / `run-transcript.js` for the transcript index |
 | `examples/transcript_facts.rs` | prints the facts the index derives from a transcript (the parity harness runs it) |
 | `DECISIONS.md`, `REFERENCE.md` | the decision record and the generated reference |
 
@@ -178,7 +179,7 @@ Deliberate differences from the Node guard:
   The Node turn gate passes `tg-` as the family name of its pruning sweep, which looks for `tg--*.json` and so never
   removes a file; that is kept so the files on disk stay the same (a finding for the Node side).
 - `verify-first-subagent`, `verify-first-full` and `fable-availability` (context checks, never block; `checks/verify_first`,
-  `checks/fable_availability`; parity harness `parity/run-verify-first.js`): the protocol texts live in
+  `checks/fable_availability`; parity test `tests/node_parity/verify_first.rs`): the protocol texts live in
   `defaults/verify_first.toml`, copied from `hooks/verify-first-core.js`, and the harness fails when either side drifts. The
   compact text names `<plugin root>/PROTOCOL.md`; the root is derived like Node does (the real location of
   `hooks/verify-first-core.js`), and a root the engine cannot prove defers. A payload the engine's JSON reader rejects
@@ -189,7 +190,7 @@ Deliberate differences from the Node guard:
   joins the forwarded request environment for the child-workspace note.
 - Session maintenance (`version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge`,
   `progress-prune`; SessionStart, never blocking): output bytes and state-file writes equal the Node hooks'
-  (`parity/run-session.js`). The engine never starts a background process, so a stale or absent version cache (Node starts a
+  (`tests/node_parity/session.rs`). The engine never starts a background process, so a stale or absent version cache (Node starts a
   detached probe) answers a deferral, and so does anything it cannot read exactly like JavaScript (a payload with no absolute
   `cwd`, a date that depends on the time zone, a `.git` file in an unusual shape, JSON with a lone surrogate escape, a git
   probe slower than `session.gitignore_probe_ms`). A deferral always comes before the first write, so Node then sees the
@@ -232,8 +233,8 @@ Deliberate differences from the Node guard:
   `guards.compactAdviceGuard`) resolve environment, then `settings.json`, then the plugin option, then the default, with
   JavaScript's number and string coercions. The home directory is `HOME` (Node's `os.homedir()`); a request without an
   absolute one defers. A reading that needs a state write (the inferred one-million-token window), a tag that is a hash of
-  the transcript path, and a relative `transcript_path` defer to Node. Parity: `node parity/run-ctxbudget.js --engine
-  target/release/ah-engine --hooks ../plugins/anti-hall/hooks`.
+  the transcript path, and a relative `transcript_path` defer to Node. Parity: `cargo test --release --test
+  node_parity ctxbudget` (`tests/node_parity/ctxbudget.rs`).
 - `swarm-guard` (PreToolUse on Agent and Task): the memory gate (macOS `vm_stat`, Linux `MemAvailable`, never the OS "free"
   figure) and the spawn-rate gate are exact, including the spawn log, the trip log and the lock file, whose format and
   takeover protocol are the Node ones (`checks/guardkit/nodelock.rs`), so the Node hook and the engine can run against the
@@ -256,7 +257,7 @@ Deliberate differences from the Node guard:
   `codex-nudge`): see DECISIONS 1.75. They answer exactly as Node does or defer; they read the request's environment
   (`HOME`, `PATH`, `TZ`, `TMPDIR`) and write the same files (`~/.anti-hall/codex-availability.json`,
   `codex-nudge-state-<session>.json`, `handover-resume-state-<session>.json`, `<repo>/.anti-hall/handovers/.../PRECOMPACT-<n>.md`).
-  Parity: `node parity/run-b78.js --hook <name> --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks`.
+  Parity: `cargo test --release --test node_parity -- codex_ handover_resume precompact` (`tests/node_parity/b78*.rs`).
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 ## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)
@@ -301,10 +302,11 @@ Deliberate differences from the Node hooks:
 `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` port the task hooks of batches 9 and 10. Their
 tables, patterns, limits and texts are in `defaults/task_guards.toml`. Every check either answers exactly what the Node
 hook would (exit code, stdout and the files it writes) or defers, so the engine is never a weaker guard than Node (D74).
-`parity/hookfx.js` is the harness: it runs the real Node hook with an isolated `HOME` and the engine check on identical
-worlds and compares exit code, stdout, stderr and the whole file tree; `run-task-lifecycle-log.js`, `run-dispatch-tier.js`,
-`run-task-guard.js` and `run-tasklist-guard.js` hold the corpora (hand-written shapes, fuzz, and real transcripts for the two
-Stop gates).
+`tests/node_parity/fx.rs` is the harness: it runs the real Node hook with an isolated `HOME` and the engine check on identical
+worlds and compares exit code, stdout, stderr and the whole file tree; `fx_lifecycle.rs`, `fx_dispatch_tier.rs`,
+`fx_task_guard.rs` and `fx_tasklist_guard.rs` hold the corpora (hand-written shapes, fuzz, and, with
+`AH_PARITY_REAL_TRANSCRIPTS=1`, real transcripts for the two Stop gates). Run them with
+`cargo test --release --test node_parity -- dispatch_tier task_lifecycle task_guard tasklist_guard`.
 
 - `task-lifecycle-log` (TaskCreated, TaskCompleted): the ledger line and the index entry, exactly. The project root is the
   nearest `.git` ancestor of the real path (`taskkit/root.rs`, from the file system alone, no git process). A relative

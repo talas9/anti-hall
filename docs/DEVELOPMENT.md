@@ -193,13 +193,15 @@ cd ah-engine/parity
 node run-merge-side-pick.js --engine ../target/release/ah-engine --hooks ../../plugins/anti-hall/hooks --cmds <recorded-commands.jsonl>
 ```
 
-The six session-maintenance ports (`version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge`, `progress-prune`) are scripts that read and write files, so their harness `run-session.js` needs no recorded commands: every scenario is a fixture directory (home, project, plugin root). It runs the real Node hook (with a spy that records and suppresses any process it would start), then the engine, on the same paths and fresh copies of the fixture, and compares exit code, stdout and every file under home and project. It takes a few minutes and needs `git` and `node` on the `PATH`.
+The ported hook checks (the six session-maintenance hooks, the context-budget, handover and Codex, task, guard and verify-first checks) are compared with their Node hooks by one Rust test binary, `ah-engine/tests/node_parity/`. Every scenario runs the real Node hook (the reference) and the engine on the same inputs, in isolated homes, and compares exit code, stdout, stderr and the files each side leaves behind; nothing but Node as the reference is needed, and a lane is skipped where Node or the plugin hooks are missing. The session-maintenance lane spawns the Node hook with a spy that records and suppresses any process it would start. It takes some minutes and needs `git`, `node` and, for the API guard, `python3` on the `PATH`.
 
-<!-- doc-check: skip (about 2,400 scenarios; run on demand) -->
+<!-- doc-check: skip (several thousand scenarios; run on demand) -->
 ```sh
-cd ah-engine/parity
-node run-session.js --engine ../target/release/ah-engine --repo ../.. --hook all
+cd ah-engine
+cargo test --release --test node_parity -- --nocapture
 ```
+
+Set `AH_PARITY_DUMP=<dir>` to write each lane's corpus and summary there, `AH_PARITY_ONLY=<text>` to run only the scenarios whose id contains it (the sandbox lanes), and `AH_PARITY_REAL_CMDS`, `AH_PARITY_REAL_EDITS` or `AH_PARITY_REAL_TRANSCRIPTS=1` to add real commands, edits or transcripts from local data to the lanes that took them (never committed).
 
 ## Run the plugin against a local engine
 

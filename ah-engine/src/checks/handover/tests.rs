@@ -1,4 +1,4 @@
-//! Unit tests of the handover checks. The full Node-vs-engine comparison is `parity/run-b78.js`.
+//! Unit tests of the handover checks. The full Node-vs-engine comparison is `tests/node_parity` (the Rust Node-parity test).
 use super::find::{self, Unsure};
 use super::{precompact, resume, transcript};
 use crate::checks::Verdict;

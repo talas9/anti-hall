@@ -1,5 +1,5 @@
 //! Unit tests of the failure-root-cause-nudge check. The full Node-vs-engine comparison is
-//! `parity/run-failure-nudge.js`; these pin the behaviours that run without a Node install.
+//! `tests/node_parity` (the Rust Node-parity test); these pin the behaviours that run without a Node install.
 use super::expected::{exit_code_of, is_expected_nonzero, is_harness_refusal, split_top};
 use super::*;
 use serde_json::json;

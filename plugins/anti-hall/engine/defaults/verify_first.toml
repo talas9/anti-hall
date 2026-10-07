@@ -1,6 +1,6 @@
 # ah-engine shipped defaults for the verify-first context checks ported from Node (verify-first-subagent, verify-first-full)
 # and the fable-availability SessionStart check. The protocol texts are copied byte for byte from
-# hooks/verify-first-core.js; the parity harness (parity/run-verify-first.js) compares the engine's output with the Node hooks
+# hooks/verify-first-core.js; the parity harness (`tests/node_parity` (the Rust Node-parity test)) compares the engine's output with the Node hooks
 # for every setting combination, so a drift in either side fails there. Format: see the header of engine.toml.
 
 # ---- protocol texts (hooks/verify-first-core.js) --------------------------------------------------------------

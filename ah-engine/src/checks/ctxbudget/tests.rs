@@ -1,6 +1,6 @@
 //! Unit tests of the context-budget checks. They pin which cases the engine answers itself and which it defers, so a
 //! change that makes a check defer less (a missed state write) or more (a lost offload) fails here. The Node-versus-
-//! engine comparison over a large corpus is `parity/run-ctxbudget.js`; the expected values of the JavaScript coercions
+//! engine comparison over a large corpus is `tests/node_parity` (the Rust Node-parity test); the expected values of the JavaScript coercions
 //! below were computed with Node (`Number()`, `parseInt(x, 10)`, `new Date(x).getTime()`).
 use super::limit::iso_ms;
 use super::pct::{Pct, context_pct};

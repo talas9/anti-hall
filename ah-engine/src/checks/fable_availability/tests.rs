@@ -1,4 +1,4 @@
-//! Unit tests of the fable-availability check. The full Node-vs-engine comparison is `parity/run-verify-first.js`.
+//! Unit tests of the fable-availability check. The full Node-vs-engine comparison is `tests/node_parity` (the Rust Node-parity test).
 use super::*;
 use serde_json::json;
 use std::collections::HashMap;
