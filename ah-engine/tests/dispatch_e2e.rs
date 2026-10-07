@@ -1,6 +1,7 @@
 //! D58 end to end: the real binary as `ah-engine hook --event PreToolUse`, with the Node hooks replaced by small shell
 //! commands through `--fallback-map`, so each property is checked without Node. Every test uses its own HOME and state
 //! directory and reaps any daemon it starts.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -18,7 +19,7 @@ struct Env {
 impl Env {
     fn new(name: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("ahd-e2e-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         Env { dir }
     }
@@ -122,6 +123,7 @@ impl Env {
             c.env("CLAUDE_PLUGIN_ROOT", &self.dir);
         }
         c.envs(extra.iter().copied());
+        // SAFETY: the closure runs between fork and exec and calls only `signal` and `setrlimit`, both async-signal-safe; it allocates nothing.
         unsafe {
             c.pre_exec(move || {
                 if libc::signal(libc::SIGXFSZ, libc::SIG_IGN) == libc::SIG_ERR {
@@ -174,14 +176,16 @@ impl Env {
     fn stop(&self) {
         let st = self.state();
         common::reap(&st, || {
-            let _ = Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("stop").env("AH_ENGINE_DIR", &st).env("HOME", self.dir.join("home")).output();
+            ah_engine::discard::harmless(
+                Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("stop").env("AH_ENGINE_DIR", &st).env("HOME", self.dir.join("home")).output(),
+            );
         });
     }
 }
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 
@@ -891,6 +895,7 @@ fn wait_for_pid(path: &Path, within: Duration) {
 
 fn kill_hook_group(pid_file: &Path) {
     if let Ok(pid) = std::fs::read_to_string(pid_file).map(|s| s.trim().parse::<i32>().unwrap()) {
+        // SAFETY: `kill` and `killpg` take plain integers and have no memory-safety preconditions; a dead pid just fails with ESRCH.
         unsafe {
             libc::killpg(pid, libc::SIGKILL);
             libc::kill(pid, libc::SIGKILL);
@@ -922,11 +927,12 @@ fn killed_dispatcher_leaves_no_spool_file(signal: i32, tag: &str) {
     let mut stdin = child.stdin.take().unwrap();
     let writer = std::thread::spawn(move || stdin.write_all(payload.as_bytes()));
     wait_for_pid(&hook_pid, Duration::from_secs(10));
+    // SAFETY: `kill` and `killpg` take plain integers and have no memory-safety preconditions; a dead pid just fails with ESRCH.
     unsafe {
         libc::kill(child.id() as libc::pid_t, signal);
     }
-    let _ = child.wait();
-    let _ = writer.join();
+    ah_engine::discard::harmless(child.wait());
+    ah_engine::discard::harmless(writer.join());
     kill_hook_group(&hook_pid);
     assert!(e.dispatch_temp_files().is_empty(), "{tag}: temp payload files left behind: {:?}", e.dispatch_temp_names());
 }
@@ -1230,7 +1236,7 @@ fn one_agent_call_records_exactly_one_spawn_per_log() {
     })
     .to_string();
     for in_process in [true, false] {
-        let _ = std::fs::remove_dir_all(home.join(".anti-hall"));
+        ah_engine::discard::harmless(std::fs::remove_dir_all(home.join(".anti-hall")));
         let calls = 3;
         for _ in 0..calls {
             let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));

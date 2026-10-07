@@ -1,6 +1,7 @@
 //! D50: the generated reference is committed and cannot drift. `REFERENCE.md` must equal what
 //! `ah-engine docs --format md` prints; when a command, setting, metric, impact kind, check or error code changes,
 //! regenerate it (`cargo run -q -- docs --format md > REFERENCE.md`) in the same commit.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 #[test]
 fn committed_reference_matches_the_generated_one() {

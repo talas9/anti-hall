@@ -6,7 +6,7 @@ use std::collections::HashMap;
 /// A fake plugin root holding `hooks/verify-first-core.js`, and an empty home.
 fn dirs(tag: &str) -> (String, String) {
     let d = std::env::temp_dir().join(format!("ah-vf-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join("plugin/hooks")).unwrap();
     std::fs::write(d.join("plugin/hooks/verify-first-core.js"), "").unwrap();
     std::fs::create_dir_all(d.join("home/.anti-hall")).unwrap();

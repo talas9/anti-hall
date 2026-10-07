@@ -4,7 +4,7 @@ use serde_json::json;
 
 fn home(tag: &str) -> String {
     let d = std::env::temp_dir().join(format!("ah-eg-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall/bin")).unwrap();
     std::fs::write(d.join(".anti-hall/bin/launcher.sh"), "x").unwrap();
     // canonical, as the launcher check compares real paths (the temp dir is a symlink on macOS)

@@ -15,7 +15,7 @@ fn payload(event: &str, sid: &str, cmd: &str) -> Value {
 
 fn tmp_home(tag: &str) -> String {
     let d = std::env::temp_dir().join(format!("ah-msp-{tag}-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(d.join(".anti-hall"));
+    crate::discard::harmless(std::fs::create_dir_all(d.join(".anti-hall")));
     d.to_string_lossy().to_string()
 }
 

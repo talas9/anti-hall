@@ -80,10 +80,10 @@ pub fn markdown() -> String {
         crate::discard::harmless(writeln!(o, "| `{}` | {} |", c.name(), esc(c.summary()))); // keep: formatting into a String cannot fail
     }
 
-    let _ = writeln!(
+    crate::discard::harmless(writeln!(
         o,
         "\n## Settings\n\nDefaults ship with the plugin in `engine/defaults/*.toml` and are read at run time; a numeric setting with an environment variable can be overridden for one process.\n"
-    );
+    )); // keep: formatting into a String cannot fail
     let mut last = String::new();
     for e in all.iter().filter(|e| is_setting(e.key)) {
         let section = format!("{} / {}", e.file, e.key.split('.').next().unwrap_or(""));
@@ -114,8 +114,15 @@ pub fn markdown() -> String {
     crate::discard::harmless(writeln!(o, "\n## Metrics\n\n| Name | Kind | Unit | Labels | What it counts |\n|---|---|---|---|---|")); // keep: formatting into a String cannot fail
     for e in all.iter().filter(|e| e.key.starts_with("metric.")) {
         let labels = e.value.get("labels").map(|l| l.strings().join(", ")).unwrap_or_default();
-        let _ =
-            writeln!(o, "| `{}` | {} | {} | {} | {} |", &e.key["metric.".len()..], e.value.str_field("kind"), e.value.str_field("unit"), labels, esc(e.doc));
+        crate::discard::harmless(writeln!(
+            o,
+            "| `{}` | {} | {} | {} | {} |",
+            &e.key["metric.".len()..],
+            e.value.str_field("kind"),
+            e.value.str_field("unit"),
+            labels,
+            esc(e.doc)
+        )); // keep: formatting into a String cannot fail
     }
 
     crate::discard::harmless(writeln!(o, "\n## Impact kinds\n\n| Kind | What it records |\n|---|---|")); // keep: formatting into a String cannot fail
@@ -124,8 +131,10 @@ pub fn markdown() -> String {
         crate::discard::harmless(writeln!(o, "| `{k}` | {} |", esc(doc))); // keep: formatting into a String cannot fail
     }
 
-    let _ =
-        writeln!(o, "\n## Error codes\n\nEnvironment-class codes get a plain self-fix hint; any other code is a permanent failure that asks for an issue.\n");
+    crate::discard::harmless(writeln!(
+        o,
+        "\n## Error codes\n\nEnvironment-class codes get a plain self-fix hint; any other code is a permanent failure that asks for an issue.\n"
+    )); // keep: formatting into a String cannot fail
     crate::discard::harmless(writeln!(o, "| Codes | Class | Self-fix hint |\n|---|---|---|")); // keep: formatting into a String cannot fail
     for g in defaults::raw("health.error_codes").as_array().unwrap_or_default() {
         let codes = g.get("codes").map(|c| c.strings().iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ")).unwrap_or_default();

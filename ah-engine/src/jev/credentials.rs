@@ -172,7 +172,7 @@ mod tests {
 
     fn home() -> PathBuf {
         let d = std::env::temp_dir().join(format!("ah-jev-cred-{}-{:?}", std::process::id(), std::thread::current().id()));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(d.join(".config/vercel")).unwrap();
         std::fs::create_dir_all(d.join(".config/typesafe")).unwrap();
         d
@@ -234,9 +234,9 @@ mod tests {
         std::fs::write(&outside, "k").unwrap();
         assert!(read_key_file(&outside, &h).unwrap_err().contains("outside"));
         let link = h.join(".config/vercel/link");
-        let _ = std::os::unix::fs::symlink(&outside, &link);
+        crate::discard::harmless(std::os::unix::fs::symlink(&outside, &link)); // keep: best effort, fail-open
         assert!(read_key_file(&link, &h).unwrap_err().contains("outside"), "a symlink out of the allowed directories is refused");
         assert_eq!(read_key_file(&h.join(".config/vercel/missing"), &h), Ok(None));
-        let _ = std::fs::remove_file(&outside);
+        crate::discard::harmless(std::fs::remove_file(&outside)); // keep: cleanup that raced; an absent file is the goal state
     }
 }

@@ -351,7 +351,7 @@ fn an_opus_deny_then_a_haiku_retry_in_one_session_join_on_one_key() {
 #[test]
 fn jev_on_relaxes_row1_block_to_advisory() {
     let home = std::env::temp_dir().join(format!("ah-mr-jev-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    crate::discard::harmless(std::fs::remove_dir_all(&home));
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     let env = RequestEnv::from_pairs([
         ("HOME", home.to_str().unwrap()),
@@ -366,7 +366,7 @@ fn jev_on_relaxes_row1_block_to_advisory() {
     let Some(Verdict::Routed(inner, route)) = decide_inner_with_jev(&p, &env, Some(&lane)) else { panic!("expected routed verdict") };
     assert!(matches!(*inner, Verdict::Exact(ref x) if x.code == 0 && x.out.contains("Jev judged it non-mechanical")));
     assert!(!route[0].delegate);
-    let _ = std::fs::remove_dir_all(home);
+    crate::discard::harmless(std::fs::remove_dir_all(home));
 }
 
 #[test]

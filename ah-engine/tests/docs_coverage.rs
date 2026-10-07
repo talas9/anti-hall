@@ -2,6 +2,7 @@
 //! built. The generated reference (see `reference.rs`) lists every key; this page must at least name every command,
 //! check, metric, impact kind and defaults file, mark everything unbuilt as "planned (D-n)", mention only environment
 //! variables that exist, and link files that exist.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

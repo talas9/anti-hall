@@ -1,5 +1,6 @@
 //! Reliability e2e: real binary, real daemon, isolated HOME + engine dir under /tmp (short socket paths).
 //! The Node fallback is simulated with `/bin/sh <script>` via AH_ENGINE_NODE.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 mod common;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -25,7 +26,7 @@ struct Env {
 impl Env {
     fn new(tag: &str, extra: &[(&str, &str)]) -> Env {
         let dir = PathBuf::from("/tmp").join(format!("ah-r-{}-{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("rules.json"), RULES).unwrap();
         // the stand-in for the Node hook: reads stdin, prints a marker, exits 2 (a "block")
@@ -87,9 +88,10 @@ impl Drop for Env {
             && p > 1
             && common::alive(p)
         {
+            // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
             unsafe { libc::kill(p, libc::SIGKILL) };
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 
@@ -105,16 +107,17 @@ fn wait_for(mut f: impl FnMut() -> bool) -> bool {
 }
 
 fn alive(pid: u32) -> bool {
+    // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 fn raw_exchange(e: &Env, req: &[u8]) -> Vec<u8> {
     let mut s = std::os::unix::net::UnixStream::connect(e.eng().join("e.sock")).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let _ = s.write_all(req); // the daemon may reply and close before an oversize body is fully sent
-    let _ = s.shutdown(std::net::Shutdown::Write);
+    ah_engine::discard::harmless(s.write_all(req)); // the daemon may reply and close before an oversize body is fully sent
+    ah_engine::discard::harmless(s.shutdown(std::net::Shutdown::Write));
     let mut b = Vec::new();
-    let _ = s.read_to_end(&mut b);
+    ah_engine::discard::harmless(s.read_to_end(&mut b));
     b
 }
 
@@ -126,10 +129,10 @@ fn fake_server(e: &Env, reply: impl Fn() -> Option<Vec<u8>> + Send + 'static) {
         for s in l.incoming().flatten() {
             let mut s = s;
             let mut b = Vec::new();
-            let _ = s.read_to_end(&mut b);
+            ah_engine::discard::harmless(s.read_to_end(&mut b));
             match reply() {
                 Some(r) => {
-                    let _ = s.write_all(&r);
+                    ah_engine::discard::harmless(s.write_all(&r));
                 }
                 None => std::thread::sleep(Duration::from_secs(30)), // hang: never reply
             }
@@ -235,7 +238,7 @@ fn slow_sender_cannot_wedge_the_daemon() {
     let t = Instant::now();
     let mut b = Vec::new();
     s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-    let _ = s.read_to_end(&mut b);
+    ah_engine::discard::harmless(s.read_to_end(&mut b));
     // the 300 ms read deadline; if it were not enforced the read above would run to its own 3 s timeout
     assert!(t.elapsed() < Duration::from_millis(2900), "read deadline not enforced: {:?}", t.elapsed());
     assert!(ah_engine::frame::decode(&b).is_ok(), "slow sender still gets a well-formed ERR frame");
@@ -264,7 +267,7 @@ fn stuck_worker_triggers_exit() {
     let h = std::thread::spawn({
         let mut c = e.cmd();
         move || {
-            let _ = c.args(["ctl", "sleep 20000"]).output();
+            ah_engine::discard::harmless(c.args(["ctl", "sleep 20000"]).output());
         }
     });
     assert!(wait_for(|| !alive(old)), "stuck worker must end the daemon");
@@ -302,6 +305,7 @@ fn crash_loop_stops_respawning_records_reason_and_advises_once() {
     for i in 0..3 {
         e.warm();
         let pid = e.pid().unwrap_or_else(|| panic!("no daemon on round {i}"));
+        // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         assert!(wait_for(|| !alive(pid)));
     }
@@ -390,7 +394,7 @@ fn stale_lock_from_dead_pid_is_recovered_but_live_engine_pid_is_not_stolen() {
     let pid = e.pid().unwrap();
     assert_eq!(std::fs::read_to_string(e.eng().join("e.sock.lock")).unwrap().trim(), pid.to_string());
     // a second daemon started by hand must not steal from the live one
-    let _ = e.cmd().arg("serve").status();
+    ah_engine::discard::harmless(e.cmd().arg("serve").status());
     assert_eq!(e.pid().unwrap(), pid);
 }
 
@@ -413,7 +417,7 @@ fn queue_overflow_answers_busy_and_clients_fall_back() {
         .map(|_| {
             let mut c = e.cmd();
             std::thread::spawn(move || {
-                let _ = c.args(["ctl", "sleep 8000"]).output();
+                ah_engine::discard::harmless(c.args(["ctl", "sleep 8000"]).output());
             })
         })
         .collect();
@@ -500,6 +504,7 @@ fn memory_limit_and_nice_are_applied_and_reported() {
     let pid = e.pid().unwrap();
     let nice = Command::new("ps").args(["-o", "nice=", "-p", &pid.to_string()]).output().unwrap();
     // an unprivileged process can only raise its niceness, so a test runner already niced above 7 keeps its own value
+    // SAFETY: `getpriority` takes plain integers and has no memory-safety preconditions.
     let inherited = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
     assert_eq!(String::from_utf8_lossy(&nice.stdout).trim(), inherited.max(7).to_string());
 }
@@ -528,8 +533,8 @@ fn long_path_socket_dir_is_private_and_owner_checked() {
     common::reap(Path::new(&long), || {
         let _ = e.ctl("stop");
     });
-    let _ = std::fs::remove_dir_all(format!("/tmp/ah-r-long-{}", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(format!("/tmp/ah-r-long-{}", std::process::id())));
+    ah_engine::discard::harmless(std::fs::remove_file(&sock));
 }
 
 fn engine_socket_for(dir: &str) -> PathBuf {

@@ -615,6 +615,7 @@ fn subprocess(argv: &[String], timeout: Duration) -> Outcome {
             }
             Ok(None) if t.elapsed() < timeout => std::thread::sleep(Duration::from_millis(defaults::num("client.fallback_poll_ms"))),
             _ => {
+                // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a pid that already exited just fails with ESRCH.
                 unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
                 crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
                 return Outcome::Timeout;

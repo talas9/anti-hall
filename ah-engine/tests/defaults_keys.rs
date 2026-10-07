@@ -1,6 +1,7 @@
 //! Every key the source reads from the shipped defaults exists, and every shipped setting is read by the source
 //! (D17). Together with `no_hardcoded_tunables` this keeps code and `defaults/*.toml` in lock step: a typo cannot
 //! panic in production, and a setting nobody reads cannot linger and mislead.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::collections::BTreeSet;
 use std::fs;

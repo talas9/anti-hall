@@ -2,6 +2,7 @@
 //! checks. Every case runs the engine check; where it answers (an allow) the real Node hook must print nothing, exit 0 and
 //! leave the isolated home exactly as it was. Where the engine defers, Node decides, so there is nothing to compare: the
 //! guard direction is that an engine allow is never a stop Node would have held (D74).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -131,7 +132,7 @@ fn run(mut cmd: Command, input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
         assert!(Instant::now() < deadline, "child exceeded 20 seconds: {cmd:?}");
         std::thread::sleep(Duration::from_millis(5));
     };
-    let _ = writer.join().unwrap();
+    ah_engine::discard::harmless(writer.join().unwrap());
     (status.code().unwrap_or(-1), ro.join().unwrap(), re.join().unwrap())
 }
 
@@ -199,7 +200,7 @@ fn compare(repo: &Path, hook: &str, check: &str, variants: &[Variant], payloads:
             if out.trim() == "AHFALLBACK" {
                 assert_eq!(code, 0, "{label}: a deferral exits 0");
                 t.deferred += 1;
-                let _ = std::fs::remove_dir_all(&home);
+                ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
                 continue;
             }
             assert!(code == 0 && out.is_empty() && err.is_empty(), "{label}: the engine answered with something other than allow: {code} {out:?} {err:?}");
@@ -227,7 +228,7 @@ fn compare(repo: &Path, hook: &str, check: &str, variants: &[Variant], payloads:
                 String::from_utf8_lossy(&nerr)
             );
             assert_eq!(before, snapshot(&home), "{label}: Node changed state the engine allow skipped");
-            let _ = std::fs::remove_dir_all(&home);
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
         }
     }
     t

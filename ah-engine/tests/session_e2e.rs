@@ -5,6 +5,7 @@
 //! What this adds to the unit tests and `parity/run-session.js` (which call the checks directly): the daemon path (a
 //! request carries the CLIENT's HOME and switches, never the daemon's, D76), the in-process path, and the deferral
 //! contract (a deferred hook runs as Node and the files are exactly as they were).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -19,7 +20,7 @@ struct Env {
 impl Env {
     fn new(name: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("ahd-sess-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("root/.claude-plugin")).unwrap();
         std::fs::write(dir.join("root/.claude-plugin/plugin.json"), r#"{"version":"1.2.3"}"#).unwrap();
@@ -80,14 +81,16 @@ impl Env {
     fn stop(&self) {
         let st = self.state();
         common::reap(&st, || {
-            let _ = Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("stop").env("AH_ENGINE_DIR", &st).env("HOME", self.dir.join("home")).output();
+            ah_engine::discard::harmless(
+                Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("stop").env("AH_ENGINE_DIR", &st).env("HOME", self.dir.join("home")).output(),
+            );
         });
     }
 }
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

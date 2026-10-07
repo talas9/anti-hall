@@ -1,6 +1,7 @@
 //! D33: the scheduler, against a real daemon. A job runs on time and a restart never runs it twice; a missed window
 //! catches up once (or is skipped), never once per window; a hung job is killed at its timeout and the next run still
 //! happens; and the `schedule` command lists, runs and shows history, with or without a daemon.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -18,7 +19,7 @@ struct Env {
 impl Env {
     fn new(tag: &str, jobs: &str) -> Env {
         let dir = PathBuf::from("/tmp").join(format!("ah-sch-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("eng")).unwrap();
         std::fs::write(dir.join("rules.json"), r#"{"version":1,"rules":[]}"#).unwrap();
@@ -75,7 +76,7 @@ impl Env {
 impl Drop for Env {
     fn drop(&mut self) {
         self.stop();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

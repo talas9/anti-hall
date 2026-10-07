@@ -78,7 +78,7 @@ mod post_pass {
 
     fn fx(tag: &str, extra: &[(&str, &str)]) -> Fx {
         let d = std::env::temp_dir().join(format!("ah-cwp-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d));
         let home = d.join("home");
         let root = d.join("plugin");
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();

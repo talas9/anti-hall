@@ -1,6 +1,7 @@
 //! X3 parity (D61): for fixture repositories, every cached fact equals what a fresh `git` invocation returns, before
 //! and after each mutation, while the TTL is long enough that only the signature can invalidate. Every test uses its
 //! own HOME (an empty global config) and never touches the real one.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod transcript_support;
 use ah_engine::gitcache::{GitCache, GitCacheError, GitLimits};

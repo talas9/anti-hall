@@ -1,4 +1,5 @@
 //! Crate-creep gate: the normal dependency graph stays within the budget in `deps-budget.toml`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::collections::BTreeSet;
 use std::process::Command;
 

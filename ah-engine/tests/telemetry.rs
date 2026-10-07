@@ -3,6 +3,7 @@
 //!
 //! Every daemon a test starts is its own child process and is reaped before the test ends; every test uses its own HOME
 //! and engine directory, never the real ones.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -71,7 +72,7 @@ struct Run {
 impl Run {
     fn new(tag: &str) -> Run {
         let dir = PathBuf::from("/tmp").join(format!("ah-tel-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         Run { dir, daemon: None }
     }
@@ -133,8 +134,8 @@ impl Run {
     /// SIGKILL the daemon: nothing gets a chance to flush.
     fn kill9(&mut self) {
         if let Some(mut d) = self.daemon.take() {
-            let _ = d.kill();
-            let _ = d.wait();
+            ah_engine::discard::harmless(d.kill());
+            ah_engine::discard::harmless(d.wait());
         }
     }
 
@@ -149,7 +150,7 @@ impl Drop for Run {
         if let Some(mut d) = self.daemon.take() {
             common::stop_child(&self.sock(), &mut d);
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

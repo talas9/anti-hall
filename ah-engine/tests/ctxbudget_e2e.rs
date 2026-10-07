@@ -1,6 +1,7 @@
 //! The context-budget checks through the real dispatcher (`ah-engine hook --event <Event>`), with the Node hooks replaced
 //! by shell commands in a `--fallback-map`: a quiet turn is answered by the engine without running any of them, and every
 //! case the checks defer reaches the Node stand-in.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ struct Env {
 impl Env {
     fn new(name: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("ahd-ctxb-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         Env { dir }
     }

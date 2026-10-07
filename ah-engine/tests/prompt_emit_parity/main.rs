@@ -7,6 +7,7 @@
 //! hook client does, so a deferral that had already written state would show up as a divergence.
 //!
 //! The scenario lists are in `verify_first.rs`, `idle.rs` and `reset.rs`; `harness.rs` runs them.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 mod harness;
 mod idle;
 mod reset;

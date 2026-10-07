@@ -7,6 +7,7 @@
 //! cannot be reproduced exactly (the reason is part of the scenario's name); a deferral is never counted as parity.
 //!
 //! Node runs with `ANTIHALL_INGEST_DRY_RUN=1` and an isolated HOME, so nothing touches the real store.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use ah_engine::checks::agent_scan::iso_utc;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -262,7 +263,7 @@ fn run(mut cmd: Command, input: &str) -> Run {
         }
         std::thread::sleep(Duration::from_millis(2));
     };
-    let _ = w.join();
+    ah_engine::discard::harmless(w.join());
     Run {
         code: status.code().unwrap_or(-1),
         out: String::from_utf8_lossy(&ro.join().unwrap()).to_string(),
@@ -444,7 +445,7 @@ fn check_one(root: &Path, idx: usize, s: &Sc, mismatches: &mut Vec<String>) -> O
 fn run_all(tag: &str, list: Vec<Sc>, min_kinds: &[(&str, usize)]) {
     assert!(list.len() >= 30, "{tag}: the corpus must hold at least 30 payloads, has {}", list.len());
     let root = std::env::temp_dir().join(format!("ah-agent-controls-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     std::fs::create_dir_all(&root).unwrap();
     let mut mismatches = Vec::new();
     let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
@@ -461,7 +462,7 @@ fn run_all(tag: &str, list: Vec<Sc>, min_kinds: &[(&str, usize)]) {
             same += 1
         }
     }
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     eprintln!("{tag}: {} scenarios, engine answered {same}, deferred {deferred}, node outcomes {kinds:?}", list.len());
     assert!(mismatches.is_empty(), "{tag}: {} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
     for (k, n) in min_kinds {
@@ -1132,7 +1133,7 @@ fn silent_agent_nudge_matches_node() {
 #[test]
 fn silent_agent_nudge_state_with_real_snapshots() {
     let root = std::env::temp_dir().join(format!("ah-agent-controls-snap-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     std::fs::create_dir_all(&root).unwrap();
     let mut mismatches = Vec::new();
     for (i, (name, resumed)) in [("snapshot-already-nudged-rewrites-state", false), ("resumed-snapshot-already-nudged", true)].iter().enumerate() {
@@ -1186,7 +1187,7 @@ fn silent_agent_nudge_state_with_real_snapshots() {
         }
         assert!(nr.out.is_empty(), "{name}: the scenario must be a quiet one for Node, got {:?}", nr.out);
     }
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
@@ -1293,7 +1294,7 @@ fn the_scan_matches_node_on_random_transcripts() {
     let cases: usize = std::env::var("AH_FUZZ_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let seed: u64 = std::env::var("AH_FUZZ_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
     let root = std::env::temp_dir().join(format!("ah-agent-controls-fuzz-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     std::fs::create_dir_all(&root).unwrap();
     let mut r = Rng(seed);
     let mut mismatches = Vec::new();
@@ -1331,7 +1332,7 @@ fn the_scan_matches_node_on_random_transcripts() {
             *kinds.entry(format!("{}:{}{}", s.hook, o.node_kind, if o.deferred { ":deferred" } else { "" })).or_default() += 1;
         }
     }
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     eprintln!("fuzz: {cases} transcripts, outcomes {kinds:?}");
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
     assert!(

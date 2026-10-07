@@ -1,5 +1,6 @@
 //! End-to-end for the built-in `check = "git"`: real binary, real daemon, isolated HOME + engine dir.
 //! A block must reach the host the way the Node guard does it: exit code 2 with the reason on stderr.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 mod common;
 use std::io::Write;
 use std::path::PathBuf;
@@ -16,7 +17,7 @@ struct Env {
 impl Env {
     fn new(tag: &str) -> Env {
         let dir = PathBuf::from("/tmp").join(format!("ah-gc-{}-{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         let rules = r#"{"version":1,"rules":[{"id":"git-guard","events":["PreToolUse"],"tools":["Bash"],"check":"git","action":"deny","options":{"plugin_root":"/plugin"}}]}"#;
         std::fs::write(dir.join("rules.json"), rules).unwrap();
@@ -64,9 +65,9 @@ impl Env {
 impl Drop for Env {
     fn drop(&mut self) {
         common::reap(&self.dir.join("eng"), || {
-            let _ = self.cmd().args(["ctl", "stop"]).output();
+            ah_engine::discard::harmless(self.cmd().args(["ctl", "stop"]).output());
         });
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

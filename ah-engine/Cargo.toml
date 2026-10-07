@@ -46,5 +46,24 @@ strip = true
 codegen-units = 1
 # panic stays "unwind": the client wraps everything in catch_unwind so a bug fails open (exit 0), never SIGABRT.
 
+# Lint gate (clippy `-D warnings`, wired into test.sh). Rule ids are those of the Rust standards audit (rust-standards.md).
+#   E2   no unwrap/expect in non-test paths: a violated invariant is a Result or a stated `expect` with a one-line allow.
+#   E3   never silently discard a fallible result: use `crate::discard` (harmless / logged) instead of `let _ =`.
+#   U1   every `unsafe` block carries a `// SAFETY:` comment, and an unsafe fn body still needs explicit unsafe blocks.
+#   LI1  dbg!/todo!/unimplemented! never ship.
+# Tests are exempt from E2 through clippy.toml (`allow-*-in-tests`). A targeted `#[allow(clippy::x)]` needs a one-line reason.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny" # U1
+missing_docs = "deny"           # every public item is documented (was a crate attribute)
+
+[lints.clippy]
+unwrap_used = "deny"                 # E2
+expect_used = "deny"                 # E2
+let_underscore_must_use = "deny"     # E3
+undocumented_unsafe_blocks = "deny"  # U1
+dbg_macro = "deny"                   # LI1
+todo = "deny"                        # LI1
+unimplemented = "deny"               # LI1
+
 # Self-contained: this directory is its own Cargo workspace (never a submodule, D69), so it can move to its own repo unchanged.
 [workspace]

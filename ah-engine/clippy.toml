@@ -1,0 +1,6 @@
+# Clippy configuration for ah-engine; the lint levels themselves are in Cargo.toml `[lints]`.
+# Tests may unwrap/expect/dbg: a panic there is the failure report.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+allow-panic-in-tests = true

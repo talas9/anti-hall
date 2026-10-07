@@ -5,6 +5,7 @@
 //! holds afterwards. A deferral (`AHFALLBACK`) means Node decides, so for a deferral the case only asserts that the engine
 //! was expected to defer and that it changed nothing on disk. The engine never writes, so for an answered case the home
 //! after the engine's run must equal the home after Node's run: Node must not have written either.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -94,7 +95,7 @@ fn plugin() -> PathBuf {
 
 fn temp_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("ah-dsrole-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    let _ = std::fs::remove_dir_all(&d);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d.canonicalize().unwrap()
 }
@@ -105,7 +106,7 @@ fn run(mut cmd: Command, input: &str) -> (i32, String, String) {
     let mut stdin = child.stdin.take().unwrap();
     let input = input.as_bytes().to_vec();
     let w = std::thread::spawn(move || {
-        let _ = stdin.write_all(&input);
+        ah_engine::discard::harmless(stdin.write_all(&input));
     });
     let (mut o, mut e) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let ro = std::thread::spawn(move || {

@@ -106,7 +106,7 @@ fn run(mut cmd: Command, input: &str) -> (i32, String, String) {
     let mut stdin = child.stdin.take().unwrap();
     let input = input.as_bytes().to_vec();
     let w = std::thread::spawn(move || {
-        let _ = stdin.write_all(&input);
+        ah_engine::discard::harmless(stdin.write_all(&input));
     });
     let mut so = child.stdout.take().unwrap();
     let mut se = child.stderr.take().unwrap();
@@ -193,7 +193,7 @@ fn normalise(s: &str) -> String {
 }
 
 fn copy_tree(from: &Path, to: &Path) {
-    let _ = std::fs::remove_dir_all(to);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(to));
     fn cp(from: &Path, to: &Path) {
         std::fs::create_dir_all(to).unwrap();
         for e in std::fs::read_dir(from).unwrap().flatten() {
@@ -223,7 +223,7 @@ pub struct Tally {
 fn mkhome(tag: &str, case: &Case) -> PathBuf {
     let n = ID.fetch_add(1, Ordering::Relaxed);
     let d = std::env::temp_dir().join(format!("ah-reply-{tag}-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
     for (rel, body) in &case.files {
         let f = d.join(rel);
@@ -302,9 +302,9 @@ pub fn run_case(hook: &str, check: &str, case: &Case, t: &mut Tally) {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&nh);
-    let _ = std::fs::remove_dir_all(&eh);
-    let _ = std::fs::remove_dir_all(&tdir);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&nh));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&eh));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&tdir));
 }
 
 /// Run every case and fail with the first differences.

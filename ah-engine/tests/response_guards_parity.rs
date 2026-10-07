@@ -5,6 +5,7 @@
 //!
 //! The one difference that is on purpose and not compared: with Jev off, the Node hooks that ask a Jev shadow question
 //! still append a `mode: "off"` row to `logs/jev-assist.ndjson`; the engine never writes it (D35).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #[path = "common/replies.rs"]
 mod replies;
 

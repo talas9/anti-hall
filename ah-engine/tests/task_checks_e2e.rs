@@ -1,6 +1,7 @@
 //! The task checks through the real dispatcher (`ah-engine hook --event <Event>`, in-process): a check that answers must
 //! make the Node hook unnecessary, so each Node hook is replaced by a command that fails loudly and the test proves the
 //! answer came from the engine and that its file effects are on disk.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ struct World {
 impl World {
     fn new(name: &str) -> World {
         let dir = std::env::temp_dir().join(format!("ah-task-e2e-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("proj/.git")).unwrap();
         World { dir }
@@ -51,7 +52,7 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

@@ -4,6 +4,7 @@
 //! Set `AH_ENGINE_NODE_HOOKS` to another checkout's `plugins/anti-hall/hooks` to compare against it; the default is
 //! this checkout's. A checkout that predates `inference-check.js` has no `lastUserPrompt` to compare, and that one
 //! fact is then left out of the comparison (the others are still compared).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod transcript_support;
 use ah_engine::transcript::{Index, Limits};

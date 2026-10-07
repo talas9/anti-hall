@@ -6,7 +6,7 @@ use std::collections::HashMap;
 /// A directory holding fake `taskpolicy` and `nice` files, so the tool probe succeeds on either OS.
 fn tools_dir(tag: &str) -> String {
     let d = std::env::temp_dir().join(format!("ah-scan-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join("home/.anti-hall")).unwrap();
     std::fs::create_dir_all(d.join("bin")).unwrap();
     for t in ["taskpolicy", "nice"] {

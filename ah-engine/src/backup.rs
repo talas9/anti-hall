@@ -126,6 +126,7 @@ fn quiesce(dir: &Path) -> Result<std::fs::File, DbError> {
     let f = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(&lock_path).map_err(|e| DbError::Sql(e.to_string()))?;
     let t = Instant::now();
     while t.elapsed() < defaults::millis("backup.stop_wait_ms") {
+        // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(f);
         }

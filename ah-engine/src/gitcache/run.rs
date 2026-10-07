@@ -59,6 +59,7 @@ impl<'a> Runner<'a> {
                 Ok(None) if start.elapsed() < self.lim.timeout => std::thread::sleep(self.lim.poll),
                 Ok(None) => {
                     // the whole group: a git that spawned a helper must not leave it running (D9)
+                    // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a pid that already exited just fails with ESRCH.
                     unsafe { libc::kill(-pid, libc::SIGKILL) };
                     crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
                     crate::discard::harmless(reader.join()); // keep: reaping or draining a child or thread that already ended

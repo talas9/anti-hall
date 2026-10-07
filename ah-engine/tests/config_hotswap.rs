@@ -2,6 +2,7 @@
 //!
 //! One real daemon, an isolated HOME and state directory (never the user's real `~/.anti-hall`). Environment variables
 //! are process-global, so this file holds a single test that walks the scenarios in order.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 mod common;
 use ah_engine::client;
 use serde_json::{Value, json};
@@ -45,9 +46,10 @@ fn cli(root: &Path, args: &[&str]) -> (i32, String) {
 }
 
 #[test]
+#[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation; the single-thread audit is the FIXME beside the call
 fn layered_config_hot_swaps_without_dropping_requests() {
     let root: PathBuf = PathBuf::from("/tmp").join(format!("ah-cfg-hot-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     let eng = root.join("eng");
     std::fs::create_dir_all(root.join("home").join(".anti-hall")).unwrap();
     std::fs::create_dir_all(&eng).unwrap();
@@ -173,5 +175,5 @@ fn layered_config_hot_swaps_without_dropping_requests() {
     assert_eq!(cli(&root, &["config", "rollback"]).0, 64, "rollback is planned (D18)");
 
     drop(reap_guard);
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
 }

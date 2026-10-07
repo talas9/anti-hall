@@ -723,7 +723,7 @@ mod tests {
     fn a_transcript_condition_reads_the_index_and_flips_with_its_facts() {
         // two agents a compaction re-injected as live; one then reports a terminal status: one stays unresolved
         let dir = std::env::temp_dir().join(format!("ah-when-transcript-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         let ts = "2026-10-04T10:00:00.000Z";
@@ -755,7 +755,7 @@ mod tests {
         assert_eq!(at("records", json!({"at_least": 4})), Some(true));
         assert_eq!(at("last_tool", json!({"exists": true})), Some(true));
         assert_eq!(at("compact_boundaries", json!({"at_least": 1})), Some(false));
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]

@@ -9,6 +9,9 @@ cd "$(dirname "$0")" || exit 1
 tree="$PWD/target"
 daemons() { ps -Ao pid,command | grep -F "$tree" | grep -F "ah-engine serve" | grep -v grep | awk '{print $1}' | sort; }
 before="$(daemons)"
+# Lint gate: clippy with the `[lints]` table of Cargo.toml (unwrap/expect, discarded results, unsafe comments, dbg/todo) and
+# every warning an error. --release shares its build products with the test run below.
+cargo clippy --release --all-targets -- -D warnings || exit 1
 if cargo nextest --version >/dev/null 2>&1; then
   cargo nextest run --release "$@"
   rc=$?

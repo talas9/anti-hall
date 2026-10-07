@@ -199,6 +199,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation; the single-thread audit is the FIXME beside each call
     fn the_process_environment_is_never_read() {
         let name = "GIT_DISCOVERY_ACROSS_FILESYSTEM";
         assert!(defaults::list("gitcache.bypass_env").contains(&name));

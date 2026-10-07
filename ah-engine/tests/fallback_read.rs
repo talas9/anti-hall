@@ -4,6 +4,7 @@
 //! The Node hook is simulated with `/bin/sh <script>` via AH_ENGINE_NODE, and no daemon ever runs (AH_ENGINE_NOSPAWN), so
 //! every call goes to the fallback. A script that "writes late" hands its stdout to a background process that lives on
 //! after the script itself exits, the way a Node hook that spawns a helper does.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -16,7 +17,7 @@ struct Env {
 impl Env {
     fn new(tag: &str, script: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("ah-fb-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("fb.sh"), script).unwrap();
         Env { dir }
@@ -64,7 +65,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

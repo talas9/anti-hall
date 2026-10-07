@@ -462,6 +462,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation; the single-thread audit is the FIXME beside each call
     fn numeric_clamps_hold_and_env_overrides_apply() {
         assert_eq!(num("daemon.workers"), 4);
         // FIXME: Audit that the environment access only happens in single-threaded code.

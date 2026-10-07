@@ -18,6 +18,8 @@
 //!  8. short message text: two or more words and 12 or more characters, not a format string, pattern or SQL.
 //!  9. a file or directory name (`.anti-hall`, `x.json`, ...).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

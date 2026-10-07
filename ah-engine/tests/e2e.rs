@@ -1,4 +1,5 @@
 //! End-to-end: real binary, real daemon, isolated HOME + engine dir (never the user's real ~/.anti-hall).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 mod common;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,7 @@ struct Env {
 impl Env {
     fn new(tag: &str) -> Env {
         let dir = PathBuf::from("/tmp").join(format!("ah-e2e-{}-{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("rules.json"), RULES).unwrap();
         Env { dir }
@@ -51,7 +52,7 @@ impl Drop for Env {
         common::reap(&self.dir.join("eng"), || {
             let _ = self.ctl("stop");
         });
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

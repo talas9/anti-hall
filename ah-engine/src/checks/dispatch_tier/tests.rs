@@ -18,7 +18,7 @@ const ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV
 
 fn home(tag: &str) -> std::path::PathBuf {
     let h = std::env::temp_dir().join(format!("ah-dtier-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&h);
+    crate::discard::harmless(std::fs::remove_dir_all(&h));
     std::fs::create_dir_all(&h).unwrap();
     h
 }

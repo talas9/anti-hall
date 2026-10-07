@@ -330,6 +330,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation; the single-thread audit is the FIXME beside each call
     fn runnable_needs_every_named_variable() {
         unsafe { std::env::set_var("AH_DISPATCH_T_SET", "/x") };
         unsafe { std::env::remove_var("AH_DISPATCH_T_UNSET") };

@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn the_shared_breaker_reads_and_writes_the_node_file_shape() {
         let d = std::env::temp_dir().join(format!("ah-brk-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         let p = d.join("cache/jev-breaker.json");
         let clock = Arc::new(ManualClock::default());
         clock.advance(1_000_000);

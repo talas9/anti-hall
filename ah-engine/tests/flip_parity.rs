@@ -21,6 +21,7 @@
 //!
 //! One documented, owner-ratified divergence is expected and counted apart: invalid UTF-8 on a guard event that has table
 //! entries fails closed in the engine (D74) where Node, which decodes lossily, would let it through.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use ah_engine::dispatch::table;
 use ah_engine::{defaults, hooksgen};
@@ -134,17 +135,17 @@ fn run_shell(command: &str, input: &[u8], env: &[(String, String)], cwd: &Path, 
     let mut stdin = ch.stdin.take().unwrap();
     let data = input.to_vec();
     let w = std::thread::spawn(move || {
-        let _ = stdin.write_all(&data);
+        ah_engine::discard::harmless(stdin.write_all(&data));
     });
     let (mut so, mut se) = (ch.stdout.take().unwrap(), ch.stderr.take().unwrap());
     let ro = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = so.read_to_end(&mut b);
+        ah_engine::discard::harmless(so.read_to_end(&mut b));
         b
     });
     let re = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = se.read_to_end(&mut b);
+        ah_engine::discard::harmless(se.read_to_end(&mut b));
         b
     });
     let deadline = Instant::now() + Duration::from_secs(timeout_s.max(1));
@@ -152,14 +153,15 @@ fn run_shell(command: &str, input: &[u8], env: &[(String, String)], cwd: &Path, 
         match ch.try_wait().unwrap() {
             Some(s) => break Some(s),
             None if Instant::now() > deadline => {
+                // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
-                let _ = ch.wait();
+                ah_engine::discard::harmless(ch.wait());
                 break None;
             }
             None => std::thread::sleep(Duration::from_millis(2)),
         }
     };
-    let _ = w.join();
+    ah_engine::discard::harmless(w.join());
     let (o, e) = (ro.join().unwrap(), re.join().unwrap());
     match status {
         Some(s) => Res { code: s.code().or(Some(-1)), out: String::from_utf8_lossy(&o).to_string(), err: String::from_utf8_lossy(&e).to_string() },
@@ -380,7 +382,7 @@ fn host_index(h: &str) -> usize {
 impl Rig {
     fn new(tag: &str) -> Rig {
         let root = std::env::temp_dir().join(format!("ahd-flip-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
         for d in ["repo", "specs", "h-old", "h-new", "state"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
@@ -439,7 +441,7 @@ impl Rig {
 
     fn write_specs(&self, n: usize, fakes: &[(String, Spec)]) {
         let d = self.specs.join(n.to_string());
-        let _ = std::fs::remove_dir_all(&d);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         for (id, s) in fakes {
             std::fs::write(d.join(format!("{id}.out")), &s.out).unwrap();
@@ -542,7 +544,7 @@ impl Rig {
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.root));
     }
 }
 

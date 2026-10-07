@@ -7,6 +7,7 @@
 //! - when the engine defers (`AHFALLBACK`), the scenario is one the Node hook may act on; scenarios flagged `Act` must
 //!   additionally make Node produce output or write state (so a check that always deferred would not pass);
 //! - scenarios flagged `Silent` must be answered by the engine (a check that always deferred would fail).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -75,7 +76,7 @@ fn run(mut cmd: Command, input: &str) -> (i32, Vec<u8>, Vec<u8>) {
         assert!(Instant::now() < deadline, "child exceeded 60 seconds: {cmd:?}");
         std::thread::sleep(Duration::from_millis(5));
     };
-    let _ = writer.join().unwrap();
+    ah_engine::discard::harmless(writer.join().unwrap());
     (status.code().unwrap_or(-1), so.join().unwrap(), se.join().unwrap())
 }
 
@@ -344,8 +345,8 @@ fn engine_and_node_agree_on_every_scenario() {
                     }
                 }
             }
-            let _ = std::fs::remove_dir_all(&home);
-            let _ = std::fs::remove_dir_all(&ehome);
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&ehome));
         }
     }
     eprintln!("rows {rows}: engine answered {native}, deferred {deferred} (Node acted in {acted} flagged rows)");

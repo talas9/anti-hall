@@ -2,6 +2,7 @@
 //! checksummed, fsync'd); a daemon that starts applies them all exactly once, in order per session, and a replay of
 //! the same records (as after a crash between applying and truncating) changes nothing. A running daemon also drains
 //! records that appear while it runs.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -21,7 +22,7 @@ struct Env {
 impl Env {
     fn new(tag: &str) -> Env {
         let dir = PathBuf::from("/tmp").join(format!("ah-sp-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("rules.json"), r#"{"version":1,"rules":[]}"#).unwrap();
         Env { dir, daemon: None }
@@ -69,7 +70,7 @@ impl Drop for Env {
         if let Some(mut c) = self.daemon.take() {
             common::stop_child(&self.sock(), &mut c);
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

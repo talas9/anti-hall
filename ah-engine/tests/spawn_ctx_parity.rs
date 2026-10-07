@@ -6,6 +6,7 @@
 //! files the run left behind. A case marked `defer` is one the engine must hand to Node (`AHFALLBACK`); for it the engine
 //! must also have left the state exactly as it was seeded, so Node then sees what it would have seen alone.
 //! Timestamps within a minute of the run are normalized, since the two runs are not simultaneous.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -107,7 +108,7 @@ fn now_ms() -> u128 {
 
 fn temp_home(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("ah-spawnctx-{tag}-{}-{}", std::process::id(), HOME_ID.fetch_add(1, Ordering::Relaxed)));
-    let _ = std::fs::remove_dir_all(&d);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d.canonicalize().unwrap()
 }
@@ -224,18 +225,18 @@ fn run(mut cmd: Command, input: &[u8]) -> Out {
     let mut stdin = child.stdin.take().unwrap();
     let data = input.to_vec();
     let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&data);
+        ah_engine::discard::harmless(stdin.write_all(&data));
     });
     let mut so = child.stdout.take().unwrap();
     let mut se = child.stderr.take().unwrap();
     let ro = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = so.read_to_end(&mut b);
+        ah_engine::discard::harmless(so.read_to_end(&mut b));
         b
     });
     let re = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = se.read_to_end(&mut b);
+        ah_engine::discard::harmless(se.read_to_end(&mut b));
         b
     });
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -246,7 +247,7 @@ fn run(mut cmd: Command, input: &[u8]) -> Out {
         assert!(Instant::now() < deadline, "child exceeded 30 seconds: {cmd:?}");
         std::thread::sleep(Duration::from_millis(3));
     };
-    let _ = writer.join();
+    ah_engine::discard::harmless(writer.join());
     (status.code().unwrap_or(-1), ro.join().unwrap(), re.join().unwrap())
 }
 

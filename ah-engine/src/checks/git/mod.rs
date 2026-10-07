@@ -128,38 +128,26 @@ impl Ctx {
     ///
     /// Mirrors `git-guard.js` `heredocDataEnabled`.
     pub fn heredoc_data_enabled(&mut self) -> bool {
-        if self.hd_on.is_none() {
-            self.hd_on = Some(self.settings.enabled(&tables().setting_heredoc_data));
-        }
-        self.hd_on.unwrap()
+        *self.hd_on.get_or_insert_with(|| self.settings.enabled(&tables().setting_heredoc_data))
     }
 
     /// Whether git alias resolution is on (read once per request).
     ///
     /// Mirrors `lib/git-alias-scan.js` `aliasEnabled`.
     pub fn alias_enabled(&mut self) -> bool {
-        if self.alias_on.is_none() {
-            self.alias_on = Some(self.settings.enabled(&tables().setting_alias_resolve));
-        }
-        self.alias_on.unwrap()
+        *self.alias_on.get_or_insert_with(|| self.settings.enabled(&tables().setting_alias_resolve))
     }
 
     /// Whether the reused-commit-message check is on (read once per request).
     ///
     /// Mirrors `lib/git-alias-scan.js` `reuseEnabled`.
     pub fn reuse_enabled(&mut self) -> bool {
-        if self.reuse_on.is_none() {
-            self.reuse_on = Some(self.settings.enabled(&tables().setting_reused_message));
-        }
-        self.reuse_on.unwrap()
+        *self.reuse_on.get_or_insert_with(|| self.settings.enabled(&tables().setting_reused_message))
     }
 
     /// Whether the handover-commit guard is on (read once per request).
     pub fn handover_guard_enabled(&mut self) -> bool {
-        if self.handover_guard_on.is_none() {
-            self.handover_guard_on = Some(self.settings.enabled(&tables().setting_handover_guard));
-        }
-        self.handover_guard_on.unwrap()
+        *self.handover_guard_on.get_or_insert_with(|| self.settings.enabled(&tables().setting_handover_guard))
     }
 
     /// lib/skip-cmd.js skipCommand(key): `node '<plugin>/scripts/devswarm.js' skip <key>`.

@@ -13,7 +13,7 @@ fn settings(home: &str, on: bool) -> Settings {
 
 fn dir(tag: &str) -> String {
     let d = std::env::temp_dir().join(format!("ah-mg-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
     d.to_string_lossy().to_string()
 }

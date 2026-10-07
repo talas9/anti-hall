@@ -42,7 +42,7 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result
     })();
     if result.is_err() {
         // Best effort: the original error is the one worth returning; a leftover temp file is swept later.
-        let _ = std::fs::remove_file(&tmp);
+        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
     }
     result
 }
@@ -53,7 +53,7 @@ mod tests {
 
     fn dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ah-atomic-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -72,7 +72,7 @@ mod tests {
         write(&f, b"two".as_slice()).unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "two");
         assert_eq!(entries(&d), vec!["state.json"]);
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -85,14 +85,14 @@ mod tests {
         assert!(write(&target, "new").is_err());
         assert!(target.join("keep").exists(), "target untouched");
         assert_eq!(entries(&d), vec!["t"], "no temp file left behind");
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
     fn missing_parent_is_an_error_not_a_panic() {
         let d = dir("noparent");
         assert!(write(d.join("nope/x.json"), "a").is_err());
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "{\"v\":1}");
         write(&f, "{\"v\":2}").unwrap(); // a later write is unaffected by the stray file
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "{\"v\":2}");
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -137,6 +137,6 @@ mod tests {
             });
         });
         assert_eq!(entries(&d), vec!["state.json"]);
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 }

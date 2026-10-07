@@ -42,7 +42,7 @@ impl Home {
     fn new(tag: &str, files: &[(&str, String)]) -> Home {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let d = std::env::temp_dir().join(format!("ah-ctxb-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
         for (rel, body) in files {
             let f = d.join(rel);
@@ -69,7 +69,7 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        crate::discard::harmless(std::fs::remove_dir_all(&self.0));
     }
 }
 

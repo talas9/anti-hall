@@ -1,6 +1,7 @@
 //! The agent-facing commands and residency, against a real daemon (D7, D50-D52): `--json` on every command,
 //! metrics and impact fed by real hook calls, a read-only status summary, planned commands that say so, the idle-exit
 //! config key (default disabled), and no daemon surviving a test.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -22,7 +23,7 @@ struct Env {
 impl Env {
     fn new(tag: &str, extra: &[(&str, &str)]) -> Env {
         let dir = PathBuf::from("/tmp").join(format!("ah-cli-{}-{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("rules.json"), RULES).unwrap();
         Env { dir, extra: extra.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() }
@@ -87,7 +88,7 @@ impl Drop for Env {
         common::reap(&self.dir.join("eng"), || {
             let _ = self.run(&["stop"]);
         });
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 
@@ -266,6 +267,7 @@ fn metrics_impact_and_rollups_survive_a_restart_and_a_kill() {
     let seen = counter_total(&e.json(&["metrics", "--json"]), "check_calls");
     std::thread::sleep(Duration::from_millis(400)); // several snapshot periods
     let pid = common::marker_pid(&e.dir.join("eng")).expect("run marker");
+    // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
     unsafe { libc::kill(pid, libc::SIGKILL) };
     let t = Instant::now();
     while t.elapsed() < Duration::from_secs(3) && common::alive(pid) {

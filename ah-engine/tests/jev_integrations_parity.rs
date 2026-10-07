@@ -9,6 +9,7 @@
 //! Compared: the request line (method and path), every header except the HTTP client's own identity headers (see
 //! `IDENTITY`) with the Authorization value masked, the body byte for byte, and every log row with its clock fields
 //! (`ts`, `ms`) removed. Requests are sorted by body, since several detached asks race to the server.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #[path = "common/replies.rs"]
 mod replies;
 
@@ -86,7 +87,7 @@ impl Mock {
                 s2.lock().unwrap().push(req);
                 let body = format!(r#"{{"answers":{{"decision":{{"noul":{noul}}}}},"usage":{{"input_tokens":1000,"output_tokens":5}}}}"#);
                 let out = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                let _ = c.write_all(out.as_bytes());
+                ah_engine::discard::harmless(c.write_all(out.as_bytes()));
             }
         });
         Mock { port, seen }
@@ -103,7 +104,7 @@ fn run(mut cmd: Command, input: &str) -> (i32, String, String) {
     let mut stdin = child.stdin.take().unwrap();
     let input = input.as_bytes().to_vec();
     let w = std::thread::spawn(move || {
-        let _ = stdin.write_all(&input);
+        ah_engine::discard::harmless(stdin.write_all(&input));
     });
     let out = child.wait_with_output().unwrap();
     w.join().unwrap();
@@ -146,7 +147,7 @@ struct Side {
 fn run_side(sc: &Scenario, engine: bool) -> Side {
     let n = N.fetch_add(1, Ordering::Relaxed);
     let home = std::env::temp_dir().join(format!("ah-jevpar-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
     let cwd = home.join("proj");
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
@@ -207,7 +208,7 @@ fn run_side(sc: &Scenario, engine: bool) -> Side {
             text.lines().map(|l| serde_json::from_str::<Value>(l).map_or(l.to_string(), |v| normalise_row(&v, &[]).to_string())).collect::<Vec<_>>().join("\n")
         })
         .collect();
-    let _ = std::fs::remove_dir_all(&home);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
     Side { out, requests, rows, files }
 }
 

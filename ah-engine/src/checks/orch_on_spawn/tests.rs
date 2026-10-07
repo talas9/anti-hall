@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 fn home(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("ah-ons-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d
 }

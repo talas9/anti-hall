@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 fn home(tag: &str) -> String {
     let d = std::env::temp_dir().join(format!("ah-fa-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d.to_string_lossy().to_string()
 }
@@ -103,7 +103,7 @@ fn lone_surrogate_escapes_are_read_and_unparsable_files_defer() {
     assert_eq!(fix_lone_surrogates(r#""\ud83d\ude00 \\ud800 \ud800x \udfff""#), r#""\ud83d\ude00 \\ud800 \uFFFDx \uFFFD""#);
     for bad in ["{", "", "\u{feff}{}", "{\"a\":1,}", "nul"] {
         cfg(bad);
-        let _ = std::fs::remove_file(format!("{h}/.anti-hall/fable-availability.json"));
+        crate::discard::harmless(std::fs::remove_file(format!("{h}/.anti-hall/fable-availability.json")));
         assert_eq!(decide(&st(&h, &[])), Some(Verdict::Defer), "{bad:?}");
         assert!(!std::path::Path::new(&format!("{h}/.anti-hall/fable-availability.json")).exists(), "a deferral leaves the writing to Node");
     }

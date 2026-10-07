@@ -51,7 +51,7 @@ fn the_log_keeps_recent_lines_of_every_session_and_adds_one() {
 
 fn scratch(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("ah-phase-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -69,5 +69,5 @@ fn record_starts_a_missing_log_and_leaves_an_unreadable_one_alone() {
     record(&h, 1_700_000_000_001.0, "b");
     assert!(log.is_dir(), "the unreadable log was left alone");
     assert!(crate::discard::captured().iter().any(|(c, _)| c == "phase_log_read"));
-    let _ = std::fs::remove_dir_all(&home);
+    crate::discard::harmless(std::fs::remove_dir_all(&home));
 }

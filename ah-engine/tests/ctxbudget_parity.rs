@@ -2,6 +2,7 @@
 //! scenarios and settings fuzz; the real-transcript windows are left to the manual run) against the real binary and the real
 //! Node hooks, and requires zero mismatches. Skipped where Node or the plugin's hooks are not available (the engine can
 //! be built outside the monorepo).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::path::PathBuf;
 use std::process::Command;

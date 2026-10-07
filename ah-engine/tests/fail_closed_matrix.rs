@@ -13,6 +13,7 @@
 //! Not injectable end to end, and covered by unit tests instead: a spawn failure from the shell itself (EAGAIN; a NUL in
 //! the command stands in for it here), a hook timeout (it needs the table's real timeout; `dispatch::node` tests it with
 //! a short one and the dispatcher logs it), and a panicking check (the panic is caught per check and defers to Node).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -336,7 +337,7 @@ struct Case {
 
 impl Drop for Case {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 
@@ -431,7 +432,7 @@ fn effective_daemon(case: &Case, row: &Row) -> Daemon {
 
 /// Run the real binary for one row with one hook pair; the fallback map replaces every Node hook of the event.
 fn run(case: &Case, row: &Row, first: &str, second: &str) -> Run {
-    let _ = std::fs::remove_dir_all(&case.dir);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
     run_kept(case, row, first, second)
 }
 
@@ -511,12 +512,12 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     let feeder = writer.map(|bytes| {
         let mut si = ch.stdin.take().unwrap();
         std::thread::spawn(move || {
-            let _ = si.write_all(&bytes); // the client may stop reading at its cap
+            ah_engine::discard::harmless(si.write_all(&bytes)); // the client may stop reading at its cap
         })
     });
     let o = ch.wait_with_output().unwrap();
     if let Some(f) = feeder {
-        let _ = f.join();
+        ah_engine::discard::harmless(f.join());
     }
     if let Some(f) = fake {
         f.stop();
@@ -542,9 +543,9 @@ impl FakeDaemon {
     /// Stop the listener thread (a connection wakes its accept) and remove the socket file.
     fn stop(self) {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        let _ = std::os::unix::net::UnixStream::connect(&self.sock);
-        let _ = self.thread.join();
-        let _ = std::fs::remove_file(&self.sock);
+        ah_engine::discard::harmless(std::os::unix::net::UnixStream::connect(&self.sock));
+        ah_engine::discard::harmless(self.thread.join());
+        ah_engine::discard::harmless(std::fs::remove_file(&self.sock));
     }
 }
 
@@ -570,7 +571,7 @@ fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
     };
     let sock = ah_engine::paths::socket_in(&case.dir.join("state"));
     std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
-    let _ = std::fs::remove_file(&sock);
+    ah_engine::discard::harmless(std::fs::remove_file(&sock));
     let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = stop.clone();
@@ -581,8 +582,8 @@ fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
                 return;
             }
             let mut b = Vec::new();
-            let _ = s.read_to_end(&mut b);
-            let _ = s.write_all(&reply);
+            ah_engine::discard::harmless(s.read_to_end(&mut b));
+            ah_engine::discard::harmless(s.write_all(&reply));
         }
     });
     Some(FakeDaemon { sock, stop, thread })
@@ -739,7 +740,7 @@ fn consecutive_stops_with_a_broken_install_end_in_an_exit_0_within_the_cap() {
             // checks down: every Stop entry has a built-in check by now, which would answer in the client without needing the install;
             // the count is about hooks that cannot run
             let broken = Row { name: "broken install", runnable: false, daemon: Daemon::Down, ..BASE };
-            let _ = std::fs::remove_dir_all(&case.dir);
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
             let codes: Vec<i32> = (0..cap + 2).map(|_| run_kept(&case, &broken, MARK, MARK).code).collect();
             let expect: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
             assert_eq!(codes, expect, "[{host}/{event}] consecutive Stops, broken install");
@@ -773,7 +774,7 @@ fn a_stop_hooks_genuine_block_survives_a_failed_sibling_at_the_cap() {
                     ("stop_hook_active", Stdin::StopActive, false),
                     ("both", Stdin::StopActive, true),
                 ] {
-                    let _ = std::fs::remove_dir_all(&case.dir);
+                    ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
                     if filled {
                         let counters = case.dir.join("state").join(dir_name);
                         std::fs::create_dir_all(&counters).unwrap();
@@ -807,7 +808,7 @@ fn the_unknown_session_counter_resets_wording_and_pruning() {
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
             let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-un-{host}-{event}-{}", std::process::id())) };
-            let _ = std::fs::remove_dir_all(&case.dir);
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
             let counters = case.dir.join("state").join(dir_name);
             std::fs::create_dir_all(&counters).unwrap();
             let old = counters.join("old-session");

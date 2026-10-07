@@ -41,7 +41,7 @@ impl Tmp {
 
 impl Drop for Tmp {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        crate::discard::harmless(std::fs::remove_dir_all(&self.0));
     }
 }
 

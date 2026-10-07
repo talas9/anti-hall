@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn a_settings_file_only_javascript_can_parse_defers_every_check() {
         let home = std::env::temp_dir().join(format!("ah-badsettings-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let h = home.to_string_lossy().to_string();
         let env = RequestEnv::from_pairs([("HOME", h.as_str())]);
@@ -364,7 +364,7 @@ mod tests {
         }
         std::fs::write(&jev, r#"{"enabled":true}"#).unwrap();
         assert_ne!(run(), Some(Verdict::Defer), "a readable jev.json is answered");
-        let _ = std::fs::remove_file(&jev);
+        crate::discard::harmless(std::fs::remove_file(&jev)); // keep: cleanup that raced; an absent file is the goal state
         // the host's settings file and the skip file are read by the same chain
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
         std::fs::create_dir_all(home.join(".claude")).unwrap();
@@ -373,7 +373,7 @@ mod tests {
         std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
         std::fs::write(home.join(".anti-hall/skip.json"), r#"{"ask-guard":1e999}"#).unwrap();
         assert_eq!(run(), Some(Verdict::Defer), "skip.json");
-        let _ = std::fs::remove_dir_all(&home);
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     /// Expected values computed with Node: `io.blockDecision(reason)` from `hooks/lib/guard-io.js`.

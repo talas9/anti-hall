@@ -11,7 +11,7 @@ pub(crate) struct Sandbox {
 impl Sandbox {
     pub(crate) fn new(tag: &str) -> Sandbox {
         let root = std::env::temp_dir().join(format!("ah-codex-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
         std::fs::create_dir_all(root.join("home/.anti-hall")).unwrap();
         Sandbox { root }
     }

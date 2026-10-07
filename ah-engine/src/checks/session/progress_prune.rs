@@ -155,6 +155,7 @@ fn check_ignore(root: &str, env: &RequestEnv) -> Probe {
             Ok(None) if start.elapsed() < limit => std::thread::sleep(poll),
             _ => {
                 // the whole group, so a git helper does not outlive the limit
+                // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a pid that already exited just fails with ESRCH.
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
                 crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
                 return Probe::Slow;
@@ -276,7 +277,7 @@ fn archive_and_delete(progress: &Path, history: &Path, pruned_at: &str) {
         std::fs::OpenOptions::new().append(true).create(true).open(history)?.write_all(entry.as_bytes())?;
         std::fs::remove_file(progress)
     })();
-    let _ = appended; // fail-safe: nothing is removed before the append succeeded
+    crate::discard::logged("progress_prune_archive", appended); // fail-safe: nothing is removed before the append succeeded
 }
 
 /// Names of a directory's entries that satisfy `keep`, in name order (as `readdirSync` lists them).

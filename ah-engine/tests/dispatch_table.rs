@@ -2,6 +2,7 @@
 //! table itself: every entry has a Node command to fall back to and names a real check (D74), entry ids are unique within an
 //! event, and the model-routing entries stay scoped. That the plugin's committed `hooks.json` files, registries and fallback
 //! lists equal what the table generates is `tests/hooks_files.rs`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use ah_engine::dispatch::table;
 

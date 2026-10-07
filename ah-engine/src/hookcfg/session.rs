@@ -157,11 +157,13 @@ mod tests {
     fn a_panic_while_holding_the_lock_does_not_disable_the_store() {
         let s = Arc::new(SessionStore::new());
         let s2 = s.clone();
-        let _ = std::thread::spawn(move || {
-            let _g = s2.slots.lock().unwrap();
-            panic!("worker died");
-        })
-        .join();
+        crate::discard::harmless(
+            std::thread::spawn(move || {
+                let _g = s2.slots.lock().unwrap();
+                panic!("worker died");
+            })
+            .join(),
+        ); // keep: best effort, fail-open
         assert!(s.test("s", &cond("a", SessionOp::First, None)), "a poisoned lock is recovered");
     }
 }

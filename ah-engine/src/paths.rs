@@ -78,6 +78,7 @@ pub fn rules_file() -> PathBuf {
 mod tests {
     use super::*;
     #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation; the single-thread audit is the FIXME beside each call
     fn long_dir_falls_back_under_limit_in_a_private_dir() {
         // single-threaded env mutation is fine: only this test touches AH_ENGINE_DIR in-process
         // FIXME: Audit that the environment access only happens in single-threaded code.

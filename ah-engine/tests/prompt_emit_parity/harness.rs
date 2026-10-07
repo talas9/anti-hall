@@ -170,18 +170,18 @@ fn run(mut cmd: Command, input: &[u8]) -> Out {
     let mut stdin = child.stdin.take().unwrap();
     let input = input.to_vec();
     let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&input);
+        ah_engine::discard::harmless(stdin.write_all(&input));
     });
     let mut so = child.stdout.take().unwrap();
     let mut se = child.stderr.take().unwrap();
     let ro = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = so.read_to_end(&mut b);
+        ah_engine::discard::harmless(so.read_to_end(&mut b));
         b
     });
     let re = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = se.read_to_end(&mut b);
+        ah_engine::discard::harmless(se.read_to_end(&mut b));
         b
     });
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -192,7 +192,7 @@ fn run(mut cmd: Command, input: &[u8]) -> Out {
         assert!(Instant::now() < deadline, "child exceeded 60 seconds: {cmd:?}");
         std::thread::sleep(Duration::from_millis(2));
     };
-    let _ = writer.join();
+    ah_engine::discard::harmless(writer.join());
     Out { code: status.code().unwrap_or(-1), out: ro.join().unwrap(), err: re.join().unwrap() }
 }
 
@@ -272,7 +272,7 @@ fn copy_tree(from: &Path, to: &Path) {
 
 fn reset_dir(dir: &Path, from: &Path, root: &Path) {
     assert!(dir.starts_with(root), "refusing to clear {} outside {}", dir.display(), root.display());
-    let _ = std::fs::remove_dir_all(dir);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(dir));
     copy_tree(from, dir);
 }
 
@@ -365,8 +365,8 @@ fn run_one(scn: &Scn, root: &Path, report: &Mutex<Report>) {
         let input = sub(&st.raw, &home);
         let s0 = dir.join("s0");
         let sn = dir.join("sn");
-        let _ = std::fs::remove_dir_all(&s0);
-        let _ = std::fs::remove_dir_all(&sn);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&s0));
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&sn));
         copy_tree(&home, &s0);
         let node = run_node(scn, &home, input.as_bytes());
         copy_tree(&home, &sn);
@@ -417,7 +417,7 @@ fn run_one(scn: &Scn, root: &Path, report: &Mutex<Report>) {
             break;
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
     let mut r = report.lock().unwrap();
     r.scenarios += 1;
     r.steps += steps;
@@ -442,7 +442,7 @@ pub fn run_all(name: &str, scenarios: Vec<Scn>) -> Report {
             });
         }
     });
-    let _ = std::fs::remove_dir_all(&root);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     report.into_inner().unwrap()
 }
 

@@ -117,7 +117,10 @@ mod tests {
         assert_eq!(Err::<i32, _>("bang").or_default_logged("t_b"), 0);
         logged("t_c", Err::<(), _>("crash"));
         harmless(Err::<(), _>("silent"));
-        assert_eq!(captured(), vec![("t_a".to_string(), "boom".to_string()), ("t_b".to_string(), "bang".to_string()), ("t_c".to_string(), "crash".to_string())]);
+        assert_eq!(
+            captured(),
+            vec![("t_a".to_string(), "boom".to_string()), ("t_b".to_string(), "bang".to_string()), ("t_c".to_string(), "crash".to_string())]
+        );
     }
 
     #[test]

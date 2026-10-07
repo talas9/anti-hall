@@ -2,6 +2,7 @@
 //! with the Node hooks replaced by shell commands (`--fallback-map`), in process and through the daemon. It shows that the
 //! payload digest, the request environment and the isolated state reach the checks the way the CLI form
 //! (`ah-engine check`, which the Node parity test uses) gives them, and that a deferral runs the Node hook.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -27,7 +28,7 @@ struct Env {
 impl Env {
     fn new(name: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("ahd-pe-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         Env { dir }
     }
@@ -86,14 +87,14 @@ impl Env {
     fn stop(&self) {
         let st = self.state();
         common::reap(&st, || {
-            let _ = Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("stop").env("AH_ENGINE_DIR", &st).env("HOME", self.home()).output();
+            ah_engine::discard::harmless(Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("stop").env("AH_ENGINE_DIR", &st).env("HOME", self.home()).output());
         });
     }
 }
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

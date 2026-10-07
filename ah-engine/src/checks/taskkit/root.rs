@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn a_checkout_encloses_its_subdirectories_and_a_missing_directory_is_its_own_root() {
         let base = std::env::temp_dir().join(format!("ah-root-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(base.join("repo/.git")).unwrap();
         std::fs::create_dir_all(base.join("repo/src/deep")).unwrap();
         let real = std::fs::canonicalize(&base).unwrap();
@@ -167,6 +167,6 @@ mod tests {
         assert_eq!(repo_root("relative", home), None, "a relative cwd resolves against Node's own directory");
         let inside_git = real.join("repo/.git");
         assert_eq!(repo_root(inside_git.to_str().unwrap(), home).as_deref(), inside_git.to_str(), "a directory inside the git directory is not a work tree");
-        let _ = std::fs::remove_dir_all(&base);
+        crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
     }
 }

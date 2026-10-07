@@ -2,6 +2,7 @@
 //! 127.0.0.1. What is proven here is what the Node client's `fetch` settings guarantee and a mock cannot: the key goes only
 //! in the Authorization header, a redirect is never followed (so the key and the text stay at the vendor), a proxy named in
 //! the environment is never used, one deadline covers the whole call, and an oversized body cannot grow memory.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use ah_engine::jev::Question;
 use ah_engine::jev::assist::{AskRequest, Backend, Jev, Trust};
@@ -86,8 +87,8 @@ impl Mock {
                     out.push_str("\r\n");
                 }
                 out.push_str("\r\n");
-                let _ = c.write_all(out.as_bytes());
-                let _ = c.write_all(&body);
+                ah_engine::discard::harmless(c.write_all(out.as_bytes()));
+                ah_engine::discard::harmless(c.write_all(&body));
             }
         });
         Mock { port, seen, hits }
@@ -170,6 +171,7 @@ fn a_refused_connection_is_a_network_error() {
 }
 
 #[test]
+#[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation; the single-thread audit is the FIXME beside the call
 fn a_proxy_named_in_the_environment_is_never_used() {
     let dead = {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -194,7 +196,7 @@ fn an_oversized_body_is_cut_off_and_reads_as_unparsable() {
 
 fn temp_home(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("ah-jev-http-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -225,7 +227,7 @@ fn a_whole_decision_goes_through_the_real_transport_to_a_loopback_endpoint_and_i
         (Some("speculation"), Some("jev"), Some("vercel"), Some("default-price"))
     );
     assert!(!log.contains("abc123") && !log.contains("vercel-key"), "the log holds no prompt text and no key");
-    let _ = std::fs::remove_dir_all(&home);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
 }
 
 #[test]
@@ -247,7 +249,7 @@ fn a_localhost_override_is_dialled_as_the_loopback_literal_never_resolved() {
         assert_eq!((d.backend, d.outcome), (Backend::Jev, serde_json::json!(true)), "{host}");
     }
     assert_eq!(m.seen.lock().unwrap().len(), 3);
-    let _ = std::fs::remove_dir_all(&home);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
 }
 
 #[test]
@@ -267,5 +269,5 @@ fn a_dead_endpoint_degrades_to_the_baseline_within_the_budget() {
     let d = jev.ask(&AskRequest::new("speculation", Question::noul("Is it?", "yes", "no"), "text", Trust::AddBlock, serde_json::json!(false)));
     assert_eq!((d.outcome, d.backend), (serde_json::json!(false), Backend::BaselineOnly));
     assert!(t0.elapsed() < Duration::from_millis(3500));
-    let _ = std::fs::remove_dir_all(&home);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
 }

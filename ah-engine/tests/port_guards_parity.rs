@@ -6,6 +6,7 @@
 //! compares the exit code, the stdout bytes, the stderr bytes and every file under the home afterwards (with the
 //! timestamps of the run normalized). A row either must match exactly or must make the engine defer to Node; which one
 //! is part of the row, so a check that quietly defers everything cannot pass as parity.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -129,7 +130,7 @@ fn run(mut cmd: Command, input: &str) -> (i32, Vec<u8>, Vec<u8>) {
         assert!(Instant::now() < deadline, "child exceeded 20 seconds: {cmd:?}");
         std::thread::sleep(Duration::from_millis(3));
     };
-    let _ = writer.join();
+    ah_engine::discard::harmless(writer.join());
     (status.code().unwrap_or(-1), so.join().unwrap(), se.join().unwrap())
 }
 
@@ -258,8 +259,8 @@ fn check_rows(hook: &str, check: &str, rows: Vec<Case>) -> (usize, usize) {
                 }
             }
         }
-        let _ = std::fs::remove_dir_all(&nh);
-        let _ = std::fs::remove_dir_all(&rh);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&nh));
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&rh));
     }
     assert!(bad.is_empty(), "{} / {} {check} rows failed:\n{}", bad.len(), rows.len(), bad.join("\n\n"));
     println!("{check} parity: {same} exact ({blocks} blocks, {advisories} with output, {silent} silent), {deferred} deferred, of {}", rows.len());
@@ -898,12 +899,12 @@ fn the_engine_and_node_respect_each_others_swarm_lock() {
     let eng = run_engine("swarm-guard", &home, &case);
     assert_eq!(eng.0, 0);
     assert!(!home.join(".anti-hall/swarm-spawns.log").exists(), "the engine must not record a spawn it could not lock");
-    let _ = std::fs::remove_file(&lock);
+    ah_engine::discard::harmless(std::fs::remove_file(&lock));
     let released = node(&format!("{lib}const h=L.acquire(p,{{staleMs:5000}});h.release();process.stdout.write(L.inspect(p)===null?'free':'left');"));
     assert_eq!(String::from_utf8_lossy(&released.stdout), "free");
     let eng2 = run_engine("swarm-guard", &home, &case);
     assert_eq!(eng2.0, 0);
     assert_eq!(std::fs::read_to_string(home.join(".anti-hall/swarm-spawns.log")).unwrap().lines().count(), 1, "a released lock is taken by the engine");
     assert!(!lock.exists(), "the engine releases its lock");
-    let _ = std::fs::remove_dir_all(&home);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&home));
 }

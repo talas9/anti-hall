@@ -7,7 +7,7 @@ const PLAN: &str = "# Plan\n\n## Phases\n\n### Phase 1: db\n- goal: x\n- files: 
 
 fn proj(tag: &str, plan: Option<&str>) -> String {
     let d = std::env::temp_dir().join(format!("ah-ship-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
     if let Some(p) = plan {
         std::fs::write(d.join("PLAN.md"), p).unwrap();

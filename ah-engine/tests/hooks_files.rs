@@ -2,6 +2,7 @@
 //! that differs from the generator's output by one byte fails here. Per host: the thin `hooks.json` (one entry per event, no
 //! matcher), the per-hook registry the Node readers use, the wrapper's fallback list and its fallback map. Regenerate with
 //! `cargo run --bin ah-gen-fallback-list -- --repo ..` (or print one with `ah-engine gen-hooks --host <h> --kind <k>`).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use ah_engine::dispatch::table;
 use ah_engine::{defaults, hooksgen};

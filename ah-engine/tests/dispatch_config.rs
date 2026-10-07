@@ -2,6 +2,7 @@
 //! project file) as the real binary applies it to `ah-engine hook --event ...`, with the Node hooks replaced by small shell
 //! commands through `--fallback-map`. Each test has its own HOME and state directory; no daemon is started (every check runs as its Node
 //! hook: `AH_ENGINE_DISPATCH_IN_PROCESS=0` with `AH_ENGINE_NOSPAWN=1`).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,7 +32,7 @@ const PRE_BASH: [&str; 9] = [
 impl Env {
     fn new(name: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("ahd-cfg-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         Env { dir }
@@ -111,7 +112,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 

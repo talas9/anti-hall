@@ -9,6 +9,7 @@
 //!
 //! It loops `LOOPS` times against the same state directory, so recovery after recovery is tested too. Every daemon it
 //! starts is its own child process and is reaped (waited for) before the test ends.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -54,7 +55,7 @@ struct Run {
 impl Drop for Run {
     fn drop(&mut self) {
         common::stop_child(&sock(&self.dir), &mut self.daemon);
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 
@@ -176,7 +177,7 @@ fn check(dir: &Path, lp: usize, seen: &[Arc<Mutex<Seen>>]) -> (usize, usize) {
 #[test]
 fn kill_9_mid_burst_never_loses_an_acknowledged_write_or_half_applies_one() {
     let dir = PathBuf::from("/tmp").join(format!("ah-dur-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
     std::fs::create_dir_all(dir.join("home")).unwrap();
     std::fs::write(dir.join("rules.json"), r#"{"version":1,"rules":[]}"#).unwrap();
     let started = Instant::now();
@@ -197,8 +198,9 @@ fn kill_9_mid_burst_never_loses_an_acknowledged_write_or_half_applies_one() {
         rng ^= rng >> 7;
         rng ^= rng << 17;
         std::thread::sleep(Duration::from_millis(2 + rng % 30));
+        // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
         unsafe { libc::kill(run.daemon.id() as i32, libc::SIGKILL) };
-        let _ = run.daemon.wait();
+        ah_engine::discard::harmless(run.daemon.wait());
         stop.store(true, SeqCst);
         workers.into_iter().for_each(|w| w.join().unwrap());
         run.daemon = spawn(&dir);

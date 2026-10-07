@@ -95,7 +95,7 @@ mod tests {
 
     fn dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ah-jev-log-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         d
     }
 

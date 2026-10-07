@@ -2,6 +2,7 @@
 //! log, the budget-watch state and warning, and the opt-in audit snippets. Node's own functions (`hooks/lib/jev-assist.js`,
 //! exported for exactly this) run on one isolated home and the engine's on another, from the same seeded input, and the
 //! files they leave must be equal (clock fields removed). Nothing touches a real home; no network.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use ah_engine::jev::keep;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ fn repo() -> PathBuf {
 
 fn home(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("ah-jevkeep-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall/logs")).unwrap();
     d
 }
@@ -160,8 +161,8 @@ fn the_budget_watch_keeps_the_same_state_and_warns_once_a_day() {
     for h in [&nh, &eh] {
         std::fs::write(h.join(".anti-hall/settings.json"), settings).unwrap();
     }
-    let _ = std::fs::remove_dir_all(nh.join(".anti-hall/state"));
-    let _ = std::fs::remove_file(nh.join(".anti-hall/logs/jev-assist.ndjson"));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(nh.join(".anti-hall/state")));
+    ah_engine::discard::harmless(std::fs::remove_file(nh.join(".anti-hall/logs/jev-assist.ndjson")));
     node("for (const c of A.costs) a.maybeWarnBudget({home:A.home,costUsd:c});", &json!({"home": nh.to_string_lossy(), "costs": costs}));
     for c in costs {
         if let Some(w) = keep::maybe_warn_budget(&eh, true, Some(0.01), Some(c)) {

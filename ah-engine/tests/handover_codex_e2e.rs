@@ -2,6 +2,7 @@
 //! through the daemon: the table entry's Node command is replaced by one that prints `NODE-RAN`, so each test proves the
 //! built-in check answered (the output holds the check's text, never the marker) and that what it wrote is where Node
 //! would have written it. Every test uses its own HOME and state directory and reaps any daemon it starts.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod common;
 
@@ -16,7 +17,7 @@ struct Env {
 impl Env {
     fn new(name: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("ahd-hc-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         // the verify-first SessionStart texts (a native check of their own) would push the joined context of a `compact`
         // start past the 10000 inline cap; these tests are about the handover and Codex checks only
@@ -78,7 +79,9 @@ impl Env {
     fn stop(&self) {
         let st = self.state();
         common::reap(&st, || {
-            let _ = Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("stop").env("AH_ENGINE_DIR", &st).env("HOME", self.dir.join("home")).output();
+            ah_engine::discard::harmless(
+                Command::new(env!("CARGO_BIN_EXE_ah-engine")).arg("stop").env("AH_ENGINE_DIR", &st).env("HOME", self.dir.join("home")).output(),
+            );
         });
     }
 
@@ -92,7 +95,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
 }
 
@@ -136,7 +139,7 @@ fn codex_quota_detect_answers_a_codex_rescue_result_in_process_and_through_the_d
     let state = std::fs::read_to_string(e.dir.join("home/.anti-hall/codex-availability.json")).unwrap();
     assert!(state.contains("\"until\":1917691200000"), "{state}");
     // through the daemon
-    let _ = std::fs::remove_file(e.dir.join("home/.anti-hall/codex-availability.json"));
+    ah_engine::discard::harmless(std::fs::remove_file(e.dir.join("home/.anti-hall/codex-availability.json")));
     let (code, out, _) = e.run_daemon("PostToolUse", "codex-quota-detect", &p, &[]);
     e.stop();
     assert_eq!(code, 0);

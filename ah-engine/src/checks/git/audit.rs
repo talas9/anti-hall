@@ -187,7 +187,7 @@ mod tests {
     /// A repository with one commit of message `msg`, committed `age` seconds ago.
     fn repo(tag: &str, msg: &str, age: u64) -> String {
         let d = std::env::temp_dir().join(format!("ah-audit-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&d).unwrap();
         let dir = d.to_string_lossy().to_string();
         let git = |args: &[&str], date: Option<String>| {

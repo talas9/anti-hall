@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 /// True when a process with this pid exists.
 pub fn alive(pid: i32) -> bool {
+    // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
     pid > 1 && unsafe { libc::kill(pid, 0) } == 0
 }
 
@@ -36,8 +37,10 @@ pub fn reap(state_dir: &Path, stop: impl Fn()) {
     stop();
     let Some(pid) = pid else { return };
     if !wait_dead(pid, Duration::from_millis(1500)) {
+        // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
         unsafe { libc::kill(pid, libc::SIGTERM) };
         if !wait_dead(pid, Duration::from_millis(1500)) {
+            // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
             unsafe { libc::kill(pid, libc::SIGKILL) };
             wait_dead(pid, Duration::from_millis(1500));
         }
@@ -50,7 +53,7 @@ pub fn reap(state_dir: &Path, stop: impl Fn()) {
 /// Stop a daemon a test started as its own child (`ah-engine serve`): ask it to stop over `sock`, then SIGKILL; it is
 /// waited for (reaped) either way, so it can never outlive the test.
 pub fn stop_child(sock: &Path, child: &mut std::process::Child) {
-    let _ = ah_engine::client::exchange(sock, b"CTL stop\n", Duration::from_millis(500));
+    ah_engine::client::exchange(sock, b"CTL stop\n", Duration::from_millis(500));
     let t = Instant::now();
     while t.elapsed() < Duration::from_secs(3) {
         if let Ok(Some(_)) = child.try_wait() {
@@ -58,6 +61,6 @@ pub fn stop_child(sock: &Path, child: &mut std::process::Child) {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    ah_engine::discard::harmless(child.kill());
+    ah_engine::discard::harmless(child.wait());
 }

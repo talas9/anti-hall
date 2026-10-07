@@ -1,4 +1,5 @@
 //! Node-vs-engine parity for the built-in `model-routing` check.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -756,8 +757,8 @@ fn node_and_engine_outputs_match_for_model_routing_table() {
                 String::from_utf8_lossy(&rust.2)
             ));
         }
-        let _ = std::fs::remove_dir_all(node_home);
-        let _ = std::fs::remove_dir_all(rust_home);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(node_home));
+        ah_engine::discard::harmless(std::fs::remove_dir_all(rust_home));
     }
     assert!(mismatches.is_empty(), "{} / {} parity rows mismatched:\n{}", mismatches.len(), rows.len(), mismatches.join("\n\n"));
     assert_eq!(telemetry_fixtures, 11);
@@ -795,8 +796,8 @@ fn same_home_repeated_handover_and_update_parity() {
             compared += 1;
         }
     }
-    let _ = std::fs::remove_dir_all(node_home);
-    let _ = std::fs::remove_dir_all(rust_home);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(node_home));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(rust_home));
     println!("model-routing stateful parity: {compared} / {compared} exact matches in retained HOMEs");
 }
 
@@ -819,8 +820,8 @@ fn d74_unparsable_stdin_is_deferred_to_node_never_blocked() {
         let rust = run_engine(&rust_home, &case, input);
         assert_eq!(node, (0, Vec::new(), Vec::new()), "{name}: Node allows");
         assert_eq!(rust, (0, format!("{}\n", ah_engine::hookio::FALLBACK).into_bytes(), Vec::new()), "{name}: the engine defers to Node, never blocks");
-        let _ = std::fs::remove_dir_all(node_home);
-        let _ = std::fs::remove_dir_all(rust_home);
+        ah_engine::discard::harmless(std::fs::remove_dir_all(node_home));
+        ah_engine::discard::harmless(std::fs::remove_dir_all(rust_home));
     }
     println!("unparsable stdin: {} / {} deferred to Node", rows.len(), rows.len());
 }

@@ -619,6 +619,7 @@ fn unquote(v: &str) -> String {
 }
 
 /// Mirrors `lib/git-alias-scan.js` `shellDefs`.
+#[allow(clippy::expect_used)] // group 0 of a match always exists
 fn shell_defs(ctx: &mut Ctx) -> std::rc::Rc<HashMap<String, ShellDef>> {
     if let Some(d) = &ctx.shell_defs {
         return d.clone();
@@ -695,6 +696,7 @@ fn var_is_executed(body: &str, name: &str, names: &mut HashSet<String>) -> bool 
 }
 
 /// Mirrors `lib/git-alias-scan.js` `neutraliseDataArgAssignments`.
+#[allow(clippy::expect_used)] // the pattern makes the named groups mandatory, so they always participate in a match
 fn neutralise_data_arg_assignments(body: &str) -> String {
     static RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     let re = RE.get_or_init(|| {

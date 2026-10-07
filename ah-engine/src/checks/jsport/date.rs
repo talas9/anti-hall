@@ -118,6 +118,7 @@ pub fn local_ymd(ms: f64) -> Option<String> {
         return None;
     }
     let secs = (ms / 1000.0).floor() as libc::time_t;
+    // SAFETY: an all-zero `tm` is a valid value (integers and a null `tm_zone`); `localtime_r` fills it below.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: `secs` is a plain integer and `tm` a writable struct of the right type.
     let ok = unsafe { !libc::localtime_r(&secs, &mut tm).is_null() };
@@ -151,6 +152,7 @@ fn local_to_ms(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<f64> 
             return None;
         }
         // The wall clock must read back as asked: a skipped time is normalized to another one.
+        // SAFETY: an all-zero `tm` is a valid value (integers and a null `tm_zone`); `localtime_r` fills it below.
         let mut back: libc::tm = unsafe { std::mem::zeroed() };
         // SAFETY: valid pointers to a time_t and a tm.
         unsafe { libc::localtime_r(&secs, &mut back) };

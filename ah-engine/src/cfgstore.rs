@@ -1016,7 +1016,7 @@ mod tests {
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ah-cfg-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -1050,7 +1050,7 @@ mod tests {
         assert_eq!(store.reload(), Reload::Applied(4));
         assert_eq!(q(&store), shipped, "deleted files fall back to the shipped defaults");
         assert_eq!(store.reload(), Reload::Unchanged);
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -1079,7 +1079,7 @@ mod tests {
         std::fs::remove_file(&paths.user).unwrap();
         assert_eq!(store.reload(), Reload::Applied(4));
         assert_eq!((cap(&store), store.snapshot().hooks.hash()), (0, ""), "a deleted file falls back to the defaults");
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -1093,7 +1093,7 @@ mod tests {
         let s = store.snapshot();
         assert_eq!((s.workers, s.queue), (running, 9), "queue is live, workers waits for a restart");
         assert_eq!(s.pending_restart, vec!["daemon.workers".to_string()]);
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -1105,7 +1105,7 @@ mod tests {
         let s = store.snapshot();
         assert_eq!(s.queue, Config::from_env().queue);
         assert!(s.last_error.as_deref().unwrap().starts_with("parse"));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -1124,7 +1124,7 @@ mod tests {
         }
         assert_eq!(s.queue, 31, "the valid engine file still applies");
         assert!(s.last_error.as_deref().unwrap().starts_with("parse"), "the problem is still reported");
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 
     #[test]
@@ -1143,6 +1143,6 @@ mod tests {
         assert_eq!(got, Some(Reload::Applied(2)));
         assert!(t.elapsed() >= defaults::millis("config.debounce_ms"), "debounced");
         assert_eq!(store.snapshot().queue, 5);
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 }

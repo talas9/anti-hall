@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn the_session_and_subagent_start_entries_are_answered_with_the_node_hooks_bytes() {
         let d = std::env::temp_dir().join(format!("ah-native-vf-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(d.join("plugin/hooks")).unwrap();
         std::fs::write(d.join("plugin/hooks/verify-first-core.js"), "").unwrap();
         std::fs::create_dir_all(d.join("home")).unwrap();

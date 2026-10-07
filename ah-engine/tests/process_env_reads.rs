@@ -1,6 +1,7 @@
 //! D76: the daemon never answers a request from its own environment. This scan fails when a non-test source file reads
 //! the process environment (`env::var`, `env::var_os`, `env::vars`, `env::vars_os`) and is not on the list below, which says for each file
 //! whose environment it is and why that is right. A new read has to be justified here in review.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use std::fs;
 use std::path::{Path, PathBuf};

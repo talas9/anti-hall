@@ -5,6 +5,7 @@
 //!   * an entry the engine wrote is a hit for Node (backend `cache`, no request reaches the mock);
 //!   * writers racing on the one file (engine threads and Node processes) never leave a file that does not parse, and the
 //!     engine's own entries all survive each other.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use ah_engine::jev::assist::content_hash;
 use ah_engine::jev::cache::{Cached, FileCache, JevCache};
 use ah_engine::jev::client::Answer;
@@ -38,7 +39,7 @@ fn mock() -> (u16, Arc<Mutex<usize>>) {
     std::thread::spawn(move || {
         for c in l.incoming() {
             let Ok(mut c) = c else { break };
-            let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
+            ah_engine::discard::harmless(c.set_read_timeout(Some(Duration::from_secs(5))));
             let mut buf = [0u8; 8192];
             let mut got = Vec::new();
             while let Ok(n) = c.read(&mut buf) {
@@ -58,7 +59,7 @@ fn mock() -> (u16, Arc<Mutex<usize>>) {
             *s2.lock().unwrap() += 1;
             let body = r#"{"answers":{"decision":{"noul":0.97}},"usage":{"input_tokens":10,"output_tokens":1}}"#;
             let out = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-            let _ = c.write_all(out.as_bytes());
+            ah_engine::discard::harmless(c.write_all(out.as_bytes()));
         }
     });
     (port, seen)
