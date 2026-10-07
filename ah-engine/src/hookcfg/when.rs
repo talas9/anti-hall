@@ -267,6 +267,10 @@ impl std::fmt::Display for WhenError {
 
 impl std::error::Error for WhenError {}
 
+fn why(name: &str) -> &'static str {
+    defaults::raw("hooks.reasons").str_field(name)
+}
+
 fn err(key: &str, args: &[(&str, &dyn std::fmt::Display)]) -> WhenError {
     WhenError(defaults::render(key, args))
 }
@@ -283,12 +287,12 @@ fn parse_test(o: &serde_json::Map<String, Json>) -> Result<Test, WhenError> {
     let v = &o[*op];
     let bad = |what: String| err("hooks.msg_when_bad_value", &[("what", &what)]);
     Ok(match *op {
-        "equals" => Test::Equals(Val::from_json(v).ok_or_else(|| bad("equals needs a string, number or boolean".into()))?),
+        "equals" => Test::Equals(Val::from_json(v).ok_or_else(|| bad(why("equals_value").into()))?),
         "in" => Test::In(
             v.as_array()
                 .ok_or_else(|| bad("in needs a list".into()))?
                 .iter()
-                .map(|x| Val::from_json(x).ok_or_else(|| bad("in lists strings, numbers or booleans".into())))
+                .map(|x| Val::from_json(x).ok_or_else(|| bad(why("in_values").into())))
                 .collect::<Result<_, _>>()?,
         ),
         "regex" => {
@@ -318,7 +322,7 @@ fn find_setting(key: &str) -> Option<SettingRef> {
 
 fn parse_session(o: &serde_json::Map<String, Json>) -> Result<When, WhenError> {
     let bad = |what: &str| err("hooks.msg_when_bad_session", &[("what", &what)]);
-    let name = o.get("session").and_then(Json::as_str).filter(|n| !n.is_empty()).ok_or_else(|| bad("session needs the counter's name"))?;
+    let name = o.get("session").and_then(Json::as_str).filter(|n| !n.is_empty()).ok_or_else(|| bad(why("session_name")))?;
     let ops = defaults::list("hooks.session_ops");
     let given: Vec<&str> = ops.iter().copied().filter(|k| o.contains_key(*k)).collect();
     let [op] = given.as_slice() else { return Err(bad(&format!("exactly one of {}", ops.join(", ")))) };
@@ -326,12 +330,12 @@ fn parse_session(o: &serde_json::Map<String, Json>) -> Result<When, WhenError> {
     let op = match *op {
         "first" if o.get("first").and_then(Json::as_bool) == Some(true) => SessionOp::First,
         "first" => return Err(bad("first must be true")),
-        "every" => SessionOp::Every(n("every").ok_or_else(|| bad("every needs an integer of at least 1"))?),
-        _ => SessionOp::AtLeast(n("at_least").ok_or_else(|| bad("at_least needs an integer of at least 1"))?),
+        "every" => SessionOp::Every(n("every").ok_or_else(|| bad(why("every_n")))?),
+        _ => SessionOp::AtLeast(n("at_least").ok_or_else(|| bad(why("at_least_n")))?),
     };
     let ttl_s = match o.get("ttl_s") {
         None => None,
-        Some(t) => Some(t.as_u64().filter(|t| *t >= 1).ok_or_else(|| bad("ttl_s needs an integer of at least 1"))?),
+        Some(t) => Some(t.as_u64().filter(|t| *t >= 1).ok_or_else(|| bad(why("ttl_s")))?),
     };
     let allowed: Vec<&str> = ["session", "ttl_s"].into_iter().chain(ops.iter().copied()).collect();
     if let Some(k) = o.keys().find(|k| !allowed.contains(&k.as_str())) {
@@ -377,19 +381,19 @@ impl When {
                     _ => Vec::new(),
                 };
                 if names.is_empty() || o.len() != 1 {
-                    return Err(err("hooks.msg_when_bad_value", &[("what", &"tool takes a tool name or a list of names, and nothing else")]));
+                    return Err(err("hooks.msg_when_bad_value", &[("what", &why("tool_value"))]));
                 }
                 When::Leaf(Source::Tool, Test::In(names))
             }
             "field" => {
-                let p = o["field"].as_str().ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &"field needs a JSON pointer string")]))?;
+                let p = o["field"].as_str().ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &why("field_value"))]))?;
                 if !p.starts_with('/') {
                     return Err(err("hooks.msg_when_bad_pointer", &[("pointer", &p)]));
                 }
                 When::Leaf(Source::Field(p.to_string()), parse_test(&rest("field"))?)
             }
             "setting" => {
-                let k = o["setting"].as_str().ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &"setting needs a name like guards.shipitGate")]))?;
+                let k = o["setting"].as_str().ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &why("setting_value"))]))?;
                 let r = find_setting(k).ok_or_else(|| err("hooks.msg_when_unknown_setting", &[("key", &k)]))?;
                 let t = rest("setting");
                 let test = if t.is_empty() { Test::Equals(Val::Bool(true)) } else { parse_test(&t)? };
@@ -709,6 +713,45 @@ mod tests {
         let atl = ok(json!({"session": "n3", "at_least": 3}));
         let seq: Vec<_> = (0..4).map(|_| ev(&atl, "a").unwrap()).collect();
         assert_eq!(seq, [false, false, true, true]);
+    }
+
+    #[test]
+    fn a_transcript_condition_reads_the_index_and_flips_with_its_facts() {
+        // two agents a compaction re-injected as live; one then reports a terminal status: one stays unresolved
+        let dir = std::env::temp_dir().join(format!("ah-when-transcript-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let ts = "2026-10-04T10:00:00.000Z";
+        let live = |id: &str| json!({"type": "attachment", "attachment": {"type": "task_status", "taskId": id, "taskType": "local_agent", "description": "d", "status": "running", "outputFilePath": "/tmp/o"}, "timestamp": ts});
+        let note = json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>agentaaaaaaaaaaa1</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n</task-notification>"}, "timestamp": ts});
+        let lines = [
+            live("agentaaaaaaaaaaa1"),
+            live("agentbbbbbbbbbbb2"),
+            note,
+            json!({"type": "user", "message": {"role": "user", "content": "hello"}, "timestamp": ts}),
+        ];
+        std::fs::write(&path, lines.iter().map(|l| l.to_string() + "\n").collect::<String>()).unwrap();
+        let mut ix = Index::new(&path);
+        ix.refresh().unwrap();
+        let loaded = crate::cfgstore::Effective::defaults();
+        let none = json!(null);
+        let facts = LoadedFacts { settings: &none, effective: &loaded, index: Some(&ix) };
+        let p = json!({});
+        let at = |fact: &str, op: Json| {
+            let mut o = serde_json::Map::new();
+            o.insert("transcript".into(), json!(fact));
+            o.extend(op.as_object().unwrap().clone());
+            eval_with(&ok(Json::Object(o)), &p, &RequestEnv::default(), &facts, None)
+        };
+        assert_eq!(at("unresolved_agents", json!({"at_least": 1})), Some(true), "agent b never reported");
+        assert_eq!(at("unresolved_agents", json!({"at_least": 2})), Some(false), "agent a did");
+        assert_eq!(at("terminal_agents", json!({"equals": 1})), Some(true));
+        assert_eq!(at("has_last_prompt", json!({"equals": true})), Some(true));
+        assert_eq!(at("records", json!({"at_least": 4})), Some(true));
+        assert_eq!(at("last_tool", json!({"exists": true})), Some(true));
+        assert_eq!(at("compact_boundaries", json!({"at_least": 1})), Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

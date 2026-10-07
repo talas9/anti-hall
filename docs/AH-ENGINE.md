@@ -103,7 +103,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Backups and restore: online snapshot of both databases, scrubbed; restore keeps the current state first | implemented | D27 |
 | Issue log and opt-in upload | planned (D28) | D28 |
 | Update checks as a scheduled job | planned (D44) | D44 |
-| One dispatcher call per hook event: `ah-engine hook --event`, built-in checks in the engine, the other hooks as Node, combined in `hooks.json` order | implemented (not yet wired into `hooks.json`; plugin wiring is planned (D75)) | D58 |
+| One dispatcher call per hook event: `ah-engine hook --event`, built-in checks in the engine, the other hooks as Node, combined in table order; the plugin's `hooks.json` is one thin trigger per event, generated from the table (`ah-engine gen-hooks`) | implemented on the `engine-proto` branch (the installed plugin changes when it merges) | D58, D75, D87 |
+| Per-event and per-entry hook configuration (`[events.<Event>]`, `[entries.<id>]`: mode, max_rules, budget_ms, order) and the `when` predicate | implemented | D87 |
 | Porting the other guards | planned (D57) | D57 |
 | Prebuilt binaries for every Unix target, release automation | planned (D56, D64, D67, D68) | D56, D64, D67, D68 |
 
@@ -121,6 +122,7 @@ arguments, is in the generated reference.
 | `ah-engine impact` | yes | What the engine affected; `--kind`, `--project` filter, `--window <7d>` for the NET section. |
 | `ah-engine telemetry` | no | `summary`, `events`, `rollup`: see Telemetry below. `summary` and `events` only read; `rollup` writes, idempotently. |
 | `ah-engine docs` | yes | The generated reference (`--format md`, or `--json`). |
+| `ah-engine gen-hooks --host claude\|codex [--kind hooks\|registry\|list\|map]` | yes | Print a file generated from the dispatch table: the thin `hooks.json` (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map (D87). |
 | `ah-engine check <name>` | yes | Run one check on a payload from stdin (parity harness). |
 | `ah-engine version` | yes | The version this build reports. |
 | `ah-engine ctl <verb>` | no | `ping`, `reload` (also re-reads the config files), `stop`, `status`, `config`. |
@@ -436,7 +438,9 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
 | `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
 | `jev.toml` | the Jev lane: vendor endpoints and models, budgets, breaker and fallback timing, the integration table with its default modes, cache and log limits, key-file rules, messages |
-| `dispatch.toml` | the dispatcher's settings and its per-event table, generated from the plugin's two `hooks.json` files |
+| `dispatch.toml` | the dispatcher's settings and the hand-maintained per-event table of hook entries (the table of record: the plugin's `hooks.json` files are generated from it) |
+| `hooks.toml` | the hook configuration: defaults of `[events.<Event>]` and `[entries.<id>]`, the `when` predicate vocabulary, the plan outcomes and their messages |
+| `hooks.d/*.toml` | optional: per-batch `[events.<Event>]` / `[entries."<id>"]` defaults (one file per batch of ported hooks, so parallel lanes do not edit a shared file) |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
@@ -469,9 +473,22 @@ State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.d
 ## Dispatcher
 
 `ah-engine hook --event <Event> [--tool <Tool>] [--host claude|codex] [--fallback-map <file>]` stands in for every hook
-`hooks.json` registers for that event (D58). Its table, `dispatch.toml`, lists each host's entries per event in
-`hooks.json` order with the exact command and timeout, and which built-in check (today: `git` and the five ported small guards, on PreToolUse) answers an entry. `parity/gen-dispatch.js` regenerates the table, and a test fails when either
-`hooks.json` changes without it.
+the plugin used to register for that event (D58). Its table, `dispatch.toml` (hand-maintained since D87: it is the table of
+record), lists each host's entries per event in combine order with the exact command, timeout and matcher, which built-in
+check (today: `git` and the other ported guards, on PreToolUse) answers an entry, and optionally a `when` predicate. The
+plugin's `hooks.json` files are generated from it (`ah-engine gen-hooks`, or `ah-gen-fallback-list --repo ..` for all of
+them) and `tests/hooks_files.rs` fails on a byte of difference.
+
+**One thin trigger per event (D87).** `hooks/hooks.json` has exactly one entry per event and no matcher:
+`sh "${CLAUDE_PLUGIN_ROOT}/hooks/ah-hook.sh" <Event>` (Codex: `${PLUGIN_ROOT}`, plus `--host codex`), with the longest timeout
+of the event's entries. It covers every event of the table and every event in `dispatch.thin_events`: all 33 Claude Code
+events of the official reference except `WorktreeCreate` and `WorktreeRemove` (a WorktreeCreate hook replaces the default
+worktree creation and a non-zero exit on either fails the operation, so there is no neutral pass-through; decision D87
+exception), and the ten Codex events. The engine matches, filters and orders from the table and the config; an event the
+table has no entry for answers the host with the neutral no-op (exit 0, no output) and the wrapper's fallback list marks it
+`empty`. The per-hook registry the old `hooks.json` was (`hooks/hooks.registry.json`, `codex/hooks/hooks.registry.json`) is
+generated too: nothing in the host reads it, the plugin's Node readers (doctor, briefing, hook-latency, tests) and the
+manual Codex installer use it to know which hook scripts exist. A new hook is a row in the table; nothing else lists hooks.
 
 1. The entries whose matcher selects the payload are chosen the way the host chooses them: on Claude a matcher of
    plain names is an exact name or list and anything else an unanchored regex; on Codex every matcher is a regex and
@@ -487,6 +504,49 @@ State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.d
    - when exactly one entry said anything, its output, stderr and exit code pass through unchanged;
    - several JSON answers merge: `additionalContext` and `systemMessage` values are joined in order, the strongest
      `permissionDecision` wins with its reason, any other field must agree, and stderr is concatenated.
+
+**Configuration of events and entries (D87).** Two kinds of section, in the engine's `config.toml` (state dir) or a project
+file (`.anti-hall/engine.toml` under the payload's cwd, below the user file in precedence; `hooks.project_file`):
+
+```toml
+[events.PostToolUse]              # any event of either host's table or thin triggers
+mode      = "on"                  # on | shadow (run and log, never change the outcome) | off (skip, answer neutral); enabled = false is off
+max_rules = 3                     # entries evaluated per occurrence (0 = all); the rest are counted as skipped (max_rules)
+budget_ms = 400                   # wall budget: after it no new entry starts, running ones finish within their own timeouts
+order     = ["output-verify-guard"]  # these ids run and combine first; an id the event's table lacks is an error
+
+[entries."git-guard:audit"]       # a table entry by id, or "PostToolUse/git-guard:audit" for one event only
+mode = "shadow"
+when = { field = "/tool_input/command", regex = '^git ' }   # replaces the row's own `when`
+```
+
+Every key has a documented default (`hooks.event_*`, `hooks.entry_*`) and the whole file is validated when it is read: a bad
+key rejects the file, the daemon keeps the previous snapshot and reports the error through `last_error`, and a one-shot
+client reads the layer as empty and logs `config_invalid`. **Guard events never become a silent allow:** on PreToolUse,
+PermissionRequest, Stop and SubagentStop, `mode` off or shadow and `enabled = false` are errors, `max_rules` must stay 0, and a
+`when` cannot be overridden on a guard entry; `mode` off or shadow on a guard ENTRY is allowed only when it has a built-in check,
+because its Node hook then still runs as the real decider (off skips only the engine's check; shadow runs the check beside the Node
+hook and logs `dispatch_shadow` with whether the two agree). A project file may not configure guard events or entries at all.
+`budget_ms` is allowed on a guard event: a built-in check's Node hook that cannot start in time fails the event closed.
+
+**The `when` predicate (D87).** A table row or an `[entries.*]` override may carry `when`, a declarative filter that decides
+per occurrence whether the entry applies (no `when` = it applies whenever its matcher does). Leaves: `tool` (a name or a
+list), `field` (a JSON pointer into the payload, so `/tool_input/file_path` reads a tool-input field), `setting` (a boolean
+switch of the shipped switch tables, such as `guards.shipitGate`, resolved from the request environment, then the loaded
+`settings.json`, then the default, or one of the engine's own settings), `env` (a variable of the request environment,
+`request_env.allow` only), `session` (`first`, `every = N` or `at_least = N` counters kept in memory per session with a TTL)
+and `transcript` (a fact of the transcript index: `records`, `compact_boundaries`, `sidechain_rows`, `meta_rows`,
+`has_last_prompt`, `has_last_assistant`, `last_tool`, `terminal_agents`, `unresolved_agents`). Each leaf takes exactly one
+test (`equals`, `in`, `regex`, `glob`, `exists`, `at_least`, `at_most`); `all`, `any` and `not` combine them. Evaluation is
+three-valued and an unknown answer applies the entry, so a guard is never skipped because the engine could not tell: a
+one-shot client keeps no session counters and has no transcript index, so those two kinds are unknown there (the daemon
+side of that is wired when a real entry first uses them). Predicates are not attached to any shipped row yet.
+
+**The plan and its telemetry.** For each occurrence the plan applies, in order: the event's mode, its `order`, each entry's
+mode, its `when`, then `max_rules`. Every entry is counted under one outcome: `ran`, `skipped_predicate`, `skipped_max_rules`,
+`skipped_budget`, `shadowed` or `off`. A dispatch that skipped, shadowed or turned anything off, or ran under a non-default
+config, writes one `dispatch_plan` event (with the config hash); the counters are the `dispatch_entries` metric, by event,
+entry and outcome, and `config --json` reports the hash of the user file's hook sections (`hooks_hash`).
 
 **The environment (D76).** A hook runs in its host's environment, not the daemon's. The client forwards the variables on
 `request_env.allow` (`defaults/engine.toml`) with each `V` and `D` request, and every check runs against that
@@ -529,8 +589,8 @@ open. A payload the dispatcher cannot parse, or that names no tool, selects ever
 hook that runs past its timeout stays the host's own discard (no decision), and is logged (`dispatch_hook_timeout`).
 `tests/fail_closed_matrix.rs` crosses every guard event with every injected failure and asserts one invariant: exit 2 with
 a message, or the result Node's hooks would give, never exit 0 with nothing printed unless a hook that ran allowed. Any
-other event runs the hooks it can and logs `dispatch_defer` for the ones it cannot. The plugin is not wired to the
-dispatcher yet; that is planned (D75).
+other event runs the hooks it can and logs `dispatch_defer` for the ones it cannot. The plugin is wired to the dispatcher on the
+`engine-proto` branch through the thin triggers above (D75, D87).
 
 **Raw stdin spool (D87).** Payloads within `client.max_stdin` are delivered from memory and do not touch the spool. Only an
 over-cap payload needs the raw stdin spool; if it cannot be created, a guard event fails closed with a clear stderr reason,

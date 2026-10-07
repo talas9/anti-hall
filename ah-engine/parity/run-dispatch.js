@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Whole-event parity for the per-event dispatcher (D58): for each corpus command, the reference runs every hooks.json
+// Whole-event parity for the per-event dispatcher (D58): for each corpus command, the reference runs every registry (formerly hooks.json)
 // entry of the event as its own Node process, all at once (as the host does), and combines their outputs with the
 // reference model in dispatch-lib.js; the engine side runs ONE `ah-engine hook --event <E>` call (built-in checks in
 // the engine, the rest through Node). Exit code, stdout and stderr must match exactly (no trimming).
@@ -25,7 +25,8 @@ const CAP = +arg('--context-cap', 10000);
 // the events whose hooks can block: defaults/dispatch.toml dispatch.guard_events
 const GUARD_EVENTS = ['PreToolUse', 'PermissionRequest', 'Stop', 'SubagentStop'];
 const MAP = arg('--fallback-map'), TIME = process.argv.includes('--time');
-const hooksJson = JSON.parse(fs.readFileSync(path.join(PLUGIN, HOST === 'codex' ? 'codex/hooks/hooks.json' : 'hooks/hooks.json'), 'utf8'));
+// D87: hooks.json is one thin trigger per event now; the per-hook registry generated from the dispatch table has the old shape
+const hooksJson = JSON.parse(fs.readFileSync(path.join(PLUGIN, HOST === 'codex' ? 'codex/hooks/hooks.registry.json' : 'hooks/hooks.registry.json'), 'utf8'));
 // a fallback map replaces commands on BOTH sides (the reference runs exactly what the dispatcher would)
 const map = MAP ? JSON.parse(fs.readFileSync(MAP, 'utf8')) : null;
 

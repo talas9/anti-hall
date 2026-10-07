@@ -483,9 +483,26 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     // a guard entry's shadowed check runs beside the Node hook of the same id that decides: it is only measured
     let sibling: Vec<bool> =
         entries.iter().enumerate().map(|(i, e)| shadow[i] && entries.iter().enumerate().any(|(j, r)| j != i && !shadow[j] && r.id == e.id)).collect();
-    // the Node hooks start first, so they run while the built-in checks are answered
-    let mut started: Vec<(usize, node::Running)> =
-        entries.iter().enumerate().filter(|(_, e)| e.check.is_none()).map(|(i, e)| (i, start_node(e, raw.as_bytes(), payload))).collect();
+    // the Node hooks start first, so they run while the built-in checks are answered; once the event's budget has passed no
+    // further entry starts (a guard event then fails closed after the ones already running have finished)
+    let mut started: Vec<(usize, node::Running)> = Vec::new();
+    for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_none()) {
+        if budget.exceeded() {
+            if guard {
+                let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
+                let mut done: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
+                for (i, f) in slots.iter().zip(node::finish(running)) {
+                    if f.fate == node::Fate::Ran && !shadow[*i] {
+                        done[*i] = Some(f.result);
+                    }
+                }
+                return genuine_block(done).unwrap_or_else(|| closed(&args.event, parsed.as_ref(), &defaults::render("hooks.msg_budget", &[("id", &e.id)])));
+            }
+            tele.mark(&e.id, plan::Outcome::SkippedBudget);
+            continue;
+        }
+        started.push((i, start_node(e, raw.as_bytes(), payload)));
+    }
     let meta = Meta {
         host: args.host.clone(),
         event: args.event.clone(),
@@ -630,6 +647,14 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     }
 }
 
+/// Tell the wrapper (`AH_ENGINE_DONE_FILE`) that the event was dispatched and the exit code that follows is the answer, not an
+/// engine failure: a hook's own non-zero exit (1, 3, ...) passes through, and must not be answered by running the hooks again.
+fn mark_done() {
+    if let Some(p) = defaults::env_var("done_file").filter(|p| !p.is_empty()) {
+        let _ = std::fs::write(p, b"");
+    }
+}
+
 /// `ah-engine hook --event ...`: read stdin, dispatch, print, exit with the combined code. Never panics out, and never
 /// turns a failure into an allow for a guard event: a usage error or a panic there answers exit 2 like [`fail_closed`].
 pub fn hook_main(args: &[String]) -> i32 {
@@ -649,6 +674,13 @@ pub fn hook_main(args: &[String]) -> i32 {
                 return 64; // a usage error: the host reports it as a non-blocking hook error
             }
         };
+        // D87: an event the table has no entry for (a thin trigger only) has nothing to run and nothing to guard, whatever its
+        // payload looks like, even invalid UTF-8 or over the cap: answer the neutral no-op after letting the host finish writing
+        if table::entries(&a.host, &a.event).is_empty() {
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            mark_done();
+            return 0;
+        }
         let max = defaults::num("client.max_stdin");
         let payload = match PayloadInput::read_stdin(max) {
             Ok(p) => p,
@@ -692,6 +724,7 @@ pub fn hook_main(args: &[String]) -> i32 {
         let mut so = std::io::stdout();
         let _ = so.write_all(o.out.as_bytes());
         let _ = so.flush();
+        mark_done();
         o.code
     });
     res.unwrap_or_else(|_| {

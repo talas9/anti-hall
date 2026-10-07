@@ -206,3 +206,15 @@ value = "{id} agree={agree} engine_exit={engine} node_exit={node}"
 [hooks.msg_budget]
 doc = "Why a guard event fails closed when its budget_ms has passed before a built-in check's Node hook could start. Placeholder: {id}."
 value = "the event's budget passed before {id} could run"
+
+[hooks.event_fields]
+doc = "The fields an `[events.<Event>]` section may hold."
+value = ["enabled", "mode", "max_rules", "budget_ms", "order"]
+
+[hooks.entry_fields]
+doc = "The fields an `[entries.<id>]` section may hold."
+value = ["enabled", "mode", "when"]
+
+[hooks.reasons]
+doc = "Short reasons the config errors above quote in their {what} placeholder."
+value = { guard_mode = "mode off or shadow, or enabled = false", guard_max_rules = "max_rules above 0 would skip guards", equals_value = "equals needs a string, number or boolean", in_values = "in lists strings, numbers or booleans", session_name = "session needs the counter's name", every_n = "every needs an integer of at least 1", at_least_n = "at_least needs an integer of at least 1", ttl_s = "ttl_s needs an integer of at least 1", tool_value = "tool takes a tool name or a list of names, and nothing else", field_value = "field needs a JSON pointer string", setting_value = "setting needs a name like guards.shipitGate" }

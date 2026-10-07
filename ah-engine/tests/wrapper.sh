@@ -44,6 +44,7 @@ make_engine() {
       normal) printf 'cat; printf "engine-err\\n" >&2; exit 2\n' ;;
       args) printf 'printf "args:$*\\n"; exit 0\n' ;;
       exit1) printf 'cat >/dev/null; exit 1\n' ;;
+      exit1_done) printf 'cat >/dev/null; : >"$AH_ENGINE_DONE_FILE"; printf "hook-own-error\\n" >&2; printf "hook-own-out"; exit 1\n' ;;
       exit3) printf 'cat >/dev/null; exit 3\n' ;;
       exit126) printf 'cat >/dev/null; exit 126\n' ;;
       exit127) printf 'cat >/dev/null; exit 127\n' ;;
@@ -234,6 +235,34 @@ test_exit_75_fallback() {
   err=$tmp/75.err
   AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/75.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
   cmp -s "$payload" "$out" && grep -q 'engine fallback' "$err" && ! grep -q 'node-err' "$err"
+}
+
+test_a_hooks_own_exit_code_passes_through_once_the_engine_marked_the_dispatch_done() {
+  # D87: the engine dispatched the event and a hook exited 1 (a non-blocking error). The wrapper must hand that answer to the
+  # host as it is, not run every hook a second time; the same exit code WITHOUT the mark is an engine failure (next test).
+  sentinel=$tmp/done-fallback-ran
+  rm -f "$sentinel"
+  h=$(hook_script doneh "printf ran >\"$sentinel\"")
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/done.list"
+  e=$(make_engine exit1done exit1_done)
+  set +e
+  AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/done.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/done.out" 2>"$tmp/done.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] && [ "$(cat "$tmp/done.out")" = hook-own-out ] && grep -q hook-own-error "$tmp/done.err" && [ ! -e "$sentinel" ]
+}
+
+test_an_engine_exit_code_without_the_done_mark_is_an_engine_failure() {
+  sentinel=$tmp/nomark-fallback-ran
+  rm -f "$sentinel"
+  h=$(hook_script nomarkh "printf ran >\"$sentinel\"")
+  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/nomark.list"
+  e=$(make_engine exit1nomark exit1)
+  set +e
+  AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/nomark.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/nomark.out" 2>"$tmp/nomark.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] && [ -e "$sentinel" ] && grep -q 'engine fallback' "$tmp/nomark.err"
 }
 
 test_missing_binary_fallback() {
@@ -1122,6 +1151,8 @@ test_event_with_node_guards_stays_fail_closed_without_engine() {
 }
 
 check normal_passthrough test_normal_passthrough
+check hooks_own_exit_code_passes_through_after_done_mark test_a_hooks_own_exit_code_passes_through_once_the_engine_marked_the_dispatch_done
+check engine_exit_without_done_mark_is_a_failure test_an_engine_exit_code_without_the_done_mark_is_an_engine_failure
 check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
 check missing_binary_fallback test_missing_binary_fallback

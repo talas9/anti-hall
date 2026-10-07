@@ -5,6 +5,11 @@
 // The table lists, per host and event, every hook entry in hooks.json order (matcher groups in order, handlers in
 // order within a group), with the exact command string and timeout, plus the built-in check that answers it in the
 // engine ("" = always the Node hook). tests/dispatch_table.rs fails when hooks.json changes and this file does not.
+// RETIRED (D87): defaults/dispatch.toml is now the hand-maintained table of record and hooks.json is generated FROM it
+// (`ah-engine gen-hooks`, `ah-gen-fallback-list`); running this would overwrite the table from a thin hooks.json. It stays in
+// the tree only until the owner deletes it.
+console.error('gen-dispatch.js is retired (D87): edit ah-engine/defaults/dispatch.toml and run ah-gen-fallback-list --repo ..');
+process.exit(1);
 const fs = require('fs'), path = require('path');
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
 const REPO = path.resolve(arg('--repo', path.join(__dirname, '..', '..')));

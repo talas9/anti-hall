@@ -13,6 +13,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `config` | `[validate <file>]` | yes | implemented | Show the effective config and where each value comes from, or validate a config file; versions, rollback and export are planned (D18, they need the config database). |
 | `ctl` | `<ping\|reload\|stop\|status>` | no | implemented | Send a control verb to the daemon: ping, reload, stop or status. |
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
+| `gen-hooks` | `--host claude\|codex [--kind hooks\|registry\|list\|map]` | yes | implemented | Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host. |
 | `hook` | `[--fallback <hook.js>] \| --event <Event> [--tool <Tool>] [--host claude\|codex] [--fallback-map <file>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would. |
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
 | `jev` | `<ask\|status\|scrub>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
@@ -918,25 +919,29 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.default_timeout_s` | `600` |  | s | The timeout of a Node hook whose hooks.json entry has none (0 in the table): the host's own default for a command hook (600 s on Claude per docs/KB-claude-code-hooks.md; Codex's default is not verified here, so the same bound is used). Never zero: a zero timeout would kill the hook at its first poll. |
 | `dispatch.defer_exit` | `75` |  |  | Exit code with which the dispatcher asks its wrapper to run the event's Node hooks one by one, as the host does (the joined output could not be delivered faithfully). EX_TEMPFAIL; the host reads it as a non-blocking hook error and shows stderr, so without a wrapper the deferral is visible, never silent. |
 | `dispatch.exact_chars` | `_- ,\|` |  |  | Besides letters and digits, the characters a Claude matcher may contain and still be an exact name or list. |
+| `dispatch.gen_default_kind` | `hooks` |  |  | The file `gen-hooks` prints when `--kind` is not given. |
+| `dispatch.generated_files` | `2 entries` |  |  | Per host and kind of generated file (hooks, registry, list, map), its path relative to the repository root. `tests/hooks_files.rs` requires each committed file to equal what `gen-hooks` prints and `ah-gen-fallback-list` writes them. |
 | `dispatch.guard_events` | `PreToolUse, PermissionRequest, Stop, SubagentStop` |  |  | Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call (Claude ignores exit 2 on PermissionRequest, so a fail-closed exit 2 there is harmless, and the event stays listed so a hook registered on it later is guarded from the start), Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74). |
-| `dispatch.hooks_claude_PostToolUse` | `8 items` |  |  | The claude PostToolUse hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_PostToolUseFailure` | `5 entries` |  |  | The claude PostToolUseFailure hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_PreCompact` | `5 entries` |  |  | The claude PreCompact hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_PreToolUse` | `21 items` |  |  | The claude PreToolUse hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_SessionEnd` | `5 entries` |  |  | The claude SessionEnd hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_SessionStart` | `16 items` |  |  | The claude SessionStart hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_Stop` | `11 items` |  |  | The claude Stop hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_SubagentStart` | `5 entries` |  |  | The claude SubagentStart hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_TaskCompleted` | `5 entries` |  |  | The claude TaskCompleted hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_TaskCreated` | `5 entries` |  |  | The claude TaskCreated hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_claude_UserPromptSubmit` | `8 items` |  |  | The claude UserPromptSubmit hook entries, in plugins/anti-hall/hooks/hooks.json order. |
-| `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in plugins/anti-hall/codex/hooks/hooks.json order. |
-| `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in plugins/anti-hall/codex/hooks/hooks.json order. |
-| `dispatch.hooks_codex_PreToolUse` | `9 items` |  |  | The codex PreToolUse hook entries, in plugins/anti-hall/codex/hooks/hooks.json order. |
-| `dispatch.hooks_codex_SessionStart` | `15 items` |  |  | The codex SessionStart hook entries, in plugins/anti-hall/codex/hooks/hooks.json order. |
-| `dispatch.hooks_codex_Stop` | `10 items` |  |  | The codex Stop hook entries, in plugins/anti-hall/codex/hooks/hooks.json order. |
-| `dispatch.hooks_codex_UserPromptSubmit` | `8 items` |  |  | The codex UserPromptSubmit hook entries, in plugins/anti-hall/codex/hooks/hooks.json order. |
+| `dispatch.hooks_claude_PostToolUse` | `8 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PostToolUseFailure` | `5 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PreCompact` | `5 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PreToolUse` | `21 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SessionEnd` | `5 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SessionStart` | `16 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_claude_Stop` | `11 items` |  |  | The claude Stop hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SubagentStart` | `5 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
+| `dispatch.hooks_claude_TaskCompleted` | `5 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
+| `dispatch.hooks_claude_TaskCreated` | `5 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
+| `dispatch.hooks_claude_UserPromptSubmit` | `8 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PreToolUse` | `9 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_codex_SessionStart` | `15 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_codex_Stop` | `10 items` |  |  | The codex Stop hook entries, in dispatch order. |
+| `dispatch.hooks_codex_UserPromptSubmit` | `8 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
+| `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |
+| `dispatch.list_empty_word` | `empty` |  |  | The word that marks an event row of the fallback list whose event has no table entry (a thin trigger only): the wrapper answers it with the neutral no-op. |
 | `dispatch.list_separators` | `\|,` |  |  | Characters that separate the names of an exact-list matcher. |
 | `dispatch.match_all` | `, *` |  |  | Matcher values that match every occurrence of the event. |
 | `dispatch.matcher_field` | `9 entries` |  |  | Per event, the payload field a matcher is tested against; on an event not listed here the matcher is ignored. |
@@ -963,6 +968,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.msg_stop_capped` | `anti-hall: the engine could not run the guards for {event} ({why}) {cap} time...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed once more than dispatch.stop_block_cap times in a row. Placeholders: {event}, {cap}, {why}. |
 | `dispatch.msg_stop_uncounted` | `anti-hall: the engine could not run the guards for {event} ({why}) and cannot...` |  |  | Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the consecutive-block count cannot be recorded, so the loop could not be bounded. Placeholders: {event}, {why}. |
 | `dispatch.msg_unknown_host` | `unknown host {host}: the dispatch table has {hosts}` |  |  | Error printed when `--host` names a host the dispatch table does not have. |
+| `dispatch.msg_unknown_kind` | `unknown kind {kind}: gen-hooks prints hooks, registry, list or map` |  |  | Error printed by `gen-hooks` when `--kind` names a file it does not generate. Placeholder: {kind}. |
 | `dispatch.msg_why_died` | `hook {id} was killed before it could answer` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook was killed by a signal. Placeholder: {id}. |
 | `dispatch.msg_why_incomplete` | `hook {id} finished with incomplete output` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook finished but a process it left behind kept its output open, so the output is incomplete. Placeholder: {id}. |
 | `dispatch.msg_why_spawn` | `hook {id} could not be started` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook could not be started. Placeholder: {id}. |
@@ -977,7 +983,61 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.stop_state_dir` | `stop-blocks` |  |  | The directory under the state dir holding one consecutive-block counter file per event and session. |
 | `dispatch.stop_state_max_age_days` | `7` |  | days | Counter files of the Stop block counter older than this many days are removed (a session that ended while its guards were failing leaves one behind). |
 | `dispatch.stop_unknown_session` | `unknown` |  |  | Counter key for a Stop whose payload names no session (unreadable or cut off). |
+| `dispatch.thin_command` | `sh "${{var}}/hooks/ah-hook.sh" {event}{extra}` |  |  | The command of each event's thin trigger in the generated hooks.json (D87). Placeholders: {var} the host's plugin-root variable (the first of dispatch.root_vars), {event} the event, {extra} the host's dispatch.thin_host_args. |
+| `dispatch.thin_events` | `2 entries` |  |  | Per host, the events that get a thin trigger in the generated hooks.json besides the events the table has entries for (D87; WorktreeCreate and WorktreeRemove are excluded on Claude because a hook there replaces the operation and cannot be a silent trigger). |
+| `dispatch.thin_host_args` | `2 entries` |  |  | Per host, the extra arguments of the thin trigger's command: the wrapper reads the host's table and fallback list from `--host` (Claude is the wrapper's default). |
+| `dispatch.thin_timeout_s` | `10` |  | s | The timeout of the thin trigger of an event the table has no entry for (an event with entries takes the longest timeout among them). |
 | `dispatch.tool_aliases` | `2 entries` |  |  | Per host, extra names a tool also answers to when matching (Codex: matcher values Edit and Write also match apply_patch). |
+
+### hooks.toml / hooks
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `hooks.entry_enabled` | `true` |  |  | Default of `enabled` in `[entries.<id>]`: whether the entry runs (false is the same as mode = off; on a guard entry only allowed when it has a built-in check). |
+| `hooks.entry_fields` | `enabled, mode, when` |  |  | The fields an `[entries.<id>]` section may hold. |
+| `hooks.entry_mode` | `on` |  |  | Default of `mode` in `[entries.<id>]`: on, shadow (runs and is logged, never changes the outcome) or off (skipped). On a guard-event entry shadow and off are allowed only when the entry has a built-in check, whose Node hook then stays the real decider. |
+| `hooks.entry_when` | `0 entries` |  |  | Default of `when` in `[entries.<id>]`: no predicate (the entry applies whenever its matcher does). A table row may carry its own `when`, and `[entries.<id>] when` overrides it (not on a guard entry). |
+| `hooks.event_budget_ms` | `0` |  | ms | Default of `budget_ms` in `[events.<Event>]`: the wall budget of one occurrence of the event (0 = none). Once it has passed the engine starts no further entry, lets the ones already running finish within their own timeouts, and on a guard event fails closed as the fail-closed matrix defines. |
+| `hooks.event_enabled` | `true` |  |  | Default of `enabled` in `[events.<Event>]`: whether the event is used at all (false is the same as mode = off). |
+| `hooks.event_fields` | `enabled, mode, max_rules, budget_ms, order` |  |  | The fields an `[events.<Event>]` section may hold. |
+| `hooks.event_max_rules` | `0` |  | entries | Default of `max_rules` in `[events.<Event>]`: the most entries evaluated per occurrence of the event (0 = all). The entries after the first max_rules, in order, are skipped and counted as skipped (max_rules). Not allowed above 0 on a guard event. |
+| `hooks.event_mode` | `on` |  |  | Default of `mode` in `[events.<Event>]`: on (the event's entries decide), shadow (they run and are logged but never change the outcome) or off (the event is skipped and answered with the neutral no-op). |
+| `hooks.event_order` | `` |  |  | Default of `order` in `[events.<Event>]`: entry ids that run and combine before the others, in this order (empty = the table's order). An id the event's table does not have is a config error. |
+| `hooks.modes` | `on, shadow, off` |  |  | The values `mode` may take, in `[events.<Event>]` and `[entries.<id>]`. |
+| `hooks.msg_budget` | `the event's budget passed before {id} could run` |  |  | Why a guard event fails closed when its budget_ms has passed before a built-in check's Node hook could start. Placeholder: {id}. |
+| `hooks.msg_cfg_bad_mode` | `mode {value} is not one of {allowed}` |  |  | Config error detail: `mode` is not one of hooks.modes. Placeholders: {value}, {allowed}. |
+| `hooks.msg_cfg_bad_type` | `{field} must be {expected}` |  |  | Config error detail: a field has the wrong type. Placeholders: {field}, {expected}. |
+| `hooks.msg_cfg_guard_entry` | `{id} decides on guard event {event} only through its Node hook, so {what} wou...` |  |  | Config error detail: an entry of a guard event has no built-in check, so its Node hook is its only decider and must keep running. Placeholders: {id}, {event}, {what}. |
+| `hooks.msg_cfg_guard_event` | `{event} is a guard event and cannot be configured into a silent allow ({what})` |  |  | Config error detail: a guard event (PreToolUse, PermissionRequest, Stop, SubagentStop) was configured so a guard could silently allow. Placeholders: {event}, {what}. |
+| `hooks.msg_cfg_guard_when` | `{id} is a guard entry of {event}: its `when` can only come from the dispatch ...` |  |  | Config error detail: a `when` override on a guard entry. Placeholders: {id}, {event}. |
+| `hooks.msg_cfg_project_guard` | `a project file may not configure guard events or their entries ({what})` |  |  | Config error detail: the project file names a guard event or guard entry. Placeholders: {what}. |
+| `hooks.msg_cfg_range` | `{field} = {value} is outside {min} to {max}` |  |  | Config error detail: a number is outside its bounds. Placeholders: {field}, {value}, {min}, {max}. |
+| `hooks.msg_cfg_unknown_entry` | `{id} is not an entry of the dispatch table` |  |  | Config error detail: `[entries.<id>]` names an entry no host's table has. Placeholder: {id}. |
+| `hooks.msg_cfg_unknown_event` | `{event} is not an event of the dispatch table` |  |  | Config error detail: `[events.<Event>]` names an event neither host's table or thin trigger list has. Placeholder: {event}. |
+| `hooks.msg_cfg_unknown_field` | `{field} is not a field here (allowed: {allowed})` |  |  | Config error detail: a section holds a field it does not have. Placeholders: {field}, {allowed}. |
+| `hooks.msg_cfg_unknown_order` | `order names {id}, which the {event} table does not have` |  |  | Config error detail: `order` names an id the event's table does not have. Placeholders: {id}, {event}. |
+| `hooks.msg_plan_event` | `cfg={cfg} ran=[{ran}] skipped_predicate=[{predicate}] skipped_max_rules=[{max...` |  |  | Event-log detail of a dispatch that skipped, shadowed or cut entries. Placeholders: {cfg} the config hash, {ran}, {predicate}, {max_rules}, {budget}, {shadowed}, {off}: comma lists of entry ids. |
+| `hooks.msg_shadow_event` | `{id} agree={agree} engine_exit={engine} node_exit={node}` |  |  | Event-log detail when a shadowed built-in check's answer is compared with the Node hook that decided. Placeholders: {id}, {agree}, {engine}, {node}. |
+| `hooks.msg_when_bad_pointer` | `the pointer {pointer} must start with /` |  |  | Config error detail: a `field` condition's JSON pointer does not start with a slash. Placeholder: {pointer}. |
+| `hooks.msg_when_bad_regex` | `the regex {pattern} is invalid: {err}` |  |  | Config error detail: a condition's regular expression does not compile. Placeholders: {pattern}, {err}. |
+| `hooks.msg_when_bad_session` | `bad session condition: {what}` |  |  | Config error detail: a `session` condition is malformed. Placeholders: {what}. |
+| `hooks.msg_when_bad_value` | `bad condition value: {what}` |  |  | Config error detail: a condition holds a value it cannot use. Placeholders: {what}. |
+| `hooks.msg_when_depth` | `a predicate may nest at most {max} levels` |  |  | Config error detail: a `when` predicate nests deeper than allowed. Placeholder: {max}. |
+| `hooks.msg_when_env_not_forwarded` | `{name} is not in request_env.allow, so the request never carries it` |  |  | Config error detail: an `env` condition names a variable the request environment does not carry (request_env.allow), so it could never be set. Placeholder: {name}. |
+| `hooks.msg_when_unknown_fact` | `{name} is not a transcript fact (allowed: {allowed})` |  |  | Config error detail: a `transcript` condition names a fact the index does not expose. Placeholders: {name}, {allowed}. |
+| `hooks.msg_when_unknown_kind` | `a condition needs exactly one of {allowed}, found: {found}` |  |  | Config error detail: a `when` condition names no condition kind, or more than one. Placeholders: {found}, {allowed}. |
+| `hooks.msg_when_unknown_op` | `a condition needs exactly one test of {allowed}, found: {found}` |  |  | Config error detail: a leaf condition has no test, or more than one. Placeholders: {found}, {allowed}. |
+| `hooks.msg_when_unknown_setting` | `{key} is not a setting the engine has loaded` |  |  | Config error detail: a `setting` condition names a setting the engine's loaded settings do not have. Placeholder: {key}. |
+| `hooks.outcomes` | `ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed, off` |  |  | The words the telemetry uses for what happened to a table entry in one dispatch, in this order: ran, skipped_predicate (its `when` was false), skipped_max_rules (cut by max_rules), skipped_budget (the event's budget had passed), shadowed (ran, never changed the outcome) and off (configured off, or a guard entry's engine check turned off so its Node hook decides). |
+| `hooks.project_file` | `.anti-hall/engine.toml` |  |  | The project-level hook configuration file, relative to the payload's cwd; read when it exists, below the user file in precedence. It may not configure guard events or guard entries. |
+| `hooks.reasons` | `11 entries` |  |  | Short reasons the config errors above quote in their {what} placeholder. |
+| `hooks.session_max_keys` | `4096` |  |  | The most session-condition counters kept at once; past it the oldest are dropped (a dropped counter starts again, which only makes its condition fire sooner). |
+| `hooks.session_ops` | `first, every, at_least` |  |  | The per-session counters a `session` condition may use: first (true the first time per session within the TTL), every (true on the 1st, then every Nth evaluation: a once-per-N-turns dedupe) and at_least (true once the evaluation count in the session reaches N). |
+| `hooks.session_ttl_s` | `3600` |  | s | How long the engine keeps a `session` condition's state after its last evaluation (a condition's own `ttl_s` overrides it). |
+| `hooks.transcript_facts` | `9 entries` |  |  | The transcript-index facts a `transcript` condition may read, with their types (int, bool or str). Only facts the index already computes: records, compact_boundaries, sidechain_rows, meta_rows (counts), has_last_prompt and has_last_assistant (whether the index holds them), last_tool (the newest tool use's name), terminal_agents (background agents with a terminal notification) and unresolved_agents (agents a compaction re-injected as live that no terminal notification closed). |
+| `hooks.when_kinds` | `9 items` |  |  | The condition kinds a `when` predicate may be built from: the combinators all, any and not (over other conditions), and the leaf kinds tool (the payload's tool name), field (a JSON pointer into the payload), setting (a boolean or enum of the engine's loaded settings), env (a variable of the request environment) , session (per-session state the engine keeps in memory) and transcript (a fact of the transcript index). |
+| `hooks.when_max_depth` | `8` |  |  | How deep combinators (all, any, not) may nest in one `when` predicate. |
+| `hooks.when_ops` | `7 items` |  |  | The tests a leaf condition may apply to its value (exactly one per condition): equals, in (a list), regex (unanchored), glob (`*` within a path segment, `**` across segments, `?` one character), exists (true or false), at_least and at_most (integers). |
 
 ## Messages
 
@@ -1112,6 +1172,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `git.msg_runner_placeholder` | Block: a runner placeholder stands for the command or subcommand beside a force or delete flag. |
 | `git.msg_runner_push` | Block: a push through xargs or parallel. Placeholder: {runner}. |
 | `git.msg_trailer_remap` | Block: a trailer remap to an AI self-credit key. |
+| `msg.cfg_err_hooks` | A hook configuration section ([events.*], [entries.*]) is invalid (D87). |
 | `msg.cfg_err_io` | A config file could not be read. |
 | `msg.cfg_err_not_object` | settings.json is valid JSON but not an object. |
 | `msg.cfg_err_parse` | A config file is not valid TOML or JSON. |
@@ -1167,6 +1228,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `db_hot_wal_bytes` | gauge | bytes |  | Size of hot.db's write-ahead log. |
 | `db_writes` | gauge | writes |  | Writes carried by those transactions since the daemon started. |
 | `dispatch_checks` | counter | entries | event, check, answer | Built-in check entries the dispatcher sent to the daemon, by event, check and answer (decided, or defer = its Node hook ran instead) (D58). |
+| `dispatch_entries` | counter | entries | event, entry, outcome | What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry and outcome. |
 | `errors` | counter | requests |  | Requests answered ERR. |
 | `hook_calls` | counter | requests | event | Hook requests served, by hook event. |
 | `hook_latency_us` | histogram | us | event | Wall time to serve a hook request inside the daemon, by hook event. |

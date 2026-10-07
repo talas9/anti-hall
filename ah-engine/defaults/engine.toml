@@ -14,6 +14,10 @@
 doc = "Overrides the state directory (default: base_dir/state_dir under the home directory)."
 value = "AH_ENGINE_DIR"
 
+[env.done_file]
+doc = "A file the dispatcher creates once it has dispatched an event and decided its exit code (D87). The reliability wrapper sets it, so that an engine exit code of a hook's own (1, say) is told from an engine failure and is not answered by running every hook a second time."
+value = "AH_ENGINE_DONE_FILE"
+
 [env.rules]
 doc = "Overrides the rules file path."
 value = "AH_ENGINE_RULES"

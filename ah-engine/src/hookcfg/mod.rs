@@ -133,6 +133,10 @@ fn bad(path: &Path, key: &str, why: &str, args: &[(&str, &dyn std::fmt::Display)
     ConfigError::Hooks { path: path.to_path_buf(), key: key.to_string(), detail: defaults::render(why, args) }
 }
 
+fn why(name: &str) -> &'static str {
+    defaults::raw("hooks.reasons").str_field(name)
+}
+
 fn is_guard(event: &str) -> bool {
     defaults::list("dispatch.guard_events").contains(&event)
 }
@@ -216,7 +220,7 @@ fn parse_event(path: &Path, origin: Origin, event: &str, v: &Json) -> Result<Eve
         return Err(bad(path, &key, "hooks.msg_cfg_unknown_event", &[("event", &event)]));
     }
     let o = expect_object(path, &key, v)?;
-    only_fields(path, &key, o, &["enabled", "mode", "max_rules", "budget_ms", "order"])?;
+    only_fields(path, &key, o, &defaults::list("hooks.event_fields"))?;
     let mode = mode_of(path, &key, o)?;
     let max_rules = number(path, &key, "max_rules", o, "hooks.event_max_rules")?;
     let budget_ms = number(path, &key, "budget_ms", o, "hooks.event_budget_ms")?;
@@ -239,10 +243,10 @@ fn parse_event(path: &Path, origin: Origin, event: &str, v: &Json) -> Result<Eve
             return Err(bad(path, &key, "hooks.msg_cfg_project_guard", &[("what", &event)]));
         }
         if mode.is_some_and(|m| m != Mode::On) {
-            return Err(bad(path, &key, "hooks.msg_cfg_guard_event", &[("event", &event), ("what", &"mode off or shadow, or enabled = false")]));
+            return Err(bad(path, &key, "hooks.msg_cfg_guard_event", &[("event", &event), ("what", &why("guard_mode"))]));
         }
         if max_rules.is_some_and(|n| n != 0) {
-            return Err(bad(path, &key, "hooks.msg_cfg_guard_event", &[("event", &event), ("what", &"max_rules above 0 would skip guards")]));
+            return Err(bad(path, &key, "hooks.msg_cfg_guard_event", &[("event", &event), ("what", &why("guard_max_rules"))]));
         }
     }
     Ok(EventPatch { mode, max_rules, budget_ms, order })
@@ -259,7 +263,7 @@ fn parse_entry(path: &Path, origin: Origin, key_name: &str, v: &Json) -> Result<
         return Err(bad(path, &key, "hooks.msg_cfg_unknown_entry", &[("id", &key_name)]));
     }
     let o = expect_object(path, &key, v)?;
-    only_fields(path, &key, o, &["enabled", "mode", "when"])?;
+    only_fields(path, &key, o, &defaults::list("hooks.entry_fields"))?;
     let mode = mode_of(path, &key, o)?;
     let when = match o.get("when") {
         None => None,
@@ -274,12 +278,7 @@ fn parse_entry(path: &Path, origin: Origin, key_name: &str, v: &Json) -> Result<
                 return Err(bad(path, &key, "hooks.msg_cfg_guard_when", &[("id", &id), ("event", event)]));
             }
             if mode.is_some_and(|m| m != Mode::On) && !has_check {
-                return Err(bad(
-                    path,
-                    &key,
-                    "hooks.msg_cfg_guard_entry",
-                    &[("id", &id), ("event", event), ("what", &"mode off or shadow, or enabled = false")],
-                ));
+                return Err(bad(path, &key, "hooks.msg_cfg_guard_entry", &[("id", &id), ("event", event), ("what", &why("guard_mode"))]));
             }
         }
     }
@@ -395,7 +394,7 @@ impl HookCfg {
             } else {
                 Mode::Off
             },
-            when: None,
+            when: defaults::raw("hooks.entry_when").as_table().filter(|t| !t.is_empty()).and_then(|_| When::from_v(defaults::raw("hooks.entry_when")).ok()),
         };
         let qualified = format!("{event}/{id}");
         for layer in [shipped(), &self.project, &self.user] {

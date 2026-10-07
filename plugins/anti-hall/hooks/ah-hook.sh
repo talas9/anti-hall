@@ -4,6 +4,8 @@
 # Dispatcher-equivalent fallback outcome table (D74 / dispatch::node):
 # - engine exit 0: exact answer, pass stdout/stderr and exit 0.
 # - engine exit 2: exact block, pass stdout/stderr and exit 2.
+# - any other engine exit after it marked the dispatch done (AH_ENGINE_DONE_FILE): a hook's own exit code (a non-blocking error),
+#   passed through with its stdout/stderr; without the mark it is an engine failure and the Node fallback below runs.
 # - engine exit 75 (`dispatch.defer_exit`): run this event's Node hooks one by one.
 # - engine timeout, signal death, spawn failure, or any other exit: run Node fallback with a one-line note.
 # - Node hook exit 2: block; stdout from every ran hook is kept, stderr from the first exit-2 hook wins.
@@ -771,7 +773,10 @@ run_fallback() {
 }
 
 run_engine() {
-  eng_out=$tmp/engine.out; eng_err=$tmp/engine.err; eng_timed=$tmp/engine.timed
+  eng_out=$tmp/engine.out; eng_err=$tmp/engine.err; eng_timed=$tmp/engine.timed; eng_done=$tmp/engine.done
+  rm -f "$eng_done"
+  AH_ENGINE_DONE_FILE=$eng_done
+  export AH_ENGINE_DONE_FILE
   timeout=$(event_timeout)
   [ -n "$timeout" ] || timeout=$timeout_env
   validate_positive_int "$timeout" engine_timeout
@@ -798,7 +803,13 @@ run_engine() {
   case "$rc" in
     0|2) cat "$eng_out"; cat "$eng_err" >&2; exit "$rc" ;;
     75) run_fallback "engine requested fallback" ;;
-    *) run_fallback "engine failed with exit $rc" ;;
+    *)
+      # The engine finished dispatching the event and its exit code is a hook's own (1, 3, ...): the host reads it as a non-blocking
+      # hook error with its stderr, exactly as it would from the hook; answering it by running the hooks again would run each twice.
+      if [ -e "$eng_done" ]; then
+        cat "$eng_out"; cat "$eng_err" >&2; exit "$rc"
+      fi
+      run_fallback "engine failed with exit $rc" ;;
   esac
 }
 
