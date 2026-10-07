@@ -231,7 +231,7 @@ pub fn drain(p: &Path, apply: &mut dyn FnMut(&Record) -> Applied) -> Drained {
     // rather than passing in silence.
     let rewritten = f.set_len(0).and_then(|_| f.write_all(rest)).and_then(|_| f.sync_all());
     if let Err(e) = rewritten {
-        crate::health::log_event("spool", "rewrite_failed", &format!("{e}; {} unapplied record(s) may be lost", out.left));
+        crate::health::log_event("spool", "rewrite_failed", &defaults::render("msg.spool_rewrite_failed", &[("err", &e), ("n", &out.left)]));
     }
     out
 }

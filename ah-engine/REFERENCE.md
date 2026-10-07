@@ -24,7 +24,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `restore` | `<snapshot-dir>` | no | implemented | Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases. |
 | `schedule` | `<list\|run <job>\|history> [--job <name>] [--limit <n>]` | no | implemented | The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json. |
 | `serve` | `` | no | implemented | Run the resident daemon in the foreground (the client starts it detached when needed). |
-| `status` | `` | yes | implemented | Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did. |
+| `status` | `[--memory]` | yes | implemented | Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did. |
 | `stop` | `` | no | implemented | Ask the daemon to drain and exit. |
 | `telemetry` | `[summary\|events\|rollup] [--window <7d>] [--kind <k>] [--limit <n>]` | no | implemented | Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention). Local only. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
@@ -155,6 +155,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.idle_exit_s` | `0` | `AH_ENGINE_IDLE_EXIT_S` | s | Seconds without any request after which the daemon exits; 0 keeps it resident (default, D7: the scheduler and mailbox must keep running with no session open). |
 | `daemon.lock_poll_ms` | `10` |  | ms | Poll interval while waiting for the singleton lock. |
 | `daemon.lock_wait_ms` | `1500` |  | ms | How long a starting daemon waits for an outgoing (version-handoff) daemon to release the singleton lock. |
+| `daemon.malloc_conf` | `narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0` |  |  | Allocator purge tuning handed to the daemon at start (jemalloc `malloc_conf` syntax): one arena for the four worker threads (less fragmentation) and decay 0 (freed pages go back to the OS at once; the system allocators keep them, which left RSS at 2.5x the live heap). Measured on 1000 mixed calls, this Mac: system allocator 45-48 MB RSS, jemalloc with only decay 0 37 MB, with narenas:1 as well 32 MB (live heap 16 MB), adding tcache:false 27 MB but p50 call latency 10 ms against 6.5-7 ms, so tcache stays on. empty = the allocator's own defaults. A variable the caller already set is not overridden. |
+| `daemon.malloc_conf_vars` | `_RJEM_MALLOC_CONF, MALLOC_CONF` |  |  | Environment variables the allocator reads its tuning from (the crate's prefixed name and the plain one). |
 | `daemon.max_request` | `1048576` | `AH_ENGINE_MAX_REQUEST` | bytes | Largest request the daemon reads; the client sends nothing larger (it falls back instead). |
 | `daemon.mem_mb` | `512` | `AH_ENGINE_MEM_MB` | MB | Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS accepts the call but does not enforce it. |
 | `daemon.nice` | `5` | `AH_ENGINE_NICE` |  | `nice` increment applied to the daemon process. |
@@ -163,7 +165,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.queue` | `16` | `AH_ENGINE_QUEUE` |  | Connections that may wait for a worker; beyond this the daemon answers BUSY and the client falls back. |
 | `daemon.read_ms` | `1000` | `AH_ENGINE_READ_MS` | ms | Total time a client has to deliver its request. |
 | `daemon.read_poll_ms` | `100` |  | ms | Socket read timeout slice while collecting a request (the total is read_ms). |
-| `daemon.rss_cap_kb` | `49152` | `AH_ENGINE_RSS_CAP_KB` | KB | Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. |
+| `daemon.rss_cap_kb` | `65536` | `AH_ENGINE_RSS_CAP_KB` | KB | Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. Set from measurement, not guessed: steady state of the 61-check engine on a mixed real-payload replay (5000 calls, a 142 MB transcript read by the Stop checks) is 33-36 MB RSS with jemalloc (aarch64-apple-darwin, linux-gnu) and 45-52 MB with the system allocator (x86_64-apple-darwin, musl, which the allocator crate does not support); live heap is 16-18 MB in both. The cap sits above the larger figure, so only growth trips it. The previous 48 MB cap sat inside the system-allocator steady state, so the daemon restarted every ~10 s and the crash-loop breaker switched it off. |
 | `daemon.rss_check_ms` | `10000` | `AH_ENGINE_RSS_CHECK_MS` | ms | How often the watchdog samples resident memory. |
 | `daemon.rules_check_ms` | `200` |  | ms | How often the daemon checks the rules file (and SIGHUP) for a change. |
 | `daemon.session_burst` | `200` | `AH_ENGINE_SESSION_BURST` |  | Token-bucket burst per session. |
@@ -220,6 +222,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.advisory_ttl_ms` | `3600000` |  | ms | A recorded failure older than this no longer produces an advisory. |
 | `health.context_events` | `PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStart` |  |  | Hook events whose output carries `additionalContext`; other events use `systemMessage` when an advisory is merged. |
 | `health.crashy_kinds` | `crash, panic, start_fail, watchdog, rss` |  |  | Event kinds that count toward the crash-loop threshold. |
+| `health.degraded_window_s` | `3600` |  | s | The window over which `status` counts self-restarts and Node fallbacks, and over which a restart marks the engine degraded (shown by `status`, the shadow report and, once per session, in the session context). |
 | `health.diag_lines` | `8` |  |  | Event-log lines included in the diagnostic block of a permanent-failure advisory. |
 | `health.error_codes` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | Error-code classification: environment-class codes get a plain self-fix hint (a message key); every other code is a permanent failure that asks for an issue. |
 | `health.event_text_max` | `300` |  | chars | Longest kind, code or detail written to one log line (newlines and tabs become spaces). |
@@ -236,6 +239,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `hook.event_keys` | `hook_event_name, hookEventName, event` |  |  | Payload fields that can carry the event name, tried in order (Claude Code and Codex send `hook_event_name`). |
 | `hook.warn_prefix` | `anti-hall warning: ` |  |  | Prefix of a `warn` rule's message in agent-visible output. |
+
+### engine.toml / load
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `load.events_cap` | `32` |  |  | Most distinct hook events listed per minute bucket; past it the rest are counted together. |
+| `load.minutes_kept` | `60` |  |  | How many one-minute buckets of request load the daemon keeps (a rolling window; older buckets are dropped, so memory does not grow with traffic). |
+| `load.proc_buckets_us` | `12 items` |  |  | Upper edges of the processing-time histogram (microseconds) the per-minute p95 is read from. |
+| `load.saturation_wait_ms` | `100` |  | ms | A call that waited longer than this between accept and the start of its processing marks that minute saturated: calls are waiting on each other. |
+| `load.saturation_window_minutes` | `10` |  | min | `status` reports the engine saturated while a saturated minute lies within this many minutes. |
+| `load.sessions_cap` | `1024` |  |  | Most distinct session ids remembered per minute bucket; past it sessions are only counted. |
+| `load.wait_noise_us` | `1000` |  | us | A wait up to this long between accept and processing is the hand-off between two threads, not queueing; only longer waits count as `calls_that_waited`. |
 
 ### engine.toml / paths
 
@@ -1121,7 +1136,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `turn_gate.injected_re` | `^\s*<(?:task-notification\|system-reminder\|local-command\|command-name\|command-...` |  |  | Regex source (JavaScript syntax) of the text an injected, non-human user entry starts with. |
 | `turn_gate.main_label` | `main` |  |  | The slot label used for the main thread. |
 | `turn_gate.max_sigs` | `16` |  |  | How many distinct advisory signatures one key remembers per turn. |
-| `turn_gate.prefix` | `tg-` |  |  | File-name prefix of a turn-gate state file (the Node code also hands it to the pruning sweep as the family name). |
+| `turn_gate.prefix` | `tg` |  |  | Family name of a turn-gate state file: the file is `<prefix>-<session>.json` and the pruning sweep takes the same name (the Node hook passes `tg` and the sweep appends the dash itself, commit ef0a30b). |
 | `turn_gate.session_max` | `80` |  |  | Longest session id part, in UTF-16 units, of a turn-gate file name. |
 | `turn_gate.tail_bytes` | `524288` |  |  | How many bytes at the end of the transcript are read to find the newest human prompt. |
 
@@ -1272,6 +1287,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.key_file_typesafe` | `.config/typesafe/key` |  |  | Default key file for the TypeSafe vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
 | `jev.key_file_vercel` | `.config/vercel/ai-gateway-key` |  |  | Default key file for the Vercel vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
 | `jev.lane_cap` | `8` |  |  | How many home directories keep a resident Jev lane at once (one per user in practice; the oldest is dropped past the cap). |
+| `jev.latency_samples_max` | `4096` |  |  | Most call-latency samples held between two metrics flushes; past it new samples are dropped until the flush drains them (a bound on memory if the flush stalls). |
 | `jev.legacy_file` | `jev.json` |  |  | The legacy Jev config file, relative to the anti-hall home directory, read below settings.json (Node: jev.json). |
 | `jev.legacy_on_default` | `speculation, triage` |  |  | Integrations that predate the per-integration modes and stay on by default; consulted only for an id missing from the table (Node: LEGACY_ON_DEFAULT). |
 | `jev.legacy_triage_key` | `triage` |  |  | Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off. |
@@ -1849,7 +1865,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `reply_turn_gate.injected_re` | `^\s*<(?:task-notification\|system-reminder\|local-command\|command-name\|command-...` |  |  | Regex source of the text an injected block starts with (notifications and reminders), which is never a human prompt. |
 | `reply_turn_gate.main_agent` | `main` |  |  | The agent part of a slot key for the main agent (a payload without an agent id). |
 | `reply_turn_gate.max_sigs` | `16` |  |  | How many signatures one slot remembers for a turn (the oldest beyond this are dropped). |
-| `reply_turn_gate.prefix` | `tg-` |  |  | Prefix of a gate state file name (the sanitised session id and the JSON extension follow); also the prefix of its stale-file sweep. |
+| `reply_turn_gate.prefix` | `tg` |  |  | Family name of a gate state file (`<prefix>-<session>.json`, the sanitised session id and the JSON extension follow); also the family name of its stale-file sweep, which appends the dash itself. |
 | `reply_turn_gate.session_max` | `80` |  |  | Longest session part of a gate state file name, in UTF-16 units. |
 | `reply_turn_gate.sig_max` | `200` |  |  | Longest advisory signature kept, in UTF-16 units. |
 | `reply_turn_gate.tail_bytes` | `524288` |  | bytes | How much of the end of the transcript is read to find the newest human prompt. |
@@ -2701,6 +2717,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 
 | Key | When it is shown |
 |---|---|
+| `msg.advisory_degraded` | Once-per-session notice that the engine is running below full strength. Placeholders: {restarts} self-restarts and {fallbacks} fallbacks to Node in the last {mins} minutes, {log} the event-log path. |
 | `msg.advisory_env` | Once-per-session advisory for an environment-class failure. Placeholder: {hint}. |
 | `msg.advisory_permanent` | Once-per-session advisory for a permanent failure; nothing is ever filed automatically. Placeholders: {reason}, {diagnostics}. |
 | `msg.backup_exists` | A backup destination already holds a snapshot. Placeholder: {path}. |
@@ -2750,6 +2767,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.exit_reason_stuck` | Drain reason for a stuck worker. |
 | `msg.failure_stall` | Failure reason when the accept loop stalled. |
 | `msg.failure_stuck` | Failure reason when a worker is stuck. |
+| `msg.fallback_read_error` | Printed on stderr when reading the Node fallback's output failed part-way, so the output is incomplete and no decision exists (exit 1). |
 | `msg.fallback_read_timeout` | Printed on stderr when the Node fallback finished but its output could not be read to the end in time, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1. |
 | `msg.fallback_signal` | Printed on stderr when the Node fallback was killed by a signal, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1. Placeholder: {signal}. |
 | `msg.hint_disk_full` | Self-fix hint when the disk is full (error code os28). |
@@ -2763,6 +2781,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_check_spawn` | Log detail when a built-in check's thread cannot start, so every command is deferred to Node. Placeholder: {err}. |
 | `msg.log_crash` | Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}. |
 | `msg.log_daemon_killed` | Log detail when the daemon was killed by a signal while starting. |
+| `msg.log_fallback_read_error` | Log detail when reading the Node fallback's stdout or stderr failed part-way. |
 | `msg.log_fallback_read_timeout` | Log detail when the Node fallback finished but its stdout or stderr was still open at the deadline. |
 | `msg.log_fallback_signal` | Log detail when the Node fallback was killed by a signal (out of memory, a crash). |
 | `msg.log_fallback_timeout` | Log detail when the Node fallback did not finish in time. |
@@ -2804,6 +2823,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.spool_damaged` | Quarantine reason for spool bytes that are not a valid record. |
 | `msg.spool_full` | Printed by `proj` when the spool is full, so the write was not kept. |
 | `msg.spool_io` | Printed by `proj` when the spool could not be written. Placeholder: {err}. |
+| `msg.spool_rewrite_failed` | Log detail when the spool could not be rewritten after a drain. Placeholders: {err} the OS error, {n} unapplied records that may be lost. |
 | `msg.spool_spooled` | Printed by `proj` when the engine could not take a write and it was spooled. Placeholder: {id}. |
 | `msg.state_open` | Status text for a breaker that is open. Placeholder: {secs}. |
 | `msg.state_stopped` | Status text for a crash-loop stop that is active. Placeholder: {secs}. |
