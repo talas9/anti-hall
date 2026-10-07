@@ -123,6 +123,9 @@ fn date_strings_with_a_zone_parse_as_node_does() {
         ("Sat, Oct 3 2030 1:00 AM GMT", 1917219600000.0),
         ("Feb 31 2030 10:00 AM UTC", 1898762400000.0),
         ("Feb 29 2032 12:00 AM Z", 1961625600000.0),
+        ("Mar 10 2030 12:00 PM UTC", 1899374400000.0),
+        ("Jan 1 2000 12:00 AM UTC", 946684800000.0),
+        ("Dec 31 1999 11:59 PM GMT", 946684740000.0),
         ("+002030-10-08T12:00:00Z", 1917691200000.0),
     ] {
         assert_eq!(date::parse(s), Parsed::Ms(ms), "{s}");
@@ -141,8 +144,6 @@ fn utf16_helpers_count_units() {
     assert_eq!(text::len16("a\u{1F600}"), 3);
     assert_eq!(text::slice16_lossy("a\u{1F600}b", 2), "a\u{FFFD}");
     assert_eq!(text::slice16_lossy("a\u{1F600}b", 3), "a\u{1F600}");
-    assert_eq!(text::tail16("a\u{1F600}b", 1).as_deref(), Some("b"));
-    assert_eq!(text::tail16("a\u{1F600}b", 2), None);
     // default sort order is by UTF-16 unit: an astral character sorts before U+E000
     let mut v = vec!["\u{E000}", "\u{1F600}", "a"];
     v.sort_by(|a, b| text::cmp16(a, b));
@@ -193,7 +194,7 @@ fn local_time_needs_proof_that_the_zone_is_the_requests() {
         assert_eq!(date::parse("2030-10-08T12:00:00Z"), Parsed::Ms(1917691200000.0));
     }
     // the process's own zone: allowed, and the guard is released afterwards
-    let same = RequestEnv::from_pairs(std::env::var("TZ").map(|t| vec![("TZ".to_string(), t)]).unwrap_or_default());
+    let same = RequestEnv::from_pairs(date::process_zone().map(|t| vec![("TZ".to_string(), t)]).unwrap_or_default());
     {
         let _g = date::ZoneGuard::new(&same);
         assert!(date::local_ymd(1.0e12).is_some());

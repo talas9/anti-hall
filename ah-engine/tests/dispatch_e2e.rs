@@ -73,6 +73,9 @@ impl Env {
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
+            // the built-in SessionStart/Stop/PostToolUse checks (handover and Codex ports) say nothing for a judge child, so
+            // these tests see only the commands they mapped; tests/handover_codex_e2e.rs covers those checks
+            .env("ANTIHALL_JUDGE_CHILD", "1")
             // DevSwarm active makes the native verify-first-orch check defer to its mapped Node command, so the
             // SessionStart tests below keep driving Node hooks only (the check itself is covered by spawn_ctx_parity.rs)
             .env("DEVSWARM_REPO_ID", "e2e")
@@ -107,6 +110,9 @@ impl Env {
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
+            // the built-in SessionStart/Stop/PostToolUse checks (handover and Codex ports) say nothing for a judge child, so
+            // these tests see only the commands they mapped; tests/handover_codex_e2e.rs covers those checks
+            .env("ANTIHALL_JUDGE_CHILD", "1")
             // DevSwarm active makes the native verify-first-orch check defer to its mapped Node command, so the
             // SessionStart tests below keep driving Node hooks only (the check itself is covered by spawn_ctx_parity.rs)
             .env("DEVSWARM_REPO_ID", "e2e")

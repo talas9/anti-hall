@@ -66,7 +66,7 @@ pub fn user_messages(lines: &[&str], max: usize) -> Result<Vec<Msg>, Unsure> {
         if line.is_empty() || (!line.contains("\"user\"") && !line.contains("user_message")) {
             continue;
         }
-        let Some(e) = jstext::parse_line(line).map_err(|()| Unsure)? else { continue };
+        let Some(e) = jstext::parse_line(line).map_err(|_| Unsure)? else { continue };
         if !e.is_object() {
             continue;
         }
@@ -120,7 +120,7 @@ pub fn task_snapshot(lines: &[&str]) -> Result<Option<Vec<Task>>, Unsure> {
         if line.is_empty() || !words.iter().any(|w| line.contains(w)) {
             continue;
         }
-        let Some(e) = jstext::parse_line(line).map_err(|()| Unsure)? else { continue };
+        let Some(e) = jstext::parse_line(line).map_err(|_| Unsure)? else { continue };
         if !truthy(Some(&e)) || member(&e, "isSidechain") == Some(&Value::Bool(true)) {
             continue;
         }

@@ -12,6 +12,11 @@ thread_local! {
     static ZONE_OK: Cell<bool> = const { Cell::new(false) };
 }
 
+/// This process's own `TZ`, for tests that need a request carrying the zone they run in.
+pub fn process_zone() -> Option<String> {
+    std::env::var(defaults::text("codex_handover.tz_var")).ok()
+}
+
 /// Proof, for the length of one check, that the local time zone of this process is the one the hook ran in.
 ///
 /// Local calendar dates and zone-less date strings depend on the time zone. The engine process has its own zone, the
@@ -23,7 +28,7 @@ impl ZoneGuard {
     /// Compare the request's `TZ` with this process's and hold the answer until the guard is dropped.
     pub fn new(env: &RequestEnv) -> ZoneGuard {
         let name = defaults::text("codex_handover.tz_var");
-        let ok = env.get(name).map(str::to_string) == std::env::var(name).ok();
+        let ok = env.get(name).map(str::to_string) == process_zone();
         ZoneGuard(ZONE_OK.with(|z| z.replace(ok)))
     }
 }
@@ -258,7 +263,7 @@ fn parse_iso(s: &str) -> Parsed {
 
 /// `Mon D, YYYY [H:MM[:SS] [AM|PM]] [UTC|GMT|Z]`, optionally led by a weekday name.
 fn parse_legacy(s: &str) -> Parsed {
-    let toks: Vec<&str> = s.split(|c: char| c == ' ' || c == ',').filter(|t| !t.is_empty()).collect();
+    let toks: Vec<&str> = s.split([' ', ',']).filter(|t| !t.is_empty()).collect();
     let mut it = toks.iter().copied().peekable();
     if it.peek().is_some_and(|t| is_weekday(t)) {
         it.next();
@@ -301,11 +306,11 @@ fn parse_legacy(s: &str) -> Parsed {
         }
     }
     let mut utc = false;
-    if let Some(t) = it.peek().copied() {
-        if defaults::list("codex_handover.utc_words").iter().any(|z| t.eq_ignore_ascii_case(z)) {
-            utc = true;
-            it.next();
-        }
+    if let Some(t) = it.peek().copied()
+        && defaults::list("codex_handover.utc_words").iter().any(|z| t.eq_ignore_ascii_case(z))
+    {
+        utc = true;
+        it.next();
     }
     if it.next().is_some() {
         return Parsed::Unknown;

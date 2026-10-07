@@ -1,7 +1,7 @@
 //! File-system helpers with the semantics of the Node calls the hooks make.
 use crate::checks::git::util::{posix_dirname, posix_normalize};
 use std::fs;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 /// `stat.mtimeMs`: seconds times 1000 plus nanoseconds over a million, in doubles, as Node computes it.
@@ -83,12 +83,4 @@ pub fn lexists(p: &str) -> bool {
 /// Create the directory and its parents (`fs.mkdirSync(p, { recursive: true })`).
 pub fn mkdir_p(p: &str) -> bool {
     fs::create_dir_all(Path::new(p)).is_ok()
-}
-
-/// A special file that `fs.statSync` reports but is neither file nor directory (socket, fifo): reading it could block.
-pub fn is_special(p: &str) -> bool {
-    fs::metadata(p).is_ok_and(|m| {
-        let t = m.file_type();
-        t.is_fifo() || t.is_socket() || t.is_char_device() || t.is_block_device()
-    })
 }

@@ -142,5 +142,23 @@ exports.scenarios = (lib) => {
   add('tasks-weird-items', mk({ lines: [JSON.stringify({ type: 'assistant', message: { content: [null, 0, 'TaskCreate', { type: 'tool_use' }, toolUse('TodoWrite', null), toolUse('TaskUpdate', 'str')] } }), JSON.stringify({ type: 'assistant', message: { content: 'TodoWrite' } }), JSON.stringify(['TodoWrite'])] }));
   add('tasks-many-cells', mk({ lines: [asst(toolUse('TodoWrite', { todos: [{ content: 'café \u{1F600}\n\tline | two', status: 'pending' }, { content: '\u{1F600}'.repeat(150), status: 'pending' }, { content: 'a'.repeat(199) + '\u{1F600}', status: 'pending' }] }))] }));
   add('tasks-and-messages-together', mk({ lines: [user('first'), asst(toolUse('TodoWrite', { todos: [{ content: 'a', status: 'pending' }] })), user('second'), asst(toolUse('TaskCreate', { subject: 'N' }, 'q')), toolRes('q', 'Task #3 created successfully'), user('third')] }));
+  // ---- fuzz: random transcripts, same seed for both sides ----
+  let seed = 4242; const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  const pick = a => a[Math.floor(rnd() * a.length)];
+  const WORDS = ['', ' ', 'a', 'caf\u00e9', '\u{1F600}', '|', '||x', 'line\nbreak', 'tab\there', '<system-reminder>x', '<task-notification>', '  pad  ', 'x'.repeat(250), '\u{1F600}'.repeat(120), 'deleted', 'pending', 'completed', 'in_progress', '0', 'TodoWrite', 'user'];
+  const scalar = () => pick([null, true, false, 0, 1, -1, 2.5, 1e21, '', 'x', 'deleted', 'pending', pick(WORDS), pick(WORDS)]);
+  const rv = (d) => { const r = rnd(); if (d <= 0 || r < 0.55) return scalar(); if (r < 0.75) return Array.from({ length: Math.floor(rnd() * 3) }, () => rv(d - 1)); const o = {}; for (const k of ['content', 'subject', 'status', 'type', 'text', 'id', 'taskId']) if (rnd() < 0.4) o[k] = rv(d - 1); return o; };
+  const fuzzLine = () => {
+    const r = rnd();
+    if (r < 0.25) return user(pick(WORDS) + pick(WORDS));
+    if (r < 0.35) return JSON.stringify({ type: pick(['user', 'assistant', 'event_msg', 'x', 5]), isMeta: pick([undefined, true, false, 0, 'x']), isSidechain: pick([undefined, true, false, 'true']), message: rv(2), payload: rv(2), timestamp: pick([undefined, 't', 5, null]) });
+    if (r < 0.55) return asst(toolUse('TodoWrite', { todos: rnd() < 0.9 ? Array.from({ length: Math.floor(rnd() * 4) }, () => rv(1)) : rv(1) }));
+    if (r < 0.7) return asst(toolUse('TaskCreate', rnd() < 0.8 ? { subject: rv(0) } : rv(1), rnd() < 0.8 ? 'id' + Math.floor(rnd() * 4) : rv(0)));
+    if (r < 0.82) return asst(toolUse('TaskUpdate', rnd() < 0.85 ? { taskId: pick([1, '1', '2', 3, null, 'x', ['a']]), status: rv(0), subject: rv(0) } : rv(1)));
+    if (r < 0.92) return toolRes('id' + Math.floor(rnd() * 4), pick(['Task #' + Math.floor(rnd() * 4) + ' created successfully', 'x', null, [{ type: 'text', text: 'Task #1 created successfully' }], rv(1)]));
+    return pick(['', ' ', 'not json', '{"type":"user"', '[1]', 'null', '5', JSON.stringify(rv(3))]);
+  };
+  const nfuzz = +lib.arg('--fuzz', 120);
+  for (let i = 0; i < nfuzz; i++) { const L = Array.from({ length: 2 + Math.floor(rnd() * 10) }, fuzzLine); add('fuzz-' + i, mk({ lines: L })); }
   return out;
 };

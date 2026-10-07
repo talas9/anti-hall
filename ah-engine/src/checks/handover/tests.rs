@@ -19,7 +19,7 @@ fn repo(sb: &Sandbox) -> PathBuf {
 }
 
 fn today() -> String {
-    let tz: Vec<(String, String)> = std::env::var("TZ").map(|t| vec![("TZ".to_string(), t)]).unwrap_or_default();
+    let tz: Vec<(String, String)> = crate::checks::jsport::date::process_zone().map(|t| vec![("TZ".to_string(), t)]).unwrap_or_default();
     let _zone = crate::checks::jsport::date::ZoneGuard::new(&crate::reqenv::RequestEnv::from_pairs(tz));
     find::local_date().unwrap()
 }
@@ -129,7 +129,8 @@ fn a_line_javascript_parses_but_serde_does_not_is_left_to_node() {
 #[test]
 fn the_task_list_is_read_back_from_the_tool_calls() {
     let assistant = |item: Value| json!({"type": "assistant", "message": {"content": [item]}}).to_string();
-    let result = |id: &str, text: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}}).to_string();
+    let result =
+        |id: &str, text: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}}).to_string();
     let ls = vec![
         assistant(json!({"type": "tool_use", "name": "TaskCreate", "id": "a", "input": {"subject": "Do A"}})),
         result("a", "Task #1 created successfully: Do A"),
@@ -146,8 +147,12 @@ fn the_task_list_is_read_back_from_the_tool_calls() {
 
 #[test]
 fn a_todo_list_replaces_the_previous_one_and_comes_before_the_tasks() {
-    let todo = |items: Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "TodoWrite", "input": {"todos": items}}]}}).to_string();
-    let ls = vec![todo(json!([{"content": "old", "status": "pending"}])), todo(json!([{"content": "first", "status": "completed"}, {"subject": "second"}, null, {"content": 5}]))];
+    let todo =
+        |items: Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "TodoWrite", "input": {"todos": items}}]}}).to_string();
+    let ls = vec![
+        todo(json!([{"content": "old", "status": "pending"}])),
+        todo(json!([{"content": "first", "status": "completed"}, {"subject": "second"}, null, {"content": 5}])),
+    ];
     let got = transcript::task_snapshot(&lines(&ls)).unwrap().unwrap();
     let rows: Vec<(&str, &str)> = got.iter().map(|t| (t.subject.as_str(), t.status.as_str())).collect();
     assert_eq!(rows, [("first", "completed"), ("second", "pending"), ("", "pending"), ("5", "pending")]);
@@ -186,10 +191,18 @@ fn a_snapshot_holds_git_state_tasks_messages_and_the_newest_handover_and_is_numb
     assert!(text.starts_with(&format!("# PRECOMPACT snapshot — {SID} · #1 · ")), "{text}");
     assert!(text.contains("(trigger: auto). NOT a handover"), "{text}");
     assert!(text.contains(&format!("## Newest handover\n{dir}/HANDOVER.md (modified ")), "{text}");
-    assert!(text.contains("## Repo state\npwd: ") && text.contains("\nbranch: main\nHEAD: ") && text.contains("dirty files: 2\n    ?? .anti-hall/\n    ?? new.txt\n"), "{text}");
+    assert!(
+        text.contains("## Repo state\npwd: ")
+            && text.contains("\nbranch: main\nHEAD: ")
+            && text.contains("dirty files: 2\n    ?? .anti-hall/\n    ?? new.txt\n"),
+        "{text}"
+    );
     assert!(text.contains("## /compact instructions (verbatim)\nkeep the plan\n"), "{text}");
     assert!(text.contains("| id | subject | status |\n|---|---|---|\n| 1 | do \\| it | pending |\n"), "{text}");
-    assert!(text.contains("## Last 1 user message(s), verbatim, oldest first\n\n### 1 · 2026-10-07T10:00:00.000Z\n````text\nfirst rule: be brief\n````\n"), "{text}");
+    assert!(
+        text.contains("## Last 1 user message(s), verbatim, oldest first\n\n### 1 · 2026-10-07T10:00:00.000Z\n````text\nfirst rule: be brief\n````\n"),
+        "{text}"
+    );
     assert!(text.ends_with("````\n"));
     precompact::decide(&p, &env).unwrap();
     assert!(std::path::Path::new(&format!("{dir}/PRECOMPACT-2.md")).exists());
@@ -287,12 +300,22 @@ fn the_pointer_names_the_handover_and_the_resume_steps_follow_what_it_has() {
     put(&repo, SID, "trials.md", "t", 3600);
     let t = text_of(resume::decide(&start_payload(&repo, "compact"), &sb.env(&[])).unwrap());
     let first = t.lines().next().unwrap();
-    assert_eq!(first, format!("\u{1F4A1} anti-hall \u{b7} handover-resume: A session handover was found for this continuation: {} (HANDOVER.md | date {} | session {SID})", h.to_string_lossy(), today()));
+    assert_eq!(
+        first,
+        format!(
+            "\u{1F4A1} anti-hall \u{b7} handover-resume: A session handover was found for this continuation: {} (HANDOVER.md | date {} | session {SID})",
+            h.to_string_lossy(),
+            today()
+        )
+    );
     assert!(t.contains("\nFreshness (measured now): HEAD ") && t.contains(" commit(s) since this handover was written"), "{t}");
     assert!(t.contains("\nDo instead: follow this guided resume path.\n1. Read "), "{t}");
     assert!(t.contains("2. Run its Resume-verification checklist (git status, pwd, CLAUDE.md re-read, smoke command)"), "{t}");
     assert!(t.contains("3. Load detail files ONLY as needed via the pointer table (state.md / trials.md).\n4. Check trials.md do-not-repeat list"), "{t}");
-    assert!(t.contains("\n5. READ-BACK:") && t.contains("\n6. Continue from the single Next Action.\n7. Recreate/reconcile your task list from state.md's"), "{t}");
+    assert!(
+        t.contains("\n5. READ-BACK:") && t.contains("\n6. Continue from the single Next Action.\n7. Recreate/reconcile your task list from state.md's"),
+        "{t}"
+    );
     assert!(t.ends_with("the compact summary is lossy."), "{t}");
     // a Codex session re-reads AGENTS.md; a start (not a continuation) says so
     let mut p = start_payload(&repo, "startup");
@@ -330,7 +353,14 @@ fn a_handover_older_than_a_week_is_silent_and_no_handover_is_reported_only_on_cl
     // the same session's stale handover is preferred over another session's fresh one, so it stays silent
     put(&repo, "fresh", "HANDOVER.md", "x", 6 * 86400);
     assert!(resume::decide(&start_payload(&repo, "clear"), &sb.env(&[])).unwrap().is_none());
-    assert!(resume::decide(&json!({"hook_event_name": "SessionStart", "session_id": "someone-else", "cwd": repo.to_string_lossy(), "source": "clear"}), &sb.env(&[])).unwrap().is_some());
+    assert!(
+        resume::decide(
+            &json!({"hook_event_name": "SessionStart", "session_id": "someone-else", "cwd": repo.to_string_lossy(), "source": "clear"}),
+            &sb.env(&[])
+        )
+        .unwrap()
+        .is_some()
+    );
 }
 
 #[test]
@@ -364,7 +394,10 @@ fn the_index_outcome_and_the_writer_note_and_the_state_file() {
     let t = text_of(resume::decide(&start_payload(&repo, "compact"), &sb.env(&[])).unwrap());
     assert!(t.lines().next().unwrap().contains("HANDOVER-2.md, predecessor HANDOVER.md | date"), "{t}");
     assert!(t.lines().next().unwrap().ends_with(") -- INDEX.md outcome: second"), "{t}");
-    assert!(t.contains(&format!("\nWriter kept running: session {SID} kept running 170 min after this handover was written (its transcript last wrote at ")), "{t}");
+    assert!(
+        t.contains(&format!("\nWriter kept running: session {SID} kept running 170 min after this handover was written (its transcript last wrote at ")),
+        "{t}"
+    );
     let state = std::fs::read_to_string(sb.root.join(format!("home/.anti-hall/handover-resume-state-{SID}.json"))).unwrap();
     let v: Value = serde_json::from_str(&state).unwrap();
     assert!(v["handoverFile"].as_str().unwrap().ends_with("HANDOVER-2.md"));
@@ -400,4 +433,21 @@ fn the_checklist_heading_is_matched_the_way_the_regex_matches() {
     ] {
         assert_eq!(resume::has_checklist(text), want, "{text:?}");
     }
+}
+
+#[test]
+fn a_repository_at_the_home_directory_does_not_own_the_handovers() {
+    let sb = Sandbox::new("h-pre-dotfiles");
+    let home = sb.root.join("home");
+    git(&home, &["init", "-q", "-b", "main"]);
+    std::fs::write(home.join("dot.txt"), "d").unwrap();
+    git(&home, &["add", "dot.txt"]);
+    git(&home, &["commit", "-q", "-m", "dots"]);
+    let proj = home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let tp = sb.write("t.jsonl", "");
+    precompact::decide(&compact_payload(&proj, &tp), &sb.env(&[])).unwrap();
+    let proj = std::fs::canonicalize(&proj).unwrap();
+    assert!(std::path::Path::new(&format!("{}/PRECOMPACT-1.md", handover_dir(&proj, SID))).exists());
+    assert!(!home.join(".anti-hall/handovers").exists());
 }

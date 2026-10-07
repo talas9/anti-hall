@@ -177,6 +177,20 @@ exports.scenarios = (lib) => {
   add('prune-dir-named-like-state', mk(edits(4), { before: (r) => { fs.mkdirSync(path.join(r, 'home/.anti-hall/codex-nudge-state-d.json')); } }));
   add('not-nudging-no-prune', mk(edits(1), { before: (r) => { old(r, 'old1', 10); } }));
   add('same-sig-no-prune', mk(edits(4), { before: (r) => { old(r, 'old1', 10); lib.write(r, `home/.anti-hall/codex-nudge-state-${SID}.json`, JSON.stringify({ sig: sigOf(fourNames), nudges: 1 })); } }));
-  // two nudges in a row would need state across runs: covered by state-* scenarios above
+  // ---- fuzz: random transcripts and settings, same seed for both sides ----
+  let seed = 777; const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  const pick = a => a[Math.floor(rnd() * a.length)];
+  const EXTS = ['js', 'ts', 'py', 'md', 'json', 'rs', 'JS', 'sh', 'txt', '', 'go', 'sql', 'jsx.bak'];
+  const NAMES = ['a', 'b', 'c', 'caf\u00e9', '\u{1F600}', 'sp ace', 'x'.repeat(40), 'f1', 'f2', 'f3', 'dup', 'dup'];
+  const DIRS = ['', 'sub/', 'sub/deep/', '../out/', '/elsewhere/', 'REPO/', 'REPO/sub/', 'REPO/x/../y/', 'SCRATCH/', 'REPO/lnk3/'];
+  const fpath = () => { const d = pick(DIRS); return (d.startsWith('REPO/') ? d.replace('REPO', '@REPO@') : d.startsWith('SCRATCH/') ? '@SCRATCH@/' : d) + pick(NAMES) + (rnd() < 0.9 ? '.' + pick(EXTS) : ''); };
+  const fuzzTu = () => { const r = rnd(); if (r < 0.7) return { type: 'tool_use', name: pick(['Edit', 'Edit', 'Write', 'MultiEdit', 'Read', 'Bash', 5, '']), input: rnd() < 0.9 ? { file_path: rnd() < 0.9 ? fpath() : pick([5, null, ['x'], '']) } : pick([null, 'x', [1], {}]) }; if (r < 0.85) return { type: 'tool_use', name: pick(['Agent', 'Task']), input: { [pick(['subagent_type', 'agentType', 'agent_type'])]: pick(['codex:codex-rescue', 'codex', 'Codex:x', 'codexy', 'general-purpose', '', 5, null, 'codex-rescue']) } }; return { type: 'tool_use', name: 'Skill', input: { skill: pick(['codex:rescue', 'review', 5, '']), command: pick(['/codex', '', 7, undefined]) } }; };
+  const wrap = (tus) => pick([() => ({ type: 'assistant', message: { content: tus } }), () => ({ content: tus }), () => ({ parts: tus }), () => ({ tool_uses: tus }), () => ({ messages: tus.map(t => ({ content: [t] })) }), () => tus[0], () => ({ message: { messages: [{ parts: tus }] } }), () => ({ type: 'x', message: 'str' })])();
+  const nfuzz = +lib.arg('--fuzz', 120);
+  for (let i = 0; i < nfuzz; i++) {
+    const env = rnd() < 0.3 ? { ANTIHALL_CODEX_NUDGE_MIN: pick(['1', '2', '5', '0', 'x', '2.5']) } : {};
+    const abstract = Array.from({ length: 1 + Math.floor(rnd() * 8) }, () => JSON.stringify(wrap(Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => fuzzTu()))));
+    add('fuzz-' + i, (root) => mk((r, b) => abstract.map(l => l.split('@REPO@').join(b.repo).split('@SCRATCH@').join(b.scratch)), { before: (r, b) => { try { fs.symlinkSync('/tmp', path.join(b.repo, 'lnk3')); } catch (_) {} }, env })(root));
+  }
   return out;
 };

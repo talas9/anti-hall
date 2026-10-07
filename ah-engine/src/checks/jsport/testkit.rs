@@ -22,7 +22,7 @@ impl Sandbox {
 
     pub(crate) fn env(&self, extra: &[(&str, &str)]) -> RequestEnv {
         let mut pairs: Vec<(String, String)> = vec![("HOME".into(), self.home()), ("TMPDIR".into(), self.root.join("tmp").to_string_lossy().into_owned())];
-        if let Ok(tz) = std::env::var("TZ") {
+        if let Some(tz) = crate::checks::jsport::date::process_zone() {
             pairs.push(("TZ".into(), tz)); // the request carries the zone this test process runs in
         }
         pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
@@ -60,4 +60,3 @@ pub(crate) fn git(dir: &Path, args: &[&str]) {
         .unwrap();
     assert!(st.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&st.stderr));
 }
-

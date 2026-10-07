@@ -243,6 +243,11 @@ Deliberate differences from the Node guard:
   migration keys is shipped in `defaults/session_gates.toml` and a test compares it with `companion/lib/migrations.js`.
   Codex registers the same three hooks, so the same checks answer its table; it registers neither `swarm-guard` nor
   `devswarm-comms-guard`.
+- Handover and Codex hook ports (`handover-resume`, `precompact-snapshot`, `codex-availability`, `codex-quota-detect`,
+  `codex-nudge`): see DECISIONS 1.75. They answer exactly as Node does or defer; they read the request's environment
+  (`HOME`, `PATH`, `TZ`, `TMPDIR`) and write the same files (`~/.anti-hall/codex-availability.json`,
+  `codex-nudge-state-<session>.json`, `handover-resume-state-<session>.json`, `<repo>/.anti-hall/handovers/.../PRECOMPACT-<n>.md`).
+  Parity: `node parity/run-b78.js --hook <name> --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks`.
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 ## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)

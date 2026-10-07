@@ -2311,6 +2311,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `codex_handover.trigger_unknown` | `unknown-trigger` |  |  | What a snapshot records for any other trigger. |
 | `codex_handover.triggers` | `manual, auto` |  |  | The PreCompact trigger values a snapshot records as they are. |
 | `codex_handover.try_again_re` | `\btry again (?:at\|after\|on)?\s*([A-Za-z0-9:,+\-\/ ]{1,60})` |  |  | JavaScript source (flag i) of the usage-limit wording that names when to try again. |
+| `codex_handover.tz_var` | `TZ` |  |  | The environment variable that sets the time zone; a request whose value differs from this process's has its local-time conversions left to the Node hook. |
 | `codex_handover.unknown_session` | `unknown-session` |  |  | The session name used when a payload carries no usable session id. |
 | `codex_handover.until_re` | `\b(?:until\|resets?(?: at)?\|resum(?:e\|ing)(?: at)?\|available again(?: at)?)\s+...` |  |  | JavaScript source (flag i) of a trailing clause that names when Codex is back; the original lookahead after the terminator is written as a consumed character, which changes neither the match start nor the capture. |
 | `codex_handover.utc_words` | `utc, gmt, z` |  |  | Words after a date and time that mean UTC (compared without case). |

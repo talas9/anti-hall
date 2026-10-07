@@ -161,7 +161,7 @@ fn scan_transcript(path: &str, p: &Value, env: &RequestEnv) -> Result<Option<Sca
         if t.is_empty() {
             continue;
         }
-        let Some(entry) = jstext::parse_line(t).map_err(|()| Unsure)? else { continue };
+        let Some(entry) = jstext::parse_line(t).map_err(|_| Unsure)? else { continue };
         let mut tus = Vec::new();
         collect_tu(&entry, &mut tus);
         for tu in tus {

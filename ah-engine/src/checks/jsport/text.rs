@@ -26,27 +26,6 @@ pub fn slice16_lossy(s: &str, n: usize) -> String {
     out
 }
 
-/// The last `n` units of `s` (`s.slice(-n)`), `None` when the cut would split a pair (a lone surrogate would then reach
-/// a place where JavaScript escapes it, which this port does not reproduce).
-pub fn tail16(s: &str, n: usize) -> Option<String> {
-    let total = len16(s);
-    if total <= n {
-        return Some(s.to_string());
-    }
-    let skip = total - n;
-    let mut units = 0usize;
-    for (i, c) in s.char_indices() {
-        if units == skip {
-            return Some(s[i..].to_string());
-        }
-        units += c.len_utf16();
-        if units > skip {
-            return None;
-        }
-    }
-    Some(String::new())
-}
-
 /// Order two strings the way `Array.prototype.sort()` does by default: by UTF-16 code unit.
 pub fn cmp16(a: &str, b: &str) -> std::cmp::Ordering {
     a.encode_utf16().cmp(b.encode_utf16())
@@ -135,10 +114,14 @@ pub fn dash_name(s: &str) -> String {
     out
 }
 
+/// A transcript line Node would parse but the engine's parser cannot; the caller defers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unparsed;
+
 /// `JSON.parse(line)` for a transcript line, on the engine's parser: `Ok(None)` when Node would also reject the line;
-/// `Err(())` when Node would accept something the engine's parser rejects (a lone surrogate escape, nesting past its
+/// `Err(Unparsed)` when Node would accept something the engine's parser rejects (a lone surrogate escape, nesting past its
 /// limit, a number out of range), so the caller defers.
-pub fn parse_line(line: &str) -> Result<Option<Value>, ()> {
+pub fn parse_line(line: &str) -> Result<Option<Value>, Unparsed> {
     match serde_json::from_str::<Value>(line) {
         Ok(v) => Ok(Some(v)),
         Err(e) => {
@@ -148,7 +131,7 @@ pub fn parse_line(line: &str) -> Result<Option<Value>, ()> {
                 || msg.starts_with(crate::defaults::text("codex_handover.serde_range_msg"))
                 || lone
             {
-                Err(())
+                Err(Unparsed)
             } else {
                 Ok(None)
             }

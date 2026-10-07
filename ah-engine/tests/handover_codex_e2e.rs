@@ -27,8 +27,10 @@ impl Env {
 
     /// A fallback map for `event`: the entry `id` prints the marker, every other entry succeeds silently.
     fn map(&self, event: &str, id: &str) -> PathBuf {
-        let m: serde_json::Map<String, serde_json::Value> =
-            ah_engine::dispatch::table::entries("claude", event).into_iter().map(|e| (e.id.clone(), if e.id == id { "echo NODE-RAN" } else { "true" }.into())).collect();
+        let m: serde_json::Map<String, serde_json::Value> = ah_engine::dispatch::table::entries("claude", event)
+            .into_iter()
+            .map(|e| (e.id.clone(), if e.id == id { "echo NODE-RAN" } else { "true" }.into()))
+            .collect();
         let p = self.dir.join(format!("{event}-map.json"));
         std::fs::write(&p, serde_json::json!({ event: m }).to_string()).unwrap();
         p
@@ -122,7 +124,11 @@ fn codex_quota_detect_answers_a_codex_rescue_result_in_process_and_through_the_d
     let p = serde_json::json!({"session_id": "s", "cwd": e.dir, "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_input": {"subagent_type": "codex:codex-rescue"}, "tool_response": "out of quota until 2030-10-08T12:00:00Z."}).to_string();
     let (code, out, err) = e.run("PostToolUse", "codex-quota-detect", true, &p, &[]);
     assert_eq!((code, err.as_str()), (0, ""));
-    assert!(out.starts_with("{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"\\u26a0") || out.contains("codex:codex-rescue reported quota exhaustion"), "{out}");
+    assert!(
+        out.starts_with("{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"\\u26a0")
+            || out.contains("codex:codex-rescue reported quota exhaustion"),
+        "{out}"
+    );
     assert!(!out.contains("NODE-RAN"), "{out}");
     let state = std::fs::read_to_string(e.dir.join("home/.anti-hall/codex-availability.json")).unwrap();
     assert!(state.contains("\"until\":1917691200000"), "{state}");
@@ -189,7 +195,11 @@ fn precompact_snapshot_writes_its_file_and_prints_nothing() {
     let (_, out, _) = e.run_daemon("PreCompact", "precompact-snapshot", &p, &[]);
     e.stop();
     assert!(!out.contains("NODE-RAN"), "{out}");
-    assert_eq!(walk(&r.join(".anti-hall/handovers")).into_iter().filter(|f| f.to_string_lossy().contains("PRECOMPACT-")).count(), 2, "the daemon numbered the second snapshot");
+    assert_eq!(
+        walk(&r.join(".anti-hall/handovers")).into_iter().filter(|f| f.to_string_lossy().contains("PRECOMPACT-")).count(),
+        2,
+        "the daemon numbered the second snapshot"
+    );
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {

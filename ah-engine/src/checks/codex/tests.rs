@@ -372,7 +372,12 @@ fn only_code_files_and_edit_tools_count() {
 
 #[test]
 fn a_codex_review_in_the_session_silences_it() {
-    for (tool, input) in [("Agent", json!({"subagent_type": "codex:codex-rescue"})), ("Task", json!({"agentType": "codex"})), ("Skill", json!({"skill": "codex:setup"})), ("Skill", json!({"command": "/CODEX"}))] {
+    for (tool, input) in [
+        ("Agent", json!({"subagent_type": "codex:codex-rescue"})),
+        ("Task", json!({"agentType": "codex"})),
+        ("Skill", json!({"skill": "codex:setup"})),
+        ("Skill", json!({"command": "/CODEX"})),
+    ] {
         let n = nudge_box("nudge-review");
         let mut t = n.edits(4);
         t.push(json!({"type": "tool_use", "name": tool, "input": input}));
@@ -420,7 +425,8 @@ fn it_nudges_once_per_file_set_and_at_most_twice_per_session() {
     assert!(n.run(&[]).unwrap().is_some());
     n.transcript(&n.edits(5));
     assert!(n.run(&[]).unwrap().is_none(), "the per-session cap");
-    let state: Value = serde_json::from_str(&std::fs::read_to_string(n.sb.root.join(format!("home/.anti-hall/codex-nudge-state-{SID}.json"))).unwrap()).unwrap();
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(n.sb.root.join(format!("home/.anti-hall/codex-nudge-state-{SID}.json"))).unwrap()).unwrap();
     assert_eq!(state["nudges"], json!(2));
 }
 
@@ -482,4 +488,20 @@ fn a_transcript_line_javascript_would_accept_but_serde_would_not_is_left_to_node
     std::fs::create_dir_all(n.transcript.parent().unwrap()).unwrap();
     std::fs::write(&n.transcript, format!("{line}\n")).unwrap();
     assert_eq!(n.run(&[]), Err(Unsure));
+}
+
+#[test]
+fn a_scratchpad_inside_the_worktree_is_still_excluded() {
+    let n = nudge_box("nudge-scratch-inside");
+    let tmp = n.repo.join("tmpx");
+    let enc: String = n.repo.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let scratch = tmp.join(format!("claude-{}/{enc}/{SID}/scratchpad", crate::checks::jsport::home::uid()));
+    let mut t = n.edits(2);
+    for i in 0..3 {
+        t.push(json!({"type": "tool_use", "name": "Edit", "input": {"file_path": scratch.join(format!("s{i}.py")).to_string_lossy()}}));
+    }
+    n.transcript(&t);
+    let env = [("TMPDIR", tmp.to_str().unwrap())];
+    assert!(n.run(&env).unwrap().is_none(), "the scratchpad edits do not count even inside the worktree");
+    assert!(n.run(&[]).unwrap().is_some(), "without that TMPDIR they are ordinary edits");
 }

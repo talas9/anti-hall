@@ -79,16 +79,17 @@ struct Ctx<'a> {
 
 fn build(c: &Ctx<'_>) -> Result<String, Unsure> {
     let r = |k: &str, a: &[(&str, &str)]| crate::checks::guardkit::msg::render(k, a);
-    let mut l: Vec<String> = Vec::new();
-    l.push(r("codex_handover.snap_title", &[("session", c.session), ("n", &c.n.to_string()), ("now", &c.now_iso)]));
-    l.push(String::new());
-    l.push(r("codex_handover.snap_intro", &[("trigger", c.trigger)]));
-    l.push(String::new());
-    l.push(defaults::text("codex_handover.snap_h_handover").to_string());
-    l.push(match &c.handover {
-        Some(h) => r("codex_handover.snap_handover_found", &[("path", &h.file_path), ("modified", &date::to_iso(h.mtime_ms).ok_or(Unsure)?)]),
-        None => defaults::text("codex_handover.snap_handover_none").to_string(),
-    });
+    let mut l: Vec<String> = vec![
+        r("codex_handover.snap_title", &[("session", c.session), ("n", &c.n.to_string()), ("now", &c.now_iso)]),
+        String::new(),
+        r("codex_handover.snap_intro", &[("trigger", c.trigger)]),
+        String::new(),
+        defaults::text("codex_handover.snap_h_handover").to_string(),
+        match &c.handover {
+            Some(h) => r("codex_handover.snap_handover_found", &[("path", &h.file_path), ("modified", &date::to_iso(h.mtime_ms).ok_or(Unsure)?)]),
+            None => defaults::text("codex_handover.snap_handover_none").to_string(),
+        },
+    ];
     l.push(String::new());
     l.push(defaults::text("codex_handover.snap_h_repo").to_string());
     l.push(r("codex_handover.snap_pwd", &[("cwd", c.cwd)]));
