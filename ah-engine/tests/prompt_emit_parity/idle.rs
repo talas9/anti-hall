@@ -399,7 +399,7 @@ pub fn scenarios() -> Vec<Scn> {
     v.push(seq("twice-same", vec![step(rawd.clone()), step(rawd.clone()), step(rawd.clone())], vec![w("t.jsonl", n_finished(3, 20.0))]));
     v.push(seq(
         "minutes-change-same-block",
-        vec![step(rawd.clone()), step(rawd.clone()).pre(vec![])],
+        vec![step(rawd.clone()), step(rawd.clone()).pre(vec![w("t.jsonl", n_finished(3, 21.0))]), step(rawd.clone()).pre(vec![w("t.jsonl", n_finished(3, 95.0))])],
         vec![w("t.jsonl", n_finished(3, 20.0))],
     ));
     v.push(seq(

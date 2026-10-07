@@ -20,4 +20,6 @@ pub mod text;
 pub mod turn_gate;
 
 #[cfg(test)]
+mod jsval_tests;
+#[cfg(test)]
 mod tests;

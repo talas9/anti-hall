@@ -196,4 +196,57 @@ fn an_old_file_of_a_family_is_pruned_once_per_window_and_the_live_one_is_kept() 
     assert_eq!(prune_stale(&d, "fam", None), 0);
     assert!(std::path::Path::new(&format!("{d}/fam-again.json")).exists());
     assert_eq!(std::fs::read_to_string(format!("{d}/.prune-stamp-fam.json")).unwrap().chars().take(13).collect::<String>(), "{\"lastSweep\":");
+fn num_settings(files: &[(&str, &str)], env: &[(&str, &str)]) -> Settings {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let d = std::env::temp_dir().join(format!("ah-num-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let _ = std::fs::remove_dir_all(&d);
+    for (rel, body) in files {
+        let p = d.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+    std::fs::create_dir_all(&d).unwrap();
+    Settings { home: d.to_string_lossy().to_string(), env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() }
+}
+
+#[test]
+fn a_number_switch_resolves_env_then_file_then_plugin_option_then_default() {
+    use crate::checks::guardkit::settings::get_number;
+    let e = defaults::raw("emit_dedupe.num_window_min"); // default 20, min 0
+    assert_eq!(get_number(&num_settings(&[], &[]), e), 20.0);
+    assert_eq!(get_number(&num_settings(&[], &[("ANTIHALL_DEDUPE_WINDOW_MIN", " 7 ")]), e), 7.0);
+    assert_eq!(get_number(&num_settings(&[], &[("ANTIHALL_DEDUPE_WINDOW_MIN", "junk")]), e), 20.0, "an unreadable value falls through");
+    assert_eq!(get_number(&num_settings(&[], &[("ANTIHALL_DEDUPE_WINDOW_MIN", "-5")]), e), 0.0, "clamped up to the minimum");
+    assert_eq!(get_number(&num_settings(&[], &[("ANTIHALL_DEDUPE_WINDOW_MIN", "0x10")]), e), 16.0);
+    let file = |body: &'static str| num_settings(&[(".anti-hall/settings.json", body)], &[]);
+    assert_eq!(get_number(&file("{\"context\":{\"dedupeWindowMin\":3}}"), e), 3.0);
+    assert_eq!(get_number(&file("{\"context\":{\"dedupeWindowMin\":\"4\"}}"), e), 4.0);
+    assert_eq!(get_number(&file("{\"context\":{\"dedupeWindowMin\":true}}"), e), 20.0);
+    assert_eq!(get_number(&file("{\"context\":{\"dedupeWindowMin\":null}}"), e), 20.0);
+    assert_eq!(get_number(&file("{{"), e), 20.0);
+    let mut s = num_settings(&[(".anti-hall/settings.json", "{\"context\":{\"dedupeWindowMin\":3}}")], &[("ANTIHALL_DEDUPE_WINDOW_MIN", "9")]);
+    assert_eq!(get_number(&s, e), 9.0, "env beats the file");
+    s.env.clear();
+    s.env.insert("CLAUDE_PLUGIN_OPTION_CONTEXT_DEDUPE_WINDOW_MIN".into(), "12".into());
+    assert_eq!(get_number(&s, e), 3.0, "the file beats the plugin option");
+    let opt = num_settings(&[], &[("CLAUDE_PLUGIN_OPTION_CONTEXT_DEDUPE_WINDOW_MIN", "12")]);
+    assert_eq!(get_number(&opt, e), 12.0);
+    let stored = num_settings(&[(".claude/settings.json", "{\"pluginConfigs\":{\"anti-hall\":{\"options\":{\"context_dedupe_window_min\":6}}}}")], &[]);
+    assert_eq!(get_number(&stored, e), 6.0);
+    // a minimum that rejects instead of clamping does not exist for these entries; the idle count clamps up to 1
+    let count = defaults::raw("idle_sweep.num_count");
+    assert_eq!(get_number(&num_settings(&[], &[("ANTIHALL_IDLE_AGENT_SWEEP_COUNT", "0")]), count), 1.0);
+    assert_eq!(get_number(&num_settings(&[], &[("ANTIHALL_IDLE_AGENT_SWEEP_COUNT", "2.5")]), count), 2.5);
+}
+
+#[test]
+fn an_enum_switch_is_trimmed_lower_cased_and_one_of_its_values() {
+    use crate::checks::guardkit::settings::get_enum;
+    let e = defaults::raw("verify_first.sw_supervisor_mode");
+    assert_eq!(get_enum(&num_settings(&[], &[]), e), "auto");
+    assert_eq!(get_enum(&num_settings(&[], &[("ANTIHALL_DEVSWARM_SUPERVISOR", "  OFF ")]), e), "off");
+    assert_eq!(get_enum(&num_settings(&[], &[("ANTIHALL_DEVSWARM_SUPERVISOR", "banana")]), e), "auto");
+    assert_eq!(get_enum(&num_settings(&[(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":\"On\"}}")], &[]), e), "on");
+    assert_eq!(get_enum(&num_settings(&[(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":5}}")], &[]), e), "auto");
+    assert_eq!(get_enum(&num_settings(&[], &[("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "off")]), e), "off");
 }
