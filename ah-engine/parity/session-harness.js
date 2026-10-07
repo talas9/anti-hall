@@ -199,6 +199,7 @@ async function runParity(o) {
       }
       return;
     }
+    if (o.verbose) console.log(`  ${sc.id}: node=${JSON.stringify(nodeRes.out).slice(0, 300)} engine=${JSON.stringify(engRes.out).slice(0, 300)}`);
     const problems = [];
     if (String(nodeRes.code) !== String(engRes.code)) problems.push(`exit node=${nodeRes.code} engine=${engRes.code}`);
     if (nodeRes.out !== engRes.out) problems.push(`stdout node=${JSON.stringify(nodeRes.out).slice(0, 400)} engine=${JSON.stringify(engRes.out).slice(0, 400)}`);

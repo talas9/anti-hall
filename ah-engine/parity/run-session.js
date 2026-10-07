@@ -13,9 +13,10 @@ const corpus = require('./session-corpus.js');
   let bad = 0;
   for (const hook of Object.keys(HOOKS)) {
     if (want !== 'all' && want !== hook) continue;
-    const scenarios = corpus.build(hook, { repo });
+    let scenarios = corpus.build(hook, { repo });
     if (!scenarios) continue;
-    await runParity({ name: hook, engine, repo, scenarios, conc: +arg('--conc', 6), show: +arg('--show', 25), keep: process.argv.includes('--keep'), tmpdir: arg('--tmp', undefined) });
+    if (arg('--only', '')) scenarios = scenarios.filter(s => s.id.includes(arg('--only', '')));
+    await runParity({ name: hook, engine, repo, scenarios, conc: +arg('--conc', 6), show: +arg('--show', 25), keep: process.argv.includes('--keep'), verbose: process.argv.includes('--verbose'), tmpdir: arg('--tmp', undefined) });
     if (process.exitCode) bad = 1;
   }
   process.exitCode = bad;
