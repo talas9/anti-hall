@@ -601,6 +601,13 @@ fn ask_corpus() -> Vec<Sc> {
     add(sc("note-launch-via-structured-agent-id", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch_sid("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
     add(sc("note-teammate-pending", h, ask_payload(q("h", "Which one?"))).transcript(&[teammate_spawn("tu_sp", "alice", &ago(40.0)), teammate_send("tu_sd", "alice", &ago(4.0))].concat()));
     add(sc("note-adopted-task-status", h, ask_payload(q("h", "Which one?"))).transcript(&[task_status("0123456789abcdef", "running", "$HOME/o", "adopted agent", &ago(20.0))]));
+    let two_aaaa = || vec![agent_use("tu_1", "first", &ago(30.0)), launch("tu_1", "aaaa000011112222", "$HOME/o1", &ago(30.0)), agent_use("tu_2", "second", &ago(30.0)), launch("tu_2", "aaaa0000ffff3333", "$HOME/o2", &ago(30.0))];
+    let output_call = |prefix: &str, text: &str| vec![assistant_use("tu_o", "TaskOutput", json!({"task_id": prefix, "block": false}), &ago(9.0)), result_blocks("tu_o", text, &ago(9.0), json!({}))];
+    add(sc("delivery-ambiguous-prefix-ends-nothing", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), output_call("aaaa0000", "done: aaaa000011112222 and aaaa0000ffff3333 finished")].concat()));
+    add(sc("delivery-unique-prefix-ends-one", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), output_call("aaaa00001", "done: aaaa000011112222 finished")].concat()));
+    add(sc("delivery-by-other-tool-ends-nothing", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), vec![assistant_use("tu_o", "Read", json!({"file_path": "aaaa000011112222"}), &ago(9.0)), result_blocks("tu_o", "aaaa000011112222 finished", &ago(9.0), json!({}))]].concat()));
+    add(sc("delivery-text-without-the-id-ends-nothing", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), output_call("aaaa000011112222", "finished, no id here")].concat()));
+    add(sc("delivery-result-of-unseen-call-ends-it", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), vec![result_blocks("tu_unseen", "report for aaaa000011112222", &ago(9.0), json!({}))]].concat()));
     add(sc("note-no-transcript-path", h, json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": q("h", "x")}})));
     add(sc("note-transcript-missing", h, json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": q("h", "x")}, "transcript_path": "$HOME/nope.jsonl"})));
     add(sc("note-transcript-empty", h, ask_payload(q("h", "x"))).file("t/session.jsonl", ""));
@@ -923,7 +930,8 @@ fn fuzz_transcript(r: &mut Rng) -> (Vec<String>, Vec<File>) {
                     lines.extend(delivery(&tu, id, &ts));
                 } else {
                     lines.push(assistant_use(&tu, "TaskOutput", json!({"task_id": &id[..8]}), &ts));
-                    lines.push(result_blocks(&tu, &format!("{id}  \u{b7}  general  \u{b7}  running  \u{b7}  started 20m ago"), &ts, json!({})));
+                    let text = if r.chance(50) { format!("{id}  \u{b7}  general  \u{b7}  running  \u{b7}  started 20m ago") } else { format!("report for {id} complete") };
+                    lines.push(result_blocks(&tu, &text, &ts, json!({})));
                 }
             }
             14 => lines.push(task_status(id, ["running", "completed", "failed"][r.below(3)], &format!("$HOME/out-{b}.txt"), &format!("agent-{b}"), &ts)),
