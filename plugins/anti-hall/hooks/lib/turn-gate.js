@@ -34,14 +34,14 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const PREFIX = 'tg-';
+const PREFIX = 'tg'; // state-prune.js appends the '-' itself
 const TAIL_BYTES = 512 * 1024;
 const MAX_SIGS = 16;
 const INJECTED_RE = /^\s*<(?:task-notification|system-reminder|local-command|command-name|command-message)/;
 
 function stateFile(home, sessionId) {
   const safe = String(sessionId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80);
-  return path.join(home, '.anti-hall', 'turn-gate', PREFIX + safe + '.json');
+  return path.join(home, '.anti-hall', 'turn-gate', PREFIX + '-' + safe + '.json');
 }
 
 function humanText(msg) {
