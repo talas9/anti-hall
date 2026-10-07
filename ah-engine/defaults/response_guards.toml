@@ -36,8 +36,8 @@ unit = "ms"
 min = 1000
 
 [replykit.unsure_parse_errors]
-doc = "Fragments of the JSON parser's error text that mark input the Node hook might still parse (a lone surrogate escape, a number beyond the double range, nesting beyond the recursion limit): the whole call is then left to Node instead of the line being skipped."
-value = ["surrogate", "recursion limit", "out of range"]
+doc = "Fragments of the JSON parser's error text that mark input the Node hook might still parse (a lone surrogate escape or a short hex escape, a number beyond the double range, nesting beyond the recursion limit): the whole call is then left to Node instead of the line being skipped."
+value = ["surrogate", "hex escape", "recursion limit", "out of range"]
 
 [replykit.role_assistant]
 doc = "The role value of an assistant transcript entry."

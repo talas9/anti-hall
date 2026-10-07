@@ -209,6 +209,8 @@ pub struct Tally {
     pub steps: usize,
     pub same: usize,
     pub deferred: usize,
+    /// Same-steps after which the hook had left some state file besides the seeded ones.
+    pub wrote: usize,
     pub failures: Vec<String>,
 }
 
@@ -260,6 +262,9 @@ pub fn run_case(hook: &str, check: &str, case: &Case, t: &mut Tally) {
                 }
                 let (tn, te) = (tree(&nh), tree(&eh));
                 let tn: BTreeMap<_, _> = tn.into_iter().filter(|(k, _)| k != ".anti-hall/logs/jev-assist.ndjson").collect();
+                if tn.keys().any(|k| k.contains(".jsonl") || k.contains("state-") || k.contains("tg-")) || tn.values().any(|v| v.contains("lastSweep")) {
+                    t.wrote += 1;
+                }
                 if tn != te {
                     t.failures.push(format!("{who}: state differs\n  node  ={tn:?}\n  engine={te:?}"));
                     copy_tree(&nh, &eh);
@@ -292,7 +297,7 @@ pub fn run_all(hook: &str, check: &str, cases: &[Case]) -> Tally {
     for c in cases {
         run_case(hook, check, c, &mut t);
     }
-    eprintln!("{check}: cases={} steps={} same={} deferred={} failures={}", cases.len(), t.steps, t.same, t.deferred, t.failures.len());
+    eprintln!("{check}: cases={} steps={} same={} deferred={} wrote-state={} failures={}", cases.len(), t.steps, t.same, t.deferred, t.wrote, t.failures.len());
     assert!(t.failures.is_empty(), "{} differences, first ones:\n{}", t.failures.len(), t.failures.iter().take(8).cloned().collect::<Vec<_>>().join("\n---\n"));
     t
 }

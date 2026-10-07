@@ -173,3 +173,126 @@ fn output_verify_guard_matches_node() {
     let t = run_all("output-verify-guard.js", "output-verify-guard", &output_verify_cases());
     assert!(t.steps >= 30 && t.same >= 25);
 }
+
+// ---- claim-ledger ---------------------------------------------------------------------------------------------
+
+fn stop(extra: Value) -> Value {
+    let mut p = json!({"hook_event_name":"Stop","session_id":"s1","cwd":"/tmp","transcript_path":"$T"});
+    if let Value::Object(m) = extra {
+        for (k, v) in m {
+            p.as_object_mut().unwrap().insert(k, v);
+        }
+    }
+    p
+}
+
+fn msg(text: &str) -> Value {
+    stop(json!({"last_assistant_message": text}))
+}
+
+fn claim_ledger_cases() -> Vec<Case> {
+    let c = |n: &str| Case::new(&format!("cl-{n}"));
+    let mut v: Vec<Case> = Vec::new();
+    let future = 4_102_444_800_000u64;
+    // counts, with and without evidence
+    v.push(c("count-unsupported").transcript(&[user("go"), asst("I ran 12 tests and changed 3 files")]).same(stop(json!({}))));
+    v.push(c("count-supported").transcript(&[user("go"), tool_result("Ran 12 tests, 3 files"), asst("I ran 12 tests and changed 3 files")]).same(stop(json!({}))));
+    v.push(c("count-payload-text").transcript(&[user("go"), tool_result("ok")]).same(msg("The run took 45 seconds over 7 files")));
+    v.push(c("rounding-supported").transcript(&[tool_result("34.887 total"), asst("took 34.9 s")]).same(stop(json!({}))));
+    v.push(c("rounding-integer").transcript(&[tool_result("34.887 total"), asst("took 35 s")]).same(stop(json!({}))));
+    v.push(c("rounding-flagged").transcript(&[tool_result("34.887 total"), asst("took 34.8 s")]).same(stop(json!({}))));
+    v.push(c("rounding-boundary").transcript(&[tool_result("34.85 total"), asst("took 34.9 s")]).same(stop(json!({}))));
+    v.push(c("rounding-boundary-2").transcript(&[tool_result("0.15 total"), asst("took 0.2 s and 0.1 s")]).same(stop(json!({}))));
+    v.push(c("thousands").transcript(&[tool_result("1234 files"), asst("scanned 1,234 files")]).same(stop(json!({}))));
+    v.push(c("comma-decimal").transcript(&[asst("scanned 1,5 files")]).same(stop(json!({}))));
+    v.push(c("many-decimals").transcript(&[asst("scanned 1.23456789012345678901234567890 files")]).same(stop(json!({}))));
+    v.push(c("big-numbers").transcript(&[asst("scanned 123456 files and 1234567 files and 99999999999 files")]).same(stop(json!({}))));
+    // lookbehind
+    for (i, t) in ["V2-4 workspace", "x12 files", "file-3 files", "ver 1.5 s", "(12 files)", "a .5 files", "foo 12files", "12files", "_9 rows", "é9 rows", "9 ROWS and 8 Rows", "7 KB 6 mb"].iter().enumerate() {
+        v.push(c(&format!("lookbehind-{i}")).transcript(&[asst(t)]).same(stop(json!({}))));
+    }
+    // sha, task, state, days ago
+    v.push(c("sha-unsupported").transcript(&[asst("commit abc1234 and 0123456789abcdef0123456789abcdef01234567")]).same(stop(json!({}))));
+    v.push(c("sha-supported").transcript(&[tool_result("HEAD abc1234"), asst("commit abc1234")]).same(stop(json!({}))));
+    v.push(c("sha-pure-digits-skipped").transcript(&[asst("id 1234567 and 12345678901234567890")]).same(stop(json!({}))));
+    v.push(c("sha-too-long").transcript(&[asst(&format!("hash {}", "a".repeat(41)))]).same(stop(json!({}))));
+    v.push(c("task-of").transcript(&[asst("Task 3 of 5 done, task 4 of 5 next")]).same(stop(json!({}))));
+    v.push(c("task-of-supported").transcript(&[tool_result("Task 3 of 5"), asst("Task 3 of 5 done")]).same(stop(json!({}))));
+    v.push(c("state-no-tool").transcript(&[user("hi"), asst("the agent is still running and currently blocked")]).same(stop(json!({}))));
+    v.push(c("state-with-tool").transcript(&[user("hi"), asst_tool(json!({"command":"ls"})), tool_result("x"), asst("the agent is still running")]).same(stop(json!({}))));
+    v.push(c("days-ago").transcript(&[asst("fixed 5 days ago, and 1 day ago")]).same(stop(json!({}))));
+    v.push(c("nothing-flagged").transcript(&[asst("all good here")]).same(stop(json!({}))));
+    v.push(c("empty-reply").transcript(&[asst("   ")]).same(stop(json!({}))));
+    // payload versus transcript
+    v.push(c("payload-equals-transcript").transcript(&[asst("took 12 seconds")]).same(msg("took 12 seconds")));
+    v.push(c("payload-extends-transcript").transcript(&[asst("took 12 seconds")]).same(msg("Done: took 12 seconds and 9 files")));
+    v.push(c("payload-behind-transcript").transcript(&[asst("an earlier 31 files remark"), user("next")]).same(msg("A later reply about 8 tests")));
+    v.push(c("payload-whitespace-only-falls-back").transcript(&[asst("took 12 seconds")]).same(msg("  \n ")));
+    v.push(c("payload-nfd-vs-nfc").transcript(&[asst("caf\u{e9} took 12 seconds")]).same(msg("cafe\u{301} took 12 seconds")));
+    v.push(c("payload-no-assistant-in-transcript").transcript(&[user("hello")]).same(msg("saw 5 files")));
+    v.push(c("no-assistant-no-payload").transcript(&[user("hello")]).same(stop(json!({}))));
+    // repeat and sessions
+    v.push(c("recorded-once").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))).same(stop(json!({}))));
+    v.push(c("two-messages").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))).same(msg("then 13 seconds")).same(msg("then 13 seconds")));
+    v.push(c("no-session-id").transcript(&[asst("took 12 seconds")]).same(without(stop(json!({})), "session_id")));
+    v.push(c("numeric-session-id").transcript(&[asst("took 12 seconds")]).same(stop(json!({"session_id": 77}))));
+    v.push(c("weird-session-id").transcript(&[asst("took 12 seconds")]).same(stop(json!({"session_id": "a/b c:d😀"}))));
+    v.push(c("object-session-id-defers").transcript(&[asst("took 12 seconds")]).defer(stop(json!({"session_id": {"a": 1}}))));
+    v.push(c("last-file-stale").file(".anti-hall/claim-ledger/s1.last", "deadbeef").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
+    // switches
+    v.push(c("settings-off").file(".anti-hall/settings.json", r#"{"guards":{"claimLedger":false}}"#).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
+    v.push(c("option-off").env("CLAUDE_PLUGIN_OPTION_GUARDS_CLAIM_LEDGER", "false").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
+    v.push(c("skip").file(".anti-hall/skip.json", &format!(r#"{{"claim-ledger": {future}}}"#)).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
+    v.push(c("skip-all").file(".anti-hall/skip.json", &format!(r#"{{"all": {future}}}"#)).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
+    // jev
+    v.push(c("jev-on-flags-defers").env("ANTIHALL_JEV", "1").transcript(&[asst("took 12 seconds")]).defer(stop(json!({}))));
+    v.push(c("jev-on-no-flags-answers").env("ANTIHALL_JEV", "1").transcript(&[asst("all good")]).same(stop(json!({}))));
+    v.push(c("jev-on-integration-off").env("ANTIHALL_JEV", "1").env("ANTIHALL_JEV_CLAIM_LEDGER", "0").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
+    // transcript shapes
+    v.push(c("no-transcript-path").same(without(msg("took 12 seconds"), "transcript_path")));
+    v.push(c("transcript-path-number").same(stop(json!({"transcript_path": 5}))));
+    v.push(c("transcript-path-empty").same(stop(json!({"transcript_path": ""}))));
+    v.push(c("transcript-relative-defers").defer(stop(json!({"transcript_path": "rel/t.jsonl"}))));
+    v.push(c("transcript-missing-file").same(stop(json!({"transcript_path": "/nonexistent/dir/t.jsonl"}))));
+    v.push(c("transcript-empty-file").transcript_raw("").same(stop(json!({}))));
+    v.push(c("transcript-garbage-lines").transcript_raw("garbage\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"took 12 seconds\"}]}}\n[1,2]\n\"str\"\nnull\n").same(stop(json!({}))));
+    v.push(c("transcript-crlf").transcript_raw(&format!("{}\r\n{}\r\n", user("hi"), asst("took 12 seconds"))).same(stop(json!({}))));
+    v.push(c("transcript-nbsp-bom-lines").transcript_raw(&format!("\u{a0}{}\u{feff}\n", asst("took 12 seconds"))).same(stop(json!({}))));
+    v.push(c("transcript-lone-surrogate-defers").transcript_raw("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"took 12 seconds \\ud800\"}}\n").defer(stop(json!({}))));
+    v.push(c("transcript-huge-exponent-defers").transcript_raw("{\"x\":1e999}\n").defer(stop(json!({}))));
+    v.push(c("transcript-deep-nesting-defers").transcript_raw(&format!("{}1{}\n", "[".repeat(200), "]".repeat(200))).defer(stop(json!({}))));
+    v.push(c("transcript-escaped-surrogate-pair-ok").transcript_raw("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"took 12 seconds \\ud83d\\ude00\"}]}}\n").same(stop(json!({}))));
+    v.push(c("same-message-id-merged").transcript(&[asst_id("m1", "first 3 files"), asst_tool(json!({})), asst_id("m1", "and 4 tests")]).same(stop(json!({}))));
+    v.push(c("different-message-id").transcript(&[asst_id("m1", "first 3 files"), asst_id("m2", "and 4 tests")]).same(stop(json!({}))));
+    v.push(c("attachment-evidence").transcript(&[json!({"type":"attachment","attachment":{"text":"ran 9 tests"}}).to_string(), asst("9 tests")]).same(stop(json!({}))));
+    v.push(c("user-array-no-tool-result").transcript(&[json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":"12 files"}]}}).to_string(), asst("12 files")]).same(stop(json!({}))));
+    v.push(c("tool-use-input-evidence").transcript(&[asst_tool(json!({"command":"check 15 files"})), asst("15 files")]).same(stop(json!({}))));
+    v.push(c("tool-use-count-resets-on-user").transcript(&[asst_tool(json!({})), user("again"), asst("still running")]).same(stop(json!({}))));
+    v.push(c("tool-use-result-null").transcript(&[json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":null}]},"toolUseResult":null}).to_string(), asst("took 5 seconds")]).same(stop(json!({}))));
+    v.push(c("role-from-message").transcript(&[json!({"message":{"role":"assistant","content":"took 12 seconds"}}).to_string()]).same(stop(json!({}))));
+    v.push(c("content-without-message").transcript(&[json!({"type":"assistant","content":[{"type":"text","text":"took 12 seconds"}]}).to_string()]).same(stop(json!({}))));
+    v.push(c("falsy-message").transcript(&[json!({"type":"assistant","message":0,"content":[{"type":"text","text":"took 12 seconds"}]}).to_string()]).same(stop(json!({}))));
+    v.push(c("big-evidence-numbers").transcript(&[tool_result(&(0..3000).map(|i| i.to_string()).collect::<Vec<_>>().join(" ")), asst("took 2999 seconds and 3001 seconds")]).same(stop(json!({}))));
+    // context and limits
+    v.push(c("context-long-line").transcript(&[asst(&format!("{} took 12 seconds {}", "word ".repeat(60), "tail ".repeat(60)))]).same(stop(json!({}))));
+    v.push(c("context-multi-line").transcript(&[asst("line one\ntook 12 seconds here\nline three")]).same(stop(json!({}))));
+    v.push(c("context-astral-cut-defers").transcript(&[asst(&format!("{}😀 took 12 seconds", "a".repeat(159)))]).defer(stop(json!({}))));
+    v.push(c("context-astral-before-cut").transcript(&[asst("😀😀 took 12 seconds 😀")]).same(stop(json!({}))));
+    v.push(c("max-flags").transcript(&[asst(&(1..=60).map(|i| format!("took {i}1 seconds")).collect::<Vec<_>>().join("\n"))]).same(stop(json!({}))));
+    v.push(c("big-transcript-window").transcript(&{
+        let mut l = vec![asst("old 99 files claim")];
+        l.extend((0..4000).map(|i| tool_result(&format!("{} {}", i, "x".repeat(600)))));
+        l.push(asst("now 77 files"));
+        l
+    }).same(stop(json!({}))));
+    v.push(c("payload-null").same(Value::Null));
+    v.push(c("payload-array").same(json!([])));
+    v
+}
+
+#[test]
+fn claim_ledger_matches_node() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let t = run_all("claim-ledger.js", "claim-ledger", &claim_ledger_cases());
+    assert!(t.steps >= 30 && t.same >= 25);
+}
