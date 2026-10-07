@@ -327,7 +327,9 @@ fn merge(active: &[&HookResult], lenient: bool) -> Combined {
     hso = hso
         .into_iter()
         .filter_map(|(k, v)| match k.as_str() {
-            CTX => Some((k, Ordered::Str(contexts.join(ctx_join)))),
+            // A hook that injects nothing prints an empty context (the context-budget hooks do on every quiet turn); it adds
+            // no value, so it adds no joiner either, or a quiet turn would deliver "\n\n" of nothing.
+            CTX => Some((k, Ordered::Str(contexts.iter().filter(|c| !c.is_empty()).cloned().collect::<Vec<_>>().join(ctx_join)))),
             DEC => dec.clone().map(|d| (k, d)),
             REASON => reason.clone().map(|r| (k, r)),
             _ => Some((k, v)),
@@ -396,6 +398,14 @@ mod tests {
             "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"one\\n\\ntwo \\\"q\\\"\"},\"systemMessage\":\"s\"}\n"
         );
         assert_eq!(o.err, "xy");
+    }
+
+    #[test]
+    fn a_hook_with_nothing_to_say_adds_no_joiner() {
+        let q = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n";
+        let a = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"one\"}}\n";
+        assert_eq!(ans(combine(&[r("a", 0, q, ""), r("b", 0, q, "")])).out, q, "all quiet is one empty context");
+        assert_eq!(ans(combine(&[r("a", 0, q, ""), r("b", 0, a, ""), r("c", 0, q, "")])).out, a, "a quiet hook around a loud one adds nothing");
     }
 
     #[test]

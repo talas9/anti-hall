@@ -112,21 +112,77 @@ fn stop(home: &Home) -> Value {
 #[test]
 fn number_parsing_matches_javascript_number() {
     let some: &[(&str, f64)] = &[
-        ("85", 85.0), (" 85", 85.0), ("0x55", 85.0), ("0X55", 85.0), ("8.5e1", 85.0), ("+85", 85.0), ("-85", -85.0), (".85e2", 85.0), ("85.", 85.0), ("1e-999", 0.0),
-        ("0b101", 5.0), ("0B11", 3.0), ("0o17", 15.0), ("0O7", 7.0), ("1.e5", 100000.0), ("5e+3", 5000.0), ("0x1F", 31.0), ("0", 0.0), ("-0", 0.0), ("+0", 0.0),
-        ("+.5", 0.5), ("-.5e1", -5.0), ("00012", 12.0), ("0.0000001", 1e-7), ("123456789012345678901234567890", 1.2345678901234568e29),
+        ("85", 85.0),
+        (" 85", 85.0),
+        ("0x55", 85.0),
+        ("0X55", 85.0),
+        ("8.5e1", 85.0),
+        ("+85", 85.0),
+        ("-85", -85.0),
+        (".85e2", 85.0),
+        ("85.", 85.0),
+        ("1e-999", 0.0),
+        ("0b101", 5.0),
+        ("0B11", 3.0),
+        ("0o17", 15.0),
+        ("0O7", 7.0),
+        ("1.e5", 100000.0),
+        ("5e+3", 5000.0),
+        ("0x1F", 31.0),
+        ("0", 0.0),
+        ("-0", 0.0),
+        ("+0", 0.0),
+        ("+.5", 0.5),
+        ("-.5e1", -5.0),
+        ("00012", 12.0),
+        ("0.0000001", 1e-7),
+        ("123456789012345678901234567890", 1.2345678901234568e29),
     ];
     for (s, want) in some {
         assert_eq!(js_number(s), Some(*want), "{s:?}");
     }
-    for s in ["0x", "0xg", "1_0", "Infinity", "-Infinity", "NaN", "85abc", "1e999", "0b2", ".e5", "e5", "5e", "5e+", "--5", "+-5", "0xff.8", "1 2", ".", "\u{661}\u{662}"] {
+    for s in [
+        "0x",
+        "0xg",
+        "1_0",
+        "Infinity",
+        "-Infinity",
+        "NaN",
+        "85abc",
+        "1e999",
+        "0b2",
+        ".e5",
+        "e5",
+        "5e",
+        "5e+",
+        "--5",
+        "+-5",
+        "0xff.8",
+        "1 2",
+        ".",
+        "\u{661}\u{662}",
+    ] {
         assert_eq!(js_number(s), None, "{s:?}");
     }
 }
 
 #[test]
 fn parse_int_matches_javascript_parse_int_with_radix_ten() {
-    let some: &[(&str, f64)] = &[("0", 0.0), ("-0", 0.0), ("+0", 0.0), ("0x32", 0.0), ("0abc", 0.0), ("  12abc", 12.0), ("\n7", 7.0), ("\u{a0}\u{feff} 9", 9.0), ("-5", -5.0), ("+5", 5.0), ("1e3", 1.0), ("0.5", 0.0), ("99999999999999999999999", 1e23)];
+    let some: &[(&str, f64)] = &[
+        ("0", 0.0),
+        ("-0", 0.0),
+        ("+0", 0.0),
+        ("0x32", 0.0),
+        ("0abc", 0.0),
+        ("  12abc", 12.0),
+        ("\n7", 7.0),
+        ("\u{a0}\u{feff} 9", 9.0),
+        ("-5", -5.0),
+        ("+5", 5.0),
+        ("1e3", 1.0),
+        ("0.5", 0.0),
+        ("99999999999999999999999", 1e23),
+    ];
     for (s, want) in some {
         assert_eq!(js_parse_int(s), Some(*want), "{s:?}");
     }
@@ -138,16 +194,43 @@ fn parse_int_matches_javascript_parse_int_with_radix_ten() {
 #[test]
 fn iso_dates_match_javascript_date_or_are_refused() {
     let some: &[(&str, f64)] = &[
-        ("2026-10-07T12:00:00.034Z", 1791374400034.0), ("2026-10-14T07:00:00Z", 1791961200000.0), ("2001-02-30T00:00:00Z", 983491200000.0), ("2001-01-01T00:00:00.123456Z", 978307200123.0),
-        ("2001-01-01T00:00:00.1Z", 978307200100.0), ("2099-01-01T00:00:00+05:30", 4070889000000.0), ("2001-01-01T00:00:00-08:00", 978336000000.0), ("1970-01-01T00:00:00Z", 0.0),
-        ("1969-12-31T23:59:59.999Z", -1.0), ("2000-02-29T12:00:00Z", 951825600000.0), ("2100-03-01T00:00:00Z", 4107542400000.0), ("0000-01-01T00:00:00Z", -62167219200000.0),
-        ("2026-12-31T23:59:59.999+23:59", 1798675259999.0), ("9999-12-31T23:59:59.999Z", 253402300799999.0),
+        ("2026-10-07T12:00:00.034Z", 1791374400034.0),
+        ("2026-10-14T07:00:00Z", 1791961200000.0),
+        ("2001-02-30T00:00:00Z", 983491200000.0),
+        ("2001-01-01T00:00:00.123456Z", 978307200123.0),
+        ("2001-01-01T00:00:00.1Z", 978307200100.0),
+        ("2099-01-01T00:00:00+05:30", 4070889000000.0),
+        ("2001-01-01T00:00:00-08:00", 978336000000.0),
+        ("1970-01-01T00:00:00Z", 0.0),
+        ("1969-12-31T23:59:59.999Z", -1.0),
+        ("2000-02-29T12:00:00Z", 951825600000.0),
+        ("2100-03-01T00:00:00Z", 4107542400000.0),
+        ("0000-01-01T00:00:00Z", -62167219200000.0),
+        ("2026-12-31T23:59:59.999+23:59", 1798675259999.0),
+        ("9999-12-31T23:59:59.999Z", 253402300799999.0),
     ];
     for (s, want) in some {
         assert_eq!(iso_ms(s), Some(*want), "{s:?}");
     }
     // text JavaScript reads some other way (or not at all) is never guessed
-    for s in ["2026-13-01T00:00:00Z", "2026-00-10T00:00:00Z", "2026-01-32T00:00:00Z", "2026-01-01T24:00:00Z", "2026-01-01T23:59:60Z", "2026-01-01T00:00:00", "2026-01-01", "2026-01-01T00:00:00+0530", "2026-01-01T00:00Z", "2026-01-01t00:00:00Z", "2026-01-01 00:00:00Z", "2026-01-01T00:00:00z", "2026-01-01T00:00:00.Z", "2026-01-01T00:00:00+24:00", "soon", ""] {
+    for s in [
+        "2026-13-01T00:00:00Z",
+        "2026-00-10T00:00:00Z",
+        "2026-01-32T00:00:00Z",
+        "2026-01-01T24:00:00Z",
+        "2026-01-01T23:59:60Z",
+        "2026-01-01T00:00:00",
+        "2026-01-01",
+        "2026-01-01T00:00:00+0530",
+        "2026-01-01T00:00Z",
+        "2026-01-01t00:00:00Z",
+        "2026-01-01 00:00:00Z",
+        "2026-01-01T00:00:00z",
+        "2026-01-01T00:00:00.Z",
+        "2026-01-01T00:00:00+24:00",
+        "soon",
+        "",
+    ] {
         assert_eq!(iso_ms(s), None, "{s:?}");
     }
 }
@@ -220,8 +303,16 @@ fn limit_conserve_answers_the_quiet_cases_and_defers_the_active_ones() {
     assert_eq!(run(vec![], &[("ANTIHALL_LIMIT_CONSERVE", "on")]), Verdict::Defer, "mode on");
     assert_eq!(run(vec![cache(60, &future, now_ms())], &[("ANTIHALL_LIMIT_THRESHOLD", "0x32")]), Verdict::Defer, "a hexadecimal threshold");
     assert_eq!(run(vec![cache(60, &future, now_ms())], &[("ANTIHALL_LIMIT_THRESHOLD", "100")]), empty(), "a threshold above the maximum clamps to 99");
-    assert_eq!(run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"limit-conserve\":{}}}", now_ms() + 60_000))], &[]), empty(), "skipped");
-    assert_eq!(run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"all\":{}}}", now_ms() - 1))], &[]), Verdict::Defer, "an expired skip");
+    assert_eq!(
+        run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"limit-conserve\":{}}}", now_ms() + 60_000))], &[]),
+        empty(),
+        "skipped"
+    );
+    assert_eq!(
+        run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"all\":{}}}", now_ms() - 1))], &[]),
+        Verdict::Defer,
+        "an expired skip"
+    );
     assert_eq!(run(vec![cache(99, &future, now_ms())], &[("ANTIHALL_JUDGE_CHILD", "1")]), Verdict::Allow, "the judge child prints nothing");
     assert_eq!(run(vec![("x", String::new())], &[]), empty());
     assert_eq!(run(vec![(CACHE, "{\"data\":{\"x\":\"\\ud83d\"}}".into())], &[]), Verdict::Defer, "a lone surrogate escape is for Node");
@@ -257,7 +348,13 @@ fn the_context_reading_follows_the_node_sources_and_defers_where_node_writes() {
     std::fs::remove_file(h.0.join(".anti-hall/context-pct/sess1.json")).unwrap();
     assert_eq!(context_pct(&st(&[]), Some(&sid), Some(&tr), None), Pct::Defer, "Node records the inferred window here");
     assert_eq!(reading(context_pct(&st(&[]), None, Some(&tr), None)), Some((30.0, true)), "without a tag nothing is recorded");
-    write("tr.jsonl", lines(&[json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120_000},"model_context_window":200_000}}}).to_string()]));
+    write(
+        "tr.jsonl",
+        lines(&[
+            json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120_000},"model_context_window":200_000}}})
+                .to_string(),
+        ]),
+    );
     assert_eq!(reading(context_pct(&st(&[]), Some(&sid), Some(&tr), None)), Some((60.0, true)), "a Codex rollout states its window");
     write("tr.jsonl", "{\"usage\":1e999}\n".into());
     assert_eq!(context_pct(&st(&[]), Some(&sid), Some(&tr), None), Pct::Defer, "a number only JavaScript can read");
@@ -295,19 +392,58 @@ fn auto_handover_answers_only_the_cases_that_write_nothing() {
     assert_eq!(case(vec![tr(90)], &[], &plain), Verdict::Defer, "against a guessed window one soft advisory is due, and it is Node's");
     assert_eq!(case(vec![tr(90), latch(json!({"softFired": true}))], &[], &plain), empty(), "but it is not repeated");
     assert_eq!(case(vec![tr(90), ("x", "".into())], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain), empty(), "the variable set to 0 disables it");
-    assert_eq!(case(vec![tr(90), latch(json!({"fired": true}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain), Verdict::Defer, "disabled with a latch set: cleared by a write");
+    assert_eq!(
+        case(vec![tr(90), latch(json!({"fired": true}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain),
+        Verdict::Defer,
+        "disabled with a latch set: cleared by a write"
+    );
     assert_eq!(case(vec![tr(90)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0x32")], &plain), empty(), "parseInt reads 0x32 as 0, which disables it");
-    assert_eq!(case(vec![tr(90), (".anti-hall/settings.json", r#"{"autoHandover":{"enabled":false}}"#.into())], &env200, &plain), empty(), "disabled in settings");
-    assert_eq!(case(vec![tr(30)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "25"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain), Verdict::Defer, "a lower threshold");
-    assert_eq!(case(vec![tr(10)], &[("ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", "15000"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain), Verdict::Defer, "the token ceiling");
+    assert_eq!(
+        case(vec![tr(90), (".anti-hall/settings.json", r#"{"autoHandover":{"enabled":false}}"#.into())], &env200, &plain),
+        empty(),
+        "disabled in settings"
+    );
+    assert_eq!(
+        case(vec![tr(30)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "25"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain),
+        Verdict::Defer,
+        "a lower threshold"
+    );
+    assert_eq!(
+        case(vec![tr(10)], &[("ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", "15000"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain),
+        Verdict::Defer,
+        "the token ceiling"
+    );
     assert_eq!(case(vec![tr(90), (".anti-hall/skip.json", format!("{{\"auto-handover\":{}}}", now_ms() + 60_000))], &env200, &plain), empty(), "skipped");
     assert_eq!(case(vec![tr(90)], &[("ANTIHALL_JUDGE_CHILD", "1")], &plain), Verdict::Allow);
-    assert_eq!(case(vec![tr(90)], &env200, &|h| ups(h, true).as_object().map(|o| { let mut o = o.clone(); o.insert("agent_id".into(), json!("a")); Value::Object(o) }).unwrap()), empty(), "a subagent");
+    assert_eq!(
+        case(vec![tr(90)], &env200, &|h| ups(h, true)
+            .as_object()
+            .map(|o| {
+                let mut o = o.clone();
+                o.insert("agent_id".into(), json!("a"));
+                Value::Object(o)
+            })
+            .unwrap()),
+        empty(),
+        "a subagent"
+    );
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!([1])), empty(), "an array payload");
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!(5)), empty(), "a scalar payload");
-    assert_eq!(case(vec![tr(90)], &env200, &|h| { let mut p = ups(h, true); p.as_object_mut().unwrap().remove("session_id"); p }), Verdict::Defer, "the tag is a hash of the path");
+    assert_eq!(
+        case(vec![tr(90)], &env200, &|h| {
+            let mut p = ups(h, true);
+            p.as_object_mut().unwrap().remove("session_id");
+            p
+        }),
+        Verdict::Defer,
+        "the tag is a hash of the path"
+    );
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!({"prompt": "x"})), empty(), "no session and no transcript: nothing to key on");
-    assert_eq!(case(vec![tr(20), (".anti-hall/auto-handover/sess1.json", "{\"fired\":true,\"x\":\"\\ud83d\"}".into())], &env200, &plain), Verdict::Defer, "a latch only JavaScript can parse");
+    assert_eq!(
+        case(vec![tr(20), (".anti-hall/auto-handover/sess1.json", "{\"fired\":true,\"x\":\"\\ud83d\"}".into())], &env200, &plain),
+        Verdict::Defer,
+        "a latch only JavaScript can parse"
+    );
     let fresh = |pct: u64, age_ms: u64| (".anti-hall/context-pct/sess1.json", json!({"pct": pct, "maxTokens": 200_000, "ts": now_ms() - age_ms}).to_string());
     assert_eq!(case(vec![tr(10), fresh(95, 1000)], &env200, &plain), Verdict::Defer, "a fresh statusline reading over the threshold");
     assert_eq!(case(vec![tr(10), fresh(95, 3_600_000)], &env200, &plain), empty(), "a stale one is ignored");
@@ -339,18 +475,57 @@ fn the_pause_nag_answers_only_the_cases_that_block_and_write_nothing() {
     assert_eq!(case(184_000, vec![fired(json!({}))], &env200, &keep), Verdict::Allow, "92 percent, 2 over the baseline, inside the quiet window");
     assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &keep), Verdict::Defer, "96 percent: a step past the baseline");
     assert_eq!(case(184_000, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000}))], &env200, &keep), Verdict::Defer, "the quiet period has passed");
-    assert_eq!(case(184_000, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 92}))], &env200, &keep), Verdict::Allow, "the identical text is not repeated");
-    assert_eq!(case(185_200, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 93}))], &env200, &keep), Verdict::Allow, "92.6 shows as 93 (Math.round)");
-    assert_eq!(case(184_800, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 93}))], &env200, &keep), Verdict::Defer, "92.4 shows as 92");
-    assert_eq!(case(184_000, vec![fired(json!({})), (".anti-hall/settings.json", r#"{"autoHandover":{"nag":false}}"#.into())], &env200, &keep), Verdict::Allow, "nag off");
-    assert_eq!(case(184_000, vec![fired(json!({"lastNagAt": now_ms() - 120_000})), (".anti-hall/settings.json", r#"{"autoHandover":{"nagQuietMin":1}}"#.into())], &env200, &keep), Verdict::Defer, "a one minute quiet period");
-    assert_eq!(case(192_000, vec![fired(json!({})), (".anti-hall/settings.json", r#"{"autoHandover":{"nagStepPct":10}}"#.into())], &env200, &keep), Verdict::Allow, "a ten point step");
+    assert_eq!(
+        case(184_000, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 92}))], &env200, &keep),
+        Verdict::Allow,
+        "the identical text is not repeated"
+    );
+    assert_eq!(
+        case(185_200, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 93}))], &env200, &keep),
+        Verdict::Allow,
+        "92.6 shows as 93 (Math.round)"
+    );
+    assert_eq!(
+        case(184_800, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 93}))], &env200, &keep),
+        Verdict::Defer,
+        "92.4 shows as 92"
+    );
+    assert_eq!(
+        case(184_000, vec![fired(json!({})), (".anti-hall/settings.json", r#"{"autoHandover":{"nag":false}}"#.into())], &env200, &keep),
+        Verdict::Allow,
+        "nag off"
+    );
+    assert_eq!(
+        case(
+            184_000,
+            vec![fired(json!({"lastNagAt": now_ms() - 120_000})), (".anti-hall/settings.json", r#"{"autoHandover":{"nagQuietMin":1}}"#.into())],
+            &env200,
+            &keep
+        ),
+        Verdict::Defer,
+        "a one minute quiet period"
+    );
+    assert_eq!(
+        case(192_000, vec![fired(json!({})), (".anti-hall/settings.json", r#"{"autoHandover":{"nagStepPct":10}}"#.into())], &env200, &keep),
+        Verdict::Allow,
+        "a ten point step"
+    );
     assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| p["stop_hook_active"] = json!(true)), Verdict::Allow, "the stop was already continued");
     assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| p["stop_hook_active"] = json!("true")), Verdict::Defer, "only a literal true counts");
     assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| p["agent_id"] = json!("a")), Verdict::Allow, "a subagent");
     assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| p["transcript_path"] = json!("t/tr.jsonl")), Verdict::Defer, "a relative path is Node's");
-    assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| { p.as_object_mut().unwrap().remove("session_id"); }), Verdict::Defer, "the tag is a hash of the path");
-    assert_eq!(case(192_000, vec![fired(json!({}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &keep), Verdict::Allow, "disabled");
+    assert_eq!(
+        case(192_000, vec![fired(json!({}))], &env200, &|p| {
+            p.as_object_mut().unwrap().remove("session_id");
+        }),
+        Verdict::Defer,
+        "the tag is a hash of the path"
+    );
+    assert_eq!(
+        case(192_000, vec![fired(json!({}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &keep),
+        Verdict::Allow,
+        "disabled"
+    );
     assert_eq!(case(192_000, vec![fired(json!({}))], &[("ANTIHALL_JUDGE_CHILD", "1")], &keep), Verdict::Allow);
 }
 
@@ -375,22 +550,71 @@ fn compact_advice_allows_texts_that_cannot_recommend_and_defers_the_rest() {
     assert_eq!(case(turn("a compact layout"), &[], vec![], &keep), Verdict::Allow, "the word alone is no recommendation");
     assert_eq!(case(turn("this code is safe"), &[], vec![], &keep), Verdict::Allow);
     assert_eq!(case(turn("good job, nice point"), &[], vec![], &keep), Verdict::Allow);
-    for t in ["\u{2705} SAFE TO COMPACT NOW", "it is safe to compact now", "safe for a context reset", "GOOD POINT TO /compact NOW", "good time to clear", "then /compact", "/compact", "safe\nto compact", "safe to /clear", "good point for /new"] {
+    for t in [
+        "\u{2705} SAFE TO COMPACT NOW",
+        "it is safe to compact now",
+        "safe for a context reset",
+        "GOOD POINT TO /compact NOW",
+        "good time to clear",
+        "then /compact",
+        "/compact",
+        "safe\nto compact",
+        "safe to /clear",
+        "good point for /new",
+    ] {
         assert_eq!(case(turn(t), &[], vec![], &keep), Verdict::Defer, "{t:?}");
     }
-    assert_eq!(case(turn("safe to compact"), &[], vec![], &|p| p["last_assistant_message"] = json!("fine")), Verdict::Allow, "the last message replaces the transcript");
+    assert_eq!(
+        case(turn("safe to compact"), &[], vec![], &|p| p["last_assistant_message"] = json!("fine")),
+        Verdict::Allow,
+        "the last message replaces the transcript"
+    );
     assert_eq!(case(turn("fine"), &[], vec![], &|p| p["last_assistant_message"] = json!("safe to compact")), Verdict::Defer);
-    assert_eq!(case(turn("safe to compact"), &[], vec![], &|p| p["last_assistant_message"] = json!("  ")), Verdict::Defer, "a blank last message falls back to the turn");
+    assert_eq!(
+        case(turn("safe to compact"), &[], vec![], &|p| p["last_assistant_message"] = json!("  ")),
+        Verdict::Defer,
+        "a blank last message falls back to the turn"
+    );
     assert_eq!(case(vec![user("go"), asst("safe to compact"), user("next"), asst("ok")], &[], vec![], &keep), Verdict::Allow, "an earlier turn does not count");
-    assert_eq!(case(vec![asst("safe to compact"), json!({"type":"user","message":{"content":[{"type":"tool_result","content":"x"}]}}).to_string(), asst("ok")], &[], vec![], &keep), Verdict::Defer, "a tool result does not start a turn");
-    assert_eq!(case(vec!["{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"s\\u0061fe to compact\"}]}}".into()], &[], vec![], &keep), Verdict::Defer, "an escape can spell the words");
-    assert_eq!(case(turn("safe to compact"), &[], vec![(".anti-hall/settings.json", r#"{"guards":{"compactAdviceGuard":false}}"#.into())], &keep), Verdict::Allow, "switched off");
-    assert_eq!(case(turn("safe to compact"), &[("CLAUDE_PLUGIN_OPTION_GUARDS_COMPACT_ADVICE_GUARD", "false")], vec![], &keep), Verdict::Allow, "switched off by the plugin option");
-    assert_eq!(case(turn("safe to compact"), &[], vec![(".anti-hall/skip.json", format!("{{\"compact-advice-guard\":{}}}", now_ms() + 60_000))], &keep), Verdict::Allow, "skipped");
+    assert_eq!(
+        case(
+            vec![asst("safe to compact"), json!({"type":"user","message":{"content":[{"type":"tool_result","content":"x"}]}}).to_string(), asst("ok")],
+            &[],
+            vec![],
+            &keep
+        ),
+        Verdict::Defer,
+        "a tool result does not start a turn"
+    );
+    assert_eq!(
+        case(vec!["{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"s\\u0061fe to compact\"}]}}".into()], &[], vec![], &keep),
+        Verdict::Defer,
+        "an escape can spell the words"
+    );
+    assert_eq!(
+        case(turn("safe to compact"), &[], vec![(".anti-hall/settings.json", r#"{"guards":{"compactAdviceGuard":false}}"#.into())], &keep),
+        Verdict::Allow,
+        "switched off"
+    );
+    assert_eq!(
+        case(turn("safe to compact"), &[("CLAUDE_PLUGIN_OPTION_GUARDS_COMPACT_ADVICE_GUARD", "false")], vec![], &keep),
+        Verdict::Allow,
+        "switched off by the plugin option"
+    );
+    assert_eq!(
+        case(turn("safe to compact"), &[], vec![(".anti-hall/skip.json", format!("{{\"compact-advice-guard\":{}}}", now_ms() + 60_000))], &keep),
+        Verdict::Allow,
+        "skipped"
+    );
     assert_eq!(case(turn("safe to compact"), &[], vec![], &|p| p["stop_hook_active"] = json!(true)), Verdict::Allow);
     assert_eq!(case(turn("safe to compact"), &[], vec![], &|p| p["agent_type"] = json!("x")), Verdict::Allow);
     assert_eq!(case(turn("safe to compact"), &[], vec![], &|p| p["transcript_path"] = json!("/nonexistent/x.jsonl")), Verdict::Allow, "no transcript");
-    assert_eq!(case(turn("safe to compact"), &[], vec![], &|p| { p.as_object_mut().unwrap().remove("transcript_path"); }), Verdict::Allow);
+    assert_eq!(
+        case(turn("safe to compact"), &[], vec![], &|p| {
+            p.as_object_mut().unwrap().remove("transcript_path");
+        }),
+        Verdict::Allow
+    );
     assert_eq!(case(turn("safe to compact"), &[], vec![], &|p| p["transcript_path"] = json!("t/tr.jsonl")), Verdict::Defer, "a relative path is Node's");
     assert_eq!(case(turn("safe to compact"), &[("ANTIHALL_JUDGE_CHILD", "1")], vec![], &keep), Verdict::Allow);
     assert_eq!(case(turn("x"), &[], vec![], &|p| *p = json!([1])), Verdict::Allow);

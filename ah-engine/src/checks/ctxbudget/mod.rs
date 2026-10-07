@@ -23,9 +23,9 @@ pub mod setting;
 #[cfg(test)]
 mod tests;
 
+use crate::checks::Verdict;
 use crate::checks::compact_decl::{has_exponent, json_depth};
 use crate::checks::git::util::Settings;
-use crate::checks::Verdict;
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use serde_json::Value;
