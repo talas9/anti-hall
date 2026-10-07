@@ -197,7 +197,7 @@ fn harness_version(env: &RequestEnv, home: &str) -> Result<Option<String>, ()> {
     let plugins_root = resolve_abs(&format!("{marketplace}/../.."));
     let file = join(&plugins_root, defaults::text("session.registry_file"));
     let Ok(meta) = std::fs::metadata(&file) else { return Ok(None) };
-    if meta.len() > defaults::num("session.registry_max_bytes") as u64 {
+    if meta.len() > defaults::num("session.registry_max_bytes") {
         return Ok(None);
     }
     let Some(text) = read_text(&file) else { return Ok(None) };
@@ -221,7 +221,7 @@ fn decide(payload: &Value, opts: &Value, env: &RequestEnv) -> Verdict {
     if super::judge_child(env) {
         return Verdict::Allow;
     }
-    let (Some(home), Some(root)) = (home_of(env), plugin_root(opts)) else { return Verdict::Defer };
+    let (Some(home), Some(root)) = (home_of(env), plugin_root(opts, env)) else { return Verdict::Defer };
     let st = Settings::from_env(env);
     if !switch_on(&st, "session.setting_version_alert") || skipped(&st, defaults::text("session.version_alert_guard")) {
         return Verdict::Allow;

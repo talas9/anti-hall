@@ -129,8 +129,8 @@ fn check_ignore(root: &str, env: &RequestEnv) -> Option<i32> {
     let mut child = cmd.spawn().ok()?;
     let pid = child.id() as i32;
     let start = std::time::Instant::now();
-    let limit = std::time::Duration::from_millis(defaults::num("session.gitignore_probe_ms") as u64);
-    let poll = std::time::Duration::from_millis(defaults::num("session.git_poll_ms") as u64);
+    let limit = std::time::Duration::from_millis(defaults::num("session.gitignore_probe_ms"));
+    let poll = std::time::Duration::from_millis(defaults::num("session.git_poll_ms"));
     loop {
         match child.try_wait() {
             Ok(Some(st)) => return st.code(),

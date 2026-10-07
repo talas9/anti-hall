@@ -39,9 +39,10 @@ pub(crate) fn home_of(env: &RequestEnv) -> Option<String> {
     env.get(defaults::env_name("home")).filter(|h| h.starts_with('/')).map(str::to_string)
 }
 
-/// The plugin root the dispatcher passes (`plugin_root`), resolved to its real path as Node resolves `__dirname`.
-pub(crate) fn plugin_root(opts: &Value) -> Option<String> {
-    let root = opts.get("plugin_root").and_then(Value::as_str).filter(|r| !r.is_empty())?;
+/// The plugin root the dispatcher passes (`plugin_root`; `ah-engine check` passes it in the environment), resolved to its
+/// real path as Node resolves `__dirname`.
+pub(crate) fn plugin_root(opts: &Value, env: &RequestEnv) -> Option<String> {
+    let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(defaults::env_name("plugin_root"))).filter(|r| !r.is_empty())?;
     std::fs::canonicalize(root).ok().map(|p| p.to_string_lossy().to_string())
 }
 

@@ -104,7 +104,7 @@ fn decide(opts: &Value, env: &RequestEnv) -> Verdict {
     if judge_child(env) {
         return Verdict::Allow;
     }
-    let (Some(home), Some(root)) = (home_of(env), plugin_root(opts)) else { return Verdict::Defer };
+    let (Some(home), Some(root)) = (home_of(env), plugin_root(opts, env)) else { return Verdict::Defer };
     let st = Settings::from_env(env);
     if !switch_on(&st, "session.setting_repo_self_drift") || skipped(&st, defaults::text("session.repo_self_drift_guard")) {
         return Verdict::Allow;
