@@ -38,9 +38,13 @@ impl Sv {
     }
 }
 
-/// `Number(s)` for a trimmed, non-empty string, `None` when the result is NaN or infinite (a setting that is not a
+/// `Number(s)` for a non-blank string (white space around it is ignored), `None` when the result is NaN or infinite (a setting that is not a
 /// finite number falls through to the next source).
 pub fn js_number(s: &str) -> Option<f64> {
+    let s = js_trim(s);
+    if s.is_empty() {
+        return None;
+    }
     let b = s.as_bytes();
     if b.len() > 2 && b[0] == b'0' {
         let radix = match b[1] {
