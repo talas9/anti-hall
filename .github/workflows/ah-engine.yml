@@ -30,6 +30,12 @@ jobs:
       # Install exactly the toolchain pinned in rust-toolchain.toml (channel, rustfmt and clippy), so CI never drifts from it.
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ah-engine
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        with:
+          tool: cargo-nextest
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: ./test.sh
@@ -71,3 +77,61 @@ jobs:
           tool: cargo-audit,cargo-deny
       - run: cargo audit
       - run: cargo deny check
+
+  # Informational, never gating (continue-on-error): scheduled reports. The schedule trigger is the weekly cron above;
+  # a manual dispatch runs them too, a push or pull request does not.
+  coverage:
+    name: coverage (informational)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ah-engine
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: Line coverage summary
+        run: cargo llvm-cov nextest --release --summary-only | tee "$GITHUB_STEP_SUMMARY"
+
+  # Binary size report: total release size and the biggest crates (cargo-bloat). Informational; compare to ah-engine/RELEASING.md.
+  size:
+    name: size report (informational)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ah-engine
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        with:
+          tool: cargo-bloat
+      - name: Release size and top crates
+        run: |
+          cargo build --release
+          size=$(wc -c < target/release/ah-engine)
+          # cargo-bloat needs symbols, and the release profile strips them: re-link an unstripped copy for the crate table only.
+          CARGO_PROFILE_RELEASE_STRIP=false cargo bloat --release --crates -n 15 > /tmp/bloat.txt
+          {
+            echo '### ah-engine release binary'
+            echo "$size bytes (stripped, as shipped)"
+            echo '### Top crates (cargo-bloat)'
+            echo '```'
+            cat /tmp/bloat.txt
+            echo '```'
+          } | tee "$GITHUB_STEP_SUMMARY"
