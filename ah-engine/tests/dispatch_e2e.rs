@@ -859,17 +859,6 @@ fn over_cap_non_guard_payload_reports_when_anonymous_spool_write_fails() {
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
 }
 
-fn wait_for(path: &Path, within: Duration) {
-    let start = Instant::now();
-    while start.elapsed() < within {
-        if path.exists() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("timed out waiting for {}", path.display());
-}
-
 /// Waits until the file holds a whole pid: the shell creates it (empty) a moment before `echo $$` fills it, so existence is
 /// not enough (a read in between parsed an empty string under load).
 fn wait_for_pid(path: &Path, within: Duration) {
