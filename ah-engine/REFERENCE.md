@@ -1220,6 +1220,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `env.jev_audit_snippets` | `ANTIHALL_JEV_AUDIT_SNIPPETS` |  |  | Switch variable of the audit snippets: a boolean word turns them on or off ahead of the settings (Node: ANTIHALL_JEV_AUDIT_SNIPPETS). |
 | `env.jev_enabled` | `ANTIHALL_JEV` |  |  | Master switch variable: 1 force-enables Jev, 0 force-disables it and wins over every file setting (Node: ANTIHALL_JEV). |
 | `env.jev_integration_prefix` | `ANTIHALL_JEV_` |  |  | Prefix of the per-integration kill switch: the integration id in upper snake case is appended and a value of 0 forces that one integration off (Node: ANTIHALL_JEV_<ID>). |
 | `env.jev_key_generic` | `CLAUDE_PLUGIN_OPTION_JEV_API_KEY` |  |  | The legacy vendor-less key option, used only for the vendor it is bound to (Node: CLAUDE_PLUGIN_OPTION_JEV_API_KEY). |
@@ -1237,6 +1238,13 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `jev.async_budget_ms` | `3000` |  | ms | Time budget of an asynchronous (fire-and-forget) call: nobody waits for it, so it may use the full ceiling (Node: DETACHED_DEFAULT_BUDGET_MS). |
+| `jev.audit_file` | `jev-audit.ndjson` |  |  | The opt-in audit-snippet log, relative to the log directory (Node: jev-audit.ndjson); redacted snippets of decisions that changed the outcome. |
+| `jev.audit_head_chars` | `200` |  |  | Characters kept from the start of an audit snippet (Node: SNIPPET_HEAD). |
+| `jev.audit_max_bytes` | `1048576` |  | bytes | The audit log rotates (one backup) once it is larger than this (Node: LOG_MAX_BYTES). |
+| `jev.audit_plain_chars` | `200` |  |  | Characters kept of a head-only audit snippet after the scrub (Node: slice(0, 200)). |
+| `jev.audit_scrub_chars` | `2000` |  |  | Characters of the judged text scrubbed for a head-only audit snippet (Node: state.slice(0, 2000)). |
+| `jev.audit_tail_chars` | `400` |  |  | Characters kept from the end of a tail-weighted audit snippet, whose verdict sits at the end of the text (Node: SNIPPET_TAIL). |
+| `jev.audit_tail_ids` | `outputVerifyGuard` |  |  | Integrations whose audit snippet keeps head and tail (the verdict is at the end of the judged text). |
 | `jev.balance_body_bytes` | `2048` |  | bytes | How much of an error body is read to classify an out-of-balance answer; the body is never logged (Node: slice(0, 2048)). |
 | `jev.balance_pattern` | `insufficient\|credit\|balance\|quota\|billing` |  |  | A 400 or 403 body matching this expression (case-insensitive) is an out-of-balance answer and makes the call fallback-eligible (Node: BALANCE_BODY_RE). |
 | `jev.bool_false_tokens` | `0, off, false, no` |  |  | Words that read as false in an environment or settings value (Node: FALSE_TOKENS). |
@@ -1244,6 +1252,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.breaker_cooldown_ms` | `300000` |  | ms | How long an open breaker skips its vendor before a probe is allowed (Node: BREAKER_COOLDOWN_MS). |
 | `jev.breaker_file` | `cache/jev-breaker.json` |  |  | The breaker state file, relative to the anti-hall home directory; the same file the Node hooks use, so both see one breaker (Node: jev-breaker.json under cache/). |
 | `jev.breaker_threshold` | `3` |  |  | Consecutive fallback-eligible failures that open a vendor's breaker (Node: BREAKER_THRESHOLD). |
+| `jev.budget_file` | `jev-budget.json` |  |  | The budget-watch state file in jev.state_dir: the day, the spend so far and the day a warning was last given (Node: jev-budget.json). |
 | `jev.cache_max_entries` | `500` |  |  | Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES). |
 | `jev.confidence_threshold` | `0.85` |  |  | Default minimum confidence for an answer to count as trusted, a decimal between 0 and 1 (Node: DEFAULT_CONFIDENCE_THRESHOLD). |
 | `jev.detached_args` | `jev, ask, --json` |  |  | The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does). |
@@ -1263,6 +1272,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.legacy_file` | `jev.json` |  |  | The legacy Jev config file, relative to the anti-hall home directory, read below settings.json (Node: jev.json). |
 | `jev.legacy_on_default` | `speculation, triage` |  |  | Integrations that predate the per-integration modes and stay on by default; consulted only for an id missing from the table (Node: LEGACY_ON_DEFAULT). |
 | `jev.legacy_triage_key` | `triage` |  |  | Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off. |
+| `jev.log_dir` | `logs` |  |  | The directory of the Jev logs (decision log, audit log, daily rollups), relative to the anti-hall home directory. |
 | `jev.log_file` | `logs/jev-assist.ndjson` |  |  | The decision log, relative to the anti-hall home directory, in the row shape the Node jev report reads (Node: logs/jev-assist.ndjson). |
 | `jev.log_max_bytes` | `2097152` |  | bytes | Size at which the decision log rotates (Node: DECISION_LOG_MAX_BYTES). |
 | `jev.log_off_rows` | `1` |  |  | 1 (default) also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does, so the `jev report` call-volume view is unchanged by the move to the engine; 0 writes nothing and does no I/O at all for such a call. |
@@ -1276,8 +1286,10 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.price_usd_per_m_output` | `0` |  |  | USD per million output tokens used when a response reports tokens but no cost; output is free on the published rate (Node: jev.priceUsdPerMOutput). |
 | `jev.question_version` | `v1` |  |  | Part of the cache key, bumped when a question's wording changes so old answers are not reused (Node: QUESTION_VERSION). |
 | `jev.queue_cap` | `64` |  |  | Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). |
+| `jev.rollup_dir` | `jev-daily` |  |  | Directory of the daily rollups, relative to the log directory (Node: jev-daily); one JSON file per UTC day. |
 | `jev.settings_file` | `settings.json` |  |  | The unified settings file, relative to the anti-hall home directory (Node: settings.json). |
 | `jev.settings_recheck_ms` | `2000` |  | ms | How often the settings files are re-checked for changes: at most one stat of each of the two files per window, taken by the first call after it elapses; between checks a call costs one clock read, so an off Jev stays off the hot path. |
+| `jev.state_dir` | `state` |  |  | Directory of the Jev budget-watch state, relative to the anti-hall home directory (Node: state/). |
 | `jev.timeout_ms` | `1500` |  | ms | Per-call time budget for one Jev call, request, headers and body together (Node: DEFAULT_TIMEOUT_MS). |
 | `jev.turn_ref_window_bytes` | `65536` |  | bytes | How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript). |
 | `jev.unlisted_mode` | `shadow` |  |  | Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones). |
