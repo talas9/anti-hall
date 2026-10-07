@@ -6,6 +6,7 @@
 //!
 //! Why a trait plus a registry instead of a `match` on names: rules refer to checks by name from data
 //! files, so the set of valid names must be discoverable at runtime (rule validation, `docs`, `status`).
+pub mod claim_ledger;
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
@@ -21,6 +22,8 @@ pub mod merge_side_pick;
 pub mod model_routing;
 pub mod orch_on_spawn;
 pub mod phase_tracker;
+pub mod output_verify;
+pub mod replykit;
 pub mod scan_throttle;
 pub mod session;
 pub mod ship_it;
@@ -28,6 +31,8 @@ pub mod spawnctx;
 pub mod verify_first;
 pub mod verify_first_orch;
 pub mod verify_first_prompt;
+pub mod speculation_guard;
+pub mod speculation_judge;
 
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
@@ -130,7 +135,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 30] = [
+    static ALL: [&dyn Check; 34] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -161,6 +166,10 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &session::repo_self_drift::RepoSelfDrift,
         &session::defect_nudge::DefectNudge,
         &session::progress_prune::ProgressPrune,
+        &speculation_guard::SpeculationGuard,
+        &speculation_judge::SpeculationJudge,
+        &claim_ledger::ClaimLedger,
+        &output_verify::OutputVerifyGuard,
     ];
     &ALL
 }
