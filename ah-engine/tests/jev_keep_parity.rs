@@ -89,6 +89,10 @@ fn seeded_rows() -> Vec<Value> {
         }
         rows.push(r);
     }
+    // one big group, so the percentiles are taken over many samples
+    for i in 0..300 {
+        rows.push(json!({"ts": format!("2026-09-03T12:{:02}:{:02}.000Z", i % 60, (i / 60) % 60), "id": "speculation", "h": format!("big{i}"), "backend": "jev", "mode": "shadow", "ms": (g.next() % 5000) as f64, "jev": true, "wouldChange": "added"}));
+    }
     rows.push(json!({"id": "x", "backend": "jev"})); // no ts: skipped
     rows.push(json!({"ts": "not a date", "id": "x"})); // not a date: skipped
     rows
