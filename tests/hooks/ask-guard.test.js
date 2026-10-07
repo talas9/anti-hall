@@ -215,7 +215,7 @@ test('DevSwarm child sentence: present for a child workspace (advise and block),
 });
 
 test('hooks.json registers the guard under PreToolUse with matcher AskUserQuestion (Claude only)', () => {
-  const claude = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'hooks', 'hooks.json'), 'utf8'));
+  const claude = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'hooks', 'hooks.registry.json'), 'utf8'));
   const groups = claude.hooks.PreToolUse.filter((g) => g.hooks.some((x) => /ask-guard\.js/.test(x.command)));
   assert.strictEqual(groups.length, 1);
   assert.strictEqual(groups[0].matcher, 'AskUserQuestion');
@@ -225,7 +225,7 @@ test('hooks.json registers the guard under PreToolUse with matcher AskUserQuesti
     command: 'node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js"',
     timeout: 10,
   });
-  assert.ok(!/hooks\/ask-guard\.js/.test(fs.readFileSync(path.join(PLUGIN, 'codex', 'hooks', 'hooks.json'), 'utf8')), 'no Codex registration');
+  assert.ok(!/hooks\/ask-guard\.js/.test(fs.readFileSync(path.join(PLUGIN, 'codex', 'hooks', 'hooks.registry.json'), 'utf8')), 'no Codex registration');
 });
 
 test('schema / manifest / docs parity for guards.noBlockingQuestions', () => {

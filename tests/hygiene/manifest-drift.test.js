@@ -24,8 +24,8 @@ const REPO = path.resolve(__dirname, '..', '..');
 const ANTI_HALL = path.join(REPO, 'plugins', 'anti-hall');
 const CLAUDE_PLUGIN_JSON = path.join(ANTI_HALL, '.claude-plugin', 'plugin.json');
 const CODEX_PLUGIN_JSON = path.join(ANTI_HALL, '.codex-plugin', 'plugin.json');
-const CLAUDE_HOOKS_JSON = path.join(ANTI_HALL, 'hooks', 'hooks.json');
-const CODEX_HOOKS_JSON = path.join(ANTI_HALL, 'codex', 'hooks', 'hooks.json');
+const CLAUDE_HOOKS_JSON = path.join(ANTI_HALL, 'hooks', 'hooks.registry.json');
+const CODEX_HOOKS_JSON = path.join(ANTI_HALL, 'codex', 'hooks', 'hooks.registry.json');
 const CLAUDE_HOOKS_DIR = path.join(ANTI_HALL, 'hooks');
 // codex/hooks/hooks.json's `${PLUGIN_ROOT}/hooks/xxx.js` commands, and
 // install-codex.js's own HOOK_ROOT (= path.resolve(__dirname, '..', 'hooks')

@@ -23,8 +23,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const PLUGIN = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
-const CLAUDE_HOOKS_JSON = path.join(PLUGIN, 'hooks', 'hooks.json');
-const CODEX_HOOKS_JSON = path.join(PLUGIN, 'codex', 'hooks', 'hooks.json');
+const CLAUDE_HOOKS_JSON = path.join(PLUGIN, 'hooks', 'hooks.registry.json');
+const CODEX_HOOKS_JSON = path.join(PLUGIN, 'codex', 'hooks', 'hooks.registry.json');
 
 // commandsFor(cfg, event) -> string[] of every hook command under an event.
 function commandsFor(cfg, event) {

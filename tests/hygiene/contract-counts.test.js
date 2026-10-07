@@ -35,8 +35,8 @@ function hookStats(manifest) {
 function computed() {
   const schema = require(P('hooks', 'lib', 'settings-schema.js'));
   const all = schema.allSettings();
-  const claude = hookStats(P('hooks', 'hooks.json'));
-  const codex = hookStats(P('codex', 'hooks', 'hooks.json'));
+  const claude = hookStats(P('hooks', 'hooks.registry.json'));
+  const codex = hookStats(P('codex', 'hooks', 'hooks.registry.json'));
   const dirs = (d) => fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).length;
   return {
     settings: all.length,

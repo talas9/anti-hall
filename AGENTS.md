@@ -263,14 +263,13 @@ feature/KB touches this area:
 ## Component catalog (condensed; full detail in llms.txt)
 
 **Hooks** by event ([C]=also on Codex; purposes: llms.txt "Hooks" table):
-- UserPromptSubmit — verify-first [C], task-tracker [C], idle-agent-sweep [C], limit-conserve-inject [C], devswarm-parent-inbox [C], devswarm-child-turn [C], auto-handover [C]
-- UserPromptSubmit+SessionStart — repair-on-reload [C]
-- TaskCreated+TaskCompleted — task-lifecycle-log
-- SubagentStart — verify-first-subagent
-- SessionStart — verify-first-full [C], verify-first-orch [C], devswarm-child-role [C], version-alert [C], fable-availability, codex-availability [C], devswarm-version [C], claude-cli-version [C], repo-self-drift [C], progress-prune [C], handover-resume [C], jev-weekly-scorecard [C], jev-review-reminder [C], emit-dedupe-reset [C], defect-nudge [C]
-- Stop — task-guard [C], tasklist-guard [C], speculation-guard [C], speculation-judge [C], claim-ledger [C], codex-nudge, devswarm-parent-gate [C], devswarm-child-gate [C], auto-handover-pause-nag [C], silent-agent-nudge [C], compact-advice-guard [C]
+- PostToolUse(Bash)+PreToolUse(Bash) — merge-side-pick [C], git-guard [C], coordinator-work-guard
+- PostToolUse(Bash) — output-verify-guard, devswarm-parent-reply-tracker [C], devswarm-child-drain [C]
+- PostToolUse(Agent) — codex-quota-detect
+- PostToolUse(TaskCreate|TaskUpdate) — dispatch-tier
+- PostToolUseFailure(Bash) — failure-root-cause-nudge
+- PreCompact — precompact-snapshot [C]
 - PreToolUse(Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash) — compact-declaration-guard [C]
-- PreToolUse(Bash)+PostToolUse(Bash) — git-guard [C], coordinator-work-guard, merge-side-pick [C]
 - PreToolUse(Bash) — command-guard [C], merge-gate [C], scan-throttle
 - PreToolUse(Write|Edit|MultiEdit|Bash) — api-guard [C], ship-it-guard [C]
 - PreToolUse(Write|Edit|MultiEdit|NotebookEdit) — edit-guard [C]
@@ -280,12 +279,13 @@ feature/KB touches this area:
 - PreToolUse(SendMessage) — devswarm-comms-guard
 - PreToolUse(AskUserQuestion) — ask-guard
 - PreToolUse(TaskStop) — stale-agent-stop-note
-- PostToolUse(Bash) — output-verify-guard, devswarm-parent-reply-tracker [C], devswarm-child-drain [C]
-- PostToolUse(Agent) — codex-quota-detect
-- PostToolUse(TaskCreate|TaskUpdate) — dispatch-tier
-- PostToolUseFailure(Bash) — failure-root-cause-nudge
-- PreCompact — precompact-snapshot [C]
 - SessionEnd — session-end-mcp-reaper
+- SessionStart — verify-first-full [C], verify-first-orch [C], devswarm-child-role [C], version-alert [C], fable-availability, codex-availability [C], devswarm-version [C], claude-cli-version [C], repo-self-drift [C], progress-prune [C], handover-resume [C], jev-weekly-scorecard [C], jev-review-reminder [C], emit-dedupe-reset [C], defect-nudge [C]
+- SessionStart+UserPromptSubmit — repair-on-reload [C]
+- Stop — task-guard [C], tasklist-guard [C], speculation-guard [C], speculation-judge [C], claim-ledger [C], codex-nudge, devswarm-parent-gate [C], devswarm-child-gate [C], auto-handover-pause-nag [C], silent-agent-nudge [C], compact-advice-guard [C]
+- SubagentStart — verify-first-subagent
+- TaskCompleted+TaskCreated — task-lifecycle-log
+- UserPromptSubmit — verify-first [C], task-tracker [C], idle-agent-sweep [C], limit-conserve-inject [C], devswarm-parent-inbox [C], devswarm-child-turn [C], auto-handover [C]
 
 **Skills** — Claude `/anti-hall:<name>`: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `defects`, `devswarm`, `doctor`, `flutter-debug`, `handover`, `install-statusline`, `jev`, `orchestration`, `root-cause`, `settings`, `ship-it`, `simplify`, `system-briefing`, `update`.
 Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects, devswarm, doctor, flutter-debug, handover, install-statusline, jev, model-policy, omc, omx, orchestration, root-cause, settings, ship-it, simplify, system-briefing, update.

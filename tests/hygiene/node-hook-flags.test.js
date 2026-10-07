@@ -73,8 +73,8 @@ function check(cmds, root, isCodex) {
 }
 
 test('exactly the EXPOSED_HOOKS entries carry the flags; every other command keeps the plain form', () => {
-  const claudeCmds = commands(path.join(HOOKS, 'hooks.json'));
-  const codexCmds = commands(path.join(PLUGIN, 'codex', 'hooks', 'hooks.json'));
+  const claudeCmds = commands(path.join(HOOKS, 'hooks.registry.json'));
+  const codexCmds = commands(path.join(PLUGIN, 'codex', 'hooks', 'hooks.registry.json'));
   assert.ok(claudeCmds.length > 50 && codexCmds.length > 30, `expected the full hook sets, got ${claudeCmds.length}/${codexCmds.length}`);
   const claude = check(claudeCmds, 'CLAUDE_PLUGIN_ROOT', false);
   const codex = check(codexCmds, 'PLUGIN_ROOT', true);

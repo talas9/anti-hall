@@ -3,7 +3,7 @@
 // tools/gen-agents-catalog.js — regenerate the condensed component catalog
 // block in AGENTS.md (between the catalog markers) from the SAME sources the
 // shipped code and llms.txt use, so the two cannot drift:
-//   hooks      <- plugins/anti-hall/hooks/hooks.json (+ codex/hooks/hooks.json),
+//   hooks      <- plugins/anti-hall/hooks/hooks.registry.json (+ codex/hooks/hooks.registry.json),
 //                 one-line purpose from llms.txt's Hooks table
 //   skills     <- plugins/anti-hall/skills/*/ and codex/skills/*/
 //   CLI verbs  <- the dispatch switches of devswarm.js / settings.js /
@@ -78,8 +78,8 @@ function fmt(v) { return v === null || v === undefined || v === '' ? '—' : (ty
 function build() {
   const out = [START, '', '## Component catalog (condensed; full detail in llms.txt)', ''];
   // Hooks
-  const claude = hookEvents(P('hooks', 'hooks.json'));
-  const codex = hookEvents(P('codex', 'hooks', 'hooks.json'));
+  const claude = hookEvents(P('hooks', 'hooks.registry.json'));
+  const codex = hookEvents(P('codex', 'hooks', 'hooks.registry.json'));
   out.push('**Hooks** by event ([C]=also on Codex; purposes: llms.txt "Hooks" table):');
   const byEvent = new Map();
   for (const n of [...new Set([...claude.keys(), ...codex.keys()])]) {

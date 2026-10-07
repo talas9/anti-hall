@@ -83,7 +83,7 @@ test('(1) every settings-schema key is documented in docs/GUIDE.md', () => {
 
 test('(2) every hook script registered in hooks.json (Claude + Codex) is in llms.txt', () => {
   const llms = read('llms.txt');
-  const all = new Set([...hookScripts('plugins/anti-hall/hooks/hooks.json'), ...hookScripts('plugins/anti-hall/codex/hooks/hooks.json')]);
+  const all = new Set([...hookScripts('plugins/anti-hall/hooks/hooks.registry.json'), ...hookScripts('plugins/anti-hall/codex/hooks/hooks.registry.json')]);
   assert.ok(all.size > 30, 'parsed the hook manifests');
   const missing = [...all].filter((h) => !llms.includes(h));
   assert.deepStrictEqual(missing, [], 'add a llms.txt Hooks row for: ' + missing.join(', '));
@@ -159,7 +159,7 @@ test('(7) AGENTS.md carries the generated component catalog, current, and fits t
   assert.strictEqual(cur, gen.build(), 'AGENTS.md catalog is stale — run node tools/gen-agents-catalog.js');
   assert.ok(Buffer.byteLength(agents) < 32768, 'AGENTS.md is ' + Buffer.byteLength(agents) + ' bytes; Codex truncates at 32 KiB');
   // Spot-check the derived content covers every hook script and every setting key.
-  const all = new Set([...hookScripts('plugins/anti-hall/hooks/hooks.json'), ...hookScripts('plugins/anti-hall/codex/hooks/hooks.json')]);
+  const all = new Set([...hookScripts('plugins/anti-hall/hooks/hooks.registry.json'), ...hookScripts('plugins/anti-hall/codex/hooks/hooks.registry.json')]);
   const missingHooks = [...all].filter((h) => !cur.includes(h.replace(/\.js$/, '')));
   const missingKeys = [];
   for (const sec of schema.SECTIONS) {

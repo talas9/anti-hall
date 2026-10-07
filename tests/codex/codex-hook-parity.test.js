@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const TEMPLATE_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.json');
+const TEMPLATE_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hooks.registry.json');
 const INSTALLER_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'install-codex.js');
 
 // Normalized full command of every hook a hooks-registry object (either the

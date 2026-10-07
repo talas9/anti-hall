@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const PLUGIN = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
-const HOOKS_JSON = path.join(PLUGIN, 'codex', 'hooks', 'hooks.json');
+const HOOKS_JSON = path.join(PLUGIN, 'codex', 'hooks', 'hooks.registry.json');
 const LOOKBACK = 4;
 const STDERR_RE = /fs\.writeSync\(\s*2\s*,|process\.stderr\.write\(/;
 

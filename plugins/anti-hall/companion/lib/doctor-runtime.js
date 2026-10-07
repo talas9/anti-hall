@@ -810,7 +810,7 @@ function scanForeignConflicts(opts) {
   const F = o.fsi || fs;
   const results = [];
 
-  const ownHooksPath = path.join(__dirname, '..', '..', 'hooks', 'hooks.json');
+  const ownHooksPath = path.join(__dirname, '..', '..', 'hooks', 'hooks.registry.json'); // D87: the per-hook registry; hooks.json is thin
   const ownCfg = readJsonBounded(ownHooksPath, F);
   const ownEntries = extractHookEntries(ownCfg);
   const ownHasStop = ownEntries.some((e) => e.event === 'Stop');

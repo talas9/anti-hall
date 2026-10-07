@@ -170,7 +170,7 @@ function tmpHome() { return fs.mkdtempSync(path.join(os.tmpdir(), 'ah-switch-'))
 
 // ---------------------------------------------------------------- (1) drift
 test('DRIFT: every Claude + Codex registered hook has a switch or a NOT_TOGGLEABLE reason', () => {
-  const all = new Set([...hookScripts('hooks/hooks.json'), ...hookScripts('codex/hooks/hooks.json')]);
+  const all = new Set([...hookScripts('hooks/hooks.registry.json'), ...hookScripts('codex/hooks/hooks.registry.json')]);
   const notToggleable = new Set(schema.NOT_TOGGLEABLE.map((n) => n.name + '.js'));
   const missing = [...all].filter((h) => !SWITCHES[h] && !notToggleable.has(h));
   assert.deepStrictEqual(missing, [], 'add a settings switch (or a NOT_TOGGLEABLE reason) for: ' + missing.join(', '));
