@@ -908,17 +908,27 @@ test_healthy_engine_returns_immediately_every_shell() {
     command -v "$shname" >/dev/null 2>&1 || continue
     ran_any=1
     i=0
+    best=999999
+    # Correctness is asserted on every run. Speed is asserted on the BEST run: a wrapper that blocks on its
+    # watchdog pays the watchdog's 1 s first poll on EVERY run, so best >= 1000 ms; machine load can slow
+    # individual runs (measured 500-1000 ms at load ~19) but cannot slow all 50, so an absolute per-run bound
+    # would be a load test, not a wrapper test. A run at/over the 5 s timeout means "engine timed out".
     while [ "$i" -lt 50 ]; do
       t0=$(now_ms)
-      AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/instant.list" "$shname" "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/instant.out" 2>"$tmp/instant.err"
+      AH_HOOK_TIMEOUT_S=5 AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/instant.list" "$shname" "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/instant.out" 2>"$tmp/instant.err"
       rc=$?
       t1=$(now_ms)
-      if [ "$rc" -ne 0 ] || [ "$(cat "$tmp/instant.out")" != ok ] || [ -s "$tmp/instant.err" ] || [ $((t1 - t0)) -ge 500 ]; then
+      if [ "$rc" -ne 0 ] || [ "$(cat "$tmp/instant.out")" != ok ] || [ -s "$tmp/instant.err" ] || [ $((t1 - t0)) -ge 5000 ]; then
         printf 'instant engine under %s run %s: rc=%s ms=%s out=%s err=%s\n' "$shname" "$i" "$rc" "$((t1 - t0))" "$(cat "$tmp/instant.out")" "$(cat "$tmp/instant.err")" >&2
         return 1
       fi
+      [ $((t1 - t0)) -lt "$best" ] && best=$((t1 - t0))
       i=$((i + 1))
     done
+    if [ "$best" -ge 1000 ]; then
+      printf 'instant engine under %s: fastest of 50 runs took %s ms (wrapper waits on its watchdog)\n' "$shname" "$best" >&2
+      return 1
+    fi
   done
   [ "$ran_any" -eq 1 ]
 }
