@@ -104,6 +104,15 @@ pub enum ConfigError {
         /// The dotted key.
         key: String,
     },
+    /// An `[events.*]` or `[entries.*]` section (hook configuration, D87) is invalid.
+    Hooks {
+        /// The file.
+        path: PathBuf,
+        /// The dotted key.
+        key: String,
+        /// What is wrong, as shipped message text.
+        detail: String,
+    },
 }
 
 impl ConfigError {
@@ -117,6 +126,7 @@ impl ConfigError {
             ConfigError::Type { .. } => "type",
             ConfigError::Range { .. } => "range",
             ConfigError::Unsupported { .. } => "unsupported",
+            ConfigError::Hooks { .. } => "hooks",
         }
     }
 }
@@ -135,6 +145,7 @@ impl fmt::Display for ConfigError {
             ConfigError::Range { path, key, value, min, max } => {
                 r("msg.cfg_err_range", &[("path", &path.display()), ("key", key), ("value", value), ("min", min), ("max", max)])
             }
+            ConfigError::Hooks { path, key, detail } => r("msg.cfg_err_hooks", &[("path", &path.display()), ("key", key), ("detail", detail)]),
             ConfigError::Unsupported { path, key } => {
                 r("msg.cfg_err_unsupported", &[("path", &path.display()), ("key", key), ("found", &defaults::text("msg.cfg_type_other"))])
             }
@@ -207,6 +218,8 @@ pub struct Layers {
     pub settings: Json,
     /// The user TOML flattened to `dotted.key -> value` (already validated).
     pub user: BTreeMap<String, Json>,
+    /// The `[events.*]` / `[entries.*]` hook configuration of the user TOML (already validated, D87).
+    pub hooks: crate::hookcfg::Layer,
 }
 
 /// Every setting resolved through the layers.
@@ -458,7 +471,7 @@ fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
     }
 }
 
-fn toml_to_json(path: &Path, key: &str, v: &toml::Value) -> Result<Json, ConfigError> {
+pub(crate) fn toml_to_json(path: &Path, key: &str, v: &toml::Value) -> Result<Json, ConfigError> {
     let unsupported = || ConfigError::Unsupported { path: path.to_path_buf(), key: key.to_string() };
     Ok(match v {
         toml::Value::String(s) => json!(s),
@@ -501,18 +514,27 @@ fn flatten(path: &Path, prefix: &str, t: &toml::Table, out: &mut BTreeMap<String
     Ok(())
 }
 
-/// Parse and validate a user TOML file's text against the shipped schema.
-pub fn parse_user(path: &Path, text: &str) -> Result<BTreeMap<String, Json>, ConfigError> {
-    let table: toml::Table = text.parse().map_err(|e: toml::de::Error| ConfigError::Parse { path: path.to_path_buf(), message: e.to_string() })?;
+/// Parse and validate a user TOML file's text against the shipped schema: the settings, and the hook configuration
+/// sections (`[events.*]`, `[entries.*]`, validated by `hookcfg`).
+pub fn parse_user_full(path: &Path, text: &str) -> Result<(BTreeMap<String, Json>, crate::hookcfg::Layer), ConfigError> {
+    let mut table: toml::Table = text.parse().map_err(|e: toml::de::Error| ConfigError::Parse { path: path.to_path_buf(), message: e.to_string() })?;
+    let mut section = |name: &str| -> Result<Option<Json>, ConfigError> { table.remove(name).map(|v| toml_to_json(path, name, &v)).transpose() };
+    let (events, entries) = (section("events")?, section("entries")?);
     let mut out = BTreeMap::new();
     flatten(path, "", &table, &mut out)?;
-    Ok(out)
+    let hooks = crate::hookcfg::parse_layer(path, crate::hookcfg::Origin::User, events.as_ref(), entries.as_ref())?;
+    Ok((out, hooks))
 }
 
-fn load_user(p: &Paths) -> Result<BTreeMap<String, Json>, ConfigError> {
+/// Parse and validate a user TOML file's text against the shipped schema (the settings it sets).
+pub fn parse_user(path: &Path, text: &str) -> Result<BTreeMap<String, Json>, ConfigError> {
+    parse_user_full(path, text).map(|(settings, _)| settings)
+}
+
+fn load_user(p: &Paths) -> Result<(BTreeMap<String, Json>, crate::hookcfg::Layer), ConfigError> {
     match read_text(&p.user)? {
-        Some(t) => parse_user(&p.user, &t),
-        None => Ok(BTreeMap::new()),
+        Some(t) => parse_user_full(&p.user, &t),
+        None => Ok(Default::default()),
     }
 }
 
@@ -531,7 +553,8 @@ fn load_settings(p: &Paths) -> Result<Json, ConfigError> {
 /// Read both files for a live reload. A missing file is an empty layer; an unreadable or invalid one is an error
 /// (the caller keeps the last good config).
 pub fn load_layers(p: &Paths) -> Result<Layers, ConfigError> {
-    Ok(Layers { user: load_user(p)?, settings: load_settings(p)? })
+    let (user, hooks) = load_user(p)?;
+    Ok(Layers { user, settings: load_settings(p)?, hooks })
 }
 
 /// Read both files at a cold start, where there is no last good config to keep. Each file stands alone: a corrupt
@@ -539,21 +562,22 @@ pub fn load_layers(p: &Paths) -> Result<Layers, ConfigError> {
 /// request), and a rejected `config.toml` reads as empty. Every rejection is returned for logging.
 pub fn load_layers_cold(p: &Paths) -> (Layers, Vec<ConfigError>) {
     let mut errs = vec![];
-    let user = load_user(p).unwrap_or_else(|e| {
+    let (user, hooks) = load_user(p).unwrap_or_else(|e| {
         errs.push(e);
-        BTreeMap::new()
+        Default::default()
     });
     let settings = load_settings(p).unwrap_or_else(|e| {
         errs.push(e);
         Json::Null
     });
-    (Layers { settings, user }, errs)
+    (Layers { settings, user, hooks }, errs)
 }
 
 /// `config validate <file>`: check a user TOML file; returns how many settings it sets.
 pub fn validate_file(path: &Path) -> Result<usize, ConfigError> {
     let text = read_text(path)?.ok_or_else(|| ConfigError::Io { path: path.to_path_buf(), source: std::io::Error::from(std::io::ErrorKind::NotFound) })?;
-    Ok(parse_user(path, &text)?.len())
+    let (settings, hooks) = parse_user_full(path, &text)?;
+    Ok(settings.len() + hooks.len())
 }
 
 /// One immutable, consistent view of the config: the resolved settings and the daemon limits built from them.
@@ -565,6 +589,8 @@ pub struct Snapshot {
     pub effective: Effective,
     /// The daemon limits (restart-only fields hold the running value).
     pub config: Config,
+    /// The hook configuration of the user file (D87); the dispatcher adds a project file per request.
+    pub hooks: crate::hookcfg::HookCfg,
     /// Settings whose on-disk value differs from the running one but only apply at the next start.
     pub pending_restart: Vec<String>,
     /// The last rejected edit, as `code: text`, while the active snapshot is older than the files.
@@ -579,7 +605,7 @@ impl Deref for Snapshot {
 }
 
 impl Snapshot {
-    fn build(version: u64, mut effective: Effective, prev: Option<&Snapshot>) -> Snapshot {
+    fn build(version: u64, mut effective: Effective, hooks: crate::hookcfg::Layer, prev: Option<&Snapshot>) -> Snapshot {
         let mut pending = Vec::new();
         if let Some(prev) = prev {
             for (k, r) in effective.map.iter_mut() {
@@ -593,7 +619,7 @@ impl Snapshot {
             }
         }
         let config = Config::from_effective(&effective);
-        Snapshot { version, effective, config, pending_restart: pending, last_error: None }
+        Snapshot { version, effective, config, hooks: crate::hookcfg::HookCfg::new(None, hooks), pending_restart: pending, last_error: None }
     }
 }
 
@@ -637,7 +663,7 @@ fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl ConfigStore {
     /// A store that never reads files: it serves `config` as given (unit tests).
     pub fn fixed(config: Config) -> ConfigStore {
-        let snap = Snapshot { version: 1, effective: Effective::defaults(), config, pending_restart: vec![], last_error: None };
+        let snap = Snapshot { version: 1, effective: Effective::defaults(), config, hooks: Default::default(), pending_restart: vec![], last_error: None };
         ConfigStore { cur: RwLock::new(Arc::new(snap)), paths: None, watch: Mutex::new(Watch { seen: vec![], pending: None, last_poll: Instant::now() }) }
     }
 
@@ -655,7 +681,7 @@ impl ConfigStore {
         for e in &errs {
             health::log_event("config_invalid", e.code(), &e.to_string());
         }
-        let mut snap = Snapshot::build(1, Effective::resolve(&layers, &env), None);
+        let mut snap = Snapshot::build(1, Effective::resolve(&layers, &env), layers.hooks.clone(), None);
         snap.last_error = errs.first().map(|e| format!("{}: {e}", e.code()));
         ConfigStore { cur: RwLock::new(Arc::new(snap)), paths: Some(paths), watch: Mutex::new(Watch { seen, pending: None, last_poll: Instant::now() }) }
     }
@@ -685,9 +711,9 @@ impl ConfigStore {
                 Reload::Invalid(e.code())
             }
             Ok(layers) => {
-                let next = Snapshot::build(prev.version + 1, Effective::resolve(&layers, &env), Some(&prev));
+                let next = Snapshot::build(prev.version + 1, Effective::resolve(&layers, &env), layers.hooks.clone(), Some(&prev));
                 let changed: Vec<&str> = next.effective.iter().filter(|(k, r)| prev.effective.get(k) != Some(*r)).map(|(k, _)| k).collect();
-                if changed.is_empty() && next.pending_restart == prev.pending_restart && prev.last_error.is_none() {
+                if changed.is_empty() && next.hooks == prev.hooks && next.pending_restart == prev.pending_restart && prev.last_error.is_none() {
                     return Reload::Unchanged;
                 }
                 if !next.pending_restart.is_empty() && next.pending_restart != prev.pending_restart {
@@ -757,6 +783,7 @@ fn report_of(s: &Snapshot, paths: Option<&Paths>) -> Json {
         "files": files,
         "pending_restart": s.pending_restart,
         "last_error": s.last_error,
+        "hooks_hash": s.hooks.hash(),
         "settings": s.effective.to_json(),
     })
 }
@@ -766,7 +793,7 @@ pub fn report_from_files() -> Json {
     let paths = Paths::from_env();
     let env = |n: &str| std::env::var(n).ok();
     let (layers, errs) = load_layers_cold(&paths);
-    let mut s = Snapshot::build(1, Effective::resolve(&layers, &env), None);
+    let mut s = Snapshot::build(1, Effective::resolve(&layers, &env), layers.hooks.clone(), None);
     s.last_error = errs.first().map(|e| format!("{}: {e}", e.code()));
     report_of(&s, Some(&paths))
 }
@@ -791,7 +818,7 @@ mod tests {
     }
 
     fn layers(settings: Json, toml_text: &str) -> Layers {
-        Layers { settings, user: parse_user(Path::new("t.toml"), toml_text).unwrap() }
+        Layers { settings, user: parse_user(Path::new("t.toml"), toml_text).unwrap(), ..Default::default() }
     }
 
     #[test]
@@ -816,7 +843,7 @@ mod tests {
         let key = "daemon.queue";
         let (min, max) =
             (defaults::all().iter().find(|e| e.key == key).unwrap().min.unwrap(), defaults::all().iter().find(|e| e.key == key).unwrap().max.unwrap());
-        let get = |s: Json| Effective::resolve(&Layers { settings: s, user: BTreeMap::new() }, &no_env).get(key).unwrap().clone();
+        let get = |s: Json| Effective::resolve(&Layers { settings: s, user: BTreeMap::new(), ..Default::default() }, &no_env).get(key).unwrap().clone();
         assert_eq!(get(json!({"daemon": {"queue": " 7 "}})).value, json!(7), "trimmed numeric string");
         assert_eq!(get(json!({"daemon": {"queue": max + 999}})).value, json!(max), "clamped, not rejected");
         assert_eq!(get(json!({"daemon": {"queue": min - 5}})).value, json!(min));
@@ -839,7 +866,7 @@ mod tests {
         if let Some(k) = bool_key {
             let (s, n) = k.split_once('.').unwrap();
             for (raw, want) in [("YES", true), (" off ", false), ("0", false), ("1", true)] {
-                let r = Effective::resolve(&Layers { settings: json!({ s: { n: raw } }), user: BTreeMap::new() }, &no_env);
+                let r = Effective::resolve(&Layers { settings: json!({ s: { n: raw } }), user: BTreeMap::new(), ..Default::default() }, &no_env);
                 assert_eq!(r.get(k).unwrap().value, json!(want), "{raw}");
             }
         }
@@ -862,7 +889,7 @@ mod tests {
     fn a_table_setting_takes_a_partial_override_merged_over_the_default() {
         let path = Path::new("t.toml");
         let user = parse_user(path, "[cmd.version]\nargs = \"[x]\"\n").unwrap();
-        let r = Effective::resolve(&Layers { settings: Json::Null, user }, &no_env);
+        let r = Effective::resolve(&Layers { settings: Json::Null, user, ..Default::default() }, &no_env);
         let v = &r.get("cmd.version").unwrap().value;
         assert_eq!(v["args"], "[x]");
         assert_eq!(v["status"], "implemented", "the other fields of the default table survive: {v}");
@@ -957,8 +984,10 @@ mod tests {
         std::fs::write(paths.settings.clone().unwrap(), "{ not json").unwrap();
         std::fs::write(&paths.user, "[daemon]\nqueue = 31\n").unwrap();
         let s = ConfigStore::load_from(paths.clone()).snapshot();
-        let node =
-            Effective::resolve(&Layers { settings: Json::Null, user: parse_user(&paths.user, "[daemon]\nqueue = 31\n").unwrap() }, &|n| std::env::var(n).ok());
+        let node = Effective::resolve(
+            &Layers { settings: Json::Null, user: parse_user(&paths.user, "[daemon]\nqueue = 31\n").unwrap(), ..Default::default() },
+            &|n| std::env::var(n).ok(),
+        );
         for (k, r) in node.iter() {
             assert_eq!(s.effective.get(k), Some(r), "{k}: a corrupt settings.json must read as {{}} at cold start");
         }

@@ -45,7 +45,12 @@ fn q(s: &str) -> String {
 }
 
 fn handler(out: &mut String, command: &str, timeout: u64) {
-    let _ = write!(out, "          {{\n            \"type\": \"command\",\n            \"command\": {},\n            \"timeout\": {}\n          }}", q(command), timeout);
+    let _ = write!(
+        out,
+        "          {{\n            \"type\": \"command\",\n            \"command\": {},\n            \"timeout\": {}\n          }}",
+        q(command),
+        timeout
+    );
 }
 
 /// The thin `hooks.json` of `host`.
@@ -128,7 +133,8 @@ pub fn fallback_list(host: &str) -> String {
 pub fn fallback_map(host: &str) -> String {
     let mut m = serde_json::Map::new();
     for ev in table::events(host) {
-        let ids: serde_json::Map<String, serde_json::Value> = table::entries(host, ev).into_iter().map(|e| (e.id, serde_json::Value::String(e.command))).collect();
+        let ids: serde_json::Map<String, serde_json::Value> =
+            table::entries(host, ev).into_iter().map(|e| (e.id, serde_json::Value::String(e.command))).collect();
         m.insert(ev.to_string(), serde_json::Value::Object(ids));
     }
     serde_json::to_string_pretty(&serde_json::Value::Object(m)).unwrap_or_default() + "\n"

@@ -15,6 +15,7 @@ pub mod error;
 pub mod frame;
 pub mod gitcache;
 pub mod health;
+pub mod hookcfg;
 pub mod hookio;
 pub mod hooksgen;
 pub mod impact;

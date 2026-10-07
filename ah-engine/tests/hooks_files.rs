@@ -25,8 +25,11 @@ fn every_committed_generated_file_equals_the_generators_output_byte_for_byte() {
             let want = hooksgen::render(host, kind).unwrap();
             let got = std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
             if want != got {
-                let line = want.lines().zip(got.lines()).position(|(w, g)| w != g).map(|n| n + 1).unwrap_or_else(|| want.lines().count().min(got.lines().count()) + 1);
-                panic!("{host} {kind}: {rel} differs from `ah-engine gen-hooks --host {host} --kind {kind}` at line {line}; run ah-gen-fallback-list --repo ..");
+                let line =
+                    want.lines().zip(got.lines()).position(|(w, g)| w != g).map(|n| n + 1).unwrap_or_else(|| want.lines().count().min(got.lines().count()) + 1);
+                panic!(
+                    "{host} {kind}: {rel} differs from `ah-engine gen-hooks --host {host} --kind {kind}` at line {line}; run ah-gen-fallback-list --repo .."
+                );
             }
         }
     }

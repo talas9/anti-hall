@@ -15,7 +15,7 @@ use crate::defaults::{self, V};
 use serde_json::Value;
 
 /// `coerceBoolToken` after the trim `coerceValue` does: `None` when the string is empty or not an on/off word.
-fn token(raw: &str) -> Option<bool> {
+pub(crate) fn token(raw: &str) -> Option<bool> {
     let t = js_trim(raw).to_lowercase();
     if t.is_empty() {
         return None;
@@ -30,7 +30,7 @@ fn token(raw: &str) -> Option<bool> {
 }
 
 /// `coerceValue` for a boolean entry, on a JSON value from a settings file.
-fn coerce_json(v: &Value) -> Option<bool> {
+pub(crate) fn coerce_json(v: &Value) -> Option<bool> {
     match v {
         Value::Bool(b) => Some(*b),
         Value::String(s) => token(s),

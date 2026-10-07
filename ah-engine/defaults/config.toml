@@ -72,6 +72,10 @@ value = "Config file {path}: {key} = {value} is outside {min} to {max}"
 doc = "A TOML value has a type that settings cannot hold."
 value = "Config file {path}: {key} uses a value type settings cannot hold ({found})"
 
+[msg.cfg_err_hooks]
+doc = "A hook configuration section ([events.*], [entries.*]) is invalid (D87)."
+value = "Config file {path}: {key}: {detail}"
+
 [msg.cfg_log_applied]
 doc = "Event-log detail when a new config version became active."
 value = "config version {version} active ({changed} settings changed)"

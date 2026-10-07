@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// The shipped defaults files, in the order their entries are listed.
-const FILES: [&str; 14] = [
+const FILES: [&str; 15] = [
     "engine.toml",
     "messages.toml",
     "git.toml",
@@ -24,6 +24,7 @@ const FILES: [&str; 14] = [
     "small_guards.toml",
     "jev.toml",
     "dispatch.toml",
+    "hooks.toml",
 ];
 
 fn value(v: &toml::Value, out: &mut String) {
@@ -77,7 +78,17 @@ fn main() {
     let mut entries = String::new();
     let mut keys: Vec<(String, usize)> = Vec::new();
     let mut n = 0usize;
-    for file in FILES {
+    // `defaults/hooks.d/*.toml` (D87): one file per batch of ported hooks, each holding that batch's `[events.<Event>]` and
+    // `[entries."<id>"]` defaults, so parallel lanes add files instead of editing a shared one. Sorted by name, after FILES.
+    let mut files: Vec<String> = FILES.iter().map(|f| f.to_string()).collect();
+    println!("cargo:rerun-if-changed={}", root.join("hooks.d").display());
+    if let Ok(rd) = std::fs::read_dir(root.join("hooks.d")) {
+        let mut extra: Vec<String> =
+            rd.flatten().filter_map(|e| e.file_name().to_str().filter(|n| n.ends_with(".toml")).map(|n| format!("hooks.d/{n}"))).collect();
+        extra.sort();
+        files.extend(extra);
+    }
+    for file in files.iter().map(String::as_str) {
         let path = root.join(file);
         println!("cargo:rerun-if-changed={}", path.display());
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
