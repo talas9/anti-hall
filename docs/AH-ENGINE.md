@@ -112,7 +112,7 @@ labelled with how it was measured in the README of `ah-engine/`.
   and defers a Primary (seat adoption needs the DevSwarm CLI and the mailbox store, D45), a missing or stale launcher, and
   anything it cannot prove identical. The engine never writes a launcher.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  fifty-eight: `devswarm-child-role` and `devswarm-parent-gate` (see DevSwarm role ports above), `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` (see Task checks above), `devswarm-parent-inbox` and `devswarm-child-turn` (see DevSwarm prompt gates above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  sixty-one: `devswarm-child-role`, `devswarm-parent-gate`, `devswarm-child-gate`, `devswarm-parent-reply-tracker` and `devswarm-child-drain` (see DevSwarm role ports above and the table below), `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` (see Task checks above), `devswarm-parent-inbox` and `devswarm-child-turn` (see DevSwarm prompt gates above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -200,6 +200,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `swarm-guard` check (Agent and Task spawns): memory-pressure and spawn-rate blocks with exact parity, the spawn log, trip log and lock file shared with the Node hook; a spawn that might get the shared-tree advisory defers before it is recorded | implemented, advisory deferred | D29-D31, D75 |
 | Built-in `devswarm-comms-guard` check (SendMessage to a DevSwarm workspace peer) with exact parity; a relative session directory defers | implemented | D29-D31, D75 |
 | Built-in `jev-weekly-scorecard`, `jev-review-reminder` and `repair-on-reload` checks: silent when provably nothing would be printed or written, otherwise the Node hook runs (report, review log, migrations and the detached repair stay in Node, D60); no state file is written by the engine | implemented in part | D29-D31, D60, D75 |
+| Built-in `devswarm-child-gate`, `devswarm-parent-reply-tracker` and `devswarm-child-drain` checks: answer what the Node hook decides before it reads anything but the environment, the settings files and the payload (switch off, skip recorded, not a DevSwarm child, a Bash call that is not a `devswarm send`); a child workspace, and a plausible send, defer to Node, which owns the mailbox store reads, the stop budgets, the hivecontrol probe and the reply-state writes (needs the mailbox in the engine, D45) | implemented in part | D29-D31, D45, D74 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |
@@ -561,6 +562,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
 | `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |
 | `codex_handover.toml` | patterns, switches, limits, file names and messages of the handover and Codex hook ports and the JavaScript-behavior helpers they share |
+| `devswarm_gates.toml` | switches, role and mode variables and the command pre-filter words of the DevSwarm child gate, reply tracker and drain checks |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |

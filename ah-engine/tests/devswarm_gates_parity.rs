@@ -36,8 +36,8 @@ fn with(extra: &[(&'static str, &'static str)]) -> Vec<(&'static str, &'static s
     e
 }
 
-/// Environments and files shared by the three hooks; `setting` is the hook's own switch key.
-fn variants(setting: &'static str, guard: &'static str, plugin_env: &'static str) -> Vec<Variant> {
+/// Environments and files shared by the three hooks, for one hook's skip name and plugin-option variable.
+fn variants(guard: &'static str, plugin_env: &'static str) -> Vec<Variant> {
     let mut out = vec![
         v("none", &[]),
         v("repo-only (a Primary)", &[("DEVSWARM_REPO_ID", "r1")]),
@@ -75,7 +75,6 @@ fn variants(setting: &'static str, guard: &'static str, plugin_env: &'static str
         x.settings = Some(body);
         out.push(x);
     }
-    let _ = setting;
     let mut x = v("child-host-option-false", &CHILD);
     x.host_settings =
         Some(r#"{"pluginConfigs":{"anti-hall":{"options":{"devswarm_child_gate":false,"devswarm_child_drain":false,"devswarm_parent_reply_tracker":false}}}}"#);
@@ -312,21 +311,21 @@ fn report(name: &str, t: &Tally, min_cases: usize) {
 
 #[test]
 fn child_gate_allow_is_node_silence_and_a_child_workspace_defers() {
-    let vs = variants("childGate", "devswarm-child-gate", "CLAUDE_PLUGIN_OPTION_DEVSWARM_CHILD_GATE");
+    let vs = variants("devswarm-child-gate", "CLAUDE_PLUGIN_OPTION_DEVSWARM_CHILD_GATE");
     let t = compare(&repo(), "devswarm-child-gate", "devswarm-child-gate", &vs, &stop_payloads());
     report("devswarm-child-gate", &t, 300);
 }
 
 #[test]
 fn reply_tracker_allow_is_node_silence_and_a_plausible_send_defers() {
-    let vs = variants("parentReplyTracker", "devswarm-parent-reply-tracker", "CLAUDE_PLUGIN_OPTION_DEVSWARM_PARENT_REPLY_TRACKER");
+    let vs = variants("devswarm-parent-reply-tracker", "CLAUDE_PLUGIN_OPTION_DEVSWARM_PARENT_REPLY_TRACKER");
     let t = compare(&repo(), "devswarm-parent-reply-tracker", "devswarm-parent-reply-tracker", &vs, &bash_payloads());
     report("devswarm-parent-reply-tracker", &t, 300);
 }
 
 #[test]
 fn child_drain_allow_is_node_silence_and_a_child_workspace_defers() {
-    let vs = variants("childDrain", "devswarm-child-drain", "CLAUDE_PLUGIN_OPTION_DEVSWARM_CHILD_DRAIN");
+    let vs = variants("devswarm-child-drain", "CLAUDE_PLUGIN_OPTION_DEVSWARM_CHILD_DRAIN");
     let t = compare(&repo(), "devswarm-child-drain", "devswarm-child-drain", &vs, &bash_payloads());
     report("devswarm-child-drain", &t, 300);
 }
