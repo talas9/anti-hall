@@ -104,7 +104,7 @@ fn all_quoted_or_fenced(lines: &[String], member: &[bool]) -> bool {
 fn mask_straight_quotes_line(line: &str) -> String {
     let q = defaults::text("speculation_guard.quote_char");
     let n = line.matches(q).count();
-    if n == 0 || n % 2 != 0 {
+    if n == 0 || !n.is_multiple_of(2) {
         return line.to_string();
     }
     pats().straight.replace_all(line, |c: &regex::Captures<'_>| blank(&c[0])).into_owned()

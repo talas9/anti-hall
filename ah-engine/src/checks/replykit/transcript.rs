@@ -125,7 +125,13 @@ mod tests {
 
     #[test]
     fn the_last_assistant_entry_with_text_wins() {
-        let lines = [r#"{"role":"assistant","content":"one"}"#, r#"{"role":"user","content":"x"}"#, r#"{"message":{"role":"assistant","content":"two"}}"#, "garbage", ""];
+        let lines = [
+            r#"{"role":"assistant","content":"one"}"#,
+            r#"{"role":"user","content":"x"}"#,
+            r#"{"message":{"role":"assistant","content":"two"}}"#,
+            "garbage",
+            "",
+        ];
         assert_eq!(last_assistant_text(&lines, None).unwrap().as_deref(), Some("two two"));
     }
 

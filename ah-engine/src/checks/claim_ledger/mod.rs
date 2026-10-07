@@ -133,7 +133,10 @@ fn walk(lines: &[&str], payload_text: Option<&str>) -> Result<Option<Walked>, De
         let content = if message.is_some() { message.and_then(|m| prop(m, "content")) } else { prop(&e, "content") };
         let blocks: &[Value] = content.and_then(Value::as_array).map_or(&[], Vec::as_slice);
         if role == defaults::text("claim_ledger.role_user") {
-            let results: Vec<&Value> = blocks.iter().filter(|b| truthy(b) && prop(b, "type").and_then(Value::as_str) == Some(defaults::text("claim_ledger.type_tool_result"))).collect();
+            let results: Vec<&Value> = blocks
+                .iter()
+                .filter(|b| truthy(b) && prop(b, "type").and_then(Value::as_str) == Some(defaults::text("claim_ledger.type_tool_result")))
+                .collect();
             if results.is_empty() {
                 tools_this_turn = 0;
                 ev.push(as_text(content));
@@ -182,7 +185,13 @@ fn walk(lines: &[&str], payload_text: Option<&str>) -> Result<Option<Walked>, De
             return Ok(None);
         }
         let joined = ev.join("\n");
-        return Ok(Some(Walked { last_text: String::new(), evidence: joined.clone(), tools_this_turn, evidence_with_last: joined, tools_at_end: tools_this_turn }));
+        return Ok(Some(Walked {
+            last_text: String::new(),
+            evidence: joined.clone(),
+            tools_this_turn,
+            evidence_with_last: joined,
+            tools_at_end: tools_this_turn,
+        }));
     };
     let evidence = ev.join("\n");
     let with_last = format!("{evidence}\n{}", last.text);
@@ -349,7 +358,8 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         std::fs::write(&last_file, &hash)?;
         if !flags.is_empty() {
             let line = record_line(&session, &hash, tools, utf16_len(&reply), utf16_len(&evidence), tail.truncated, &flags);
-            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{session}{}", defaults::text("claim_ledger.ledger_ext"))))?;
+            let mut f =
+                std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{session}{}", defaults::text("claim_ledger.ledger_ext"))))?;
             f.write_all(line.as_bytes())?;
         }
         Ok(())

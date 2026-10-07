@@ -26,7 +26,9 @@ fn line_start_patterns_only_match_after_a_line_terminator() {
 
 #[test]
 fn only_a_command_that_starts_with_a_test_runner_counts() {
-    for yes in ["npm test", "npm run test", "FOO=1 pytest -q", "/usr/bin/pytest", "cd a && go test ./...", "make; cargo test", "dart test", "node test", "cargo build"] {
+    for yes in
+        ["npm test", "npm run test", "FOO=1 pytest -q", "/usr/bin/pytest", "cd a && go test ./...", "make; cargo test", "dart test", "node test", "cargo build"]
+    {
         assert!(is_test_runner_command(yes), "{yes}");
     }
     for no in ["grep PASS FAIL src/foo.js", "npm install", "node app.js", "", "  ", "echo go test", "go", "npm run", "node --test"] {

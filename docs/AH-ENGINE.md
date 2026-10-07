@@ -76,8 +76,18 @@ labelled with how it was measured in the README of `ah-engine/`.
   no working directory (Node reads its own), a `.git` file or date or JSON text it cannot read exactly like JavaScript, or a
   gitignore probe slower than `session.gitignore_probe_ms` all answer a deferral BEFORE anything is written, so the Node hook
   then runs whole and sees the state it would have seen.
+- **Response-correctness ports.** `speculation-guard`, `speculation-judge`, `claim-ledger` (Stop) and `output-verify-guard`
+  (PostToolUse on Bash) share `checks/replykit`: JavaScript-faithful JSON (key order and number text kept), the transcript
+  tail reader, the once-per-turn gate and the stale-state sweep. The Jev call path is NOT ported with them: every call
+  where Node would consult Jev (the master switch on for `speculation-guard`; a flagged turn or a test-runner output with
+  the integration not `off` for `claim-ledger` and `output-verify-guard`; every opted-in call of `speculation-judge`,
+  which is a model call with its own backends) defers to Node, so Jev-off installs are answered by the engine and
+  Jev-on installs keep Node's exact behavior, log rows included. The block of `speculation-guard` is therefore never
+  weaker than Node's (D74). The one deliberate difference with Jev off: Node's `claim-ledger` and `output-verify-guard`
+  still append a `mode: "off"` row to the Jev decision log per consult; the engine's Jev layer never does (D35), and
+  neither do these checks.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  thirty: `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  thirty-four: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -120,6 +130,10 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `scan-throttle` check (advisory throttle prefix for user-configured heavy scans) with exact parity; patterns it cannot match exactly defer | implemented | D29-D31, D75 |
 | Built-in `ship-it-guard` check (opt-in plan gate for Edit, Write and MultiEdit; Bash and apply_patch defer to Node) with exact parity | implemented | D29-D31, D75 |
 | Built-in `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` checks: the quiet case of each hook, exact (stdout bytes, exit code and no state written); every fire, nag, re-arm, active conservation and possible compact recommendation defers to Node | implemented | D29-D31, D74, D75 |
+| Built-in `output-verify-guard` check (advisory when a test run shows both a passing and a failing signal, once per turn): exact parity, 118 payload steps against the Node hook; a call Jev would be asked about, and an object output whose key order could change the answer, defer | implemented | D29-D31, D74, D75 |
+| Built-in `claim-ledger` check (Stop, ledger only): the ledger and last-message files byte for byte, 91 steps against Node; a flagged turn Jev would be asked about defers | implemented | D29-D31, D74, D75 |
+| Built-in `speculation-guard` check (Stop block on an unverified hedge, once per text, three per session): exact parity, 138 steps against Node, state file included; Jev on, the Stop after a block and `guards.inferenceCheck` on defer | implemented | D29-D31, D74, D75 |
+| Built-in `speculation-judge` check: the off path of the opt-in model judge (switch off, judge child, skip) is answered; every opted-in call defers to Node, which makes the model call | implemented in part | D29-D31, D74, D75 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
@@ -487,6 +501,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
+| `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |

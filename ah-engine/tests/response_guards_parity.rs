@@ -48,8 +48,26 @@ fn output_verify_cases() -> Vec<Case> {
     v.push(c("ov-no-command").same(json!({"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"s1","tool_response":mixed})));
     // runner shapes
     for (i, cmd) in [
-        "npm test", "npm run test", "yarn test", "pnpm test", "node --test", "go test ./...", "cargo test", "pytest -q", "jest", "vitest run", "flutter test", "dart test",
-        "FOO=1 BAR=2 pytest", "/usr/local/bin/pytest -x", "cd app && npm test", "make build; go test ./pkg", "echo hi | pytest", "npm run build", "npm", "go build",
+        "npm test",
+        "npm run test",
+        "yarn test",
+        "pnpm test",
+        "node --test",
+        "go test ./...",
+        "cargo test",
+        "pytest -q",
+        "jest",
+        "vitest run",
+        "flutter test",
+        "dart test",
+        "FOO=1 BAR=2 pytest",
+        "/usr/local/bin/pytest -x",
+        "cd app && npm test",
+        "make build; go test ./pkg",
+        "echo hi | pytest",
+        "npm run build",
+        "npm",
+        "go build",
     ]
     .iter()
     .enumerate()
@@ -84,13 +102,17 @@ fn output_verify_cases() -> Vec<Case> {
     v.push(c("ov-obj-single-stream").same(post("npm test", json!({"stdout":mixed}))));
     v.push(c("ov-obj-two-streams-same-text").same(post("npm test", json!({"stdout":"8 passed 2 failed","stderr":"2 failed"}))));
     v.push(c("ov-obj-two-streams-different-text").same(post("npm test", json!({"stdout":"8 passed\n2 failed","stderr":"5 failed"}))));
-    let raw_resp = |resp: &str| format!(r#"{{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"s1","tool_input":{{"command":"npm test"}},"tool_response":{resp}}}"#);
+    let raw_resp = |resp: &str| {
+        format!(r#"{{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"s1","tool_input":{{"command":"npm test"}},"tool_response":{resp}}}"#)
+    };
     v.push(c("ov-raw-unsorted-unambiguous").raw(&raw_resp(r#"{"stdout":"8 passed","stderr":"2 failed","interrupted":false}"#), Expect::Same));
     v.push(c("ov-raw-unsorted-ambiguous-defers").raw(&raw_resp(r#"{"stdout":"2 failed 8 passed","stderr":"5 failed"}"#), Expect::Defer));
     v.push(c("ov-raw-unsorted-ambiguous-pass-defers").raw(&raw_resp(r#"{"stdout":"9 passed","stderr":"4 passed 1 failed"}"#), Expect::Defer));
     v.push(c("ov-raw-unsorted-same-text-in-both").raw(&raw_resp(r#"{"stdout":"2 failed 8 passed","stderr":"2 failed"}"#), Expect::Same));
     v.push(c("ov-raw-unsorted-exit-codes-defer").raw(&raw_resp(r#"{"stdout":"8 passed exit code: 2","stderr":"exit code: 5"}"#), Expect::Defer));
-    v.push(c("ov-raw-unsorted-structured-exit-wins").raw(&raw_resp(r#"{"stdout":"8 passed exit code: 2","stderr":"exit code: 5","exit_code":1}"#), Expect::Same));
+    v.push(
+        c("ov-raw-unsorted-structured-exit-wins").raw(&raw_resp(r#"{"stdout":"8 passed exit code: 2","stderr":"exit code: 5","exit_code":1}"#), Expect::Same),
+    );
     v.push(c("ov-raw-nested-unsorted-ambiguous-defers").raw(&raw_resp(r#"{"z":{"b":"1 failed","a":"3 failed"},"y":"8 passed"}"#), Expect::Defer));
     v.push(c("ov-raw-escaped-leaf-boundary").raw(&raw_resp(r#"{"stdout":"line\n2 failed\n8 passed"}"#), Expect::Same));
     v.push(c("ov-obj-nested").same(post("npm test", json!({"result":{"stdout":"4 passed","stderr":"1 failed"},"interrupted":false}))));
@@ -123,29 +145,58 @@ fn output_verify_cases() -> Vec<Case> {
     v.push(c("ov-jev-on-not-runner-allows").env("ANTIHALL_JEV", "1").same(post("ls", json!(mixed))));
     v.push(c("ov-jev-settings-defers").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).defer(post("npm test", json!(mixed))));
     v.push(c("ov-jev-on-integration-off-allows").env("ANTIHALL_JEV", "1").env("ANTIHALL_JEV_OUTPUT_VERIFY_GUARD", "0").same(post("npm test", json!(mixed))));
-    v.push(c("ov-jev-on-integration-off-settings").env("ANTIHALL_JEV", "1").file(".anti-hall/settings.json", r#"{"jevIntegrations":{"outputVerifyGuard":"off"}}"#).same(post("npm test", json!(mixed))));
-    v.push(c("ov-jev-env-zero-wins").env("ANTIHALL_JEV", "0").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).same(post("npm test", json!(mixed))));
+    v.push(
+        c("ov-jev-on-integration-off-settings")
+            .env("ANTIHALL_JEV", "1")
+            .file(".anti-hall/settings.json", r#"{"jevIntegrations":{"outputVerifyGuard":"off"}}"#)
+            .same(post("npm test", json!(mixed))),
+    );
+    v.push(
+        c("ov-jev-env-zero-wins").env("ANTIHALL_JEV", "0").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).same(post("npm test", json!(mixed))),
+    );
     // once per turn
     v.push(
-        c("ov-once-per-turn").transcript(&turn).same(post("npm test", json!(mixed))).same(post("npm test", json!(mixed))).same(post("npm test", json!("1 passed 1 failed"))),
+        c("ov-once-per-turn")
+            .transcript(&turn)
+            .same(post("npm test", json!(mixed)))
+            .same(post("npm test", json!(mixed)))
+            .same(post("npm test", json!("1 passed 1 failed"))),
     );
-    v.push(c("ov-once-off").env("ANTIHALL_OUTPUT_VERIFY_ONCE_PER_TURN", "0").transcript(&turn).same(post("npm test", json!(mixed))).same(post("npm test", json!(mixed))));
     v.push(
-        c("ov-once-new-turn")
-            .transcript(&[user_uuid("u1", "a")])
+        c("ov-once-off")
+            .env("ANTIHALL_OUTPUT_VERIFY_ONCE_PER_TURN", "0")
+            .transcript(&turn)
             .same(post("npm test", json!(mixed)))
             .same(post("npm test", json!(mixed))),
     );
+    v.push(c("ov-once-new-turn").transcript(&[user_uuid("u1", "a")]).same(post("npm test", json!(mixed))).same(post("npm test", json!(mixed))));
     v.push(
         c("ov-once-injected-prompt-skipped")
             .transcript(&[user_uuid("u1", "a"), user_uuid("u2", "<system-reminder>x</system-reminder>"), tool_result("x")])
             .same(post("npm test", json!(mixed)))
             .same(post("npm test", json!(mixed))),
     );
-    v.push(c("ov-once-agent").transcript(&turn).same(with(post("npm test", json!(mixed)), "agent_id", json!("ag1"))).same(with(post("npm test", json!(mixed)), "agent_id", json!("ag1"))));
-    v.push(c("ov-once-agent-other").transcript(&turn).same(with(post("npm test", json!(mixed)), "agent_id", json!("ag1"))).same(with(post("npm test", json!(mixed)), "agent_id", json!("ag2"))));
-    v.push(c("ov-once-no-session").transcript(&turn).same(without(post("npm test", json!(mixed)), "session_id")).same(without(post("npm test", json!(mixed)), "session_id")));
-    v.push(c("ov-once-numeric-session").transcript(&turn).same(with(post("npm test", json!(mixed)), "session_id", json!(42))).same(with(post("npm test", json!(mixed)), "session_id", json!(42))));
+    v.push(c("ov-once-agent").transcript(&turn).same(with(post("npm test", json!(mixed)), "agent_id", json!("ag1"))).same(with(
+        post("npm test", json!(mixed)),
+        "agent_id",
+        json!("ag1"),
+    )));
+    v.push(c("ov-once-agent-other").transcript(&turn).same(with(post("npm test", json!(mixed)), "agent_id", json!("ag1"))).same(with(
+        post("npm test", json!(mixed)),
+        "agent_id",
+        json!("ag2"),
+    )));
+    v.push(
+        c("ov-once-no-session")
+            .transcript(&turn)
+            .same(without(post("npm test", json!(mixed)), "session_id"))
+            .same(without(post("npm test", json!(mixed)), "session_id")),
+    );
+    v.push(c("ov-once-numeric-session").transcript(&turn).same(with(post("npm test", json!(mixed)), "session_id", json!(42))).same(with(
+        post("npm test", json!(mixed)),
+        "session_id",
+        json!(42),
+    )));
     v.push(c("ov-once-no-transcript").same(post("npm test", json!(mixed))).same(post("npm test", json!(mixed))));
     v.push(c("ov-once-missing-transcript-file").same(with(post("npm test", json!(mixed)), "transcript_path", json!("/nonexistent/t.jsonl"))));
     v.push(c("ov-once-relative-transcript-defers").defer(with(post("npm test", json!(mixed)), "transcript_path", json!("rel/t.jsonl"))));
@@ -158,7 +209,15 @@ fn output_verify_cases() -> Vec<Case> {
     v.push(c("ov-once-state-array-defers").file(".anti-hall/turn-gate/tg-s1.json", "[1]").transcript(&turn).defer(post("npm test", json!(mixed))));
     v.push(c("ov-once-state-garbage").file(".anti-hall/turn-gate/tg-s1.json", "not json").transcript(&turn).same(post("npm test", json!(mixed))));
     v.push(c("ov-once-state-null").file(".anti-hall/turn-gate/tg-s1.json", "null").transcript(&turn).same(post("npm test", json!(mixed))));
-    v.push(c("ov-once-sigs-capped").transcript(&turn).file(".anti-hall/turn-gate/tg-s1.json", &format!(r#"{{"output-verify-guard|main":{{"turn":"u1","sigs":[{}]}}}}"#, (0..20).map(|i| format!("\"s{i}\"")).collect::<Vec<_>>().join(","))).same(post("npm test", json!(mixed))));
+    v.push(
+        c("ov-once-sigs-capped")
+            .transcript(&turn)
+            .file(
+                ".anti-hall/turn-gate/tg-s1.json",
+                &format!(r#"{{"output-verify-guard|main":{{"turn":"u1","sigs":[{}]}}}}"#, (0..20).map(|i| format!("\"s{i}\"")).collect::<Vec<_>>().join(",")),
+            )
+            .same(post("npm test", json!(mixed))),
+    );
     v.push(c("ov-once-prune-stale").transcript(&turn).aged(".anti-hall/turn-gate/tg--old.json", "{}").same(post("npm test", json!(mixed))));
     // payload shapes
     v.push(c("ov-payload-null").same(Value::Null));
@@ -198,7 +257,9 @@ fn claim_ledger_cases() -> Vec<Case> {
     let future = 4_102_444_800_000u64;
     // counts, with and without evidence
     v.push(c("count-unsupported").transcript(&[user("go"), asst("I ran 12 tests and changed 3 files")]).same(stop(json!({}))));
-    v.push(c("count-supported").transcript(&[user("go"), tool_result("Ran 12 tests, 3 files"), asst("I ran 12 tests and changed 3 files")]).same(stop(json!({}))));
+    v.push(
+        c("count-supported").transcript(&[user("go"), tool_result("Ran 12 tests, 3 files"), asst("I ran 12 tests and changed 3 files")]).same(stop(json!({}))),
+    );
     v.push(c("count-payload-text").transcript(&[user("go"), tool_result("ok")]).same(msg("The run took 45 seconds over 7 files")));
     v.push(c("rounding-supported").transcript(&[tool_result("34.887 total"), asst("took 34.9 s")]).same(stop(json!({}))));
     v.push(c("rounding-integer").transcript(&[tool_result("34.887 total"), asst("took 35 s")]).same(stop(json!({}))));
@@ -210,7 +271,23 @@ fn claim_ledger_cases() -> Vec<Case> {
     v.push(c("many-decimals").transcript(&[asst("scanned 1.23456789012345678901234567890 files")]).same(stop(json!({}))));
     v.push(c("big-numbers").transcript(&[asst("scanned 123456 files and 1234567 files and 99999999999 files")]).same(stop(json!({}))));
     // lookbehind
-    for (i, t) in ["V2-4 workspace", "x12 files", "file-3 files", "ver 1.5 s", "(12 files)", "a .5 files", "foo 12files", "12files", "_9 rows", "é9 rows", "9 ROWS and 8 Rows", "7 KB 6 mb"].iter().enumerate() {
+    for (i, t) in [
+        "V2-4 workspace",
+        "x12 files",
+        "file-3 files",
+        "ver 1.5 s",
+        "(12 files)",
+        "a .5 files",
+        "foo 12files",
+        "12files",
+        "_9 rows",
+        "é9 rows",
+        "9 ROWS and 8 Rows",
+        "7 KB 6 mb",
+    ]
+    .iter()
+    .enumerate()
+    {
         v.push(c(&format!("lookbehind-{i}")).transcript(&[asst(t)]).same(stop(json!({}))));
     }
     // sha, task, state, days ago
@@ -221,7 +298,11 @@ fn claim_ledger_cases() -> Vec<Case> {
     v.push(c("task-of").transcript(&[asst("Task 3 of 5 done, task 4 of 5 next")]).same(stop(json!({}))));
     v.push(c("task-of-supported").transcript(&[tool_result("Task 3 of 5"), asst("Task 3 of 5 done")]).same(stop(json!({}))));
     v.push(c("state-no-tool").transcript(&[user("hi"), asst("the agent is still running and currently blocked")]).same(stop(json!({}))));
-    v.push(c("state-with-tool").transcript(&[user("hi"), asst_tool(json!({"command":"ls"})), tool_result("x"), asst("the agent is still running")]).same(stop(json!({}))));
+    v.push(
+        c("state-with-tool")
+            .transcript(&[user("hi"), asst_tool(json!({"command":"ls"})), tool_result("x"), asst("the agent is still running")])
+            .same(stop(json!({}))),
+    );
     v.push(c("days-ago").transcript(&[asst("fixed 5 days ago, and 1 day ago")]).same(stop(json!({}))));
     v.push(c("nothing-flagged").transcript(&[asst("all good here")]).same(stop(json!({}))));
     v.push(c("empty-reply").transcript(&[asst("   ")]).same(stop(json!({}))));
@@ -242,14 +323,18 @@ fn claim_ledger_cases() -> Vec<Case> {
     v.push(c("object-session-id-defers").transcript(&[asst("took 12 seconds")]).defer(stop(json!({"session_id": {"a": 1}}))));
     v.push(c("last-file-stale").file(".anti-hall/claim-ledger/s1.last", "deadbeef").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
     // switches
-    v.push(c("settings-off").file(".anti-hall/settings.json", r#"{"guards":{"claimLedger":false}}"#).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
+    v.push(
+        c("settings-off").file(".anti-hall/settings.json", r#"{"guards":{"claimLedger":false}}"#).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))),
+    );
     v.push(c("option-off").env("CLAUDE_PLUGIN_OPTION_GUARDS_CLAIM_LEDGER", "false").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
     v.push(c("skip").file(".anti-hall/skip.json", &format!(r#"{{"claim-ledger": {future}}}"#)).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
     v.push(c("skip-all").file(".anti-hall/skip.json", &format!(r#"{{"all": {future}}}"#)).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
     // jev
     v.push(c("jev-on-flags-defers").env("ANTIHALL_JEV", "1").transcript(&[asst("took 12 seconds")]).defer(stop(json!({}))));
     v.push(c("jev-on-no-flags-answers").env("ANTIHALL_JEV", "1").transcript(&[asst("all good")]).same(stop(json!({}))));
-    v.push(c("jev-on-integration-off").env("ANTIHALL_JEV", "1").env("ANTIHALL_JEV_CLAIM_LEDGER", "0").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
+    v.push(
+        c("jev-on-integration-off").env("ANTIHALL_JEV", "1").env("ANTIHALL_JEV_CLAIM_LEDGER", "0").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))),
+    );
     // transcript shapes
     v.push(c("no-transcript-path").same(without(msg("took 12 seconds"), "transcript_path")));
     v.push(c("transcript-path-number").same(stop(json!({"transcript_path": 5}))));
@@ -260,33 +345,74 @@ fn claim_ledger_cases() -> Vec<Case> {
     v.push(c("transcript-garbage-lines").transcript_raw("garbage\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"took 12 seconds\"}]}}\n[1,2]\n\"str\"\nnull\n").same(stop(json!({}))));
     v.push(c("transcript-crlf").transcript_raw(&format!("{}\r\n{}\r\n", user("hi"), asst("took 12 seconds"))).same(stop(json!({}))));
     v.push(c("transcript-nbsp-bom-lines").transcript_raw(&format!("\u{a0}{}\u{feff}\n", asst("took 12 seconds"))).same(stop(json!({}))));
-    v.push(c("transcript-lone-surrogate-defers").transcript_raw("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"took 12 seconds \\ud800\"}}\n").defer(stop(json!({}))));
+    v.push(
+        c("transcript-lone-surrogate-defers")
+            .transcript_raw("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"took 12 seconds \\ud800\"}}\n")
+            .defer(stop(json!({}))),
+    );
     v.push(c("transcript-huge-exponent-defers").transcript_raw("{\"x\":1e999}\n").defer(stop(json!({}))));
     v.push(c("transcript-deep-nesting-defers").transcript_raw(&format!("{}1{}\n", "[".repeat(200), "]".repeat(200))).defer(stop(json!({}))));
-    v.push(c("transcript-escaped-surrogate-pair-ok").transcript_raw("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"took 12 seconds \\ud83d\\ude00\"}]}}\n").same(stop(json!({}))));
+    v.push(
+        c("transcript-escaped-surrogate-pair-ok")
+            .transcript_raw(
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"took 12 seconds \\ud83d\\ude00\"}]}}\n",
+            )
+            .same(stop(json!({}))),
+    );
     v.push(c("same-message-id-merged").transcript(&[asst_id("m1", "first 3 files"), asst_tool(json!({})), asst_id("m1", "and 4 tests")]).same(stop(json!({}))));
     v.push(c("different-message-id").transcript(&[asst_id("m1", "first 3 files"), asst_id("m2", "and 4 tests")]).same(stop(json!({}))));
-    v.push(c("attachment-evidence").transcript(&[json!({"type":"attachment","attachment":{"text":"ran 9 tests"}}).to_string(), asst("9 tests")]).same(stop(json!({}))));
-    v.push(c("user-array-no-tool-result").transcript(&[json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":"12 files"}]}}).to_string(), asst("12 files")]).same(stop(json!({}))));
+    v.push(
+        c("attachment-evidence")
+            .transcript(&[json!({"type":"attachment","attachment":{"text":"ran 9 tests"}}).to_string(), asst("9 tests")])
+            .same(stop(json!({}))),
+    );
+    v.push(
+        c("user-array-no-tool-result")
+            .transcript(&[json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":"12 files"}]}}).to_string(), asst("12 files")])
+            .same(stop(json!({}))),
+    );
     v.push(c("tool-use-input-evidence").transcript(&[asst_tool(json!({"command":"check 15 files"})), asst("15 files")]).same(stop(json!({}))));
     v.push(c("tool-use-count-resets-on-user").transcript(&[asst_tool(json!({})), user("again"), asst("still running")]).same(stop(json!({}))));
-    v.push(c("tool-use-result-null").transcript(&[json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":null}]},"toolUseResult":null}).to_string(), asst("took 5 seconds")]).same(stop(json!({}))));
+    v.push(
+        c("tool-use-result-null")
+            .transcript(&[
+                json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":null}]},"toolUseResult":null}).to_string(),
+                asst("took 5 seconds"),
+            ])
+            .same(stop(json!({}))),
+    );
     v.push(c("role-from-message").transcript(&[json!({"message":{"role":"assistant","content":"took 12 seconds"}}).to_string()]).same(stop(json!({}))));
-    v.push(c("content-without-message").transcript(&[json!({"type":"assistant","content":[{"type":"text","text":"took 12 seconds"}]}).to_string()]).same(stop(json!({}))));
-    v.push(c("falsy-message").transcript(&[json!({"type":"assistant","message":0,"content":[{"type":"text","text":"took 12 seconds"}]}).to_string()]).same(stop(json!({}))));
-    v.push(c("big-evidence-numbers").transcript(&[tool_result(&(0..3000).map(|i| i.to_string()).collect::<Vec<_>>().join(" ")), asst("took 2999 seconds and 3001 seconds")]).same(stop(json!({}))));
+    v.push(
+        c("content-without-message")
+            .transcript(&[json!({"type":"assistant","content":[{"type":"text","text":"took 12 seconds"}]}).to_string()])
+            .same(stop(json!({}))),
+    );
+    v.push(
+        c("falsy-message")
+            .transcript(&[json!({"type":"assistant","message":0,"content":[{"type":"text","text":"took 12 seconds"}]}).to_string()])
+            .same(stop(json!({}))),
+    );
+    v.push(
+        c("big-evidence-numbers")
+            .transcript(&[tool_result(&(0..3000).map(|i| i.to_string()).collect::<Vec<_>>().join(" ")), asst("took 2999 seconds and 3001 seconds")])
+            .same(stop(json!({}))),
+    );
     // context and limits
     v.push(c("context-long-line").transcript(&[asst(&format!("{} took 12 seconds {}", "word ".repeat(60), "tail ".repeat(60)))]).same(stop(json!({}))));
     v.push(c("context-multi-line").transcript(&[asst("line one\ntook 12 seconds here\nline three")]).same(stop(json!({}))));
     v.push(c("context-astral-cut-defers").transcript(&[asst(&format!("{}😀 took 12 seconds", "a".repeat(159)))]).defer(stop(json!({}))));
     v.push(c("context-astral-before-cut").transcript(&[asst("😀😀 took 12 seconds 😀")]).same(stop(json!({}))));
     v.push(c("max-flags").transcript(&[asst(&(1..=60).map(|i| format!("took {i}1 seconds")).collect::<Vec<_>>().join("\n"))]).same(stop(json!({}))));
-    v.push(c("big-transcript-window").transcript(&{
-        let mut l = vec![asst("old 99 files claim")];
-        l.extend((0..4000).map(|i| tool_result(&format!("{} {}", i, "x".repeat(600)))));
-        l.push(asst("now 77 files"));
-        l
-    }).same(stop(json!({}))));
+    v.push(
+        c("big-transcript-window")
+            .transcript(&{
+                let mut l = vec![asst("old 99 files claim")];
+                l.extend((0..4000).map(|i| tool_result(&format!("{} {}", i, "x".repeat(600)))));
+                l.push(asst("now 77 files"));
+                l
+            })
+            .same(stop(json!({}))),
+    );
     v.push(c("payload-null").same(Value::Null));
     v.push(c("payload-array").same(json!([])));
     v
@@ -389,27 +515,74 @@ fn spec_cases() -> Vec<Case> {
     // loop safety and state
     v.push(c("block-then-pending-defers").same(msg("It is probably the cache.")).defer(msg("It is probably the cache.")));
     v.push(c("block-then-other-text-defers").same(msg("It is probably the cache.")).defer(msg("It is likely something else.")));
-    v.push(c("seeded-same-hash-allows").file(".anti-hall/speculation-guard-state-s1.json", &format!(r#"{{"hash":"{}","blocks":1}}"#, sha1("It is probably the cache."))).same(msg("It is probably the cache.")));
-    v.push(c("seeded-other-hash-blocks").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1}"#).same(msg("It is probably the cache.")));
+    v.push(
+        c("seeded-same-hash-allows")
+            .file(".anti-hall/speculation-guard-state-s1.json", &format!(r#"{{"hash":"{}","blocks":1}}"#, sha1("It is probably the cache.")))
+            .same(msg("It is probably the cache.")),
+    );
+    v.push(
+        c("seeded-other-hash-blocks").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1}"#).same(msg("It is probably the cache.")),
+    );
     v.push(c("seeded-blocks-cap").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":3}"#).same(msg("It is probably the cache.")));
-    v.push(c("seeded-blocks-float").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1.5}"#).same(msg("It is probably the cache.")));
-    v.push(c("seeded-blocks-string").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":"9"}"#).same(msg("It is probably the cache.")));
+    v.push(
+        c("seeded-blocks-float").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1.5}"#).same(msg("It is probably the cache.")),
+    );
+    v.push(
+        c("seeded-blocks-string").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":"9"}"#).same(msg("It is probably the cache.")),
+    );
     v.push(c("seeded-legacy-hash-text").file(".anti-hall/speculation-guard-state-s1.json", "3f2a9c").same(msg("It is probably the cache.")));
     v.push(c("seeded-legacy-numeric").file(".anti-hall/speculation-guard-state-s1.json", "12345678").same(msg("It is probably the cache.")));
     v.push(c("seeded-legacy-string-json").file(".anti-hall/speculation-guard-state-s1.json", "\"abc\"").same(msg("It is probably the cache.")));
     v.push(c("seeded-array").file(".anti-hall/speculation-guard-state-s1.json", "[1,2]").same(msg("It is probably the cache.")));
     v.push(c("seeded-null").file(".anti-hall/speculation-guard-state-s1.json", "null").same(msg("It is probably the cache.")));
     v.push(c("seeded-empty").file(".anti-hall/speculation-guard-state-s1.json", "  \n").same(msg("It is probably the cache.")));
-    v.push(c("seeded-pending-defers").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"regex"}}"#).defer(msg("It is probably the cache.")));
-    v.push(c("seeded-pending-incomplete-ok").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz"}}"#).same(msg("It is probably the cache.")));
-    v.push(c("seeded-pending-non-hedge-defers").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"jev"}}"#).defer(msg("All fine.")));
+    v.push(
+        c("seeded-pending-defers")
+            .file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"regex"}}"#)
+            .defer(msg("It is probably the cache.")),
+    );
+    v.push(
+        c("seeded-pending-incomplete-ok")
+            .file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz"}}"#)
+            .same(msg("It is probably the cache.")),
+    );
+    v.push(
+        c("seeded-pending-non-hedge-defers")
+            .file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"jev"}}"#)
+            .defer(msg("All fine.")),
+    );
     v.push(c("seeded-unsure-state-defers").file(".anti-hall/speculation-guard-state-s1.json", r#"{"7":1}"#).defer(msg("It is probably the cache.")));
     v.push(c("prune-stale-files").file(".anti-hall/speculation-guard-state-old.json", "{}").same(msg("It is probably the cache.")));
-    v.push(c("prune-removes-aged").aged(".anti-hall/speculation-guard-state-old.json", "{}").aged(".anti-hall/speculation-guard-state-old2.json", "{}").same(msg("It is probably the cache.")));
-    v.push(c("prune-keeps-other-prefix").aged(".anti-hall/other-state-old.json", "{}").aged(".anti-hall/speculation-guard-state-old.txt", "{}").same(msg("It is probably the cache.")));
-    v.push(c("prune-bad-stamp-sweeps").aged(".anti-hall/speculation-guard-state-old.json", "{}").file(".anti-hall/.prune-stamp-speculation-guard-state.json", "garbage").same(msg("It is probably the cache.")));
-    v.push(c("prune-future-stamp-sweeps").aged(".anti-hall/speculation-guard-state-old.json", "{}").file(".anti-hall/.prune-stamp-speculation-guard-state.json", r#"{"lastSweep":99999999999999}"#).same(msg("It is probably the cache.")));
-    v.push(c("prune-throttled").file(".anti-hall/.prune-stamp-speculation-guard-state.json", &format!(r#"{{"lastSweep":{}}}"#, 4_102_444_800_000u64)).file(".anti-hall/speculation-guard-state-old.json", "{}").same(msg("It is probably the cache.")));
+    v.push(
+        c("prune-removes-aged")
+            .aged(".anti-hall/speculation-guard-state-old.json", "{}")
+            .aged(".anti-hall/speculation-guard-state-old2.json", "{}")
+            .same(msg("It is probably the cache.")),
+    );
+    v.push(
+        c("prune-keeps-other-prefix")
+            .aged(".anti-hall/other-state-old.json", "{}")
+            .aged(".anti-hall/speculation-guard-state-old.txt", "{}")
+            .same(msg("It is probably the cache.")),
+    );
+    v.push(
+        c("prune-bad-stamp-sweeps")
+            .aged(".anti-hall/speculation-guard-state-old.json", "{}")
+            .file(".anti-hall/.prune-stamp-speculation-guard-state.json", "garbage")
+            .same(msg("It is probably the cache.")),
+    );
+    v.push(
+        c("prune-future-stamp-sweeps")
+            .aged(".anti-hall/speculation-guard-state-old.json", "{}")
+            .file(".anti-hall/.prune-stamp-speculation-guard-state.json", r#"{"lastSweep":99999999999999}"#)
+            .same(msg("It is probably the cache.")),
+    );
+    v.push(
+        c("prune-throttled")
+            .file(".anti-hall/.prune-stamp-speculation-guard-state.json", &format!(r#"{{"lastSweep":{}}}"#, 4_102_444_800_000u64))
+            .file(".anti-hall/speculation-guard-state-old.json", "{}")
+            .same(msg("It is probably the cache.")),
+    );
     // sessions
     v.push(c("no-session-id").same(without(msg("It is probably the cache."), "session_id")));
     v.push(c("numeric-session-id").same(with(msg("It is probably the cache."), "session_id", json!(7))));
@@ -427,10 +600,17 @@ fn spec_cases() -> Vec<Case> {
     v.push(c("jev-env-defers-no-hedge").env("ANTIHALL_JEV", "1").defer(msg("All fine.")));
     v.push(c("jev-settings-defers").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).defer(msg("It is probably the cache.")));
     v.push(c("jev-legacy-file-defers").file(".anti-hall/jev.json", r#"{"enabled":true}"#).defer(msg("It is probably the cache.")));
-    v.push(c("jev-env-zero-wins").env("ANTIHALL_JEV", "0").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).same(msg("It is probably the cache.")));
+    v.push(
+        c("jev-env-zero-wins").env("ANTIHALL_JEV", "0").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).same(msg("It is probably the cache.")),
+    );
     v.push(c("inference-on-no-hedge-defers").env("ANTIHALL_INFERENCE_CHECK", "1").defer(msg("The root cause is the cache.")));
     v.push(c("inference-on-hedge-blocks").env("ANTIHALL_INFERENCE_CHECK", "1").same(msg("It is probably the cache.")));
-    v.push(c("inference-on-loop-safe-allows").env("ANTIHALL_INFERENCE_CHECK", "1").file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":3}"#).same(msg("The root cause is the cache.")));
+    v.push(
+        c("inference-on-loop-safe-allows")
+            .env("ANTIHALL_INFERENCE_CHECK", "1")
+            .file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":3}"#)
+            .same(msg("The root cause is the cache.")),
+    );
     v.push(c("inference-off-no-hedge").same(msg("The root cause is the cache.")));
     // transcript fallback
     v.push(c("transcript-only-hedge").transcript(&[user("go"), asst("It is probably the cache.")]).same(stop(json!({}))));
@@ -442,17 +622,35 @@ fn spec_cases() -> Vec<Case> {
     v.push(c("transcript-no-assistant").transcript(&[user("hello")]).same(stop(json!({}))));
     v.push(c("transcript-missing-file").same(stop(json!({"transcript_path": "/nonexistent/t.jsonl"}))));
     v.push(c("transcript-relative-defers").defer(stop(json!({"transcript_path": "rel/t.jsonl", "last_assistant_message": "probably"}))));
-    v.push(c("transcript-lone-surrogate-defers").transcript_raw("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"probably \\ud800\"}}\n").defer(stop(json!({}))));
-    v.push(c("transcript-duplicated-message-text").transcript(&[json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"prob"},{"type":"text","text":"ably"}]}}).to_string()]).same(stop(json!({}))));
+    v.push(
+        c("transcript-lone-surrogate-defers")
+            .transcript_raw("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"probably \\ud800\"}}\n")
+            .defer(stop(json!({}))),
+    );
+    v.push(
+        c("transcript-duplicated-message-text")
+            .transcript(&[
+                json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"prob"},{"type":"text","text":"ably"}]}}).to_string()
+            ])
+            .same(stop(json!({}))),
+    );
     v.push(c("transcript-role-direct").transcript(&[json!({"role":"assistant","content":"It is probably the cache."}).to_string()]).same(stop(json!({}))));
-    v.push(c("transcript-empty-message-string").transcript(&[json!({"role":"assistant","content":"","message":"","text":"probably"}).to_string()]).same(stop(json!({}))));
+    v.push(
+        c("transcript-empty-message-string")
+            .transcript(&[json!({"role":"assistant","content":"","message":"","text":"probably"}).to_string()])
+            .same(stop(json!({}))),
+    );
     v.push(c("transcript-masked-blockquote").transcript(&[asst("> probably fine\nreal words")]).same(stop(json!({}))));
-    v.push(c("transcript-big-window").transcript(&{
-        let mut l = vec![asst("It is probably early.")];
-        l.extend((0..3000).map(|i| tool_result(&format!("{i} {}", "x".repeat(400)))));
-        l.push(asst("Final: all good."));
-        l
-    }).same(stop(json!({}))));
+    v.push(
+        c("transcript-big-window")
+            .transcript(&{
+                let mut l = vec![asst("It is probably early.")];
+                l.extend((0..3000).map(|i| tool_result(&format!("{i} {}", "x".repeat(400)))));
+                l.push(asst("Final: all good."));
+                l
+            })
+            .same(stop(json!({}))),
+    );
     // payload shapes
     v.push(c("no-transcript-path").same(without(msg("It is probably the cache."), "transcript_path")));
     v.push(c("transcript-path-number").same(with(msg("It is probably the cache."), "transcript_path", json!(5))));
@@ -505,15 +703,30 @@ fn judge_cases() -> Vec<Case> {
     }
     v.push(c("settings-true-defers").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#).step(msg("x"), Expect::DeferNoNode));
     v.push(c("settings-string-true-defers").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":"on"}}"#).step(msg("x"), Expect::DeferNoNode));
-    v.push(c("env-zero-beats-settings-true").env("ANTIHALL_SEMANTIC_JUDGE", "0").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#).same(msg("x")));
-    v.push(c("env-on-beats-settings-false").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":false}}"#).step(msg("x"), Expect::DeferNoNode));
+    v.push(
+        c("env-zero-beats-settings-true")
+            .env("ANTIHALL_SEMANTIC_JUDGE", "0")
+            .file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#)
+            .same(msg("x")),
+    );
+    v.push(
+        c("env-on-beats-settings-false")
+            .env("ANTIHALL_SEMANTIC_JUDGE", "1")
+            .file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":false}}"#)
+            .step(msg("x"), Expect::DeferNoNode),
+    );
     // the judge's own child never recurses
     v.push(c("child-exits").env("ANTIHALL_JUDGE_CHILD", "1").env("ANTIHALL_SEMANTIC_JUDGE", "1").same(msg("The cause is x.")));
     v.push(c("child-other-value-defers").env("ANTIHALL_JUDGE_CHILD", "0").env("ANTIHALL_SEMANTIC_JUDGE", "1").step(msg("x"), Expect::DeferNoNode));
     // skip
     v.push(c("skip-when-on").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", &format!(r#"{{"speculation-judge": {future}}}"#)).same(msg("x")));
     v.push(c("skip-all-when-on").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", &format!(r#"{{"all": {future}}}"#)).same(msg("x")));
-    v.push(c("skip-expired-when-on-defers").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", r#"{"speculation-judge": 3}"#).step(msg("x"), Expect::DeferNoNode));
+    v.push(
+        c("skip-expired-when-on-defers")
+            .env("ANTIHALL_SEMANTIC_JUDGE", "1")
+            .file(".anti-hall/skip.json", r#"{"speculation-judge": 3}"#)
+            .step(msg("x"), Expect::DeferNoNode),
+    );
     v
 }
 

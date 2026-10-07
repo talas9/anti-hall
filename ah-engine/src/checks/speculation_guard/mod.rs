@@ -161,8 +161,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         None => sha1_hex(transcript)[..16].to_string(),
     };
     let state_dir = Path::new(&home).join(defaults::text("replykit.state_dir"));
-    let state_name =
-        format!("{}{}{}", defaults::text("speculation_guard.state_prefix"), safe_session(&session_raw, None), defaults::text("replykit.json_ext"));
+    let state_name = format!("{}{}{}", defaults::text("speculation_guard.state_prefix"), safe_session(&session_raw, None), defaults::text("replykit.json_ext"));
     let state_file = state_dir.join(&state_name);
 
     let payload_text = payload.get("last_assistant_message").and_then(Value::as_str).filter(|s| !js_trim(s).is_empty());

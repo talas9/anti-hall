@@ -127,7 +127,12 @@ pub fn first_this_turn(i: &GateInput<'_>) -> Result<bool, Defer> {
     let slot = format!("{}|{}", i.key, if i.agent.is_empty() { defaults::text("turn_gate.main_agent") } else { i.agent });
     let sig = slice_utf16(i.sig, defaults::num("turn_gate.sig_max") as usize).ok_or(Defer)?;
     let dir = Path::new(i.home).join(defaults::text("replykit.state_dir")).join(defaults::text("turn_gate.dir"));
-    let file_name = format!("{}{}{}", defaults::text("turn_gate.prefix"), safe_session(&session, Some(defaults::num("turn_gate.session_max") as usize)), defaults::text("replykit.json_ext"));
+    let file_name = format!(
+        "{}{}{}",
+        defaults::text("turn_gate.prefix"),
+        safe_session(&session, Some(defaults::num("turn_gate.session_max") as usize)),
+        defaults::text("replykit.json_ext")
+    );
     let path = dir.join(&file_name);
     let mut state: Vec<(String, Oj)> = match std::fs::read_to_string(&path) {
         Err(_) => Vec::new(),
