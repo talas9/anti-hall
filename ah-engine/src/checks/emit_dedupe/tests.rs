@@ -221,3 +221,26 @@ fn session_ids_are_what_the_hooks_make_of_them() {
     assert_eq!(transcript_of(&json!({"transcript_path": "a"})), Err(Defer));
     assert_eq!(transcript_of(&json!({"transcript_path": 5})), Ok(None));
 }
+
+// Found by cargo-mutants (scripts/mutants.sh emit_dedupe): no test pinned `window_ms` (five surviving mutants on its
+// condition and its minutes-to-milliseconds product) and `disabled`'s negation was only detected by a hang (timeout).
+#[test]
+fn the_fallback_window_is_the_setting_in_minutes_else_the_default() {
+    let h = home("window");
+    let ms = |v: &str| window_ms(&st(&h, &[("ANTIHALL_DEDUPE_WINDOW_MIN", v)]));
+    assert_eq!(window_ms(&st(&h, &[])), 20.0 * 60_000.0, "no setting: the 20-minute default");
+    assert_eq!(ms("3"), 180_000.0);
+    assert_eq!(ms("0.5"), 30_000.0, "a fraction of a minute is a product, not a sum");
+    assert_eq!(ms("0"), num("emit_dedupe.window_default_ms"), "0 minutes is not a window: the 15 s default applies");
+    assert_eq!(ms("-4"), num("emit_dedupe.window_default_ms"), "a negative value is clamped to 0, so the default applies");
+}
+
+#[test]
+fn the_feature_is_off_only_for_a_zero_window_or_the_switch_off() {
+    let h = home("disabled");
+    assert!(!disabled(&st(&h, &[])), "on by default");
+    assert!(!disabled(&st(&h, &[("ANTIHALL_DEDUPE_WINDOW_MIN", "5")])));
+    assert!(disabled(&st(&h, &[("ANTIHALL_DEDUPE_WINDOW_MIN", "0")])), "a zero window turns it off");
+    assert!(disabled(&st(&h, &[("ANTIHALL_EMIT_DEDUPE", "false")])), "the switch off turns it off");
+    assert!(!disabled(&st(&h, &[("ANTIHALL_EMIT_DEDUPE", "true")])));
+}
