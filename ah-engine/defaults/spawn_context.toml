@@ -261,10 +261,6 @@ value = "<delivery>"
 doc = "How the compact body's model-routing line starts (that line is swapped for the Codex one)."
 value = "M/N."
 
-[verify_first_orch.host_arg]
-doc = "The command-line flag of the Claude hook entry the check answers; the table maps only that entry to the check."
-value = "--host=claude"
-
 [verify_first_orch.compact_first]
 doc = "First line of the compact orchestration text."
 value = "ORCHESTRATION (main thread = coordinator; letters match the full rules A-N in <abs>/PROTOCOL.md#orchestration<delivery>):"
