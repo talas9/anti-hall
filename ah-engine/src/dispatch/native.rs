@@ -140,6 +140,59 @@ mod tests {
         }
     }
 
+    /// A payload each of the five stateless checks settles as "nothing to say".
+    fn quiet_payload(check: &str) -> Value {
+        let base = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}});
+        match check {
+            // No transcript path: Node allows whatever the call is.
+            "compact-declaration-guard" => base,
+            // A subagent call: the coordinator guard leaves it alone.
+            "coordinator-work-guard" => {
+                let mut p = base;
+                p["agent_id"] = json!("a1");
+                p
+            }
+            // A command that neither picks a side, tests nor pushes.
+            "merge-side-pick" => base,
+            // No scan-throttle patterns in the environment.
+            "scan-throttle" => base,
+            // A Bash call names no file for the plan guard.
+            "ship-it-guard" => base,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Regression: a check that returned `None` ("nothing to say, allow") was answered `Defer` here, so its Node hook
+    /// still ran (0% native answers for these five checks in a 1819-payload replay). It must be answered natively with
+    /// the quiet bytes, which are what the silent Node hook produces.
+    #[test]
+    fn a_check_that_decided_allow_is_answered_natively_not_deferred() {
+        let mut deferred = Vec::new();
+        for name in ["compact-declaration-guard", "coordinator-work-guard", "merge-side-pick", "scan-throttle", "ship-it-guard"] {
+            let p = quiet_payload(name);
+            let got = evaluate(&meta(), &p, &|_, _, _| {});
+            let (_, a) = got.iter().find(|(id, _)| id == name).unwrap_or_else(|| panic!("{name} entry missing"));
+            if a != &Answer::Decided(HookResult::quiet(name), Vec::new()) {
+                deferred.push(name);
+            }
+        }
+        assert!(deferred.is_empty(), "these checks must answer natively, not defer: {deferred:?}");
+    }
+
+    /// The other side of the fix: where a check cannot prove Node is silent it still defers (D74).
+    #[test]
+    fn a_check_that_cannot_prove_silence_still_defers() {
+        // coordinator-work-guard: a main-session Bash call needs Node's own state, the check says Defer.
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}});
+        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        assert_eq!(got.iter().find(|(id, _)| id == "coordinator-work-guard").unwrap().1, Answer::Defer);
+        // ship-it-guard with its opt-in gate on: Bash targets need the command-guard parser, so it defers.
+        let mut m = meta();
+        m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1")]);
+        let got = evaluate(&m, &p, &|_, _, _| {});
+        assert_eq!(got.iter().find(|(id, _)| id == "ship-it-guard").unwrap().1, Answer::Defer);
+    }
+
     #[test]
     fn an_exact_verdict_becomes_the_entrys_exact_bytes() {
         let x = crate::checks::Exact::json_block("stop");

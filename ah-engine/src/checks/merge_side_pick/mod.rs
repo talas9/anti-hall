@@ -233,6 +233,6 @@ impl Check for MergeSidePick {
     }
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        decide(payload, &Settings::from_env(env), state::global())
+        Some(decide(payload, &Settings::from_env(env), state::global()).unwrap_or(Verdict::Allow))
     }
 }

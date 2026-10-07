@@ -87,6 +87,6 @@ impl Check for CoordinatorWorkGuard {
     }
 
     fn run_payload(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value) -> Option<Verdict> {
-        decide(payload)
+        Some(decide(payload).unwrap_or(Verdict::Allow))
     }
 }

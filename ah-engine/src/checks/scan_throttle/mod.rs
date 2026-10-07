@@ -376,6 +376,6 @@ impl Check for ScanThrottle {
     }
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        decide(payload, &Settings::from_env(env))
+        Some(decide(payload, &Settings::from_env(env)).unwrap_or(Verdict::Allow))
     }
 }
