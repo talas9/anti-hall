@@ -1,0 +1,18 @@
+# Dependency budget for ah-engine (crate plan item 10). `tests/dep_budget.rs` counts the distinct crates in the normal
+# dependency graph (`cargo tree --prefix none --edges normal`, the engine itself excluded) and fails when the count passes
+# `max_crates`, so crate creep is a reviewed change to this file instead of a side effect of a `cargo add`.
+#
+# Raise `max_crates` in the same commit that adds a dependency, with the measured delta and the reason; lower it when a
+# dependency goes away.
+
+[budget]
+# Distinct `name version` entries in the normal graph for the host target on 2026-10-07, counted by the test (the `(*)` repeat
+# markers and the engine itself are not counted; the raw `cargo tree ... | sort -u` line count is 59 because of both, and the
+# earlier crate-plan figure of 58 included crates only other targets pull in).
+base_crates = 53
+# Crates approved this round but not yet in the tree; the headroom covers their own entries only. Their transitive
+# dependencies are not measured yet: the commit that adds them must replace this with the measured count.
+approved = ["tikv-jemallocator", "rquickjs"]
+approved_headroom = 2
+# The limit the test enforces: base_crates + approved_headroom.
+max_crates = 55
