@@ -107,7 +107,7 @@ mod jev_shadow {
         let rows = log_rows(&h);
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
-        assert_eq!((&r["id"], &r["mode"], &r["base"], &r["sessionId"], &r["turnRef"]), (&json!("claimLedger"), &json!("on"), &json!(true), &json!("s1"), &json!("2026-01-01T00:00:05.000Z")));
+        assert_eq!((&r["id"], &r["mode"], &r["base"], &r["sessionId"], &r["turnRef"]), (&json!("claimLedger"), &json!("shadow"), &json!(true), &json!("s1"), &json!("2026-01-01T00:00:05.000Z")));
     }
 
     #[test]
