@@ -34,7 +34,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::OnceLock;
 
-mod mask;
+pub(crate) mod mask;
 #[cfg(test)]
 mod tests;
 
