@@ -524,6 +524,12 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
         sh.telemetry.fallback("busy", &phash);
         return Reply::Busy;
     }
+    // D87: what the client's plan did to each entry (ran, skipped by predicate or cap or budget, shadowed, off), by event and entry
+    sh.telemetry.with_metrics(|m| {
+        for (id, outcome) in &meta.plan {
+            m.inc("dispatch_entries", &[("event", meta.event.as_str()), ("entry", id.as_str()), ("outcome", outcome.as_str())]);
+        }
+    });
     let observe = |e: &crate::dispatch::table::Entry, a: &crate::dispatch::native::Answer, micros: u64| {
         use crate::checks::Verdict;
         use crate::dispatch::native::Answer;
@@ -1054,8 +1060,16 @@ mod tests {
             for (i, env) in envs.iter().enumerate() {
                 let v = format!("V 0.1.0\n{}\n{payload}", env.to_line());
                 let blocked_v = ok(&handle_request(v.as_bytes(), &sh).0).starts_with(crate::hookio::EXIT2);
-                let meta =
-                    crate::dispatch::native::Meta { host: "claude".into(), event: "PreToolUse".into(), tool: None, root: Some("/p".into()), env: env.clone() };
+                let meta = crate::dispatch::native::Meta {
+                    host: "claude".into(),
+                    event: "PreToolUse".into(),
+                    tool: None,
+                    root: Some("/p".into()),
+                    env: env.clone(),
+                    only: None,
+                    plan: vec![],
+                    cfg: String::new(),
+                };
                 let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
                 let rows: Vec<serde_json::Value> = serde_json::from_str(ok(&handle_request(d.as_bytes(), &sh).0)).unwrap();
                 let git = rows.iter().find(|r| r[0] == "git-guard").expect("the git check answers its entry");

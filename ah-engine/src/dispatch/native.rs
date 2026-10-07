@@ -23,6 +23,16 @@ pub struct Meta {
     /// The client's environment (D76): every check is evaluated with it, never with the daemon's own.
     #[serde(default)]
     pub env: crate::reqenv::RequestEnv,
+    /// The ids of the entries whose built-in check the client asks for (`None` = every matching entry with a check): the
+    /// client has already applied the hook configuration and the entries' predicates (D87).
+    #[serde(default)]
+    pub only: Option<Vec<String>>,
+    /// What the client's plan did to each entry, as `(entry id, outcome word)`; the daemon counts them.
+    #[serde(default)]
+    pub plan: Vec<(String, String)>,
+    /// The hash of the non-default hook configuration the plan was made under (empty = the defaults).
+    #[serde(default)]
+    pub cfg: String,
 }
 
 /// One built-in check's answer for one entry.
@@ -73,7 +83,7 @@ fn answer_of(id: &str, verdict: Option<Verdict>) -> Answer {
 pub fn evaluate(meta: &Meta, p: &Value, observe: &dyn Fn(&Entry, &Answer, u64)) -> Vec<(String, Answer)> {
     table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
         .into_iter()
-        .filter(|e| e.check.is_some())
+        .filter(|e| e.check.is_some() && meta.only.as_ref().is_none_or(|ids| ids.contains(&e.id)))
         .map(|e| {
             let started = std::time::Instant::now();
             let a = run_entry(&e, meta, p);
@@ -116,7 +126,16 @@ mod tests {
     use super::*;
 
     fn meta() -> Meta {
-        Meta { host: "claude".into(), event: "PreToolUse".into(), tool: None, root: Some("/nonexistent-plugin".into()), env: Default::default() }
+        Meta {
+            host: "claude".into(),
+            event: "PreToolUse".into(),
+            tool: None,
+            root: Some("/nonexistent-plugin".into()),
+            env: Default::default(),
+            only: None,
+            plan: vec![],
+            cfg: String::new(),
+        }
     }
 
     #[test]

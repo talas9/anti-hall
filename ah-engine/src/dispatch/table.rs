@@ -1,7 +1,7 @@
-//! The dispatch table (D58): per host and event, the hook entries `hooks.json` registers, in `hooks.json` order, and
-//! which of them a built-in check answers. The table is data (`defaults/dispatch.toml`, generated from the two
-//! `hooks.json` files and kept in step by `tests/dispatch_table.rs`); this module reads it and decides which entries
-//! a payload matches, the way the host does.
+//! The dispatch table (D58, D87): per host and event, the hook entries, in the order their results combine, and which of
+//! them a built-in check answers. The table is data (`defaults/dispatch.toml`, edited by hand; the plugin's `hooks.json`
+//! files are generated from it, `hooksgen`); this module reads it and decides which entries a payload matches, the way the
+//! host does.
 use crate::defaults::{self, V};
 use crate::error::DispatchError;
 use regex::Regex;
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// One hook entry of an event, as `hooks.json` registers it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     /// Stable name of the entry within its event (the fallback-map key).
     pub id: String,
@@ -22,6 +22,9 @@ pub struct Entry {
     pub timeout_s: u64,
     /// The built-in check that answers this entry, if any.
     pub check: Option<String>,
+    /// The row's `when` predicate (D87), if it has one: the entry applies only when it holds. A row whose predicate does
+    /// not parse reads as having none (it applies), and `tests/dispatch_table.rs` fails on such a row.
+    pub when: Option<crate::hookcfg::when::When>,
 }
 
 /// The table key of one host's event.
@@ -50,6 +53,7 @@ pub fn entries(host: &str, event: &str) -> Vec<Entry> {
             command: e.str_field("command").to_string(),
             timeout_s: e.get("timeout").and_then(V::as_integer).unwrap_or(0).max(0) as u64,
             check: Some(e.str_field("check")).filter(|c| !c.is_empty()).map(str::to_string),
+            when: e.get("when").and_then(|w| crate::hookcfg::when::When::from_v(w).ok()),
         })
         .collect()
 }

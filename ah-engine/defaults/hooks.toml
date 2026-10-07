@@ -185,6 +185,10 @@ value = "bad session condition: {what}"
 doc = "Config error detail: a `when` predicate nests deeper than allowed. Placeholder: {max}."
 value = "a predicate may nest at most {max} levels"
 
+[hooks.outcomes]
+doc = "The words the telemetry uses for what happened to a table entry in one dispatch, in this order: ran, skipped_predicate (its `when` was false), skipped_max_rules (cut by max_rules), skipped_budget (the event's budget had passed), shadowed (ran, never changed the outcome) and off (configured off, or a guard entry's engine check turned off so its Node hook decides)."
+value = ["ran", "skipped_predicate", "skipped_max_rules", "skipped_budget", "shadowed", "off"]
+
 [hooks.when_max_depth]
 doc = "How deep combinators (all, any, not) may nest in one `when` predicate."
 value = 8
@@ -198,3 +202,7 @@ value = "cfg={cfg} ran=[{ran}] skipped_predicate=[{predicate}] skipped_max_rules
 [hooks.msg_shadow_event]
 doc = "Event-log detail when a shadowed built-in check's answer is compared with the Node hook that decided. Placeholders: {id}, {agree}, {engine}, {node}."
 value = "{id} agree={agree} engine_exit={engine} node_exit={node}"
+
+[hooks.msg_budget]
+doc = "Why a guard event fails closed when its budget_ms has passed before a built-in check's Node hook could start. Placeholder: {id}."
+value = "the event's budget passed before {id} could run"

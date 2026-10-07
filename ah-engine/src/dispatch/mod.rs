@@ -18,6 +18,7 @@
 pub mod combine;
 pub mod native;
 pub mod node;
+pub mod plan;
 pub mod stoploop;
 pub mod table;
 
@@ -400,11 +401,30 @@ fn start_node(e: &table::Entry, raw: &[u8], payload: Option<&File>) -> node::Run
 }
 
 fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> Outcome {
+    let mut tele = plan::Tele::default();
+    let o = run_core(raw, args, payload, complete, &mut tele);
+    if tele.notable() {
+        let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+        health::log_event("dispatch_plan", &args.event, &tele.detail());
+    }
+    o
+}
+
+/// Retain the entries (and their shadow flags) `keep` accepts.
+fn retain_both(entries: &mut Vec<table::Entry>, shadow: &mut Vec<bool>, mut keep: impl FnMut(&table::Entry, bool) -> bool) {
+    let mask: Vec<bool> = entries.iter().zip(shadow.iter()).map(|(e, s)| keep(e, *s)).collect();
+    let mut it = mask.iter();
+    entries.retain(|_| *it.next().unwrap_or(&true));
+    let mut it = mask.iter();
+    shadow.retain(|_| *it.next().unwrap_or(&true));
+}
+
+fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele: &mut plan::Tele) -> Outcome {
     let guard = guarded(&args.event);
     let parsed = complete.then(|| serde_json::from_str::<Value>(raw).ok()).flatten();
     let p = parsed.clone().unwrap_or(Value::Null);
     let mut pre_err = String::new();
-    let mut entries = if guard {
+    let entries = if guard {
         table::select_guarded(&args.host, &args.event, &p, args.tool.as_deref())
     } else if !complete && parsed.is_none() && args.tool.is_none() {
         table::entries(&args.host, &args.event)
@@ -415,6 +435,19 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         // no guard ran for this payload (another agent's SubagentStop, say), so it proves nothing about a block run
         return Outcome { out: String::new(), code: 0, err: String::new() };
     }
+    // D87: the hook configuration and the entries' predicates decide which of the matched entries run, and how
+    let req_env = crate::reqenv::RequestEnv::capture();
+    let facts = plan::LiveFacts::default();
+    let cfg = plan::load_config(p.get("cwd").and_then(Value::as_str).unwrap_or(""));
+    let occurrence = plan::Occurrence { payload: &p, tool: args.tool.as_deref(), env: &req_env, sessions: None, facts: &facts, payload_ok: parsed.is_some() };
+    let dplan = plan::build(&args.event, entries, &cfg, &occurrence);
+    tele.cfg_hash = dplan.cfg_hash.clone();
+    tele.outcomes = dplan.outcomes();
+    let budget = dplan.budget;
+    if dplan.event_off || dplan.items.is_empty() {
+        return Outcome { out: String::new(), code: 0, err: String::new() };
+    }
+    let (mut entries, mut shadow): (Vec<table::Entry>, Vec<bool>) = dplan.items.into_iter().map(|i| (i.entry, i.shadow)).unzip();
     if let Some(path) = &args.map {
         match table::FallbackMap::load(path) {
             Ok(m) => m.apply(&args.event, &mut entries),
@@ -424,12 +457,15 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
     }
     let no_command = |id: &str| defaults::render("dispatch.msg_no_fallback", &[("id", &id)]);
     if guard {
-        if let Some(e) = entries.iter().find(|e| e.check.is_none() && !table::runnable(&e.command)) {
+        if let Some(e) = entries.iter().zip(&shadow).find(|(e, sh)| !**sh && e.check.is_none() && !table::runnable(&e.command)).map(|(e, _)| e) {
             return closed(&args.event, parsed.as_ref(), &no_command(&e.id));
         }
     } else {
-        entries.retain(|e| {
+        retain_both(&mut entries, &mut shadow, |e, sh| {
             let ok = e.check.is_some() || table::runnable(&e.command);
+            if !ok && sh {
+                return false; // a shadowed entry that cannot run is only not measured
+            }
             if !ok {
                 let note = defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]);
                 let stderr = defaults::render("dispatch.msg_skipped_entry_stderr", &[("event", &args.event), ("id", &e.id)]);
@@ -444,6 +480,9 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
             return Outcome { out: String::new(), code: 0, err: pre_err };
         }
     }
+    // a guard entry's shadowed check runs beside the Node hook of the same id that decides: it is only measured
+    let sibling: Vec<bool> =
+        entries.iter().enumerate().map(|(i, e)| shadow[i] && entries.iter().enumerate().any(|(j, r)| j != i && !shadow[j] && r.id == e.id)).collect();
     // the Node hooks start first, so they run while the built-in checks are answered
     let mut started: Vec<(usize, node::Running)> =
         entries.iter().enumerate().filter(|(_, e)| e.check.is_none()).map(|(i, e)| (i, start_node(e, raw.as_bytes(), payload))).collect();
@@ -452,7 +491,10 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         event: args.event.clone(),
         tool: args.tool.clone(),
         root: table::plugin_root(&args.host),
-        env: crate::reqenv::RequestEnv::capture(),
+        env: req_env.clone(),
+        only: Some(entries.iter().filter(|e| e.check.is_some()).map(|e| e.id.clone()).collect()),
+        plan: tele.outcomes.iter().map(|(id, o)| (id.clone(), o.word().to_string())).collect(),
+        cfg: tele.cfg_hash.clone(),
     };
     let answers = match (&parsed, complete) {
         // A payload serde_json cannot read falls back to Node (JS may still parse it, e.g. a lone surrogate escape): the
@@ -463,16 +505,36 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         (Some(_), _) => ask_daemon(&meta, raw).unwrap_or_default(),
     };
     let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
+    let mut shadow_results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_some()) {
         match answers.iter().find(|(id, _)| *id == e.id) {
+            Some((_, Answer::Decided(r, _))) if shadow[i] => shadow_results[i] = Some(r.clone()),
             Some((_, Answer::Decided(r, _))) => results[i] = Some(r.clone()),
+            _ if sibling[i] => {} // the Node hook of the same id decides; the shadowed check just goes unmeasured
+            _ if budget.exceeded() => {
+                // the event's budget has passed: start nothing further (a guard event fails closed, as for a hook that cannot run)
+                if guard {
+                    let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
+                    let mut done = results.clone();
+                    for (i, f) in slots.iter().zip(node::finish(running)) {
+                        if f.fate == node::Fate::Ran && !shadow[*i] {
+                            done[*i] = Some(f.result);
+                        }
+                    }
+                    if let Some(o) = genuine_block(done) {
+                        return o;
+                    }
+                    return closed(&args.event, parsed.as_ref(), &defaults::render("hooks.msg_budget", &[("id", &e.id)]));
+                }
+                tele.mark(&e.id, plan::Outcome::SkippedBudget);
+            }
             _ if !table::runnable(&e.command) => {
                 if guard {
                     // the hooks already started are finished first: one that ran and blocked still decides, as below
                     let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
                     let mut done = results.clone();
                     for (i, f) in slots.iter().zip(node::finish(running)) {
-                        if f.fate == node::Fate::Ran {
+                        if f.fate == node::Fate::Ran && !shadow[*i] {
                             done[*i] = Some(f.result);
                         }
                     }
@@ -502,7 +564,7 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         }) {
             let mut done: Vec<Option<combine::HookResult>> = results.clone();
             for (i, f) in slots.iter().zip(&finished) {
-                if f.fate == node::Fate::Ran {
+                if f.fate == node::Fate::Ran && !shadow[*i] {
                     done[*i] = Some(f.result.clone());
                 }
             }
@@ -521,7 +583,24 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
         }
     }
     for (i, f) in slots.into_iter().zip(finished) {
-        results[i] = Some(f.result);
+        if shadow[i] {
+            shadow_results[i] = Some(f.result);
+        } else {
+            results[i] = Some(f.result);
+        }
+    }
+    // a shadowed check is compared with the Node hook of the same id that decided; nothing shadowed is combined
+    for (i, e) in entries.iter().enumerate().filter(|(i, _)| sibling[*i]) {
+        let node_result = entries.iter().enumerate().find(|(j, r)| *j != i && !shadow[*j] && r.id == e.id).and_then(|(j, _)| results[j].as_ref());
+        if let (Some(a), Some(b)) = (shadow_results[i].as_ref(), node_result) {
+            let agree = a.code == b.code && a.out == b.out;
+            let (engine, node) = (a.code.map_or(-1, i64::from), b.code.map_or(-1, i64::from));
+            health::log_event(
+                "dispatch_shadow",
+                &args.event,
+                &defaults::render("hooks.msg_shadow_event", &[("id", &e.id), ("agree", &agree), ("engine", &engine), ("node", &node)]),
+            );
+        }
     }
     let results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over

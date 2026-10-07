@@ -172,6 +172,10 @@ value = { kind = "counter", unit = "connections", labels = [] }
 doc = "Built-in check entries the dispatcher sent to the daemon, by event, check and answer (decided, or defer = its Node hook ran instead) (D58)."
 value = { kind = "counter", unit = "entries", labels = ["event", "check", "answer"] }
 
+[metric.dispatch_entries]
+doc = "What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry and outcome."
+value = { kind = "counter", unit = "entries", labels = ["event", "entry", "outcome"] }
+
 [metric.hook_calls]
 doc = "Hook requests served, by hook event."
 value = { kind = "counter", unit = "requests", labels = ["event"] }

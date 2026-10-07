@@ -280,7 +280,7 @@ mod tests {
     use super::*;
 
     fn entry(id: &str, command: &str, timeout_s: u64) -> Entry {
-        Entry { id: id.into(), matcher: String::new(), command: command.into(), timeout_s, check: None }
+        Entry { id: id.into(), matcher: String::new(), command: command.into(), timeout_s, check: None, when: None }
     }
 
     #[test]
