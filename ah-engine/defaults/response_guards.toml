@@ -455,6 +455,23 @@ value = { section = "guards", key = "outputVerifyOncePerTurn", env = "ANTIHALL_O
 doc = "The Jev integration id of the shadow question asked for each test-runner output."
 value = "outputVerifyGuard"
 
+[output_verify.jev_instructions]
+doc = "The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's)."
+value = "Does this test-runner output show a GENUINELY mixed pass/fail result (some tests failed alongside others passing), as opposed to both words merely appearing in unrelated text?"
+
+[output_verify.jev_true]
+doc = "The label for a true answer of the outputVerifyGuard question."
+value = "genuinely mixed pass/fail"
+
+[output_verify.jev_false]
+doc = "The label for a false answer of the outputVerifyGuard question."
+value = "not a genuine mixed result"
+
+[output_verify.jev_state_chars]
+doc = "How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000))."
+value = 4000
+min = 1
+
 [output_verify.blob_fields]
 doc = "The payload fields the scanned text is built from, in order."
 value = ["tool_response", "tool_output"]

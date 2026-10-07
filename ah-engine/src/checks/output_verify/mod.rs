@@ -7,8 +7,10 @@
 //! What is answered here and what is not:
 //! - Answered here: the switch, the skip file, the test-runner test, the signal scan, the exit code, the once-per-turn
 //!   gate and its state file.
-//! - Deferred to Node: every call where the optional Jev shadow question would be asked (the Jev lane's call path stays
-//!   on Node, see `docs/AH-ENGINE.md`), a payload whose output carries an object whose key order would change the
+//! - Answered here too: the Jev shadow question. For every test-runner output it is asked on the shared Jev lane without
+//!   waiting (Node: `askDetached`) with Node's id, question, text window, trust and baseline; the answer only reaches the
+//!   Jev decision log (a `mode: "off"` row when the integration is off, as Node writes) and never changes the advisory.
+//! - Deferred to Node: a payload whose output carries an object whose key order would change the
 //!   answer (the engine's parsed payload does not keep key order; the check proves the answer cannot depend on it or
 //!   defers), and anything the JavaScript text semantics cannot be reproduced for.
 //!
@@ -24,7 +26,7 @@ use crate::checks::replykit::json::{js_number, quote, stringify_value};
 use crate::checks::replykit::turn_gate::{GateInput, first_this_turn};
 use crate::checks::{Check, Exact, Verdict};
 use crate::defaults::{self, V};
-use crate::jev::{Env as JevEnv, JevSettings, Mode, settings::Sources};
+use crate::jev::{AskRequest, Env as JevEnv, Question, Trust};
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use regex::Regex;
@@ -276,10 +278,17 @@ fn scan(payload: &Value, blob: &Blob) -> Result<Found, Defer> {
     Ok(Found { pass: first_match(&p.pass, &blob.blob, false), fail: first_match(&p.fail, &blob.blob, false), exit })
 }
 
-fn jev_asks(st: &Settings, env: &RequestEnv) -> bool {
-    let home = Path::new(&st.home);
-    let sources = Sources::load(home, JevEnv::from_pairs(env.to_map()));
-    JevSettings::resolve(home, sources).mode(defaults::text("output_verify.jev_id"), false) != Mode::Off
+/// The Jev shadow question for one test-runner output (Node: the `askDetached` call before the advisory).
+fn ask_jev(home: &str, env: &RequestEnv, session: Option<String>, text: &str, mismatch: bool) {
+    let mut req = AskRequest::new(
+        defaults::text("output_verify.jev_id"),
+        Question::noul(defaults::text("output_verify.jev_instructions"), defaults::text("output_verify.jev_true"), defaults::text("output_verify.jev_false")),
+        text,
+        Trust::Advisory,
+        Value::Bool(mismatch),
+    );
+    req.session_id = session;
+    crate::jev::shared::ask_detached(Path::new(home), &JevEnv::from_pairs(env.to_map()), req);
 }
 
 fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
@@ -300,11 +309,15 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         return Ok(Verdict::Allow);
     }
     let found = scan(payload, &blob)?;
-    // The Jev shadow question is asked for every test-runner output; its call path stays on Node.
-    if jev_asks(&st, env) {
-        return Err(Defer);
-    }
     let non_zero = found.exit.is_some_and(|n| n != 0.0);
+    // The shadow ask comes before the advisory and never waits; a window that would cut a surrogate pair is Node's lone
+    // surrogate, which this port does not reproduce, so that call stays on Node.
+    let window = prefix_utf16(&blob.blob, defaults::num("output_verify.jev_state_chars") as usize).ok_or(Defer)?;
+    let session = match payload.get("session_id").filter(|s| crate::checks::replykit::io::truthy(s)) {
+        Some(s) => Some(crate::checks::replykit::io::js_id_string(s).ok_or(Defer)?),
+        None => None,
+    };
+    ask_jev(&home, env, session, &window, found.pass.is_some() && (found.fail.is_some() || non_zero));
     let (Some(pass), true) = (found.pass.as_ref(), found.fail.is_some() || non_zero) else { return Ok(Verdict::Allow) };
     let mut bits: Vec<String> = vec![msg::render("output_verify.bit_pass", &[("hit", &quote(pass))])];
     if let Some(f) = &found.fail {
