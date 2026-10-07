@@ -100,8 +100,19 @@ pub fn current_turn_id(transcript_path: Option<&Value>) -> Option<String> {
 }
 
 fn state_path(home: &str, session: &str) -> String {
-    let safe: String = session.encode_utf16().take(defaults::num("turn_gate.session_max") as usize).map(|u| char::from_u32(u32::from(u)).unwrap_or('_')).map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect();
-    format!("{home}/{}/{}/{}{safe}{}", defaults::text("guardkit.state_dir_name"), defaults::text("turn_gate.dir"), defaults::text("turn_gate.prefix"), defaults::text("guardkit.state_ext"))
+    let safe: String = session
+        .encode_utf16()
+        .take(defaults::num("turn_gate.session_max") as usize)
+        .map(|u| char::from_u32(u32::from(u)).unwrap_or('_'))
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .collect();
+    format!(
+        "{home}/{}/{}/{}{safe}{}",
+        defaults::text("guardkit.state_dir_name"),
+        defaults::text("turn_gate.dir"),
+        defaults::text("turn_gate.prefix"),
+        defaults::text("guardkit.state_ext")
+    )
 }
 
 static GATE_LOCK: Mutex<()> = Mutex::new(());
@@ -113,7 +124,8 @@ pub fn first_this_turn(a: &Ask<'_>) -> bool {
     if !js_truthy(a.session_id) || a.key.is_empty() || a.home.is_empty() {
         return true;
     }
-    let turn = if a.agent_id.is_empty() { current_turn_id(a.transcript_path) } else { Some(format!("{}{}", defaults::text("turn_gate.agent_prefix"), a.agent_id)) };
+    let turn =
+        if a.agent_id.is_empty() { current_turn_id(a.transcript_path) } else { Some(format!("{}{}", defaults::text("turn_gate.agent_prefix"), a.agent_id)) };
     let Some(turn) = turn else { return true };
     let slot = format!("{}|{}", a.key, if a.agent_id.is_empty() { defaults::text("turn_gate.main_label") } else { a.agent_id });
     let sig = "";

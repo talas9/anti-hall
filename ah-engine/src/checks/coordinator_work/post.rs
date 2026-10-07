@@ -79,7 +79,18 @@ pub struct State {
 impl State {
     /// `emptyState(version)`.
     fn empty(version: &str) -> State {
-        State { version: version.to_string(), first_ts: 0.0, ts: Vec::new(), armed: true, calls: 0.0, work: 0.0, blocks: 0.0, last_block_at: 0.0, skipped: 0.0, pre: Vec::new() }
+        State {
+            version: version.to_string(),
+            first_ts: 0.0,
+            ts: Vec::new(),
+            armed: true,
+            calls: 0.0,
+            work: 0.0,
+            blocks: 0.0,
+            last_block_at: 0.0,
+            skipped: 0.0,
+            pre: Vec::new(),
+        }
     }
 
     fn counter(&self, k: &str) -> f64 {
@@ -194,7 +205,11 @@ fn now_ms() -> f64 {
 /// `safeId(sid)`: the session id as a file-name part.
 fn safe_id(sid: &str) -> String {
     let max = defaults::num("coordinator_work.session_id_max") as usize;
-    sid.encode_utf16().take(max).map(|u| char::from_u32(u32::from(u)).unwrap_or('_')).map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect()
+    sid.encode_utf16()
+        .take(max)
+        .map(|u| char::from_u32(u32::from(u)).unwrap_or('_'))
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .collect()
 }
 
 fn session_path(home: &str, sid: &str) -> String {
@@ -223,7 +238,9 @@ fn lock_wait(env: &RequestEnv) -> u64 {
 /// The version that stamps a new window file: the plugin manifest's `version`.
 fn plugin_version(root: &str) -> String {
     let unknown = defaults::text("coordinator_work.unknown_version").to_string();
-    read_json(&format!("{root}/{}", defaults::text("coordinator_work.plugin_json"))).and_then(|v| v.get("version").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)).unwrap_or(unknown)
+    read_json(&format!("{root}/{}", defaults::text("coordinator_work.plugin_json")))
+        .and_then(|v| v.get("version").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string))
+        .unwrap_or(unknown)
 }
 
 /// The metrics file's contents, in the order Node keeps them.
@@ -364,11 +381,15 @@ fn fold_stale(home: &str, now: f64, env: &RequestEnv) -> usize {
     }
     let ttl = defaults::num("guardkit.prune_ttl_ms") as f64;
     let dir = state_dir(home);
-    let mut names: Vec<String> = std::fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| session_re().is_match(n)).collect()).unwrap_or_default();
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| session_re().is_match(n)).collect())
+        .unwrap_or_default();
     // `readdirSync` lists the names sorted (libuv sorts a scandir by `strcmp`), and that is the order Node folds them in
     names.sort();
     let mut folded = 0usize;
-    let mtime = |p: &str| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0));
+    let mtime = |p: &str| {
+        std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0))
+    };
     for name in names.drain(..) {
         let p = format!("{dir}/{name}");
         let Some(mt) = mtime(&p) else { continue };
@@ -476,7 +497,8 @@ fn is_coordinator(p: &Value, env: &RequestEnv) -> bool {
     if coordinator_work::subagent_by_payload(p) || entry == defaults::text("coordinator_work.subagent_entrypoint") {
         return false;
     }
-    defaults::list("coordinator_work.coordinator_entrypoints").contains(&entry) || (!entry.is_empty() && entry.starts_with(defaults::text("coordinator_work.coordinator_entrypoint_prefix")))
+    defaults::list("coordinator_work.coordinator_entrypoints").contains(&entry)
+        || (!entry.is_empty() && entry.starts_with(defaults::text("coordinator_work.coordinator_entrypoint_prefix")))
 }
 
 /// Settings (the switch of command-guard that gates the window) and skip files, as the Node guard reads them.
@@ -519,7 +541,9 @@ pub fn decide_post(p: &Value, st: &Settings, env: &RequestEnv, plugin_root: &str
     // Everything is decided in memory first and the metrics lock (taken after the window lock, the order Node keeps) is
     // acquired before anything is written, so a lock that cannot be had hands the whole call to Node with nothing recorded.
     let path = session_path(home, sid);
-    let Some(lock) = filelock::acquire(&format!("{path}{}", defaults::text("coordinator_work.lock_suffix")), lock_wait(env)) else { return Some(Verdict::Defer) };
+    let Some(lock) = filelock::acquire(&format!("{path}{}", defaults::text("coordinator_work.lock_suffix")), lock_wait(env)) else {
+        return Some(Verdict::Defer);
+    };
     let mut s = read_json(&path).and_then(|v| State::normalize(&v)).unwrap_or_else(|| State::empty(&plugin_version(plugin_root)));
     if !id.is_empty() {
         s.take_pre(id);
@@ -560,6 +584,10 @@ pub fn decide_post(p: &Value, st: &Settings, env: &RequestEnv, plugin_root: &str
 fn nudge(count: usize, cfg: &Cfg) -> String {
     let minutes = (cfg.t_ms / 60_000.0).round() as i64;
     let what = msg::render("coordinator_work.nudge_what", &[("count", &count.to_string()), ("minutes", &minutes.to_string())]);
-    let instead = if cfg.block_at > 0 { msg::render("coordinator_work.nudge_instead_block", &[("block_at", &cfg.block_at.to_string())]) } else { defaults::text("coordinator_work.nudge_instead").to_string() };
+    let instead = if cfg.block_at > 0 {
+        msg::render("coordinator_work.nudge_instead_block", &[("block_at", &cfg.block_at.to_string())])
+    } else {
+        defaults::text("coordinator_work.nudge_instead").to_string()
+    };
     msg::message(Kind::Warn, defaults::text("coordinator_work.guard_name"), &Parts { what: &what, instead: &instead, ..Parts::default() })
 }

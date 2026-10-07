@@ -13,9 +13,9 @@
 //! (the payload-only part).
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::text::js_trim;
-use crate::reqenv::RequestEnv;
 use crate::checks::{Check, Verdict};
 use crate::defaults;
+use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use serde_json::Value;
 

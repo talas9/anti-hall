@@ -71,7 +71,10 @@ fn inspect(path: &str) -> Option<Holder> {
     let mut ts = rec.as_ref().and_then(|r| r.get("ts")).and_then(serde_json::Value::as_f64);
     let mut ts_from_mtime = false;
     if ts.is_none() {
-        ts = std::fs::metadata(path).and_then(|m| m.modified()).ok().map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0));
+        ts = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0));
         ts_from_mtime = ts.is_some();
     }
     Some(Holder { token, ts, ts_from_mtime })
@@ -97,7 +100,10 @@ fn reclaim(path: &str, h: &Holder) -> bool {
         (Some(a), Some(b)) => a == b,
         (None, None) => {
             // no token to compare: the moved file must still be the same old, tokenless file
-            let mt = std::fs::metadata(&reap).and_then(|m| m.modified()).ok().map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0));
+            let mt = std::fs::metadata(&reap)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0));
             moved.is_none() && h.ts_from_mtime && mt == h.ts
         }
         _ => false,

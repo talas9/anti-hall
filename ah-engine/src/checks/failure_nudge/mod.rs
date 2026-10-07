@@ -56,7 +56,13 @@ pub fn decide(p: &Value, st: &Settings) -> Option<Verdict> {
             return None;
         }
         let agent = p.get("agent_id").and_then(Value::as_str).unwrap_or("");
-        let ask = Ask { home: &st.home, session_id: p.get("session_id"), agent_id: agent, transcript_path: p.get("transcript_path"), key: defaults::text("failure_nudge.gate_key") };
+        let ask = Ask {
+            home: &st.home,
+            session_id: p.get("session_id"),
+            agent_id: agent,
+            transcript_path: p.get("transcript_path"),
+            key: defaults::text("failure_nudge.gate_key"),
+        };
         if st.home.is_empty() && js_truthy(ask.session_id) {
             return Some(Verdict::Defer);
         }
@@ -66,9 +72,17 @@ pub fn decide(p: &Value, st: &Settings) -> Option<Verdict> {
     }
     let shown = truncate_command(cmd);
     let Some(shown) = shown else { return Some(Verdict::Defer) };
-    let cmd_part = if shown.is_empty() { String::new() } else { format!("{}{shown}{}", defaults::text("failure_nudge.cmd_open"), defaults::text("failure_nudge.cmd_close")) };
+    let cmd_part = if shown.is_empty() {
+        String::new()
+    } else {
+        format!("{}{shown}{}", defaults::text("failure_nudge.cmd_open"), defaults::text("failure_nudge.cmd_close"))
+    };
     let what = msg::render("failure_nudge.msg_what", &[("cmd", &cmd_part)]);
-    let text = msg::message(Kind::Tip, defaults::text("failure_nudge.message_guard"), &Parts { what: &what, instead: defaults::text("failure_nudge.msg_instead"), ..Parts::default() });
+    let text = msg::message(
+        Kind::Tip,
+        defaults::text("failure_nudge.message_guard"),
+        &Parts { what: &what, instead: defaults::text("failure_nudge.msg_instead"), ..Parts::default() },
+    );
     Some(Verdict::Advisory(msg::advisory_json(defaults::text("failure_nudge.event"), &text)))
 }
 

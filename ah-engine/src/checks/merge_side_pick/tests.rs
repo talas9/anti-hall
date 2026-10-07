@@ -177,7 +177,11 @@ fn the_post_pass_follows_the_wired_event_and_no_home_defers() {
     let sub = |event| Subject { event, tool: Some("Bash"), cwd: None, tool_input: &ti, prompt: None };
     // a Post entry whose payload lacks the event name still records (what `--post` does in Node)
     let p = json!({"tool_name": "Bash", "session_id": "w", "tool_input": {"command": "git checkout --theirs ."}});
-    assert!(MergeSidePick.run_env(&sub("PostToolUse"), &p, &Value::Null, &env).is_none());
+    assert_eq!(
+        MergeSidePick.run_env(&sub("PostToolUse"), &p, &Value::Null, &env),
+        Some(Verdict::Allow),
+        "a silent answer is Allow, never None (None hands the call to Node, which would record it twice)"
+    );
     assert!(std::path::Path::new(&format!("{home}/.anti-hall/merge-side-pick-w.json")).exists());
     let none = crate::reqenv::RequestEnv::from_pairs(Vec::<(String, String)>::new());
     assert_eq!(MergeSidePick.run_env(&sub("PostToolUse"), &p, &Value::Null, &none), Some(Verdict::Defer));

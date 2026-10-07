@@ -113,7 +113,13 @@ fn array_index(k: &str) -> Option<u32> {
 /// `String(n)` for a finite number.
 pub fn js_number_text(n: f64) -> String {
     if n == 0.0 || !n.is_finite() {
-        return if n.is_nan() { "NaN".into() } else if n.is_infinite() { if n > 0.0 { "Infinity".into() } else { "-Infinity".into() } } else { "0".into() };
+        return if n.is_nan() {
+            "NaN".into()
+        } else if n.is_infinite() {
+            if n > 0.0 { "Infinity".into() } else { "-Infinity".into() }
+        } else {
+            "0".into()
+        };
     }
     let a = n.abs();
     if !(1e-6..1e21).contains(&a) {

@@ -170,7 +170,9 @@ pub fn get_num(st: &Settings, entry: &V) -> f64 {
         return n;
     }
     let (section, key) = (entry.str_field("section"), entry.str_field("key"));
-    if let Some(n) = read_object(st, defaults::text("guardkit.settings_file")).and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|v| coerce_number(v, entry))) {
+    if let Some(n) = read_object(st, defaults::text("guardkit.settings_file"))
+        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|v| coerce_number(v, entry)))
+    {
         return n;
     }
     entry.get("default").and_then(V::as_integer).map_or(0.0, |d| d as f64)

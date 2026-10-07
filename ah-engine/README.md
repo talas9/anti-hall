@@ -124,7 +124,7 @@ Deliberate differences from the Node guard:
   defers: the daemon replies ERR and the client runs the Node hook.
 - A payload `serde_json` rejects but JS accepts (a lone surrogate escape) gets the same deferral.
 - Pathological nesting (more than 1500 levels) and any panic also defer; the check runs on a 64 MB-stack thread.
-- The PostToolUse `--audit` pass is not ported. Plugin options stored in Claude's own settings are not read, only the
+- The PostToolUse `--audit` pass is the separate `git-audit` check (below). Plugin options stored in Claude's own settings are not read, only the
   environment form.
 
 ## Built-in checks: the small guards (`src/checks/guardkit`, one module per guard)
@@ -137,10 +137,12 @@ a side-pick has no test run after it adds one advisory line. The shared helpers 
 `defaults/small_guards.toml` so `\s`, `\b`, `.` and the `i` flag keep their JavaScript meaning.
 
 Deliberate differences from the Node guard:
-- State is in memory (`SessionState`, bounded), not `~/.anti-hall/merge-side-pick-<session>.json`; a restart forgets it and
-  it is not shared with a Node-run guard. Storage replaces it later (planned, D22).
-- The PostToolUse pass is selected by `hook_event_name`, not `--post` (the wiring passes `--post` only to the PostToolUse
-  entry).
+- State is the Node file `~/.anti-hall/merge-side-pick-<session>.json` itself (`FileState`, same bytes, old files pruned as
+  `state-prune.js` does), so a restart forgets nothing and a Node hook that answers for the same session in turn (a
+  deferral) reads and writes the same record. The database-backed store replaces it later (planned, D22).
+- The PostToolUse pass is selected by the event the entry is wired to (or `hook_event_name`), which is what `--post` stands
+  for in the wiring. A silent answer is `Allow`, never `None` (`None` hands the call to the Node hook, which would record
+  it a second time).
 - The switch environment is the engine process's, not the hook client's (same limit as the git check); the switch files
   work. A cut of the stored command inside a surrogate pair defers to Node.
 - `ship-it-guard` (opt-in, `guards.shipitGate`): Edit, Write and MultiEdit are decided here (existence gate on hard-risk
@@ -151,11 +153,27 @@ Deliberate differences from the Node guard:
   regexes, and the engine matches only a plain subset itself (literals, `.`, groups, alternation, quantifiers, simple
   classes, `^`/`$`, `\s \d \w \b`, escaped punctuation). Lookaround, back-references, counted repeats, Unicode escapes and
   non-ASCII patterns defer to Node. Its state (none) and its tool probe read the engine process's `PATH`.
-- `coordinator-work-guard`: only the exits the payload proves are decided here (not Bash, no session id, a subagent marker
-  in the payload, which on the recorded field data is 88 percent of Bash calls). The window (counters, nudge, block) needs
-  `classifyBashWork` from command-guard and the hook's `CLAUDE_CODE_ENTRYPOINT`, neither of which the engine has yet, so
-  every main-thread call defers to the Node guard, which keeps all of the window's state; the engine keeps none, so the
-  two cannot disagree. The window moves in with the command-guard port (planned, D75).
+- `coordinator-work-guard`, PreToolUse: only the exits the payload proves are decided here (not Bash, no session id, a
+  subagent marker in the payload, which on the recorded field data is 88 percent of Bash calls); the block needs
+  `classifyBashWork` from command-guard, which the engine does not have, so every other main-thread call defers to the Node
+  guard (planned with the classifier, D75). PostToolUse (`--post`, `checks/coordinator_work/post.rs`): the engine keeps the
+  window in the Node files (`coordinator-work-session-<id>.json` with its `.lock`, the metrics, the trips log, the fold
+  stamp; same bytes, key order and number text) and answers the call when its classification is already known without the
+  classifier: the Node PreToolUse pass stored its verdict under the call's `tool_use_id`, or the command is provably not
+  work. Anything else defers to the Node hook, as does a window or metrics lock a live process holds. The lock is Node's
+  format (`guardkit::filelock`: the JSON owner record, hard-link publish, takeover of a holder older than 5 s by
+  rename-aside with token check) without the reclaim sidecar. Where the Node code lists a directory the engine sorts the
+  names the way libuv does, so the fold order and the metrics key order agree.
+- `git-audit` (PostToolUse on Bash, `src/checks/git/audit.rs`): the `--audit` pass of git-guard. After a commit-creating
+  command (found with the PreToolUse scanner: `cd`, `git -C`, wrappers, aliases, eval and `sh -c`) it reads the last 20
+  commits at HEAD of each repository involved and advises when one made in the last 15 minutes carries a self-credit
+  trailer. A payload without an absolute `cwd` defers (Node would use its own directory).
+- `failure-root-cause-nudge` (PostToolUseFailure on Bash, `src/checks/failure_nudge/`): the one-line root-cause reminder
+  with its noise filter: silent for an interrupt, a harness refusal, an expected exit 1 of a predicate command
+  (`expected.rs`, a port of `expected-failure.js`) and for repeats within a turn (`guardkit/turn_gate.rs`, a port of
+  `turn-gate.js` over the Node file `turn-gate/tg-<session>.json`, rewritten with its key order by `guardkit/ojson.rs`).
+  The Node turn gate passes `tg-` as the family name of its pruning sweep, which looks for `tg--*.json` and so never
+  removes a file; that is kept so the files on disk stay the same (a finding for the Node side).
 - `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
   exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
   current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both

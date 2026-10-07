@@ -55,7 +55,8 @@ fn commit_repo_dirs(ctx: &mut Ctx, cmd: &str, base: &str, depth: usize, out: &mu
             continue;
         }
         let (sub, rest) = git_subcommand(&ev.args);
-        let creates = sub.as_deref().is_some_and(|s| tables().commit_creating.has(s)) || alias_creates_commit(ctx, &ev.args, sub.as_deref(), &rest, Some(&cd_dir));
+        let creates =
+            sub.as_deref().is_some_and(|s| tables().commit_creating.has(s)) || alias_creates_commit(ctx, &ev.args, sub.as_deref(), &rest, Some(&cd_dir));
         if !creates {
             continue;
         }
@@ -100,7 +101,9 @@ fn audit_recent_commits(ctx: &mut Ctx, cmd: &str, cwd: &str) -> Vec<String> {
             .into_iter()
             .map(|a| a.replace("{dir}", dir).replace("{n}", &defaults::num("git_audit.commits").to_string()))
             .collect();
-        let Some(out) = run_capture(&tables().git_binary, &argv, None, &ctx.settings.env, &HashMap::new(), defaults::millis("git_audit.timeout_ms")) else { continue };
+        let Some(out) = run_capture(&tables().git_binary, &argv, None, &ctx.settings.env, &HashMap::new(), defaults::millis("git_audit.timeout_ms")) else {
+            continue;
+        };
         if out.is_empty() || out.len() as u64 > defaults::num("git_audit.max_buffer") {
             continue;
         }
@@ -235,7 +238,12 @@ mod tests {
         let a = repo("dirA", &credit(), 30);
         let b = repo("dirB", "feat: fine", 30);
         let e = env(&a);
-        for cmd in [format!("git -C {a} commit -m x"), format!("cd {a} && git commit -m x"), format!("bash -c 'cd {a} && git commit'"), format!("eval \"git -C {a} commit\"")] {
+        for cmd in [
+            format!("git -C {a} commit -m x"),
+            format!("cd {a} && git commit -m x"),
+            format!("bash -c 'cd {a} && git commit'"),
+            format!("eval \"git -C {a} commit\""),
+        ] {
             assert!(matches!(audit_bash(&cmd, Some(&b), &e), Verdict::Advisory(_)), "{cmd}");
         }
         assert_eq!(audit_bash(&format!("cd {a} && git status"), Some(&b), &e), Verdict::Allow);

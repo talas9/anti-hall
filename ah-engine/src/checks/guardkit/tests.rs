@@ -115,3 +115,85 @@ fn the_memory_state_evicts_the_oldest_entry_past_its_cap() {
     }
     assert!(s.get("ns", "k0").is_none() && s.get("ns", &format!("k{}", cap + 4)).is_some());
 }
+
+#[test]
+fn ordered_json_keeps_the_key_order_and_number_text_javascript_writes() {
+    use super::ojson::{OVal, js_number_text};
+    // insertion order, integer-like keys first ascending, a repeated key keeps its first place and takes the last value
+    let v = OVal::parse(r#"{"z":1,"10":2,"a":{"y":[1,2.5,-0,1e21,1e-7],"b":null},"2":3,"01":4,"z":9}"#).unwrap();
+    assert_eq!(v.stringify(), r#"{"2":3,"10":2,"z":9,"a":{"y":[1,2.5,0,1e+21,1e-7],"b":null},"01":4}"#);
+    for (n, t) in [
+        (0.0, "0"),
+        (-0.0, "0"),
+        (1.0, "1"),
+        (-12.5, "-12.5"),
+        (1e21, "1e+21"),
+        (1.5e-7, "1.5e-7"),
+        (123456789012345680000.0, "123456789012345680000"),
+        (0.000001, "0.000001"),
+        (0.1, "0.1"),
+    ] {
+        assert_eq!(js_number_text(n), t, "{n}");
+    }
+    assert!(OVal::parse("{nope").is_none() && OVal::parse("").is_none());
+    let mut o = OVal::parse(r#"{"a":1}"#).unwrap();
+    o.set("b", OVal::Bool(true));
+    o.set("a", OVal::Null);
+    assert_eq!(o.stringify(), r#"{"a":null,"b":true}"#);
+}
+
+#[test]
+fn javascript_number_coercions_match_number_and_int32() {
+    use super::text::{js_number_of_str, js_to_int32};
+    use serde_json::json;
+    for (s, n) in [("5", 5.0), ("  7  ", 7.0), ("", 0.0), ("0x10", 16.0), ("0b11", 3.0), ("1e3", 1000.0), ("-2.5", -2.5), ("Infinity", f64::INFINITY)] {
+        assert_eq!(js_number_of_str(s), n, "{s:?}");
+    }
+    for s in ["abc", "inf", "nan", "1,5", "0x", "1 2", "--1"] {
+        assert!(js_number_of_str(s).is_nan(), "{s:?}");
+    }
+    for (v, n) in [
+        (json!(4294967297u64), 1),
+        (json!(4294967299u64), 3),
+        (json!(2147483648u64), -2147483648),
+        (json!("3"), 3),
+        (json!([4]), 4),
+        (json!(true), 1),
+        (json!(null), 0),
+        (json!({}), 0),
+        (json!(1.9), 1),
+        (json!(-1.9), -1),
+        (json!("x"), 0),
+    ] {
+        assert_eq!(js_to_int32(&v), n, "{v}");
+    }
+}
+
+#[test]
+fn an_old_file_of_a_family_is_pruned_once_per_window_and_the_live_one_is_kept() {
+    use super::fsio::{prune_stale, write_atomic};
+    let h = home("prune");
+    let d = format!("{h}/.anti-hall");
+    let age = |f: &str| {
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 3600);
+        std::fs::File::options().write(true).open(f).unwrap().set_modified(t).unwrap();
+    };
+    for n in ["fam-old.json", "fam-live.json", "fam-new.json", "other-old.json", "fam-old.txt"] {
+        write_atomic(&format!("{d}/{n}"), "{}").unwrap();
+    }
+    for n in ["fam-old.json", "fam-live.json", "other-old.json", "fam-old.txt"] {
+        age(&format!("{d}/{n}"));
+    }
+    assert_eq!(prune_stale(&d, "fam", Some(&format!("{d}/fam-live.json"))), 1);
+    let left: Vec<bool> = ["fam-old.json", "fam-live.json", "fam-new.json", "other-old.json", "fam-old.txt"]
+        .iter()
+        .map(|n| std::path::Path::new(&format!("{d}/{n}")).exists())
+        .collect();
+    assert_eq!(left, [false, true, true, true, true]);
+    // throttled: a second sweep inside the window does nothing, even for a file that has since aged
+    write_atomic(&format!("{d}/fam-again.json"), "{}").unwrap();
+    age(&format!("{d}/fam-again.json"));
+    assert_eq!(prune_stale(&d, "fam", None), 0);
+    assert!(std::path::Path::new(&format!("{d}/fam-again.json")).exists());
+    assert_eq!(std::fs::read_to_string(format!("{d}/.prune-stamp-fam.json")).unwrap().chars().take(13).collect::<String>(), "{\"lastSweep\":");
+}

@@ -128,7 +128,8 @@ fn transcript(home: &str, name: &str, body: &str) -> String {
 fn one_nudge_per_turn_per_session_and_a_new_prompt_starts_a_new_turn() {
     let home = tmp_home("turn");
     let st = settings(&home);
-    let t1 = transcript(&home, "t1.jsonl", "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"first\"}}\n{\"type\":\"assistant\",\"uuid\":\"a1\"}\n");
+    let t1 =
+        transcript(&home, "t1.jsonl", "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"first\"}}\n{\"type\":\"assistant\",\"uuid\":\"a1\"}\n");
     let t2 = transcript(
         &home,
         "t2.jsonl",
@@ -145,7 +146,10 @@ fn one_nudge_per_turn_per_session_and_a_new_prompt_starts_a_new_turn() {
     assert!(decide(&with("s", &t2), &st).is_some(), "the newest human prompt (u2) is a new turn; the tool result and injected entry are not prompts");
     assert!(decide(&with("s", &t2), &st).is_none());
     // the state is the Node file, with the Node bytes
-    assert_eq!(std::fs::read_to_string(format!("{home}/.anti-hall/turn-gate/tg-s.json")).unwrap(), r#"{"failure-root-cause-nudge|main":{"turn":"u2","sigs":[""]}}"#);
+    assert_eq!(
+        std::fs::read_to_string(format!("{home}/.anti-hall/turn-gate/tg-s.json")).unwrap(),
+        r#"{"failure-root-cause-nudge|main":{"turn":"u2","sigs":[""]}}"#
+    );
     // a subagent's turn is its whole run
     let mut sub = with("s", &t1);
     sub["agent_id"] = json!("ag1");
@@ -174,7 +178,11 @@ fn state_files_of_an_unexpected_shape_behave_as_node_does() {
         ("str", "\"x\"", None),
         ("zero", "0", Some(r#"{"failure-root-cause-nudge|main":{"turn":"u1","sigs":[""]}}"#)),
         ("nul", "null", Some(r#"{"failure-root-cause-nudge|main":{"turn":"u1","sigs":[""]}}"#)),
-        ("keys", r#"{"z":1,"10":2,"2":3,"a":{"y":1,"b":2}}"#, Some(r#"{"2":3,"10":2,"z":1,"a":{"y":1,"b":2},"failure-root-cause-nudge|main":{"turn":"u1","sigs":[""]}}"#)),
+        (
+            "keys",
+            r#"{"z":1,"10":2,"2":3,"a":{"y":1,"b":2}}"#,
+            Some(r#"{"2":3,"10":2,"z":1,"a":{"y":1,"b":2},"failure-root-cause-nudge|main":{"turn":"u1","sigs":[""]}}"#),
+        ),
     ] {
         let path = format!("{dir}/tg-{name}.json");
         std::fs::write(&path, body).unwrap();
