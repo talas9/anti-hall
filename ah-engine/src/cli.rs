@@ -58,6 +58,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("config", cmd_config),
         ("schedule", cmd_schedule),
         ("jev", crate::jev::cli::run_cmd),
+        ("migrate", crate::migrate::cli::run_migrate),
+        ("doctor", crate::doctor::run_doctor),
     ]
 }
 

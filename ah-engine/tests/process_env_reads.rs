@@ -16,6 +16,7 @@ const ALLOW: &[(&str, &str)] = &[
         "locates the plugin root and the state directory before any defaults can be read: the root and state-dir variables are the one environment the bootstrap needs",
     ),
     ("src/defaults.rs", "`AH_ENGINE_*` tunable overrides and names: settings of the engine process itself"),
+    ("src/migrate/cli.rs", "the migrate and doctor command-line process: its own environment IS the caller's (the daemon is not involved, D76)"),
     ("src/cfgstore.rs", "integer `AH_ENGINE_*` engine tunables only (test `only_engine_tunables_read_the_process_environment`)"),
     (
         "src/checks/jsport/date.rs",

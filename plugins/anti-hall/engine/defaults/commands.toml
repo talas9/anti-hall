@@ -68,6 +68,14 @@ value = { args = "", read_only = false, status = "implemented" }
 doc = "The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line."
 value = { args = "<ask|status|scrub>", read_only = false, status = "implemented" }
 
+[cmd.migrate]
+doc = "The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present."
+value = { args = "[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]", read_only = false, status = "implemented" }
+
+[cmd.doctor]
+doc = "The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON."
+value = { args = "[--check] [--repair|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]", read_only = false, status = "implemented" }
+
 [cmd.schedule]
 doc = "The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the run `history` from hot.db; adding and removing jobs from the command line is planned (D33), today they come from schedules.toml and schedules.json."
 value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, status = "implemented" }

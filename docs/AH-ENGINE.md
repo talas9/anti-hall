@@ -232,6 +232,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Jev lane: Vercel and TypeSafe transports with fallback and breaker, Noul and Choice calls, off/shadow/on modes, add-block and advisory trust, cache, async queue with budgets, the `jev-assist.ndjson` rows, `ah-engine jev` | implemented, one-shot only | D34-D38 |
 | Jev wired into the dispatcher and the daemon, spend budget watch, audit snippets, daily rollups, persisted breaker and cache | planned (D58, D38) | D38, D58 |
 | Backups and restore: online snapshot of both databases, scrubbed; restore keeps the current state first | implemented | D27 |
+| Health check and repair: `ah-engine doctor` (platform and versions, hook scripts on disk, live self-tests of the built-in guards, statusline, Workflow templates, the repair pass) and `ah-engine migrate` (the persisted-state migrations and sweeps) | implemented for the plain-file steps; the DevSwarm-store steps and the spawn-based checks stay with the Node doctor | D81 |
+| The DevSwarm store migrations, the statusline render, context footprint, supervisor, OMC and Codex detection, ingest units and the opt-in doctor flags in the engine doctor | planned (D81) | D81 |
 | Issue log and opt-in upload | planned (D28) | D28 |
 | Update checks as a scheduled job | planned (D44) | D44 |
 | One dispatcher call per hook event: `ah-engine hook --event`, built-in checks in the engine, the other hooks as Node, combined in table order; the plugin's `hooks.json` is one thin trigger per event, generated from the table (`ah-engine gen-hooks`) | implemented on the `engine-proto` branch (the installed plugin changes when it merges) | D58, D75, D87 |
@@ -262,6 +264,8 @@ arguments, is in the generated reference.
 | `ah-engine maintain` | no | Size control: move inactive rows to `archive.db`, prune derived bookkeeping, checkpoint and VACUUM; prints a report. |
 | `ah-engine proj <cwd> <verb>` | no | Per-project state in `hot.db`: mailbox `put`, `take`, `len`; key-value `set`, `setex` (TTL in seconds), `get`. A write the engine cannot take is spooled. |
 | `ah-engine jev <ask\|status\|scrub>` | no | The optional Jev lane: `ask` reads JSON requests (one per stdin line) and prints each decision, `status` prints the resolved settings and every integration's mode (never a key), `scrub` redacts secrets from JSON strings. |
+| `ah-engine doctor [--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet]` | no | The health check and repair, in the Node doctor's layout and finding texts. Read-only unless `--repair`; `--dry-run` previews; `--migrations-only` with either prints only the migration report as one JSON line. Each built-in guard is run in-process on a crafted payload (a payload the engine defers is run through its Node hook, as the dispatcher would; with no Node it is reported as a deferral, never a pass). |
+| `ah-engine migrate [--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | The persisted-state migrations and sweeps of the Node doctor's repair pass, with Node's report: legacy progress/history copy, reply-state, gate-intent and auto-archive forward migrations, the `settings.json` migration, the Jev triage cache repair, the lock scratch sweep and the retention sweeps. Idempotent, fail-open, no repo file is moved or deleted. |
 | `ah-engine backup [--to <dir>]` | no | A consistent, scrubbed snapshot of `hot.db` and `archive.db`; prints its manifest. |
 | `ah-engine restore <snapshot-dir>` | no | Keep the current state as a pre-restore snapshot, stop the daemon, swap in the snapshot. |
 | `ah-engine config [--json]` | yes | The effective config with the source of every value (`default`, `config_toml`, `settings`, `env`), the files read, the active version, any rejected edit and settings pending a restart. Asks the running daemon, else reads the files. |
@@ -609,6 +613,9 @@ Files:
 | `prompt_emit.toml` | switches, limits, patterns and messages of the prompt-emission checks (`verify-first`, `idle-agent-sweep`, `emit-dedupe-reset`) and the emit-dedupe store they share |
 | `session.toml` | the session-maintenance checks: switches, cache and ledger file names, time limits, baselines, claim patterns and messages |
 | `spawn_guards.toml` | switches, limits, paths, memory-tool grammar and messages of the swarm-guard and devswarm-comms-guard ports |
+| `migrate.toml` | the layout of the state `migrate` and `doctor --repair` work on (paths, file-name patterns, retention windows, the migration registry, read limits) and the report texts, which are Node's byte for byte |
+| `migrate_settings.toml` | the settings schema as the `settings.json` migration reads it, generated from `settings-schema.js` (`parity/gen-migrate-schema.js`; a test fails when the two differ) |
+| `doctor.toml` | the doctor's finding texts, the table of live self-tests (check, payload, environment, expected outcome, finding texts) and the flags it does not handle yet |
 | `session_gates.toml` | switches, latch files, windows and the default-migration key list of the jev-weekly-scorecard, jev-review-reminder and repair-on-reload gates |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for

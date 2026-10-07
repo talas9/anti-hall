@@ -35,6 +35,9 @@ files = [
     "task_guards.toml",
     "devswarm_role.toml",
     "devswarm_gates.toml",
+    "migrate.toml",
+    "migrate_settings.toml",
+    "doctor.toml",
     "limits.toml",
 ]
 extra_dir = "hooks.d"
