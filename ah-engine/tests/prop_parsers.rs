@@ -46,10 +46,7 @@ fn any_text() -> impl Strategy<Value = String> {
 /// `command::shell` documents ASCII-only input (its module doc: byte indexes stand for JavaScript's UTF-16 indexes; the
 /// command check defers every non-ASCII command before it reaches the splitter), so its properties draw ASCII text.
 fn ascii_text() -> impl Strategy<Value = String> {
-    prop_oneof![
-        shellish().prop_map(|s| s.chars().filter(char::is_ascii).collect::<String>()),
-        "[ -~\\t\\n\\r]{0,200}",
-    ]
+    prop_oneof![shellish().prop_map(|s| s.chars().filter(char::is_ascii).collect::<String>()), "[ -~\\t\\n\\r]{0,200}",]
 }
 
 proptest! {
