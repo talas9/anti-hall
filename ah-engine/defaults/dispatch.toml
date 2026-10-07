@@ -374,8 +374,8 @@ value = [
 [dispatch.hooks_claude_Stop]
 doc = "The claude Stop hook entries, in dispatch order."
 value = [
-  { id = "task-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js\"", timeout = 30, check = "" },
-  { id = "tasklist-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js\"", timeout = 30, check = "" },
+  { id = "task-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js\"", timeout = 30, check = "task-guard" },
+  { id = "tasklist-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js\"", timeout = 30, check = "tasklist-guard" },
   { id = "speculation-guard", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-guard.js\"", timeout = 30, check = "speculation-guard" },
   { id = "speculation-judge", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-judge.js\"", timeout = 30, check = "speculation-judge" },
   { id = "claim-ledger", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/claim-ledger.js\"", timeout = 30, check = "claim-ledger" },
@@ -496,8 +496,8 @@ value = [
 [dispatch.hooks_codex_Stop]
 doc = "The codex Stop hook entries, in dispatch order."
 value = [
-  { id = "task-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-guard.js\"", timeout = 30, check = "" },
-  { id = "tasklist-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/tasklist-guard.js\"", timeout = 30, check = "" },
+  { id = "task-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-guard.js\"", timeout = 30, check = "task-guard" },
+  { id = "tasklist-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/tasklist-guard.js\"", timeout = 30, check = "tasklist-guard" },
   { id = "speculation-guard", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/speculation-guard.js\"", timeout = 30, check = "speculation-guard" },
   { id = "speculation-judge", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/speculation-judge.js\"", timeout = 30, check = "speculation-judge" },
   { id = "claim-ledger", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/claim-ledger.js\"", timeout = 30, check = "claim-ledger" },

@@ -57,7 +57,7 @@ function snapshot(W, skip) {
       let st; try { st = fs.lstatSync(p); } catch (_) { continue; }
       if (st.isSymbolicLink()) out[r] = '-> ' + fs.readlinkSync(p).split(W).join('<W>');
       else if (st.isDirectory()) { out[r] = '<dir>'; walk(p, r); }
-      else out[r] = fs.readFileSync(p, 'utf8').split(W).join('<W>').replace(TS, '<TS>');
+      else out[r] = fs.readFileSync(p, 'utf8').split(W).join('<W>').replace(TS, '<TS>').replace(/"lastSweep":\d+/g, '"lastSweep":<N>').replace(/"ts":\d{12,}/g, '"ts":<N>').replace(/"project":"[ne]\d+"/g, '"project":"<W>"');
     }
   };
   walk(W, '');
@@ -123,6 +123,10 @@ async function runFx(o) {
       let e1 = { code: er.code, out: mask(er.out.split(WE).join('<W>')), err: er.err.split(WE).join('<W>') };
       let deferred = false;
       if (e1.out.trim() === 'AHFALLBACK') { deferred = true; e1 = await nodeRun(WE); }
+      if (deferred && sc.answerWhenSilent && n1.code === 0 && !n1.out.trim()) {
+        stats.mismatch++; mism.push({ scenario: sc.id, step: si, node: n1, engine: e1, treeDiff: [], note: 'engine deferred where Node allowed silently', payload: step.payload !== undefined ? step.payload : step.raw });
+        continue;
+      }
       if (deferred && o.mayDefer && !sc.expectDefer && !o.mayDefer(sc, step)) {
         stats.mismatch++; mism.push({ scenario: sc.id, step: si, node: n1, engine: e1, treeDiff: [], note: 'engine deferred where it must answer', payload: step.payload !== undefined ? step.payload : step.raw });
         continue;

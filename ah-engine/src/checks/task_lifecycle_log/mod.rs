@@ -92,7 +92,7 @@ fn append(path: &str, text: &str) -> std::io::Result<()> {
 }
 
 /// `appendIndexLineIfAbsent`: nothing when the index already mentions the session id anywhere.
-fn append_index_line_if_absent(index: &str, sid: &str, line: &str) {
+pub fn append_index_line_if_absent(index: &str, sid: &str, line: &str) {
     let existing = std::fs::read(index).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     if existing.contains(sid) {
         return;

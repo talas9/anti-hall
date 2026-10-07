@@ -4,8 +4,10 @@
 //!
 //! Every function either answers exactly as the Node original does or says it cannot (`None`); the caller then defers
 //! the whole call to the Node hook, so an input these helpers cannot judge never becomes a silent decision (D74).
+pub mod jsval;
 pub mod root;
 pub mod time;
+pub mod workdetect;
 
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{collapse_ws, js_trim, slice_utf16};
@@ -71,4 +73,20 @@ pub fn sanitize_text(s: &Value, max: usize) -> Option<String> {
         return Some(format!("{cut}{}", defaults::text("taskkit.ellipsis")));
     }
     Some(out)
+}
+
+/// `detectPlatform(payload) === 'codex'` (`hooks/lib/auto-handover-text.js`): a `turn_id` string, or a transcript path that is a
+/// Codex rollout or lives under a `.codex` directory.
+pub fn is_codex_platform(p: &Value) -> bool {
+    if !p.is_object() && !p.is_array() {
+        return false;
+    }
+    if jsval::get(p, "turn_id").and_then(Value::as_str).is_some_and(|t| !t.is_empty()) {
+        return true;
+    }
+    let tp = jsval::get(p, "transcript_path").and_then(Value::as_str).unwrap_or("");
+    static RE: OnceLock<(regex::Regex, regex::Regex)> = OnceLock::new();
+    let (rollout, dotcodex) =
+        RE.get_or_init(|| (jsre::compile(defaults::text("taskkit.codex_rollout"), false), jsre::compile(defaults::text("taskkit.codex_dir"), false)));
+    rollout.is_match(tp) || dotcodex.is_match(tp)
 }

@@ -22,6 +22,10 @@ value = 15
 min = 1
 max = 15
 
+[taskkit.tmp_env_names]
+doc = "The environment variables `os.tmpdir()` reads for the temp directory, in order; without any the temp directory is /tmp."
+value = ["TMPDIR", "TMP", "TEMP"]
+
 [taskkit.ellipsis]
 doc = "What is appended to a ledger field that was cut to its limit."
 value = "…"
@@ -92,3 +96,274 @@ value = "dispatchTier"
 [dispatch_tier.tools]
 doc = "The task tools whose text changes the hook classifies."
 value = ["TaskCreate", "TaskUpdate"]
+
+# ---- task fact model (checks::taskstate: lib/task-state.js, task-guard.js parseTasksFromFile, lib/task-subject-backfill.js) ----
+
+[taskstate.tail_bytes]
+doc = "How much of the end of a transcript the task reconstruction reads (the Node `MAX_TAIL_BYTES`, 1.5 MiB)."
+value = 1572864
+min = 1
+
+[taskstate.re_created]
+doc = "JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number."
+value = '^Task\s+#(\d+)\s+created\s+successfully'
+
+[taskstate.re_list_empty]
+doc = "JavaScript regex source (case-insensitive) of the TaskList result that says the task store is empty."
+value = '^\s*No\s+tasks\s+found\b'
+
+[taskstate.re_not_found]
+doc = "JavaScript regex source (case-insensitive) of the TaskGet or TaskUpdate result that says one task id does not exist."
+value = '^\s*Task\s*(?:#\S+)?\s*not\s+found\b'
+
+[taskstate.id_keys]
+doc = "The input fields a task tool call may name its task id in, in order: the harness's `taskId`, then `id`, then `task_id`."
+value = ["taskId", "id", "task_id"]
+
+[taskstate.tools_collect_keys]
+doc = "The object keys the tool-use collector descends into, in order (the Node `collectToolUses`)."
+value = ["content", "message", "messages", "tool_uses", "parts"]
+
+[taskstate.open_statuses]
+doc = "Statuses (lowercase) that make a task open."
+value = ["pending", "in_progress", "in-progress"]
+
+[taskstate.done_statuses]
+doc = "Statuses (lowercase) that count as completed for the completed-task advisory."
+value = ["completed", "done", "cancelled", "canceled"]
+
+[taskstate.terminal_status_re]
+doc = "JavaScript regex source (case-insensitive) of the statuses that close a task for the backfill (`TERMINAL`)."
+value = '^(completed|done|cancelled|canceled|deleted)$'
+
+[taskstate.backfill_max_subject]
+doc = "Longest subject the backfill recovers, in UTF-16 units."
+value = 200
+min = 1
+
+[taskstate.backfill_max_candidates]
+doc = "How many unpaired task-creation results the backfill remembers while scanning backward."
+value = 256
+min = 1
+
+[taskstate.backfill_chunk_bytes]
+doc = "How much of the transcript the backfill reads at a time."
+value = 1048576
+min = 4096
+
+[taskstate.backfill_exact_bytes]
+doc = "How far back the backfill scans before the engine hands the call to Node. Node stops after 150 ms of wall clock (64 MiB at most); the engine scans a fixed number of bytes instead so its answer never depends on machine speed, and past this bound it defers rather than guess where Node would have stopped."
+value = 8388608
+min = 4096
+
+[taskstate.backfill_prefix_scan_bytes]
+doc = "How far past the window start the backfill looks for the end of the line that straddles it."
+value = 8388608
+min = 4096
+
+[taskstate.unknown_max_notes]
+doc = "How many times the unknown-state note may be printed for one session and tag."
+value = 3
+min = 1
+
+[taskstate.unknown_note_text]
+doc = "The unknown-state note; `{n}` is the number of tasks."
+value = "{n} task(s) in an unknown state (their records are too far back to read) — re-state each with TaskUpdate (status) to refresh."
+
+[taskstate.unknown_file_prefix]
+doc = "Prefix of the per-session file that remembers which unknown set was last announced."
+value = "last-unknown"
+
+[taskstate.prune_ttl_days]
+doc = "Per-session state files older than this many days are removed by the opportunistic sweep."
+value = 7
+min = 1
+
+[taskstate.prune_throttle_hours]
+doc = "The sweep of one file prefix runs at most once per this many hours."
+value = 6
+min = 1
+
+[taskstate.prune_stamp_prefix]
+doc = "Prefix of the stamp file that throttles one prefix's sweep."
+value = ".prune-stamp-"
+
+# ---- task-guard (hooks/task-guard.js) --------------------------------------------------------------------------------
+
+[task_guard.summary]
+doc = "One-line description of the task-guard check in the generated reference."
+value = "Stop gate: answers the Stops where the task list has nothing open (the loop state cleared, the advisories printed) and hands every Stop with an open task to the Node hook (port of task-guard.js)."
+
+[task_guard.guard_name]
+doc = "The guard id of task-guard (the skip key and the message prefix)."
+value = "task-guard"
+
+[task_guard.setting]
+doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
+value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
+
+[task_guard.prune_setting]
+doc = "How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)."
+value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
+
+[task_guard.state_prefix]
+doc = "Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`)."
+value = "last-stop-taskset-"
+
+[task_guard.session_hash_len]
+doc = "How many hex characters of the transcript path hash name a session that has no id."
+value = 16
+min = 1
+
+[task_guard.prune_advisory]
+doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
+value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"
+
+[task_guard.note_line]
+doc = "The line that carries the unknown-state note; `{note}` is the note."
+value = "[task-guard] {note}\n"
+
+[task_guard.unknown_tag]
+doc = "The tag of the unknown-state note's state file for task-guard."
+value = "guard"
+
+[task_guard.judge_child_env]
+doc = "The environment variable that marks a judge child process; every task hook is a no-op there."
+value = "ANTIHALL_JUDGE_CHILD"
+
+# ---- work detection (checks::taskkit::workdetect: lib/work-detect.js) ---------------------------------------------------
+
+[workdetect.always_work]
+doc = "JavaScript regex source (case-insensitive) of the shell commands that always count as work: git history and dependency mutations, `sed -i`, installs and `patch`."
+value = '\bgit\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\b|\bgit\s+(?:checkout|switch|restore|clean)\b|\bsed\s+-i|\bnpm\s+(?:install|i|ci)\b|\b(?:pnpm|yarn)\s+(?:add|install)\b|\bpip\s+install\b|\bpatch\b'
+
+[workdetect.command_position]
+doc = "Regex source (case-insensitive) of the bare file verbs that count as work only at command position: at the start of a line, or after a separator, an opening parenthesis, a backtick or `$(`. A JavaScript `^` with the multiline flag also matches after a carriage return and the two Unicode line separators, which the character class lists."
+value = '(?:^|[\n\r\u2028\u2029;&|`(]|\$\()\s*(?:rm|cp|mv|tee|mkdir|touch|make|chmod)\b'
+
+[workdetect.scratchpad_path]
+doc = "Regex source of a path inside the session scratchpad (a segment literally named scratchpad); writes there are message passing, not project work."
+value = '\/scratchpad\/'
+
+[workdetect.state_dir]
+doc = "Regex source of a path inside anti-hall's own progress, history or handover directories; writing the bookkeeping the guard asks for is not work."
+value = '(?:^|[\s/])\.anti-hall\/(?:progress|history|handovers)\/'
+
+[workdetect.devswarm_housekeeping]
+doc = "Regex source (case-insensitive) of a command segment that is only DevSwarm mesh housekeeping through the stable launcher: an inbox, heartbeat, send, relay, notice, nudge, roster or wake-directive verb."
+value = '^\s*(?:node\s+)?(?:\S*[\\/])?devswarm\.js\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*(?:inbox\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*(?:pull|ack|ack-primary|read|read-primary|tick|count|peek-primary|messages)\b|heartbeat\b|send\b|relay\b|notice\b|nudge\b|roster\b|wake-directive\b)'
+
+[workdetect.crontab_segment]
+doc = "Regex source (case-insensitive) of the start of a crontab call at command position, optionally inside a leading subshell paren; a name that continues with a word character, dot or hyphen is not a crontab call (checked in code)."
+value = '^[({\s]*crontab'
+
+[workdetect.tmp_housekeeping_target]
+doc = "Regex source (case-insensitive) of the redirect targets a housekeeping crontab install may write to: the scratchpad or a tmp directory."
+value = '\/scratchpad\/|(?:^|\/)tmp\/'
+
+[workdetect.dev_null]
+doc = "Regex source of the null device, a redirect target that never counts as a write."
+value = '\/dev\/null'
+
+[workdetect.heredoc_delimiter]
+doc = "Regex source of a heredoc operator and its delimiter word, which may be partly quoted or escaped; group 1 is the word."
+value = '''^<<-?\s*((?:[^\s;&|()<>'"\\]|'[^'\n]*'|"[^"\n]*"|\\[^\n])+)'''
+
+[workdetect.never_work_tools]
+doc = "Tools that start or schedule work and never change a file themselves."
+value = ["Agent", "Task", "CronCreate", "CronDelete"]
+
+[workdetect.mutating_tools]
+doc = "File-mutating tools: each call counts as work unless it targets an excluded path."
+value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+# ---- tasklist-guard (hooks/tasklist-guard.js) ---------------------------------------------------------------------------
+
+[tasklist_guard.summary]
+doc = "One-line description of the tasklist-guard check in the generated reference."
+value = "Stop gate: answers the Stops that do not block (a trivial session, tracked work with a fresh progress file, plan mode, the resume-verification nudge) with the Node hook's file effects, and hands every Stop that would block to the Node hook (port of tasklist-guard.js)."
+
+[tasklist_guard.guard_name]
+doc = "The guard id of tasklist-guard (the skip key and the message prefix)."
+value = "tasklist-guard"
+
+[tasklist_guard.setting]
+doc = "Where the on/off switch is read from (guards.tasklistGuard, default on)."
+value = { section = "guards", key = "tasklistGuard", env = "", aliases = [], option = "guards_tasklist_guard", default = true }
+
+[tasklist_guard.threshold_setting]
+doc = "How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold)."
+value = { section = "guards", key = "tasklistWorkThreshold", env = "ANTIHALL_TASKLIST_WORK_THRESHOLD", aliases = [], min = 1, default = 3 }
+
+[tasklist_guard.fresh_setting]
+doc = "How long (ms) a progress file counts as fresh when no work time is known (guards.progressFreshMs)."
+value = { section = "guards", key = "progressFreshMs", env = "ANTIHALL_PROGRESS_FRESH_MS", aliases = [], min = 0, default = 1800000 }
+
+[tasklist_guard.window_bytes]
+doc = "How much of the end of the transcript the work and task scan reads (512 KiB)."
+value = 524288
+min = 1
+
+[tasklist_guard.wide_window_bytes]
+doc = "How much of the transcript the fallback search for any task activity reads when the scan window held none (16 MiB)."
+value = 16777216
+min = 1
+
+[tasklist_guard.fresh_grace_ms]
+doc = "How far the newest counted work may run ahead of a progress file's time and still count as covered by it."
+value = 1000
+min = 0
+
+[tasklist_guard.plan_mode_text]
+doc = "The advisory printed instead of a decision while the session is in plan mode."
+value = "[tasklist-guard] PLAN MODE — Stop not blocked (progress-file writes are not possible in plan mode). Track this work as tasks and refresh the progress file once you leave plan mode.\n"
+
+[tasklist_guard.plan_mode_value]
+doc = "The permission_mode value (compared in lowercase) that marks plan mode."
+value = "plan"
+
+[tasklist_guard.task_tool_names]
+doc = "The tool names that count as task activity."
+value = ["TaskCreate", "TaskUpdate", "TodoWrite"]
+
+[tasklist_guard.progress_dir]
+doc = "The progress directory under the project root, as path segments."
+value = [".anti-hall", "progress"]
+
+[tasklist_guard.history_dir]
+doc = "The history directory under the project root, as path segments."
+value = [".anti-hall", "history"]
+
+[tasklist_guard.resume_marker_prefix]
+doc = "Prefix of the per-session marker the handover resume writes (`<prefix><session>.json` under the anti-hall state directory)."
+value = "handover-resume-state-"
+
+[tasklist_guard.resume_nudged_prefix]
+doc = "Prefix of the per-session file that records the one resume-verification nudge."
+value = "resume-verify-nudged-"
+
+[tasklist_guard.resume_verified_marker]
+doc = "The text a resumed handover must contain once its resume has been verified."
+value = "resume-verified:"
+
+[tasklist_guard.resume_text]
+doc = "The resume-verification nudge; `{file}` is the handover file."
+value = "A session handover was resumed this session ({file}) but no `resume-verified:` marker was recorded in it. Run the resume-verification checklist (git status, pwd, smoke command) and append `resume-verified: <ISO timestamp> -- <summary>` to that file before continuing."
+
+[tasklist_guard.reason_max]
+doc = "Longest block reason, in UTF-16 units; longer text is cut and ends with an ellipsis."
+value = 2000
+min = 1
+
+
+[taskkit.codex_rollout]
+doc = "JavaScript regex source of a Codex rollout transcript path."
+value = '(^|[\\/])rollout-[^\\/]*\.jsonl$'
+
+[taskkit.codex_dir]
+doc = "JavaScript regex source of a path with a `.codex` directory in it."
+value = '[\\/]\.codex[\\/]'
+
+[tasklist_guard.low_priorities]
+doc = "Priorities (lowercase) below the actionable floor for the stalled-in-progress count."
+value = ["p2", "low", "deferred"]

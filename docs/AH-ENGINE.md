@@ -94,12 +94,18 @@ labelled with how it was measured in the README of `ah-engine/`.
   A case the port cannot reproduce exactly (a date string in an unfamiliar shape, a state file holding `__proto__`,
   a Codex result whose key order could change what matches, an enabled Jev consult for the nudge) defers, so Node
   decides; the deferral happens before any write the Node hook would repeat.
-- **Task checks.** `task-lifecycle-log` and its siblings (the task fact model and the task Stop gates) share
-  `checks/taskkit`: the JavaScript string conversion of a JSON value, the ledger text sanitizer, the UTC clock text and the
-  project root resolver (`repoRoot` of `handover-find.js`, answered from the file system alone). A task check does the file
-  effects of its Node hook itself and answers exactly what Node would; anything it cannot reproduce byte for byte defers.
+- **Task checks.** `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` share `checks/taskkit` (the
+  JavaScript string and truthiness semantics over a JSON value, the ledger text sanitizer, the UTC clock text, the project
+  root resolvers `repoRoot` and `sessionProjectRoot` of `handover-find.js` answered from the file system alone, and the
+  work-detection port of `lib/work-detect.js`) and `checks/taskstate` (the task list rebuilt from a transcript tail, the
+  backfill that recovers records before the tail, and the unknown-state note). A task check does the file effects of its
+  Node hook itself and answers exactly what Node would; anything it cannot reproduce byte for byte defers. The two Stop
+  gates never block: they answer the Stops on which Node stays quiet and hand every Stop that would block, and every Stop
+  whose decision needs a running-agent scan, to the Node hook (D74). `task-tracker` (UserPromptSubmit) stays on Node: its
+  output depends on the emit-dedupe state, the Jev decision-log row written on every prompt and the agent scan, which are
+  other lanes' ports.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  fifty-two: `task-lifecycle-log` and `dispatch-tier` (see Task checks above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  fifty-four: `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` (see Task checks above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -160,6 +166,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `edit-guard` check: the launcher-directory block (every agent) byte for byte, and every call that is not the main thread; every main-thread call and every `apply_patch` defers to Node, which owns the allowlists, honesty checks and DevSwarm wording | implemented | D29-D31, D74, D75 |
 | Built-in `task-lifecycle-log` check (TaskCreated and TaskCompleted: the per-session history ledger line and its index entry) with exact parity of exit code, output and the files written; a relative `cwd`, a field cut through a surrogate pair and a number JavaScript prints differently defer to Node | implemented | D29-D31, D74, D75 |
 | Built-in `dispatch-tier` check (PostToolUse on TaskCreate and TaskUpdate): the Node hook does nothing while the Jev `dispatchTier` integration is off, and so does the engine, with exact parity; with it on or in shadow the Node hook asks Jev and writes its state, so the engine defers | implemented | D29-D31, D74, D75 |
+| Built-in `task-guard` check (Stop): the Stops where no task is open (loop state removed, pruning advisory and unknown-state note printed exactly); every Stop with an open task, and every transcript record it cannot read exactly, defers to Node | implemented | D29-D31, D74, D75 |
+| Built-in `tasklist-guard` check (Stop): the Stops on which Node does not block, with its file effects (progress directory, progress and history indexes, the resume-verification marker and nudge, the plan-mode advisory); every Stop that would block defers to Node | implemented | D29-D31, D74, D75 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |

@@ -121,3 +121,68 @@ fn dispatch_tier_does_nothing_while_jev_is_off_and_defers_while_it_is_on() {
         assert_eq!(o.status.code(), Some(want), "jev={jev:?}: {}", String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// A Stop run through the dispatcher with every Stop hook of the event mapped to a no-op, except `only`, which is mapped to
+/// exit 99: a result of 99 proves the check deferred to its Node hook, 0 that the engine answered.
+fn stop_run(w: &World, only: &str, payload: &str) -> i32 {
+    let ids = ids_for("Stop", "");
+    assert!(ids.iter().any(|i| i == only), "{ids:?}");
+    let map: serde_json::Map<String, serde_json::Value> = ids.iter().map(|id| (id.clone(), if id == only { "exit 99" } else { "true" }.into())).collect();
+    let map_path = w.path("stop-map.json");
+    std::fs::write(&map_path, serde_json::json!({ "Stop": map }).to_string()).unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["hook", "--event", "Stop", "--fallback-map"])
+        .arg(&map_path)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", w.path("home"))
+        .env("AH_ENGINE_DIR", w.path("state"))
+        .env("AH_ENGINE_VERSION", "task-e2e")
+        .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+        .env("CLAUDE_PLUGIN_ROOT", &w.dir)
+        .current_dir(&w.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    ch.wait_with_output().unwrap().status.code().unwrap_or(-1)
+}
+
+fn task_lines(status: &str) -> String {
+    let create = serde_json::json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": "TaskCreate", "input": {"subject": "do it"}}]}});
+    let result = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "Task #1 created successfully: do it"}]}});
+    let update = serde_json::json!({"type": "assistant", "message": {"id": "m2", "role": "assistant", "content": [{"type": "tool_use", "id": "tu2", "name": "TaskUpdate", "input": {"taskId": "1", "status": status}}]}});
+    format!("{create}\n{result}\n{update}\n")
+}
+
+#[test]
+fn task_guard_answers_a_stop_with_nothing_open_and_defers_one_with_an_open_task() {
+    let w = World::new("task-guard");
+    let state_file = w.path("home/.anti-hall/last-stop-taskset-s1");
+    std::fs::create_dir_all(w.path("home/.anti-hall")).unwrap();
+    for (status, want, state_kept) in [("completed", 0, false), ("pending", 99, true)] {
+        std::fs::write(w.path("t.jsonl"), task_lines(status)).unwrap();
+        std::fs::write(&state_file, "{}").unwrap();
+        let payload =
+            serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+        assert_eq!(stop_run(&w, "task-guard", &payload), want, "{status}");
+        assert_eq!(state_file.exists(), state_kept, "{status}: the loop state file");
+    }
+}
+
+#[test]
+fn tasklist_guard_answers_a_quiet_stop_with_its_file_effects_and_defers_a_block() {
+    let w = World::new("tasklist-guard");
+    let cwd = std::fs::canonicalize(w.path("proj")).unwrap();
+    std::fs::write(w.path("t.jsonl"), "").unwrap();
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t.jsonl")}).to_string();
+    assert_eq!(stop_run(&w, "tasklist-guard", &payload), 0, "a session with no work is trivial");
+    let day = std::fs::read_dir(w.path("proj/.anti-hall/progress")).unwrap().filter_map(Result::ok).next().expect("the progress directory is made").path();
+    assert!(day.is_dir());
+    // three file-changing actions with no task activity: Node blocks, so the engine must hand the Stop over
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    std::fs::write(w.path("t2.jsonl"), format!("{}\n{}\n{}\n", edit(1), edit(2), edit(3))).unwrap();
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t2.jsonl")}).to_string();
+    assert_eq!(stop_run(&w, "tasklist-guard", &payload), 99);
+}
