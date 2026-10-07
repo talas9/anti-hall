@@ -1491,3 +1491,48 @@ value = "terminal_ide_"
 [coordinator_work.codex_tool]
 doc = "The tool name only Codex sends; a payload naming it is a Codex payload."
 value = "apply_patch"
+# ---- DevSwarm prompt gates (hooks/devswarm-parent-inbox.js, hooks/devswarm-child-turn.js) -------------------------------
+
+[devswarm_prompt.parent_summary]
+doc = "One-line description of the devswarm-parent-inbox check in the generated reference."
+value = "DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js)."
+
+[devswarm_prompt.child_summary]
+doc = "One-line description of the devswarm-child-turn check in the generated reference."
+value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js)."
+
+[devswarm_prompt.parent_setting]
+doc = "Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+value = { section = "devswarm", key = "parentInbox", env = "", aliases = [], option = "devswarm_parent_inbox", default = true }
+
+[devswarm_prompt.child_setting]
+doc = "Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+value = { section = "devswarm", key = "childTurn", env = "", aliases = [], option = "devswarm_child_turn", default = true }
+
+[devswarm_prompt.judge_env]
+doc = "Environment variable that marks a Jev judge child process; its hooks do nothing (hooks/lib/judge-child-exit.js). Only the exact value in judge_value counts."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[devswarm_prompt.judge_value]
+doc = "The value of judge_env that silences the hook."
+value = "1"
+
+[devswarm_prompt.kill_env]
+doc = "Hard kill switch of the DevSwarm integration (hooks/lib/devswarm-detect.js): the exact value in kill_value makes the integration inactive."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_prompt.kill_value]
+doc = "The value of kill_env that deactivates the DevSwarm integration."
+value = "1"
+
+[devswarm_prompt.repo_env]
+doc = "Environment variable whose non-blank value makes the DevSwarm integration active in auto mode."
+value = "DEVSWARM_REPO_ID"
+
+[devswarm_prompt.branch_env]
+doc = "Environment variable whose non-blank value marks a child workspace (hooks/lib/devswarm-role.js)."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[devswarm_prompt.mode_setting]
+doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset, as in hooks/lib/settings.js)."
+value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", manifest_default = "auto", values = ["auto", "on", "off"] }

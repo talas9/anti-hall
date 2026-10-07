@@ -210,6 +210,14 @@ Deliberate differences from the Node guard:
   allowed as Node allows it. Every main-thread call, every `apply_patch` (no patch parser), a relative cwd or home, a
   non-string path and a request environment without a home directory defer; the allowlists, symlink and hard-link honesty
   checks, plan mode, the trusted per-project allowlist and the DevSwarm wording stay with Node.
+- `coordinator-work-guard`: only the exits the payload proves are decided here (not Bash, no session id, a subagent marker
+  in the payload, which on the recorded field data is 88 percent of Bash calls). The window (counters, nudge, block) needs
+  `classifyBashWork` from command-guard and the hook's `CLAUDE_CODE_ENTRYPOINT`, neither of which the engine has yet, so
+  every main-thread call defers to the Node guard, which keeps all of the window's state; the engine keeps none, so the
+  two cannot disagree. The window moves in with the command-guard port (planned, D75).
+- `devswarm-parent-inbox`, `devswarm-child-turn`: the gate of the two DevSwarm prompt hooks. Silent cases (not a Primary or not
+  a child, DevSwarm inactive, the hook's switch off, a Jev judge child) are answered; an active Primary or child defers to the
+  Node hook, which owns the roster, the mailbox and the dedupe state until the engine owns the mesh and mailbox (D45).
 - `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
   exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
   current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both

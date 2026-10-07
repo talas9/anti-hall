@@ -105,7 +105,7 @@ labelled with how it was measured in the README of `ah-engine/`.
   output depends on the emit-dedupe state, the Jev decision-log row written on every prompt and the agent scan, which are
   other lanes' ports.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  fifty-four: `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` (see Task checks above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  fifty-six: `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` (see Task checks above), `devswarm-parent-inbox` and `devswarm-child-turn` (see DevSwarm prompt gates above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -134,6 +134,13 @@ labelled with how it was measured in the README of `ah-engine/`.
   transcript scan), a session where DevSwarm is active for `verify-first-orch` (whether it is a Primary changes the text),
   a working directory that is not a string, and a relative path or config directory that Node resolves against its own
   working directory. A deferral touches no state.
+  ten: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
+  `compact-declaration-guard` (see the README of `ah-engine/`).
+- **DevSwarm prompt gates.** `devswarm-parent-inbox` and `devswarm-child-turn` (the two DevSwarm UserPromptSubmit hooks) answer
+  their silent cases in the engine: not a Primary / not a child workspace, DevSwarm inactive (kill switch, `devswarm.supervisorMode`
+  off, auto mode without `DEVSWARM_REPO_ID`), the hook's own switch off, or a Jev judge child. A session that is an active Primary
+  or an active child defers to the Node hook, which owns the workspace roster, the mailbox and the dedupe state (they need the
+  engine-owned mesh and mailbox, D45, first). The engine renders nothing and keeps no dedupe state of its own for these hooks.
 
 ## What works today
 

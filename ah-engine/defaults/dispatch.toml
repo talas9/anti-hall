@@ -326,8 +326,8 @@ value = [
   { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "" },
   { id = "idle-agent-sweep", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "limit-conserve-inject" },
-  { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "" },
-  { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "" },
+  { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "devswarm-parent-inbox" },
+  { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "devswarm-child-turn" },
   { id = "repair-on-reload", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
   { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
 ]
@@ -473,8 +473,8 @@ value = [
   { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "" },
   { id = "idle-agent-sweep", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "limit-conserve-inject" },
-  { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "" },
-  { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "" },
+  { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "devswarm-parent-inbox" },
+  { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "devswarm-child-turn" },
   { id = "repair-on-reload", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
   { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
 ]
