@@ -76,7 +76,7 @@ function snapshot(base) {
     let names = [];
     try { names = fs.readdirSync(dir); } catch (_) { return; }
     for (const n of names.sort()) {
-      const r = rel ? rel + '/' + n : n, full = path.join(dir, n);
+      const r = (rel ? rel + '/' + n : n).replace(/\.tmp\.\d+$/, '.tmp.<pid>'), full = path.join(dir, n);
       if (n === '.git' && rel.split('/').length <= 2) { out[r] = { type: 'dir' }; continue; }
       let st; try { st = fs.lstatSync(full); } catch (_) { continue; }
       if (st.isSymbolicLink()) out[r] = { type: 'link', target: fs.readlinkSync(full) };

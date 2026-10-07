@@ -102,7 +102,7 @@ pub fn parse(text: &str) -> Parsed {
         Ok(v) => Parsed::Ok(v),
         Err(e) => {
             let m = e.to_string();
-            if m.contains("surrogate") || m.contains("recursion limit") || m.contains("out of range") { Parsed::Unsure } else { Parsed::Bad }
+            if m.contains("surrogate") || m.contains("hex escape") || m.contains("recursion limit") || m.contains("out of range") { Parsed::Unsure } else { Parsed::Bad }
         }
     }
 }
