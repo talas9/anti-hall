@@ -50,7 +50,7 @@ function group(matcher, files, timeout) {
 //   (cat >, sed -i, tee) never reach these guards.
 // - fable-availability.js is deliberately omitted: it probes ~/.claude.json for a
 //   Claude Fable model entitlement (Claude Reviewer-seat fallback only), which is
-//   irrelevant to gpt-5.x Codex/OMX sessions.
+//   irrelevant to Codex/OMX sessions.
 // - The DevSwarm per-turn override/reassert hooks (SessionStart devswarm-child-
 //   role.js; UserPromptSubmit devswarm-parent-inbox.js/devswarm-child-turn.js;
 //   Stop devswarm-parent-gate.js/devswarm-child-gate.js) ARE mirrored here
