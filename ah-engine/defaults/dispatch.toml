@@ -408,7 +408,7 @@ value = [
   { id = "swarm-guard#2", matcher = "Task", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"", timeout = 10, check = "" },
   { id = "phase-tracker#2", matcher = "Task", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"", timeout = 10, check = "phase-tracker" },
   { id = "orch-on-spawn", matcher = "Agent|Task|Workflow", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/orch-on-spawn.js\"", timeout = 10, check = "orch-on-spawn" },
-  { id = "devswarm-comms-guard", matcher = "SendMessage", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js\"", timeout = 10, check = "" },
+  { id = "devswarm-comms-guard", matcher = "SendMessage", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js\"", timeout = 10, check = "devswarm-comms-guard" },
   { id = "ask-guard", matcher = "AskUserQuestion", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js\"", timeout = 10, check = "ask-guard" },
   { id = "stale-agent-stop-note", matcher = "TaskStop", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"", timeout = 10, check = "stale-agent-stop-note" },
 ]

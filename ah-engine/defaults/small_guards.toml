@@ -61,6 +61,22 @@ max = 1000000
 doc = "Longest session key, in UTF-16 units, after the characters outside letters, digits, dot, underscore and hyphen are replaced (the Node state file name limit)."
 value = 120
 
+[guardkit.plugin_manifest]
+doc = "The plugin manifest, relative to the plugin root (its version is the one the settings migration stamp is compared with)."
+value = ".claude-plugin/plugin.json"
+
+[guardkit.migration_markers_file]
+doc = "The per-migration marker file, relative to the home directory."
+value = ".anti-hall/update-sweep-state.json"
+
+[guardkit.settings_migration_key]
+doc = "Key of the marker that says the legacy settings were forward-migrated into settings.json for a plugin version."
+value = "migrateSettingsFromLegacy"
+
+[guardkit.settings_dir]
+doc = "The anti-hall directory under the home directory, where the legacy settings files live."
+value = ".anti-hall"
+
 [guardkit.icons]
 doc = "Leading icon of a block or advisory message, by kind."
 value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "✅", update = "⬆️", error = "❌" }

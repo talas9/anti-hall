@@ -286,3 +286,139 @@ pub fn get_num(st: &Settings, entry: &V) -> f64 {
     }
     entry.get("default").and_then(V::as_integer).map_or(0.0, |d| d as f64)
 }
+
+// ---- the full Node chain for typed settings (boolean and enum), with the legacy tier ---------------------------------
+//
+// `get_bool` above covers the plain switches. The settings below also have a legacy file (`jev.json`) or are an
+// enumeration, so they need the whole of `hooks/lib/settings.js` `get`: environment, `settings.json`, then the tiers
+// below the file (legacy file and plugin option, in the order the one-time migration stamp decides), then the default.
+
+/// `coerceValue(entry, raw)` for a boolean or an enum entry: `None` when `raw` cannot be read as that type, so the
+/// next source is tried.
+fn coerce_typed(entry: &V, raw: &Value) -> Option<Value> {
+    let trimmed = match raw {
+        Value::String(s) => js_trim(s).to_string(),
+        Value::Number(_) | Value::Bool(_) => js_string_of(raw)?,
+        _ => return None,
+    };
+    if trimmed.is_empty() {
+        return None;
+    }
+    match entry.str_field("type") {
+        "boolean" => match raw {
+            Value::Bool(b) => Some(Value::Bool(*b)),
+            _ => token(&trimmed).map(Value::Bool),
+        },
+        "enum" => {
+            let v = trimmed.to_lowercase();
+            entry.get("values").map(V::strings).unwrap_or_default().contains(&v.as_str()).then_some(Value::String(v))
+        }
+        _ => None,
+    }
+}
+
+/// What a typed lookup could not decide on its own.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Undecidable;
+
+/// True when the plugin version's `migrateSettingsFromLegacy` stamp is in the marker file (`settingsMigrationStamped`):
+/// false on any read problem, as in Node. `Err` when the plugin root is unknown, which only the caller can supply.
+fn migration_stamped(st: &Settings, plugin_root: &str) -> Result<bool, Undecidable> {
+    if plugin_root.is_empty() {
+        return Err(Undecidable);
+    }
+    let version = std::fs::read_to_string(format!("{plugin_root}/{}", defaults::text("guardkit.plugin_manifest")))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("version").and_then(Value::as_str).map(str::to_string));
+    let Some(version) = version.filter(|v| !v.is_empty()) else { return Ok(false) };
+    let Some(markers) = read_object(st, defaults::text("guardkit.migration_markers_file")) else { return Ok(false) };
+    let done = markers
+        .get(defaults::text("guardkit.settings_migration_key"))
+        .and_then(Value::as_object)
+        .and_then(|m| m.get("completedVersion"))
+        .and_then(Value::as_str);
+    Ok(done == Some(version.as_str()))
+}
+
+/// `readPluginOption`: the plugin option's value unless it equals the entry default (which the host exports even when
+/// the person never touched it, so it must not mask a lower tier).
+fn plugin_option_typed(st: &Settings, entry: &V) -> Option<Value> {
+    let option = entry.str_field("option");
+    if option.is_empty() {
+        return None;
+    }
+    let default = entry.get("default").map(|d| match d {
+        V::Bool(b) => b.to_string(),
+        other => other.as_str().unwrap_or_default().to_string(),
+    })?;
+    let env_key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), option.to_ascii_uppercase());
+    if let Some(raw) = st.env.get(&env_key) {
+        return if *raw == default { None } else { coerce_typed(entry, &Value::String(raw.clone())) };
+    }
+    let stored = stored_options(st)?;
+    let v = stored.get(option)?;
+    if js_string_of(v).is_some_and(|s| s == default) {
+        return None;
+    }
+    coerce_typed(entry, v)
+}
+
+/// `readLegacy`: the value of `legacy_file[legacy_key]` under the anti-hall directory.
+fn legacy_typed(st: &Settings, entry: &V) -> Option<Value> {
+    let file = entry.str_field("legacy_file");
+    if file.is_empty() {
+        return None;
+    }
+    let o = read_object(st, &format!("{}/{file}", defaults::text("guardkit.settings_dir")))?;
+    coerce_typed(entry, o.get(entry.str_field("legacy_key"))?)
+}
+
+/// The effective value of a boolean or enum setting, as `hooks/lib/settings.js` `get(section, key, dflt)` answers it.
+/// `dflt` wins over the entry's own default (but nothing above it in the chain). `Ok(None)` is JavaScript's `undefined`.
+/// `Err` when the answer depends on the plugin root and the caller has none.
+pub fn get_setting(st: &Settings, entry: &V, dflt: Option<Value>, plugin_root: &str) -> Result<Option<Value>, Undecidable> {
+    let env_name = entry.str_field("env");
+    if !env_name.is_empty() {
+        let names = std::iter::once(env_name).chain(entry.get("aliases").map(V::strings).unwrap_or_default());
+        for n in names {
+            if let Some(v) = st.env.get(n).and_then(|raw| coerce_typed(entry, &Value::String(raw.clone()))) {
+                return Ok(Some(v));
+            }
+        }
+    }
+    let (section, key) = (entry.str_field("section"), entry.str_field("key"));
+    if let Some(v) = read_object(st, defaults::text("guardkit.settings_file"))
+        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|raw| coerce_typed(entry, raw)))
+    {
+        return Ok(Some(v));
+    }
+    let has_legacy = !entry.str_field("legacy_file").is_empty();
+    let legacy_first = has_legacy && !migration_stamped(st, plugin_root)?;
+    if legacy_first && let Some(v) = legacy_typed(st, entry) {
+        return Ok(Some(v));
+    }
+    if let Some(v) = plugin_option_typed(st, entry) {
+        return Ok(Some(v));
+    }
+    if !legacy_first && let Some(v) = legacy_typed(st, entry) {
+        return Ok(Some(v));
+    }
+    Ok(dflt.or_else(|| entry.get("default").map(V::to_json)))
+}
+
+/// `settings.enabled(section, key)`: false only when the setting resolves to exactly `false` or to `"off"`.
+pub fn enabled(st: &Settings, entry: &V, plugin_root: &str) -> Result<bool, Undecidable> {
+    let v = get_setting(st, entry, None, plugin_root)?;
+    Ok(!matches!(v, Some(Value::Bool(false))) && v.as_ref().and_then(Value::as_str) != Some("off"))
+}
+
+/// The plugin root a check was given: the rule's `plugin_root` option, else the engine's environment variable for it,
+/// else empty (unknown).
+pub fn plugin_root(opts: &Value, env: &crate::reqenv::RequestEnv) -> String {
+    opts.get("plugin_root")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| env.get(defaults::env_name("plugin_root")).map(str::to_string))
+        .unwrap_or_default()
+}

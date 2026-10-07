@@ -14,6 +14,8 @@ pub enum Kind {
     Tip,
     /// An update is available.
     Update,
+    /// Confirmation (the check passed and says so).
+    Ok,
 }
 
 impl Kind {
@@ -23,6 +25,7 @@ impl Kind {
             Kind::Warn => "warn",
             Kind::Tip => "tip",
             Kind::Update => "update",
+            Kind::Ok => "ok",
         }
     }
 }
