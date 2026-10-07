@@ -1083,14 +1083,20 @@ test_temp_removed_on_hup() { run_signal_cleanup_case hup HUP 129; }
 test_temp_removed_on_int() { run_signal_cleanup_case int INT 130; }
 
 test_no_node_hook_events_allow_without_engine() {
-  # The shipped list registers no Node hook for PermissionRequest or SubagentStop (D74: Node alone allows).
-  for ev in PermissionRequest SubagentStop; do
-    if grep -q "^@$ev" "$repo/plugins/anti-hall/hooks/ah-fallback.list"; then return 1; fi
-    set +e
-    AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$repo/plugins/anti-hall/hooks/ah-fallback.list" sh "$wrapper" "$ev" <"$payload" >"$tmp/nohook-$ev.out" 2>"$tmp/nohook-$ev.err"
-    rc=$?
-    set -e
-    [ "$rc" -eq 0 ] || return 1
+  # D87: the shipped lists give PermissionRequest and SubagentStop an event row marked "empty" (a thin trigger and no Node hook):
+  # nothing to run and nothing to guard, so an absent engine allows them. A row that is NOT marked empty and whose hook cannot run
+  # still fails closed (the next test). Both hosts' lists.
+  for list in ah-fallback.list ah-fallback.codex.list; do
+    host=claude
+    [ "$list" = ah-fallback.codex.list ] && host=codex
+    for ev in PermissionRequest SubagentStop; do
+      grep -q "^@$ev	[0-9][0-9]*	empty$" "$repo/plugins/anti-hall/hooks/$list" || return 1
+      set +e
+      AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$repo/plugins/anti-hall/hooks/$list" sh "$wrapper" "$ev" --host "$host" <"$payload" >"$tmp/nohook-$ev.out" 2>"$tmp/nohook-$ev.err"
+      rc=$?
+      set -e
+      [ "$rc" -eq 0 ] || return 1
+    done
   done
 }
 

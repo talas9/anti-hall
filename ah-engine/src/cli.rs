@@ -46,6 +46,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("telemetry", cmd_telemetry),
         ("docs", cmd_docs),
         ("check", cmd_check),
+        ("gen-hooks", cmd_gen_hooks),
         ("version", cmd_version),
         ("ctl", cmd_ctl),
         ("stop", cmd_stop),
@@ -234,6 +235,27 @@ fn cmd_docs(p: &Parsed) -> i32 {
 
 fn cmd_check(p: &Parsed) -> i32 {
     crate::checks::cli_main(p.rest.first().map(String::as_str).unwrap_or(""))
+}
+
+fn cmd_gen_hooks(p: &Parsed) -> i32 {
+    let host = Some(flag(p, "host")).filter(|h| !h.is_empty()).unwrap_or_else(|| defaults::text("dispatch.default_host").to_string());
+    let kind = Some(flag(p, "kind")).filter(|k| !k.is_empty()).unwrap_or_else(|| defaults::text("dispatch.gen_default_kind").to_string());
+    if !crate::dispatch::table::hosts().contains(&host.as_str()) {
+        let msg = defaults::render("dispatch.msg_unknown_host", &[("host", &host), ("hosts", &crate::dispatch::table::hosts().join(", "))]);
+        emit(p, msg.clone(), json!({"error": msg}));
+        return 64;
+    }
+    match crate::hooksgen::render(&host, &kind) {
+        Some(text) => {
+            print!("{text}");
+            0
+        }
+        None => {
+            let msg = defaults::render("dispatch.msg_unknown_kind", &[("kind", &kind)]);
+            emit(p, msg.clone(), json!({"error": msg}));
+            64
+        }
+    }
 }
 
 fn cmd_version(p: &Parsed) -> i32 {

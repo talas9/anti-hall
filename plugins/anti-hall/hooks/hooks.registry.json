@@ -1,0 +1,483 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\" --audit",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/output-verify-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "TaskCreate|TaskUpdate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/failure-root-cause-nudge.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/precompact-snapshot.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/command-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-gate.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scan-throttle.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/api-guard.js\"",
+            "timeout": 45
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ship-it-guard.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/edit-guard.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/inbox-read-guard.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/orch-on-spawn.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "TaskStop",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-full.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js\" --host=claude",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-role.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/version-alert.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/fable-availability.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-availability.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-version.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/claude-cli-version.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repo-self-drift.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/progress-prune.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-guard.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-judge.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/claim-ledger.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-nudge.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-gate.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,6 +1,11 @@
-# ah-engine shipped defaults for the per-event dispatcher (D58): `ah-engine hook --event <Event>` runs every hook
-# entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks,
-# then combines the results the way the host combines separate hooks. Format: see the header of engine.toml.
+# ah-engine shipped defaults for the per-event dispatcher (D58, D87): `ah-engine hook --event <Event>` runs every hook
+# entry of the table below that applies to the event and payload, built-in checks in the engine and the rest as their Node
+# hooks, then combines the results the way the host combines separate hooks. Format: see the header of engine.toml.
+#
+# D87: THIS FILE IS THE TABLE OF RECORD, edited by hand. The plugin's `hooks.json` files (one thin trigger per event) and
+# the wrapper's fallback list and map are generated FROM it by `ah-engine gen-hooks` and kept equal to it by
+# tests/hooks_files.rs. A new hook or check is one row in the table of its host and event (plus, where it needs one, a
+# `[entries.<id>]` default in hooks.toml); nothing else lists hooks.
 #
 # How the host combines hooks (the model the dispatcher reproduces):
 # - Claude Code: "All matching hooks run in parallel"; exit 2 blocks and "even a JSON permissionDecision of allow
@@ -248,21 +253,70 @@ value = "the hook payload is larger than {max} bytes; built-in checks are skippe
 doc = "Event-log detail when stale named raw-payload spool files were removed. Placeholder: {n}."
 value = "removed {n} stale dispatch stdin spool file(s)"
 
-# ---- GENERATED TABLE BELOW (parity/gen-dispatch.js from the plugin's hooks.json files; do not edit by hand) ----
-# tests/dispatch_table.rs fails when hooks.json changes and this part does not: run node parity/gen-dispatch.js.
-#
-# One key per host and event: dispatch.hooks_<host>_<Event>. Each value lists the hook entries in hooks.json order
-# (matcher groups in order, then handlers in order), which is the order the dispatcher combines their results in:
-#   id       stable name of the entry within its event (script, then its arguments; "#n" for a repeat)
-#   matcher  the hooks.json matcher ("" = every occurrence)
-#   command  the exact hooks.json command: the Node hook the dispatcher runs when no built-in check answers
-#   timeout  the hooks.json timeout in seconds (the host discards a hook that runs longer)
-#   check    the built-in check that answers this entry in the engine ("" = always the Node hook)
+[dispatch.thin_command]
+doc = "The command of each event's thin trigger in the generated hooks.json (D87). Placeholders: {var} the host's plugin-root variable (the first of dispatch.root_vars), {event} the event, {extra} the host's dispatch.thin_host_args."
+value = 'sh "${{var}}/hooks/ah-hook.sh" {event}{extra}'
 
-# ---- claude: plugins/anti-hall/hooks/hooks.json ----
+[dispatch.thin_host_args]
+doc = "Per host, the extra arguments of the thin trigger's command: the wrapper reads the host's table and fallback list from `--host` (Claude is the wrapper's default)."
+value = { claude = "", codex = " --host codex" }
+
+[dispatch.thin_timeout_s]
+doc = "The timeout of the thin trigger of an event the table has no entry for (an event with entries takes the longest timeout among them)."
+value = 10
+unit = "s"
+min = 1
+max = 3600
+
+# D87: the events every host gets a thin trigger for, whether or not the table has an entry for them yet: the engine decides
+# per event from the table and the config what to run, and answers the host with the neutral no-op when nothing applies.
+# Claude: all 33 events of the official hooks reference (docs/KB-claude-code-hooks.md section 1) EXCEPT WorktreeCreate and
+# WorktreeRemove (decision D87 exception, 1.43): a WorktreeCreate hook REPLACES the default worktree creation (it must create
+# the worktree and print its path) and a non-zero exit on either event fails the operation, so a silent trigger would break
+# worktree creation in every project; no neutral pass-through exists for an event whose hook is the operation. They get a
+# trigger when the engine implements worktree create/remove itself, with tests.
+# Codex: the events the Codex hooks reference lists (docs/KB-codex-platform-hooks-plugins.md).
+[dispatch.thin_events]
+doc = "Per host, the events that get a thin trigger in the generated hooks.json besides the events the table has entries for (D87; WorktreeCreate and WorktreeRemove are excluded on Claude because a hook there replaces the operation and cannot be a silent trigger)."
+value = { claude = ["SessionStart", "Setup", "UserPromptSubmit", "UserPromptExpansion", "PreToolUse", "PermissionRequest", "PermissionDenied", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "Stop", "StopFailure", "TeammateIdle", "InstructionsLoaded", "ConfigChange", "CwdChanged", "DirectoryAdded", "FileChanged", "PreCompact", "PostCompact", "PreModelSwitch", "PostModelSwitch", "Notification", "MessageDisplay", "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted", "Elicitation", "ElicitationResult", "SessionEnd"], codex = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop", "Stop"] }
+
+[dispatch.generated_files]
+doc = "Per host and kind of generated file (hooks, registry, list, map), its path relative to the repository root. `tests/hooks_files.rs` requires each committed file to equal what `gen-hooks` prints and `ah-gen-fallback-list` writes them."
+value = { claude = { hooks = "plugins/anti-hall/hooks/hooks.json", registry = "plugins/anti-hall/hooks/hooks.registry.json", list = "plugins/anti-hall/hooks/ah-fallback.list", map = "plugins/anti-hall/hooks/ah-fallback.map.json" }, codex = { hooks = "plugins/anti-hall/codex/hooks/hooks.json", registry = "plugins/anti-hall/codex/hooks/hooks.registry.json", list = "plugins/anti-hall/hooks/ah-fallback.codex.list", map = "plugins/anti-hall/hooks/ah-fallback.codex.map.json" } }
+
+[dispatch.gen_default_kind]
+doc = "The file `gen-hooks` prints when `--kind` is not given."
+value = "hooks"
+
+[dispatch.msg_unknown_kind]
+doc = "Error printed by `gen-hooks` when `--kind` names a file it does not generate. Placeholder: {kind}."
+value = "unknown kind {kind}: gen-hooks prints hooks, registry, list or map"
+
+[dispatch.list_banner]
+doc = "The first line of the generated fallback list."
+value = "# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are: @Event<TAB>timeout[<TAB>empty]; hook rows are: matcher<TAB>timeout<TAB>command."
+
+[dispatch.list_empty_word]
+doc = "The word that marks an event row of the fallback list whose event has no table entry (a thin trigger only): the wrapper answers it with the neutral no-op."
+value = "empty"
+
+# ---- THE TABLE (hand-maintained, D87) ----
+# One key per host and event: dispatch.hooks_<host>_<Event>. Each value lists the hook entries in the order the dispatcher
+# combines their results in (the order the old per-hook hooks.json registered them):
+#   id       stable name of the entry within its event (script, then its arguments; "#n" for a repeat); keys the fallback
+#            map and `[entries.<id>]` in the config
+#   matcher  which occurrences of the event the entry applies to ("" = every one), read the host's way (dispatch.matcher_mode)
+#   command  the Node hook the dispatcher runs when no built-in check answers
+#   timeout  the timeout in seconds (the host discards a hook that runs longer); the thin trigger of the event takes the
+#            longest of its entries
+#   check    the built-in check that answers this entry in the engine ("" = always the Node hook)
+#   when     (optional) a declarative predicate over the payload, the settings, the request environment, the session and
+#            the transcript facts; an entry whose predicate is false is skipped. Absent = always applies. See hooks.toml.
+
+# ---- claude ----
 
 [dispatch.hooks_claude_UserPromptSubmit]
-doc = "The claude UserPromptSubmit hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude UserPromptSubmit hook entries, in dispatch order."
 value = [
   { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "" },
   { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "" },
@@ -275,25 +329,25 @@ value = [
 ]
 
 [dispatch.hooks_claude_TaskCreated]
-doc = "The claude TaskCreated hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude TaskCreated hook entries, in dispatch order."
 value = [
   { id = "task-lifecycle-log", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"", timeout = 10, check = "" },
 ]
 
 [dispatch.hooks_claude_TaskCompleted]
-doc = "The claude TaskCompleted hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude TaskCompleted hook entries, in dispatch order."
 value = [
   { id = "task-lifecycle-log", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"", timeout = 10, check = "" },
 ]
 
 [dispatch.hooks_claude_SubagentStart]
-doc = "The claude SubagentStart hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude SubagentStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-subagent", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"", timeout = 10, check = "" },
 ]
 
 [dispatch.hooks_claude_SessionStart]
-doc = "The claude SessionStart hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude SessionStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-full", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "" },
   { id = "verify-first-orch:host=claude", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js\" --host=claude", timeout = 10, check = "" },
@@ -314,7 +368,7 @@ value = [
 ]
 
 [dispatch.hooks_claude_Stop]
-doc = "The claude Stop hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude Stop hook entries, in dispatch order."
 value = [
   { id = "task-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js\"", timeout = 30, check = "" },
   { id = "tasklist-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js\"", timeout = 30, check = "" },
@@ -330,7 +384,7 @@ value = [
 ]
 
 [dispatch.hooks_claude_PreToolUse]
-doc = "The claude PreToolUse hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude PreToolUse hook entries, in dispatch order."
 value = [
   { id = "compact-declaration-guard", matcher = "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Bash", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"", timeout = 10, check = "compact-declaration-guard" },
   { id = "git-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\"", timeout = 10, check = "git" },
@@ -356,7 +410,7 @@ value = [
 ]
 
 [dispatch.hooks_claude_PostToolUse]
-doc = "The claude PostToolUse hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude PostToolUse hook entries, in dispatch order."
 value = [
   { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "" },
   { id = "git-guard:audit", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "" },
@@ -369,27 +423,27 @@ value = [
 ]
 
 [dispatch.hooks_claude_PostToolUseFailure]
-doc = "The claude PostToolUseFailure hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude PostToolUseFailure hook entries, in dispatch order."
 value = [
   { id = "failure-root-cause-nudge", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/failure-root-cause-nudge.js\"", timeout = 10, check = "" },
 ]
 
 [dispatch.hooks_claude_PreCompact]
-doc = "The claude PreCompact hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude PreCompact hook entries, in dispatch order."
 value = [
   { id = "precompact-snapshot", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/precompact-snapshot.js\"", timeout = 10, check = "" },
 ]
 
 [dispatch.hooks_claude_SessionEnd]
-doc = "The claude SessionEnd hook entries, in plugins/anti-hall/hooks/hooks.json order."
+doc = "The claude SessionEnd hook entries, in dispatch order."
 value = [
   { id = "session-end-mcp-reaper", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js\"", timeout = 5, check = "" },
 ]
 
-# ---- codex: plugins/anti-hall/codex/hooks/hooks.json ----
+# ---- codex ----
 
 [dispatch.hooks_codex_SessionStart]
-doc = "The codex SessionStart hook entries, in plugins/anti-hall/codex/hooks/hooks.json order."
+doc = "The codex SessionStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-full", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "" },
   { id = "verify-first-orch", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-orch.js\"", timeout = 10, check = "" },
@@ -409,7 +463,7 @@ value = [
 ]
 
 [dispatch.hooks_codex_UserPromptSubmit]
-doc = "The codex UserPromptSubmit hook entries, in plugins/anti-hall/codex/hooks/hooks.json order."
+doc = "The codex UserPromptSubmit hook entries, in dispatch order."
 value = [
   { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "" },
   { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "" },
@@ -422,7 +476,7 @@ value = [
 ]
 
 [dispatch.hooks_codex_PreToolUse]
-doc = "The codex PreToolUse hook entries, in plugins/anti-hall/codex/hooks/hooks.json order."
+doc = "The codex PreToolUse hook entries, in dispatch order."
 value = [
   { id = "git-guard", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\"", timeout = 10, check = "git" },
   { id = "command-guard", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/command-guard.js\"", timeout = 10, check = "command" },
@@ -436,7 +490,7 @@ value = [
 ]
 
 [dispatch.hooks_codex_Stop]
-doc = "The codex Stop hook entries, in plugins/anti-hall/codex/hooks/hooks.json order."
+doc = "The codex Stop hook entries, in dispatch order."
 value = [
   { id = "task-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-guard.js\"", timeout = 30, check = "" },
   { id = "tasklist-guard", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/tasklist-guard.js\"", timeout = 30, check = "" },
@@ -451,13 +505,13 @@ value = [
 ]
 
 [dispatch.hooks_codex_PreCompact]
-doc = "The codex PreCompact hook entries, in plugins/anti-hall/codex/hooks/hooks.json order."
+doc = "The codex PreCompact hook entries, in dispatch order."
 value = [
   { id = "precompact-snapshot", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/precompact-snapshot.js\"", timeout = 10, check = "" },
 ]
 
 [dispatch.hooks_codex_PostToolUse]
-doc = "The codex PostToolUse hook entries, in plugins/anti-hall/codex/hooks/hooks.json order."
+doc = "The codex PostToolUse hook entries, in dispatch order."
 value = [
   { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "" },
   { id = "git-guard:audit", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "" },

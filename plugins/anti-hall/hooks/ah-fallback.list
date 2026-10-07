@@ -1,4 +1,4 @@
-# Generated from hooks.json by ah-gen-fallback-list. Hook rows are: matcher<TAB>timeout<TAB>command.
+# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are: @Event<TAB>timeout[<TAB>empty]; hook rows are: matcher<TAB>timeout<TAB>command.
 @PostToolUse	10
 Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js" --post
 Bash	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js" --audit
@@ -80,3 +80,23 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js"
+@Setup	10	empty
+@UserPromptExpansion	10	empty
+@PermissionRequest	10	empty
+@PermissionDenied	10	empty
+@PostToolBatch	10	empty
+@StopFailure	10	empty
+@TeammateIdle	10	empty
+@InstructionsLoaded	10	empty
+@ConfigChange	10	empty
+@CwdChanged	10	empty
+@DirectoryAdded	10	empty
+@FileChanged	10	empty
+@PostCompact	10	empty
+@PreModelSwitch	10	empty
+@PostModelSwitch	10	empty
+@Notification	10	empty
+@MessageDisplay	10	empty
+@SubagentStop	10	empty
+@Elicitation	10	empty
+@ElicitationResult	10	empty

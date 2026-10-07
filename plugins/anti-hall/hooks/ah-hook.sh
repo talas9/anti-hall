@@ -11,7 +11,9 @@
 # - Node hook timeout: host discards that hook; other hooks still decide the event.
 # - Node hook signal death, spawn failure, known-unrunnable command, or incomplete output:
 #   fail closed on guard events, ignored on non-guards.
-# Tool selection is payload-only: the one accepted argument is --tool-from-payload, which reads tool_name structurally from
+# Arguments: the event, then optionally `--host claude|codex` (default claude: picks the host's table in the engine and its
+# fallback list and map) and `--tool-from-payload` (implied on PreToolUse, PostToolUse, PostToolUseFailure and PermissionRequest).
+# Tool selection is payload-only: the tool argument is --tool-from-payload, which reads tool_name structurally from
 # stdin. There is no --tool X: a caller-named tool could narrow the rows run and skip a guard the payload would select.
 # Any other argument is ignored (without --tool-from-payload every row of the event runs, the safe superset).
 # Test-only knobs (honored ONLY when AH_WRAPPER_TEST=1 is also set; otherwise ignored with a one-line
@@ -37,14 +39,35 @@ if [ "${AH_WRAPPER_TEST:-}" != 1 ]; then
     printf 'anti-hall: ignoring test-only variables (need AH_WRAPPER_TEST=1):%s\n' "$ignored_knobs" >&2
   fi
 fi
+# D87: the hooks.json of each host runs this wrapper once per event, `ah-hook.sh <Event> [--host codex]`, and the engine (or,
+# when it cannot answer, the fallback list) decides which hooks apply. On the events whose hooks are matched by tool name
+# the tool is read from the payload structurally, as if --tool-from-payload had been given, so a hook the payload's tool
+# does not select is not run by the fallback either; any other event has no matcher the wrapper could read.
 tool_from_payload=0
-if [ "${1:-}" = "--tool-from-payload" ]; then
-  tool_from_payload=1
-fi
+case "$event" in
+  PreToolUse|PostToolUse|PostToolUseFailure|PermissionRequest) tool_from_payload=1 ;;
+esac
+host=claude
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --tool-from-payload) tool_from_payload=1 ;;
+    --host)
+      case "${2:-}" in
+        claude|codex) host=$2; shift ;;
+        *) printf 'anti-hall: ignoring unknown --host value\n' >&2 ;;
+      esac
+      ;;
+  esac
+  shift
+done
 
 dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-list=${AH_FALLBACK_LIST:-"$dir/ah-fallback.list"}
-fallback_map=${AH_FALLBACK_MAP:-"$dir/ah-fallback.map.json"}
+case "$host" in
+  codex) list_default=$dir/ah-fallback.codex.list; map_default=$dir/ah-fallback.codex.map.json ;;
+  *) list_default=$dir/ah-fallback.list; map_default=$dir/ah-fallback.map.json ;;
+esac
+list=${AH_FALLBACK_LIST:-"$list_default"}
+fallback_map=${AH_FALLBACK_MAP:-"$map_default"}
 uid=$(id -u 2>/dev/null || printf '0')
 self_pid=$$
 tmp=
@@ -658,14 +681,23 @@ run_fallback() {
     fallback_note "$reason"
     exit 0
   fi
-  selected=0; ran=0; first_block_err=; hard_failure=0; code=0; in_event=0; event_seen=0
+  selected=0; ran=0; first_block_err=; hard_failure=0; code=0; in_event=0; event_seen=0; event_empty=0
   timeout_default=$(event_timeout)
   [ -n "$timeout_default" ] || timeout_default=$timeout_env
   validate_positive_int "$timeout_default" event_timeout
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       ""|"#"*) continue ;;
-      @*) header=${line#@}; ev=${header%%	*}; [ "$ev" = "$event" ] && { in_event=1; event_seen=1; } || in_event=0; continue ;;
+      @*)
+        header=${line#@}; ev=${header%%	*}
+        if [ "$ev" = "$event" ]; then
+          in_event=1; event_seen=1
+          # an event row ending in the word "empty" has no hook of its own: it is only a trigger (D87)
+          case "$header" in *"	empty") event_empty=1 ;; esac
+        else
+          in_event=0
+        fi
+        continue ;;
     esac
     [ "$in_event" -eq 1 ] || continue
     matcher=${line%%	*}
@@ -703,6 +735,11 @@ run_fallback() {
     [ -n "$first_block_err" ] && cat "$first_block_err" >&2
     exit 2
   fi
+  if [ "$event_empty" -eq 1 ]; then
+    # D87: the table has no hook for this event, so there is nothing to run and nothing to guard: the neutral no-op
+    fallback_note "$reason"
+    exit 0
+  fi
   if [ "$hard_failure" -eq 1 ] && [ "$guard_event" -eq 1 ]; then
     fallback_note "$reason"
     fail_closed "fallback hook failed before producing a complete answer"
@@ -720,7 +757,8 @@ run_fallback() {
           fi ;;
       esac
       # The tool name was read structurally and no row names it: the host would have run nothing.
-      if [ "$tool_from_payload" -eq 1 ] && [ "$tool_match_all" -eq 0 ] && [ -n "$tool" ]; then
+      # (a list with no section for the event at all is damaged, whatever the tool: that stays fail-closed)
+      if [ "$event_seen" -eq 1 ] && [ "$tool_from_payload" -eq 1 ] && [ "$tool_match_all" -eq 0 ] && [ -n "$tool" ]; then
         fallback_note "$reason"
         exit 0
       fi
@@ -739,7 +777,7 @@ run_engine() {
   validate_positive_int "$timeout" engine_timeout
   set -- "$engine" hook --event "$event"
   [ -n "$tool" ] && set -- "$@" --tool "$tool"
-  set -- "$@" --host claude --fallback-map "$fallback_map"
+  set -- "$@" --host "$host" --fallback-map "$fallback_map"
   pid_file=$tmp/engine.pid; group_file=$tmp/engine.group
   launch_argv_group "$eng_out" "$eng_err" "$pid_file" "$group_file" "$@" || run_fallback "engine could not start"
   pid=$(cat "$pid_file"); group_pid=$(cat "$group_file")
