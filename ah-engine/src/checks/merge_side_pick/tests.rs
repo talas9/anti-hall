@@ -186,3 +186,48 @@ fn the_post_pass_follows_the_wired_event_and_no_home_defers() {
     let none = crate::reqenv::RequestEnv::from_pairs(Vec::<(String, String)>::new());
     assert_eq!(MergeSidePick.run_env(&sub("PostToolUse"), &p, &Value::Null, &none), Some(Verdict::Defer));
 }
+
+fn run_check(event: &str, p: &Value, home: &str) -> Option<Verdict> {
+    let null = Value::Null;
+    let s = Subject { event, tool: Some("Bash"), cwd: None, tool_input: &null, prompt: None };
+    MergeSidePick.run_env(&s, p, &Value::Null, &RequestEnv::from_pairs([("HOME", home)]))
+}
+
+/// The native Post writes Node's file, the native Pre reads it: one session sees the pick, with the advisory Node prints.
+#[test]
+fn a_native_post_then_a_native_pre_sees_the_pick() {
+    let h = tmp_home("post-pre");
+    let post = payload("PostToolUse", "s9", "git checkout --theirs .");
+    assert_eq!(run_check("PostToolUse", &post, &h), Some(Verdict::Allow), "Post is answered natively, not deferred");
+    let push = payload("PreToolUse", "s9", "git push");
+    let native = run_check("PreToolUse", &push, &h);
+    let Some(Verdict::Advisory(j)) = native else { panic!("expected the advisory, got {native:?}") };
+    // identical to what the decision core yields from the same file with a fresh store (Node's reading of that file)
+    let same = decide(&push, &settings(&h), &FileState::new(&h).unwrap());
+    assert_eq!(Some(Verdict::Advisory(j.clone())), same);
+    assert!(j.contains("git checkout --theirs ."), "{j}");
+    // a test run after the pick clears it
+    run_check("PostToolUse", &payload("PostToolUse", "s9", "npm test"), &h);
+    assert_eq!(run_check("PreToolUse", &push, &h), Some(Verdict::Allow));
+    // another session has no record
+    assert_eq!(run_check("PreToolUse", &payload("PreToolUse", "s10", "git push"), &h), Some(Verdict::Allow));
+}
+
+/// A state file written by Node (its bytes, its coercions) is read by the native Pre pass; one the engine cannot read as text defers.
+#[test]
+fn a_node_written_state_file_is_read_natively_and_an_unreadable_one_defers() {
+    let h = tmp_home("node-file");
+    let push = payload("PreToolUse", "n1", "git push");
+    std::fs::write(format!("{h}/.anti-hall/merge-side-pick-n1.json"), r#"{"seq":"2","pickSeq":2,"testSeq":"1","cmd":"git merge -X ours x"}"#).unwrap();
+    let Some(Verdict::Advisory(j)) = run_check("PreToolUse", &push, &h) else { panic!("Node's record must be seen") };
+    assert!(j.contains("git merge -X ours x"), "{j}");
+    // unparseable text is a fresh record in Node, so the native answer is Allow
+    std::fs::write(format!("{h}/.anti-hall/merge-side-pick-n2.json"), "{not json").unwrap();
+    assert_eq!(run_check("PreToolUse", &payload("PreToolUse", "n2", "git push"), &h), Some(Verdict::Allow));
+    // bytes that are not UTF-8 text: not provable, so Node decides (Pre and Post), and nothing is written
+    let bad = format!("{h}/.anti-hall/merge-side-pick-n3.json");
+    std::fs::write(&bad, [0x7b, 0xff, 0xfe, 0x7d]).unwrap();
+    assert_eq!(run_check("PreToolUse", &payload("PreToolUse", "n3", "git push"), &h), Some(Verdict::Defer));
+    assert_eq!(run_check("PostToolUse", &payload("PostToolUse", "n3", "git checkout --theirs ."), &h), Some(Verdict::Defer));
+    assert_eq!(std::fs::read(&bad).unwrap(), vec![0x7b, 0xff, 0xfe, 0x7d]);
+}

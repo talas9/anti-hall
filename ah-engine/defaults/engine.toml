@@ -567,7 +567,7 @@ doc = "Prefix of the request line that carries the forwarded environment as one 
 value = "E "
 
 [request_env.max_bytes]
-doc = "Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them, and the checks that read the environment then see an empty one."
+doc = "Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them and the request is marked incomplete, so every check defers to the Node guard (a missing or empty HOME marks it incomplete too)."
 value = 65536
 unit = "bytes"
 min = 1024
