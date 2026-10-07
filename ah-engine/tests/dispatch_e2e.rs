@@ -310,6 +310,47 @@ fn the_built_in_check_blocks_in_process_and_through_the_daemon() {
     assert!(metrics.contains("dispatch_checks") && metrics.contains("decided"), "the daemon counts what it answered: {metrics}");
 }
 
+/// The three agent controls are answered by the dispatcher itself: their Node commands (which would print `NODE-RAN`) are
+/// never run, an ask-guard block carries Node's exact bytes (the JSON decision on stdout, exit 2, nothing on stderr), and the
+/// answer is the same in process and through the daemon.
+#[test]
+fn the_agent_controls_are_answered_by_the_dispatcher() {
+    let e = Env::new("agent-controls");
+    let ran = r#"printf NODE-RAN >&2; exit 0"#;
+    let map = pretool_map(&e, &[("ask-guard", ran), ("stale-agent-stop-note", ran)], "true");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let ask = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_input": {"questions": [{"header": "h", "question": "q"}]}}).to_string();
+    let env = [("ANTIHALL_NO_BLOCKING_QUESTIONS", "block")];
+    let (code, out, err) = e.run_with(&args, true, &ask, true, &env);
+    assert_eq!(code, 2, "in-process: {out:?} {err:?}");
+    assert!(out.starts_with("{\"decision\":\"block\",\"reason\":\"") && out.ends_with("\"}\n") && !err.contains("NODE-RAN"), "{out:?} {err:?}");
+    let mut last = (0, String::new(), String::new());
+    for _ in 0..50 {
+        last = e.run_with(&args, false, &ask, true, &env);
+        if last.0 == 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!((last.0, last.1.as_str()), (2, out.as_str()), "daemon: the same block, byte for byte: {last:?}");
+    assert!(!last.2.contains("NODE-RAN"));
+    // TaskStop with nothing in the transcript to say: answered quietly, Node not run
+    let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "TaskStop", "tool_input": {"task_id": "x"}, "transcript_path": e.dir.join("none.jsonl")}).to_string();
+    let (code, out, err) = e.run(&args, true, &stop, true);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "the stale-agent-stop-note entry is answered by the check");
+    // Stop: a session with no transcript has nothing silent; silent-agent-nudge is answered by the check
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "Stop").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().map(|id| (id.clone(), if id == "silent-agent-nudge" { ran } else { "true" }.into())).collect();
+    let map = e.dir.join("stop-map.json");
+    std::fs::write(&map, serde_json::json!({ "Stop": m }).to_string()).unwrap();
+    let stop_args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let stop_payload = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop"}).to_string();
+    let (code, out, err) = e.run(&stop_args, true, &stop_payload, true);
+    e.stop();
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "silent-agent-nudge is answered by the check, not run as Node");
+}
+
 #[test]
 fn an_event_no_entry_matches_says_nothing_and_starts_no_daemon() {
     let e = Env::new("nomatch");
