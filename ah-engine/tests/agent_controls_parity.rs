@@ -878,6 +878,9 @@ fn silent_corpus() -> Vec<Sc> {
     add(sc("no-agents-at-all", h, stop_payload_for(json!("s1"))).transcript(&noise()));
     add(sc("no-transcript-path", h, json!({"hook_event_name": "Stop", "session_id": "s1"})));
     add(sc("transcript-missing", h, json!({"hook_event_name": "Stop", "session_id": "s1", "transcript_path": "$HOME/nope.jsonl"})));
+    add(sc("transcript-relative-path-defers", h, json!({"hook_event_name": "Stop", "session_id": "s1", "transcript_path": "t/session.jsonl"}))
+        .transcript(&noise())
+        .defers());
     add(sc("transcript-empty", h, stop_payload_for(json!("s1"))).file("t/session.jsonl", ""));
     add(sc("finished-agent", h, stop_payload_for(json!("s1")))
         .transcript(&[stale_run("01"), vec![notif_user("a1b2c3d4e5f601", "completed", &ago(10.0))]].concat()));
@@ -953,6 +956,20 @@ fn silent_corpus() -> Vec<Sc> {
     add(sc("heartbeat-already-nudged", h, stop_payload_for(json!("s1")))
         .file(".anti-hall/agents/hb1.json", &json!({"id": "hb1", "session": "s1", "status": "running", "step": "w", "ts": hb_ts}).to_string())
         .file(".anti-hall/silent-agent-nudge-state.json", &state_json(json!({"h:hb1": format!("{}", hb_ts as i64)}), json!({}))));
+    {
+        // Three live heartbeats, all already capped: the rewritten state lists them in the order the directory is read, which
+        // Node sorts by name (an upper-case name sorts before a lower-case one).
+        let ts = (NOW.with(|n| *n) - 90.0 * 60_000.0).floor();
+        let mut s = sc("heartbeat-order-follows-sorted-names", h, stop_payload_for(json!("s1")));
+        for id in ["z-last", "a-first", "M-upper"] {
+            s = s.file(&format!(".anti-hall/agents/{id}.json"), &json!({"id": id, "session": "s1", "status": "running", "step": "w", "ts": ts}).to_string());
+        }
+        let recent = (NOW.with(|n| *n) - 1000.0).floor();
+        add(s.file(
+            ".anti-hall/silent-agent-nudge-state.json",
+            &state_json(json!({}), json!({"s1::z-last": recent, "s1::a-first": recent, "s1::M-upper": recent})),
+        ));
+    }
     add(sc("heartbeat-ts-float-defers", h, stop_payload_for(json!("s1")))
         .file(".anti-hall/agents/a.json", &json!({"id": "a", "session": "s1", "status": "running", "ts": 1.5}).to_string())
         .defers());

@@ -353,10 +353,10 @@ fn notification_texts(e: &Value) -> Vec<String> {
 
 // ---- reading the tail --------------------------------------------------------------------------------------
 
-/// The home directory a Node hook's `os.homedir()` gives: `HOME`, or `None` when it is unset or empty (the hook would ask the
-/// password database, which the engine does not).
+/// The home directory a Node hook's `os.homedir()` gives: `HOME`, or `None` when it is unset, empty or not an absolute path (the
+/// hook would ask the password database, or resolve it against its own directory; the engine does neither).
 pub fn home_dir(env: &crate::reqenv::RequestEnv) -> Option<String> {
-    env.get(defaults::env_name("home")).filter(|h| !h.is_empty()).map(str::to_string)
+    env.get(defaults::env_name("home")).filter(|h| h.starts_with('/')).map(str::to_string)
 }
 
 /// `new Date(ms).toISOString()` for a finite time in range.
@@ -968,6 +968,10 @@ fn unsafe_number(v: &Value) -> bool {
 
 /// `scanTranscript(transcriptPath, readTail(path, tail), opts)`. `Ok(None)` is JavaScript's `null` (unreadable).
 pub fn scan_transcript(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
+    if !path.is_empty() && !path.starts_with('/') {
+        // A relative path means the hook's own working directory, which the engine does not share.
+        return Err(Unsupported);
+    }
     let Some(mut t) = Tail::open(path, tail) else { return Ok(None) };
     let mut w = Walk::new();
     let mut buf: Vec<u8> = Vec::new();

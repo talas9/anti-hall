@@ -272,6 +272,10 @@ fn transcript_candidates(transcript: &str, now: f64, threshold: f64) -> Result<V
         let mut reference = f64::NAN;
         let mut snapshot = defaults::text("silent_nudge.missing").to_string();
         let mut output_missing = true;
+        if !rec.output_file.is_empty() && !rec.output_file.starts_with('/') {
+            // Node resolves it against the hook's own directory, which the engine does not share.
+            return Err(Unsupported);
+        }
         if !rec.output_file.is_empty()
             && let Some(m) = mtime_ms(std::path::Path::new(&rec.output_file))
         {
@@ -314,12 +318,14 @@ fn heartbeat_candidates(home: &str, now: f64, threshold: f64, session: &str) -> 
     let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Vec::new()) };
     let ext = defaults::text("silent_nudge.heartbeat_ext");
     let mut out = Vec::new();
-    for e in rd.flatten() {
-        let f = e.file_name().to_string_lossy().to_string();
+    // `fs.readdirSync` lists a directory sorted (libuv scandir sorts by name, byte order in the C locale Node runs in).
+    let mut entries: Vec<(String, std::path::PathBuf)> = rd.flatten().map(|e| (e.file_name().to_string_lossy().to_string(), e.path())).collect();
+    entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    for (f, path) in entries {
         if !f.ends_with(ext) || f == defaults::text("silent_nudge.heartbeat_skip_name") || f.starts_with(defaults::text("silent_nudge.heartbeat_skip_prefix")) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(e.path()) else { continue };
+        let Ok(bytes) = std::fs::read(&path) else { continue };
         let text = String::from_utf8_lossy(&bytes);
         let Some(data) = agent_scan::parse_json(&text)? else { continue };
         let (Some(id), Some(status)) = (data.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()), data.get("status").and_then(Value::as_str)) else {
