@@ -36,14 +36,8 @@ pub(crate) fn ok(status: u16, body: &str) -> Result<RawResponse, NetError> {
 /// shared lane the checks ask through. The env pairs are the lane's own default environment.
 pub(crate) fn install_scripted(home: &Path, env: &[(&str, &str)], script: Vec<Result<RawResponse, NetError>>) -> (Arc<super::Jev>, Arc<Fake>) {
     let f = Arc::new(Fake::new(script));
-    let jev = super::Jev::with_parts(
-        home,
-        super::Env::from_pairs(env.iter().copied()),
-        f.clone(),
-        Arc::new(super::breaker::ManualClock::default()),
-        None,
-        None,
-    );
+    let jev =
+        super::Jev::with_parts(home, super::Env::from_pairs(env.iter().copied()), f.clone(), Arc::new(super::breaker::ManualClock::default()), None, None);
     super::shared::install(home, jev.clone());
     (jev, f)
 }

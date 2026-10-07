@@ -208,7 +208,10 @@ mod jev_self_credit {
         let Verdict::Block(m) = v else { panic!("expected a block, got {v:?}") };
         assert!(m.contains("a commit message that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked."), "{m}");
         let rows = log_rows(&h);
-        assert_eq!((rows.len(), &rows[0]["id"], &rows[0]["mode"], &rows[0]["base"], &rows[0]["final"], &rows[0]["sessionId"]), (1, &json!("gitGuardSelfCredit"), &json!("on"), &json!(false), &json!(true), &json!("sess")));
+        assert_eq!(
+            (rows.len(), &rows[0]["id"], &rows[0]["mode"], &rows[0]["base"], &rows[0]["final"], &rows[0]["sessionId"]),
+            (1, &json!("gitGuardSelfCredit"), &json!("on"), &json!(false), &json!(true), &json!("sess"))
+        );
     }
 
     #[test]
@@ -237,7 +240,7 @@ mod jev_self_credit {
         let h = home("regex");
         on_mode(&h);
         let fake = lane(&h, vec![]);
-        let credit = format!(r#"git commit -m "x\n\nCo-Authored-By: Claude <noreply@anthropic.com>""#);
+        let credit = format!(r#"git commit -m "x\n\n{CO}: Claude <noreply@anthropic.com>""#);
         assert!(matches!(check_with(settings(&h, &[]), &credit, Some("/tmp"), "/plugin"), Verdict::Block(_)));
         assert!(fake.seen.lock().unwrap().is_empty(), "the regex block returns before the consult");
         assert_eq!(check_with(settings(&h, &[]), PARAPHRASE, Some("/tmp"), "/plugin"), Verdict::Allow, "no answer: fail open");

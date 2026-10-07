@@ -235,7 +235,10 @@ pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str, env: &crate::
 pub fn check_bash_session(cmd: &str, cwd: Option<&str>, plugin_root: &str, env: &crate::reqenv::RequestEnv, session: Option<&str>) -> Verdict {
     let settings = Settings::from_env(env);
     let r = std::thread::scope(|sc| {
-        std::thread::Builder::new().stack_size(tables().stack_bytes).spawn_scoped(sc, || check_with_session(settings, cmd, cwd, plugin_root, session)).map(|h| h.join())
+        std::thread::Builder::new()
+            .stack_size(tables().stack_bytes)
+            .spawn_scoped(sc, || check_with_session(settings, cmd, cwd, plugin_root, session))
+            .map(|h| h.join())
     });
     match r {
         Ok(Ok(o)) => o,

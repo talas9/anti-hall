@@ -345,7 +345,13 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         };
         if let Some(o) = outcome {
             let project = if crate::jev::shared::is_resident() { project_of(payload) } else { None };
-            crate::jev::shared::lane(Path::new(&home), &jev_env).record_outcome(defaults::text("speculation_guard.jev_id"), h, o, Some(source), project.as_deref());
+            crate::jev::shared::lane(Path::new(&home), &jev_env).record_outcome(
+                defaults::text("speculation_guard.jev_id"),
+                h,
+                o,
+                Some(source),
+                project.as_deref(),
+            );
         }
         let cleared = format!("{{\"hash\":{},\"blocks\":{},\"pending\":null}}", quote(&prior.last_blocked), js_number(prior.blocks));
         let _ = std::fs::create_dir_all(&state_dir).and_then(|()| std::fs::write(&state_file, cleared));
@@ -364,14 +370,24 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
     if jev_on && loop_safe {
         entry = Some(JudgeEntry { backend: "none", reason: "loop-safe".into(), ms: None, confidence: None, regex_verdict: regex_would_block });
     } else if let Some(text) = &jev_text {
-        let q = Question::noul(defaults::text("speculation_guard.jev_instructions"), defaults::text("speculation_guard.jev_true"), defaults::text("speculation_guard.jev_false"));
+        let q = Question::noul(
+            defaults::text("speculation_guard.jev_instructions"),
+            defaults::text("speculation_guard.jev_true"),
+            defaults::text("speculation_guard.jev_false"),
+        );
         let mut req = ask_request(defaults::text("speculation_guard.jev_id"), q, text, Trust::AddBlock, false, &session_raw, payload);
         req.compare = Some(regex_would_block);
         req.env = Some(jev_env.clone());
         let d = crate::jev::shared::lane(Path::new(&home), &jev_env).ask(&req);
         if d.jev == Value::Null {
             if let Some(reason) = &d.reason {
-                entry = Some(JudgeEntry { backend: "jev\u{2192}regex", reason: reason.to_string(), ms: Some(d.ms), confidence: None, regex_verdict: regex_would_block });
+                entry = Some(JudgeEntry {
+                    backend: "jev\u{2192}regex",
+                    reason: reason.to_string(),
+                    ms: Some(d.ms),
+                    confidence: None,
+                    regex_verdict: regex_would_block,
+                });
             }
         } else if d.outcome == Value::Bool(true) {
             jev_block = true;
@@ -379,7 +395,13 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
             entry = Some(JudgeEntry { backend: "jev", reason: "confident".into(), ms: Some(d.ms), confidence: d.confidence, regex_verdict: regex_would_block });
         } else {
             let reason = if d.confident == Some(true) { "confident-allow-untrusted" } else { "low-confidence" };
-            entry = Some(JudgeEntry { backend: "jev\u{2192}regex", reason: reason.into(), ms: Some(d.ms), confidence: d.confidence, regex_verdict: regex_would_block });
+            entry = Some(JudgeEntry {
+                backend: "jev\u{2192}regex",
+                reason: reason.into(),
+                ms: Some(d.ms),
+                confidence: d.confidence,
+                regex_verdict: regex_would_block,
+            });
         }
     }
     let finish = |v: Verdict, verdict: &str| -> Result<Verdict, Defer> {
@@ -414,9 +436,20 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
     // FRAMED EXPECTATION (relax-block): only for a genuine regex hit under a plan or expectation frame; Jev may turn that
     // block into a non-block, never add one.
     if !jev_block && marker.is_some() && is_framed_hit(&marker_text, hit_at) && jev_on {
-        append_judge_log(&home, &format!("{{\"ts\":{},\"event\":\"trigger\",\"id\":{},\"outcome\":\"seen\"}}\n", quote(&now_iso()), quote(defaults::text("speculation_guard.jev_framed_id"))));
+        append_judge_log(
+            &home,
+            &format!(
+                "{{\"ts\":{},\"event\":\"trigger\",\"id\":{},\"outcome\":\"seen\"}}\n",
+                quote(&now_iso()),
+                quote(defaults::text("speculation_guard.jev_framed_id"))
+            ),
+        );
         let Some(text) = &jev_text else { return Err(Defer) }; // unreachable: Jev on and not loop-safe computed it above
-        let q = Question::noul(defaults::text("speculation_guard.framed_instructions"), defaults::text("speculation_guard.framed_true"), defaults::text("speculation_guard.framed_false"));
+        let q = Question::noul(
+            defaults::text("speculation_guard.framed_instructions"),
+            defaults::text("speculation_guard.framed_true"),
+            defaults::text("speculation_guard.framed_false"),
+        );
         let mut req = ask_request(defaults::text("speculation_guard.jev_framed_id"), q, text, Trust::RelaxBlock, true, &session_raw, payload);
         req.env = Some(jev_env.clone());
         let d = crate::jev::shared::lane(Path::new(&home), &jev_env).ask(&req);

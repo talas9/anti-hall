@@ -17,15 +17,15 @@
 //! Mirrors `hooks/merge-gate.js`.
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
+use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::paths;
 use crate::checks::guardkit::settings::{get_bool, is_skipped};
-use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::text::{is_js_space, js_trim};
 use crate::checks::speculation_guard::mask::mask_quoted_text;
 use crate::checks::{Check, Exact, Verdict};
 use crate::defaults;
-use crate::reqenv::RequestEnv;
 use crate::jev::{AskRequest, Question, Trust};
+use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
@@ -172,7 +172,8 @@ fn text_of(entry: &Value) -> (String, bool) {
     let content = entry.get("message").and_then(|m| m.get("content"));
     match content {
         Some(Value::Array(a)) => {
-            let text: Vec<&str> = a.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("text")).filter_map(|b| b.get("text").and_then(Value::as_str)).collect();
+            let text: Vec<&str> =
+                a.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("text")).filter_map(|b| b.get("text").and_then(Value::as_str)).collect();
             (text.join("\n"), a.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")))
         }
         Some(Value::String(s)) => (s.clone(), false),

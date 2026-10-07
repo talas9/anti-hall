@@ -51,40 +51,50 @@ impl Lcg {
 
 fn seeded_rows() -> Vec<Value> {
     let mut g = Lcg(7);
-    let ids = ["claimLedger", "speculation", "speculationFramed", "gitGuardSelfCredit", "dispatchTier", "modelRouting", "newRequest", "outputVerifyGuard", "mergeGateHedge"];
+    let ids = [
+        "claimLedger",
+        "speculation",
+        "speculationFramed",
+        "gitGuardSelfCredit",
+        "dispatchTier",
+        "modelRouting",
+        "newRequest",
+        "outputVerifyGuard",
+        "mergeGateHedge",
+    ];
     let backends = ["jev", "cache", "baseline-only"];
     let modes = ["on", "shadow", "off"];
     let mut rows = Vec::new();
-    for i in 0..400 {
+    for i in 0..400u64 {
         let day = 1 + (i % 5);
         let ts = format!("2026-09-{:02}T{:02}:{:02}:{:02}.{:03}Z", day, g.next() % 24, g.next() % 60, g.next() % 60, g.next() % 1000);
         let id = *g.pick(&ids);
-        if i % 17 == 0 {
+        if i.is_multiple_of(17) {
             rows.push(json!({"ts": ts, "type": "outcome", "id": id, "h": format!("h{i}"), "outcome": g.pick(&["evidence-added", "repeat-speculation", "user-override"]), "source": "regex", "project": "p"}));
             continue;
         }
-        if i % 29 == 0 {
+        if i.is_multiple_of(29) {
             rows.push(json!({"ts": ts, "type": "budget-warning", "window": "daily", "spentUsd": 1.5, "budgetUsd": 1}));
             continue;
         }
         let backend = *g.pick(&backends);
         let mode = *g.pick(&modes);
-        let mut r = json!({"ts": ts, "id": id, "h": format!("{:x}", g.next() % 40), "base": false, "jev": if g.next() % 5 == 0 { json!("label") } else { json!(g.next() % 2 == 0) },
-            "conf": 0.9, "ms": (g.next() % 3000) as f64, "backend": backend, "final": false, "changed": if g.next() % 3 == 0 { json!("added") } else { Value::Null },
+        let mut r = json!({"ts": ts, "id": id, "h": format!("{:x}", g.next() % 40), "base": false, "jev": if g.next().is_multiple_of(5) { json!("label") } else { json!(g.next().is_multiple_of(2)) },
+            "conf": 0.9, "ms": (g.next() % 3000) as f64, "backend": backend, "final": false, "changed": if g.next().is_multiple_of(3) { json!("added") } else { Value::Null },
             "cached": backend == "cache", "mode": mode, "project": "p"});
-        if g.next() % 3 == 0 {
+        if g.next().is_multiple_of(3) {
             r["wouldChange"] = json!("added");
         }
-        if g.next() % 6 == 0 {
+        if g.next().is_multiple_of(6) {
             r["reason"] = json!(*g.pick(&["timeout", "http-500", "no-key"]));
         }
-        if g.next() % 4 == 0 {
+        if g.next().is_multiple_of(4) {
             r["costUsd"] = json!((g.next() % 1000) as f64 / 1e6);
         }
-        if g.next() % 5 == 0 {
+        if g.next().is_multiple_of(5) {
             r["transport"] = json!(*g.pick(&["vercel", "typesafe"]));
         }
-        if g.next() % 9 == 0 {
+        if g.next().is_multiple_of(9) {
             r["fellBack"] = json!(true);
         }
         rows.push(r);
@@ -100,12 +110,13 @@ fn seeded_rows() -> Vec<Value> {
 
 fn read_daily(home: &Path) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
+    let stamp = regex::Regex::new(r#""generatedAt":"[^"]*","#).unwrap();
     for e in std::fs::read_dir(home.join(".anti-hall/logs/jev-daily")).unwrap().flatten() {
         let text = std::fs::read_to_string(e.path()).unwrap();
         let mut v: Value = serde_json::from_str(&text).unwrap();
         v.as_object_mut().unwrap().remove("generatedAt");
         // compare the text of the file with the clock field cut out, so key order and number text are compared too
-        let cut = regex::Regex::new(r#""generatedAt":"[^"]*","#).unwrap().replace(&text, "").into_owned();
+        let cut = stamp.replace(&text, "").into_owned();
         assert!(v.get("complete").is_some(), "{text}");
         out.insert(e.file_name().to_string_lossy().into_owned(), cut);
     }
@@ -142,10 +153,7 @@ fn the_budget_watch_keeps_the_same_state_and_warns_once_a_day() {
     let (nh, eh) = (home("bn"), home("be"));
     let costs = [0.004, 0.004, 0.004, 0.0021, 0.5];
     let mut warnings = Vec::new();
-    node(
-        "for (const c of A.costs) a.maybeWarnBudget({home:A.home,costUsd:c});",
-        &json!({"home": nh.to_string_lossy(), "costs": costs}),
-    );
+    node("for (const c of A.costs) a.maybeWarnBudget({home:A.home,costUsd:c});", &json!({"home": nh.to_string_lossy(), "costs": costs}));
     std::fs::create_dir_all(nh.join(".anti-hall")).ok();
     // Node reads the budget mode from the home's settings: written before its calls
     let settings = r#"{"jev":{"budget":{"mode":"watch","usdPerDay":0.01}}}"#;
@@ -162,7 +170,8 @@ fn the_budget_watch_keeps_the_same_state_and_warns_once_a_day() {
     }
     let state = |h: &Path| std::fs::read_to_string(h.join(".anti-hall/state/jev-budget.json")).unwrap();
     assert_eq!(state(&nh), state(&eh), "the budget state file");
-    let node_rows: Vec<Value> = std::fs::read_to_string(nh.join(".anti-hall/logs/jev-assist.ndjson")).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let node_rows: Vec<Value> =
+        std::fs::read_to_string(nh.join(".anti-hall/logs/jev-assist.ndjson")).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(node_rows.len(), 1, "one warning a day");
     assert_eq!(warnings.len(), 1);
     assert_eq!((node_rows[0]["spentUsd"].as_f64().unwrap(), node_rows[0]["budgetUsd"].as_f64().unwrap()), warnings[0]);

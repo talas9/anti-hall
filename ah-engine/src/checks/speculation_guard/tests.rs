@@ -118,9 +118,15 @@ mod jev {
         assert!(e.out.contains("asserts a cause or outcome without citing evidence"));
         assert_eq!(fake.seen.lock().unwrap().len(), 1);
         let rows = log_rows(&h);
-        assert_eq!((rows.len(), &rows[0]["id"], &rows[0]["mode"], &rows[0]["final"], &rows[0]["compare"], &rows[0]["sessionId"]), (1, &json!("speculation"), &json!("on"), &json!(true), &json!(false), &json!("s1")));
+        assert_eq!(
+            (rows.len(), &rows[0]["id"], &rows[0]["mode"], &rows[0]["final"], &rows[0]["compare"], &rows[0]["sessionId"]),
+            (1, &json!("speculation"), &json!("on"), &json!(true), &json!(false), &json!("s1"))
+        );
         let j = judge(&h);
-        assert_eq!((j.len(), &j[0]["backend"], &j[0]["reason"], &j[0]["verdict"], &j[0]["regexVerdict"]), (1, &json!("jev"), &json!("confident"), &json!("block"), &json!(false)));
+        assert_eq!(
+            (j.len(), &j[0]["backend"], &j[0]["reason"], &j[0]["verdict"], &j[0]["regexVerdict"]),
+            (1, &json!("jev"), &json!("confident"), &json!("block"), &json!(false))
+        );
         let state = std::fs::read_to_string(h.join(".anti-hall/speculation-guard-state-s1.json")).unwrap();
         assert!(state.contains("\"source\":\"jev\""), "{state}");
     }
@@ -132,7 +138,10 @@ mod jev {
         let v = decide(&payload(&h, "It is probably fine.", "s2"), &env(&h, &ON)).unwrap();
         assert!(blocked(&v));
         let j = judge(&h);
-        assert_eq!((&j[0]["backend"], &j[0]["reason"], &j[0]["verdict"], &j[0]["regexVerdict"]), (&json!("jev\u{2192}regex"), &json!("confident-allow-untrusted"), &json!("block"), &json!(true)));
+        assert_eq!(
+            (&j[0]["backend"], &j[0]["reason"], &j[0]["verdict"], &j[0]["regexVerdict"]),
+            (&json!("jev\u{2192}regex"), &json!("confident-allow-untrusted"), &json!("block"), &json!(true))
+        );
     }
 
     #[test]
@@ -152,7 +161,8 @@ mod jev {
         let (_, fake) = install_scripted(&h, &ON, vec![]);
         let reply = "It is probably fine.";
         std::fs::create_dir_all(h.join(".anti-hall")).unwrap();
-        std::fs::write(h.join(".anti-hall/speculation-guard-state-s4.json"), format!("{{\"hash\":\"{}\",\"blocks\":1,\"pending\":null}}", sha1_hex(reply))).unwrap();
+        std::fs::write(h.join(".anti-hall/speculation-guard-state-s4.json"), format!("{{\"hash\":\"{}\",\"blocks\":1,\"pending\":null}}", sha1_hex(reply)))
+            .unwrap();
         assert_eq!(decide(&payload(&h, reply, "s4"), &env(&h, &ON)).unwrap(), Verdict::Allow);
         assert!(fake.seen.lock().unwrap().is_empty());
         assert_eq!(judge(&h)[0]["reason"], json!("loop-safe"));
@@ -161,12 +171,16 @@ mod jev {
     #[test]
     fn a_framed_hit_is_asked_once_more_and_in_shadow_the_block_stands() {
         let h = home("framed");
-        let (_, fake) = install_scripted(&h, &ON, vec![ok(200, r#"{"answers":{"decision":{"noul":0.01}}}"#), ok(200, r#"{"answers":{"decision":{"noul":0.01}}}"#)]);
+        let (_, fake) =
+            install_scripted(&h, &ON, vec![ok(200, r#"{"answers":{"decision":{"noul":0.01}}}"#), ok(200, r#"{"answers":{"decision":{"noul":0.01}}}"#)]);
         let v = decide(&payload(&h, "Should be blocked: X probably fails", "s5"), &env(&h, &ON)).unwrap();
         assert!(blocked(&v), "speculationFramed is shadow by default: the block stands");
         assert_eq!(fake.seen.lock().unwrap().len(), 2, "the speculation ask and the framed ask");
         let rows = log_rows(&h);
-        assert_eq!((&rows[0]["id"], &rows[1]["id"], &rows[1]["base"], &rows[1]["mode"]), (&json!("speculation"), &json!("speculationFramed"), &json!(true), &json!("shadow")));
+        assert_eq!(
+            (&rows[0]["id"], &rows[1]["id"], &rows[1]["base"], &rows[1]["mode"]),
+            (&json!("speculation"), &json!("speculationFramed"), &json!(true), &json!("shadow"))
+        );
         assert!(judge(&h).iter().any(|e| e["event"] == "trigger" && e["id"] == "speculationFramed"));
     }
 
@@ -180,7 +194,10 @@ mod jev {
         let off = [("ANTIHALL_JEV", "0")];
         assert_eq!(decide(&payload(&h, "I haven't checked yet.", "s6"), &env(&h, &off)).unwrap(), Verdict::Allow);
         let rows = log_rows(&h);
-        assert_eq!((rows.len(), &rows[0]["type"], &rows[0]["id"], &rows[0]["h"], &rows[0]["outcome"], &rows[0]["source"]), (1, &json!("outcome"), &json!("speculation"), &json!("abc"), &json!("evidence-added"), &json!("regex")));
+        assert_eq!(
+            (rows.len(), &rows[0]["type"], &rows[0]["id"], &rows[0]["h"], &rows[0]["outcome"], &rows[0]["source"]),
+            (1, &json!("outcome"), &json!("speculation"), &json!("abc"), &json!("evidence-added"), &json!("regex"))
+        );
         assert_eq!(std::fs::read_to_string(&state).unwrap(), r#"{"hash":"old","blocks":1,"pending":null}"#);
     }
 

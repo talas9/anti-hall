@@ -80,7 +80,13 @@ fn a_hedge_in_the_assistant_text_blocks_and_everything_else_is_allowed() {
     std::fs::write(&t, format!("{}\n", assistant("this is a First-Pass"))).unwrap();
     let Verdict::Exact(e) = decide(&payload("gh pr merge 1", Some(&t)), &st) else { panic!("an unresolved hedge blocks") };
     assert_eq!((e.code, e.out.as_str()), (2, ""));
-    assert!(e.err.starts_with("\u{26d4} anti-hall \u{b7} merge-gate: auto-merge blocked: your recent output flagged a deliverable as pending/unverified (\"First-Pass\")."), "{}", e.err);
+    assert!(
+        e.err.starts_with(
+            "\u{26d4} anti-hall \u{b7} merge-gate: auto-merge blocked: your recent output flagged a deliverable as pending/unverified (\"First-Pass\")."
+        ),
+        "{}",
+        e.err
+    );
     assert!(e.err.ends_with("Override (only if the user explicitly asked): set ANTIHALL_MERGE_GATE=off, or skip merge-gate\n"), "{}", e.err);
     assert_eq!(decide(&payload("git status", Some(&t)), &st), Verdict::Allow, "not an auto-merge command");
     std::fs::write(&t, format!("{}\n", assistant("all done"))).unwrap();
@@ -190,7 +196,10 @@ mod jev_shadow {
         let body: Value = serde_json::from_str(seen[0].2.as_ref().unwrap()).unwrap();
         assert_eq!(body["state"], "first-pass only");
         let rows = log_rows(std::path::Path::new(&d));
-        assert_eq!((rows.len(), &rows[0]["id"], &rows[0]["base"], &rows[0]["mode"], &rows[0]["sessionId"]), (1, &json!("mergeGateHedge"), &json!(true), &json!("shadow"), &json!("sg")));
+        assert_eq!(
+            (rows.len(), &rows[0]["id"], &rows[0]["base"], &rows[0]["mode"], &rows[0]["sessionId"]),
+            (1, &json!("mergeGateHedge"), &json!(true), &json!("shadow"), &json!("sg"))
+        );
     }
 
     #[test]

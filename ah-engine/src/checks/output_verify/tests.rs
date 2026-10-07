@@ -116,7 +116,10 @@ mod jev_shadow {
         let body: Value = serde_json::from_str(seen[0].2.as_ref().unwrap()).unwrap();
         assert!(body["state"].as_str().unwrap().contains("3 passed"));
         let rows = log_rows(&h);
-        assert_eq!((rows.len(), &rows[0]["id"], &rows[0]["base"], &rows[0]["mode"], &rows[0]["sessionId"]), (1, &json!("outputVerifyGuard"), &json!(true), &json!("shadow"), &json!("sv")));
+        assert_eq!(
+            (rows.len(), &rows[0]["id"], &rows[0]["base"], &rows[0]["mode"], &rows[0]["sessionId"]),
+            (1, &json!("outputVerifyGuard"), &json!(true), &json!("shadow"), &json!("sv"))
+        );
     }
 
     #[test]

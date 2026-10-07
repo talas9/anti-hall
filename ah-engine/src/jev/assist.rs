@@ -769,7 +769,15 @@ impl Jev {
                 self.write(&w);
             }
             let (ch, wc) = (direction(req.trust, changed), would_change.clone());
-            super::keep::maybe_write_audit_snippet(&self.home.join(defaults::text("paths.base_dir")).join(defaults::text("jev.log_dir")), s.audit_snippets, &req.id, &hash, &req.state, &ch, &wc);
+            super::keep::maybe_write_audit_snippet(
+                &self.home.join(defaults::text("paths.base_dir")).join(defaults::text("jev.log_dir")),
+                s.audit_snippets,
+                &req.id,
+                &hash,
+                &req.state,
+                &ch,
+                &wc,
+            );
             self.write(&self.row(
                 s,
                 req,

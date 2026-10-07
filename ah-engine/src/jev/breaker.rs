@@ -115,7 +115,10 @@ impl Breakers {
         let fails = e.get("fails").and_then(serde_json::Value::as_f64).filter(|f| f.is_finite() && *f >= 0.0);
         let Some(fails) = fails else { return Entry::default() };
         let now = self.clock.now_ms() as f64;
-        let ou = e.get("openUntil").and_then(serde_json::Value::as_f64).filter(|o| o.is_finite() && *o > 0.0 && *o <= now + defaults::num("jev.breaker_cooldown_ms") as f64);
+        let ou = e
+            .get("openUntil")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|o| o.is_finite() && *o > 0.0 && *o <= now + defaults::num("jev.breaker_cooldown_ms") as f64);
         Entry { fails: fails as u64, open_until: ou.map_or(0, |o| o as u64) }
     }
 
@@ -143,7 +146,14 @@ impl Breakers {
                 Entry::default()
             } else {
                 let fails = e.fails + 1;
-                Entry { fails, open_until: if fails >= defaults::num("jev.breaker_threshold") { self.clock.now_ms() + defaults::num("jev.breaker_cooldown_ms") } else { 0 } }
+                Entry {
+                    fails,
+                    open_until: if fails >= defaults::num("jev.breaker_threshold") {
+                        self.clock.now_ms() + defaults::num("jev.breaker_cooldown_ms")
+                    } else {
+                        0
+                    },
+                }
             };
             m.insert(Self::name(vendor).to_string(), serde_json::json!({"fails": next.fails, "openUntil": next.open_until}));
             let _ = (|| -> std::io::Result<()> {

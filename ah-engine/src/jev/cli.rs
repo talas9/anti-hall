@@ -179,8 +179,14 @@ mod tests {
         req.record_disagreement = true;
         let line = Jev::wire_line(&req, 3000);
         let back = parse(&line).unwrap();
-        assert_eq!((back.id.as_str(), back.state.as_str(), back.trust, back.baseline.clone(), back.budget_ms), ("claimLedger", "state \\ \u{1}", Trust::RelaxBlock, json!(true), Some(3000)));
-        assert_eq!((back.cache_key.as_deref(), back.compare, back.project.as_deref(), back.session_id.as_deref(), back.turn_ref.as_deref(), back.record_disagreement), (Some("k\u{1}x"), Some(false), Some("p"), Some("s"), Some("L3"), true));
+        assert_eq!(
+            (back.id.as_str(), back.state.as_str(), back.trust, back.baseline.clone(), back.budget_ms),
+            ("claimLedger", "state \\ \u{1}", Trust::RelaxBlock, json!(true), Some(3000))
+        );
+        assert_eq!(
+            (back.cache_key.as_deref(), back.compare, back.project.as_deref(), back.session_id.as_deref(), back.turn_ref.as_deref(), back.record_disagreement),
+            (Some("k\u{1}x"), Some(false), Some("p"), Some("s"), Some("L3"), true)
+        );
         assert_eq!(back.question.to_wire(), req.question.to_wire(), "the criteria keep their order");
     }
 

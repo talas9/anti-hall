@@ -87,7 +87,10 @@ pub fn maybe_warn_budget(home: &Path, watch: bool, usd_per_day: Option<f64>, cos
     let today = today();
     let state: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).filter(Value::is_object).unwrap_or(Value::Null);
     let (mut spent, mut warned) = if state.get("date").and_then(Value::as_str) == Some(today.as_str()) {
-        (state.get("spentUsd").and_then(Value::as_f64).filter(|n| n.is_finite()).unwrap_or(0.0), state.get("warnedDate").and_then(Value::as_str).map(str::to_string))
+        (
+            state.get("spentUsd").and_then(Value::as_f64).filter(|n| n.is_finite()).unwrap_or(0.0),
+            state.get("warnedDate").and_then(Value::as_str).map(str::to_string),
+        )
     } else {
         (0.0, None)
     };
@@ -100,7 +103,8 @@ pub fn maybe_warn_budget(home: &Path, watch: bool, usd_per_day: Option<f64>, cos
         warning = Some((spent, limit));
         warned = Some(today.clone());
     }
-    let body = format!("{{\"date\":{},\"spentUsd\":{},\"warnedDate\":{}}}", quote(&today), js_number(spent), warned.as_deref().map_or("null".to_string(), quote));
+    let body =
+        format!("{{\"date\":{},\"spentUsd\":{},\"warnedDate\":{}}}", quote(&today), js_number(spent), warned.as_deref().map_or("null".to_string(), quote));
     let _ = path.parent().map(std::fs::create_dir_all);
     let _ = std::fs::write(&path, body);
     warning
@@ -135,7 +139,13 @@ pub fn maybe_write_audit_snippet(log_dir: &Path, enabled: bool, id: &str, hash: 
             std::fs::rename(&path, PathBuf::from(old))?; // replaces the one backup, as Node's remove-then-rename does
         }
         let shadow = if truthy(changed) || !truthy(would_change) { String::new() } else { ",\"shadow\":true".to_string() };
-        let row = format!("{{\"ts\":{},\"id\":{},\"h\":{},\"snippet\":{}{shadow}}}\n", quote(&super::assist::iso_ms(now_ms())), quote(id), quote(hash), quote(&snippet));
+        let row = format!(
+            "{{\"ts\":{},\"id\":{},\"h\":{},\"snippet\":{}{shadow}}}\n",
+            quote(&super::assist::iso_ms(now_ms())),
+            quote(id),
+            quote(hash),
+            quote(&snippet)
+        );
         let mut f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
         f.write_all(row.as_bytes())?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
@@ -246,7 +256,11 @@ pub fn build_daily_rollups(rows: &[Value]) -> Vec<(String, String)> {
         }
         let dir = if r.get("mode").and_then(Value::as_str) == Some("on") { r.get("changed") } else { r.get("wouldChange") };
         let dir_truthy = dir.is_some_and(|v| !v.is_null() && v.as_str().is_none_or(|s| !s.is_empty()) && *v != Value::Bool(false));
-        if dir_truthy && !r.get("jev").is_some_and(Value::is_string) && backend != "cache" && let Some(h) = r.get("h").and_then(Value::as_str).filter(|h| !h.is_empty()) {
+        if dir_truthy
+            && !r.get("jev").is_some_and(Value::is_string)
+            && backend != "cache"
+            && let Some(h) = r.get("h").and_then(Value::as_str).filter(|h| !h.is_empty())
+        {
             g.changed.insert(h.to_string());
         }
         if r.get("reason").and_then(Value::as_str) == Some("timeout") {
