@@ -20,8 +20,8 @@ pub mod orch_on_spawn;
 pub mod phase_tracker;
 pub mod scan_throttle;
 pub mod ship_it;
-pub mod verify_first;
 pub mod spawnctx;
+pub mod verify_first;
 pub mod verify_first_orch;
 
 use crate::reqenv::RequestEnv;

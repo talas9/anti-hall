@@ -552,13 +552,16 @@ fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
         got.code == Some(2) && got.err.contains(defaults::text("msg.dispatch_stdin_utf8"))
     } else if row.class == "well-formed" && has_context_check(row.host, &row.event) {
         // A context check answers a well-formed payload with real text natively, which the silent fake hooks of the oracle cannot
-        // produce; the exact text is compared with Node by the check's own parity harness. Here: the engine's answer is a clean
-        // exit 0 whose stdout is a JSON object carrying the injected context, and nothing on stderr.
+        // produce; the exact text is compared with Node by the check's own parity harness. Here: a clean exit 0 whose stdout is a
+        // JSON object carrying the injected context and nothing on stderr, or, when the joined context of the event is over the
+        // host's cap, the engine's request for the separate (here silent fake) hooks, which is the designed answer then.
+        let separately = format!("anti-hall: engine fallback for {}: engine requested fallback\n", row.event);
         got.code == Some(0)
-            && got.err.is_empty()
-            && serde_json::from_str::<Value>(got.out.trim())
-                .ok()
-                .is_some_and(|v| v["hookSpecificOutput"]["additionalContext"].as_str().is_some_and(|s| !s.is_empty()))
+            && ((got.err.is_empty()
+                && serde_json::from_str::<Value>(got.out.trim())
+                    .ok()
+                    .is_some_and(|v| v["hookSpecificOutput"]["additionalContext"].as_str().is_some_and(|s| !s.is_empty())))
+                || (got.err == separately && got.out.is_empty()))
     } else {
         got.code == want.code && same_stdout(&got.out, &want.out) && got.err == want.err
     };

@@ -231,34 +231,3 @@ pub fn get_num(st: &Settings, entry: &V) -> f64 {
     }
     entry.get("default").and_then(V::as_integer).map_or(0.0, |d| d as f64)
 }
-
-/// `coerceValue` for an enum entry: trimmed, lower-cased, and one of `values`; `None` otherwise (the next source decides).
-fn enum_token(raw: &str, values: &[&str]) -> Option<String> {
-    let t = js_trim(raw);
-    if t.is_empty() {
-        return None;
-    }
-    let l = t.to_lowercase();
-    values.contains(&l.as_str()).then_some(l)
-}
-
-/// The effective value of an enum switch (`entry` is the switch table from the defaults, with `values` and `default`):
-/// environment variable, then `settings.json`, then the default. The enum switches read here have no plugin option.
-///
-/// Mirrors `hooks/lib/settings.js` `get` for an enum setting without a plugin option or legacy file.
-pub fn get_enum(st: &Settings, entry: &V) -> String {
-    let values = entry.get("values").map(V::strings).unwrap_or_default();
-    let env_name = entry.str_field("env");
-    if !env_name.is_empty()
-        && let Some(v) = st.env.get(env_name).and_then(|raw| enum_token(raw, &values))
-    {
-        return v;
-    }
-    let (section, key) = (entry.str_field("section"), entry.str_field("key"));
-    if let Some(v) = read_object(st, defaults::text("guardkit.settings_file"))
-        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(Value::as_str).and_then(|raw| enum_token(raw, &values)))
-    {
-        return v;
-    }
-    entry.str_field("default").to_string()
-}

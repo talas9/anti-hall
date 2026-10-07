@@ -66,6 +66,10 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `verify-first-subagent` | SubagentStart context: injects the verify-first protocol (compact, or full when context.protocolLevel is full) into every spawned subagent (port of verify-first-subagent.js). |
 | `verify-first-full` | SessionStart context: injects the verify-first protocol and discipline index for the session, Claude or Codex text (port of verify-first-full.js). |
 | `fable-availability` | SessionStart: records whether a Fable model is available (from the host's model cache) in ~/.anti-hall/fable-availability.json and tells the session when it is (port of fable-availability.js). |
+| `inbox-read-guard` | Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is active (port of inbox-read-guard.js). |
+| `phase-tracker` | Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm bar and the running-agents heartbeat); never blocks (port of phase-tracker.js). |
+| `orch-on-spawn` | Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker defers to Node, which owns the claim race (port of orch-on-spawn.js). |
+| `verify-first-orch` | SessionStart orchestration text for the Claude entry: composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node (port of verify-first-orch.js --host=claude). |
 
 ## Settings
 
@@ -207,7 +211,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `request_env.allow` | `31 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. |
+| `request_env.allow` | `34 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. |
 | `request_env.line_prefix` | `E ` |  |  | Prefix of the request line that carries the forwarded environment as one JSON object. |
 | `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them, and the checks that read the environment then see an empty one. |
 
@@ -975,6 +979,98 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `turn_gate.prefix` | `tg-` |  |  | File-name prefix of a turn-gate state file (the Node code also hands it to the pruning sweep as the family name). |
 | `turn_gate.session_max` | `80` |  |  | Longest session id part, in UTF-16 units, of a turn-gate file name. |
 | `turn_gate.tail_bytes` | `524288` |  |  | How many bytes at the end of the transcript are read to find the newest human prompt. |
+
+### spawn_context.toml / inbox_read
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `inbox_read.devswarm_root` | `.anti-hall/devswarm` |  |  | Path of the DevSwarm state root under the home directory. |
+| `inbox_read.guard_inbox` | `devswarm-inbox-read` |  |  | Guard name in the message that blocks a raw inbox read. |
+| `inbox_read.inbox_segment` | `inbox` |  |  | First path segment under the DevSwarm root whose files are the raw inbox. |
+| `inbox_read.msg_inbox_instead` | ``devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.` |  |  | What to do instead of reading the inbox. |
+| `inbox_read.msg_inbox_what` | `reading the raw DevSwarm inbox file directly is blocked.` |  |  | What the inbox block says was blocked. |
+| `inbox_read.msg_inbox_why` | `It does not drain the queue, but bypasses the durable cursor, so messages get...` |  |  | Why the inbox block applies. |
+| `inbox_read.msg_override` | `set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely` |  |  | How to disable the guard entirely. |
+| `inbox_read.setting` | `6 entries` |  |  | Where the on/off switch is read from (devswarm.inboxReadGuard, default on; it has no environment variable). |
+| `inbox_read.skip_name` | `devswarm-read-guard` |  |  | Name of the skip-file entry that disables the guard (a broad skip of everything does not cover it). |
+| `inbox_read.store_patterns` | `9 items` |  |  | Store-relative paths that are the raw store (JavaScript regex sources): the database and its sidecars and the journal files, per project key and in the old flat layout. |
+| `inbox_read.store_segment` | `store` |  |  | First path segment under the DevSwarm root whose files are the raw store. |
+| `inbox_read.summary` | `Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to No...` |  |  | One-line description of the inbox-read-guard check in the generated reference. |
+| `inbox_read.tool` | `Read` |  |  | The only tool the guard looks at. |
+
+### spawn_context.toml / orch_on_spawn
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `orch_on_spawn.agent_markers` | `agent_id, agent_type` |  |  | Payload fields whose mere presence (not null) marks a subagent's own call. |
+| `orch_on_spawn.spawn_tools` | `Agent, Task, Workflow, spawn_agent, collaborationspawn_agent` |  |  | Tool names that are a spawn: a call to any other named tool is ignored. |
+| `orch_on_spawn.summary` | `Silent unless a spawn-time delivery is pending: answers every case where Node...` |  |  | One-line description of the orch-on-spawn check in the generated reference. |
+
+### spawn_context.toml / orch_state
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `orch_state.codex_orch_full_on_setting` | `7 entries` |  |  | Where the Codex delivery mode of the full orchestration rules is read from (context.codexOrchFullOn). |
+| `orch_state.decisions` | `pending, none` |  |  | The decisions a marker may hold: the first is the one meaning the full text is still owed to the first spawn. |
+| `orch_state.dir` | `orch-full` |  |  | Directory of the orchestration markers and claims, relative to the state root. |
+| `orch_state.full_level` | `full` |  |  | The protocol level that sends today's full text everywhere. |
+| `orch_state.orch_full_on_setting` | `7 entries` |  |  | Where the delivery mode of the full orchestration rules is read from (context.orchFullOn). |
+| `orch_state.prefix` | `orch-full` |  |  | File-name prefix of every marker, claim and temporary file. |
+| `orch_state.protocol_setting` | `7 entries` |  |  | Where the protocol level (compact or full) is read from (context.protocolLevel). |
+| `orch_state.setting` | `6 entries` |  |  | Where the orchestration on/off switch is read from (context.verifyFirstOrchestration, default on; it has no environment variable). |
+| `orch_state.skip_name` | `orch-on-spawn` |  |  | Name of the skip-file entry that turns the spawn-time delivery off. |
+| `orch_state.stamp_prefix` | `.prune-stamp-` |  |  | File-name prefix of the prune stamp (the prefix is appended). |
+| `orch_state.throttle_ms` | `21600000` |  | ms | Shortest time between two prune sweeps. |
+| `orch_state.ttl_ms` | `604800000` |  | ms | How old a marker or claim must be (by modification time) before the prune sweep removes it. |
+
+### spawn_context.toml / phase_tracker
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `phase_tracker.agents_dir` | `agents` |  |  | Directory of the running-agents heartbeats, relative to the state root. |
+| `phase_tracker.cwd_hash_len` | `12` |  |  | How many hex characters of the working directory's SHA-1 the derived tag keeps. |
+| `phase_tracker.cwd_tag_prefix` | `cwd-` |  |  | Prefix of the session tag derived from the working directory. |
+| `phase_tracker.heartbeat_file` | `recent-spawn.json` |  |  | The rolling heartbeat file written on every spawn, inside the agents directory. |
+| `phase_tracker.keep_ms` | `300000` |  | ms | How long a spawn timestamp stays in the log. |
+| `phase_tracker.log_file` | `agent-spawns.log` |  |  | The spawn log, relative to the state root. |
+| `phase_tracker.summary` | `Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm...` |  |  | One-line description of the phase-tracker check in the generated reference. |
+| `phase_tracker.tag_max` | `64` |  |  | Longest session tag written next to a spawn timestamp. |
+| `phase_tracker.unknown_tag` | `unknown` |  |  | The session tag when the payload names neither a session nor a directory. |
+
+### spawn_context.toml / spawn_ctx
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `spawn_ctx.devswarm_kill_env` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Environment variable that, set to the kill value, turns DevSwarm detection off entirely (hooks/lib/devswarm-detect.js). |
+| `spawn_ctx.devswarm_kill_value` | `1` |  |  | The value of the DevSwarm kill variable that disables detection. |
+| `spawn_ctx.devswarm_repo_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable DevSwarm sets in the processes it spawns; a non-blank value means the session runs under DevSwarm. |
+| `spawn_ctx.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable that marks a judge child process; a hook that sees it set to the judge value does nothing (hooks/lib/judge-child-exit.js). |
+| `spawn_ctx.judge_child_value` | `1` |  |  | The value of the judge-child variable that turns a hook into a no-op. |
+| `spawn_ctx.real_home_optout_env` | `ANTIHALL_ALLOW_REAL_HOME_TEST` |  |  | Environment variable that lets a test run use the real home anyway (companion/lib/test-home-guard.js). |
+| `spawn_ctx.state_root` | `.anti-hall` |  |  | Directory under the home directory that holds every state file these hooks read or write. |
+| `spawn_ctx.supervisor_setting` | `7 entries` |  |  | Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode). |
+| `spawn_ctx.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; under one of them a state path inside the real user home is refused (companion/lib/test-home-guard.js). |
+| `spawn_ctx.unknown_session` | `unknown-session` |  |  | Session id used in a state file name when the real one sanitizes to nothing (hooks/lib/handover-find.js). |
+
+### spawn_context.toml / verify_first_orch
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `verify_first_orch.codex_transcript_patterns` | `(^\\|[\\/])rollout-[^\\/]*\.jsonl$, [\\/]\.codex[\\/]` |  |  | Transcript paths that identify a Codex session (JavaScript regex sources): a rollout file, or any path under a .codex directory. |
+| `verify_first_orch.compact_body` | `A/E. Delegate builds/tests/deploys/installs, noisy commands and broad searche...` |  |  | Lines of the compact orchestration text, after the first line. |
+| `verify_first_orch.compact_delivery` | `; sent in full on your first spawn` |  |  | The phrase added to the compact first line when the full text follows on the first spawn. |
+| `verify_first_orch.compact_first` | `ORCHESTRATION (main thread = coordinator; letters match the full rules A-N in...` |  |  | First line of the compact orchestration text. |
+| `verify_first_orch.compact_mn_codex` | `M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent;...` |  |  | The compact model-routing line for a Codex session. |
+| `verify_first_orch.config_dir_default` | `.claude` |  |  | The host's config directory under the home directory when the variable is not set. |
+| `verify_first_orch.config_dir_env` | `CLAUDE_CONFIG_DIR` |  |  | Environment variable that moves the host's config directory. |
+| `verify_first_orch.delivery_placeholder` | `<delivery>` |  |  | Placeholder in the compact first line that is replaced by the spawn-delivery phrase, or by nothing. |
+| `verify_first_orch.event` | `SessionStart` |  |  | The only event the hook answers. |
+| `verify_first_orch.full_lines` | `15 items` |  |  | Lines of the full orchestration text for a Claude session, joined with a newline. |
+| `verify_first_orch.full_lines_codex` | `15 items` |  |  | Lines of the full orchestration text for a Codex session, joined with a newline. |
+| `verify_first_orch.mn_prefix` | `M/N.` |  |  | How the compact body's model-routing line starts (that line is swapped for the Codex one). |
+| `verify_first_orch.projects_dir` | `projects` |  |  | Directory of the host's transcripts, relative to the host's config directory. |
+| `verify_first_orch.root_placeholder` | `<abs>` |  |  | Placeholder in the compact text that is replaced by the plugin root. |
+| `verify_first_orch.summary` | `SessionStart orchestration text for the Claude entry: composes the full or co...` |  |  | One-line description of the verify-first-orch check in the generated reference. |
 
 ### jev.toml / env
 
