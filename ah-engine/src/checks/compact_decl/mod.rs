@@ -164,7 +164,7 @@ fn is_new_work(p: &Value) -> Work {
 /// when the file is missing, empty or unreadable.
 ///
 /// Mirrors `lib/transcript-tail.js` `readTail`.
-fn read_tail(path: &str, max: u64) -> Option<Vec<String>> {
+pub(crate) fn read_tail(path: &str, max: u64) -> Option<Vec<String>> {
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();
     if size == 0 {
@@ -190,7 +190,7 @@ fn read_tail(path: &str, max: u64) -> Option<Vec<String>> {
 }
 
 /// ASCII-case-insensitive substring test on bytes.
-fn contains_ci(hay: &[u8], needle: &[u8]) -> bool {
+pub(crate) fn contains_ci(hay: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && hay.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
 }
 
@@ -314,7 +314,7 @@ fn classify(e: &Value) -> Step {
 
 /// A number with an exponent (`1e5`, `2E-3`) somewhere in the text: serde rejects one outside the finite range, which
 /// JavaScript reads as infinity.
-fn has_exponent(line: &str) -> bool {
+pub(crate) fn has_exponent(line: &str) -> bool {
     line.as_bytes().windows(3).enumerate().any(|(i, w)| {
         w[0].is_ascii_digit()
             && matches!(w[1], b'e' | b'E')
@@ -323,7 +323,7 @@ fn has_exponent(line: &str) -> bool {
 }
 
 /// How deeply a JSON text nests (brackets outside strings).
-fn json_depth(line: &str) -> usize {
+pub(crate) fn json_depth(line: &str) -> usize {
     let (mut depth, mut max, mut in_str, mut esc) = (0usize, 0usize, false, false);
     for c in line.chars() {
         if in_str {
@@ -349,11 +349,11 @@ fn json_depth(line: &str) -> usize {
     max
 }
 
-/// Whether the current turn's assistant text may hold a declaration. `None` when a line could not be handled exactly.
+/// The assistant text of the current turn, one part per text block, in order. `None` when a line could not be handled
+/// exactly.
 ///
-/// Mirrors `compact-advice.js` `readTurn` (the turn text only), reduced to "does it contain the safe word".
-fn turn_may_declare(lines: &[String]) -> Option<bool> {
-    let word = defaults::text("compact_decl.safe_word").as_bytes();
+/// Mirrors `compact-advice.js` `readTurn` (the turn text only).
+pub(crate) fn turn_texts(lines: &[String]) -> Option<Vec<String>> {
     let mut parts: Vec<String> = Vec::new();
     for line in lines.iter().filter(|l| !l.is_empty()) {
         let e: Value = match serde_json::from_str(line) {
@@ -376,7 +376,15 @@ fn turn_may_declare(lines: &[String]) -> Option<bool> {
             Step::Other => {}
         }
     }
-    Some(parts.iter().any(|t| contains_ci(t.as_bytes(), word)))
+    Some(parts)
+}
+
+/// Whether the current turn's assistant text may hold a declaration. `None` when a line could not be handled exactly.
+///
+/// Mirrors `compact-advice.js` `readTurn` (the turn text only), reduced to "does it contain the safe word".
+fn turn_may_declare(lines: &[String]) -> Option<bool> {
+    let word = defaults::text("compact_decl.safe_word").as_bytes();
+    Some(turn_texts(lines)?.iter().any(|t| contains_ci(t.as_bytes(), word)))
 }
 
 /// The check's decision on one payload. `None`: allow.

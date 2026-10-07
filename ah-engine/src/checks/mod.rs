@@ -12,6 +12,7 @@ pub mod coordinator_work;
 pub mod emit_dedupe;
 pub mod fable_availability;
 pub mod failure_nudge;
+pub mod ctxbudget;
 pub mod git;
 pub mod guardkit;
 pub mod idle_agent_sweep;
@@ -128,7 +129,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 20] = [
+    static ALL: [&dyn Check; 24] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -149,6 +150,10 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &verify_first_prompt::VerifyFirst,
         &idle_agent_sweep::IdleAgentSweep,
         &emit_dedupe::EmitDedupeReset,
+        &ctxbudget::limit::LimitConserveInject,
+        &ctxbudget::handover::AutoHandover,
+        &ctxbudget::handover::AutoHandoverPauseNag,
+        &ctxbudget::advice::CompactAdviceGuard,
     ];
     &ALL
 }

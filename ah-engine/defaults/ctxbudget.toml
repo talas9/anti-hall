@@ -1,0 +1,190 @@
+# ah-engine shipped defaults for the context-budget and handover gates ported from Node (limit-conserve-inject,
+# auto-handover, auto-handover-pause-nag, compact-advice-guard) and the helpers they share (D17, D30, D74).
+#
+# Every file name, setting name, limit and message of these checks lives here. The settings tables
+# (`ctxbudget.set_*`) describe one entry of hooks/lib/settings-schema.js each: `kind` is bool, num or enum; `env` and
+# `aliases` are the environment names; `option` is the plugin option name (empty: none); `manifest_default` is the text
+# a stored plugin option must equal to count as "never touched" (the default the plugin manifest or the schema carries);
+# `default` is the schema default; `min`/`max` clamp a number, `values` lists the words of an enum. Format of the file:
+# see the header of engine.toml.
+
+# ---- shared ---------------------------------------------------------------------------------------------------
+
+[ctxbudget.judge_child_env]
+doc = "Environment variable the judge child sets to 1 so that every hook is a no-op (hooks/lib/judge-child-exit.js)."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[ctxbudget.judge_child_on]
+doc = "The value of the judge child variable that turns the hooks into no-ops."
+value = "1"
+
+[ctxbudget.home_env]
+doc = "Environment variable that holds the home directory (Node's os.homedir() reads it first on POSIX)."
+value = "HOME"
+
+[ctxbudget.ups_empty]
+doc = "The exact stdout line of a UserPromptSubmit hook that injects nothing (an empty additionalContext), newline included."
+value = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n"
+
+[ctxbudget.skip_limit_conserve]
+doc = "The skip-file name of the limit-conserve-inject guard."
+value = "limit-conserve"
+
+[ctxbudget.skip_auto_handover]
+doc = "The skip-file name of the auto-handover and auto-handover-pause-nag guards."
+value = "auto-handover"
+
+[ctxbudget.skip_compact_advice]
+doc = "The skip-file name of the compact-advice-guard."
+value = "compact-advice-guard"
+
+[ctxbudget.tail_bytes]
+doc = "How many bytes of the end of a transcript the guards read (hooks/lib/transcript-tail.js MAX_TAIL_BYTES)."
+value = 1572864
+unit = "bytes"
+
+[ctxbudget.deep_json_depth]
+doc = "Nesting depth beyond which a transcript or state line the engine cannot parse is deferred to Node (the Node parser has no such limit)."
+value = 100
+
+[ctxbudget.session_tag_max]
+doc = "Characters of a session id kept in a state file tag (hooks/lib/auto-handover-state.js sessionTag)."
+value = 64
+
+[ctxbudget.state_root]
+doc = "The directory under the home directory that holds the guards' state files."
+value = ".anti-hall"
+
+[ctxbudget.latch_dir]
+doc = "The directory under the state root that holds the per-session auto-handover latch files."
+value = "auto-handover"
+
+[ctxbudget.pct_dir]
+doc = "The directory under the state root that holds the statusline context readings (context-pct) and the inferred-window latches."
+value = "context-pct"
+
+[ctxbudget.inferred_suffix]
+doc = "File name suffix of the inferred one-million-token window latch next to a session's context reading."
+value = ".inferred-1m.json"
+
+[ctxbudget.context_window_env]
+doc = "Environment variable that overrides the context window size, in tokens (always wins over the other window sources)."
+value = "ANTIHALL_CONTEXT_WINDOW_TOKENS"
+
+[ctxbudget.pct_fresh_ms]
+doc = "How old a statusline context reading may be and still be used before the transcript is consulted instead."
+value = 600000
+unit = "ms"
+
+[ctxbudget.default_window]
+doc = "The context window assumed when no source states one, in tokens (the reading is then flagged as unknown)."
+value = 200000
+unit = "tokens"
+
+[ctxbudget.inferred_window]
+doc = "The window assumed once the observed usage has exceeded the default window, in tokens."
+value = 1000000
+unit = "tokens"
+
+[ctxbudget.token_count_marker]
+doc = "Substring that a Codex rollout line must hold to be parsed as a token_count reading."
+value = "token_count"
+
+[ctxbudget.usage_marker]
+doc = "Substring that a Claude transcript line must hold to be parsed as an assistant usage reading."
+value = '"usage"'
+
+# ---- limit-conserve-inject (hooks/limit-conserve-inject.js, hooks/limit-conserve.js) -------------------------
+
+[ctxbudget.summary_limit_conserve]
+doc = "One-line description of the limit-conserve-inject check in the generated reference."
+value = "UserPromptSubmit: answers the quiet case (conservation off, no usage cache, or no bucket over the threshold) with an empty context; an active conservation, which needs account-switch state and emit-dedupe writes, defers to the Node hook (port of limit-conserve-inject.js)."
+
+[ctxbudget.usage_cache]
+doc = "The OMC usage cache file, relative to the home directory."
+value = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json"
+
+[ctxbudget.usage_max_stale_ms]
+doc = "Snapshot age beyond which a bucket without a usable reset time counts as 0 percent (hooks/limit-conserve.js MAX_STALE_MS)."
+value = 21600000
+unit = "ms"
+
+[ctxbudget.set_limit_mode]
+doc = "The limitConserve.mode setting: force conservation on or off, or auto-detect from the usage cache."
+value = { section = "limitConserve", key = "mode", kind = "enum", values = ["auto", "on", "off"], env = "ANTIHALL_LIMIT_CONSERVE", aliases = [], option = "limit_conserve_mode", manifest_default = "auto", default = "auto" }
+
+[ctxbudget.set_limit_threshold]
+doc = "The limitConserve.threshold setting: the usage percent at which conservation starts."
+value = { section = "limitConserve", key = "threshold", kind = "num", env = "ANTIHALL_LIMIT_THRESHOLD", aliases = [], option = "limit_conserve_threshold", manifest_default = "85", default = 85, min = 1, max = 99 }
+
+# ---- auto-handover and auto-handover-pause-nag ----------------------------------------------------------------
+
+[ctxbudget.summary_auto_handover]
+doc = "One-line description of the auto-handover check in the generated reference."
+value = "UserPromptSubmit: answers the cases that write no state and inject nothing (a subagent, a skipped or disabled feature, context below the threshold with the latch not set); a threshold crossing, a nag, the new-work gate and a latch reset defer to the Node hook (port of auto-handover.js)."
+
+[ctxbudget.summary_pause_nag]
+doc = "One-line description of the auto-handover-pause-nag check in the generated reference."
+value = "Stop: answers the cases that block nothing and write no state (a subagent, a continued stop, a skipped or disabled feature, context below the threshold with the latch not set, a nag inside its step and quiet window); a fire, a re-arm and a nag defer to the Node hook (port of auto-handover-pause-nag.js)."
+
+[ctxbudget.env_pct_off]
+doc = "Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express)."
+value = "ANTIHALL_AUTO_HANDOVER_PCT"
+
+[ctxbudget.set_ah_enabled]
+doc = "The autoHandover.enabled setting: write an automatic handover before the context runs out."
+value = { section = "autoHandover", key = "enabled", kind = "bool", env = "", aliases = [], option = "auto_handover_enabled", manifest_default = "true", default = true }
+
+[ctxbudget.set_ah_pct]
+doc = "The autoHandover.pct setting: the context percent that triggers the handover."
+value = { section = "autoHandover", key = "pct", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_PCT", aliases = [], option = "auto_handover_pct", manifest_default = "85", default = 85, min = 1, max = 99 }
+
+[ctxbudget.set_ah_max_tokens]
+doc = "The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none)."
+value = { section = "autoHandover", key = "maxTokens", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", aliases = [], option = "auto_handover_max_tokens", manifest_default = "0", default = 0, min = 0 }
+
+[ctxbudget.set_ah_nag]
+doc = "The autoHandover.nag setting: remind when a handover is due."
+value = { section = "autoHandover", key = "nag", kind = "bool", env = "", aliases = [], option = "auto_handover_nag", manifest_default = "true", default = true }
+
+[ctxbudget.set_ah_nag_step]
+doc = "The autoHandover.nagStepPct setting: the context points between two nags."
+value = { section = "autoHandover", key = "nagStepPct", kind = "num", env = "", aliases = [], option = "auto_handover_nag_step_pct", manifest_default = "5", default = 5, min = 1, max = 100 }
+
+[ctxbudget.set_ah_nag_quiet]
+doc = "The autoHandover.nagQuietMin setting: the minutes between two nags at a quiet pause."
+value = { section = "autoHandover", key = "nagQuietMin", kind = "num", env = "", aliases = [], option = "auto_handover_nag_quiet_min", manifest_default = "15", default = 15, min = 1 }
+
+# ---- compact-advice-guard ------------------------------------------------------------------------------------
+
+[ctxbudget.summary_compact_advice]
+doc = "One-line description of the compact-advice-guard check in the generated reference."
+value = "Stop: allows every turn whose final text cannot hold a compact recommendation (no wording a recommendation needs); a possible recommendation defers to the Node hook, which owns the phrase analysis, the context rules and the block (port of compact-advice-guard.js)."
+
+[ctxbudget.set_compact_advice_guard]
+doc = "The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or just after a compact."
+value = { section = "guards", key = "compactAdviceGuard", kind = "bool", env = "", aliases = [], option = "guards_compact_advice_guard", manifest_default = "true", default = true }
+
+[ctxbudget.advice_needs_safe]
+doc = "Words that, together with the word safe, can form a compact recommendation (safe to compact, safe to /clear, safe for a reset or /new); a final text with none of the pairs holds no recommendation."
+value = ["compact", "/clear", "reset", "/new"]
+
+[ctxbudget.advice_safe_word]
+doc = "The word that opens the safe-to and safe-for recommendation wordings."
+value = "safe"
+
+[ctxbudget.advice_slash_compact]
+doc = "The slash command whose mention alone can be a recommendation (run /compact, a standalone /compact line)."
+value = "/compact"
+
+[ctxbudget.advice_good_word]
+doc = "The word that opens the good-point-to recommendation wording."
+value = "good"
+
+[ctxbudget.advice_needs_good]
+doc = "Words that, together with the word good, can form a good-point-to recommendation (good point to compact, /clear or /new)."
+value = ["compact", "clear", "/new"]
+
+[ctxbudget.advice_prefilter]
+doc = "Substrings whose absence from the whole transcript tail (and from every unicode escape) proves that no assistant text of it can hold a compact recommendation."
+value = ["compact", "clear", "reset", "/new"]

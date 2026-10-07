@@ -60,8 +60,16 @@ labelled with how it was measured in the README of `ah-engine/`.
   state file, transcript line or timestamp that JavaScript might read differently defers the whole hook to Node before
   anything is written; so does a possible DevSwarm Primary session for `verify-first`, whose extra sentence depends on
   the repo's `CLAUDE.md` chain.
+- **Context-budget gates.** `limit-conserve-inject`, `auto-handover` (both UserPromptSubmit), `auto-handover-pause-nag` and
+  `compact-advice-guard` (both Stop) answer the case in which the Node hook injects nothing, blocks nothing and writes no
+  file: the feature off or skipped, a subagent, context below the threshold, no usage bucket over its limit, a turn whose
+  final text holds no compact-recommendation wording. Every other case (a fire, a nag, a re-arm, an active conservation,
+  a possible recommendation) defers, so the files those hooks write (the per-session latch, the account-switch file, the
+  emit-dedupe state, the once-per-declaration hash) are only ever written by the Node implementation (`checks/ctxbudget`,
+  `defaults/ctxbudget.toml`).
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  twenty: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
+  twenty-four: `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
   the five small guard ports above: `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
@@ -101,6 +109,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `failure-root-cause-nudge` check: the PostToolUseFailure advisory with its noise filter (expected exit-1 predicates, harness refusals, once per turn through the Node turn-gate file) with exact parity | implemented | D29-D31, D75 |
 | Built-in `scan-throttle` check (advisory throttle prefix for user-configured heavy scans) with exact parity; patterns it cannot match exactly defer | implemented | D29-D31, D75 |
 | Built-in `ship-it-guard` check (opt-in plan gate for Edit, Write and MultiEdit; Bash and apply_patch defer to Node) with exact parity | implemented | D29-D31, D75 |
+| Built-in `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` checks: the quiet case of each hook, exact (stdout bytes, exit code and no state written); every fire, nag, re-arm, active conservation and possible compact recommendation defers to Node | implemented | D29-D31, D74, D75 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
@@ -463,6 +472,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
+| `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |

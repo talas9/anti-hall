@@ -48,7 +48,8 @@ pub(crate) fn read_object(st: &Settings, rel: &str) -> Option<serde_json::Map<St
     if st.home.is_empty() {
         return None;
     }
-    let txt = std::fs::read_to_string(format!("{}/{rel}", st.home)).ok()?;
+    // Node reads the file as UTF-8 with replacement characters, so invalid bytes do not make it unreadable there.
+    let txt = String::from_utf8_lossy(&std::fs::read(format!("{}/{rel}", st.home)).ok()?).into_owned();
     match serde_json::from_str::<Value>(&txt) {
         Ok(Value::Object(o)) => Some(o),
         _ => None,
