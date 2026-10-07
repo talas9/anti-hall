@@ -74,7 +74,7 @@ test('judge status: off / on, key, model; key never printed', () => {
     assert.strictEqual(r.code, 0, r.out);
     assert.match(r.out, /judge: off/);
     assert.match(r.out, /key: not visible/i);
-    assert.match(r.out, /model: claude-haiku-4-5/);
+    assert.match(r.out, /model: haiku/);
     cli(['judge', 'on'], h.home);
     r = cli(['judge', 'status'], h.home, { CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY: SECRET });
     assert.match(r.out, /judge: on/);
