@@ -143,3 +143,13 @@ pub fn js_truthy(v: Option<&serde_json::Value>) -> bool {
         Some(_) => true,
     }
 }
+
+/// `String.prototype.trimStart`.
+pub fn js_trim_start(s: &str) -> &str {
+    s.trim_start_matches(is_js_space)
+}
+
+/// `String.prototype.trimEnd`.
+pub fn js_trim_end(s: &str) -> &str {
+    s.trim_end_matches(is_js_space)
+}

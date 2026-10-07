@@ -11,6 +11,7 @@
 //! are the reliable route; the git check has the same limit.
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::text::{js_string_of, js_trim};
+use crate::checks::lit_re;
 use crate::defaults::{self, V};
 use serde_json::Value;
 
@@ -79,19 +80,95 @@ pub(crate) fn stored_options(st: &Settings) -> Option<serde_json::Map<String, Va
 }
 
 /// The value one boolean switch resolves to before its default: `None` when no source sets it.
-fn resolve(st: &Settings, entry: &V) -> Option<bool> {
+/// The type a setting's value is read as (`coerceValue` of `hooks/lib/settings.js`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ty {
+    Bool,
+    Num,
+    Enum,
+}
+
+/// A coerced setting value.
+#[derive(Clone, Debug, PartialEq)]
+enum Val {
+    B(bool),
+    N(f64),
+    S(String),
+}
+
+/// `Number(s)` for a trimmed, non-empty string, `None` when it is not a finite number.
+pub fn js_number(s: &str) -> Option<f64> {
+    let t = s.trim_start_matches(['+', '-']);
+    let lower = t.to_ascii_lowercase();
+    for (p, radix) in [("0x", 16), ("0o", 8), ("0b", 2)] {
+        if let Some(rest) = lower.strip_prefix(p)
+            && t.len() == s.len()
+        {
+            return u64::from_str_radix(rest, radix).ok().map(|n| n as f64);
+        }
+    }
+    let ok = lit_re(defaults::text("guardkit.js_decimal_re")).is_match(s);
+    if !ok {
+        return None;
+    }
+    s.parse::<f64>().ok().filter(|f| f.is_finite())
+}
+
+fn coerce_str(ty: Ty, entry: &V, raw: &str) -> Option<Val> {
+    let t = js_trim(raw);
+    if t.is_empty() {
+        return None;
+    }
+    match ty {
+        Ty::Bool => token(t).map(Val::B),
+        Ty::Num => {
+            let mut n = js_number(t)?;
+            if let Some(min) = entry.get("min").and_then(V::as_integer)
+                && n < min as f64
+            {
+                n = min as f64;
+            }
+            Some(Val::N(n))
+        }
+        Ty::Enum => {
+            let lower = t.to_lowercase();
+            entry.get("values").map(V::strings).unwrap_or_default().contains(&lower.as_str()).then_some(Val::S(lower))
+        }
+    }
+}
+
+fn coerce_value(ty: Ty, entry: &V, v: &Value) -> Option<Val> {
+    match (ty, v) {
+        (_, Value::String(s)) => coerce_str(ty, entry, s),
+        (Ty::Bool, Value::Bool(b)) => Some(Val::B(*b)),
+        (Ty::Bool, Value::Number(_)) => coerce_json(v).map(Val::B),
+        (Ty::Num, Value::Number(n)) => {
+            let mut f = n.as_f64().filter(|f| f.is_finite())?;
+            if let Some(min) = entry.get("min").and_then(V::as_integer)
+                && f < min as f64
+            {
+                f = min as f64;
+            }
+            Some(Val::N(f))
+        }
+        (Ty::Enum, Value::Number(_) | Value::Bool(_)) => js_string_of(v).and_then(|s| coerce_str(ty, entry, &s)),
+        _ => None,
+    }
+}
+
+fn resolve_typed(st: &Settings, entry: &V, ty: Ty) -> Option<Val> {
     let env_name = entry.str_field("env");
     if !env_name.is_empty() {
         let names = std::iter::once(env_name).chain(entry.get("aliases").map(V::strings).unwrap_or_default());
         for n in names {
-            if let Some(b) = st.env.get(n).and_then(|v| token(v)) {
-                return Some(b);
+            if let Some(v) = st.env.get(n).and_then(|raw| coerce_str(ty, entry, raw)) {
+                return Some(v);
             }
         }
     }
     let (section, key) = (entry.str_field("section"), entry.str_field("key"));
     if let Some(v) = read_object(st, defaults::text("guardkit.settings_file"))
-        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(coerce_json))
+        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|v| coerce_value(ty, entry, v)))
     {
         return Some(v);
     }
@@ -99,17 +176,50 @@ fn resolve(st: &Settings, entry: &V) -> Option<bool> {
     if option.is_empty() {
         return None;
     }
-    let default = entry.get("default").and_then(V::as_bool).unwrap_or(false).to_string();
+    let default = default_string(entry);
     let env_key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), option.to_ascii_uppercase());
     if let Some(raw) = st.env.get(&env_key) {
-        return if *raw == default { None } else { token(raw) };
+        return if *raw == default { None } else { coerce_str(ty, entry, raw) };
     }
     let stored = stored_options(st)?;
     let v = stored.get(option)?;
     if js_string_of(v).is_some_and(|s| s == default) {
         return None;
     }
-    coerce_json(v)
+    coerce_value(ty, entry, v)
+}
+
+/// `String(default)` of a setting entry.
+fn default_string(entry: &V) -> String {
+    match entry.get("default") {
+        Some(d) => d.as_bool().map(|b| b.to_string()).or_else(|| d.as_integer().map(|i| i.to_string())).or_else(|| d.as_str().map(str::to_string)).unwrap_or_default(),
+        None => false.to_string(),
+    }
+}
+
+/// The value one boolean switch resolves to before its default: `None` when no source sets it.
+fn resolve(st: &Settings, entry: &V) -> Option<bool> {
+    match resolve_typed(st, entry, Ty::Bool) {
+        Some(Val::B(b)) => Some(b),
+        _ => None,
+    }
+}
+
+/// An enum setting (`settings.get` of a `type: 'enum'` entry): the first tier that holds one of the entry's `values`,
+/// else its `default`.
+pub fn get_enum(st: &Settings, entry: &V) -> String {
+    match resolve_typed(st, entry, Ty::Enum) {
+        Some(Val::S(s)) => s,
+        _ => entry.str_field("default").to_string(),
+    }
+}
+
+/// A numeric setting: the first tier that holds a finite number (raised to the entry's `min`), else its `default`.
+pub fn get_number(st: &Settings, entry: &V) -> f64 {
+    match resolve_typed(st, entry, Ty::Num) {
+        Some(Val::N(n)) => n,
+        _ => entry.get("default").and_then(V::as_integer).unwrap_or(0) as f64,
+    }
 }
 
 /// The effective value of a boolean switch: `entry` is the switch table from the defaults.

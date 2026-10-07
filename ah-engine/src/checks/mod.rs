@@ -7,6 +7,8 @@
 //! Why a trait plus a registry instead of a `match` on names: rules refer to checks by name from data
 //! files, so the set of valid names must be discoverable at runtime (rule validation, `docs`, `status`).
 pub mod claim_ledger;
+pub mod agent_scan;
+pub mod ask_guard;
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
@@ -33,6 +35,8 @@ pub mod speculation_judge;
 pub mod verify_first;
 pub mod verify_first_orch;
 pub mod verify_first_prompt;
+pub mod silent_agent_nudge;
+pub mod stale_agent_stop_note;
 
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
@@ -135,7 +139,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 34] = [
+    static ALL: [&dyn Check; 37] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -170,6 +174,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &speculation_judge::SpeculationJudge,
         &claim_ledger::ClaimLedger,
         &output_verify::OutputVerifyGuard,
+        &ask_guard::AskGuard,
+        &silent_agent_nudge::SilentAgentNudge,
+        &stale_agent_stop_note::StaleAgentStopNote,
     ];
     &ALL
 }

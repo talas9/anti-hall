@@ -1,0 +1,496 @@
+# ah-engine shipped defaults for the agent and transcript controls ported from Node: ask-guard, silent-agent-nudge and
+# stale-agent-stop-note, and the transcript agent scan they share (hooks/lib/agent-scan.js). Every pattern, message, setting
+# name and limit of these checks lives here (D17, D30). Regex sources are written as TOML literal strings so no backslash is
+# doubled; those under `agent_scan.re_` are JavaScript sources translated by `checks::guardkit::jsre` unless their doc says
+# they are Rust regex sources. Format: see the header of engine.toml.
+
+# ---- the transcript agent scan (hooks/lib/agent-scan.js, hooks/lib/transcript-tail.js) --------------------------
+
+[agent_scan.tail_bytes]
+doc = "Bytes read from the end of a transcript by the default scan (MAX_TAIL_BYTES of hooks/lib/transcript-tail.js)."
+value = 1572864
+unit = "bytes"
+
+[agent_scan.wide_tail_bytes]
+doc = "Bytes read by the one widened scan that proves a zero running-agent count on a transcript longer than the default window (WIDE_TAIL_BYTES of hooks/lib/agent-scan.js)."
+value = 12582912
+unit = "bytes"
+
+[agent_scan.retain_bytes]
+doc = "Most text of tool results the scan keeps for its delivered-but-unnotified safety net; a scan that would keep more defers to the Node hook so the daemon's memory stays bounded."
+value = 8388608
+unit = "bytes"
+
+[agent_scan.pending_silence_ms]
+doc = "How long a teammate with an unanswered message still counts as running without a sign of life (PENDING_MESSAGE_SILENCE_MS of hooks/lib/agent-scan.js)."
+value = 1200000
+unit = "ms"
+
+[agent_scan.report_future_skew_ms]
+doc = "How far past its own entry a teammate report's inner timestamp may lie before the report is treated as forged (REPORT_FUTURE_SKEW_MS)."
+value = 5000
+unit = "ms"
+
+[agent_scan.resume_skew_slack_ms]
+doc = "How far before a resume record a terminal notice may be stamped and still stand (RESUME_SKEW_SLACK_MS)."
+value = 2000
+unit = "ms"
+
+[agent_scan.safe_int]
+doc = "Largest integer JavaScript prints exactly (2^53 - 1); a tool input holding a number outside it is judged by the Node hook, whose number text differs."
+value = 9007199254740991
+
+[agent_scan.launch_text]
+doc = "Text a launch tool_result begins with."
+value = "Async agent launched successfully"
+
+[agent_scan.notification_tag]
+doc = "The opening tag of a completion notice."
+value = "<task-notification>"
+
+[agent_scan.agent_tool]
+doc = "Name of the tool whose input carries the description of a launched agent."
+value = "Agent"
+
+[agent_scan.stop_tool]
+doc = "Name of the tool that stops an agent."
+value = "TaskStop"
+
+[agent_scan.launch_tools]
+doc = "Tools whose tool_result can be a launch of an agent."
+value = ["Agent", "Task"]
+
+[agent_scan.resume_tools]
+doc = "Tools whose tool_result can be a resume of an agent."
+value = ["SendMessage", "Agent", "Task"]
+
+[agent_scan.delivery_tools]
+doc = "Tools whose tool_result can deliver an agent's result."
+value = ["TaskOutput", "SendMessage"]
+
+[agent_scan.send_tools]
+doc = "Tools whose tool_result can be a message sent to a teammate's inbox."
+value = ["SendMessage"]
+
+[agent_scan.prefilter]
+doc = "Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment and a teammate idle notice."
+value = { launch = "Async agent launched successfully", notification = "<task-notification>", agent_use = '"name":"Agent"', agent_use_spaced = '"name": "Agent"', tool_result = "tool_result", taskstop = '"name":"TaskStop"', taskstop_spaced = '"name": "TaskStop"', task_status = '"task_status"', tool_use = '"tool_use"', idle = "idle_notification" }
+
+[agent_scan.teammate_report_prefix]
+doc = "Text a teammate report entry begins with."
+value = "Another Claude session sent a message:"
+
+[agent_scan.not_a_report_keys]
+doc = "Keys the host stamps on records that come from a person, a queue, a tool result or a compaction, and never on a real teammate report (NOT_A_REPORT_KEYS)."
+value = ["origin", "promptSource", "turnOrigin", "permissionMode", "isMeta", "isCompactSummary", "isSidechain", "toolUseResult", "sourceToolAssistantUUID", "imagePasteIds", "queuePriority", "scheduledTaskId"]
+
+[agent_scan.sidechain_key]
+doc = "The one key of the list above that only counts when it is true."
+value = "isSidechain"
+
+[agent_scan.resuming_word]
+doc = "Word a resume tool_result carries."
+value = "Resuming"
+
+[agent_scan.resumed_key]
+doc = "Field of a resume tool_result that holds the full agent id."
+value = "resumedAgentId"
+
+[agent_scan.queued_phrase]
+doc = "Phrase of the result of a message queued for a running agent."
+value = "Message queued for delivery to"
+
+[agent_scan.inbox_phrase]
+doc = "Phrase of the result of a message sent to a teammate's inbox."
+value = "'s inbox"
+
+[agent_scan.empty_object]
+doc = "What JSON.stringify gives for a missing tool input."
+value = "{}"
+
+[agent_scan.object_string]
+doc = "What String() gives for an object."
+value = "[object Object]"
+
+[agent_scan.undefined_string]
+doc = "What String() gives for a missing value."
+value = "undefined"
+
+[agent_scan.utc_suffix]
+doc = "Suffix of a clock time in a note."
+value = " UTC"
+
+[agent_scan.transcript_ext]
+doc = "Extension of a transcript file."
+value = ".jsonl"
+
+[agent_scan.subagents_dir]
+doc = "Directory, beside a transcript's own name, that holds the transcripts of its subagents."
+value = "subagents"
+
+[agent_scan.sidechain_prefix]
+doc = "Prefix of a subagent transcript's file name."
+value = "agent-a"
+
+[agent_scan.json_unsupported]
+doc = "Fragments of a JSON parser error that mean the text is JSON to JavaScript but not to serde (nesting past the parser's limit, a number past f64 range); such a line defers to the Node hook."
+value = ["recursion limit", "out of range"]
+
+[agent_scan.re_surrogate_escape]
+doc = "Rust regex source of an escape for a UTF-16 surrogate half: JavaScript reads a lone one, serde does not, so text that holds one and fails to parse defers to the Node hook."
+value = '\\u[dD][89a-fA-F][0-9a-fA-F]{2}'
+
+[agent_scan.re_notification_block]
+doc = "Rust regex source of one completion notice block, lazily to the first closing tag."
+value = '(?s)<task-notification>(.*?)</task-notification>'
+
+[agent_scan.re_task_id]
+doc = "Rust regex source of the task id inside a notice."
+value = '<task-id>([^<]*)</task-id>'
+
+[agent_scan.re_status]
+doc = "Rust regex source of the status inside a notice."
+value = '<status>([^<]*)</status>'
+
+[agent_scan.re_agent_id]
+doc = "JavaScript regex source of the agent id in a launch result."
+value = 'agentId:\s*([0-9a-fA-F]{6,40})'
+
+[agent_scan.re_output_file]
+doc = "JavaScript regex source of the output file in a launch result."
+value = 'output_file:\s*(\S+)'
+
+[agent_scan.re_resume_message]
+doc = "JavaScript regex source (case-insensitive) of the start of a resume message."
+value = '^Resuming\s+agent\s+([0-9a-fA-F]{6,40})'
+
+[agent_scan.re_hex_id]
+doc = "Rust regex source of a whole agent id."
+value = '^[0-9a-fA-F]{6,40}$'
+
+[agent_scan.re_hex_run]
+doc = "Rust regex source of a run of hex digits that may name an agent by prefix."
+value = '[0-9a-fA-F]{7,40}'
+
+[agent_scan.re_running_row]
+doc = "JavaScript regex source (case-insensitive) of a status row that says an agent is still running."
+value = '·\s*running\b'
+
+[agent_scan.re_notification_in_reminder]
+doc = "JavaScript regex source of a completion notice directly inside a system reminder."
+value = '<system-reminder>\s*<task-notification>'
+
+[agent_scan.re_inbox_send]
+doc = "JavaScript regex source of the message of a send to a teammate's inbox."
+value = "^Message sent to (.+)'s inbox$"
+
+[agent_scan.re_teammate_block]
+doc = "Rust regex source of one teammate message block at the start of the text, lazily to the first closing line."
+value = '(?s)\A<teammate-message teammate_id="([^"]+)"[^>]*>\n(.*?)\n</teammate-message>'
+
+[agent_scan.re_queued_message]
+doc = "JavaScript regex source of the message of a send to a running agent."
+value = '^Message queued for delivery to\s'
+
+[agent_scan.re_iso_datetime]
+doc = "Rust regex source of the ISO date-time with an explicit zone that the scan reads itself; other timestamp forms defer to the Node hook."
+value = '^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]+))?)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+
+[agent_scan.re_iso_date]
+doc = "Rust regex source of the ISO date alone (read as UTC midnight)."
+value = '^([0-9]{4})-([0-9]{2})-([0-9]{2})$'
+
+# ---- shared setting reading --------------------------------------------------------------------------------
+
+[guardkit.js_decimal_re]
+doc = "Rust regex source of the text JavaScript's Number() reads as a decimal number (the hexadecimal, octal and binary forms are read separately)."
+value = '^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$'
+
+# ---- ask-guard (hooks/ask-guard.js) ------------------------------------------------------------------------
+
+[ask_guard.summary]
+doc = "One-line description of the ask-guard check in the generated reference."
+value = "Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js)."
+
+[ask_guard.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "ask-guard"
+
+[ask_guard.tool]
+doc = "The tool this check answers."
+value = "AskUserQuestion"
+
+[ask_guard.mode_setting]
+doc = "Where the question mode is read from (guards.noBlockingQuestions: off, advise or block; default off)."
+value = { section = "guards", key = "noBlockingQuestions", env = "ANTIHALL_NO_BLOCKING_QUESTIONS", aliases = [], option = "", default = "off", values = ["off", "advise", "block"] }
+
+[ask_guard.note_setting]
+doc = "Where the in-flight agents note switch is read from (guards.questionAgentsNote, default on)."
+value = { section = "guards", key = "questionAgentsNote", env = "ANTIHALL_QUESTION_AGENTS_NOTE", aliases = [], option = "", default = true }
+
+[ask_guard.marker_re]
+doc = "Rust regex source of the marker a question starts with when it is allowed in block mode."
+value = '^(DESTRUCTIVE|CREDENTIAL):'
+
+[ask_guard.advise_what]
+doc = "Headline of the standing-rule advice."
+value = "do not hold work on a question."
+
+[ask_guard.advise_instead]
+doc = "What to do instead, in the standing-rule advice."
+value = "take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line."
+
+[ask_guard.block_what]
+doc = "Headline of the block message."
+value = "AskUserQuestion blocked by guards.noBlockingQuestions."
+
+[ask_guard.block_why]
+doc = "Why line of the block message."
+value = "Work should not wait on a question."
+
+[ask_guard.block_instead]
+doc = "What to do instead, in the block message."
+value = "decide the recommended option yourself, state it in your reply, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line."
+
+[ask_guard.block_allowed]
+doc = "What stays allowed, in the block message."
+value = "a question about a destructive or irreversible action, with the question header starting DESTRUCTIVE: (or CREDENTIAL: for a secret only the user can supply)."
+
+[ask_guard.child_text]
+doc = "Sentence appended in a child workspace, which asks its parent instead of the user."
+value = "\nChild workspace: send the question to your parent with `devswarm.js send --to-primary --question \"...\"` instead of asking the user directly."
+
+[ask_guard.child_env]
+doc = "Environment variable whose non-blank value marks a child workspace."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[ask_guard.log_file]
+doc = "NDJSON log of allowed question markers, relative to the home directory."
+value = ".anti-hall/logs/ask-guard.ndjson"
+
+[ask_guard.log_event]
+doc = "Event name of a logged marker."
+value = "marker-allowed"
+
+[ask_guard.note_max_listed]
+doc = "Most agents the in-flight note names."
+value = 5
+min = 1
+
+[ask_guard.note_desc_max]
+doc = "Longest description, in UTF-16 units, the in-flight note shows for an agent."
+value = 60
+min = 1
+
+[ask_guard.note_unnamed]
+doc = "Name the in-flight note gives an agent with no description."
+value = "unnamed agent"
+
+[ask_guard.note_control_re]
+doc = "Rust regex source of the control characters collapsed to a space in an agent description."
+value = '[\x00-\x1f\x7f]+'
+
+[ask_guard.note_head]
+doc = "Text after the count in the in-flight note."
+value = " background agent"
+
+[ask_guard.note_one]
+doc = "Verb of the note for one agent."
+value = " is"
+
+[ask_guard.note_many]
+doc = "Suffix and verb of the note for several agents."
+value = "s are"
+
+[ask_guard.note_mid]
+doc = "Text between the verb and the agent names in the note."
+value = " still in flight ("
+
+[ask_guard.note_more]
+doc = "Template of the tail of the agent list; {n} is how many more there are."
+value = ", +{n} more"
+
+[ask_guard.note_tail]
+doc = "Text that ends the in-flight note."
+value = "). They may act on one of these options before the answer arrives: pause them (SendMessage) or tell them to wait for the decision."
+
+[ask_guard.note_join]
+doc = "Separator between agent names in the note."
+value = "; "
+
+# ---- stale-agent-stop-note (hooks/stale-agent-stop-note.js) ------------------------------------------------
+
+[stale_note.summary]
+doc = "One-line description of the stale-agent-stop-note check in the generated reference."
+value = "Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js)."
+
+[stale_note.tool]
+doc = "The tool this check answers."
+value = "TaskStop"
+
+[stale_note.setting]
+doc = "Where the on/off switch is read from (guards.staleAgentStopNote, default on)."
+value = { section = "guards", key = "staleAgentStopNote", env = "ANTIHALL_STALE_AGENT_STOP_NOTE", aliases = [], option = "", default = true }
+
+[stale_note.scan_bytes]
+doc = "Bytes of the transcript tail the check reads (the send can sit well before the shared 1.5 MB window)."
+value = 67108864
+unit = "bytes"
+
+[stale_note.guard_name]
+doc = "The guard id this check shows in its advisory."
+value = "stale-stop"
+
+[stale_note.name_max]
+doc = "Longest agent name or id, in UTF-16 units, the advisory shows."
+value = 60
+min = 1
+
+[stale_note.control_re]
+doc = "Rust regex source of the control characters turned into spaces in a name."
+value = '[\x00-\x1f\x7f-\u{9f}]'
+
+[stale_note.ellipsis]
+doc = "Text appended to a name that was cut."
+value = "…"
+
+[stale_note.msg_pending_a]
+doc = "Text between the quoted name and the send time in the headline for a teammate sent a message."
+value = " was sent a message at "
+
+[stale_note.msg_pending_b]
+doc = "Text between the send time and the last report time in that headline."
+value = ", after its last report"
+
+[stale_note.msg_pending_c]
+doc = "Text that ends that headline."
+value = ", and has not reported since."
+
+[stale_note.msg_pending_last]
+doc = "Template of the last report time, appended to the headline; {time} is the clock time."
+value = " ({time})"
+
+[stale_note.msg_pending_why]
+doc = "Why line for a teammate sent a message."
+value = "It may be working on that message."
+
+[stale_note.msg_pending_seen]
+doc = "Template appended to the why line when the teammate's own transcript was written after the send; {min} is how many minutes ago."
+value = " Its own transcript was last written {min} min ago."
+
+[stale_note.msg_resumed_a]
+doc = "Text between the quoted name and the resume time in the headline for a resumed background agent."
+value = " was resumed at "
+
+[stale_note.msg_resumed_b]
+doc = "Text that ends that headline."
+value = ", after its last report, and has not reported since."
+
+[stale_note.msg_resumed_why]
+doc = "Why line for a resumed background agent."
+value = "It may be working."
+
+[stale_note.msg_instead]
+doc = "What the advisory says about the stop."
+value = "advisory only; the stop is not blocked."
+
+# ---- silent-agent-nudge (hooks/silent-agent-nudge.js) ------------------------------------------------------
+
+[silent_nudge.summary]
+doc = "One-line description of the silent-agent-nudge check in the generated reference."
+value = "Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js)."
+
+[silent_nudge.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "silent-agent-nudge"
+
+[silent_nudge.setting]
+doc = "Where the on/off switch is read from (guards.silentAgentNudge, default on)."
+value = { section = "guards", key = "silentAgentNudge", env = "ANTIHALL_SILENT_AGENT_NUDGE", aliases = [], option = "guards_silent_agent_nudge", default = true }
+
+[silent_nudge.min_setting]
+doc = "Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1)."
+value = { section = "guards", key = "silentAgentNudgeMin", env = "ANTIHALL_SILENT_AGENT_NUDGE_MIN", aliases = [], option = "guards_silent_agent_nudge_min", default = 20, min = 1 }
+
+[silent_nudge.min_default]
+doc = "Minutes of silence used when the setting is not a number of at least 1 (DEFAULT_MIN of the hook)."
+value = 20
+min = 1
+
+[silent_nudge.judge_child_env]
+doc = "Environment variable that, set to its marker value, makes every hook a no-op (the judge child's hooks must never run)."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[silent_nudge.judge_child_value]
+doc = "Value of the judge-child variable that disables the hook."
+value = "1"
+
+[silent_nudge.scan_bytes]
+doc = "Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES)."
+value = 67108864
+unit = "bytes"
+
+[silent_nudge.state_file]
+doc = "Nudge state file, relative to the home directory."
+value = ".anti-hall/silent-agent-nudge-state.json"
+
+[silent_nudge.agents_dir]
+doc = "Directory of subagent heartbeat files, relative to the home directory."
+value = ".anti-hall/agents"
+
+[silent_nudge.heartbeat_ext]
+doc = "Extension of a heartbeat file."
+value = ".json"
+
+[silent_nudge.heartbeat_skip_name]
+doc = "Name of the orchestration-live marker that shares the heartbeat directory and is never a heartbeat."
+value = "recent-spawn.json"
+
+[silent_nudge.heartbeat_skip_prefix]
+doc = "Prefix of the DevSwarm tooling files that share the heartbeat directory and are never heartbeats."
+value = "devswarm-"
+
+[silent_nudge.finished_words]
+doc = "Heartbeat statuses (case-insensitive, whole text) that mean the agent finished."
+value = "done complete completed finished stopped success succeeded error failed"
+
+[silent_nudge.ever_nudged_ttl_ms]
+doc = "How long a once-per-agent nudge record is kept (30 days)."
+value = 2592000000
+unit = "ms"
+
+[silent_nudge.key_transcript]
+doc = "Prefix of a transcript-sourced nudge key."
+value = "t:"
+
+[silent_nudge.key_heartbeat]
+doc = "Prefix of a heartbeat-sourced nudge key."
+value = "h:"
+
+[silent_nudge.ever_sep]
+doc = "Separator between session id and agent id in a once-per-agent key."
+value = "::"
+
+[silent_nudge.resume_mark]
+doc = "Marker between an agent id or snapshot and the resume time."
+value = "@r"
+
+[silent_nudge.missing]
+doc = "Snapshot of an agent whose output file is missing."
+value = "missing"
+
+[silent_nudge.nudged_key]
+doc = "Field of the state file that holds the per-snapshot records."
+value = "nudged"
+
+[silent_nudge.ever_key]
+doc = "Field of the state file that holds the once-per-agent records."
+value = "everNudged"
+
+[silent_nudge.expecting]
+doc = "Parser error text for a state file member that is not a JSON object."
+value = "a JSON object"
+
+[silent_nudge.sidechain_file_prefix]
+doc = "Prefix of an agent's own sidechain transcript file name."
+value = "agent-"
