@@ -850,11 +850,14 @@ mod tests {
     }
 
     #[test]
-    fn jev_off_is_the_baseline_with_no_network_no_cache_and_no_log() {
+    fn jev_off_is_the_baseline_with_no_network_no_cache_and_one_off_row_as_node_writes() {
         let (jev, f, log) = lane(&[], vec![]);
         let d = jev.ask(&req("speculation", Trust::AddBlock, json!(false)));
         assert_eq!((d.outcome, d.backend, d.changed), (json!(false), Backend::BaselineOnly, false));
-        assert!(f.seen.lock().unwrap().is_empty() && log.0.lock().unwrap().is_empty() && jev.cache.is_empty());
+        assert!(f.seen.lock().unwrap().is_empty() && jev.cache.is_empty());
+        let rows = log.0.lock().unwrap();
+        assert_eq!(rows.len(), 1, "Node's finalize logs a skipped call, so `jev report` volume is unchanged");
+        assert_eq!((field(&rows[0], "mode"), field(&rows[0], "backend"), field(&rows[0], "final")), (json!("off"), json!("baseline-only"), json!(false)));
     }
 
     #[test]
@@ -958,7 +961,9 @@ mod tests {
         let (jev, f, log) = lane(&[("ANTIHALL_JEV", "1"), ("ANTIHALL_JEV_SPECULATION", "0"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")], vec![]);
         jev.ask_async(req("speculation", Trust::AddBlock, json!(false)));
         assert!(jev.queue.get().is_none(), "no worker thread was started");
-        assert!(f.seen.lock().unwrap().is_empty() && log.0.lock().unwrap().is_empty());
+        assert!(f.seen.lock().unwrap().is_empty());
+        let rows = log.0.lock().unwrap();
+        assert_eq!((rows.len(), field(&rows[0], "mode")), (1, json!("off")), "the off row Node's askDetached writes synchronously");
     }
 
     #[test]

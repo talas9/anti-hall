@@ -232,8 +232,8 @@ min = 1
 max = 100
 
 [jev.log_off_rows]
-doc = "1 also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does; 0 (default) writes nothing and does no I/O at all for such a call, so a disabled Jev costs the hot path nothing."
-value = 0
+doc = "1 (default) also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does, so the `jev report` call-volume view is unchanged by the move to the engine; 0 writes nothing and does no I/O at all for such a call."
+value = 1
 min = 0
 max = 1
 
