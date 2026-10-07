@@ -870,6 +870,19 @@ fn wait_for(path: &Path, within: Duration) {
     panic!("timed out waiting for {}", path.display());
 }
 
+/// Waits until the file holds a whole pid: the shell creates it (empty) a moment before `echo $$` fills it, so existence is
+/// not enough (a read in between parsed an empty string under load).
+fn wait_for_pid(path: &Path, within: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < within {
+        if std::fs::read_to_string(path).is_ok_and(|s| s.trim().parse::<i32>().is_ok()) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for a pid in {}", path.display());
+}
+
 fn kill_hook_group(pid_file: &Path) {
     if let Ok(pid) = std::fs::read_to_string(pid_file).map(|s| s.trim().parse::<i32>().unwrap()) {
         unsafe {
@@ -902,7 +915,7 @@ fn killed_dispatcher_leaves_no_spool_file(signal: i32, tag: &str) {
     let mut child = c.spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let writer = std::thread::spawn(move || stdin.write_all(payload.as_bytes()));
-    wait_for(&hook_pid, Duration::from_secs(10));
+    wait_for_pid(&hook_pid, Duration::from_secs(10));
     unsafe {
         libc::kill(child.id() as libc::pid_t, signal);
     }
