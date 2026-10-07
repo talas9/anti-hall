@@ -122,7 +122,7 @@ fn task_of(p: &Value, tool: &str, env: &RequestEnv) -> R<Option<TaskText>> {
                 base = TaskText { content: t.content.clone(), description: t.description.clone(), blocked_on: t.blocked_on.clone() };
             }
         }
-    } else if p.get("transcript_path").is_some_and(|v| truthy(v)) {
+    } else if p.get("transcript_path").is_some_and(truthy) {
         return Err(Unsure); // a path that is not a string: Node's readTail answers null, which this port does not model
     }
     if let Some(s) = subject {

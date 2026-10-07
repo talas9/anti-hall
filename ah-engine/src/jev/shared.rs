@@ -82,7 +82,7 @@ pub fn consult_relax(home: &Path, env: &Env, mut req: super::AskRequest) -> Opti
         ask_detached(home, env, req);
         return None;
     }
-    let cap = defaults::num("jev.relax_sync_cap_ms") as u64;
+    let cap = defaults::num("jev.relax_sync_cap_ms");
     req.budget_ms = Some(req.budget_ms.map_or(cap, |b| b.min(cap)));
     req.env = Some(env.clone());
     Some(lane(home, env).ask(&req))
