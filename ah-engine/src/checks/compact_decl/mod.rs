@@ -312,16 +312,6 @@ fn classify(e: &Value) -> Step {
     }
 }
 
-/// A number with an exponent (`1e5`, `2E-3`) somewhere in the text: serde rejects one outside the finite range, which
-/// JavaScript reads as infinity.
-pub(crate) fn has_exponent(line: &str) -> bool {
-    line.as_bytes().windows(3).enumerate().any(|(i, w)| {
-        w[0].is_ascii_digit()
-            && matches!(w[1], b'e' | b'E')
-            && (w[2].is_ascii_digit() || (matches!(w[2], b'+' | b'-') && line.as_bytes().get(i + 3).is_some_and(u8::is_ascii_digit)))
-    })
-}
-
 /// How deeply a JSON text nests (brackets outside strings).
 pub(crate) fn json_depth(line: &str) -> usize {
     let (mut depth, mut max, mut in_str, mut esc) = (0usize, 0usize, false, false);
@@ -360,13 +350,13 @@ pub(crate) fn turn_texts(lines: &[String]) -> Option<Vec<String>> {
         let e: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => {
-                // Node might parse what serde rejects: a lone surrogate escape, nesting past serde's limit, an exponent or
-                // an integer literal out of range (JS reads it as Infinity). A rejected line that holds the safe word could
+                // Node might parse what serde rejects: a lone surrogate escape, nesting past serde's limit, a number out
+                // of range (an exponent or an integer literal of 309+ digits; JS reads it as Infinity, `jsdiff`). A rejected line that holds the safe word could
                 // carry the declaration, so it defers whatever the reason; one without it cannot change the answer.
                 if contains_ci(line.as_bytes(), word)
                     || line.contains("\\u")
                     || json_depth(line) > defaults::num("compact_decl.deep_json_depth") as usize
-                    || has_exponent(line)
+                    || crate::checks::guardkit::jsdiff::js_reads_differently_str(line)
                 {
                     return None;
                 }

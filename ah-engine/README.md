@@ -303,9 +303,11 @@ Stop gates).
 - `task-lifecycle-log` (TaskCreated, TaskCompleted): the ledger line and the index entry, exactly. The project root is the
   nearest `.git` ancestor of the real path (`taskkit/root.rs`, from the file system alone, no git process). A relative
   `cwd`, a field cut through a surrogate pair and a number JavaScript prints with a different digit string defer.
-- `dispatch-tier` (PostToolUse on TaskCreate and TaskUpdate): the Node hook only ever asks Jev, and only while the
-  `dispatchTier` integration is not off. Integration off (the default while Jev is disabled) means the hook does nothing,
-  so the engine does nothing; on or shadow defers.
+- `dispatch-tier` (PostToolUse on TaskCreate and TaskUpdate): asks Jev (`dispatchTier`) once per task text, detached.
+  Integration off (the default while Jev is disabled) means nothing is read or written. Otherwise the check builds the
+  task text (a TaskUpdate's from the reconstructed task plus the update), skips owner-blocked tasks, skips a text that has
+  a verdict in the shared answer cache or a live request marker, writes the marker (`dispatch-tier-state.json`) and
+  starts the ask (DECISIONS 1.93).
 - `task-guard` (Stop): rebuilds the task list from the last 1.5 MiB of the transcript with both Node reconstructions
   (`taskstate/parse.rs`), recovers records before the window (`taskstate/backfill.rs`) and answers only the Stops with no
   open task: the loop state file is removed, and the pruning advisory and the unknown-state note are printed as Node

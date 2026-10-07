@@ -5,8 +5,9 @@
 //! observed usage is over the default window and no real window size is known). A check that must leave state exactly as
 //! Node does asks for [`Pct::Defer`] there instead of writing, so the Node hook runs and writes it.
 use super::{Jf, read_json};
-use crate::checks::compact_decl::{has_exponent, json_depth};
+use crate::checks::compact_decl::json_depth;
 use crate::checks::git::util::Settings;
+use crate::checks::guardkit::jsdiff::js_reads_differently_str;
 use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use serde_json::Value;
@@ -92,10 +93,10 @@ fn inferred(st: &Settings, tag: &str) -> Result<bool, ()> {
 
 /// Parse a transcript line Node parsed after its substring test. `Err` when the engine's parser rejects what Node's might
 /// accept (a lone surrogate escape, nesting past the limit, an exponent out of range); `Ok(None)` for text both reject.
-fn parse_line(line: &str) -> Result<Option<Value>, ()> {
+pub(crate) fn parse_line(line: &str) -> Result<Option<Value>, ()> {
     match serde_json::from_str::<Value>(line) {
         Ok(v) => Ok(Some(v)),
-        Err(_) if line.contains("\\u") || json_depth(line) > defaults::num("ctxbudget.deep_json_depth") as usize || has_exponent(line) => Err(()),
+        Err(_) if line.contains("\\u") || json_depth(line) > defaults::num("ctxbudget.deep_json_depth") as usize || js_reads_differently_str(line) => Err(()),
         Err(_) => Ok(None),
     }
 }

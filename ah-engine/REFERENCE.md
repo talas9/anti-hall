@@ -104,7 +104,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `precompact-snapshot` | PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it (port of precompact-snapshot.js). |
 | `handover-resume` | SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js). |
 | `task-lifecycle-log` | Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js). |
-| `dispatch-tier` | Does nothing while the Jev dispatchTier integration is off (the Node hook would do nothing too); with Jev on, the Node hook asks Jev and writes its state (port of dispatch-tier.js). |
+| `dispatch-tier` | Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off (port of dispatch-tier.js). |
 | `task-guard` | Stop gate: answers the Stops where the task list has nothing open (the loop state cleared, the advisories printed) and hands every Stop with an open task to the Node hook (port of task-guard.js). |
 | `tasklist-guard` | Stop gate: answers the Stops that do not block (a trivial session, tracked work with a fresh progress file, plan mode, the resume-verification nudge) with the Node hook's file effects, and hands every Stop that would block to the Node hook (port of tasklist-guard.js). |
 | `devswarm-parent-inbox` | DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js). |
@@ -1253,6 +1253,8 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.breaker_file` | `cache/jev-breaker.json` |  |  | The breaker state file, relative to the anti-hall home directory; the same file the Node hooks use, so both see one breaker (Node: jev-breaker.json under cache/). |
 | `jev.breaker_threshold` | `3` |  |  | Consecutive fallback-eligible failures that open a vendor's breaker (Node: BREAKER_THRESHOLD). |
 | `jev.budget_file` | `jev-budget.json` |  |  | The budget-watch state file in jev.state_dir: the day, the spend so far and the day a warning was last given (Node: jev-budget.json). |
+| `jev.cache_file` | `cache/jev-assist.json` |  |  | The answer cache file, relative to the anti-hall home directory; the same file the Node hooks use (Node: cache/jev-assist.json), so a text asked by either side is asked once. |
+| `jev.cache_max_depth` | `128` |  |  | Nesting past which the answer cache file is left alone: only JavaScript reads it, so the engine neither serves from it nor rewrites it (JSON.parse reads deeper than this port does). |
 | `jev.cache_max_entries` | `500` |  |  | Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES). |
 | `jev.confidence_threshold` | `0.85` |  |  | Default minimum confidence for an answer to count as trusted, a decimal between 0 and 1 (Node: DEFAULT_CONFIDENCE_THRESHOLD). |
 | `jev.detached_args` | `jev, ask, --json` |  |  | The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does). |
@@ -1286,6 +1288,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.price_usd_per_m_output` | `0` |  |  | USD per million output tokens used when a response reports tokens but no cost; output is free on the published rate (Node: jev.priceUsdPerMOutput). |
 | `jev.question_version` | `v1` |  |  | Part of the cache key, bumped when a question's wording changes so old answers are not reused (Node: QUESTION_VERSION). |
 | `jev.queue_cap` | `64` |  |  | Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). |
+| `jev.relax_sync_cap_ms` | `1500` |  | ms | Longest a relax-block consult inside a hook that is about to nudge or block waits for Jev when the integration is on; a slower answer keeps today's verdict (Node: RELAX_SYNC_CAP_MS). |
 | `jev.rollup_dir` | `jev-daily` |  |  | Directory of the daily rollups, relative to the log directory (Node: jev-daily); one JSON file per UTC day. |
 | `jev.settings_file` | `settings.json` |  |  | The unified settings file, relative to the anti-hall home directory (Node: settings.json). |
 | `jev.settings_recheck_ms` | `2000` |  | ms | How often the settings files are re-checked for changes: at most one stat of each of the two files per window, taken by the first call after it elapses; between checks a call costs one clock read, so an off Jev stays off the hot path. |
@@ -2281,7 +2284,13 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `codex_handover.nudge_edit_tools` | `Edit, Write, MultiEdit` |  |  | Tool names whose calls count as code edits. |
 | `codex_handover.nudge_guard` | `codex-nudge` |  |  | The guard id of the Codex nudge: its messages, its skip-file key and its escape hatch. |
 | `codex_handover.nudge_instead` | `before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:res...` |  |  | Advice line of the Codex nudge. |
+| `codex_handover.nudge_jev_edits_label` | `edits: ` |  |  | The second line of the Codex nudge question's summary, before the edit count. |
+| `codex_handover.nudge_jev_false` | `trivial — only comments/strings/log lines/formatting changed` |  |  | The criterion of a false answer to the Codex nudge question. |
+| `codex_handover.nudge_jev_files` | `20` |  |  | How many edited file names the Codex nudge question's summary lists. |
+| `codex_handover.nudge_jev_files_label` | `files: ` |  |  | The first line of the Codex nudge question's summary, before the file list. |
 | `codex_handover.nudge_jev_id` | `codexNudgeSubstantial` |  |  | The Jev integration the Codex nudge consults. |
+| `codex_handover.nudge_jev_instructions` | `This session is about to be nudged to get an independent Codex review because...` |  |  | The question the Codex nudge puts to Jev (a noul question; Node: the `instructions` of the codexNudgeSubstantial consult). |
+| `codex_handover.nudge_jev_true` | `genuinely substantial — logic/behavior changed` |  |  | The criterion of a true answer to the Codex nudge question. |
 | `codex_handover.nudge_max` | `2` |  |  | The most Codex nudges a session gets. |
 | `codex_handover.nudge_min_default` | `3` |  |  | Edits needed before the Codex nudge fires when nothing sets the threshold. |
 | `codex_handover.nudge_min_env` | `ANTIHALL_CODEX_NUDGE_MIN` |  |  | Environment variable of the Codex nudge threshold. |
@@ -2415,7 +2424,19 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `dispatch_tier.jev_id` | `dispatchTier` |  |  | The Jev integration id the dispatch-tier hook asks. |
-| `dispatch_tier.summary` | `Does nothing while the Jev dispatchTier integration is off (the Node hook wou...` |  |  | One-line description of the dispatch-tier check in the generated reference. |
+| `dispatch_tier.json_max_depth` | `128` |  |  | Deepest JSON nesting the state file parser reads; deeper input is left to the Node hook. |
+| `dispatch_tier.max_sessions` | `50` |  |  | Sessions the state file keeps recommendation tracking for; the longest untouched go first. |
+| `dispatch_tier.owner_marker_setting` | `6 entries` |  |  | Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified. |
+| `dispatch_tier.owner_subject_re` | `^\s*owner(:\|\s+decision\b)` |  |  | JavaScript regex source (case-insensitive) of a subject that marks a task as waiting on the owner (OWNER: ... or OWNER DECISION ...). |
+| `dispatch_tier.owner_values` | `owner, user, human, external` |  |  | The blockedOn values (trimmed, lowercase) that mark a task as waiting on the owner. |
+| `dispatch_tier.question_instructions` | `Classify how an orchestrating agent should dispatch this task.` |  |  | The question put to Jev (a choice question over the three tiers). |
+| `dispatch_tier.request_ttl_ms` | `600000` |  | ms | How long a request marker stops the same task text from being asked again while the first ask may still be in flight; older markers are dropped when the state is written. |
+| `dispatch_tier.state_file` | `dispatch-tier-state.json` |  |  | The state file (requested markers and per-session tracking), inside the anti-hall directory of the home. |
+| `dispatch_tier.summary` | `Asks Jev (dispatchTier, detached) how a new or changed task should be dispatc...` |  |  | One-line description of the dispatch-tier check in the generated reference. |
+| `dispatch_tier.text_cap` | `600` |  |  | Most UTF-16 units of a task's text (subject, newline, description) that Jev is asked about. |
+| `dispatch_tier.tier_subagent` | `the DEFAULT when unsure: a lookup, a bug fix, a UI text or copy change, any c...` |  |  | The description of the subagent tier in the question. |
+| `dispatch_tier.tier_workflow` | `breadth-first or parallelisable work: 3 or more clearly independent or nested...` |  |  | The description of the workflow tier in the question. |
+| `dispatch_tier.tier_workspace` | `a large multi-step feature, migration or release spanning several files or co...` |  |  | The description of the workspace tier in the question. |
 | `dispatch_tier.tools` | `TaskCreate, TaskUpdate` |  |  | The task tools whose text changes the hook classifies. |
 
 ### task_guards.toml / task_guard

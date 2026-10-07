@@ -179,7 +179,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `api-guard` check: allows every call that reaches no interpreter probe (guard off, not Python or JavaScript, no verifiable module or global named, no code file named in a shell command or patch); everything else defers, so the probes stay with Node | implemented | D29-D31, D62, D74, D75 |
 | Built-in `edit-guard` check: the launcher-directory block (every agent) byte for byte, and every call that is not the main thread; every main-thread call and every `apply_patch` defers to Node, which owns the allowlists, honesty checks and DevSwarm wording | implemented | D29-D31, D74, D75 |
 | Built-in `task-lifecycle-log` check (TaskCreated and TaskCompleted: the per-session history ledger line and its index entry) with exact parity of exit code, output and the files written; a relative `cwd`, a field cut through a surrogate pair and a number JavaScript prints differently defer to Node | implemented | D29-D31, D74, D75 |
-| Built-in `dispatch-tier` check (PostToolUse on TaskCreate and TaskUpdate): the Node hook does nothing while the Jev `dispatchTier` integration is off, and so does the engine, with exact parity; with it on or in shadow the Node hook asks Jev and writes its state, so the engine defers | implemented | D29-D31, D74, D75 |
+| Built-in `dispatch-tier` check (PostToolUse on TaskCreate and TaskUpdate): asks Jev (`dispatchTier`, detached, advisory) once per task text, with the shared answer cache and the request marker in `dispatch-tier-state.json` as Node keeps them (DECISIONS 1.93); does nothing while the integration is off, and defers only input it cannot read exactly | implemented | D29-D31, D74, D75 |
 | Built-in `task-guard` check (Stop): the Stops where no task is open (loop state removed, pruning advisory and unknown-state note printed exactly); every Stop with an open task, and every transcript record it cannot read exactly, defers to Node | implemented | D29-D31, D74, D75 |
 | Built-in `tasklist-guard` check (Stop): the Stops on which Node does not block, with its file effects (progress directory, progress and history indexes, the resume-verification marker and nudge, the plan-mode advisory); every Stop that would block defers to Node | implemented | D29-D31, D74, D75 |
 | Built-in `devswarm-child-role` check (SessionStart): a child workspace's mesh-only messaging and mailbox-wake directive, byte for byte, when the stable launchers are current; a Primary, a missing launcher and the rest defer to Node | implemented in part | D29-D31, D45, D74 |
@@ -520,9 +520,11 @@ judgement calls do.
   thread or log write.
 - **Budget, queue, cache.** A call has a time budget (default 1.5 s, at most 3 s) covering connect, request and body. A
   caller either waits for it (`ask`) or queues it and moves on (`ask_async`: a bounded queue, a worker thread started on first
-  use, a full queue answered with the baseline). Answers are cached by content hash, bounded to 500 entries, in memory for
-  now (persisting them in `hot.db` is planned, D21). The key covers the vendor, model and endpoint, so one session's answer is
-  never served to a session that would have asked someone else, and an answer from a test endpoint override is never cached.
+  use, a full queue answered with the baseline). Answers are cached by content hash, bounded to 500 entries, in the same
+  file the Node hooks use (`~/.anti-hall/cache/jev-assist.json`, Node's shape and its read-merge-rename protocol, DECISIONS 1.93),
+  so a text asked by either side is asked once. An entry the engine writes also names the vendor chain (vendors, models,
+  endpoints), so one session's answer is never served to a session that would have asked someone else, and an answer from a
+  test endpoint override is never cached.
 - **The log.** One row per decision in `~/.anti-hall/logs/jev-assist.ndjson`, in the row shape `jev report` reads: hashes,
   verdicts, confidences, latencies, costs and the reason a call produced nothing; never prompt text, never a key. It rotates
   at 2 MB. The daily rollups and the spend budget watch the Node client also writes are planned (D38).

@@ -423,7 +423,15 @@ fn scenarios() -> Vec<Scenario> {
     let created_ok =
         || json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Task #1 created successfully: x"}]}}).to_string();
     vec![
-        tier("dispatchTier shadow (default): a new task is asked once, the marker is written", task_create("Ship the parser"), vec![user("go")], "", &[], 1, 1),
+        tier(
+            "dispatchTier default mode (on): a new task is asked once, the marker is written",
+            task_create("Ship the parser"),
+            vec![user("go")],
+            "",
+            &[],
+            1,
+            1,
+        ),
         tier("dispatchTier on", task_create("Ship the parser"), vec![user("go")], r#"{"jevIntegrations":{"dispatchTier":"on"}}"#, &[], 1, 1),
         tier(
             "dispatchTier off: nothing is read or asked",

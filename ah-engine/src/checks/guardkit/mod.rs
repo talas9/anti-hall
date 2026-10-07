@@ -9,6 +9,8 @@
 pub mod filelock;
 pub mod fsio;
 pub mod jsdiff;
+#[cfg(test)]
+mod jsdiff_sites;
 pub mod jsre;
 pub mod jsval;
 pub mod msg;
