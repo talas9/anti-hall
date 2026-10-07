@@ -1,0 +1,80 @@
+# ah-engine shipped defaults for the task fact model and task Stop gates ported from Node (task-lifecycle-log,
+# dispatch-tier, task-tracker, task-guard, tasklist-guard) and the helpers they share (checks::taskkit) (D17, D30, D74).
+# Format: see the header of engine.toml. Regex sources use JavaScript syntax and are translated by checks::guardkit::jsre.
+
+# ---- shared helpers (checks::taskkit) ---------------------------------------------------------------------
+
+[taskkit.unknown_session]
+doc = "The session id used in a file name when the payload carries none, or only characters a file name part may not hold (the Node `UNKNOWN_SESSION`)."
+value = "unknown-session"
+
+[taskkit.session_id_unsafe]
+doc = "Characters that are removed from a session id before it becomes part of a ledger file name (JavaScript regex source of a negated class)."
+value = '[^A-Za-z0-9_-]'
+
+[taskkit.control_chars]
+doc = "Characters a ledger line replaces with a space (C0 controls, DEL and C1 controls), as the body of a JavaScript regex class."
+value = '[\x00-\x1F\x7F-\x9F]'
+
+[taskkit.exact_digits]
+doc = "Most significant digits a JSON number may have for its text to be taken as JavaScript prints it; a number with more digits is left to the Node hook (several shortest round-trip texts exist and the two languages may pick different ones)."
+value = 15
+min = 1
+max = 15
+
+[taskkit.ellipsis]
+doc = "What is appended to a ledger field that was cut to its limit."
+value = "…"
+
+[taskkit.gitdir_line]
+doc = "JavaScript regex source of the line that names the git directory in a `.git` file (the `m` flag applies)."
+value = '^\s*gitdir:\s*(.+?)\s*$'
+
+[taskkit.git_entry]
+doc = "The name of the entry that marks a git checkout root."
+value = ".git"
+
+# ---- task-lifecycle-log (hooks/task-lifecycle-log.js) ---------------------------------------------------------
+
+[task_lifecycle_log.summary]
+doc = "One-line description of the task-lifecycle-log check in the generated reference."
+value = "Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js)."
+
+[task_lifecycle_log.setting]
+doc = "Where the on/off switch is read from (maintenance.taskLifecycleLog, default on)."
+value = { section = "maintenance", key = "taskLifecycleLog", env = "", aliases = [], option = "maintenance_task_lifecycle_log", default = true }
+
+[task_lifecycle_log.events]
+doc = "The hook events the ledger records."
+value = ["TaskCreated", "TaskCompleted"]
+
+[task_lifecycle_log.task_id_max]
+doc = "Longest task id kept in a ledger line, in UTF-16 units."
+value = 200
+min = 1
+
+[task_lifecycle_log.subject_max]
+doc = "Longest task subject kept in a ledger line, in UTF-16 units."
+value = 200
+min = 1
+
+[task_lifecycle_log.teammate_max]
+doc = "Longest teammate name kept in a ledger line, in UTF-16 units."
+value = 100
+min = 1
+
+[task_lifecycle_log.separator]
+doc = "The separator between the fields of a ledger line (a middle dot with a space on each side)."
+value = " · "
+
+[task_lifecycle_log.history_dir]
+doc = "The ledger directory under the project root, as path segments."
+value = [".anti-hall", "history"]
+
+[task_lifecycle_log.index_name]
+doc = "The index file name inside the history directory."
+value = "INDEX.md"
+
+[task_lifecycle_log.ledger_ext]
+doc = "The ledger file extension."
+value = ".md"

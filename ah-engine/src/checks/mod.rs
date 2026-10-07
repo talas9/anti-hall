@@ -43,6 +43,8 @@ pub mod speculation_guard;
 pub mod speculation_judge;
 pub mod stale_agent_stop_note;
 pub mod swarm_guard;
+pub mod task_lifecycle_log;
+pub mod taskkit;
 pub mod verify_first;
 pub mod verify_first_orch;
 pub mod verify_first_prompt;
@@ -159,7 +161,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 50] = [
+    static ALL: [&dyn Check; 51] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -210,6 +212,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &codex::nudge::CodexNudge,
         &handover::precompact::PrecompactSnapshot,
         &handover::resume::HandoverResume,
+        &task_lifecycle_log::TaskLifecycleLog,
     ];
     &ALL
 }

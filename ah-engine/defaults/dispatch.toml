@@ -335,13 +335,13 @@ value = [
 [dispatch.hooks_claude_TaskCreated]
 doc = "The claude TaskCreated hook entries, in dispatch order."
 value = [
-  { id = "task-lifecycle-log", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"", timeout = 10, check = "" },
+  { id = "task-lifecycle-log", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"", timeout = 10, check = "task-lifecycle-log" },
 ]
 
 [dispatch.hooks_claude_TaskCompleted]
 doc = "The claude TaskCompleted hook entries, in dispatch order."
 value = [
-  { id = "task-lifecycle-log", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"", timeout = 10, check = "" },
+  { id = "task-lifecycle-log", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"", timeout = 10, check = "task-lifecycle-log" },
 ]
 
 [dispatch.hooks_claude_SubagentStart]

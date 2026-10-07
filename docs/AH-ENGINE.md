@@ -94,8 +94,12 @@ labelled with how it was measured in the README of `ah-engine/`.
   A case the port cannot reproduce exactly (a date string in an unfamiliar shape, a state file holding `__proto__`,
   a Codex result whose key order could change what matches, an enabled Jev consult for the nudge) defers, so Node
   decides; the deferral happens before any write the Node hook would repeat.
+- **Task checks.** `task-lifecycle-log` and its siblings (the task fact model and the task Stop gates) share
+  `checks/taskkit`: the JavaScript string conversion of a JSON value, the ledger text sanitizer, the UTC clock text and the
+  project root resolver (`repoRoot` of `handover-find.js`, answered from the file system alone). A task check does the file
+  effects of its Node hook itself and answers exactly what Node would; anything it cannot reproduce byte for byte defers.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  fifty: the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  fifty-one: `task-lifecycle-log` (see Task checks above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -154,6 +158,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `merge-gate` check (opt-in false-done backstop): allows every Bash call Node allows with no output (gate off, not an auto-merge command, no hedge phrase in the recent assistant text); a hedge phrase defers to Node, which owns the block and the Jev shadow ask | implemented | D29-D31, D74, D75 |
 | Built-in `api-guard` check: allows every call that reaches no interpreter probe (guard off, not Python or JavaScript, no verifiable module or global named, no code file named in a shell command or patch); everything else defers, so the probes stay with Node | implemented | D29-D31, D62, D74, D75 |
 | Built-in `edit-guard` check: the launcher-directory block (every agent) byte for byte, and every call that is not the main thread; every main-thread call and every `apply_patch` defers to Node, which owns the allowlists, honesty checks and DevSwarm wording | implemented | D29-D31, D74, D75 |
+| Built-in `task-lifecycle-log` check (TaskCreated and TaskCompleted: the per-session history ledger line and its index entry) with exact parity of exit code, output and the files written; a relative `cwd`, a field cut through a surrogate pair and a number JavaScript prints differently defer to Node | implemented | D29-D31, D74, D75 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
@@ -522,6 +527,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `engine.toml` | environment variable names, paths and file names, daemon and client limits, project store caps, health policy, hook adapter, socket protocol |
 | `messages.toml` | every message the engine produces (failure hints, advisories, replies, errors, command-line text) |
 | `git.toml` | every table, limit, setting name and block message of the git check |
+| `task_guards.toml` | switches, limits, file layout and messages of the task checks and their shared helpers |
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |

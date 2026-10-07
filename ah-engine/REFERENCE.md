@@ -103,6 +103,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `codex-nudge` | Stop: one soft nudge to get a Codex second opinion after several substantial code edits with no Codex review; defers when Jev is enabled for it (port of codex-nudge.js). |
 | `precompact-snapshot` | PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it (port of precompact-snapshot.js). |
 | `handover-resume` | SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js). |
+| `task-lifecycle-log` | Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js). |
 
 ## Settings
 
@@ -2317,6 +2318,33 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `codex_handover.utc_words` | `utc, gmt, z` |  |  | Words after a date and time that mean UTC (compared without case). |
 | `codex_handover.weekdays` | `7 items` |  |  | Weekday names, lower case (a date string may lead with one, full or its first three letters). |
 | `codex_handover.writer_grace_ms` | `300000` |  | ms | How long after a handover its writer may keep writing before the resume says it kept running. |
+
+### task_guards.toml / task_lifecycle_log
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `task_lifecycle_log.events` | `TaskCreated, TaskCompleted` |  |  | The hook events the ledger records. |
+| `task_lifecycle_log.history_dir` | `.anti-hall, history` |  |  | The ledger directory under the project root, as path segments. |
+| `task_lifecycle_log.index_name` | `INDEX.md` |  |  | The index file name inside the history directory. |
+| `task_lifecycle_log.ledger_ext` | `.md` |  |  | The ledger file extension. |
+| `task_lifecycle_log.separator` | ` · ` |  |  | The separator between the fields of a ledger line (a middle dot with a space on each side). |
+| `task_lifecycle_log.setting` | `6 entries` |  |  | Where the on/off switch is read from (maintenance.taskLifecycleLog, default on). |
+| `task_lifecycle_log.subject_max` | `200` |  |  | Longest task subject kept in a ledger line, in UTF-16 units. |
+| `task_lifecycle_log.summary` | `Appends one line per TaskCreated/TaskCompleted event to the per-session histo...` |  |  | One-line description of the task-lifecycle-log check in the generated reference. |
+| `task_lifecycle_log.task_id_max` | `200` |  |  | Longest task id kept in a ledger line, in UTF-16 units. |
+| `task_lifecycle_log.teammate_max` | `100` |  |  | Longest teammate name kept in a ledger line, in UTF-16 units. |
+
+### task_guards.toml / taskkit
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `taskkit.control_chars` | `[\x00-\x1F\x7F-\x9F]` |  |  | Characters a ledger line replaces with a space (C0 controls, DEL and C1 controls), as the body of a JavaScript regex class. |
+| `taskkit.ellipsis` | `…` |  |  | What is appended to a ledger field that was cut to its limit. |
+| `taskkit.exact_digits` | `15` |  |  | Most significant digits a JSON number may have for its text to be taken as JavaScript prints it; a number with more digits is left to the Node hook (several shortest round-trip texts exist and the two languages may pick different ones). |
+| `taskkit.git_entry` | `.git` |  |  | The name of the entry that marks a git checkout root. |
+| `taskkit.gitdir_line` | `^\s*gitdir:\s*(.+?)\s*$` |  |  | JavaScript regex source of the line that names the git directory in a `.git` file (the `m` flag applies). |
+| `taskkit.session_id_unsafe` | `[^A-Za-z0-9_-]` |  |  | Characters that are removed from a session id before it becomes part of a ledger file name (JavaScript regex source of a negated class). |
+| `taskkit.unknown_session` | `unknown-session` |  |  | The session id used in a file name when the payload carries none, or only characters a file name part may not hold (the Node `UNKNOWN_SESSION`). |
 
 ## Messages
 
