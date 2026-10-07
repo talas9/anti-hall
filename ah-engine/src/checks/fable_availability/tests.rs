@@ -21,15 +21,33 @@ fn state(home: &str) -> Value {
 #[test]
 fn detection_follows_the_two_caches_in_order() {
     let u = Found { available: None, source: "unknown" };
-    assert_eq!(detect(&json!({"modelAccessCache": [{"apiName": "claude-Fable-5", "entitled": true}]})), Found { available: Some(true), source: "modelAccessCache" });
+    assert_eq!(
+        detect(&json!({"modelAccessCache": [{"apiName": "claude-Fable-5", "entitled": true}]})),
+        Found { available: Some(true), source: "modelAccessCache" }
+    );
     assert_eq!(detect(&json!({"modelAccessCache": [{"apiName": "FABLE", "entitled": 1}]})).available, Some(false), "only true counts as entitled");
     assert_eq!(detect(&json!({"modelAccessCache": [{"apiName": "x"}, null, 3, "fable", {"apiName": "fable-1"}]})).available, Some(false));
     let both = json!({"modelAccessCache": [{"apiName": "fable", "entitled": false}], "additionalModelOptionsCache": [{"value": "fable"}]});
     assert_eq!(detect(&both), Found { available: Some(false), source: "modelAccessCache" }, "the first cache wins even when it says no");
-    assert_eq!(detect(&json!({"additionalModelOptionsCache": [{"label": "My Fable"}]})), Found { available: Some(true), source: "additionalModelOptionsCache" });
+    assert_eq!(
+        detect(&json!({"additionalModelOptionsCache": [{"label": "My Fable"}]})),
+        Found { available: Some(true), source: "additionalModelOptionsCache" }
+    );
     assert_eq!(detect(&json!({"additionalModelOptionsCache": [{"model": "fable", "disabled": true}]})).available, Some(false));
-    assert_eq!(detect(&json!({"additionalModelOptionsCache": [{"model": "fable", "disabled": "true"}]})).available, Some(true), "only the boolean true disables");
-    for none in [json!({}), json!(null), json!([1]), json!("fable"), json!({"modelAccessCache": "fable"}), json!({"modelAccessCache": [{"apiName": 5}]}), json!({"additionalModelOptionsCache": {"value": "fable"}})] {
+    assert_eq!(
+        detect(&json!({"additionalModelOptionsCache": [{"model": "fable", "disabled": "true"}]})).available,
+        Some(true),
+        "only the boolean true disables"
+    );
+    for none in [
+        json!({}),
+        json!(null),
+        json!([1]),
+        json!("fable"),
+        json!({"modelAccessCache": "fable"}),
+        json!({"modelAccessCache": [{"apiName": 5}]}),
+        json!({"additionalModelOptionsCache": {"value": "fable"}}),
+    ] {
         assert_eq!(detect(&none), u, "{none}");
     }
 }

@@ -65,12 +65,24 @@ fn full_level_picks_the_codex_text_from_the_payload() {
     let s = st(&home, &[("ANTIHALL_PROTOCOL_LEVEL", " FULL ")]);
     let e = RequestEnv::default();
     let claude = text(decide_full(&json!({}), &s, &opts(&root), &e)).1;
-    for p in [json!({"turn_id": "t1"}), json!({"transcript_path": "/x/rollout-1.jsonl"}), json!({"transcript_path": "/home/u/.codex/sessions/a"}), json!({"transcript_path": "C:\\a\\.codex\\b"})] {
+    for p in [
+        json!({"turn_id": "t1"}),
+        json!({"transcript_path": "/x/rollout-1.jsonl"}),
+        json!({"transcript_path": "/home/u/.codex/sessions/a"}),
+        json!({"transcript_path": "C:\\a\\.codex\\b"}),
+    ] {
         let t = text(decide_full(&p, &s, &opts(&root), &e)).1;
         assert_ne!(t, claude, "{p}");
         assert_eq!(t, defaults::text("verify_first.full_codex"), "{p}");
     }
-    for p in [json!({"turn_id": ""}), json!({"turn_id": 5}), json!({"transcript_path": "/x/rollout-1.jsonl.bak"}), json!({"transcript_path": "/x/notcodex/a"}), json!([1]), json!(null)] {
+    for p in [
+        json!({"turn_id": ""}),
+        json!({"turn_id": 5}),
+        json!({"transcript_path": "/x/rollout-1.jsonl.bak"}),
+        json!({"transcript_path": "/x/notcodex/a"}),
+        json!([1]),
+        json!(null),
+    ] {
         assert_eq!(text(decide_full(&p, &s, &opts(&root), &e)).1, claude, "{p}");
     }
 }
@@ -127,7 +139,10 @@ fn the_subagent_text_follows_level_and_devswarm_role() {
         assert_eq!(text(decide_subagent(&st(&home, &[("DEVSWARM_SOURCE_BRANCH", blank)]), &opts(&root), &e)).1, compact, "{blank:?}");
     }
     let full = st(&home, &[("ANTIHALL_PROTOCOL_LEVEL", "full"), ("DEVSWARM_SOURCE_BRANCH", "b")]);
-    assert_eq!(text(decide_subagent(&full, &Value::Null, &e)).1, format!("{}\n{}", defaults::text("verify_first.subagent_full"), defaults::text("verify_first.child_note")));
+    assert_eq!(
+        text(decide_subagent(&full, &Value::Null, &e)).1,
+        format!("{}\n{}", defaults::text("verify_first.subagent_full"), defaults::text("verify_first.child_note"))
+    );
     // an unknown level falls back to compact, as Node's enum read does
     let bad = st(&home, &[("ANTIHALL_PROTOCOL_LEVEL", "huge")]);
     assert_eq!(text(decide_subagent(&bad, &opts(&root), &e)).1, compact);

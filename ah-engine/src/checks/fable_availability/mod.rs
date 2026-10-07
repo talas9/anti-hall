@@ -62,7 +62,8 @@ pub fn detect(config: &Value) -> Found {
 /// still contains the rest of its letters.
 fn fix_lone_surrogates(src: &str) -> String {
     let b = src.as_bytes();
-    let hex4 = |at: usize| -> Option<u32> { src.get(at..at + 4).filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit())).and_then(|h| u32::from_str_radix(h, 16).ok()) };
+    let hex4 =
+        |at: usize| -> Option<u32> { src.get(at..at + 4).filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit())).and_then(|h| u32::from_str_radix(h, 16).ok()) };
     let mut out = String::with_capacity(src.len());
     let (mut i, mut last) = (0usize, 0usize);
     while i < b.len() {
@@ -72,7 +73,11 @@ fn fix_lone_surrogates(src: &str) -> String {
         }
         let unit = if b.get(i + 1) == Some(&b'u') { hex4(i + 2) } else { None };
         match unit {
-            Some(0xD800..=0xDBFF) if b.get(i + 6) == Some(&b'\\') && b.get(i + 7) == Some(&b'u') && hex4(i + 8).is_some_and(|l| (0xDC00..=0xDFFF).contains(&l)) => i += 12,
+            Some(0xD800..=0xDBFF)
+                if b.get(i + 6) == Some(&b'\\') && b.get(i + 7) == Some(&b'u') && hex4(i + 8).is_some_and(|l| (0xDC00..=0xDFFF).contains(&l)) =>
+            {
+                i += 12
+            }
             Some(0xD800..=0xDFFF) => {
                 out.push_str(&src[last..i]);
                 out.push_str("\\uFFFD");
@@ -126,7 +131,8 @@ pub fn decide(st: &Settings) -> Option<Verdict> {
     };
     let state = format!("{}/{}", st.home, defaults::text("fable_availability.state_file"));
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let wrote = std::path::Path::new(&state).parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&state, state_json(found, now)).is_ok();
+    let wrote =
+        std::path::Path::new(&state).parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&state, state_json(found, now)).is_ok();
     if !wrote || found.available != Some(true) {
         return Some(Verdict::Allow);
     }

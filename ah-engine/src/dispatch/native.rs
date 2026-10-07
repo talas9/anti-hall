@@ -234,7 +234,11 @@ mod tests {
         let root = std::fs::canonicalize(d.join("plugin")).unwrap().to_string_lossy().to_string();
         let env = crate::reqenv::RequestEnv::from_pairs([("HOME", d.join("home").to_string_lossy().to_string())]);
         let p = json!({"session_id": "s", "hook_event_name": "SessionStart"});
-        for (host, event, ids) in [("claude", "SessionStart", vec!["verify-first-full", "fable-availability"]), ("codex", "SessionStart", vec!["verify-first-full"]), ("claude", "SubagentStart", vec!["verify-first-subagent"])] {
+        for (host, event, ids) in [
+            ("claude", "SessionStart", vec!["verify-first-full", "fable-availability"]),
+            ("codex", "SessionStart", vec!["verify-first-full"]),
+            ("claude", "SubagentStart", vec!["verify-first-subagent"]),
+        ] {
             let meta = Meta { host: host.into(), event: event.into(), tool: None, root: Some(root.clone()), env: env.clone() };
             let got = evaluate(&meta, &p, &|_, _, _| {});
             assert_eq!(got.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ids, "{host} {event}");
@@ -242,7 +246,12 @@ mod tests {
                 let Answer::Decided(r, _) = a else { panic!("{id} deferred") };
                 assert_eq!(r.code, Some(0), "{id}");
                 if id != "fable-availability" {
-                    assert!(r.out.starts_with(&format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"{event}\",\"additionalContext\":\"ANTI-HALL VERIFY-FIRST")) && r.out.ends_with("}}\n"), "{id}: {}", r.out);
+                    assert!(
+                        r.out.starts_with(&format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"{event}\",\"additionalContext\":\"ANTI-HALL VERIFY-FIRST"))
+                            && r.out.ends_with("}}\n"),
+                        "{id}: {}",
+                        r.out
+                    );
                     assert!(r.out.contains(&format!("{root}/PROTOCOL.md")), "{id}");
                 } else {
                     assert!(r.out.is_empty(), "no fable in an empty home");
