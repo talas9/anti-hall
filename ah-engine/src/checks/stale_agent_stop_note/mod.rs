@@ -55,7 +55,11 @@ pub fn note(scan: &Scan, task_id: &str, now_ms: f64) -> Result<Option<String>, U
     let max = defaults::num("stale_note.name_max") as usize;
     let pm = scan.pending.iter().find(|(n, p)| n == task_id || (!p.agent_id.is_empty() && p.agent_id == task_id));
     if let Some((name, p)) = pm {
-        let last = if p.last_idle_ms.is_finite() { defaults::text("stale_note.msg_pending_last").replace("{time}", &agent_scan::hhmm(p.last_idle_ms)) } else { String::new() };
+        let last = if p.last_idle_ms.is_finite() {
+            defaults::text("stale_note.msg_pending_last").replace("{time}", &agent_scan::hhmm(p.last_idle_ms))
+        } else {
+            String::new()
+        };
         let seen = if p.last_seen_ms > p.sent_at_ms {
             let min = js_round((now_ms - p.last_seen_ms) / 60000.0).max(0.0);
             defaults::text("stale_note.msg_pending_seen").replace("{min}", &format!("{}", min as i64))
@@ -72,7 +76,11 @@ pub fn note(scan: &Scan, task_id: &str, now_ms: f64) -> Result<Option<String>, U
             last
         ) + defaults::text("stale_note.msg_pending_c");
         let why = format!("{}{seen}", defaults::text("stale_note.msg_pending_why"));
-        return Ok(Some(msg::message(Kind::Warn, guard, &Parts { what: &what, why: &why, instead: defaults::text("stale_note.msg_instead"), ..Parts::default() })));
+        return Ok(Some(msg::message(
+            Kind::Warn,
+            guard,
+            &Parts { what: &what, why: &why, instead: defaults::text("stale_note.msg_instead"), ..Parts::default() },
+        )));
     }
     if let Some(rec) = scan.launched.get(task_id)
         && !rec.teammate

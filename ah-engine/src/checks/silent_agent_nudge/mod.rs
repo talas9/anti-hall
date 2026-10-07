@@ -287,7 +287,7 @@ fn transcript_candidates(transcript: &str, now: f64, threshold: f64) -> Result<V
             snapshot = defaults::text("silent_nudge.missing").to_string();
         }
         let sc = sidechain_mtime(transcript, id)?;
-        if sc.is_finite() && !(sc <= reference) {
+        if sc.is_finite() && sc > reference {
             reference = sc;
         }
         if rec.last_seen_ms.is_finite() && rec.last_seen_ms > reference {
@@ -300,7 +300,7 @@ fn transcript_candidates(transcript: &str, now: f64, threshold: f64) -> Result<V
         if resumed != 0.0 {
             snapshot = format!("{snapshot}{}{}", defaults::text("silent_nudge.resume_mark"), num_text(resumed));
         }
-        if !(now - reference >= threshold) {
+        if now - reference < threshold {
             continue;
         }
         out.push(Candidate { key: format!("{}{id}", defaults::text("silent_nudge.key_transcript")), id: id.clone(), resumed_at_ms: resumed, snapshot });
@@ -322,7 +322,9 @@ fn heartbeat_candidates(home: &str, now: f64, threshold: f64, session: &str) -> 
         let Ok(bytes) = std::fs::read(e.path()) else { continue };
         let text = String::from_utf8_lossy(&bytes);
         let Some(data) = agent_scan::parse_json(&text)? else { continue };
-        let (Some(id), Some(status)) = (data.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()), data.get("status").and_then(Value::as_str)) else { continue };
+        let (Some(id), Some(status)) = (data.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()), data.get("status").and_then(Value::as_str)) else {
+            continue;
+        };
         let Some(sess) = data.get("session").and_then(Value::as_str).filter(|s| !s.is_empty()) else { continue };
         if session.is_empty() || sess != session {
             continue;
@@ -341,7 +343,12 @@ fn heartbeat_candidates(home: &str, now: f64, threshold: f64, session: &str) -> 
         if ts != ts.trunc() || ts.abs() >= defaults::num("agent_scan.safe_int") as f64 {
             return Err(Unsupported);
         }
-        out.push(Candidate { key: format!("{}{id}", defaults::text("silent_nudge.key_heartbeat")), id: id.to_string(), resumed_at_ms: 0.0, snapshot: num_text(ts) });
+        out.push(Candidate {
+            key: format!("{}{id}", defaults::text("silent_nudge.key_heartbeat")),
+            id: id.to_string(),
+            resumed_at_ms: 0.0,
+            snapshot: num_text(ts),
+        });
     }
     Ok(out)
 }
@@ -414,7 +421,8 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Verdict {
         }
     }
     let ever_key = |c: &Candidate| {
-        let resume = if c.resumed_at_ms != 0.0 { format!("{}{}", defaults::text("silent_nudge.resume_mark"), num_text(c.resumed_at_ms)) } else { String::new() };
+        let resume =
+            if c.resumed_at_ms != 0.0 { format!("{}{}", defaults::text("silent_nudge.resume_mark"), num_text(c.resumed_at_ms)) } else { String::new() };
         format!("{session}{}{}{resume}", defaults::text("silent_nudge.ever_sep"), c.id)
     };
     let capped = |c: &&Candidate| !session.is_empty() && next_ever.iter().any(|(k, _)| *k == ever_key(c));

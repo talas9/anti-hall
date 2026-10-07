@@ -38,7 +38,17 @@ fn date_parse_matches_v8_for_the_forms_a_transcript_carries() {
 
 #[test]
 fn date_parse_defers_on_every_form_it_does_not_read_itself() {
-    for s in ["2026-10-06T12:00:00", "Oct 6 2026 10:00:00", "1", "2026-10-06 12:00:00Z", "2026-13-01T00:00:00Z", "2026-10-06T24:00:00Z", "2026-10-06t12:00:00z", "+002026-10-06T00:00:00Z", "2026-10-06T12:00:00+0200"] {
+    for s in [
+        "2026-10-06T12:00:00",
+        "Oct 6 2026 10:00:00",
+        "1",
+        "2026-10-06 12:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "2026-10-06T24:00:00Z",
+        "2026-10-06t12:00:00z",
+        "+002026-10-06T00:00:00Z",
+        "2026-10-06T12:00:00+0200",
+    ] {
         assert_eq!(date_parse(s), Err(Unsupported), "{s}");
     }
 }
@@ -110,7 +120,17 @@ fn the_resume_result_is_recognised_only_as_the_harness_writes_it() {
 #[test]
 fn names_agent_matches_a_full_id_or_a_unique_prefix() {
     let mut launched: OMap<Rec> = OMap::default();
-    let rec = || Rec { adopted: false, output_file: String::new(), description: String::new(), launched_at_ms: 0.0, tool_use_id: None, resumed_at_ms: None, teammate: false, last_seen_ms: f64::NAN, pending_message: false };
+    let rec = || Rec {
+        adopted: false,
+        output_file: String::new(),
+        description: String::new(),
+        launched_at_ms: 0.0,
+        tool_use_id: None,
+        resumed_at_ms: None,
+        teammate: false,
+        last_seen_ms: f64::NAN,
+        pending_message: false,
+    };
     launched.set("a1b2c3d4e5f60718", rec());
     launched.set("a1b2c3d4ffffffff", rec());
     launched.set("0123456789abcdef", rec());

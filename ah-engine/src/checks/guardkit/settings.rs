@@ -192,7 +192,9 @@ fn resolve_typed(st: &Settings, entry: &V, ty: Ty) -> Option<Val> {
 /// `String(default)` of a setting entry.
 fn default_string(entry: &V) -> String {
     match entry.get("default") {
-        Some(d) => d.as_bool().map(|b| b.to_string()).or_else(|| d.as_integer().map(|i| i.to_string())).or_else(|| d.as_str().map(str::to_string)).unwrap_or_default(),
+        Some(d) => {
+            d.as_bool().map(|b| b.to_string()).or_else(|| d.as_integer().map(|i| i.to_string())).or_else(|| d.as_str().map(str::to_string)).unwrap_or_default()
+        }
         None => false.to_string(),
     }
 }

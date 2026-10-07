@@ -73,7 +73,8 @@ fn agents_note(st: &Settings, payload: &Value) -> Result<Option<String>, Unsuppo
         let cut = slice_utf16(d, defaults::num("ask_guard.note_desc_max") as usize).ok_or(Unsupported)?;
         names.push(if cut.is_empty() { defaults::text("ask_guard.note_unnamed").to_string() } else { cut });
     }
-    let more = if agents.len() > max_listed { defaults::text("ask_guard.note_more").replace("{n}", &(agents.len() - max_listed).to_string()) } else { String::new() };
+    let more =
+        if agents.len() > max_listed { defaults::text("ask_guard.note_more").replace("{n}", &(agents.len() - max_listed).to_string()) } else { String::new() };
     let verb = if agents.len() == 1 { defaults::text("ask_guard.note_one") } else { defaults::text("ask_guard.note_many") };
     Ok(Some(format!(
         "{}{}{}{}{}{}{}",
@@ -100,7 +101,11 @@ fn log_marker(home: &str, marker: &str) {
             std::fs::create_dir_all(d)?;
         }
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
-        let line = format!("{{\"ts\":\"{}\",\"event\":\"{}\",\"marker\":\"{marker}\"}}\n", agent_scan::iso_utc(agent_scan::now_ms()), defaults::text("ask_guard.log_event"));
+        let line = format!(
+            "{{\"ts\":\"{}\",\"event\":\"{}\",\"marker\":\"{marker}\"}}\n",
+            agent_scan::iso_utc(agent_scan::now_ms()),
+            defaults::text("ask_guard.log_event")
+        );
         f.write_all(line.as_bytes())
     })();
 }
@@ -149,7 +154,11 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Verdict {
     }
     let mut parts: Vec<String> = Vec::new();
     if mode == "advise" {
-        let advice = msg::message(Kind::Tip, guard, &Parts { what: defaults::text("ask_guard.advise_what"), instead: defaults::text("ask_guard.advise_instead"), ..Parts::default() });
+        let advice = msg::message(
+            Kind::Tip,
+            guard,
+            &Parts { what: defaults::text("ask_guard.advise_what"), instead: defaults::text("ask_guard.advise_instead"), ..Parts::default() },
+        );
         parts.push(format!("{advice}{suffix}"));
     }
     match agents_note(&st, p) {

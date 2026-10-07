@@ -98,7 +98,8 @@ impl Sc {
 // ---- transcript line builders (the shapes of tests/hooks/silent-agent-nudge.test.js and teammate-fixtures.js) ----------
 
 fn assistant_use(id: &str, name: &str, input: Value, ts: &str) -> String {
-    json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}, "timestamp": ts}).to_string()
+    json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}, "timestamp": ts})
+        .to_string()
 }
 
 fn result_blocks(id: &str, text: &str, ts: &str, extra: Value) -> String {
@@ -130,7 +131,9 @@ fn launch_sid(tuid: &str, agent: &str, out: &str, ts: &str) -> String {
 }
 
 fn notif_text(id: &str, status: &str) -> String {
-    format!("<task-notification>\n<task-id>{id}</task-id>\n<tool-use-id>toolu_01ABCDEF</tool-use-id>\n<output-file>/tmp/x/{id}.output</output-file>\n<status>{status}</status>\n<summary>done</summary>\n</task-notification>")
+    format!(
+        "<task-notification>\n<task-id>{id}</task-id>\n<tool-use-id>toolu_01ABCDEF</tool-use-id>\n<output-file>/tmp/x/{id}.output</output-file>\n<status>{status}</status>\n<summary>done</summary>\n</task-notification>"
+    )
 }
 
 fn notif_user(id: &str, status: &str, ts: &str) -> String {
@@ -138,7 +141,8 @@ fn notif_user(id: &str, status: &str, ts: &str) -> String {
 }
 
 fn notif_attachment(id: &str, status: &str, ts: &str) -> String {
-    json!({"type": "attachment", "attachment": {"type": "prompt", "commandMode": false, "prompt": notif_text(id, status), "timestamp": ts}, "timestamp": ts}).to_string()
+    json!({"type": "attachment", "attachment": {"type": "prompt", "commandMode": false, "prompt": notif_text(id, status), "timestamp": ts}, "timestamp": ts})
+        .to_string()
 }
 
 fn notif_queue(id: &str, status: &str, ts: &str) -> String {
@@ -203,7 +207,10 @@ fn teammate_idle(name: &str, inner: &str, entry_ts: &str) -> String {
 }
 
 fn delivery(tuid: &str, agent: &str, ts: &str) -> Vec<String> {
-    vec![assistant_use(tuid, "TaskOutput", json!({"task_id": agent, "block": false}), ts), result_blocks(tuid, &format!("<retrieval_status>success</retrieval_status>\n<task_id>{agent}</task_id>\n<output>report</output>"), ts, json!({}))]
+    vec![
+        assistant_use(tuid, "TaskOutput", json!({"task_id": agent, "block": false}), ts),
+        result_blocks(tuid, &format!("<retrieval_status>success</retrieval_status>\n<task_id>{agent}</task_id>\n<output>report</output>"), ts, json!({})),
+    ]
 }
 
 fn noise() -> Vec<String> {
@@ -213,7 +220,8 @@ fn noise() -> Vec<String> {
         "{\"type\":\"user\",".into(),
         "[1,2,3]".into(),
         "null".into(),
-        json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "plain chatter"}]}, "timestamp": ago(30.0)}).to_string(),
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "plain chatter"}]}, "timestamp": ago(30.0)})
+            .to_string(),
     ]
 }
 
@@ -255,7 +263,11 @@ fn run(mut cmd: Command, input: &str) -> Run {
         std::thread::sleep(Duration::from_millis(2));
     };
     let _ = w.join();
-    Run { code: status.code().unwrap_or(-1), out: String::from_utf8_lossy(&ro.join().unwrap()).to_string(), err: String::from_utf8_lossy(&re.join().unwrap()).to_string() }
+    Run {
+        code: status.code().unwrap_or(-1),
+        out: String::from_utf8_lossy(&ro.join().unwrap()).to_string(),
+        err: String::from_utf8_lossy(&re.join().unwrap()).to_string(),
+    }
 }
 
 fn subst(v: &Value, home: &str) -> Value {
@@ -298,7 +310,11 @@ fn snapshot(home: &Path) -> BTreeMap<String, String> {
             } else {
                 let mut body = String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default()).to_string();
                 if rel.ends_with("ask-guard.ndjson") {
-                    body = body.lines().map(|l| l.split("\"ts\":\"").next().unwrap_or("").to_string() + "\"ts\":\"X\"," + l.split_once("\",").map_or("", |x| x.1)).collect::<Vec<_>>().join("\n");
+                    body = body
+                        .lines()
+                        .map(|l| l.split("\"ts\":\"").next().unwrap_or("").to_string() + "\"ts\":\"X\"," + l.split_once("\",").map_or("", |x| x.1))
+                        .collect::<Vec<_>>()
+                        .join("\n");
                 }
                 if rel.ends_with("silent-agent-nudge-state.json") {
                     // Times differ between the two runs by construction (the run clock, the mtime of each home's own output
@@ -394,7 +410,9 @@ fn check_one(root: &Path, idx: usize, s: &Sc, mismatches: &mut Vec<String>) -> O
     match (s.expect, deferred) {
         (Expect::Defer, false) => mismatches.push(tag(&format!("expected a deferral, engine answered code={} out={:?}", er.code, er.out))),
         (Expect::Same, true) => mismatches.push(tag(&format!("engine deferred where it should answer (node: code={} out={:?})", nr.code, nout))),
-        (Expect::Auto, true) if kind != "stop-block" => mismatches.push(tag(&format!("engine deferred where Node did not block (node: code={} out={:?})", nr.code, nout))),
+        (Expect::Auto, true) if kind != "stop-block" => {
+            mismatches.push(tag(&format!("engine deferred where Node did not block (node: code={} out={:?})", nr.code, nout)))
+        }
         (Expect::Auto, true) => {}
         (Expect::Same | Expect::Auto, false) => {
             let (eout, eerr) = (norm(&er.out, &eh), norm(&er.err, &eh));
@@ -407,7 +425,13 @@ fn check_one(root: &Path, idx: usize, s: &Sc, mismatches: &mut Vec<String>) -> O
                 let diff: Vec<String> = keys
                     .iter()
                     .filter(|k| ns.get(**k) != es.get(**k))
-                    .map(|k| format!("{k}: node={:?} engine={:?}", ns.get(*k).map(|x| x.chars().take(300).collect::<String>()), es.get(*k).map(|x| x.chars().take(300).collect::<String>())))
+                    .map(|k| {
+                        format!(
+                            "{k}: node={:?} engine={:?}",
+                            ns.get(*k).map(|x| x.chars().take(300).collect::<String>()),
+                            es.get(*k).map(|x| x.chars().take(300).collect::<String>())
+                        )
+                    })
                     .collect();
                 mismatches.push(tag(&format!("files differ: {}", diff.join(" || "))));
             }
@@ -457,69 +481,117 @@ fn stale_corpus() -> Vec<Sc> {
     let mut add = |s: Sc| v.push(s);
     let team = |name: &str| teammate_spawn("tu_spawn", name, &ago(60.0));
     let join = |parts: Vec<Vec<String>>| parts.into_iter().flatten().collect::<Vec<String>>();
-    let pend = |name: &str, send_min: f64| join(vec![team(name), vec![teammate_idle(name, &ago(50.0), &ago(49.0))], teammate_send("tu_send", name, &ago(send_min))]);
+    let pend =
+        |name: &str, send_min: f64| join(vec![team(name), vec![teammate_idle(name, &ago(50.0), &ago(49.0))], teammate_send("tu_send", name, &ago(send_min))]);
     add(sc("teammate-sent-after-report", h, stop_payload(json!("alice"))).transcript(&pend("alice", 5.0)));
     add(sc("teammate-by-agent-id", h, stop_payload(json!("alice@session-fx"))).transcript(&pend("alice", 5.0)));
     add(sc("teammate-send-old-not-live", h, stop_payload(json!("alice"))).transcript(&pend("alice", 45.0)));
-    add(sc("teammate-reported-after-send", h, stop_payload(json!("alice"))).transcript(&join(vec![pend("alice", 20.0), vec![teammate_idle("alice", &ago(10.0), &ago(9.0))]])));
+    add(sc("teammate-reported-after-send", h, stop_payload(json!("alice")))
+        .transcript(&join(vec![pend("alice", 20.0), vec![teammate_idle("alice", &ago(10.0), &ago(9.0))]])));
     add(sc("teammate-no-prior-report", h, stop_payload(json!("alice"))).transcript(&join(vec![team("alice"), teammate_send("tu_send", "alice", &ago(4.0))])));
-    add(sc("teammate-sidechain-newer", h, stop_payload(json!("alice")))
-        .transcript(&pend("alice", 12.0))
-        .aged("t/session/subagents/agent-aalice-0123abcd.jsonl", "{}\n", 2.0));
-    add(sc("teammate-sidechain-older-than-send", h, stop_payload(json!("alice")))
-        .transcript(&pend("alice", 6.0))
-        .aged("t/session/subagents/agent-aalice-0123abcd.jsonl", "{}\n", 30.0));
+    add(sc("teammate-sidechain-newer", h, stop_payload(json!("alice"))).transcript(&pend("alice", 12.0)).aged(
+        "t/session/subagents/agent-aalice-0123abcd.jsonl",
+        "{}\n",
+        2.0,
+    ));
+    add(sc("teammate-sidechain-older-than-send", h, stop_payload(json!("alice"))).transcript(&pend("alice", 6.0)).aged(
+        "t/session/subagents/agent-aalice-0123abcd.jsonl",
+        "{}\n",
+        30.0,
+    ));
     add(sc("teammate-sidechain-bad-name", h, stop_payload(json!("alice")))
         .transcript(&pend("alice", 6.0))
         .aged("t/session/subagents/agent-aalice-XYZ.jsonl", "{}\n", 1.0)
         .aged("t/session/subagents/agent-aalice-0f.txt", "{}\n", 1.0));
-    add(sc("teammate-stopped-after-send", h, stop_payload(json!("alice"))).transcript(&join(vec![pend("alice", 8.0), stop_call("tu_st", "alice", &ago(7.0), true, false)])));
-    add(sc("teammate-stop-errored", h, stop_payload(json!("alice"))).transcript(&join(vec![pend("alice", 8.0), stop_call("tu_st", "alice", &ago(7.0), true, true)])));
-    add(sc("teammate-stop-unanswered-ignored", h, stop_payload(json!("alice"))).transcript(&join(vec![pend("alice", 8.0), stop_call("tu_st", "alice", &ago(7.0), false, false)])));
-    add(sc("teammate-two-sends-queued", h, stop_payload(json!("alice")))
-        .transcript(&join(vec![team("alice"), teammate_send("tu_s1", "alice", &ago(20.0)), teammate_send("tu_s2", "alice", &ago(19.0)), vec![teammate_idle("alice", &ago(18.0), &ago(17.0))]])));
-    add(sc("teammate-unicode-name", h, stop_payload(json!("zoë-日本")))
-        .transcript(&pend("zoë-日本", 5.0)));
-    add(sc("teammate-name-with-controls", h, stop_payload(json!("al\nice")))
-        .transcript(&pend("al\nice", 5.0)));
+    add(sc("teammate-stopped-after-send", h, stop_payload(json!("alice")))
+        .transcript(&join(vec![pend("alice", 8.0), stop_call("tu_st", "alice", &ago(7.0), true, false)])));
+    add(sc("teammate-stop-errored", h, stop_payload(json!("alice")))
+        .transcript(&join(vec![pend("alice", 8.0), stop_call("tu_st", "alice", &ago(7.0), true, true)])));
+    add(sc("teammate-stop-unanswered-ignored", h, stop_payload(json!("alice")))
+        .transcript(&join(vec![pend("alice", 8.0), stop_call("tu_st", "alice", &ago(7.0), false, false)])));
+    add(sc("teammate-two-sends-queued", h, stop_payload(json!("alice"))).transcript(&join(vec![
+        team("alice"),
+        teammate_send("tu_s1", "alice", &ago(20.0)),
+        teammate_send("tu_s2", "alice", &ago(19.0)),
+        vec![teammate_idle("alice", &ago(18.0), &ago(17.0))],
+    ])));
+    add(sc("teammate-unicode-name", h, stop_payload(json!("zoë-日本"))).transcript(&pend("zoë-日本", 5.0)));
+    add(sc("teammate-name-with-controls", h, stop_payload(json!("al\nice"))).transcript(&pend("al\nice", 5.0)));
     add(sc("teammate-name-over-60", h, stop_payload(json!("n".repeat(70)))).transcript(&pend(&"n".repeat(70), 5.0)));
-    add(sc("teammate-name-over-60-cuts-pair", h, stop_payload(json!(format!("{}{}", "a".repeat(59), "😀tail")))).transcript(&pend(&format!("{}{}", "a".repeat(59), "😀tail"), 5.0)).defers());
-    add(sc("teammate-two-teammates", h, stop_payload(json!("bob")))
-        .transcript(&join(vec![pend("alice", 5.0), teammate_spawn("tu_sp2", "bob", &ago(55.0)), teammate_send("tu_sd2", "bob", &ago(6.0))])));
+    add(sc("teammate-name-over-60-cuts-pair", h, stop_payload(json!(format!("{}{}", "a".repeat(59), "😀tail"))))
+        .transcript(&pend(&format!("{}{}", "a".repeat(59), "😀tail"), 5.0))
+        .defers());
+    add(sc("teammate-two-teammates", h, stop_payload(json!("bob"))).transcript(&join(vec![
+        pend("alice", 5.0),
+        teammate_spawn("tu_sp2", "bob", &ago(55.0)),
+        teammate_send("tu_sd2", "bob", &ago(6.0)),
+    ])));
     add(sc("teammate-name-equals-background-id", h, stop_payload(json!("abc123def")))
         .transcript(&join(vec![vec![agent_use("tu_a", "bg", &ago(30.0)), launch("tu_a", "abc123def", "$HOME/out.txt", &ago(30.0))], pend("abc123def", 5.0)])));
     add(sc("teammate-events-without-timestamps", h, stop_payload(json!("alice")))
         .transcript(&pend("alice", 5.0).into_iter().map(|l| l.replace("\"timestamp\"", "\"ts_x\"")).collect::<Vec<_>>()));
-    add(sc("teammate-future-inner-timestamp", h, stop_payload(json!("alice")))
-        .transcript(&join(vec![team("alice"), vec![teammate_idle("alice", &ago(-120.0), &ago(10.0))], teammate_send("tu_send", "alice", &ago(5.0))])));
-    add(sc("bg-resumed-no-report", h, stop_payload(json!("a1b2c3d4e5f60718")))
-        .transcript(&join(vec![vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0)), notif_user("a1b2c3d4e5f60718", "stopped", &ago(40.0))], resume_json("a1b2c3d4e5f60718", "a1b2c3d", &ago(10.0), "tu_r")])));
-    add(sc("bg-resumed-then-completed", h, stop_payload(json!("a1b2c3d4e5f60718")))
-        .transcript(&join(vec![vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))], resume_json("a1b2c3d4e5f60718", "a1b2c3d", &ago(10.0), "tu_r"), vec![notif_user("a1b2c3d4e5f60718", "completed", &ago(5.0))]])));
-    add(sc("bg-stale-terminal-after-resume-order", h, stop_payload(json!("a1b2c3d4e5f60718")))
-        .transcript(&join(vec![vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))], resume_json("a1b2c3d4e5f60718", "a1b2c3d", &ago(10.0), "tu_r"), vec![notif_user("a1b2c3d4e5f60718", "stopped", &ago(30.0))]])));
+    add(sc("teammate-future-inner-timestamp", h, stop_payload(json!("alice"))).transcript(&join(vec![
+        team("alice"),
+        vec![teammate_idle("alice", &ago(-120.0), &ago(10.0))],
+        teammate_send("tu_send", "alice", &ago(5.0)),
+    ])));
+    add(sc("bg-resumed-no-report", h, stop_payload(json!("a1b2c3d4e5f60718"))).transcript(&join(vec![
+        vec![
+            agent_use("tu_a", "bg", &ago(60.0)),
+            launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0)),
+            notif_user("a1b2c3d4e5f60718", "stopped", &ago(40.0)),
+        ],
+        resume_json("a1b2c3d4e5f60718", "a1b2c3d", &ago(10.0), "tu_r"),
+    ])));
+    add(sc("bg-resumed-then-completed", h, stop_payload(json!("a1b2c3d4e5f60718"))).transcript(&join(vec![
+        vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))],
+        resume_json("a1b2c3d4e5f60718", "a1b2c3d", &ago(10.0), "tu_r"),
+        vec![notif_user("a1b2c3d4e5f60718", "completed", &ago(5.0))],
+    ])));
+    add(sc("bg-stale-terminal-after-resume-order", h, stop_payload(json!("a1b2c3d4e5f60718"))).transcript(&join(vec![
+        vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))],
+        resume_json("a1b2c3d4e5f60718", "a1b2c3d", &ago(10.0), "tu_r"),
+        vec![notif_user("a1b2c3d4e5f60718", "stopped", &ago(30.0))],
+    ])));
     add(sc("bg-launched-not-resumed", h, stop_payload(json!("a1b2c3d4e5f60718")))
         .transcript(&[agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))]));
-    add(sc("bg-resume-prefix-only", h, stop_payload(json!("a1b2c3d4e5f60718")))
-        .transcript(&join(vec![vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))], vec![
+    add(sc("bg-resume-prefix-only", h, stop_payload(json!("a1b2c3d4e5f60718"))).transcript(&join(vec![
+        vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))],
+        vec![
             assistant_use("tu_r", "SendMessage", json!({"to": "a1b2c3d"}), &ago(9.0)),
-            result_blocks("tu_r", "Resuming agent a1b2c3d in the background", &ago(9.0), json!({}))]])));
-    add(sc("bg-resume-adopt-unseen-launch", h, stop_payload(json!("ffeeddccbbaa9988")))
-        .transcript(&resume_json("ffeeddccbbaa9988", "ffeeddc", &ago(9.0), "tu_r")));
+            result_blocks("tu_r", "Resuming agent a1b2c3d in the background", &ago(9.0), json!({})),
+        ],
+    ])));
+    add(sc("bg-resume-adopt-unseen-launch", h, stop_payload(json!("ffeeddccbbaa9988"))).transcript(&resume_json(
+        "ffeeddccbbaa9988",
+        "ffeeddc",
+        &ago(9.0),
+        "tu_r",
+    )));
     add(sc("bg-resume-quoted-in-assistant-text", h, stop_payload(json!("a1b2c3d4e5f60718")))
         .transcript(&[agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0)),
             json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Resuming agent a1b2c3d4e5f60718 now"}]}, "timestamp": ago(9.0)}).to_string()]));
-    add(sc("bg-adopted-task-status-resumed", h, stop_payload(json!("0123456789abcdef")))
-        .transcript(&join(vec![vec![task_status("0123456789abcdef", "running", "$HOME/o", "adopted", &ago(50.0))], resume_json("0123456789abcdef", "0123456", &ago(9.0), "tu_r")])));
-    add(sc("bg-delivery-evidence-terminal", h, stop_payload(json!("a1b2c3d4e5f60718")))
-        .transcript(&join(vec![vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))], resume_json("a1b2c3d4e5f60718", "a1b2c3d", &ago(20.0), "tu_r"), delivery("tu_d", "a1b2c3d4e5f60718", &ago(10.0))])));
+    add(sc("bg-adopted-task-status-resumed", h, stop_payload(json!("0123456789abcdef"))).transcript(&join(vec![
+        vec![task_status("0123456789abcdef", "running", "$HOME/o", "adopted", &ago(50.0))],
+        resume_json("0123456789abcdef", "0123456", &ago(9.0), "tu_r"),
+    ])));
+    add(sc("bg-delivery-evidence-terminal", h, stop_payload(json!("a1b2c3d4e5f60718"))).transcript(&join(vec![
+        vec![agent_use("tu_a", "bg", &ago(60.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/out.txt", &ago(60.0))],
+        resume_json("a1b2c3d4e5f60718", "a1b2c3d", &ago(20.0), "tu_r"),
+        delivery("tu_d", "a1b2c3d4e5f60718", &ago(10.0)),
+    ])));
     add(sc("unknown-task-id", h, stop_payload(json!("nobody"))).transcript(&pend("alice", 5.0)));
     add(sc("disabled-by-env", h, stop_payload(json!("alice"))).transcript(&pend("alice", 5.0)).env("ANTIHALL_STALE_AGENT_STOP_NOTE", "off"));
     add(sc("disabled-by-settings", h, stop_payload(json!("alice"))).transcript(&pend("alice", 5.0)).settings(json!({"guards": {"staleAgentStopNote": false}})));
     add(sc("settings-string-false", h, stop_payload(json!("alice"))).transcript(&pend("alice", 5.0)).settings(json!({"guards": {"staleAgentStopNote": "no"}})));
-    add(sc("env-garbage-falls-to-settings", h, stop_payload(json!("alice"))).transcript(&pend("alice", 5.0)).env("ANTIHALL_STALE_AGENT_STOP_NOTE", "maybe").settings(json!({"guards": {"staleAgentStopNote": false}})));
-    add(sc("not-taskstop", h, json!({"tool_name": "Bash", "tool_input": {"task_id": "alice"}, "transcript_path": "$HOME/t/session.jsonl"})).transcript(&pend("alice", 5.0)));
-    add(sc("missing-task-id", h, json!({"tool_name": "TaskStop", "tool_input": {}, "transcript_path": "$HOME/t/session.jsonl"})).transcript(&pend("alice", 5.0)));
+    add(sc("env-garbage-falls-to-settings", h, stop_payload(json!("alice")))
+        .transcript(&pend("alice", 5.0))
+        .env("ANTIHALL_STALE_AGENT_STOP_NOTE", "maybe")
+        .settings(json!({"guards": {"staleAgentStopNote": false}})));
+    add(sc("not-taskstop", h, json!({"tool_name": "Bash", "tool_input": {"task_id": "alice"}, "transcript_path": "$HOME/t/session.jsonl"}))
+        .transcript(&pend("alice", 5.0)));
+    add(sc("missing-task-id", h, json!({"tool_name": "TaskStop", "tool_input": {}, "transcript_path": "$HOME/t/session.jsonl"}))
+        .transcript(&pend("alice", 5.0)));
     add(sc("task-id-number", h, stop_payload(json!(5))).transcript(&pend("alice", 5.0)));
     add(sc("task-id-empty", h, stop_payload(json!(""))).transcript(&pend("alice", 5.0)));
     add(sc("no-transcript-path", h, json!({"tool_name": "TaskStop", "tool_input": {"task_id": "alice"}})));
@@ -542,12 +614,18 @@ fn stale_corpus() -> Vec<Sc> {
         .transcript(&join(vec![team("alice"), teammate_send("tu_send", "alice", "Oct 6 2026 10:00:00")]))
         .defers());
     add(sc("garbage-timestamp-nan", h, stop_payload(json!("alice"))).transcript(&join(vec![team("alice"), teammate_send("tu_send", "alice", "garbage")])));
-    add(sc("offset-timestamps", h, stop_payload(json!("alice")))
-        .transcript(&join(vec![team("alice").into_iter().map(|l| l.replace(&ago(60.0), "2026-01-01T00:00:00.000+02:00")).collect(), teammate_send("tu_send", "alice", &ago(5.0).replace('Z', "+00:00"))])));
-    add(sc("huge-irrelevant-line", h, stop_payload(json!("alice")))
-        .transcript(&join(vec![vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(3_000_000)}, "timestamp": ago(20.0)}).to_string()], pend("alice", 5.0)])));
-    add(sc("send-beyond-default-window", h, stop_payload(json!("alice")))
-        .transcript(&join(vec![pend("alice", 5.0), vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(3_000_000)}, "timestamp": ago(2.0)}).to_string()]])));
+    add(sc("offset-timestamps", h, stop_payload(json!("alice"))).transcript(&join(vec![
+        team("alice").into_iter().map(|l| l.replace(&ago(60.0), "2026-01-01T00:00:00.000+02:00")).collect(),
+        teammate_send("tu_send", "alice", &ago(5.0).replace('Z', "+00:00")),
+    ])));
+    add(sc("huge-irrelevant-line", h, stop_payload(json!("alice"))).transcript(&join(vec![
+        vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(3_000_000)}, "timestamp": ago(20.0)}).to_string()],
+        pend("alice", 5.0),
+    ])));
+    add(sc("send-beyond-default-window", h, stop_payload(json!("alice"))).transcript(&join(vec![
+        pend("alice", 5.0),
+        vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(3_000_000)}, "timestamp": ago(2.0)}).to_string()],
+    ])));
     v
 }
 
@@ -586,48 +664,135 @@ fn ask_corpus() -> Vec<Sc> {
     add(sc("default-note-with-one-agent", h, ask_payload(q("h", "Which one?"))).transcript(&running(1)));
     add(sc("note-seven-agents-more", h, ask_payload(q("h", "Which one?"))).transcript(&running(7)));
     add(sc("note-exactly-five", h, ask_payload(q("h", "Which one?"))).transcript(&running(5)));
-    add(sc("note-no-agents", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)), notif_user("a1b2c3d4e5f60718", "completed", &ago(10.0))]));
-    add(sc("note-agent-finished-attachment-shape", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)), notif_attachment("a1b2c3d4e5f60718", "failed", &ago(10.0))]));
-    add(sc("note-agent-finished-queue-shape", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)), notif_queue("a1b2c3d4e5f60718", "KILLED", &ago(10.0))]));
-    add(sc("note-status-not-terminal", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)), notif_user("a1b2c3d4e5f60718", "running", &ago(10.0))]));
-    add(sc("note-notification-quoted-not-terminal", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)),
-        json!({"type": "user", "message": {"role": "user", "content": format!("see {}", notif_text("a1b2c3d4e5f60718", "completed"))}, "timestamp": ago(10.0)}).to_string()]));
-    add(sc("note-agent-stopped-by-taskstop", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))].into_iter().chain(stop_call("tu_s", "a1b2c3d4e5f60718", &ago(9.0), true, false)).collect::<Vec<_>>()));
-    add(sc("note-description-controls", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "line one\nline\ttwo\u{1}end", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
-    add(sc("note-description-unicode", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "größe 日本語 \u{1F600}", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
-    add(sc("note-description-empty", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
-    add(sc("note-description-over-60", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", &"d".repeat(90), &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
-    add(sc("note-description-cuts-pair", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", &format!("{}{}", "d".repeat(59), "\u{1F600}more"), &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]).defers());
-    add(sc("note-launch-via-structured-agent-id", h, ask_payload(q("h", "Which one?"))).transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch_sid("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
-    add(sc("note-teammate-pending", h, ask_payload(q("h", "Which one?"))).transcript(&[teammate_spawn("tu_sp", "alice", &ago(40.0)), teammate_send("tu_sd", "alice", &ago(4.0))].concat()));
-    add(sc("note-adopted-task-status", h, ask_payload(q("h", "Which one?"))).transcript(&[task_status("0123456789abcdef", "running", "$HOME/o", "adopted agent", &ago(20.0))]));
-    let two_aaaa = || vec![agent_use("tu_1", "first", &ago(30.0)), launch("tu_1", "aaaa000011112222", "$HOME/o1", &ago(30.0)), agent_use("tu_2", "second", &ago(30.0)), launch("tu_2", "aaaa0000ffff3333", "$HOME/o2", &ago(30.0))];
-    let output_call = |prefix: &str, text: &str| vec![assistant_use("tu_o", "TaskOutput", json!({"task_id": prefix, "block": false}), &ago(9.0)), result_blocks("tu_o", text, &ago(9.0), json!({}))];
-    add(sc("delivery-ambiguous-prefix-ends-nothing", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), output_call("aaaa0000", "done: aaaa000011112222 and aaaa0000ffff3333 finished")].concat()));
-    add(sc("delivery-unique-prefix-ends-one", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), output_call("aaaa00001", "done: aaaa000011112222 finished")].concat()));
-    add(sc("delivery-by-other-tool-ends-nothing", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), vec![assistant_use("tu_o", "Read", json!({"file_path": "aaaa000011112222"}), &ago(9.0)), result_blocks("tu_o", "aaaa000011112222 finished", &ago(9.0), json!({}))]].concat()));
-    add(sc("delivery-text-without-the-id-ends-nothing", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), output_call("aaaa000011112222", "finished, no id here")].concat()));
-    add(sc("delivery-result-of-unseen-call-ends-it", h, ask_payload(q("h", "x"))).transcript(&[two_aaaa(), vec![result_blocks("tu_unseen", "report for aaaa000011112222", &ago(9.0), json!({}))]].concat()));
+    add(sc("note-no-agents", h, ask_payload(q("h", "Which one?"))).transcript(&[
+        agent_use("tu_a", "w", &ago(30.0)),
+        launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)),
+        notif_user("a1b2c3d4e5f60718", "completed", &ago(10.0)),
+    ]));
+    add(sc("note-agent-finished-attachment-shape", h, ask_payload(q("h", "Which one?"))).transcript(&[
+        agent_use("tu_a", "w", &ago(30.0)),
+        launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)),
+        notif_attachment("a1b2c3d4e5f60718", "failed", &ago(10.0)),
+    ]));
+    add(sc("note-agent-finished-queue-shape", h, ask_payload(q("h", "Which one?"))).transcript(&[
+        agent_use("tu_a", "w", &ago(30.0)),
+        launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)),
+        notif_queue("a1b2c3d4e5f60718", "KILLED", &ago(10.0)),
+    ]));
+    add(sc("note-status-not-terminal", h, ask_payload(q("h", "Which one?"))).transcript(&[
+        agent_use("tu_a", "w", &ago(30.0)),
+        launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)),
+        notif_user("a1b2c3d4e5f60718", "running", &ago(10.0)),
+    ]));
+    add(sc("note-notification-quoted-not-terminal", h, ask_payload(q("h", "Which one?"))).transcript(&[
+        agent_use("tu_a", "w", &ago(30.0)),
+        launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)),
+        json!({"type": "user", "message": {"role": "user", "content": format!("see {}", notif_text("a1b2c3d4e5f60718", "completed"))}, "timestamp": ago(10.0)})
+            .to_string(),
+    ]));
+    add(sc("note-agent-stopped-by-taskstop", h, ask_payload(q("h", "Which one?"))).transcript(
+        &[agent_use("tu_a", "w", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]
+            .into_iter()
+            .chain(stop_call("tu_s", "a1b2c3d4e5f60718", &ago(9.0), true, false))
+            .collect::<Vec<_>>(),
+    ));
+    add(sc("note-description-controls", h, ask_payload(q("h", "Which one?")))
+        .transcript(&[agent_use("tu_a", "line one\nline\ttwo\u{1}end", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
+    add(sc("note-description-unicode", h, ask_payload(q("h", "Which one?")))
+        .transcript(&[agent_use("tu_a", "größe 日本語 \u{1F600}", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
+    add(sc("note-description-empty", h, ask_payload(q("h", "Which one?")))
+        .transcript(&[agent_use("tu_a", "", &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
+    add(sc("note-description-over-60", h, ask_payload(q("h", "Which one?")))
+        .transcript(&[agent_use("tu_a", &"d".repeat(90), &ago(30.0)), launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
+    add(sc("note-description-cuts-pair", h, ask_payload(q("h", "Which one?")))
+        .transcript(&[
+            agent_use("tu_a", &format!("{}{}", "d".repeat(59), "\u{1F600}more"), &ago(30.0)),
+            launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)),
+        ])
+        .defers());
+    add(sc("note-launch-via-structured-agent-id", h, ask_payload(q("h", "Which one?")))
+        .transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch_sid("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
+    add(sc("note-teammate-pending", h, ask_payload(q("h", "Which one?")))
+        .transcript(&[teammate_spawn("tu_sp", "alice", &ago(40.0)), teammate_send("tu_sd", "alice", &ago(4.0))].concat()));
+    add(sc("note-adopted-task-status", h, ask_payload(q("h", "Which one?"))).transcript(&[task_status(
+        "0123456789abcdef",
+        "running",
+        "$HOME/o",
+        "adopted agent",
+        &ago(20.0),
+    )]));
+    let two_aaaa = || {
+        vec![
+            agent_use("tu_1", "first", &ago(30.0)),
+            launch("tu_1", "aaaa000011112222", "$HOME/o1", &ago(30.0)),
+            agent_use("tu_2", "second", &ago(30.0)),
+            launch("tu_2", "aaaa0000ffff3333", "$HOME/o2", &ago(30.0)),
+        ]
+    };
+    let output_call = |prefix: &str, text: &str| {
+        vec![assistant_use("tu_o", "TaskOutput", json!({"task_id": prefix, "block": false}), &ago(9.0)), result_blocks("tu_o", text, &ago(9.0), json!({}))]
+    };
+    add(sc("delivery-ambiguous-prefix-ends-nothing", h, ask_payload(q("h", "x")))
+        .transcript(&[two_aaaa(), output_call("aaaa0000", "done: aaaa000011112222 and aaaa0000ffff3333 finished")].concat()));
+    add(sc("delivery-unique-prefix-ends-one", h, ask_payload(q("h", "x")))
+        .transcript(&[two_aaaa(), output_call("aaaa00001", "done: aaaa000011112222 finished")].concat()));
+    add(sc("delivery-by-other-tool-ends-nothing", h, ask_payload(q("h", "x"))).transcript(
+        &[
+            two_aaaa(),
+            vec![
+                assistant_use("tu_o", "Read", json!({"file_path": "aaaa000011112222"}), &ago(9.0)),
+                result_blocks("tu_o", "aaaa000011112222 finished", &ago(9.0), json!({})),
+            ],
+        ]
+        .concat(),
+    ));
+    add(sc("delivery-text-without-the-id-ends-nothing", h, ask_payload(q("h", "x")))
+        .transcript(&[two_aaaa(), output_call("aaaa000011112222", "finished, no id here")].concat()));
+    add(sc("delivery-result-of-unseen-call-ends-it", h, ask_payload(q("h", "x")))
+        .transcript(&[two_aaaa(), vec![result_blocks("tu_unseen", "report for aaaa000011112222", &ago(9.0), json!({}))]].concat()));
     add(sc("note-no-transcript-path", h, json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": q("h", "x")}})));
-    add(sc("note-transcript-missing", h, json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": q("h", "x")}, "transcript_path": "$HOME/nope.jsonl"})));
+    add(sc(
+        "note-transcript-missing",
+        h,
+        json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": q("h", "x")}, "transcript_path": "$HOME/nope.jsonl"}),
+    ));
     add(sc("note-transcript-empty", h, ask_payload(q("h", "x"))).file("t/session.jsonl", ""));
-    add(sc("note-large-transcript-launch-before-window", h, ask_payload(q("h", "x")))
-        .transcript(&[running(1), vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(2_000_000)}, "timestamp": ago(20.0)}).to_string()]].concat()));
-    add(sc("note-large-transcript-launch-inside-wide-window", h, ask_payload(q("h", "x")))
-        .transcript(&[running(1), vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(2_000_000)}, "timestamp": ago(20.0)}).to_string()], vec![notif_user("a1b2c3d4e5f60700", "completed", &ago(5.0))]].concat()));
-    add(sc("note-large-transcript-running-in-window", h, ask_payload(q("h", "x")))
-        .transcript(&[vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(2_000_000)}, "timestamp": ago(40.0)}).to_string()], running(1)].concat()));
+    add(sc("note-large-transcript-launch-before-window", h, ask_payload(q("h", "x"))).transcript(
+        &[running(1), vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(2_000_000)}, "timestamp": ago(20.0)}).to_string()]]
+            .concat(),
+    ));
+    add(sc("note-large-transcript-launch-inside-wide-window", h, ask_payload(q("h", "x"))).transcript(
+        &[
+            running(1),
+            vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(2_000_000)}, "timestamp": ago(20.0)}).to_string()],
+            vec![notif_user("a1b2c3d4e5f60700", "completed", &ago(5.0))],
+        ]
+        .concat(),
+    ));
+    add(sc("note-large-transcript-running-in-window", h, ask_payload(q("h", "x"))).transcript(
+        &[vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(2_000_000)}, "timestamp": ago(40.0)}).to_string()], running(1)]
+            .concat(),
+    ));
     add(sc("note-noise-lines", h, ask_payload(q("h", "x"))).transcript(&[noise(), running(1), noise()].concat()));
     add(sc("note-lone-surrogate-line-defers", h, ask_payload(q("h", "x")))
-        .transcript(&[running(1), vec![format!("{{\"type\":\"user\",\"message\":{{\"content\":\"tool_result \\ud800\"}},\"timestamp\":\"{}\"}}", ago(1.0))]].concat())
+        .transcript(
+            &[running(1), vec![format!("{{\"type\":\"user\",\"message\":{{\"content\":\"tool_result \\ud800\"}},\"timestamp\":\"{}\"}}", ago(1.0))]].concat(),
+        )
         .defers());
-    add(sc("advise-mode", h, ask_payload(q("h", "Which one?"))).env("ANTIHALL_NO_BLOCKING_QUESTIONS", "advise").settings(json!({"guards": {"questionAgentsNote": false}})));
+    add(sc("advise-mode", h, ask_payload(q("h", "Which one?")))
+        .env("ANTIHALL_NO_BLOCKING_QUESTIONS", "advise")
+        .settings(json!({"guards": {"questionAgentsNote": false}})));
     add(on(sc("advise-with-agents", h, ask_payload(q("h", "Which one?"))).transcript(&running(2)), "ADVISE"));
     add(on(sc("advise-child", h, ask_payload(q("h", "Which one?"))).transcript(&running(1)).env("DEVSWARM_SOURCE_BRANCH", "feature/x"), "advise"));
     add(on(sc("advise-child-blank-branch", h, ask_payload(q("h", "Which one?"))).env("DEVSWARM_SOURCE_BRANCH", "   "), "advise"));
-    add(sc("advise-from-settings-file", h, ask_payload(q("h", "Which one?"))).settings(json!({"guards": {"noBlockingQuestions": "advise", "questionAgentsNote": false}})));
-    add(sc("mode-invalid-env-falls-to-file", h, ask_payload(q("h", "x"))).env("ANTIHALL_NO_BLOCKING_QUESTIONS", "loud").settings(json!({"guards": {"noBlockingQuestions": "block"}})));
-    add(sc("mode-invalid-everywhere-is-off", h, ask_payload(q("h", "x"))).env("ANTIHALL_NO_BLOCKING_QUESTIONS", "loud").settings(json!({"guards": {"noBlockingQuestions": "sometimes", "questionAgentsNote": false}})));
+    add(sc("advise-from-settings-file", h, ask_payload(q("h", "Which one?")))
+        .settings(json!({"guards": {"noBlockingQuestions": "advise", "questionAgentsNote": false}})));
+    add(sc("mode-invalid-env-falls-to-file", h, ask_payload(q("h", "x")))
+        .env("ANTIHALL_NO_BLOCKING_QUESTIONS", "loud")
+        .settings(json!({"guards": {"noBlockingQuestions": "block"}})));
+    add(sc("mode-invalid-everywhere-is-off", h, ask_payload(q("h", "x")))
+        .env("ANTIHALL_NO_BLOCKING_QUESTIONS", "loud")
+        .settings(json!({"guards": {"noBlockingQuestions": "sometimes", "questionAgentsNote": false}})));
     add(on(sc("block-plain-question", h, ask_payload(q("h", "Which one?"))), "block"));
     add(on(sc("block-child", h, ask_payload(q("h", "Which one?"))).env("DEVSWARM_SOURCE_BRANCH", "feat"), "block"));
     add(on(sc("block-marker-in-header", h, ask_payload(q("DESTRUCTIVE: delete", "ok?"))), "block"));
@@ -636,7 +801,14 @@ fn ask_corpus() -> Vec<Sc> {
     add(on(sc("block-marker-trimmed-header", h, ask_payload(q("\u{a0}\tCREDENTIAL: x", "?"))), "block"));
     add(on(sc("block-marker-lowercase-rejected", h, ask_payload(q("destructive: x", "destructive: y"))), "block"));
     add(on(sc("block-marker-midtext-rejected", h, ask_payload(q("x", "is this DESTRUCTIVE: yes"))), "block"));
-    add(on(sc("block-marker-only-second-question", h, ask_payload(json!([{"question": "a", "header": "a"}, {"question": "DESTRUCTIVE: b", "header": "DESTRUCTIVE:"}]))), "block"));
+    add(on(
+        sc(
+            "block-marker-only-second-question",
+            h,
+            ask_payload(json!([{"question": "a", "header": "a"}, {"question": "DESTRUCTIVE: b", "header": "DESTRUCTIVE:"}])),
+        ),
+        "block",
+    ));
     add(on(sc("block-marker-with-agents-note", h, ask_payload(q("DESTRUCTIVE: x", "?"))).transcript(&running(2)), "block"));
     add(on(sc("block-marker-logs-twice", h, ask_payload(q("CREDENTIAL: x", "?"))).file(".anti-hall/logs/ask-guard.ndjson", "{\"old\":1}\n"), "block"));
     add(on(sc("block-questions-empty-array", h, ask_payload(json!([]))), "block"));
@@ -648,7 +820,10 @@ fn ask_corpus() -> Vec<Sc> {
     add(on(sc("block-header-number", h, ask_payload(json!([{"header": 5, "question": "DESTRUCTIVE: q"}]))), "block"));
     add(on(sc("block-no-tool-input", h, json!({"tool_name": "AskUserQuestion"})), "block"));
     add(on(sc("block-unicode-reason", h, ask_payload(q("héader ✓", "日本語?"))), "block"));
-    add(on(sc("skipped-by-skip-file", h, ask_payload(q("h", "x"))).file(".anti-hall/skip.json", &json!({"ask-guard": 99999999999999u64}).to_string()), "block"));
+    add(on(
+        sc("skipped-by-skip-file", h, ask_payload(q("h", "x"))).file(".anti-hall/skip.json", &json!({"ask-guard": 99999999999999u64}).to_string()),
+        "block",
+    ));
     add(on(sc("skipped-by-all", h, ask_payload(q("h", "x"))).file(".anti-hall/skip.json", &json!({"all": 99999999999999u64}).to_string()), "block"));
     add(on(sc("skip-expired", h, ask_payload(q("h", "x"))).file(".anti-hall/skip.json", &json!({"ask-guard": 1}).to_string()), "block"));
     add(on(sc("skip-file-corrupt", h, ask_payload(q("h", "x"))).file(".anti-hall/skip.json", "{oops"), "block"));
@@ -660,7 +835,9 @@ fn ask_corpus() -> Vec<Sc> {
     add(on(sc("empty-stdin-defers-to-node", h, json!({})).raw(""), "block").defers());
     add(sc("note-off-and-mode-off-never-reads-stdin", h, json!({})).raw("{nope").settings(json!({"guards": {"questionAgentsNote": false}})).defers());
     add(sc("plugin-option-note-ignored", h, ask_payload(q("h", "x"))).transcript(&running(1)).env("CLAUDE_PLUGIN_OPTION_GUARDS_QUESTION_AGENTS_NOTE", "false"));
-    add(sc("claude-settings-plugin-config-ignored", h, ask_payload(q("h", "x"))).transcript(&running(1)).file(".claude/settings.json", &json!({"pluginConfigs": {"anti-hall": {"options": {"guards_question_agents_note": false}}}}).to_string()));
+    add(sc("claude-settings-plugin-config-ignored", h, ask_payload(q("h", "x")))
+        .transcript(&running(1))
+        .file(".claude/settings.json", &json!({"pluginConfigs": {"anti-hall": {"options": {"guards_question_agents_note": false}}}}).to_string()));
     v
 }
 
@@ -676,7 +853,10 @@ fn stop_payload_for(session: Value) -> Value {
 }
 
 fn stale_run(n: &str) -> Vec<String> {
-    vec![agent_use(&format!("tu_{n}"), &format!("agent {n}"), &ago(90.0)), launch(&format!("tu_{n}"), &format!("a1b2c3d4e5f6{n}"), &format!("$HOME/out-{n}.txt"), &ago(90.0))]
+    vec![
+        agent_use(&format!("tu_{n}"), &format!("agent {n}"), &ago(90.0)),
+        launch(&format!("tu_{n}"), &format!("a1b2c3d4e5f6{n}"), &format!("$HOME/out-{n}.txt"), &ago(90.0)),
+    ]
 }
 
 fn state_json(nudged: Value, ever: Value) -> String {
@@ -699,32 +879,60 @@ fn silent_corpus() -> Vec<Sc> {
     add(sc("no-transcript-path", h, json!({"hook_event_name": "Stop", "session_id": "s1"})));
     add(sc("transcript-missing", h, json!({"hook_event_name": "Stop", "session_id": "s1", "transcript_path": "$HOME/nope.jsonl"})));
     add(sc("transcript-empty", h, stop_payload_for(json!("s1"))).file("t/session.jsonl", ""));
-    add(sc("finished-agent", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), vec![notif_user("a1b2c3d4e5f601", "completed", &ago(10.0))]].concat()));
+    add(sc("finished-agent", h, stop_payload_for(json!("s1")))
+        .transcript(&[stale_run("01"), vec![notif_user("a1b2c3d4e5f601", "completed", &ago(10.0))]].concat()));
     // Node would nudge: the engine defers (before touching any state)
     add(old(sc("silent-agent-first-time-defers", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")), "01").defers());
     add(sc("output-file-missing-defers", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).defers());
     add(old(sc("silent-agent-no-session-defers", h, stop_payload_for(json!(null))).transcript(&stale_run("01")), "01").defers());
-    add(old(sc("two-silent-agents-defer", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), stale_run("02")].concat()), "01").aged("out-02.txt", "{}\n", 70.0).defers());
+    add(old(sc("two-silent-agents-defer", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), stale_run("02")].concat()), "01")
+        .aged("out-02.txt", "{}\n", 70.0)
+        .defers());
     // already nudged: state is rewritten exactly as Node does, nothing is said
-    add(sc("missing-output-already-nudged", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01"))
+    add(sc("missing-output-already-nudged", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
         .file(".anti-hall/silent-agent-nudge-state.json", &state_json(json!({"t:a1b2c3d4e5f601": "missing"}), json!({}))));
-    add(sc("missing-output-capped-ever", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01"))
+    add(sc("missing-output-capped-ever", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
         .file(".anti-hall/silent-agent-nudge-state.json", &state_json(json!({}), json!({"s1::a1b2c3d4e5f601": (NOW.with(|n| *n) - 1000.0).floor()}))));
-    add(sc("ever-cap-other-session-does-not-cap", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01"))
-        .file(".anti-hall/silent-agent-nudge-state.json", &state_json(json!({}), json!({"s2::a1b2c3d4e5f601": (NOW.with(|n| *n) - 1000.0).floor()}))).defers());
-    add(sc("ever-cap-expired-defers", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01"))
-        .file(".anti-hall/silent-agent-nudge-state.json", &state_json(json!({}), json!({"s1::a1b2c3d4e5f601": (NOW.with(|n| *n) - 40.0 * 86_400_000.0).floor()}))).defers());
+    add(sc("ever-cap-other-session-does-not-cap", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
+        .file(".anti-hall/silent-agent-nudge-state.json", &state_json(json!({}), json!({"s2::a1b2c3d4e5f601": (NOW.with(|n| *n) - 1000.0).floor()})))
+        .defers());
+    add(sc("ever-cap-expired-defers", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
+        .file(
+            ".anti-hall/silent-agent-nudge-state.json",
+            &state_json(json!({}), json!({"s1::a1b2c3d4e5f601": (NOW.with(|n| *n) - 40.0 * 86_400_000.0).floor()})),
+        )
+        .defers());
     add(sc("state-prunes-dead-keys", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01"))
         .file(".anti-hall/silent-agent-nudge-state.json", &state_json(json!({"t:gone": "x", "t:a1b2c3d4e5f601": "missing", "h:old": "5"}), json!({"s1::gone": (NOW.with(|n| *n) - 1000.0).floor(), "s1::a1b2c3d4e5f601": (NOW.with(|n| *n) - 2000.0).floor(), "s0::x": (NOW.with(|n| *n) - 50.0 * 86_400_000.0).floor()}))));
     add(sc("ever-values-coerced-by-number", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01"))
         .file(".anti-hall/silent-agent-nudge-state.json", &format!("{{\"nudged\":{{\"t:a1b2c3d4e5f601\":\"missing\"}},\"everNudged\":{{\"a\":\"{}\",\"b\":null,\"c\":true,\"d\":[{}],\"e\":{{}},\"f\":\"\",\"g\":\"0x10\"}}}}", (NOW.with(|n| *n) - 5000.0).floor(), (NOW.with(|n| *n) - 6000.0).floor())));
-    add(sc("state-corrupt-json-defers-for-first-nudge", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).file(".anti-hall/silent-agent-nudge-state.json", "{oops").defers());
-    add(sc("state-not-an-object", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).file(".anti-hall/silent-agent-nudge-state.json", "[1,2]").defers());
-    add(sc("state-extra-keys-dropped", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01"))
+    add(sc("state-corrupt-json-defers-for-first-nudge", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
+        .file(".anti-hall/silent-agent-nudge-state.json", "{oops")
+        .defers());
+    add(sc("state-not-an-object", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
+        .file(".anti-hall/silent-agent-nudge-state.json", "[1,2]")
+        .defers());
+    add(sc("state-extra-keys-dropped", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
         .file(".anti-hall/silent-agent-nudge-state.json", &json!({"nudged": {"t:a1b2c3d4e5f601": "missing"}, "everNudged": {}, "extra": 1}).to_string()));
-    add(sc("state-nudged-is-list-defers", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).file(".anti-hall/silent-agent-nudge-state.json", &json!({"nudged": [1], "everNudged": {}}).to_string()).defers());
-    add(sc("state-index-like-key-defers", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).file(".anti-hall/silent-agent-nudge-state.json", "{\"nudged\":{\"t:a1b2c3d4e5f601\":\"missing\",\"7\":\"x\"},\"everNudged\":{}}").defers());
-    add(sc("state-nudged-null-members", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).file(".anti-hall/silent-agent-nudge-state.json", "{\"nudged\":null,\"everNudged\":5}").defers());
+    add(sc("state-nudged-is-list-defers", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
+        .file(".anti-hall/silent-agent-nudge-state.json", &json!({"nudged": [1], "everNudged": {}}).to_string())
+        .defers());
+    add(sc("state-index-like-key-defers", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
+        .file(".anti-hall/silent-agent-nudge-state.json", "{\"nudged\":{\"t:a1b2c3d4e5f601\":\"missing\",\"7\":\"x\"},\"everNudged\":{}}")
+        .defers());
+    add(sc("state-nudged-null-members", h, stop_payload_for(json!("s1")))
+        .transcript(&stale_run("01"))
+        .file(".anti-hall/silent-agent-nudge-state.json", "{\"nudged\":null,\"everNudged\":5}")
+        .defers());
     // heartbeat source
     add(sc("heartbeat-stale-defers", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/hb1.json", &hb("hb1", "s1", "running", 90.0)).defers());
     add(sc("heartbeat-fresh", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/hb1.json", &hb("hb1", "s1", "running", 2.0)));
@@ -733,52 +941,166 @@ fn silent_corpus() -> Vec<Sc> {
     add(sc("heartbeat-no-session-in-payload", h, stop_payload_for(json!(null))).file(".anti-hall/agents/hb1.json", &hb("hb1", "s2", "running", 90.0)));
     add(sc("heartbeat-recent-spawn-marker", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/recent-spawn.json", &json!({"ts": 5}).to_string()));
     add(sc("heartbeat-devswarm-file", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/devswarm-x.json", &hb("x", "s1", "running", 90.0)));
-    add(sc("heartbeat-no-id", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/a.json", &json!({"session": "s1", "status": "running", "ts": 5}).to_string()));
-    add(sc("heartbeat-ts-zero", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/a.json", &json!({"id": "a", "session": "s1", "status": "running", "ts": 0}).to_string()));
-    add(sc("heartbeat-ts-string", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/a.json", &json!({"id": "a", "session": "s1", "status": "running", "ts": "5"}).to_string()));
+    add(sc("heartbeat-no-id", h, stop_payload_for(json!("s1")))
+        .file(".anti-hall/agents/a.json", &json!({"session": "s1", "status": "running", "ts": 5}).to_string()));
+    add(sc("heartbeat-ts-zero", h, stop_payload_for(json!("s1")))
+        .file(".anti-hall/agents/a.json", &json!({"id": "a", "session": "s1", "status": "running", "ts": 0}).to_string()));
+    add(sc("heartbeat-ts-string", h, stop_payload_for(json!("s1")))
+        .file(".anti-hall/agents/a.json", &json!({"id": "a", "session": "s1", "status": "running", "ts": "5"}).to_string()));
     add(sc("heartbeat-corrupt", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/a.json", "{bad"));
     add(sc("heartbeat-not-json-ext", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/a.txt", &hb("a", "s1", "running", 90.0)));
     let hb_ts = (NOW.with(|n| *n) - 90.0 * 60_000.0).floor();
     add(sc("heartbeat-already-nudged", h, stop_payload_for(json!("s1")))
         .file(".anti-hall/agents/hb1.json", &json!({"id": "hb1", "session": "s1", "status": "running", "step": "w", "ts": hb_ts}).to_string())
         .file(".anti-hall/silent-agent-nudge-state.json", &state_json(json!({"h:hb1": format!("{}", hb_ts as i64)}), json!({}))));
-    add(sc("heartbeat-ts-float-defers", h, stop_payload_for(json!("s1"))).file(".anti-hall/agents/a.json", &json!({"id": "a", "session": "s1", "status": "running", "ts": 1.5}).to_string()).defers());
+    add(sc("heartbeat-ts-float-defers", h, stop_payload_for(json!("s1")))
+        .file(".anti-hall/agents/a.json", &json!({"id": "a", "session": "s1", "status": "running", "ts": 1.5}).to_string())
+        .defers());
     // settings, skip, judge child
     add(old(sc("disabled-by-env", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE", "off"), "01"));
-    add(old(sc("disabled-by-settings", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).settings(json!({"guards": {"silentAgentNudge": false}})), "01"));
-    add(old(sc("disabled-by-plugin-option", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("CLAUDE_PLUGIN_OPTION_GUARDS_SILENT_AGENT_NUDGE", "false"), "01"));
-    add(old(sc("plugin-option-equal-default-ignored", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("CLAUDE_PLUGIN_OPTION_GUARDS_SILENT_AGENT_NUDGE", "true"), "01").defers());
-    add(old(sc("skipped", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).file(".anti-hall/skip.json", &json!({"silent-agent-nudge": 99999999999999u64}).to_string()), "01"));
-    add(old(sc("skipped-all", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).file(".anti-hall/skip.json", &json!({"all": 99999999999999u64}).to_string()), "01"));
+    add(old(
+        sc("disabled-by-settings", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).settings(json!({"guards": {"silentAgentNudge": false}})),
+        "01",
+    ));
+    add(old(
+        sc("disabled-by-plugin-option", h, stop_payload_for(json!("s1")))
+            .transcript(&stale_run("01"))
+            .env("CLAUDE_PLUGIN_OPTION_GUARDS_SILENT_AGENT_NUDGE", "false"),
+        "01",
+    ));
+    add(old(
+        sc("plugin-option-equal-default-ignored", h, stop_payload_for(json!("s1")))
+            .transcript(&stale_run("01"))
+            .env("CLAUDE_PLUGIN_OPTION_GUARDS_SILENT_AGENT_NUDGE", "true"),
+        "01",
+    )
+    .defers());
+    add(old(
+        sc("skipped", h, stop_payload_for(json!("s1")))
+            .transcript(&stale_run("01"))
+            .file(".anti-hall/skip.json", &json!({"silent-agent-nudge": 99999999999999u64}).to_string()),
+        "01",
+    ));
+    add(old(
+        sc("skipped-all", h, stop_payload_for(json!("s1")))
+            .transcript(&stale_run("01"))
+            .file(".anti-hall/skip.json", &json!({"all": 99999999999999u64}).to_string()),
+        "01",
+    ));
     add(old(sc("judge-child-is-silent", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_JUDGE_CHILD", "1"), "01"));
     add(old(sc("judge-child-other-value", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_JUDGE_CHILD", "0"), "01").defers());
     // threshold
-    add(old(sc("threshold-env-huge-keeps-quiet", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "500"), "01"));
-    add(old(sc("threshold-env-small-defers", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "5"), "01").defers());
-    add(old(sc("threshold-zero-clamped-to-one", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "0"), "01").defers());
-    add(old(sc("threshold-garbage-uses-default", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "soon").settings(json!({"guards": {"silentAgentNudgeMin": 500}})), "01"));
+    add(old(
+        sc("threshold-env-huge-keeps-quiet", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "500"),
+        "01",
+    ));
+    add(old(sc("threshold-env-small-defers", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "5"), "01")
+        .defers());
+    add(old(
+        sc("threshold-zero-clamped-to-one", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "0"),
+        "01",
+    )
+    .defers());
+    add(old(
+        sc("threshold-garbage-uses-default", h, stop_payload_for(json!("s1")))
+            .transcript(&stale_run("01"))
+            .env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "soon")
+            .settings(json!({"guards": {"silentAgentNudgeMin": 500}})),
+        "01",
+    ));
     add(old(sc("threshold-hex-env", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "0x1F4"), "01"));
-    add(old(sc("threshold-from-settings", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).settings(json!({"guards": {"silentAgentNudgeMin": 500}})), "01"));
-    add(old(sc("threshold-plugin-option", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("CLAUDE_PLUGIN_OPTION_GUARDS_SILENT_AGENT_NUDGE_MIN", "500"), "01"));
+    add(old(
+        sc("threshold-from-settings", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).settings(json!({"guards": {"silentAgentNudgeMin": 500}})),
+        "01",
+    ));
+    add(old(
+        sc("threshold-plugin-option", h, stop_payload_for(json!("s1")))
+            .transcript(&stale_run("01"))
+            .env("CLAUDE_PLUGIN_OPTION_GUARDS_SILENT_AGENT_NUDGE_MIN", "500"),
+        "01",
+    ));
     add(old(sc("threshold-fraction", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).env("ANTIHALL_SILENT_AGENT_NUDGE_MIN", "61.5"), "01"));
     // shapes of agent state
-    add(sc("resumed-agent-fresh-resume-quiet", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), resume_json("a1b2c3d4e5f601", "a1b2c3d", &ago(1.0), "tu_r")].concat()).aged("out-01.txt", "{}\n", 60.0));
-    add(sc("adopted-without-timestamp-never-nudged", h, stop_payload_for(json!("s1"))).transcript(&[json!({"type": "attachment", "attachment": {"type": "task_status", "taskId": "0123456789abcdef", "status": "running", "outputFilePath": "$HOME/nope"}}).to_string()]));
-    add(sc("adopted-with-timestamp-missing-output-defers", h, stop_payload_for(json!("s1"))).transcript(&[task_status("0123456789abcdef", "running", "$HOME/nope", "adopted", &ago(90.0))]).defers());
-    add(sc("adopted-then-terminal", h, stop_payload_for(json!("s1"))).transcript(&[task_status("0123456789abcdef", "running", "$HOME/nope", "adopted", &ago(90.0)), task_status("0123456789abcdef", "completed", "", "", &ago(10.0))]));
-    add(old(sc("sidechain-newer-than-output", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).aged("t/session/subagents/agent-a1b2c3d4e5f601.jsonl", "{}\n", 1.0), "01"));
-    add(sc("teammate-pending-message-never-blocks", h, stop_payload_for(json!("s1"))).transcript(&[teammate_spawn("tu_sp", "alice", &ago(120.0)), teammate_send("tu_sd", "alice", &ago(30.0))].concat()));
-    add(old(sc("noise-lines", h, stop_payload_for(json!("s1"))).transcript(&[noise(), stale_run("01"), noise(), vec![notif_attachment("a1b2c3d4e5f601", "stopped", &ago(5.0))]].concat()), "01"));
-    add(old(sc("taskstop-ended-it", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), stop_call("tu_s", "a1b2c3d4e5f601", &ago(30.0), true, false)].concat()), "01"));
-    add(old(sc("delivery-evidence-ended-it", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), delivery("tu_d", "a1b2c3d4e5f601", &ago(30.0))].concat()), "01"));
-    add(old(sc("running-row-not-delivery", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), vec![assistant_use("tu_l", "TaskOutput", json!({"task_id": "a1b2c3d4e5f601"}), &ago(30.0)), result_blocks("tu_l", "a1b2c3d4e5f601  ·  general  ·  running  ·  started 20m ago", &ago(30.0), json!({}))]].concat()), "01").defers());
-    add(sc("lone-surrogate-line-defers", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), vec![format!("{{\"type\":\"user\",\"message\":{{\"content\":\"tool_result \\ud800\"}},\"timestamp\":\"{}\"}}", ago(1.0))]].concat()).defers());
+    add(sc("resumed-agent-fresh-resume-quiet", h, stop_payload_for(json!("s1")))
+        .transcript(&[stale_run("01"), resume_json("a1b2c3d4e5f601", "a1b2c3d", &ago(1.0), "tu_r")].concat())
+        .aged("out-01.txt", "{}\n", 60.0));
+    add(sc("adopted-without-timestamp-never-nudged", h, stop_payload_for(json!("s1"))).transcript(&[
+        json!({"type": "attachment", "attachment": {"type": "task_status", "taskId": "0123456789abcdef", "status": "running", "outputFilePath": "$HOME/nope"}})
+            .to_string(),
+    ]));
+    add(sc("adopted-with-timestamp-missing-output-defers", h, stop_payload_for(json!("s1")))
+        .transcript(&[task_status("0123456789abcdef", "running", "$HOME/nope", "adopted", &ago(90.0))])
+        .defers());
+    add(sc("adopted-then-terminal", h, stop_payload_for(json!("s1"))).transcript(&[
+        task_status("0123456789abcdef", "running", "$HOME/nope", "adopted", &ago(90.0)),
+        task_status("0123456789abcdef", "completed", "", "", &ago(10.0)),
+    ]));
+    add(old(
+        sc("sidechain-newer-than-output", h, stop_payload_for(json!("s1"))).transcript(&stale_run("01")).aged(
+            "t/session/subagents/agent-a1b2c3d4e5f601.jsonl",
+            "{}\n",
+            1.0,
+        ),
+        "01",
+    ));
+    add(sc("teammate-pending-message-never-blocks", h, stop_payload_for(json!("s1")))
+        .transcript(&[teammate_spawn("tu_sp", "alice", &ago(120.0)), teammate_send("tu_sd", "alice", &ago(30.0))].concat()));
+    add(old(
+        sc("noise-lines", h, stop_payload_for(json!("s1")))
+            .transcript(&[noise(), stale_run("01"), noise(), vec![notif_attachment("a1b2c3d4e5f601", "stopped", &ago(5.0))]].concat()),
+        "01",
+    ));
+    add(old(
+        sc("taskstop-ended-it", h, stop_payload_for(json!("s1")))
+            .transcript(&[stale_run("01"), stop_call("tu_s", "a1b2c3d4e5f601", &ago(30.0), true, false)].concat()),
+        "01",
+    ));
+    add(old(
+        sc("delivery-evidence-ended-it", h, stop_payload_for(json!("s1")))
+            .transcript(&[stale_run("01"), delivery("tu_d", "a1b2c3d4e5f601", &ago(30.0))].concat()),
+        "01",
+    ));
+    add(old(
+        sc("running-row-not-delivery", h, stop_payload_for(json!("s1"))).transcript(
+            &[
+                stale_run("01"),
+                vec![
+                    assistant_use("tu_l", "TaskOutput", json!({"task_id": "a1b2c3d4e5f601"}), &ago(30.0)),
+                    result_blocks("tu_l", "a1b2c3d4e5f601  ·  general  ·  running  ·  started 20m ago", &ago(30.0), json!({})),
+                ],
+            ]
+            .concat(),
+        ),
+        "01",
+    )
+    .defers());
+    add(sc("lone-surrogate-line-defers", h, stop_payload_for(json!("s1")))
+        .transcript(
+            &[stale_run("01"), vec![format!("{{\"type\":\"user\",\"message\":{{\"content\":\"tool_result \\ud800\"}},\"timestamp\":\"{}\"}}", ago(1.0))]]
+                .concat(),
+        )
+        .defers());
     add(old(sc("payload-array-still-evaluated", h, json!([])), "01"));
     add(sc("payload-string", h, json!("x")));
     add(sc("malformed-stdin-defers-to-node", h, json!({})).raw("{nope").defers());
     add(sc("empty-stdin-defers-to-node", h, json!({})).raw("").defers());
-    add(old(sc("session-id-number", h, json!({"hook_event_name": "Stop", "session_id": 5, "transcript_path": "$HOME/t/session.jsonl"})).transcript(&stale_run("01")), "01").defers());
-    add(old(sc("huge-transcript-with-stale-agent", h, stop_payload_for(json!("s1"))).transcript(&[stale_run("01"), vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(3_000_000)}, "timestamp": ago(20.0)}).to_string()]].concat()), "01").defers());
+    add(old(
+        sc("session-id-number", h, json!({"hook_event_name": "Stop", "session_id": 5, "transcript_path": "$HOME/t/session.jsonl"}))
+            .transcript(&stale_run("01")),
+        "01",
+    )
+    .defers());
+    add(old(
+        sc("huge-transcript-with-stale-agent", h, stop_payload_for(json!("s1"))).transcript(
+            &[
+                stale_run("01"),
+                vec![json!({"type": "user", "message": {"role": "user", "content": "x".repeat(3_000_000)}, "timestamp": ago(20.0)}).to_string()],
+            ]
+            .concat(),
+        ),
+        "01",
+    )
+    .defers());
     v
 }
 
@@ -816,7 +1138,11 @@ fn silent_agent_nudge_state_with_real_snapshots() {
                 snap = format!("{snap}@r{}", resume_ts as i64);
             }
             let key_ever = if *resumed { format!("s1::a1b2c3d4e5f601ab@r{}", resume_ts as i64) } else { "s1::zzz".to_string() };
-            std::fs::write(h.join(".anti-hall/silent-agent-nudge-state.json"), state_json(json!({"t:a1b2c3d4e5f601ab": snap}), json!({key_ever: (NOW.with(|n| *n) - 5000.0).floor()}))).unwrap();
+            std::fs::write(
+                h.join(".anti-hall/silent-agent-nudge-state.json"),
+                state_json(json!({"t:a1b2c3d4e5f601ab": snap}), json!({key_ever: (NOW.with(|n| *n) - 5000.0).floor()})),
+            )
+            .unwrap();
         }
         let mut n = Command::new("node");
         n.arg(repo().join("plugins/anti-hall/hooks/silent-agent-nudge.js"));
@@ -884,7 +1210,7 @@ fn fuzz_transcript(r: &mut Rng) -> (Vec<String>, Vec<File>) {
         let id = BG[b];
         let t = TEAM[r.below(TEAM.len())];
         match r.below(16) {
-            0 | 1 | 2 => {
+            0..=2 => {
                 lines.push(agent_use(&tu, &format!("agent-{b}"), &ts));
                 let out = format!("$HOME/out-{b}.txt");
                 lines.push(if r.chance(30) { launch_sid(&tu, id, &out, &ts) } else { launch(&tu, id, &out, &ts) });
@@ -894,7 +1220,7 @@ fn fuzz_transcript(r: &mut Rng) -> (Vec<String>, Vec<File>) {
                     files.push(File { rel: format!("out-{b}.txt"), body: b"{}\n".to_vec(), age_min: Some(age) });
                 }
             }
-            3 | 4 => {
+            3..=4 => {
                 let status = ["completed", "failed", "stopped", "killed", "cancelled", "canceled", "running", "COMPLETED", " completed ", "done"][r.below(10)];
                 lines.push(match r.below(3) {
                     0 => notif_user(id, status, &ts),
@@ -902,7 +1228,7 @@ fn fuzz_transcript(r: &mut Rng) -> (Vec<String>, Vec<File>) {
                     _ => notif_queue(id, status, &ts),
                 });
             }
-            5 | 6 => {
+            5..=6 => {
                 if r.chance(60) {
                     lines.extend(resume_json(id, &id[..7], &ts, &tu));
                 } else {
@@ -920,8 +1246,8 @@ fn fuzz_transcript(r: &mut Rng) -> (Vec<String>, Vec<File>) {
                 lines.extend(stop_call(&tu, &target, &ts, r.chance(80), r.chance(20)));
             }
             8 => lines.extend(teammate_spawn(&tu, t, &ts)),
-            9 | 10 => lines.extend(teammate_send(&tu, t, &ts)),
-            11 | 12 => {
+            9..=10 => lines.extend(teammate_send(&tu, t, &ts)),
+            11..=12 => {
                 let inner = if r.chance(10) { ago(tick - 30.0) } else { ago((tick + 0.5).max(0.0)) };
                 lines.push(teammate_idle(t, &inner, &ts));
             }
@@ -930,7 +1256,11 @@ fn fuzz_transcript(r: &mut Rng) -> (Vec<String>, Vec<File>) {
                     lines.extend(delivery(&tu, id, &ts));
                 } else {
                     lines.push(assistant_use(&tu, "TaskOutput", json!({"task_id": &id[..8]}), &ts));
-                    let text = if r.chance(50) { format!("{id}  \u{b7}  general  \u{b7}  running  \u{b7}  started 20m ago") } else { format!("report for {id} complete") };
+                    let text = if r.chance(50) {
+                        format!("{id}  \u{b7}  general  \u{b7}  running  \u{b7}  started 20m ago")
+                    } else {
+                        format!("report for {id} complete")
+                    };
                     lines.push(result_blocks(&tu, &text, &ts, json!({})));
                 }
             }
@@ -987,5 +1317,8 @@ fn the_scan_matches_node_on_random_transcripts() {
     let _ = std::fs::remove_dir_all(&root);
     eprintln!("fuzz: {cases} transcripts, outcomes {kinds:?}");
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
-    assert!(kinds.keys().any(|k| k.starts_with("ask-guard:advisory")) && kinds.keys().any(|k| k.starts_with("stale-agent-stop-note:advisory")), "the fuzz is vacuous: {kinds:?}");
+    assert!(
+        kinds.keys().any(|k| k.starts_with("ask-guard:advisory")) && kinds.keys().any(|k| k.starts_with("stale-agent-stop-note:advisory")),
+        "the fuzz is vacuous: {kinds:?}"
+    );
 }

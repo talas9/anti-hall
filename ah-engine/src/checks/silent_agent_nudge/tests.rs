@@ -14,7 +14,11 @@ fn index_like_keys_are_the_ones_javascript_orders_first() {
 #[test]
 fn state_parsing_follows_the_hook() {
     let s = parse_state(r#"{"nudged":{"t:a":"1","t:b":"2","t:a":"3"},"everNudged":{"s::a":5},"x":1}"#).unwrap();
-    assert_eq!(s.nudged.0, vec![("t:a".to_string(), Value::from("3")), ("t:b".to_string(), Value::from("2"))], "a repeated key keeps its first place and its last value");
+    assert_eq!(
+        s.nudged.0,
+        vec![("t:a".to_string(), Value::from("3")), ("t:b".to_string(), Value::from("2"))],
+        "a repeated key keeps its first place and its last value"
+    );
     assert_eq!(s.ever.0.len(), 1);
     assert_eq!(parse_state("[1]").unwrap(), State::default());
     assert_eq!(parse_state("{oops").unwrap(), State::default());

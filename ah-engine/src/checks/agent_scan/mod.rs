@@ -237,7 +237,11 @@ pub fn parse_json(s: &str) -> Res<Option<Value>> {
         Ok(v) => Ok(Some(v)),
         Err(e) => {
             let m = e.to_string();
-            if defaults::list("agent_scan.json_unsupported").iter().any(|k| m.contains(k)) || pats().surrogate.is_match(s) { Err(Unsupported) } else { Ok(None) }
+            if defaults::list("agent_scan.json_unsupported").iter().any(|k| m.contains(k)) || pats().surrogate.is_match(s) {
+                Err(Unsupported)
+            } else {
+                Ok(None)
+            }
         }
     }
 }
@@ -459,7 +463,7 @@ fn teammate_sidechain_mtime(path: &str, name: &str) -> f64 {
             continue;
         }
         if let Some(m) = mtime_ms(&e.path())
-            && !(m <= best)
+            && (best.is_nan() || m > best)
         {
             best = m;
         }
@@ -746,7 +750,8 @@ impl Walk {
             let tuid = sprop(block, "tool_use_id");
             let block_content = prop(block, "content").unwrap_or(block);
             let is_tool_result = sprop(block, "type") == Some("tool_result");
-            if is_tool_result && prop(block, "is_error") == Some(&Value::Bool(true))
+            if is_tool_result
+                && prop(block, "is_error") == Some(&Value::Bool(true))
                 && let Some(id) = tuid
             {
                 self.errored.insert(id.to_string());
@@ -757,7 +762,11 @@ impl Walk {
             let mut texts = Vec::new();
             extract_texts(block_content, &mut texts);
             for text in texts {
-                if is_tool_result && has_launch && self.answers(tuid, "agent_scan.launch_tools") && trim_start(&text).starts_with(defaults::text("agent_scan.launch_text")) {
+                if is_tool_result
+                    && has_launch
+                    && self.answers(tuid, "agent_scan.launch_tools")
+                    && trim_start(&text).starts_with(defaults::text("agent_scan.launch_text"))
+                {
                     let idm = pats().agent_id.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
                     let sid = prop(&entry, "toolUseResult").and_then(|t| sprop(t, "agentId")).filter(|s| pats().hex_id.is_match(s)).map(str::to_string);
                     if let Some(id) = sid.or(idm) {
@@ -845,8 +854,7 @@ impl Walk {
         let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
         let mut at = prefix.len();
         at += c[at..].len() - trim_start(&c[at..]).len();
-        loop {
-            let Some(m) = pats().teammate_block.captures(&c[at..]) else { break };
+        while let Some(m) = pats().teammate_block.captures(&c[at..]) {
             let (id, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
             at += m.get(0).map_or(0, |x| x.end());
             at += c[at..].len() - trim_start(&c[at..]).len();
@@ -948,7 +956,10 @@ fn names_agent(input: Option<&Value>, id: &str, launched: &OMap<Rec>) -> Res<boo
 /// A number whose JavaScript text may differ from serde's (a float, or an integer past 2^53).
 fn unsafe_number(v: &Value) -> bool {
     match v {
-        Value::Number(n) => !(n.as_i64().is_some_and(|i| i.unsigned_abs() <= defaults::num("agent_scan.safe_int")) || n.as_u64().is_some_and(|u| u <= defaults::num("agent_scan.safe_int"))),
+        Value::Number(n) => {
+            !(n.as_i64().is_some_and(|i| i.unsigned_abs() <= defaults::num("agent_scan.safe_int"))
+                || n.as_u64().is_some_and(|u| u <= defaults::num("agent_scan.safe_int")))
+        }
         Value::Array(a) => a.iter().any(unsafe_number),
         Value::Object(o) => o.values().any(unsafe_number),
         _ => false,
@@ -1089,9 +1100,10 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
             if !w.terminal.contains(&id) {
                 continue;
             }
-            let stands = w.terminal_ev.get(&id).is_some_and(|evs| {
-                evs.iter().any(|(s, ts)| *s > r_seq && !(ts.is_finite() && r_ts.is_some_and(|r| r.is_finite() && *ts < r - slack)))
-            });
+            let stands = w
+                .terminal_ev
+                .get(&id)
+                .is_some_and(|evs| evs.iter().any(|(s, ts)| *s > r_seq && !(ts.is_finite() && r_ts.is_some_and(|r| r.is_finite() && *ts < r - slack))));
             if !stands {
                 w.terminal.remove(&id);
             }
