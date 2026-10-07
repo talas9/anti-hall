@@ -33,6 +33,10 @@ pub struct Meta {
     /// The hash of the non-default hook configuration the plan was made under (empty = the defaults).
     #[serde(default)]
     pub cfg: String,
+    /// SHA-1 of the exact payload bytes the host sent (hex), for a check whose Node hook derives something from the raw
+    /// stdin (verify-first picks its rotating line from it).
+    #[serde(default)]
+    pub payload_sha1: Option<String>,
 }
 
 /// One built-in check's answer for one entry.
@@ -56,7 +60,7 @@ pub fn run_entry(entry: &Entry, meta: &Meta, p: &Value) -> Answer {
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),
     };
-    let opts = json!({ "plugin_root": meta.root });
+    let opts = json!({ "plugin_root": meta.root, "payload_sha1": meta.payload_sha1 });
     let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check.run_env(&subject, p, &opts, &meta.env)));
     match verdict {
         Ok(v) => answer_of(&entry.id, v),
@@ -135,6 +139,7 @@ mod tests {
             only: None,
             plan: vec![],
             cfg: String::new(),
+            payload_sha1: None,
         }
     }
 

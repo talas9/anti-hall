@@ -53,8 +53,15 @@ labelled with how it was measured in the README of `ah-engine/`.
   reads the recent commits, `failure-root-cause-nudge` answers PostToolUseFailure). Where the Node verdict cannot be reproduced exactly (a block whose
   stdout and stderr the reply cannot carry yet, a regex construct, a classifier that lives in another port) the check
   defers, so Node decides.
+- **Prompt-emission ports.** `verify-first`, `idle-agent-sweep` and `emit-dedupe-reset` are the UserPromptSubmit and
+  SessionStart context hooks of the dedupe family. They share `checks/emit_dedupe`, which reads and writes the very same
+  per-session state file the Node hooks still use (`~/.anti-hall/emit-dedupe/dedupe-<session>.json`: key order, entry
+  layout, the 24 hour key expiry, atomic write, suppression counter and the throttled sweep of idle session files). A
+  state file, transcript line or timestamp that JavaScript might read differently defers the whole hook to Node before
+  anything is written; so does a possible DevSwarm Primary session for `verify-first`, whose extra sentence depends on
+  the repo's `CLAUDE.md` chain.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  seventeen: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
+  twenty: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
   the five small guard ports above: `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
@@ -62,7 +69,9 @@ labelled with how it was measured in the README of `ah-engine/`.
   `--audit` pass of git-guard) and `failure-root-cause-nudge` (PostToolUseFailure), plus the three context checks `verify-first-subagent`
   (SubagentStart), `verify-first-full` (SessionStart) and `fable-availability` (SessionStart). The context checks are not
   guards: they inject text or record a fact, never block, and anything they cannot reproduce exactly defers to the Node
-  hook (D74); and the four spawn/path context ports below.
+  hook (D74); the four spawn/path context ports below; and the three prompt-emission ports `verify-first` (the
+  short rotating reminder), `idle-agent-sweep` (agents that finished but were never stopped) and `emit-dedupe-reset`
+  (marks a context loss at SessionStart).
 - **Spawn/path context ports.** `inbox-read-guard` (PreToolUse on Read), `phase-tracker` (PreToolUse on Agent and Task),
   `orch-on-spawn` (PreToolUse on spawns) and `verify-first-orch` (SessionStart, the Claude entry only). They share
   `checks/spawnctx`: the home directory the state files live under (with the test-run refusal of the real home), the
@@ -98,6 +107,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `fable-availability` check: reads the host's model cache, writes `~/.anti-hall/fable-availability.json` and prints the availability note when a Fable model is entitled; a config file the engine's JSON reader rejects defers | implemented | D29-D31, D74 |
 | Built-in `inbox-read-guard`, `phase-tracker`, `orch-on-spawn` and `verify-first-orch` checks (the spawn/path context ports) with exact parity on the paths they answer; the cases that need Node's own probes defer | implemented | D29-D31, D74, D75 |
 | Built-in `model-routing` check for Agent/Task spawns: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches | implemented | D29-D31, D75 |
+| Built-in `verify-first`, `idle-agent-sweep` and `emit-dedupe-reset` checks (prompt emission, advisory only) over the shared emit-dedupe state file, with exact parity including the state files; a DevSwarm Primary session and anything JavaScript might read differently defer to Node | implemented | D29-D31, D74, D75 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |
@@ -465,6 +475,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `dispatch.toml` | the dispatcher's settings and the hand-maintained per-event table of hook entries (the table of record: the plugin's `hooks.json` files are generated from it) |
 | `hooks.toml` | the hook configuration: defaults of `[events.<Event>]` and `[entries.<id>]`, the `when` predicate vocabulary, the plan outcomes and their messages |
 | `hooks.d/*.toml` | optional: per-batch `[events.<Event>]` / `[entries."<id>"]` defaults (one file per batch of ported hooks, so parallel lanes do not edit a shared file) |
+| `prompt_emit.toml` | switches, limits, patterns and messages of the prompt-emission checks (`verify-first`, `idle-agent-sweep`, `emit-dedupe-reset`) and the emit-dedupe store they share |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or

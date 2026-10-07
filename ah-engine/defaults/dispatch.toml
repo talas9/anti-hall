@@ -79,6 +79,10 @@ value = "_- ,|"
 doc = "Characters that separate the names of an exact-list matcher."
 value = "|,"
 
+[dispatch.payload_hash_checks]
+doc = "Built-in checks whose Node hook derives something from the exact stdin bytes (verify-first rotates its reminder by the SHA-1 of the whole payload): the dispatcher hands these the SHA-1 of the raw payload, computed only when one of them is selected."
+value = ["verify-first"]
+
 [dispatch.match_all]
 doc = "Matcher values that match every occurrence of the event."
 value = ["", "*"]
@@ -318,9 +322,9 @@ value = "empty"
 [dispatch.hooks_claude_UserPromptSubmit]
 doc = "The claude UserPromptSubmit hook entries, in dispatch order."
 value = [
-  { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "" },
+  { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "verify-first" },
   { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "" },
-  { id = "idle-agent-sweep", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "" },
+  { id = "idle-agent-sweep", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "" },
   { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "" },
   { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "" },
@@ -362,7 +366,7 @@ value = [
   { id = "handover-resume", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js\"", timeout = 10, check = "" },
   { id = "jev-weekly-scorecard", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"", timeout = 10, check = "" },
   { id = "jev-review-reminder", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js\"", timeout = 10, check = "" },
-  { id = "emit-dedupe-reset", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"", timeout = 10, check = "" },
+  { id = "emit-dedupe-reset", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"", timeout = 10, check = "emit-dedupe-reset" },
   { id = "defect-nudge", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js\"", timeout = 10, check = "" },
   { id = "repair-on-reload", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "" },
 ]
@@ -457,7 +461,7 @@ value = [
   { id = "handover-resume", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/handover-resume.js\"", timeout = 10, check = "" },
   { id = "jev-weekly-scorecard", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"", timeout = 10, check = "" },
   { id = "jev-review-reminder", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/jev-review-reminder.js\"", timeout = 10, check = "" },
-  { id = "emit-dedupe-reset", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"", timeout = 10, check = "" },
+  { id = "emit-dedupe-reset", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"", timeout = 10, check = "emit-dedupe-reset" },
   { id = "defect-nudge", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/defect-nudge.js\"", timeout = 10, check = "" },
   { id = "repair-on-reload", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "" },
 ]
@@ -465,9 +469,9 @@ value = [
 [dispatch.hooks_codex_UserPromptSubmit]
 doc = "The codex UserPromptSubmit hook entries, in dispatch order."
 value = [
-  { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "" },
+  { id = "verify-first", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/verify-first.js\"", timeout = 10, check = "verify-first" },
   { id = "task-tracker", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/task-tracker.js\"", timeout = 10, check = "" },
-  { id = "idle-agent-sweep", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "" },
+  { id = "idle-agent-sweep", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"", timeout = 10, check = "" },
   { id = "devswarm-parent-inbox", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"", timeout = 10, check = "" },
   { id = "devswarm-child-turn", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", timeout = 10, check = "" },

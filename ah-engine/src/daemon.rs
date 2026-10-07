@@ -1070,6 +1070,7 @@ mod tests {
                     only: None,
                     plan: vec![],
                     cfg: String::new(),
+                    payload_sha1: None,
                 };
                 let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
                 let rows: Vec<serde_json::Value> = serde_json::from_str(ok(&handle_request(d.as_bytes(), &sh).0)).unwrap();

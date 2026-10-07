@@ -512,6 +512,10 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         only: Some(entries.iter().filter(|e| e.check.is_some()).map(|e| e.id.clone()).collect()),
         plan: tele.outcomes.iter().map(|(id, o)| (id.clone(), o.word().to_string())).collect(),
         cfg: tele.cfg_hash.clone(),
+        payload_sha1: {
+            let wants = defaults::list("dispatch.payload_hash_checks");
+            entries.iter().any(|e| e.check.as_deref().is_some_and(|c| wants.contains(&c))).then(|| crate::checks::emit_dedupe::sha1_hex(raw.as_bytes()))
+        },
     };
     let answers = match (&parsed, complete) {
         // A payload serde_json cannot read falls back to Node (JS may still parse it, e.g. a lone surrogate escape): the

@@ -118,58 +118,113 @@ pub fn get_bool(st: &Settings, entry: &V) -> bool {
     resolve(st, entry).unwrap_or_else(|| entry.get("default").and_then(V::as_bool).unwrap_or(false))
 }
 
-/// `coerceValue` for an enum entry on a JSON value: the trimmed, lower-cased string when it is one of `values`.
-fn coerce_enum(v: &Value, values: &[&str]) -> Option<String> {
-    let Value::String(s) = v else { return None };
-    let t = js_trim(s);
+/// `coerceValue` for a number entry on a string: trimmed, then `Number(..)`, then the entry's bounds.
+fn number_of_str(raw: &str, entry: &V) -> Option<f64> {
+    let t = js_trim(raw);
     if t.is_empty() {
         return None;
     }
-    let lower = t.to_lowercase();
-    values.contains(&lower.as_str()).then_some(lower)
+    bounded(crate::checks::guardkit::jsval::to_number(t), entry)
 }
 
-/// The effective value of an enum switch: `entry` is the switch table from the defaults (`values` lists the allowed
-/// words, all lower case). Same chain as [`get_bool`]: environment variable, `settings.json`, the plugin option (a
-/// value equal to the default counts as unset), the default.
+/// The bounds of a number entry: a value out of range is clamped to `min` / `max`, or rejected below `min` when the entry says so.
+fn bounded(n: f64, entry: &V) -> Option<f64> {
+    if !n.is_finite() {
+        return None;
+    }
+    let min = entry.get("min").and_then(V::as_integer).map(|m| m as f64);
+    let max = entry.get("max").and_then(V::as_integer).map(|m| m as f64);
+    if entry.get("reject_below_min").and_then(V::as_bool).unwrap_or(false) && min.is_some_and(|m| n < m) {
+        return None;
+    }
+    let n = min.map_or(n, |m| n.max(m));
+    Some(max.map_or(n, |m| n.min(m)))
+}
+
+/// `coerceValue` for a number entry on a JSON value from a settings file or the stored plugin options.
+fn number_of_json(v: &Value, entry: &V) -> Option<f64> {
+    match v {
+        Value::String(s) => number_of_str(s, entry),
+        Value::Number(n) => n.as_f64().and_then(|n| bounded(n, entry)),
+        _ => None,
+    }
+}
+
+/// The effective value of a number switch: `entry` is the switch table from the defaults.
 ///
-/// Mirrors `hooks/lib/settings.js` `get` for an enum setting without a legacy file.
-pub fn get_enum(st: &Settings, entry: &V) -> String {
-    let values = entry.get("values").map(V::strings).unwrap_or_default();
-    let default = entry.str_field("default");
+/// Mirrors `hooks/lib/settings.js` `get` for a number setting without a legacy file: the environment variable (then its
+/// aliases), then `settings.json`, then the plugin option, then the default. The plugin option tier needs no
+/// manifest-default test here: a value equal to the default resolves to the default either way.
+pub fn get_number(st: &Settings, entry: &V) -> f64 {
+    let default = entry.get("default").and_then(V::as_integer).unwrap_or(0) as f64;
     let env_name = entry.str_field("env");
     if !env_name.is_empty() {
         let names = std::iter::once(env_name).chain(entry.get("aliases").map(V::strings).unwrap_or_default());
         for n in names {
-            if let Some(v) = st.env.get(n).and_then(|raw| coerce_enum(&Value::String(raw.clone()), &values)) {
+            if let Some(v) = st.env.get(n).and_then(|raw| number_of_str(raw, entry)) {
                 return v;
             }
         }
     }
     let (section, key) = (entry.str_field("section"), entry.str_field("key"));
     if let Some(v) = read_object(st, defaults::text("guardkit.settings_file"))
-        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|raw| coerce_enum(raw, &values)))
+        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|v| number_of_json(v, entry)))
     {
         return v;
     }
     let option = entry.str_field("option");
-    if !option.is_empty() {
-        let env_key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), option.to_ascii_uppercase());
-        if let Some(raw) = st.env.get(&env_key) {
-            if *raw != default
-                && let Some(v) = coerce_enum(&Value::String(raw.clone()), &values)
-            {
+    if option.is_empty() {
+        return default;
+    }
+    let env_key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), option.to_ascii_uppercase());
+    if let Some(raw) = st.env.get(&env_key) {
+        return number_of_str(raw, entry).unwrap_or(default);
+    }
+    stored_options(st).and_then(|o| o.get(option).and_then(|v| number_of_json(v, entry))).unwrap_or(default)
+}
+
+/// `coerceValue` for an enum entry: trimmed, lower-cased, and one of the entry's values.
+fn enum_of(raw: &str, entry: &V) -> Option<String> {
+    let t = js_trim(raw);
+    if t.is_empty() {
+        return None;
+    }
+    let low = t.to_lowercase();
+    entry.get("values").is_some_and(|v| v.strings().contains(&low.as_str())).then_some(low)
+}
+
+/// `coerceValue` for an enum entry on a JSON value: a string, or a number or boolean read as its JavaScript text.
+fn enum_of_json(v: &Value, entry: &V) -> Option<String> {
+    js_string_of(v).and_then(|s| enum_of(&s, entry))
+}
+
+/// The effective value of an enum switch (same chain as [`get_number`]).
+pub fn get_enum(st: &Settings, entry: &V) -> String {
+    let default = entry.str_field("default").to_string();
+    let env_name = entry.str_field("env");
+    if !env_name.is_empty() {
+        let names = std::iter::once(env_name).chain(entry.get("aliases").map(V::strings).unwrap_or_default());
+        for n in names {
+            if let Some(v) = st.env.get(n).and_then(|raw| enum_of(raw, entry)) {
                 return v;
             }
-        } else if let Some(stored) = stored_options(st)
-            && let Some(v) = stored.get(option)
-            && !js_string_of(v).is_some_and(|s| s == default)
-            && let Some(v) = coerce_enum(v, &values)
-        {
-            return v;
         }
     }
-    default.to_string()
+    let (section, key) = (entry.str_field("section"), entry.str_field("key"));
+    if let Some(v) = read_object(st, defaults::text("guardkit.settings_file"))
+        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|v| enum_of_json(v, entry)))
+    {
+        return v;
+    }
+    let option = entry.str_field("option");
+    if option.is_empty() {
+        return default;
+    }
+    let env_key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), option.to_ascii_uppercase());
+    if let Some(raw) = st.env.get(&env_key) {
+        return enum_of(raw, entry).unwrap_or(default);
+    }
+    stored_options(st).and_then(|o| o.get(option).and_then(|v| enum_of_json(v, entry))).unwrap_or(default)
 }
 
 /// True when an unexpired skip is recorded for `guard` (a broad skip of everything also covers it unless the guard is

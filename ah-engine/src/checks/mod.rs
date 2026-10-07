@@ -14,6 +14,8 @@ pub mod failure_nudge;
 pub mod git;
 pub mod guardkit;
 pub mod inbox_read_guard;
+pub mod emit_dedupe;
+pub mod idle_agent_sweep;
 pub mod merge_side_pick;
 pub mod model_routing;
 pub mod orch_on_spawn;
@@ -23,6 +25,7 @@ pub mod ship_it;
 pub mod spawnctx;
 pub mod verify_first;
 pub mod verify_first_orch;
+pub mod verify_first_prompt;
 
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
@@ -125,7 +128,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 17] = [
+    static ALL: [&dyn Check; 20] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -143,6 +146,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &phase_tracker::PhaseTracker,
         &orch_on_spawn::OrchOnSpawn,
         &verify_first_orch::VerifyFirstOrch,
+        &verify_first_prompt::VerifyFirst,
+        &idle_agent_sweep::IdleAgentSweep,
+        &emit_dedupe::EmitDedupeReset,
     ];
     &ALL
 }
@@ -177,7 +183,8 @@ pub fn cli_main(name: &str) -> i32 {
         tool_input: p.get("tool_input").unwrap_or(&null),
         prompt: p.get("prompt").and_then(Value::as_str),
     };
-    match check.run_env(&subject, &p, &Value::Null, &RequestEnv::capture()) {
+    let opts = serde_json::json!({ "payload_sha1": emit_dedupe::sha1_hex(raw.as_bytes()) });
+    match check.run_env(&subject, &p, &opts, &RequestEnv::capture()) {
         None | Some(Verdict::Allow) => 0,
         Some(Verdict::Block(m)) => {
             let _ = writeln!(std::io::stderr(), "{m}");

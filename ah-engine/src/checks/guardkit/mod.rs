@@ -9,11 +9,13 @@
 pub mod filelock;
 pub mod fsio;
 pub mod jsre;
+pub mod jsval;
 pub mod msg;
 pub mod ojson;
 pub mod paths;
 pub mod settings;
 pub mod state;
+pub mod tail;
 pub mod text;
 pub mod turn_gate;
 
