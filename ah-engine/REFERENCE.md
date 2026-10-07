@@ -57,10 +57,12 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `merge-side-pick` | Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since (port of merge-side-pick.js). |
 | `ship-it-guard` | Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's phases do not declare (port of ship-it-guard.js). |
 | `scan-throttle` | Advisory: recommends the background-throttled form of a user-configured heavy scan command (port of scan-throttle.js). |
-| `coordinator-work-guard` | Main-thread work window: allows subagent Bash calls in the engine; the window itself (classification, counters, block) stays with the Node guard until the command-guard port lands (port of coordinator-work-guard.js). |
+| `coordinator-work-guard` | Main-thread work window. PreToolUse: allows subagent Bash calls in the engine and defers the rest (the classification and the block stay with Node). PostToolUse: records the call in the window, nudges once per crossing and folds stale session files, when the call's classification is already known (the Node pre-verdict of the same tool call) or provably not work; otherwise defers (port of coordinator-work-guard.js). |
 | `compact-declaration-guard` | Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks (port of compact-declaration-guard.js). |
 | `command` | command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook. |
 | `model-routing` | Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches (port of model-routing-guard.js). |
+| `failure-root-cause-nudge` | Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals and repeats within a turn (port of failure-root-cause-nudge.js). |
+| `git-audit` | Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer (port of git-guard.js --audit). |
 
 ## Settings
 
@@ -331,6 +333,27 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `git.xargs_long_req` | `arg-file, delimiter, max-args, max-procs, max-chars, process-slot-var` |  |  | xargs long options that take a value. |
 | `git.xargs_short_opt` | `eil` |  |  | xargs short options with an optional attached value. |
 | `git.xargs_short_req` | `adEILnPsJRS` |  |  | xargs short options that take a value. |
+
+### git.toml / git_audit
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `git_audit.argv_log` | `7 items` |  |  | git arguments of the audit's log query; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e). |
+| `git_audit.cd_verb` | `cd` |  |  | The verb whose directory argument moves the audit's working directory. |
+| `git_audit.commits` | `20` |  |  | How many commits at HEAD the audit reads. |
+| `git_audit.dir_opt` | `-C` |  |  | The global git option that changes the repository directory. |
+| `git_audit.eval_verb` | `eval` |  |  | The verb whose payload is scanned as a command. |
+| `git_audit.event` | `PostToolUse` |  |  | The hook event name in the audit's output. |
+| `git_audit.field_sep` | `` |  |  | The character that separates the fields of one commit record (US). |
+| `git_audit.git_verb` | `git` |  |  | The verb of a git command. |
+| `git_audit.max_buffer` | `1048576` |  |  | Largest log output, in bytes, the audit accepts from one repository (Node's child-process buffer cap: a larger output is dropped). |
+| `git_audit.max_depth` | `3` |  |  | How deep eval and shell -c payloads are followed when looking for commit-creating git commands. |
+| `git_audit.msg` | `anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last ...` |  |  | Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes). |
+| `git_audit.opts_with_value` | `-c, --git-dir, --work-tree, --namespace, --config-env` |  |  | Global git options that take a value in the next word (skipped when looking for the repository directory). |
+| `git_audit.record_sep` | `` |  |  | The character that ends one commit record of the audit's log output (RS). |
+| `git_audit.summary` | `Advisory after a commit-creating git command: a commit made in the last 15 mi...` |  |  | One-line description of the git-audit check in the generated reference. |
+| `git_audit.timeout_ms` | `4000` |  | ms | Timeout of the git log the audit runs in each repository. |
+| `git_audit.window_s` | `900` |  |  | How recent, in seconds, a commit must be for the audit to look at it. |
 
 ### command.toml / command
 
@@ -629,8 +652,90 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `coordinator_work.agent_markers` | `agent_id, agent_type` |  |  | Payload fields the host puts on a subagent's hook payload and never on the main thread's. |
+| `coordinator_work.block_setting` | `5 entries` |  |  | The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never. |
+| `coordinator_work.cap_setting` | `5 entries` |  |  | Safety cap on the stored window timestamps per session (guards.coordinatorWorkMaxEntries). |
 | `coordinator_work.codex_markers` | `turn_id, model` |  |  | Payload fields that, both non-empty strings, identify a Codex payload. |
-| `coordinator_work.summary` | `Main-thread work window: allows subagent Bash calls in the engine; the window...` |  |  | One-line description of the coordinator-work-guard check in the generated reference. |
+| `coordinator_work.command_guard_name` | `command-guard` |  |  | The skip.json key of command-guard, which also silences the work window. |
+| `coordinator_work.command_guard_setting` | `6 entries` |  |  | Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work window is off with it. |
+| `coordinator_work.coordinator_entrypoint_prefix` | `terminal_ide_` |  |  | Prefix of the CLAUDE_CODE_ENTRYPOINT values (IDE terminals) that also mean the main thread. |
+| `coordinator_work.coordinator_entrypoints` | `cli, vscode, jetbrains, vim, emacs` |  |  | CLAUDE_CODE_ENTRYPOINT values that mean the interactive main thread. |
+| `coordinator_work.counters` | `calls, work, blocks, skippedWouldBlock` |  |  | The counters a window file keeps and the metrics fold, by their key in the files. |
+| `coordinator_work.entrypoint_env` | `CLAUDE_CODE_ENTRYPOINT` |  |  | The environment variable that names the host entry point. |
+| `coordinator_work.fold_stamp_file` | `.coordinator-work-fold-stamp.json` |  |  | Name of the stamp file that throttles folding stale window files into the metrics. |
+| `coordinator_work.fold_throttle_ms` | `21600000` |  |  | Minimum time between two folds of stale window files into the metrics (6 hours). |
+| `coordinator_work.git_output_flag` | `output\|^-o` |  |  | Regex source of a git argument that writes output to a file (so the command is not read-only). |
+| `coordinator_work.git_verb` | `git` |  |  | The verb of a git command. |
+| `coordinator_work.guard_name` | `coordinator-work-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
+| `coordinator_work.lock_isolation_env` | `ANTIHALL_TEST_HOME_ISOLATED` |  |  | The variable that marks an isolated test home (enables the lock wait override). |
+| `coordinator_work.lock_suffix` | `.lock` |  |  | Suffix of a lock file next to the file it guards. |
+| `coordinator_work.lock_wait_env` | `ANTIHALL_COORDINATOR_WORK_LOCK_WAIT_MS` |  |  | Test-only variable that overrides the lock wait (honoured only with the isolation flag set). |
+| `coordinator_work.lock_wait_ms` | `250` |  |  | How long a lock held by another process is waited for before the call is handed to the Node hook. |
+| `coordinator_work.metrics_file` | `coordinator-work-metrics.json` |  |  | Name of the metrics file under the state directory. |
+| `coordinator_work.nudge_instead` | `delegate the rest to a subagent now.` |  |  | Advisory advice without a block threshold. |
+| `coordinator_work.nudge_instead_block` | `delegate the rest to a subagent now; call {block_at} in the window is blocked.` |  |  | Advisory advice with a block threshold; {block_at} is the call that is blocked. |
+| `coordinator_work.nudge_setting` | `5 entries` |  |  | Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory. |
+| `coordinator_work.nudge_what` | `{count} state-changing calls in the main thread within {minutes} min.` |  |  | Advisory headline; {count} is the number of work calls in the window and {minutes} the window length. |
+| `coordinator_work.plugin_json` | `.claude-plugin/plugin.json` |  |  | Path of the plugin manifest, relative to the plugin root; its version stamps new window files. |
+| `coordinator_work.post_event` | `PostToolUse` |  |  | The event name of the pass that records calls into the window. |
+| `coordinator_work.pre_cap` | `20` |  |  | How many pre-call verdicts (kept until the matching post-call) a window file holds. |
+| `coordinator_work.readonly_git_subs` | `8 items` |  |  | git subcommands that only read. |
+| `coordinator_work.readonly_verbs` | `22 items` |  |  | Verbs that only read; a command built from these is not work. |
+| `coordinator_work.safe_arg` | `^[A-Za-z0-9_.\/:=@%+,-]+$` |  |  | Regex source of an argument word of a command that is provably not work. |
+| `coordinator_work.safe_command` | `^[A-Za-z0-9 \t\n_.\/:=@%+,&\|;-]*$` |  |  | Regex source (JavaScript syntax) of the only characters a command may hold to be provably not work. |
+| `coordinator_work.safe_max_len` | `4096` |  |  | Longest command, in UTF-16 units, that is tested for being provably not work. |
+| `coordinator_work.safe_verb` | `^[a-z-]+$` |  |  | Regex source of the verb word of a command that is provably not work. |
+| `coordinator_work.segment_split` | `&&\|\\|\\|\|;\|\\|\|\n` |  |  | Regex source that splits a provably-not-work candidate into segments (&&, \|\|, ;, \|, newline). |
+| `coordinator_work.session_file_prefix` | `coordinator-work-session-` |  |  | Prefix of a per-session window file under the state directory. |
+| `coordinator_work.session_id_max` | `80` |  |  | Longest session id part, in UTF-16 units, of a window file name. |
+| `coordinator_work.subagent_entrypoint` | `agent_tool` |  |  | CLAUDE_CODE_ENTRYPOINT value of a subagent process. |
+| `coordinator_work.summary` | `Main-thread work window. PreToolUse: allows subagent Bash calls in the engine...` |  |  | One-line description of the coordinator-work-guard check in the generated reference. |
+| `coordinator_work.trip_nudge` | `nudge` |  |  | The event name a nudge is logged under in the trips log. |
+| `coordinator_work.trips_file` | `coordinator-work-trips.log` |  |  | Name of the JSONL log of nudges and blocks. |
+| `coordinator_work.trips_max_bytes` | `1048576` |  |  | Size at which the trips log is rotated to its .1 file. |
+| `coordinator_work.unknown_version` | `unknown` |  |  | The version text used when the manifest cannot be read. |
+| `coordinator_work.version_keys` | `sessions, calls, work, blocks, skippedWouldBlock` |  |  | The keys of one version's entry in the metrics file, in file order: the number of folded sessions, then the counters. |
+| `coordinator_work.window_setting` | `5 entries` |  |  | Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns the window off. |
+
+### small_guards.toml / expected_failure
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `expected_failure.assign` | `^[A-Za-z_][A-Za-z0-9_]*=` |  |  | Regex source of a leading VAR=value assignment word. |
+| `expected_failure.bail` | `<<\|\bset\s+-[A-Za-z]*e\|\bset\s+-o\b\|\bpipefail\b\|\berrexit\b\|\btrap\b\|\bexec\...` |  |  | Regex source of the constructs that make the last statement not decide the exit status (heredocs, set -e, pipefail, trap, exec, eval, shells run with -e). |
+| `expected_failure.command_v` | `^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*command\s+-[vV]\b` |  |  | Regex source of the command -v / command -V form (with optional leading assignments). |
+| `expected_failure.command_v_verb` | `command -v` |  |  | The verb name reported for the command -v form. |
+| `expected_failure.comment_or_empty` | `^\s*(?:#\|$)` |  |  | Regex source of a statement that is a comment or empty. |
+| `expected_failure.control` | `^(?:if\|for\|while\|until\|case\|select\|function\|do\|then\|else\|fi\|done\|esac)\b` |  |  | Regex source of a statement that starts a shell control construct (never classified). |
+| `expected_failure.exit_code` | `^\s*Exit code (\d+)\b` |  |  | Regex source of the exit code stated in a failed tool call's error text; group 1 is the number. |
+| `expected_failure.git_predicates` | `^(?:-C\s+\S+\s+)?diff\b.*(?:--quiet\\|--exit-code)\b, ^(?:-C\s+\S+\s+)?merge-b...` |  |  | Regex sources (JavaScript syntax) over the arguments of a git command that make it a predicate (exit 1 is the answer). |
+| `expected_failure.git_verb` | `git` |  |  | The verb whose read-only predicate forms are recognised by git_predicates. |
+| `expected_failure.pass_through` | `command, builtin, env, time, nice, nohup` |  |  | Wrappers that pass the inner command's exit status through unchanged. |
+| `expected_failure.predicate_exit` | `1` |  |  | The only exit code (as text) that counts as a predicate's answer. |
+| `expected_failure.predicate_verbs` | `15 items` |  |  | Verbs whose exit status 1 means no, different or false rather than broken. |
+| `expected_failure.redirect_split` | `\s(?:2?>\|&>\|<)` |  |  | Regex source that finds the first redirection in a deciding command. |
+| `expected_failure.refusal` | `^\s*This (?:agent\|session) is isolated in the worktree\b` |  |  | Regex source of an error text that is a harness refusal: the command never ran. |
+| `expected_failure.subst` | `\$\(\|`` |  |  | Regex source of a command substitution (dollar-parenthesis or backtick). |
+| `expected_failure.trailing_and` | `&&\s*$` |  |  | Regex source of a statement ending in a double ampersand. |
+| `expected_failure.trailing_bg` | `&\s*$` |  |  | Regex source of a statement ending in an ampersand. |
+| `expected_failure.trivial_verbs` | `echo, printf, true, :` |  |  | Statements that cannot fail on their own and may sit in an && chain. |
+
+### small_guards.toml / failure_nudge
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `failure_nudge.cmd_close` | ``)` |  |  | Text after the shown command in the advisory headline. |
+| `failure_nudge.cmd_open` | ` (`` |  |  | Text before the shown command in the advisory headline. |
+| `failure_nudge.ellipsis` | `…` |  |  | Text appended to a cut command. |
+| `failure_nudge.event` | `PostToolUseFailure` |  |  | The hook event name in the advisory's output. |
+| `failure_nudge.filter_setting` | `6 entries` |  |  | Where the noise-filter switch is read from (guards.failureNudgeFilter, default on). |
+| `failure_nudge.gate_key` | `failure-root-cause-nudge` |  |  | The turn-gate key under which the once-per-turn state of this advisory is kept. |
+| `failure_nudge.guard_name` | `failure-root-cause-nudge` |  |  | The skip.json key that silences this hook. |
+| `failure_nudge.max_cmd_len` | `80` |  |  | Longest command text, in UTF-16 units, shown in the advisory before it is cut. |
+| `failure_nudge.message_guard` | `root-cause` |  |  | The guard label shown in the advisory. |
+| `failure_nudge.msg_instead` | `before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) ...` |  |  | Advisory advice. |
+| `failure_nudge.msg_what` | `this command failed{cmd}.` |  |  | Advisory headline; {cmd} is the shown command part or empty. |
+| `failure_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.failureRootCauseNudge, default on). |
+| `failure_nudge.summary` | `Advisory after a failed Bash call: trace the cause before patching; silent fo...` |  |  | One-line description of the failure-root-cause-nudge check in the generated reference. |
 
 ### small_guards.toml / guardkit
 
@@ -642,15 +747,24 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `guardkit.icons` | `6 entries` |  |  | Leading icon of a block or advisory message, by kind. |
 | `guardkit.js_space` | `\t\n\x0b\x0c\r    -     　﻿` |  |  | Characters JavaScript treats as white space, written as the body of a regex character class; used to translate the JS escapes for white space exactly (Rust's own class differs: it has U+0085 and lacks U+FEFF). |
 | `guardkit.line_terminators` | `\n\r  ` |  |  | Characters JavaScript's dot excludes, as the body of a regex character class. |
+| `guardkit.lock_stale_ms` | `5000` |  |  | Age, in milliseconds, after which another process's lock on a window file or the metrics is considered abandoned and is taken over (the same limit for a live, a dead and an unknown holder). |
+| `guardkit.lock_step_ms` | `5` |  |  | Pause between two attempts to take a held lock. |
 | `guardkit.msg_head` | ` anti-hall · ` |  |  | Text between the icon and the guard name in every block or advisory message. |
 | `guardkit.msg_labels` | `4 entries` |  |  | Labels of the optional lines of a block or advisory message. |
 | `guardkit.plugin_config_keys` | `anti-hall, anti-hall@anti-hall` |  |  | Keys of the host settings file's pluginConfigs map under which this plugin's options may be stored, lowest priority first. |
 | `guardkit.plugin_option_prefix` | `CLAUDE_PLUGIN_OPTION_` |  |  | Prefix of the environment variables the host sets from plugin options. |
+| `guardkit.prune_stamp` | `.prune-stamp-{prefix}.json` |  |  | Name of the stamp file that throttles the pruning sweep; {prefix} is the state-file family. |
+| `guardkit.prune_stamp_key` | `lastSweep` |  |  | Key of the stamp file that holds the time of the last sweep. |
+| `guardkit.prune_throttle_ms` | `21600000` |  |  | Minimum time, in milliseconds, between two pruning sweeps of one state-file family (6 hours). |
+| `guardkit.prune_ttl_ms` | `604800000` |  |  | How old, in milliseconds, a per-session state file must be before the pruning sweep removes it (7 days). |
 | `guardkit.session_key_max` | `120` |  |  | Longest session key, in UTF-16 units, after the characters outside letters, digits, dot, underscore and hyphen are replaced (the Node state file name limit). |
 | `guardkit.settings_file` | `.anti-hall/settings.json` |  |  | Settings file, relative to the home directory. |
 | `guardkit.skip_all_key` | `all` |  |  | Key of the skip file that skips every guard not listed in destructive_guards. |
 | `guardkit.skip_file` | `.anti-hall/skip.json` |  |  | Skip file, relative to the home directory (a skipped guard is allowed until its expiry time). |
 | `guardkit.state_cap` | `4096` |  |  | How many per-session state entries the in-memory guard state keeps before it evicts the least recently written one. |
+| `guardkit.state_dir_name` | `.anti-hall` |  |  | Name of the directory under the home directory that holds the per-session state files the Node guards share with the engine. |
+| `guardkit.state_ext` | `.json` |  |  | Extension of a per-session state file. |
+| `guardkit.tmp_suffix` | `tmp` |  |  | Suffix of the temporary file a state file is written through before the rename. |
 | `guardkit.true_tokens` | `1, on, true, yes` |  |  | Environment or settings strings that mean on (compared after trimming and lower-casing). |
 
 ### small_guards.toml / merge_side_pick
@@ -845,6 +959,19 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `ship_it.token_ext_max` | `10` |  |  | Longest dotted extension that makes a token without a slash look like a path. |
 | `ship_it.token_separators` | `,`"'()` |  |  | Characters that separate path tokens inside a files value, besides white space. |
 | `ship_it.token_trim` | `.,;:` |  |  | Trailing characters stripped from a path token. |
+
+### small_guards.toml / turn_gate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `turn_gate.agent_prefix` | `agent:` |  |  | Prefix of the turn id of a subagent (its whole run is one turn). |
+| `turn_gate.dir` | `turn-gate` |  |  | Directory under the state directory that holds the per-session turn-gate files. |
+| `turn_gate.injected_re` | `^\s*<(?:task-notification\|system-reminder\|local-command\|command-name\|command-...` |  |  | Regex source (JavaScript syntax) of the text an injected, non-human user entry starts with. |
+| `turn_gate.main_label` | `main` |  |  | The slot label used for the main thread. |
+| `turn_gate.max_sigs` | `16` |  |  | How many distinct advisory signatures one key remembers per turn. |
+| `turn_gate.prefix` | `tg-` |  |  | File-name prefix of a turn-gate state file (the Node code also hands it to the pruning sweep as the family name). |
+| `turn_gate.session_max` | `80` |  |  | Longest session id part, in UTF-16 units, of a turn-gate file name. |
+| `turn_gate.tail_bytes` | `524288` |  |  | How many bytes at the end of the transcript are read to find the newest human prompt. |
 
 ### jev.toml / env
 
