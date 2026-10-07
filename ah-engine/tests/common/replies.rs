@@ -30,6 +30,8 @@ pub enum Expect {
 #[derive(Clone)]
 pub struct Step {
     pub payload: Value,
+    /// When set, the exact stdin text (key order and spelling kept), with `$T` and `$H` replaced; `payload` is ignored.
+    pub raw: Option<String>,
     pub expect: Expect,
 }
 
@@ -64,7 +66,11 @@ impl Case {
         self
     }
     pub fn step(mut self, payload: Value, expect: Expect) -> Case {
-        self.steps.push(Step { payload, expect });
+        self.steps.push(Step { payload, raw: None, expect });
+        self
+    }
+    pub fn raw(mut self, raw: &str, expect: Expect) -> Case {
+        self.steps.push(Step { payload: Value::Null, raw: Some(raw.into()), expect });
         self
     }
     pub fn same(self, payload: Value) -> Case {
@@ -233,8 +239,10 @@ pub fn run_case(hook: &str, check: &str, case: &Case, t: &mut Tally) {
     for (i, step) in case.steps.iter().enumerate() {
         t.steps += 1;
         let who = format!("{} step {i}", case.name);
-        let input_n = subst(&step.payload, &tstr, &nh.to_string_lossy()).to_string();
-        let input_e = subst(&step.payload, &tstr, &eh.to_string_lossy()).to_string();
+        let (input_n, input_e) = match &step.raw {
+            Some(r) => (r.replace("$T", &tstr).replace("$H", &nh.to_string_lossy()), r.replace("$T", &tstr).replace("$H", &eh.to_string_lossy())),
+            None => (subst(&step.payload, &tstr, &nh.to_string_lossy()).to_string(), subst(&step.payload, &tstr, &eh.to_string_lossy()).to_string()),
+        };
         let before = tree(&eh);
         let e = run_engine(check, &eh, case, &input_e);
         let deferred = e.1.trim() == "AHFALLBACK";
@@ -242,7 +250,7 @@ pub fn run_case(hook: &str, check: &str, case: &Case, t: &mut Tally) {
             Expect::Same => {
                 let n = run_node(hook, &nh, case, &input_n);
                 if deferred {
-                    t.failures.push(format!("{who}: engine deferred but the step must be answered; node={n:?}"));
+                    t.failures.push(format!("{who}: engine deferred but the step must be answered; node={n:?} input={input_e}"));
                     copy_tree(&nh, &eh);
                     continue;
                 }

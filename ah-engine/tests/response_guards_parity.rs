@@ -84,6 +84,15 @@ fn output_verify_cases() -> Vec<Case> {
     v.push(c("ov-obj-single-stream").same(post("npm test", json!({"stdout":mixed}))));
     v.push(c("ov-obj-two-streams-same-text").same(post("npm test", json!({"stdout":"8 passed 2 failed","stderr":"2 failed"}))));
     v.push(c("ov-obj-two-streams-different-text").same(post("npm test", json!({"stdout":"8 passed\n2 failed","stderr":"5 failed"}))));
+    let raw_resp = |resp: &str| format!(r#"{{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"s1","tool_input":{{"command":"npm test"}},"tool_response":{resp}}}"#);
+    v.push(c("ov-raw-unsorted-unambiguous").raw(&raw_resp(r#"{"stdout":"8 passed","stderr":"2 failed","interrupted":false}"#), Expect::Same));
+    v.push(c("ov-raw-unsorted-ambiguous-defers").raw(&raw_resp(r#"{"stdout":"2 failed 8 passed","stderr":"5 failed"}"#), Expect::Defer));
+    v.push(c("ov-raw-unsorted-ambiguous-pass-defers").raw(&raw_resp(r#"{"stdout":"9 passed","stderr":"4 passed 1 failed"}"#), Expect::Defer));
+    v.push(c("ov-raw-unsorted-same-text-in-both").raw(&raw_resp(r#"{"stdout":"2 failed 8 passed","stderr":"2 failed"}"#), Expect::Same));
+    v.push(c("ov-raw-unsorted-exit-codes-defer").raw(&raw_resp(r#"{"stdout":"8 passed exit code: 2","stderr":"exit code: 5"}"#), Expect::Defer));
+    v.push(c("ov-raw-unsorted-structured-exit-wins").raw(&raw_resp(r#"{"stdout":"8 passed exit code: 2","stderr":"exit code: 5","exit_code":1}"#), Expect::Same));
+    v.push(c("ov-raw-nested-unsorted-ambiguous-defers").raw(&raw_resp(r#"{"z":{"b":"1 failed","a":"3 failed"},"y":"8 passed"}"#), Expect::Defer));
+    v.push(c("ov-raw-escaped-leaf-boundary").raw(&raw_resp(r#"{"stdout":"line\n2 failed\n8 passed"}"#), Expect::Same));
     v.push(c("ov-obj-nested").same(post("npm test", json!({"result":{"stdout":"4 passed","stderr":"1 failed"},"interrupted":false}))));
     v.push(c("ov-array").same(post("npm test", json!(["8 passed", "2 failed"]))));
     v.push(c("ov-number").same(post("npm test", json!(5))));
