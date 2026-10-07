@@ -70,6 +70,9 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `phase-tracker` | Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm bar and the running-agents heartbeat); never blocks (port of phase-tracker.js). |
 | `orch-on-spawn` | Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker defers to Node, which owns the claim race (port of orch-on-spawn.js). |
 | `verify-first-orch` | SessionStart orchestration text for the Claude entry: composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node (port of verify-first-orch.js --host=claude). |
+| `verify-first` | UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node (port of verify-first.js). |
+| `idle-agent-sweep` | UserPromptSubmit: lists agents that finished but were never stopped or closed, and the call that ends each (port of idle-agent-sweep.js). |
+| `emit-dedupe-reset` | SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted (port of emit-dedupe-reset.js). |
 
 ## Settings
 
@@ -211,7 +214,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `request_env.allow` | `34 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. |
+| `request_env.allow` | `34 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. |
 | `request_env.line_prefix` | `E ` |  |  | Prefix of the request line that carries the forwarded environment as one JSON object. |
 | `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them, and the checks that read the environment then see an empty one. |
 
@@ -1199,6 +1202,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `dispatch.msg_why_died` | `hook {id} was killed before it could answer` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook was killed by a signal. Placeholder: {id}. |
 | `dispatch.msg_why_incomplete` | `hook {id} finished with incomplete output` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook finished but a process it left behind kept its output open, so the output is incomplete. Placeholder: {id}. |
 | `dispatch.msg_why_spawn` | `hook {id} could not be started` |  |  | Reason in dispatch.msg_fail_closed when a guard event's Node hook could not be started. Placeholder: {id}. |
+| `dispatch.payload_hash_checks` | `verify-first` |  |  | Built-in checks whose Node hook derives something from the exact stdin bytes (verify-first rotates its reminder by the SHA-1 of the whole payload): the dispatcher hands these the SHA-1 of the raw payload, computed only when one of them is selected. |
 | `dispatch.plain_context_events` | `UserPromptSubmit, UserPromptExpansion, SessionStart, PostModelSwitch` |  |  | Events on which plain-text stdout (exit 0) is context for the model (docs/KB-claude-code-hooks.md: UserPromptSubmit, UserPromptExpansion, SessionStart, PostModelSwitch). When the dispatcher must deliver such text next to a hook's JSON it folds it into the merged additionalContext instead of moving it to stderr, where the model would not see it. |
 | `dispatch.poll_ms` | `2` |  | ms | How often the dispatcher checks whether its Node hooks have finished. |
 | `dispatch.read_ms` | `2000` |  | ms | How long the dispatcher waits for a finished Node hook's output pipes to drain. |
@@ -1308,6 +1312,128 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `verify_first.summary_full` | `SessionStart context: injects the verify-first protocol and discipline index ...` |  |  | One-line description of the verify-first-full check in the generated reference. |
 | `verify_first.summary_subagent` | `SubagentStart context: injects the verify-first protocol (compact, or full wh...` |  |  | One-line description of the verify-first-subagent check in the generated reference. |
 | `verify_first.worker` | `WORKER: do the task yourself; do not re-delegate unless told to. Your assignm...` |  |  | The WORKER line that follows the compact subagent protocol. |
+
+### prompt_emit.toml / emit_dedupe
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `emit_dedupe.attachment_type` | `hook_additional_context` |  |  | The transcript attachment type the host writes for a delivered hook context. |
+| `emit_dedupe.file_prefix` | `dedupe` |  |  | Prefix of a session's state file name (dedupe-<session>.json) and of the sweep stamp. |
+| `emit_dedupe.hook_event` | `UserPromptSubmit` |  |  | The hook event whose delivered context counts as a block's delivery. |
+| `emit_dedupe.key_ttl_ms` | `86400000` |  | ms | A block key unseen for this long is dropped from the session file when it is next written. |
+| `emit_dedupe.max_pending_ms` | `600000` |  | ms | A copy still undelivered after this long (a queued prompt the user cancelled, say) is emitted again. |
+| `emit_dedupe.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (converts the window setting and the sweep thresholds). |
+| `emit_dedupe.num_window_min` | `6 entries` |  |  | Where the fallback suppression window is read from (context.dedupeWindowMin, minutes, default 20): used when the transcript cannot show whether a block was delivered; 0 turns the whole feature off. |
+| `emit_dedupe.prune_stamp_prefix` | `.prune-stamp-` |  |  | Prefix of the stamp file that throttles the sweep of idle session files. |
+| `emit_dedupe.prune_throttle_ms` | `21600000` |  | ms | The sweep of idle session files runs at most this often. |
+| `emit_dedupe.prune_ttl_ms` | `604800000` |  | ms | A session file not modified for this long is removed by the sweep (never the file of the session being written). |
+| `emit_dedupe.reset_key` | `__reset` |  |  | The state key that records the last context loss. |
+| `emit_dedupe.segment_sep` | `\n\n` |  |  | How the hooks join their blocks into one additionalContext; a delivery may hold the emitted block as a run of whole segments. |
+| `emit_dedupe.session_safe_max` | `128` |  |  | Longest session part of a state file name, in UTF-16 units, after characters outside letters, digits, dot, underscore and hyphen become underscores. |
+| `emit_dedupe.state_dir` | `.anti-hall/emit-dedupe` |  |  | The session state directory, relative to the home directory. |
+| `emit_dedupe.stats_key` | `__stats` |  |  | The state key that holds the suppression counter doctor reports. |
+| `emit_dedupe.summary` | `SessionStart: marks a context loss in the session's emit-dedupe state so the ...` |  |  | One-line description of the emit-dedupe-reset check in the generated reference. |
+| `emit_dedupe.sw_enabled` | `5 entries` |  |  | Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing. |
+| `emit_dedupe.tail_bytes` | `262144` |  | bytes | The first transcript window searched for a block's delivery. |
+| `emit_dedupe.tail_bytes_wide` | `4194304` |  | bytes | The wider transcript window searched once when the first has no delivery and the file is larger than it. |
+| `emit_dedupe.tmp_suffix` | `.tmp` |  |  | Suffix of the temporary file a state write goes through before the atomic rename. |
+| `emit_dedupe.ts_tolerance_ms` | `1000` |  | ms | How far before a block's own timestamp a transcript attachment may be stamped and still count as its delivery. |
+| `emit_dedupe.window_default_ms` | `15000` |  | ms | The fallback window when the setting cannot be read, and the gap that counts as a new turn when the transcript is unusable. |
+
+### prompt_emit.toml / idle_sweep
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `idle_sweep.be_many` | `s are` |  |  | The words after `finished agent` when several agents are idle. |
+| `idle_sweep.be_one` | ` is` |  |  | The words after `finished agent` when one agent is idle. |
+| `idle_sweep.block_close` | `\n</teammate-message>` |  |  | The end of one teammate message block, with the newline before it. |
+| `idle_sweep.block_open` | `<teammate-message teammate_id="` |  |  | The start of one teammate message block, up to its opening quote of the teammate id. |
+| `idle_sweep.call_claude` | `TaskStop {"task_id":"{id}"}` |  |  | The call that stops a Claude teammate; {id} is its name. |
+| `idle_sweep.call_codex` | `close_agent {"target":"{id}"}` |  |  | The call that closes a Codex agent; {id} is its id. |
+| `idle_sweep.codex_arg_keys` | `target, id, agent_id` |  |  | Arguments of an agent tool call that name one agent. |
+| `idle_sweep.codex_arg_list_key` | `targets` |  |  | The argument of an agent tool call that names several agents. |
+| `idle_sweep.codex_call_names` | `spawn_agent, wait_agent, close_agent, send_input, resume_agent` |  |  | The agent tool calls the scan follows. |
+| `idle_sweep.codex_close_call` | `close_agent` |  |  | The call that closes an agent. |
+| `idle_sweep.codex_finished_keys` | `completed, errored` |  |  | Keys of a wait_agent status entry that mean the agent finished. |
+| `idle_sweep.codex_prefilter` | `_agent, send_input, function_call_output` |  |  | A rollout line is read only when it holds one of these. |
+| `idle_sweep.codex_retask_calls` | `send_input, resume_agent` |  |  | The calls that give an agent more work. |
+| `idle_sweep.codex_spawn_call` | `spawn_agent` |  |  | The call whose output names a new agent. |
+| `idle_sweep.codex_wait_call` | `wait_agent` |  |  | The call whose output reports agent statuses. |
+| `idle_sweep.dedupe_key` | `idle-agent-sweep` |  |  | The emit-dedupe key of the advisory. |
+| `idle_sweep.ellipsis` | `…` |  |  | Appended to a label that was cut. |
+| `idle_sweep.env_test_isolation` | `ANTIHALL_TEST_ISOLATION` |  |  | When this variable is 1, the injected clock below is honoured (tests and replays only, as in the Node hook). |
+| `idle_sweep.env_test_now` | `ANTIHALL_TEST_NOW_MS` |  |  | The injected clock, in milliseconds, honoured only when the isolation variable is 1. |
+| `idle_sweep.event` | `UserPromptSubmit` |  |  | The hook event name in the check's output. |
+| `idle_sweep.guard_name` | `idle-agents` |  |  | The guard id the advisory names. |
+| `idle_sweep.idle_marker` | `idle_notification` |  |  | The text a teammate's end-of-turn report carries. |
+| `idle_sweep.inbox_marker` | `'s inbox` |  |  | Text of a SendMessage result for a teammate. |
+| `idle_sweep.instead` | `if you have no more work for them, {verb} each one, e.g. {call} (one call per...` |  |  | Advisory advice; {verb} close or stop, {call} the exact call for the first agent. |
+| `idle_sweep.label_max` | `60` |  |  | Longest agent label shown, in UTF-16 units. |
+| `idle_sweep.launch_phrase` | `Async agent launched successfully` |  |  | What a background agent's launch tool result begins with. |
+| `idle_sweep.launch_tools` | `Agent, Task` |  |  | The tools whose results can be a launch or a teammate spawn. |
+| `idle_sweep.max_named` | `10` |  |  | How many agents the advisory names; the rest are counted. |
+| `idle_sweep.more` | `, and {m} more` |  |  | Appended to the list when agents beyond the named ones exist; {m} is how many. |
+| `idle_sweep.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (idle ages are shown and compared in minutes). |
+| `idle_sweep.not_a_report_keys` | `12 items` |  |  | Keys the host stamps on typed, queued, tool-result and compaction records; a genuine teammate report carries none of them (isSidechain only when true). |
+| `idle_sweep.notification_tag` | `<task-notification>` |  |  | The tag a background task's completion notice starts with; a turn that is one is not a human turn. |
+| `idle_sweep.num_count` | `5 entries` |  |  | Where the idle-agent count that fires the advisory is read from (guards.idleAgentSweepCount, default 3). |
+| `idle_sweep.num_minutes` | `5 entries` |  |  | Where the idle minutes that fire the advisory for any one agent are read from (guards.idleAgentSweepMin, default 15). |
+| `idle_sweep.prefilter` | `10 items` |  |  | A transcript line is read only when it holds one of these (the Node scan's cheap pre-filter, in the same terms). |
+| `idle_sweep.queued_marker` | `Message queued for delivery to` |  |  | Text of a SendMessage result for an agent that is still running. |
+| `idle_sweep.re_agent_id` | `agentId:\s*([0-9a-fA-F]{6,40})` |  |  | The agent id in a launch result's text (JavaScript regex). |
+| `idle_sweep.re_codex_dir` | `[\\/]\.codex[\\/]` |  |  | A path under a .codex directory (JavaScript regex). |
+| `idle_sweep.re_codex_id` | `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` |  |  | A Codex agent id (JavaScript regex, ignore case). |
+| `idle_sweep.re_codex_rollout` | `(^\|[\\/])rollout-[^\\/]*\.jsonl$` |  |  | A Codex rollout transcript path (JavaScript regex). |
+| `idle_sweep.re_control_chars` | `[\x00-\x1F\x7F-\x9F]` |  |  | Control characters replaced by a space in a label (JavaScript regex, replaced globally). |
+| `idle_sweep.re_finished_reason` | `^(available\|failed)$` |  |  | Idle reasons that end a teammate's work (JavaScript regex). |
+| `idle_sweep.re_hex_id` | `^[0-9a-fA-F]{6,40}$` |  |  | A background agent id (JavaScript regex). |
+| `idle_sweep.re_inbox_message` | `^Message sent to (.+)\x27s inbox$` |  |  | A teammate send result's message; the group is the teammate's name (JavaScript regex). |
+| `idle_sweep.re_minutes` | `\(\d+m\)` |  |  | The age shown after an agent, which the dedupe hash ignores (JavaScript regex, replaced globally). |
+| `idle_sweep.re_notification_block` | `<task-notification>([\s\S]*?)</task-notification>` |  |  | One task-notification block of a text (JavaScript regex, global). |
+| `idle_sweep.re_queued_message` | `^Message queued for delivery to\s` |  |  | A queued-delivery result's message (JavaScript regex). |
+| `idle_sweep.re_resume_message` | `^Resuming\s+agent\s+([0-9a-fA-F]{6,40})` |  |  | A resume result's message (JavaScript regex, ignore case). |
+| `idle_sweep.re_status` | `<status>([^<]*)</status>` |  |  | The status inside one notification block (JavaScript regex). |
+| `idle_sweep.re_system_reminder_notice` | `<system-reminder>\s*<task-notification>` |  |  | A notification block directly inside a system-reminder block (JavaScript regex). |
+| `idle_sweep.re_task_id` | `<task-id>([^<]*)</task-id>` |  |  | The task id inside one notification block (JavaScript regex). |
+| `idle_sweep.re_terminal_status` | `^(completed\|failed\|stopped\|killed\|cancelled\|canceled)$` |  |  | Notification and attachment statuses that mean an agent ended (JavaScript regex, ignore case). |
+| `idle_sweep.report_future_skew_ms` | `5000` |  | ms | A report's inner timestamp further than this after its entry's own timestamp is forged or garbage and is ignored. |
+| `idle_sweep.report_prefix` | `Another Claude session sent a message:` |  |  | What a teammate report entry's text begins with. |
+| `idle_sweep.resume_tools` | `SendMessage, Agent, Task` |  |  | The tools whose results can resume an agent. |
+| `idle_sweep.scan_bytes` | `12582912` |  | bytes | How much of the transcript tail is read: wide enough that a teammate's spawn record is in the window with its reports. |
+| `idle_sweep.send_tools` | `SendMessage` |  |  | The tools whose results can be a message sent to a teammate. |
+| `idle_sweep.skip_name` | `idle-agent-sweep` |  |  | The name that ~/.anti-hall/skip.json uses to skip this hook. |
+| `idle_sweep.spawned_status` | `teammate_spawned` |  |  | The `toolUseResult.status` of a named teammate's spawn. |
+| `idle_sweep.summary` | `UserPromptSubmit: lists agents that finished but were never stopped or closed...` |  |  | One-line description of the idle-agent-sweep check in the generated reference. |
+| `idle_sweep.sw_enabled` | `4 entries` |  |  | Where the on/off switch is read from (guards.idleAgentSweep, default on). |
+| `idle_sweep.task_stop_marks` | `"name":"TaskStop", "name": "TaskStop"` |  |  | How a TaskStop call appears in a transcript line. |
+| `idle_sweep.what` | `{n} finished agent{be} idle and not {past}: {shown}{more}.` |  |  | Advisory headline; {n} agents, {be} the verb phrase, {past} closed or stopped, {shown} the named agents, {more} the overflow. |
+| `idle_sweep.why` | `{why_head} until it is {past}.` |  |  | Advisory reason; {why_head} is the platform's reason, {past} closed or stopped. |
+| `idle_sweep.words_claude` | `3 entries` |  |  | The platform words of the Claude advisory. |
+| `idle_sweep.words_codex` | `3 entries` |  |  | The platform words of the Codex advisory. |
+
+### prompt_emit.toml / prompt_emit
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `prompt_emit.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | When this variable is 1 the hook runs inside the `claude -p` judge child, whose hooks must do nothing (hooks/lib/judge-child-exit.js): the check answers with no output and no state. |
+
+### prompt_emit.toml / verify_first
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `verify_first.dedupe_key` | `verify-first` |  |  | The emit-dedupe key of the reminder. |
+| `verify_first.dedupe_normalized` | `VERIFY-FIRST` |  |  | What every rotating line is normalized to before hashing, so a different line is still the same block. |
+| `verify_first.env_devswarm_disable` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Setting this variable to 1 turns the DevSwarm integration off. |
+| `verify_first.env_devswarm_repo` | `DEVSWARM_REPO_ID` |  |  | The variable DevSwarm sets for a session it runs; a non-blank value makes the session a DevSwarm session in auto mode. |
+| `verify_first.env_devswarm_source_branch` | `DEVSWARM_SOURCE_BRANCH` |  |  | The variable DevSwarm sets for a child workspace; a non-blank value means this session is a child, never a Primary. |
+| `verify_first.event` | `UserPromptSubmit` |  |  | The hook event name in the check's output. |
+| `verify_first.nudges` | `20 items` |  |  | The rotating reminder lines, in the order the Node hook lists them (the index is the payload digest modulo their number). |
+| `verify_first.num_repeat_every` | `6 entries` |  |  | Where the repeat interval is read from (guards.injectionRepeatEvery, delivered turns, default 10); 0 repeats the reminder every turn. |
+| `verify_first.prefix` | `VERIFY-FIRST: ` |  |  | Text in front of the rotating line. |
+| `verify_first.summary` | `UserPromptSubmit: the short rotating verify-first reminder, deduplicated per ...` |  |  | One-line description of the verify-first check in the generated reference. |
+| `verify_first.sw_dispatch_tier_text` | `4 entries` |  |  | Where the switch of the DevSwarm Primary dispatch-tier text is read from (devswarm.dispatchTierText, default on). |
+| `verify_first.sw_supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode is read from (devswarm.supervisorMode: auto, on or off, default auto): the first condition of the Primary gate. |
+| `verify_first.sw_turn` | `4 entries` |  |  | Where the on/off switch is read from (context.verifyFirstTurn, default on). |
 
 ## Messages
 

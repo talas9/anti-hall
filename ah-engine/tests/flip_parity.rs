@@ -538,7 +538,7 @@ impl Drop for Rig {
 }
 
 /// Built-in checks that inject text (never silent) on a well-formed payload.
-const CONTEXT_CHECKS: [&str; 3] = ["verify-first-subagent", "verify-first-full", "fable-availability"];
+const CONTEXT_CHECKS: [&str; 4] = ["verify-first-subagent", "verify-first-full", "fable-availability", "verify-first"];
 
 fn has_context_check(host: &str, event: &str) -> bool {
     table::entries(host, event).iter().any(|e| e.check.as_deref().is_some_and(|c| CONTEXT_CHECKS.contains(&c)))

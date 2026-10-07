@@ -192,9 +192,14 @@ mod tests {
     #[test]
     fn a_check_that_decided_allow_is_answered_natively_not_deferred() {
         let mut deferred = Vec::new();
+        // the checks that keep their state in the client's home need one (without it they defer, D74): an empty one here
+        let home = std::env::temp_dir().join(format!("ah-native-quiet-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+        let mut m = meta();
+        m.env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string())]);
         for name in ["compact-declaration-guard", "coordinator-work-guard", "merge-side-pick", "scan-throttle", "ship-it-guard"] {
             let p = quiet_payload(name);
-            let got = evaluate(&meta(), &p, &|_, _, _| {});
+            let got = evaluate(&m, &p, &|_, _, _| {});
             let (_, a) = got.iter().find(|(id, _)| id == name).unwrap_or_else(|| panic!("{name} entry missing"));
             if a != &Answer::Decided(HookResult::quiet(name), Vec::new()) {
                 deferred.push(name);
@@ -240,8 +245,8 @@ mod tests {
         let env = crate::reqenv::RequestEnv::from_pairs([("HOME", d.join("home").to_string_lossy().to_string())]);
         let p = json!({"session_id": "s", "hook_event_name": "SessionStart"});
         for (host, event, ids) in [
-            ("claude", "SessionStart", vec!["verify-first-full", "fable-availability"]),
-            ("codex", "SessionStart", vec!["verify-first-full"]),
+            ("claude", "SessionStart", vec!["verify-first-full", "verify-first-orch:host=claude", "fable-availability", "emit-dedupe-reset"]),
+            ("codex", "SessionStart", vec!["verify-first-full", "emit-dedupe-reset"]),
             ("claude", "SubagentStart", vec!["verify-first-subagent"]),
         ] {
             let meta = Meta {
@@ -253,12 +258,16 @@ mod tests {
                 only: None,
                 plan: Vec::new(),
                 cfg: String::new(),
+                payload_sha1: None,
             };
             let got = evaluate(&meta, &p, &|_, _, _| {});
             assert_eq!(got.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ids, "{host} {event}");
             for (id, a) in &got {
                 let Answer::Decided(r, _) = a else { panic!("{id} deferred") };
                 assert_eq!(r.code, Some(0), "{id}");
+                if id == "emit-dedupe-reset" || id.starts_with("verify-first-orch") {
+                    continue; // other batches' checks: their own tests pin their bytes
+                }
                 if id != "fable-availability" {
                     assert!(
                         r.out.starts_with(&format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"{event}\",\"additionalContext\":\"ANTI-HALL VERIFY-FIRST"))
@@ -273,7 +282,17 @@ mod tests {
             }
         }
         // the root is a host fact: with none, the compact text cannot be built and the Node hook answers
-        let meta = Meta { host: "claude".into(), event: "SubagentStart".into(), tool: None, root: None, env, only: None, plan: Vec::new(), cfg: String::new() };
+        let meta = Meta {
+            host: "claude".into(),
+            event: "SubagentStart".into(),
+            tool: None,
+            root: None,
+            env,
+            only: None,
+            plan: Vec::new(),
+            cfg: String::new(),
+            payload_sha1: None,
+        };
         assert_eq!(evaluate(&meta, &p, &|_, _, _| {}).into_iter().map(|(_, a)| a).collect::<Vec<_>>(), vec![Answer::Defer]);
     }
 

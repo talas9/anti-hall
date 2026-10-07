@@ -196,6 +196,8 @@ fn an_old_file_of_a_family_is_pruned_once_per_window_and_the_live_one_is_kept() 
     assert_eq!(prune_stale(&d, "fam", None), 0);
     assert!(std::path::Path::new(&format!("{d}/fam-again.json")).exists());
     assert_eq!(std::fs::read_to_string(format!("{d}/.prune-stamp-fam.json")).unwrap().chars().take(13).collect::<String>(), "{\"lastSweep\":");
+}
+
 fn num_settings(files: &[(&str, &str)], env: &[(&str, &str)]) -> Settings {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let d = std::env::temp_dir().join(format!("ah-num-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));

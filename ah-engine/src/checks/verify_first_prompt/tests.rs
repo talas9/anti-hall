@@ -4,7 +4,10 @@ use serde_json::json;
 use std::collections::HashMap;
 
 fn st(env: &[(&str, &str)]) -> Settings {
-    let d = std::env::temp_dir().join(format!("ah-vf-{}-{}", std::process::id(), crate::checks::emit_dedupe::now_ms() as u64));
+    // a counter, not the clock: two tests starting in the same millisecond must not share a home
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let d = std::env::temp_dir().join(format!("ah-vf-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     Settings { home: d.to_string_lossy().to_string(), env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<_, _>>() }
 }

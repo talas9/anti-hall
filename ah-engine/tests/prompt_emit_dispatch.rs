@@ -174,7 +174,9 @@ fn session_start_marks_the_context_loss_through_the_dispatcher() {
         // through the daemon the first call is the Node fallback (the shell map: nothing written), later ones are the check's
         for _ in 0..80 {
             let (code, out, err) = e.run(&args, in_process, &p, &[]);
-            assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+            // the other SessionStart checks (verify-first-full, verify-first-orch, ...) answer with their own context: only the exit
+            // and stderr are asserted here, the reset is proven by the state file below
+            assert_eq!((code, err.as_str()), (0, ""), "{out}");
             if file.exists() {
                 break;
             }
