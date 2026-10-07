@@ -92,3 +92,42 @@ pub fn session_key(sid: &str) -> String {
     }
     out
 }
+
+/// The file-backed implementation: the record of `(ns, session)` is the file `<home>/.anti-hall/<ns>-<session>.json`, the
+/// very file the Node guard of that name keeps, so the engine and a Node hook that answers for the same session in turn
+/// see one record, and the record survives a restart. An old file is pruned after a write (`state-prune.js`).
+pub struct FileState {
+    dir: String,
+}
+
+impl FileState {
+    /// State under `<home>/.anti-hall`; `None` when there is no home directory.
+    pub fn new(home: &str) -> Option<FileState> {
+        (!home.is_empty()).then(|| FileState { dir: crate::checks::guardkit::fsio::state_dir(home) })
+    }
+
+    fn file(&self, ns: &str, session: &str) -> String {
+        format!("{}/{ns}-{session}{}", self.dir, defaults::text("guardkit.state_ext"))
+    }
+}
+
+/// Serializes the read-modify-write of every file-backed entry inside this process (Node's own writers take no lock
+/// here either; this only keeps two engine workers from losing each other's update).
+static FILE_LOCK: Mutex<()> = Mutex::new(());
+
+impl SessionState for FileState {
+    fn update(&self, ns: &str, session: &str, f: &mut dyn FnMut(Option<&str>) -> Option<String>) {
+        let _g = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = self.file(ns, session);
+        let cur = std::fs::read_to_string(&path).ok();
+        if let Some(new) = f(cur.as_deref())
+            && crate::checks::guardkit::fsio::write_atomic(&path, &new).is_ok()
+        {
+            crate::checks::guardkit::fsio::prune_stale(&self.dir, ns, Some(&path));
+        }
+    }
+
+    fn get(&self, ns: &str, session: &str) -> Option<String> {
+        std::fs::read_to_string(self.file(ns, session)).ok()
+    }
+}

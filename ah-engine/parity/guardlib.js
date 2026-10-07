@@ -52,6 +52,21 @@ function mkHome(tmp, n, ctx) {
   return home;
 }
 
+// Compare the state files (names matching `re`) of the node home and the engine home. Session-scoped files are compared
+// after every step; `norm(name, text)` removes what legitimately differs (clock values). Returns null when equal.
+function stateDiff(homeN, homeE, re, norm, sid) {
+  const list = h => { try { return fs.readdirSync(path.join(h, '.anti-hall')).filter(f => re.test(f)).sort(); } catch { return []; } };
+  const read = (h, f) => { try { return fs.readFileSync(path.join(h, '.anti-hall', f), 'utf8'); } catch { return null; } };
+  const nrm = (f, t) => (t === null ? null : norm ? norm(f, t) : t);
+  const a = list(homeN), b = list(homeE);
+  const names = [...new Set([...a, ...b])].sort();
+  for (const f of names) {
+    const x = nrm(f, read(homeN, f)), y = nrm(f, read(homeE, f));
+    if (x !== y) return { name: f, node: String(x), engine: String(y) };
+  }
+  return null;
+}
+
 // opts: {name, check, hookFile, scenarios, engine, hooks, mode, conc, show, out, rule?, nodeArgv?(step)->[...],
 //        engineRule?: extra rule fields}
 async function runParity(o) {
@@ -77,10 +92,12 @@ async function runParity(o) {
   let gi = 0;
   for (const [k, list] of groups) {
     const ctx = k, home = mkHome(tmp, gi++, ctx);
+    // dual: the engine gets its OWN home (same settings), so state files the guards write can be compared instead of shared
+    const homeE = o.dual ? mkHome(tmp, 'e' + gi, ctx) : home;
     const dir = path.join(tmp, 'e' + gi), rf = path.join(tmp, `rules${gi}.json`);
     const events = o.events || ['PreToolUse', 'PostToolUse'];
     fs.writeFileSync(rf, JSON.stringify({ version: 1, rules: [Object.assign({ id: o.name, events, tools: o.tools || ['Bash'], check: o.check, action: 'deny', options: { plugin_root: PLUGIN_ROOT } }, o.engineRule || {})] }));
-    const eenv = Object.assign({ PATH: basePath, HOME: home, USERPROFILE: home, ANTIHALL_TEST_ISOLATION: '1' }, ctx.env || {});
+    const eenv = Object.assign({ PATH: basePath, HOME: homeE, USERPROFILE: homeE, ANTIHALL_TEST_ISOLATION: '1' }, ctx.env || {});
     const denv = Object.assign({}, eenv, { AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity', AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_NODE: process.execPath, AH_ENGINE_BREAKER_N: '1000000' });
     const oenv = Object.assign({}, eenv, { AH_ENGINE_PLUGIN_ROOT: PLUGIN_ROOT });
     const warm = JSON.stringify({ session_id: 'warm', cwd: '/tmp', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo warm' } });
@@ -96,11 +113,12 @@ async function runParity(o) {
         const step = sc.steps[si];
         stats.steps++;
         const payload = subst(step.payload, home);
+        const payloadE = o.dual ? subst(step.payload, homeE) : payload;
         const n = nodeStep(payload, step, home, ctx);
         if (n.code === 2) stats.nodeBlocks++; else if (n.out) stats.nodeAdvisories++;
         if (n.err && n.code !== 2) stats.nodeStderr = (stats.nodeStderr || 0) + 1;
         if (stopped) { stats.skipped++; continue; }
-        const input = JSON.stringify(payload);
+        const input = JSON.stringify(payloadE);
         const cwd = '/tmp';
         const results = {};
         if ((MODE === 'oneshot' || MODE === 'both') && si === 0) {
@@ -111,6 +129,11 @@ async function runParity(o) {
           const e = norm(await run(ENGINE, ['hook', '--fallback', sentinel], input, denv, cwd));
           results.daemon = e.out === 'AHDEFERRED' ? 'deferred' : same(n, e) ? 'same' : e;
         }
+        if (o.dual && o.stateFiles && !stopped && Object.keys(results).length) {
+          const d = stateDiff(home, homeE, typeof o.stateFiles === 'function' ? o.stateFiles(step.payload) : o.stateFiles, o.stateNorm, sc.id);
+          if (d && !Object.values(results).includes('deferred')) { stats.compared++; stats.stateMismatch = (stats.stateMismatch || 0) + 1; stats.mismatch++; if (mism.length < 2000) mism.push({ scenario: sc.id, step: si, mode: 'state', payload, node: { code: 0, out: d.node, err: '' }, engine: { code: 0, out: d.engine, err: d.name } }); }
+          else if (!d) { stats.compared++; stats.same++; stats.stateSame = (stats.stateSame || 0) + 1; }
+        }
         for (const [mode, r] of Object.entries(results)) {
           stats.compared++;
           if (r === 'same') stats.same++;
@@ -120,6 +143,12 @@ async function runParity(o) {
         }
       }
     });
+    if (o.dual && o.sharedFiles) {
+      const d = stateDiff(home, homeE, o.sharedFiles, o.stateNorm, 'group-end');
+      stats.compared++;
+      if (d) { stats.mismatch++; if (mism.length < 2000) mism.push({ scenario: 'group-end', step: 0, mode: 'shared-state', payload: {}, node: { code: 0, out: d.node, err: '' }, engine: { code: 0, out: d.engine, err: d.name } }); }
+      else stats.same++;
+    }
     if (MODE !== 'oneshot') {
       await run(ENGINE, ['ctl', 'stop'], '', denv, '/tmp');
       for (let i = 0; i < 200; i++) { const r = await run(ENGINE, ['ctl', 'ping'], '', denv, '/tmp'); if (r.code !== 0) break; await new Promise(r => setTimeout(r, 30)); }
@@ -158,4 +187,7 @@ const bash = (event, sid, command, extra) => Object.assign({ hook_event_name: ev
 // Deterministic PRNG so a failing corpus is reproducible.
 function rng(seed) { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; }
 
-module.exports = { arg, flag, runParity, readCmds, bash, rng, norm, same, run, pool };
+// The file-name part of a session id as the guards build it (letters, digits, . _ - kept; the rest _; cut to `max` UTF-16 units).
+const safeSid = (sid, max) => String(sid || '').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, max);
+
+module.exports = { safeSid, arg, flag, runParity, readCmds, bash, rng, norm, same, run, pool };

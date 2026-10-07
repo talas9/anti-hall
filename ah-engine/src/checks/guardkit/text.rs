@@ -67,3 +67,70 @@ pub fn js_string_of(v: &serde_json::Value) -> Option<String> {
 fn js_number_string(n: f64) -> String {
     if n == n.trunc() && n.abs() < 1e21 { format!("{}", n as i128) } else { format!("{n}") }
 }
+
+/// `Number(s)` for a JavaScript string: white space trimmed, empty is 0, `0x`/`0o`/`0b` prefixes, `Infinity`, decimal and
+/// exponent forms; anything else is NaN.
+fn js_number_of_str(s: &str) -> f64 {
+    let t = js_trim(s);
+    if t.is_empty() {
+        return 0.0;
+    }
+    let radix = |p: &[&str], r: u32| {
+        p.iter().find_map(|x| t.strip_prefix(x)).and_then(|d| if d.is_empty() { None } else { u64::from_str_radix(d, r).ok() }).map(|n| n as f64)
+    };
+    if let Some(n) = radix(&["0x", "0X"], 16).or_else(|| radix(&["0o", "0O"], 8)).or_else(|| radix(&["0b", "0B"], 2)) {
+        return n;
+    }
+    match t {
+        "Infinity" | "+Infinity" => return f64::INFINITY,
+        "-Infinity" => return f64::NEG_INFINITY,
+        _ => {}
+    }
+    // Rust also parses "inf", "nan" and "infinity"; JavaScript does not.
+    if !t.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E')) {
+        return f64::NAN;
+    }
+    t.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// `Number(v)` for a JSON value (arrays go through their `String()` form, as JavaScript does).
+pub fn js_number(v: &serde_json::Value) -> f64 {
+    match v {
+        serde_json::Value::Null => 0.0,
+        serde_json::Value::Bool(b) => f64::from(u8::from(*b)),
+        serde_json::Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+        serde_json::Value::String(s) => js_number_of_str(s),
+        serde_json::Value::Array(_) => js_number_of_str(&js_string_coerce(v)),
+        serde_json::Value::Object(_) => f64::NAN,
+    }
+}
+
+/// `x | 0` (ToInt32) for a JSON value.
+pub fn js_to_int32(v: &serde_json::Value) -> i64 {
+    let n = js_number(v);
+    if !n.is_finite() {
+        return 0;
+    }
+    let m = n.trunc().rem_euclid(4_294_967_296.0) as i64;
+    if m >= 2_147_483_648 { m - 4_294_967_296 } else { m }
+}
+
+/// `String(v)` for any JSON value (`null` in an array is an empty element, as in `Array.prototype.join`).
+pub fn js_string_coerce(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Array(a) => a.iter().map(|x| if x.is_null() { String::new() } else { js_string_coerce(x) }).collect::<Vec<_>>().join(","),
+        serde_json::Value::Object(_) => "[object Object]".to_string(),
+        other => js_string_of(other).unwrap_or_default(),
+    }
+}
+
+/// JavaScript truthiness of an optional JSON value (`undefined`, `null`, `false`, `0`, `NaN`, `""` are falsy).
+pub fn js_truthy(v: Option<&serde_json::Value>) -> bool {
+    match v {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
+        Some(serde_json::Value::String(s)) => !s.is_empty(),
+        Some(_) => true,
+    }
+}

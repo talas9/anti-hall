@@ -412,7 +412,7 @@ value = [
 [dispatch.hooks_claude_PostToolUse]
 doc = "The claude PostToolUse hook entries, in dispatch order."
 value = [
-  { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "" },
+  { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "merge-side-pick" },
   { id = "git-guard:audit", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "" },
   { id = "output-verify-guard", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/output-verify-guard.js\"", timeout = 10, check = "" },
   { id = "devswarm-parent-reply-tracker", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", timeout = 10, check = "" },
@@ -513,7 +513,7 @@ value = [
 [dispatch.hooks_codex_PostToolUse]
 doc = "The codex PostToolUse hook entries, in dispatch order."
 value = [
-  { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "" },
+  { id = "merge-side-pick:post", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post", timeout = 10, check = "merge-side-pick" },
   { id = "git-guard:audit", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "" },
   { id = "devswarm-parent-reply-tracker", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", timeout = 10, check = "" },
   { id = "devswarm-child-drain", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"", timeout = 10, check = "" },

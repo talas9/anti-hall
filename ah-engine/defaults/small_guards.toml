@@ -898,3 +898,37 @@ value = "re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent to
 [model_routing.msg_row6_why]
 doc = "Row-6 advisory reason."
 value = "general-purpose carries the Agent tool and can recurse; chains waste ~7x tokens by depth 5."
+
+# ---- file-backed guard state (checks::guardkit::fsio, hooks/lib/state-prune.js) -----------------------------
+
+[guardkit.state_dir_name]
+doc = "Name of the directory under the home directory that holds the per-session state files the Node guards share with the engine."
+value = ".anti-hall"
+
+[guardkit.state_ext]
+doc = "Extension of a per-session state file."
+value = ".json"
+
+[guardkit.tmp_suffix]
+doc = "Suffix of the temporary file a state file is written through before the rename."
+value = "tmp"
+
+[guardkit.prune_ttl_ms]
+doc = "How old, in milliseconds, a per-session state file must be before the pruning sweep removes it (7 days)."
+value = 604800000
+min = 60000
+max = 31536000000
+
+[guardkit.prune_throttle_ms]
+doc = "Minimum time, in milliseconds, between two pruning sweeps of one state-file family (6 hours)."
+value = 21600000
+min = 0
+max = 31536000000
+
+[guardkit.prune_stamp]
+doc = "Name of the stamp file that throttles the pruning sweep; {prefix} is the state-file family."
+value = ".prune-stamp-{prefix}.json"
+
+[guardkit.prune_stamp_key]
+doc = "Key of the stamp file that holds the time of the last sweep."
+value = "lastSweep"

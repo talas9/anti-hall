@@ -4,18 +4,19 @@
 //! PostToolUse records a conflict resolved by taking one side wholesale (`git checkout --ours`, `git merge -X theirs`,
 //! ...) and test runs, per session; a push while a side-pick has no test run after it adds one advisory line.
 //!
-//! Differences from the Node guard (deliberate): the state lives in the engine's memory ([`SessionState`]) instead of
-//! `~/.anti-hall/merge-side-pick-<session>.json`, so it is lost when the engine restarts and is not shared with a
-//! Node-run guard (the prune of old files is therefore not ported); the PostToolUse pass is selected by the event name
-//! in the payload, which is what the hook wiring passes (`--post` is only ever given to the PostToolUse entry).
+//! Differences from the Node guard (deliberate): the PostToolUse pass is selected by the event the entry is wired to (or
+//! the payload's event name), which is what `--post` stands for in the hook wiring. The state is the very file the Node
+//! guard keeps, `~/.anti-hall/merge-side-pick-<session>.json` (a [`FileState`]), so a restart forgets nothing and a Node
+//! hook that answers for the same session in turn (a deferral) reads and writes the same record; old files are pruned
+//! the way `state-prune.js` does. Without a home directory the check defers.
 //!
 //! Mirrors `hooks/merge-side-pick.js` and `hooks/lib/merge-side-pick.js`.
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::settings::{get_bool, is_skipped};
-use crate::checks::guardkit::state::{self, SessionState, session_key};
-use crate::checks::guardkit::text::{collapse_ws, js_trim, slice_utf16};
+use crate::checks::guardkit::state::{FileState, SessionState, session_key};
+use crate::checks::guardkit::text::{collapse_ws, js_string_coerce, js_to_int32, js_trim, js_truthy, slice_utf16};
 use crate::checks::{Check, Verdict};
 use crate::defaults;
 use crate::reqenv::RequestEnv;
@@ -101,12 +102,16 @@ struct Rec {
 impl Rec {
     fn load(raw: Option<&str>) -> Rec {
         let Some(Value::Object(o)) = raw.and_then(|r| serde_json::from_str::<Value>(r).ok()) else { return Rec::default() };
-        let n = |k: &str| o.get(k).and_then(Value::as_i64).unwrap_or(0);
-        Rec { seq: n("seq"), pick_seq: n("pickSeq"), test_seq: n("testSeq"), cmd: o.get("cmd").and_then(Value::as_str).unwrap_or("").to_string() }
+        // `s.seq | 0` and `String(s.cmd || '')`: the Node guard coerces whatever the file holds.
+        let n = |k: &str| o.get(k).map_or(0, js_to_int32);
+        let cmd = o.get("cmd").filter(|v| js_truthy(Some(v))).map(js_string_coerce).unwrap_or_default();
+        Rec { seq: n("seq"), pick_seq: n("pickSeq"), test_seq: n("testSeq"), cmd }
     }
 
+    /// `JSON.stringify({seq, pickSeq, testSeq, cmd})`, keys in that order.
     fn dump(&self) -> String {
-        serde_json::json!({"seq": self.seq, "pickSeq": self.pick_seq, "testSeq": self.test_seq, "cmd": self.cmd}).to_string()
+        let cmd = serde_json::to_string(&self.cmd).unwrap_or_default();
+        format!("{{\"seq\":{},\"pickSeq\":{},\"testSeq\":{},\"cmd\":{cmd}}}", self.seq, self.pick_seq, self.test_seq)
     }
 }
 
@@ -185,6 +190,11 @@ fn push_check(store: &dyn SessionState, sid: &str, cmd: &str) -> Option<String> 
 ///
 /// Mirrors `hooks/merge-side-pick.js` `main`.
 pub fn decide(p: &Value, st: &Settings, store: &dyn SessionState) -> Option<Verdict> {
+    decide_as(p, st, store, false)
+}
+
+/// [`decide`] with the PostToolUse pass forced on (`--post`, or a PostToolUse event in the hook wiring).
+pub fn decide_as(p: &Value, st: &Settings, store: &dyn SessionState, post: bool) -> Option<Verdict> {
     if p.get("tool_name").and_then(Value::as_str) != Some("Bash") {
         return None;
     }
@@ -196,7 +206,7 @@ pub fn decide(p: &Value, st: &Settings, store: &dyn SessionState) -> Option<Verd
     if !get_bool(st, defaults::raw("merge_side_pick.setting")) || is_skipped(st, defaults::text("merge_side_pick.guard_name")) {
         return None;
     }
-    if p.get("hook_event_name").and_then(Value::as_str) == Some("PostToolUse") {
+    if post || p.get("hook_event_name").and_then(Value::as_str) == Some("PostToolUse") {
         return match record(store, sid, cmd) {
             Some(()) => None,
             None => Some(Verdict::Defer),
@@ -232,7 +242,11 @@ impl Check for MergeSidePick {
         (s.tool == Some("Bash")).then_some(Verdict::Defer)
     }
 
-    fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        Some(decide(payload, &Settings::from_env(env), state::global()).unwrap_or(Verdict::Allow))
+    fn run_env(&self, s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        let st = Settings::from_env(env);
+        // No home directory: Node would fall back to the process home, which the engine cannot name. Defer.
+        let Some(store) = FileState::new(&st.home) else { return (s.tool == Some("Bash")).then_some(Verdict::Defer) };
+        // `None` from decide_as is "nothing to say": answer it natively as Allow (dispatch reads None as Defer).
+        Some(decide_as(payload, &st, &store, s.event == "PostToolUse").unwrap_or(Verdict::Allow))
     }
 }

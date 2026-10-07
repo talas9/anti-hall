@@ -111,3 +111,74 @@ fn run_without_the_payload_defers_for_bash_and_ignores_other_tools() {
     assert_eq!(MergeSidePick.run(&s(Some("Bash")), &Value::Null), Some(Verdict::Defer));
     assert!(MergeSidePick.run(&s(Some("Edit")), &Value::Null).is_none());
 }
+
+fn file_state(home: &str) -> FileState {
+    FileState::new(home).expect("a home directory")
+}
+
+#[test]
+fn the_record_is_the_node_file_and_survives_a_new_store() {
+    let home = tmp_home("file");
+    let st = settings(&home);
+    decide(&payload("PostToolUse", "sess/1", "git checkout --theirs . && npm test && git merge -X ours x"), &st, &file_state(&home));
+    let path = format!("{home}/.anti-hall/merge-side-pick-sess_1.json");
+    // byte for byte what `JSON.stringify({seq, pickSeq, testSeq, cmd})` writes
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"seq":3,"pickSeq":3,"testSeq":2,"cmd":"git merge -X ours x"}"#);
+    // a new store (an engine restart) still sees the untested side-pick and advises on the push
+    assert!(decide(&payload("PreToolUse", "sess/1", "git push"), &st, &file_state(&home)).is_some());
+    decide(&payload("PostToolUse", "sess/1", "npm test"), &st, &file_state(&home));
+    assert!(decide(&payload("PreToolUse", "sess/1", "git push"), &st, &file_state(&home)).is_none());
+}
+
+#[test]
+fn a_record_written_by_node_is_read_and_coerced_like_node_does() {
+    let home = tmp_home("coerce");
+    let st = settings(&home);
+    let d = format!("{home}/.anti-hall");
+    // Node: `s.pickSeq | 0` of "3" is 3, `s.testSeq | 0` of "1" is 1, cmd is String(...)
+    std::fs::write(format!("{d}/merge-side-pick-a.json"), r#"{"seq":"5","pickSeq":"3","testSeq":"1","cmd":"git checkout --ours x"}"#).unwrap();
+    let out = advisory(decide(&payload("PreToolUse", "a", "git push"), &st, &file_state(&home))).expect("advisory");
+    assert!(out.contains("git checkout --ours x"), "{out}");
+    // a corrupt file is a fresh record
+    std::fs::write(format!("{d}/merge-side-pick-b.json"), "{not json").unwrap();
+    assert!(decide(&payload("PreToolUse", "b", "git push"), &st, &file_state(&home)).is_none());
+    decide(&payload("PostToolUse", "b", "git checkout --theirs ."), &st, &file_state(&home));
+    assert_eq!(std::fs::read_to_string(format!("{d}/merge-side-pick-b.json")).unwrap(), r#"{"seq":1,"pickSeq":1,"testSeq":0,"cmd":"git checkout --theirs ."}"#);
+    // an int32 wrap, as `4294967297 | 0` is 1
+    std::fs::write(format!("{d}/merge-side-pick-c.json"), r#"{"seq":4294967297,"pickSeq":4294967299,"testSeq":0,"cmd":"c"}"#).unwrap();
+    decide(&payload("PostToolUse", "c", "npm test"), &st, &file_state(&home));
+    assert_eq!(std::fs::read_to_string(format!("{d}/merge-side-pick-c.json")).unwrap(), r#"{"seq":2,"pickSeq":3,"testSeq":2,"cmd":"c"}"#);
+}
+
+#[test]
+fn recording_prunes_old_files_of_the_family_but_never_its_own() {
+    let home = tmp_home("prune");
+    let st = settings(&home);
+    let d = format!("{home}/.anti-hall");
+    let old = format!("{d}/merge-side-pick-old.json");
+    let other = format!("{d}/other-family-old.json");
+    for f in [&old, &other] {
+        std::fs::write(f, "{}").unwrap();
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 3600);
+        std::fs::File::options().write(true).open(f).unwrap().set_modified(t).unwrap();
+    }
+    decide(&payload("PostToolUse", "live", "git checkout --theirs ."), &st, &file_state(&home));
+    assert!(!std::path::Path::new(&old).exists(), "an old file of the family is removed");
+    assert!(std::path::Path::new(&other).exists(), "another family is never touched");
+    assert!(std::path::Path::new(&format!("{d}/merge-side-pick-live.json")).exists());
+    assert!(std::path::Path::new(&format!("{d}/.prune-stamp-merge-side-pick.json")).exists());
+}
+
+#[test]
+fn the_post_pass_follows_the_wired_event_and_no_home_defers() {
+    let home = tmp_home("wired");
+    let env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.as_str())]);
+    let ti = json!({"command": "git checkout --theirs ."});
+    let sub = |event| Subject { event, tool: Some("Bash"), cwd: None, tool_input: &ti, prompt: None };
+    // a Post entry whose payload lacks the event name still records (what `--post` does in Node)
+    let p = json!({"tool_name": "Bash", "session_id": "w", "tool_input": {"command": "git checkout --theirs ."}});
+    assert!(MergeSidePick.run_env(&sub("PostToolUse"), &p, &Value::Null, &env).is_none());
+    assert!(std::path::Path::new(&format!("{home}/.anti-hall/merge-side-pick-w.json")).exists());
+    let none = crate::reqenv::RequestEnv::from_pairs(Vec::<(String, String)>::new());
+    assert_eq!(MergeSidePick.run_env(&sub("PostToolUse"), &p, &Value::Null, &none), Some(Verdict::Defer));
+}

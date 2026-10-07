@@ -5,7 +5,7 @@
 // Corpus: (1) the guard's own test cases and settings/skip variants, (2) windows of real sessions from the field
 // data (every command as a Pre then a Post step, in order), (3) real pushes preceded by an injected side-pick (so the
 // advisory path is exercised on real text), (4) fuzzed commands (quotes, odd white space, long and astral text).
-const { arg, runParity, readCmds, bash, rng } = require('./guardlib.js');
+const { arg, runParity, readCmds, bash, rng, safeSid } = require('./guardlib.js');
 const ENGINE = arg('--engine', '../target/release/ah-engine'), HOOKS = arg('--hooks');
 const R = rng(+arg('--seed', 1));
 const pick = a => a[Math.floor(R() * a.length)];
@@ -56,7 +56,7 @@ for (const [id, pl] of [
 ]) add([{ payload: pl }], undefined, `shape-${id}`);
 // sessions: padded, unicode, long and colliding ids share or separate state exactly as Node's file names do
 for (const [a, b] of [[' pad ', 'pad'], ['a/b', 'a_b'], ['a b', 'a?b'], ['és', '__s'], ['\u{1F600}', '__'], ['x'.repeat(130) + 'A', 'x'.repeat(130) + 'B'], ['ID.1-2_3', 'ID.1-2_3']]) {
-  add([...pairs(a, 'git checkout --theirs .'), ...pairs(b, 'git push'), ...pairs(a, 'git push')], undefined, `sid-${JSON.stringify(a).slice(0, 20)}`);
+  add([...pairs(a, 'git checkout --theirs .'), ...pairs(b, 'git push'), ...pairs(a, 'git push')], {}, `sid-${JSON.stringify(a).slice(0, 20)}`); // its own home: ids that sanitize alike share one file
 }
 // switches and skip, each its own ctx (its own home and daemon)
 const flow = s => [...pairs(s, 'git checkout --theirs .'), ...pairs(s, 'git push')];
@@ -71,6 +71,20 @@ const ctxs = {
 };
 for (const [k, c] of Object.entries(ctxs)) add(flow(sid()), c, `ctx-${k}`);
 // a settings-off session records nothing; turning it on later is another ctx, so only check the quiet path here
+
+// seeded state files: the engine reads and writes the same record the Node guard keeps (corrupt, coerced, hand-edited forms)
+const seedCtx = {};
+const SEEDS = {
+  corrupt: '{not json', empty: '', arr: '[1,2]', str: '"x"', nul: 'null',
+  coerced: '{"seq":"5","pickSeq":"3","testSeq":"1","cmd":"git checkout --ours x"}', floats: '{"seq":7.9,"pickSeq":6.2,"testSeq":1.5,"cmd":"git merge -X ours"}',
+  bools: '{"seq":true,"pickSeq":true,"testSeq":false,"cmd":false}', neg: '{"seq":-3,"pickSeq":-1,"testSeq":-2,"cmd":"c"}', big: '{"seq":4294967297,"pickSeq":4294967299,"testSeq":0,"cmd":"git checkout --ours big"}',
+  arrnums: '{"seq":[4],"pickSeq":["3"],"testSeq":[],"cmd":["a","b"]}', objcmd: '{"seq":2,"pickSeq":2,"testSeq":0,"cmd":{"x":1}}', hex: '{"seq":"0x10","pickSeq":"0x10","testSeq":"0b1","cmd":"h"}',
+  pending: '{"seq":1,"pickSeq":1,"testSeq":0,"cmd":"git checkout --theirs ."}', tested: '{"seq":2,"pickSeq":1,"testSeq":2,"cmd":"git checkout --theirs ."}', extra: '{"seq":1,"pickSeq":1,"testSeq":0,"cmd":"c","junk":[1,2]}',
+};
+seedCtx.files = Object.fromEntries(Object.entries(SEEDS).map(([k, v]) => ['.anti-hall/merge-side-pick-seed-' + k + '.json', v]));
+for (const k of Object.keys(SEEDS)) {
+  add([...pairs('seed-' + k, 'git push'), ...pairs('seed-' + k, 'git checkout --ours .'), ...pairs('seed-' + k, 'git push'), ...pairs('seed-' + k, 'npm test'), ...pairs('seed-' + k, 'git push')], seedCtx, `seed-${k}`);
+}
 
 // (2) real sessions
 const cmds = readCmds(arg('--cmds', '../../fpr/cmds.jsonl'));
@@ -120,4 +134,4 @@ for (let i = 0; i < 2500; i++) {
   add([...pairs(s, mutate(pick(PICKS))), ...pairs(s, mutate(pick(seeds))), ...pairs(s, mutate(pick(PUSHES)))], undefined, `fuzz-${i}`);
 }
 console.error(`scenarios=${scenarios.length} real-window-commands=${realSteps} injected=${injected}`);
-runParity({ name: 'merge-side-pick', check: 'merge-side-pick', hookFile: 'merge-side-pick.js', scenarios, engine: ENGINE, hooks: HOOKS, mode: arg('--mode', 'both'), conc: +arg('--conc', 8), show: +arg('--show', 15), nodeArgv: s => (s.payload.hook_event_name === 'PostToolUse' ? ['--post'] : []) });
+runParity({ name: 'merge-side-pick', check: 'merge-side-pick', hookFile: 'merge-side-pick.js', scenarios, engine: ENGINE, hooks: HOOKS, mode: arg('--mode', 'daemon'), dual: true, stateNorm: (f, t) => t, stateFiles: p => { const sid = typeof p.session_id === 'string' ? p.session_id.trim() : ''; return new RegExp('^merge-side-pick-' + safeSid(sid, 120).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.json$'); }, conc: +arg('--conc', 8), show: +arg('--show', 15), nodeArgv: s => (s.payload.hook_event_name === 'PostToolUse' ? ['--post'] : []) });

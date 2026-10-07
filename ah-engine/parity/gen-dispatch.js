@@ -17,7 +17,7 @@ const HOSTS = [
   ['claude', 'plugins/anti-hall/hooks/hooks.json'],
   ['codex', 'plugins/anti-hall/codex/hooks/hooks.json'],
 ];
-// Hook entries a built-in check answers: event + script + args (the PostToolUse `--audit` pass is not ported).
+// Hook entries a built-in check answers: event + script + args.
 const CHECKS = [
   ['git-guard', 'git'],
   ['command-guard', 'command'],
@@ -27,7 +27,10 @@ const CHECKS = [
   ['scan-throttle', 'scan-throttle'],
   ['coordinator-work-guard', 'coordinator-work-guard'],
   ['compact-declaration-guard', 'compact-declaration-guard'],
-].map(([script, check]) => ({ event: 'PreToolUse', script: script + '.js', args: '', check }));
+].map(([script, check]) => ({ event: 'PreToolUse', script: script + '.js', args: '', check })).concat([
+  // the PostToolUse / PostToolUseFailure companions of the Pre guards (the same script run with --post or --audit)
+  ['PostToolUse', 'merge-side-pick.js', '--post', 'merge-side-pick'],
+].map(([event, script, args, check]) => ({ event, script, args, check })));
 
 const q = s => JSON.stringify(s); // TOML basic strings accept JSON string escapes for this content
 function entries(hooks, event) {
