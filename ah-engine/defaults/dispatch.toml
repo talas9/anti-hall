@@ -423,7 +423,7 @@ value = [
   { id = "devswarm-child-drain", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"", timeout = 10, check = "" },
   { id = "coordinator-work-guard:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post", timeout = 10, check = "coordinator-work-guard" },
   { id = "codex-quota-detect", matcher = "Agent", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js\"", timeout = 10, check = "codex-quota-detect" },
-  { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js\"", timeout = 10, check = "" },
+  { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js\"", timeout = 10, check = "dispatch-tier" },
 ]
 
 [dispatch.hooks_claude_PostToolUseFailure]

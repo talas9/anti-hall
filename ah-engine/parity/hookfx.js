@@ -91,7 +91,8 @@ const diffTrees = (a, b) => {
   return d;
 };
 
-// o: {name, hookFile, check, engine, hooks, scenarios, conc, show, nodeArgs?, extraEnv?, skip?(rel), maskOut?(s)}
+// o: {name, hookFile, check, engine, hooks, scenarios, conc, show, nodeArgs?, extraEnv?, skip?(rel), maskOut?(s),
+//     mayDefer?(scenario, step) -> bool: when given, a deferral it does not allow is a MISMATCH (the engine must answer)}
 async function runFx(o) {
   const ENGINE = path.resolve(o.engine), HOOKS = path.resolve(o.hooks), PLUGIN_ROOT = path.resolve(HOOKS, '..');
   const HOOK = path.join(HOOKS, o.hookFile);
@@ -122,6 +123,15 @@ async function runFx(o) {
       let e1 = { code: er.code, out: mask(er.out.split(WE).join('<W>')), err: er.err.split(WE).join('<W>') };
       let deferred = false;
       if (e1.out.trim() === 'AHFALLBACK') { deferred = true; e1 = await nodeRun(WE); }
+      if (deferred && o.mayDefer && !sc.expectDefer && !o.mayDefer(sc, step)) {
+        stats.mismatch++; mism.push({ scenario: sc.id, step: si, node: n1, engine: e1, treeDiff: [], note: 'engine deferred where it must answer', payload: step.payload !== undefined ? step.payload : step.raw });
+        continue;
+      }
+      if (sc.expectDefer) {
+        // The Node hook starts detached workers whose files land asynchronously: only the deferral itself is checked.
+        if (deferred) stats.deferred++; else { stats.mismatch++; mism.push({ scenario: sc.id, step: si, node: n1, engine: e1, treeDiff: [], note: 'expected a deferral' }); }
+        continue;
+      }
       const tn = snapshot(WN, o.skip), te = snapshot(WE, o.skip);
       const fx = diffTrees(tn, te);
       const sameIo = n1.code === e1.code && n1.out.trim() === e1.out.trim() && n1.err.trim() === e1.err.trim();

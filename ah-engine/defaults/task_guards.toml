@@ -78,3 +78,17 @@ value = "INDEX.md"
 [task_lifecycle_log.ledger_ext]
 doc = "The ledger file extension."
 value = ".md"
+
+# ---- dispatch-tier (hooks/dispatch-tier.js) -------------------------------------------------------------------------
+
+[dispatch_tier.summary]
+doc = "One-line description of the dispatch-tier check in the generated reference."
+value = "Does nothing while the Jev dispatchTier integration is off (the Node hook would do nothing too); with Jev on, the Node hook asks Jev and writes its state (port of dispatch-tier.js)."
+
+[dispatch_tier.jev_id]
+doc = "The Jev integration id the dispatch-tier hook asks."
+value = "dispatchTier"
+
+[dispatch_tier.tools]
+doc = "The task tools whose text changes the hook classifies."
+value = ["TaskCreate", "TaskUpdate"]

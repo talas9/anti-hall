@@ -104,6 +104,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `precompact-snapshot` | PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it (port of precompact-snapshot.js). |
 | `handover-resume` | SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js). |
 | `task-lifecycle-log` | Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js). |
+| `dispatch-tier` | Does nothing while the Jev dispatchTier integration is off (the Node hook would do nothing too); with Jev on, the Node hook asks Jev and writes its state (port of dispatch-tier.js). |
 
 ## Settings
 
@@ -2318,6 +2319,14 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `codex_handover.utc_words` | `utc, gmt, z` |  |  | Words after a date and time that mean UTC (compared without case). |
 | `codex_handover.weekdays` | `7 items` |  |  | Weekday names, lower case (a date string may lead with one, full or its first three letters). |
 | `codex_handover.writer_grace_ms` | `300000` |  | ms | How long after a handover its writer may keep writing before the resume says it kept running. |
+
+### task_guards.toml / dispatch_tier
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `dispatch_tier.jev_id` | `dispatchTier` |  |  | The Jev integration id the dispatch-tier hook asks. |
+| `dispatch_tier.summary` | `Does nothing while the Jev dispatchTier integration is off (the Node hook wou...` |  |  | One-line description of the dispatch-tier check in the generated reference. |
+| `dispatch_tier.tools` | `TaskCreate, TaskUpdate` |  |  | The task tools whose text changes the hook classifies. |
 
 ### task_guards.toml / task_lifecycle_log
 

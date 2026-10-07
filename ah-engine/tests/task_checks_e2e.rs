@@ -79,3 +79,45 @@ fn a_relative_cwd_runs_the_node_hook() {
     let (code, ..) = w.hook("TaskCompleted", &payload, &["task-lifecycle-log"]);
     assert_eq!(code, 99, "a deferred check hands the call to the Node hook");
 }
+
+/// Every Node hook of `event` that matches `tool`, as ids, so a test can replace all of them.
+fn ids_for(event: &str, tool: &str) -> Vec<String> {
+    let p = serde_json::json!({"hook_event_name": event, "tool_name": tool});
+    ah_engine::dispatch::table::select("claude", event, &p, Some(tool)).into_iter().map(|e| e.id).collect()
+}
+
+#[test]
+fn dispatch_tier_does_nothing_while_jev_is_off_and_defers_while_it_is_on() {
+    let w = World::new("tier");
+    let payload = serde_json::json!({"hook_event_name": "PostToolUse", "tool_name": "TaskCreate", "session_id": "s", "cwd": w.path("proj"), "tool_input": {"subject": "x"}}).to_string();
+    let ids = ids_for("PostToolUse", "TaskCreate");
+    assert!(ids.iter().any(|i| i == "dispatch-tier"), "{ids:?}");
+    // Every other matching hook is mapped to a successful no-op; dispatch-tier alone is mapped to exit 99.
+    let map: serde_json::Map<String, serde_json::Value> =
+        ids.iter().map(|id| (id.clone(), if id == "dispatch-tier" { "exit 99" } else { "true" }.into())).collect();
+    let map_path = w.path("map.json");
+    std::fs::write(&map_path, serde_json::json!({ "PostToolUse": map }).to_string()).unwrap();
+    for (jev, want) in [(None, 0), (Some("1"), 99)] {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        c.args(["hook", "--event", "PostToolUse", "--tool", "TaskCreate", "--fallback-map"])
+            .arg(&map_path)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", w.path("home"))
+            .env("AH_ENGINE_DIR", w.path("state"))
+            .env("AH_ENGINE_VERSION", "task-e2e")
+            .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+            .env("CLAUDE_PLUGIN_ROOT", &w.dir)
+            .current_dir(&w.dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(v) = jev {
+            c.env("ANTIHALL_JEV", v);
+        }
+        let mut ch = c.spawn().unwrap();
+        ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(want), "jev={jev:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+}
