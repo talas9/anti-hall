@@ -193,6 +193,15 @@ value = ["speculation", "triage"]
 doc = "Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off."
 value = "triage"
 
+[jev.cache_file]
+doc = "The answer cache file, relative to the anti-hall home directory; the same file the Node hooks use (Node: cache/jev-assist.json), so a text asked by either side is asked once."
+value = "cache/jev-assist.json"
+
+[jev.cache_max_depth]
+doc = "Nesting past which the answer cache file is left alone: only JavaScript reads it, so the engine neither serves from it nor rewrites it (JSON.parse reads deeper than this port does)."
+value = 128
+min = 8
+
 [jev.cache_max_entries]
 doc = "Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES)."
 value = 500

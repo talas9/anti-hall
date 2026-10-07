@@ -22,7 +22,7 @@
 //! apply. `changed` is `"added"`, `"changed"` or `null`; `wouldChange` reports what the rule would have done had the mode
 //! been `on`, so `jev report` can judge a shadow integration before it is trusted.
 use super::breaker::{Breakers, Clock, SystemClock, WallClock};
-use super::cache::{Cached, JevCache, MemCache};
+use super::cache::{Cached, FileCache, JevCache, MemCache};
 use super::client::{Answer, CallResult, JevClient};
 use super::credentials::resolve_key;
 use super::error::Reason;
@@ -359,16 +359,12 @@ fn now_unix_ms() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The content hash: SHA-256 of the parts joined with U+0001, as lowercase hex cut to `jev.hash_len`.
+/// The content hash: SHA-256 of the parts joined with U+0001, as lowercase hex cut to `jev.hash_len`. It is the log's `h`
+/// and Node's cache key.
 pub fn content_hash(parts: &[&str]) -> String {
-    let hex = full_hash(parts);
-    hex[..(defaults::num("jev.hash_len") as usize).min(hex.len())].to_string()
-}
-
-/// The whole SHA-256 of the parts joined with U+0001, as lowercase hex (the cache key; the log keeps the short form).
-fn full_hash(parts: &[&str]) -> String {
     let joined = parts.join("\u{1}");
-    ring::digest::digest(&ring::digest::SHA256, joined.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+    let hex: String = ring::digest::digest(&ring::digest::SHA256, joined.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    hex[..(defaults::num("jev.hash_len") as usize).min(hex.len())].to_string()
 }
 
 /// Node's `computeFinal` with this engine's trust rules (see the module docs).
@@ -475,6 +471,7 @@ impl Jev {
         log: Option<Arc<dyn DecisionLog>>,
         breakers: Option<Breakers>,
     ) -> Arc<Jev> {
+        let production = breakers.is_some();
         let settings = SettingsCache::new(home, env, clock.clone());
         let snapshot = settings.get(None);
         let log = log.unwrap_or_else(|| {
@@ -488,7 +485,7 @@ impl Jev {
                 Some(b) => JevClient::with_breakers(transport, clock.clone(), b),
                 None => JevClient::new(transport, clock.clone()),
             },
-            cache: cache.unwrap_or_else(|| Arc::new(MemCache::with_defaults())),
+            cache: cache.unwrap_or_else(|| if production { Arc::new(FileCache::for_home(home)) } else { Arc::new(MemCache::with_defaults()) }),
             log,
             stats: JevStats::default(),
             queue: OnceLock::new(),
@@ -542,15 +539,15 @@ impl Jev {
         // the same way: the key names the vendor chain, models and endpoints, and a test endpoint override never reads or
         // writes the cache. A hit still needs a key for the CALLING session; without one the call fails as `no-key`.
         let cache_key = self.cache_key_of(&s, req);
-        if let Some(ck) = cache_key.as_deref().filter(|_| resolve_key(&s, s.transport).key.is_some())
-            && let Some(c) = self.cache.get(ck)
+        if let Some((ck, chain)) = cache_key.as_ref().filter(|_| resolve_key(&s, s.transport).key.is_some())
+            && let Some(c) = self.cache.get(ck).filter(|c| c.chain.as_ref().is_none_or(|x| x == chain))
         {
             let r = CallResult::answered(c.answer, c.confidence, 0);
             return self.finish(&s, req, mode, Some(r), true, true);
         }
         let r = self.client.decide(&s, &req.question, &req.state, req.budget_ms);
-        if let (Some(a), Some(ck)) = (&r.answer, &cache_key) {
-            self.cache.put(ck, Cached { answer: a.clone(), confidence: r.confidence });
+        if let (Some(a), Some((ck, chain))) = (&r.answer, &cache_key) {
+            self.cache.put(ck, Cached { answer: a.clone(), confidence: r.confidence, chain: Some(chain.clone()) });
         }
         self.finish(&s, req, mode, Some(r), false, true)
     }
@@ -672,11 +669,10 @@ impl Jev {
 
     /// The key an answer is cached under for the session whose settings are `s`; `None` when it must not be cached (a test
     /// endpoint override is in effect). Unlike the logged hash it covers everything that decides who answers and how.
-    fn cache_key_of(&self, s: &JevSettings, req: &AskRequest) -> Option<String> {
+    fn cache_key_of(&self, s: &JevSettings, req: &AskRequest) -> Option<(String, String)> {
         if s.has_endpoint_override() {
             return None;
         }
-        let qv = defaults::text("jev.question_version");
         let vendors: Vec<Vendor> = std::iter::once(s.transport).chain(s.fallback).collect();
         let chain: String = vendors
             .iter()
@@ -684,7 +680,7 @@ impl Jev {
             .map(|(i, v)| format!("{}|{}|{}", v.as_str(), JevClient::model_for(*v), endpoint_for(s, *v, i == 0)))
             .collect::<Vec<_>>()
             .join(">");
-        Some(full_hash(&[&req.id, qv, &chain, req.cache_key.as_deref().unwrap_or(&req.state)]))
+        Some((self.hash_of(req), chain))
     }
 
     fn hash_of(&self, req: &AskRequest) -> String {
@@ -1177,6 +1173,40 @@ mod tests {
         off.env = session(&[]);
         assert_eq!(jev.ask(&off).backend, Backend::BaselineOnly, "nor to one with Jev off");
         assert_eq!(f.seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_lane_shares_nodes_cache_file_a_node_entry_is_a_hit_and_an_engine_entry_is_nodes() {
+        let dir = std::env::temp_dir().join(format!("ah-jev-assist-file-cache-{}", std::process::id()));
+        let path = dir.join("cache").join("jev-assist.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let r = req("speculation", Trust::AddBlock, json!(false));
+        let h = content_hash(&[&r.id, "v1", &r.state]);
+        std::fs::write(&path, format!(r#"{{"{h}":{{"answer":true,"confidence":0.95,"_seq":4}}}}"#)).unwrap();
+        let f = Arc::new(Fake::new(vec![ok(200, &answer(0.01))]));
+        let cache: Arc<dyn JevCache> = Arc::new(FileCache::new(path.clone(), 500));
+        let jev = Jev::with_parts(&dir, Env::from_pairs(ON), f.clone(), Arc::new(ManualClock::default()), Some(cache), None);
+        let mut a = r.clone();
+        a.env = session(&ON);
+        let d = jev.ask(&a);
+        assert_eq!((d.backend, d.outcome), (Backend::Cache, json!(true)), "Node's entry answers without a request");
+        assert!(f.seen.lock().unwrap().is_empty());
+        let mut b = r.clone();
+        b.state = "another text".into();
+        b.env = session(&ON);
+        assert_eq!(jev.ask(&b).backend, Backend::Jev);
+        let written = std::fs::read_to_string(&path).unwrap();
+        let hb = content_hash(&[&b.id, "v1", &b.state]);
+        assert!(written.contains(&format!(r#""{hb}":{{"answer":false,"confidence":0.98,"_seq":5,"chain":""#)), "{written}");
+        assert!(written.starts_with(&format!(r#"{{"{h}":{{"answer":true,"confidence":0.95,"_seq":4}},"#)), "Node's entry is kept byte for byte");
+        // an entry another vendor chain wrote is not served to this session
+        let other = written.replacen(r#","chain":""#, r#","chain":"other|"#, 1);
+        std::fs::write(&path, other).unwrap();
+        let f2 = Arc::new(Fake::new(vec![ok(200, &answer(0.01))]));
+        let cache2: Arc<dyn JevCache> = Arc::new(FileCache::new(path, 500));
+        let jev2 = Jev::with_parts(&dir, Env::from_pairs(ON), f2.clone(), Arc::new(ManualClock::default()), Some(cache2), None);
+        assert_eq!(jev2.ask(&b).backend, Backend::Jev, "a different chain asks again");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
