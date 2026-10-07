@@ -307,6 +307,18 @@ value = { section = "guards", key = "claimLedger", env = "", aliases = [], optio
 doc = "The Jev integration id of the shadow question asked for each flagged claim."
 value = "claimLedger"
 
+[claim_ledger.jev_instructions]
+doc = "The Noul question text of the claimLedger shadow ask (byte-identical to the Node hook's)."
+value = "Is this claim unsupported by evidence in the message (no matching value/SHA/state appears anywhere in the session's own tool output and prior messages)?"
+
+[claim_ledger.jev_true]
+doc = "The label for a true answer of the claimLedger question."
+value = "unsupported by evidence"
+
+[claim_ledger.jev_false]
+doc = "The label for a false answer of the claimLedger question."
+value = "supported by evidence"
+
 [claim_ledger.dir]
 doc = "Directory of the ledger files under the state directory."
 value = "claim-ledger"

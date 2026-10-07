@@ -17,6 +17,7 @@
 //! | `breaker` | `jev-client.js` breaker | per-vendor circuit breaker with a half-open probe |
 //! | `client` | `jev-client.js` `jevDecide`, `runWithFallback` | a decision call with an optional backup vendor |
 //! | `cache`, `log` | `jev-assist.js` cache and `appendLog` | content-hash cache and the `jev-assist.ndjson` rows |
+//! | `shared` | `jev-assist.js` `turnRefFromTranscript` | the process-wide lanes the checks ask through |
 //! | `assist` | `jev-assist.js` `ask`, `finalize` | modes, trust rules, budget, async queue, metrics |
 //!
 //! The decision record's rules for this lane: static checks never route to Jev (D34); every Jev decision has a
@@ -36,10 +37,11 @@ pub mod loopback;
 pub mod question;
 pub mod scrub;
 pub mod settings;
+pub mod shared;
 pub mod transport;
 
 #[cfg(test)]
-mod testkit;
+pub(crate) mod testkit;
 
 pub use assist::{AskRequest, Decision, Jev, Trust};
 pub use error::{JevError, Reason};

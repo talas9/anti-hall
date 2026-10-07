@@ -8,12 +8,11 @@
 //!
 //! What is answered here and what is not:
 //! - Answered here: the switch, the skip file, the transcript walk, the flag extraction and both ledger files.
-//! - Deferred to Node: a turn with flags while the optional Jev shadow question would be asked (the Jev lane's call path
-//!   stays on Node, see `docs/AH-ENGINE.md`); a relative transcript path (Node resolves it against its own directory);
+//! - Answered here too: the Jev shadow question. After the ledger is written, every flag is asked on the shared Jev lane
+//!   without waiting (Node: `askDetached`), with Node's id, question, state, cache key, trust and baseline; the answer only
+//!   reaches the Jev decision log (a `mode: "off"` row when the integration is off, as Node writes).
+//! - Deferred to Node: a relative transcript path (Node resolves it against its own directory);
 //!   a transcript line `JSON.parse` might read differently from `serde_json`; a context line cut inside a surrogate pair.
-//!
-//! Deliberate difference: with the Jev switch off the Node hook still appends a `mode: "off"` row to the Jev decision log
-//! for every flag (`askDetached` logs a skipped call); the engine's Jev layer never does (D35), and neither does this check.
 //!
 //! Mirrors `hooks/claim-ledger.js`.
 use crate::checks::git::util::Settings;
@@ -27,7 +26,7 @@ use crate::checks::replykit::transcript::{parse_line, prop, tail_lines};
 use crate::checks::{Check, Verdict};
 use crate::defaults;
 use crate::jev::assist::iso_ms;
-use crate::jev::{Env as JevEnv, JevSettings, Mode, settings::Sources};
+use crate::jev::{AskRequest, Env as JevEnv, Question, Trust};
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use regex::Regex;
@@ -285,10 +284,19 @@ fn extract_flags(text: &str, evidence: &str, tools_this_turn: usize) -> Result<V
     Ok(flags)
 }
 
-fn jev_asks(st: &Settings, env: &RequestEnv) -> bool {
-    let home = Path::new(&st.home);
-    let sources = Sources::load(home, JevEnv::from_pairs(env.to_map()));
-    JevSettings::resolve(home, sources).mode(defaults::text("claim_ledger.jev_id"), false) != Mode::Off
+/// The Jev shadow question for one flag (Node: the `askDetached` call at the end of `main`).
+fn ask_jev(home: &Path, env: &RequestEnv, session: &str, turn_ref: Option<&str>, f: &Flag) {
+    let mut req = AskRequest::new(
+        defaults::text("claim_ledger.jev_id"),
+        Question::noul(defaults::text("claim_ledger.jev_instructions"), defaults::text("claim_ledger.jev_true"), defaults::text("claim_ledger.jev_false")),
+        &format!("claim: {}\ncontext: {}", f.token, f.context),
+        Trust::RelaxBlock,
+        Value::Bool(true),
+    );
+    req.cache_key = Some(format!("{}\u{1}{}\u{1}{}", f.kind, f.token, f.context));
+    req.session_id = Some(session.to_string());
+    req.turn_ref = turn_ref.map(str::to_string);
+    crate::jev::shared::ask_detached(home, &JevEnv::from_pairs(env.to_map()), req);
 }
 
 fn record_line(session: &str, hash: &str, tools: usize, msg_chars: usize, evidence_chars: usize, truncated: bool, flags: &[Flag]) -> String {
@@ -327,6 +335,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
     let mut reply = walked.last_text.clone();
     let mut evidence = walked.evidence.clone();
     let mut tools = walked.tools_this_turn;
+    let mut from_payload = false;
     if let Some(pt) = payload_text {
         let n_pay = collapse_text(pt);
         let n_last = collapse_text(&walked.last_text);
@@ -334,6 +343,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
             reply = pt.to_string();
             evidence = walked.evidence_with_last.clone();
             tools = walked.tools_at_end;
+            from_payload = true;
         } else if n_pay != n_last {
             reply = pt.to_string();
         }
@@ -350,9 +360,6 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         return Ok(Verdict::Allow);
     }
     let flags = extract_flags(&reply, &evidence, tools)?;
-    if !flags.is_empty() && jev_asks(&st, env) {
-        return Err(Defer);
-    }
     let _ = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(&last_file, &hash)?;
@@ -364,6 +371,12 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         }
         Ok(())
     })();
+    // The ledger is written first; the asks never wait. The turn pointer is left out when the reply came from the payload:
+    // the transcript's last line may then belong to the previous message, and a wrong pointer is worse than none.
+    let turn_ref = if from_payload { None } else { crate::jev::shared::turn_ref_from_transcript(transcript) };
+    for f in &flags {
+        ask_jev(Path::new(&home), env, &session_raw, turn_ref.as_deref(), f);
+    }
     Ok(Verdict::Allow)
 }
 

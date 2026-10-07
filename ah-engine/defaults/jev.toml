@@ -333,3 +333,14 @@ value = { kind = "histogram", unit = "us", labels = [] }
 doc = "Largest response body read from a vendor; a longer one is treated as unparsable, so a misbehaving endpoint cannot grow the daemon's memory (D15)."
 value = 1048576
 unit = "bytes"
+
+[jev.lane_cap]
+doc = "How many home directories keep a resident Jev lane at once (one per user in practice; the oldest is dropped past the cap)."
+value = 8
+min = 1
+
+[jev.turn_ref_window_bytes]
+doc = "How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript)."
+value = 65536
+unit = "bytes"
+min = 1024
