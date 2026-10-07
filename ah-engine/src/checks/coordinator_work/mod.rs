@@ -93,13 +93,13 @@ impl Check for CoordinatorWorkGuard {
         Some(decide(payload).unwrap_or(Verdict::Allow))
     }
 
-    /// PostToolUse records the call in the window ([`post`]); PreToolUse is [`decide`]. A silent answer is an answer
-    /// (`Allow`): `None` would hand the call to the Node hook, which for the PostToolUse pass would record it twice.
+    /// PostToolUse records the call in the window ([`post`]); PreToolUse is [`decide`]. A silent PostToolUse answer is `Allow`,
+    /// not `None`: `None` would hand the call to the Node hook, which would record it a second time.
     fn run_env(&self, s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
         if s.event == defaults::text("coordinator_work.post_event") {
             let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(defaults::env_name("plugin_root"))).unwrap_or_default();
             return Some(post::decide_post(payload, &Settings::from_env(env), env, root).unwrap_or(Verdict::Allow));
         }
-        Some(decide(payload).unwrap_or(Verdict::Allow))
+        decide(payload)
     }
 }

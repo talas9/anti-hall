@@ -46,16 +46,20 @@ labelled with how it was measured in the README of `ah-engine/`.
   check instead of a pattern.
 - **Small guard ports.** `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
   `compact-declaration-guard` are the five small guards ported from Node. They share `checks/guardkit`: the switch and
-  skip-file lookup, the message layout, JavaScript-exact regex translation and a per-session state store that lives in
-  memory until storage is wired in (planned, D22). Where the Node verdict cannot be reproduced exactly (a block whose
+  skip-file lookup, the message layout, JavaScript-exact regex translation and the per-session state files the Node guards
+  keep under `~/.anti-hall/` (written in the same bytes, so a Node hook that answers for the same session in turn reads
+  the same record; an in-memory store remains for tests; the database-backed store is planned, D22). Their PostToolUse
+  companions run as checks too (`merge-side-pick` records, `coordinator-work-guard` keeps the work window, `git-audit`
+  reads the recent commits, `failure-root-cause-nudge` answers PostToolUseFailure). Where the Node verdict cannot be reproduced exactly (a block whose
   stdout and stderr the reply cannot carry yet, a regex construct, a classifier that lives in another port) the check
   defers, so Node decides.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  eight: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
+  ten: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
   the five small guard ports above: `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
-  `compact-declaration-guard` (see the README of `ah-engine/`).
+  `compact-declaration-guard` (see the README of `ah-engine/`), and two PostToolUse-side checks: `git-audit` (the
+  `--audit` pass of git-guard) and `failure-root-cause-nudge` (PostToolUseFailure).
 
 ## What works today
 
@@ -68,9 +72,11 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Socket 0600, private directory, peer uid check, no network | implemented | D16 |
 | Shipped defaults for every tunable, table, message, path, env-var name, limit and timeout | implemented | D17 |
 | Built-in `git` check with exact parity to git-guard | implemented | D29-D31 |
-| Built-in `merge-side-pick` check (advisory on a push after a one-sided conflict resolution) with exact parity | implemented, state in memory | D29-D31, D75 |
+| Built-in `merge-side-pick` check (advisory on a push after a one-sided conflict resolution; its PostToolUse pass records into `~/.anti-hall/merge-side-pick-<session>.json`, the Node file) with exact parity | implemented | D29-D31, D75 |
 | Built-in `compact-declaration-guard` check: allows new work unless the turn may hold a declaration (the common case, read from the transcript tail); a possible declaration, and so every block, defers to Node | implemented | D29-D31, D75 |
-| Built-in `coordinator-work-guard` check: answers every call the payload proves is not the main thread (88 percent of recorded Bash calls); the window itself defers to Node until the command classifier is ported (planned, D75) | implemented in part | D29-D31, D75 |
+| Built-in `coordinator-work-guard` check: PreToolUse answers every call the payload proves is not the main thread and defers the rest (the block needs the command classifier, planned, D75); PostToolUse keeps the work window in the Node files (nudge, metrics, trips log, stale-file fold) whenever the call's classification is already stored by the Node PreToolUse pass or provably not work, and defers otherwise | implemented in part | D29-D31, D75 |
+| Built-in `git-audit` check: the PostToolUse `--audit` pass of git-guard (recent commits with a self-credit trailer after a commit-creating command) with exact parity | implemented | D29-D31, D75 |
+| Built-in `failure-root-cause-nudge` check: the PostToolUseFailure advisory with its noise filter (expected exit-1 predicates, harness refusals, once per turn through the Node turn-gate file) with exact parity | implemented | D29-D31, D75 |
 | Built-in `scan-throttle` check (advisory throttle prefix for user-configured heavy scans) with exact parity; patterns it cannot match exactly defer | implemented | D29-D31, D75 |
 | Built-in `ship-it-guard` check (opt-in plan gate for Edit, Write and MultiEdit; Bash and apply_patch defer to Node) with exact parity | implemented | D29-D31, D75 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |

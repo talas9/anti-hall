@@ -75,11 +75,20 @@ pub fn js_number_of_str(s: &str) -> f64 {
     if t.is_empty() {
         return 0.0;
     }
-    let radix = |p: &[&str], r: u32| {
-        p.iter().find_map(|x| t.strip_prefix(x)).and_then(|d| if d.is_empty() { None } else { u64::from_str_radix(d, r).ok() }).map(|n| n as f64)
+    let prefix = t.get(..2).map(str::to_ascii_lowercase);
+    let radix = match prefix.as_deref() {
+        Some("0x") => 16,
+        Some("0o") => 8,
+        Some("0b") => 2,
+        _ => 0,
     };
-    if let Some(n) = radix(&["0x", "0X"], 16).or_else(|| radix(&["0o", "0O"], 8)).or_else(|| radix(&["0b", "0B"], 2)) {
-        return n;
+    if radix != 0 {
+        let digits = &t[2..];
+        return if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_alphanumeric()) {
+            f64::NAN
+        } else {
+            u64::from_str_radix(digits, radix).map_or(f64::NAN, |n| n as f64)
+        };
     }
     match t {
         "Infinity" | "+Infinity" => return f64::INFINITY,

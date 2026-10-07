@@ -149,7 +149,7 @@ fn javascript_number_coercions_match_number_and_int32() {
     for (s, n) in [("5", 5.0), ("  7  ", 7.0), ("", 0.0), ("0x10", 16.0), ("0b11", 3.0), ("1e3", 1000.0), ("-2.5", -2.5), ("Infinity", f64::INFINITY)] {
         assert_eq!(js_number_of_str(s), n, "{s:?}");
     }
-    for s in ["abc", "inf", "nan", "1,5", "0x", "1 2", "--1"] {
+    for s in ["abc", "inf", "nan", "1,5", "0x", "0x+1", "0b2", "1 2", "--1"] {
         assert!(js_number_of_str(s).is_nan(), "{s:?}");
     }
     for (v, n) in [

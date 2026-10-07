@@ -141,8 +141,8 @@ Deliberate differences from the Node guard:
   `state-prune.js` does), so a restart forgets nothing and a Node hook that answers for the same session in turn (a
   deferral) reads and writes the same record. The database-backed store replaces it later (planned, D22).
 - The PostToolUse pass is selected by the event the entry is wired to (or `hook_event_name`), which is what `--post` stands
-  for in the wiring. A silent answer is `Allow`, never `None` (`None` hands the call to the Node hook, which would record
-  it a second time).
+  for in the wiring. A silent PostToolUse answer is `Allow`, never `None` (`None` hands the call to the Node hook, which would
+  record it a second time); the PreToolUse pass still answers `None` when silent, so the dispatcher runs its Node hook.
 - The switch environment is the engine process's, not the hook client's (same limit as the git check); the switch files
   work. A cut of the stored command inside a surrogate pair defers to Node.
 - `ship-it-guard` (opt-in, `guards.shipitGate`): Edit, Write and MultiEdit are decided here (existence gate on hard-risk

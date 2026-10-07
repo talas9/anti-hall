@@ -27,8 +27,10 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-/// The counters a window file and the metrics share.
-const COUNTERS: [&str; 4] = ["calls", "work", "blocks", "skippedWouldBlock"];
+/// The counters a window file and the metrics share, in the order the metrics list them after `sessions`.
+fn counters() -> Vec<&'static str> {
+    defaults::list("coordinator_work.counters")
+}
 
 /// The window configuration (`lib.config`).
 pub struct Cfg {
@@ -126,7 +128,7 @@ impl State {
             let cap = defaults::num("coordinator_work.pre_cap") as usize;
             s.pre = pre[pre.len().saturating_sub(cap)..].to_vec();
         }
-        for k in COUNTERS.iter().chain(&["lastBlockAt"]) {
+        for k in counters().iter().chain(&["lastBlockAt"]) {
             if let Some(n) = num(o.get(*k)).filter(|n| *n >= 0.0) {
                 match *k {
                     "calls" => s.calls = n,
@@ -251,7 +253,10 @@ struct Metrics {
     by_version: Vec<(String, [f64; 5])>,
 }
 
-const VERSION_KEYS: [&str; 5] = ["sessions", "calls", "work", "blocks", "skippedWouldBlock"];
+/// The keys of one version's entry in the metrics: `sessions` and then the counters.
+fn version_keys() -> Vec<&'static str> {
+    defaults::list("coordinator_work.version_keys")
+}
 
 impl Metrics {
     /// `normalizeMetrics(raw)` (the raw value parsed with its key order).
@@ -279,7 +284,7 @@ impl Metrics {
                 continue;
             }
             let mut o = [0.0; 5];
-            for (i, k) in VERSION_KEYS.iter().enumerate() {
+            for (i, k) in version_keys().iter().enumerate() {
                 if let Some(n) = nn(e.get(k)) {
                     o[i] = n;
                 }
@@ -296,7 +301,7 @@ impl Metrics {
         let by = OVal::Obj(
             self.by_version
                 .iter()
-                .map(|(v, o)| (v.clone(), OVal::Obj(VERSION_KEYS.iter().zip(o).map(|(k, n)| (k.to_string(), OVal::Num(*n))).collect())))
+                .map(|(v, o)| (v.clone(), OVal::Obj(version_keys().iter().zip(o).map(|(k, n)| (k.to_string(), OVal::Num(*n))).collect())))
                 .collect(),
         );
         let mut s = format!("{{\"v\":1,\"nudges\":{},\"blocks\":{},\"byVersion\":{}", js_number_text(self.nudges), js_number_text(self.blocks), by.stringify());
@@ -404,7 +409,7 @@ fn fold_stale(home: &str, now: f64, env: &RequestEnv) -> usize {
                 let v = if s.version.is_empty() { unknown.to_string() } else { s.version.clone() };
                 let mut e = m.by_version.iter().find(|(k, _)| *k == v).map_or([0.0; 5], |(_, e)| *e);
                 e[0] += 1.0;
-                for (i, k) in COUNTERS.iter().enumerate() {
+                for (i, k) in counters().iter().enumerate() {
                     e[i + 1] += s.counter(k);
                 }
                 match m.by_version.iter_mut().find(|(k, _)| *k == v) {

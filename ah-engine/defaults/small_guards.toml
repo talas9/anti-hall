@@ -1278,3 +1278,11 @@ value = "delegate the rest to a subagent now; call {block_at} in the window is b
 [coordinator_work.trip_nudge]
 doc = "The event name a nudge is logged under in the trips log."
 value = "nudge"
+
+[coordinator_work.counters]
+doc = "The counters a window file keeps and the metrics fold, by their key in the files."
+value = ["calls", "work", "blocks", "skippedWouldBlock"]
+
+[coordinator_work.version_keys]
+doc = "The keys of one version's entry in the metrics file, in file order: the number of folded sessions, then the counters."
+value = ["sessions", "calls", "work", "blocks", "skippedWouldBlock"]
