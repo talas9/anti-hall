@@ -83,14 +83,14 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `repo-self-drift` | SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago (port of repo-self-drift.js). |
 | `defect-nudge` | SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported (port of defect-nudge.js); counts and ages only. |
 | `progress-prune` | SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/ (port of progress-prune.js). |
-| `speculation-guard` | Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag; answers while Jev is off and leaves every Jev path to Node (port of speculation-guard.js). |
+| `speculation-guard` | Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair (port of speculation-guard.js). |
 | `speculation-judge` | Stop: answers the off path of the opt-in semantic judge (switch off, judge child, skip) and leaves every opted-in call, a model call, to Node (port of speculation-judge.js). |
-| `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; leaves the optional Jev shadow question to Node (port of claim-ledger.js). |
-| `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; leaves the optional Jev shadow question to Node (port of output-verify-guard.js). |
+| `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js). |
+| `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js). |
 | `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
 | `silent-agent-nudge` | Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js). |
 | `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
-| `merge-gate` | Opt-in false-done backstop: answers every Bash call the Node merge-gate would allow (gate off, not an auto-merge command, no transcript, no hedge phrase in the recent assistant text) and defers the rest, so a possible block and its Jev shadow ask stay with the Node hook (port of merge-gate.js). |
+| `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
@@ -340,8 +340,15 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `git.hd_specs` | `10 entries` |  |  | Option grammar per git subcommand for heredoc-fed commands: s = short flags, v = short flags with a value, o = short flags with an optional value, l / big_l / big_o = long flags (none / required value / optional value), num = numeric -<n> allowed, strict = unknown options are not data, read = also accept the shared read-only option sets, l_extra = more long flags. |
 | `git.heredoc_git_msg_subs` | `commit, tag, notes, merge` |  |  | git subcommands that take a message from a heredoc. |
 | `git.heredoc_safe_verbs` | `21 items` |  |  | Commands a data heredoc may be fed to without being treated as a shell script. |
-| `git.jev_file` | `.anti-hall/jev.json` |  |  | Jev configuration file, relative to the home directory. |
-| `git.jev_settings` | `8 entries` |  |  | Names the Jev add-block consult is switched by: the global enable env var, the per-integration env var, the settings.json integration key and mode value. |
+| `git.jev_backstop_ms` | `500` |  | ms | Extra time Node's synchronous worker is allowed beyond the budget; counted in the total-time guard (Node: the +500 in the guard). |
+| `git.jev_budget_ms` | `1500` |  | ms | Time budget of one self-credit consult (Node: CONSULT_BUDGET_MS). |
+| `git.jev_consult_cap` | `8` |  |  | Most distinct texts one command may consult Jev about (Node: JEV_CONSULT_CAP). |
+| `git.jev_false` | `no AI self-credit of any kind` |  |  | The label for a false answer of the self-credit question. |
+| `git.jev_id` | `gitGuardSelfCredit` |  |  | The Jev integration id of the self-credit question (add-block trust). |
+| `git.jev_instructions` | `Does this commit message, or PR/issue/release body or title, credit an AI ass...` |  |  | The Noul question of the self-credit ask (byte-identical to the Node guard's). |
+| `git.jev_state_chars` | `4000` |  |  | How many UTF-16 units of a message the self-credit ask evaluates (Node: String(text).slice(0, 4000)). |
+| `git.jev_total_budget_ms` | `4000` |  | ms | Most time one command may spend on self-credit consults in total; past it a consult is skipped and the regex verdict stands (Node: JEV_TOTAL_BUDGET_MS). |
+| `git.jev_true` | `credits an AI assistant as author/co-author/contributor, in any phrasing` |  |  | The label for a true answer of the self-credit question. |
 | `git.label_allowed` | `Allowed here: ` |  |  | Label of the allowed-here line. |
 | `git.label_instead` | `Do instead: ` |  |  | Label of the remedy line. |
 | `git.label_override` | `Override (only if the user explicitly asked): ` |  |  | Label of the override line. |
@@ -891,11 +898,24 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `merge_gate.guard_name` | `merge-gate` |  |  | The guard id this check answers to in skip.json. |
 | `merge_gate.hedge_patterns` | `first[- ]pass, not pixel[- ]perfect` |  |  | Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output. |
 | `merge_gate.hedge_phrases` | `7 items` |  |  | Self-hedge phrases, matched case-insensitively as plain text in the recent assistant output. |
+| `merge_gate.injected_user` | `^\s*(<(task-notification\|system-reminder\|command-name\|command-message\|local-c...` |  |  | Regex source (case-insensitive) of the user-role bodies that are not a human typing (task notifications, system reminders, hook feedback, cross-session messages). |
+| `merge_gate.jev_false` | `no unresolved hedge` |  |  | The label for a false answer of the mergeGateHedge question. |
+| `merge_gate.jev_id` | `mergeGateHedge` |  |  | The Jev integration id of the shadow question asked when a hedge is found on a merge command. |
+| `merge_gate.jev_instructions` | `Does the recent reply text below contain an UNRESOLVED self-hedge (e.g. "pend...` |  |  | The Noul question text of the mergeGateHedge shadow ask (byte-identical to the Node gate's). |
+| `merge_gate.jev_state_chars` | `4000` |  |  | How many trailing UTF-16 units of the assistant text the mergeGateHedge ask evaluates (Node: text.slice(-4000)). |
+| `merge_gate.jev_true` | `unresolved hedge present` |  |  | The label for a true answer of the mergeGateHedge question. |
 | `merge_gate.merge_rules` | `2 entries, 3 entries, 4 entries, 2 entries, 2 entries` |  |  | The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target. |
+| `merge_gate.msg_instead` | `verify it against its agreed criterion or get owner sign-off, then merge.` |  |  | The block message's alternative. |
+| `merge_gate.msg_override` | `set ANTIHALL_MERGE_GATE=off, or skip merge-gate` |  |  | The block message's override line. |
+| `merge_gate.msg_what` | `auto-merge blocked: your recent output flagged a deliverable as pending/unver...` |  |  | The block message's first line; {hedge} is the last hedge phrase found. |
+| `merge_gate.msg_why` | `A self-issued hedge blocks auto-merge (false-done backstop).` |  |  | The block message's reason. |
+| `merge_gate.non_human_origins` | `human, user` |  |  | The origin kinds of a user record that still count as a human typing. |
 | `merge_gate.protected_target` | `^(main\|master\|develop\|origin\/(main\|master\|develop))$` |  |  | Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge. |
+| `merge_gate.resolutions` | `owner approved, owner signed off, sign-off received, fidelity verified, verif...` |  |  | Phrases that resolve a hedge when a REAL user prompt typed after the hedge contains one (case-insensitive plain text); the assistant can never clear its own hedge. |
 | `merge_gate.segment_split` | `&&\|\\|\\|\|[;&\|\n]` |  |  | Regex source that splits a Bash command into the segments the auto-merge scan looks at (shell separators; quotes are not honoured, on purpose, as in the Node gate). |
 | `merge_gate.setting` | `6 entries` |  |  | Where the opt-in switch is read from (guards.mergeGate, default off). |
-| `merge_gate.summary` | `Opt-in false-done backstop: answers every Bash call the Node merge-gate would...` |  |  | One-line description of the merge-gate check in the generated reference. |
+| `merge_gate.summary` | `Opt-in false-done backstop: answers every Bash call natively, including the b...` |  |  | One-line description of the merge-gate check in the generated reference. |
+| `merge_gate.system_reminder` | `<system-reminder>[\s\S]*?<\/system-reminder>` |  |  | Regex source (case-insensitive) of a system-reminder block, removed from a user prompt before it is judged. |
 | `merge_gate.window_bytes` | `131072` |  | bytes | How much of the end of the transcript is scanned for a self-hedge (the same bounded tail the Node gate reads). |
 
 ### small_guards.toml / merge_side_pick
@@ -1222,9 +1242,11 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.bool_false_tokens` | `0, off, false, no` |  |  | Words that read as false in an environment or settings value (Node: FALSE_TOKENS). |
 | `jev.bool_true_tokens` | `1, on, true, yes` |  |  | Words that read as true in an environment or settings value (Node: TRUE_TOKENS). |
 | `jev.breaker_cooldown_ms` | `300000` |  | ms | How long an open breaker skips its vendor before a probe is allowed (Node: BREAKER_COOLDOWN_MS). |
+| `jev.breaker_file` | `cache/jev-breaker.json` |  |  | The breaker state file, relative to the anti-hall home directory; the same file the Node hooks use, so both see one breaker (Node: jev-breaker.json under cache/). |
 | `jev.breaker_threshold` | `3` |  |  | Consecutive fallback-eligible failures that open a vendor's breaker (Node: BREAKER_THRESHOLD). |
 | `jev.cache_max_entries` | `500` |  |  | Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES). |
 | `jev.confidence_threshold` | `0.85` |  |  | Default minimum confidence for an answer to count as trusted, a decimal between 0 and 1 (Node: DEFAULT_CONFIDENCE_THRESHOLD). |
+| `jev.detached_args` | `jev, ask, --json` |  |  | The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does). |
 | `jev.drain_poll_ms` | `2` |  | ms | How often `drain` checks whether the asynchronous queue has emptied (tests and shutdown only). |
 | `jev.endpoint_typesafe` | `https://api.typesafe.ai/v1/systemone` |  |  | TypeSafe's own direct API endpoint (Node: TYPESAFE.endpoint). |
 | `jev.endpoint_vercel` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` |  |  | Vercel AI Gateway TypeSafe passthrough that serves the Jev system-one API (Node: jev-client.js GATEWAY.endpoint). |
@@ -1237,12 +1259,13 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.key_file_roots` | `.config, .anti-hall` |  |  | Directories under the home directory a key file must really live in once symlinks are resolved (Node: readKeyFile). |
 | `jev.key_file_typesafe` | `.config/typesafe/key` |  |  | Default key file for the TypeSafe vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
 | `jev.key_file_vercel` | `.config/vercel/ai-gateway-key` |  |  | Default key file for the Vercel vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
+| `jev.lane_cap` | `8` |  |  | How many home directories keep a resident Jev lane at once (one per user in practice; the oldest is dropped past the cap). |
 | `jev.legacy_file` | `jev.json` |  |  | The legacy Jev config file, relative to the anti-hall home directory, read below settings.json (Node: jev.json). |
 | `jev.legacy_on_default` | `speculation, triage` |  |  | Integrations that predate the per-integration modes and stay on by default; consulted only for an id missing from the table (Node: LEGACY_ON_DEFAULT). |
 | `jev.legacy_triage_key` | `triage` |  |  | Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off. |
 | `jev.log_file` | `logs/jev-assist.ndjson` |  |  | The decision log, relative to the anti-hall home directory, in the row shape the Node jev report reads (Node: logs/jev-assist.ndjson). |
 | `jev.log_max_bytes` | `2097152` |  | bytes | Size at which the decision log rotates (Node: DECISION_LOG_MAX_BYTES). |
-| `jev.log_off_rows` | `0` |  |  | 1 also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does; 0 (default) writes nothing and does no I/O at all for such a call, so a disabled Jev costs the hot path nothing. |
+| `jev.log_off_rows` | `1` |  |  | 1 (default) also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does, so the `jev report` call-volume view is unchanged by the move to the engine; 0 writes nothing and does no I/O at all for such a call. |
 | `jev.log_rotated_files` | `10` |  |  | Rotated generations kept, .1 to .N (Node: the jev.logRotatedFiles setting). |
 | `jev.max_response_bytes` | `1048576` |  | bytes | Largest response body read from a vendor; a longer one is treated as unparsable, so a misbehaving endpoint cannot grow the daemon's memory (D15). |
 | `jev.max_timeout_ms` | `3000` |  | ms | Hard ceiling on any configured or per-call timeout, so a Jev call can never outlast the hook that asked (Node: MAX_TIMEOUT_MS). |
@@ -1256,6 +1279,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.settings_file` | `settings.json` |  |  | The unified settings file, relative to the anti-hall home directory (Node: settings.json). |
 | `jev.settings_recheck_ms` | `2000` |  | ms | How often the settings files are re-checked for changes: at most one stat of each of the two files per window, taken by the first call after it elapses; between checks a call costs one clock read, so an off Jev stays off the hot path. |
 | `jev.timeout_ms` | `1500` |  | ms | Per-call time budget for one Jev call, request, headers and body together (Node: DEFAULT_TIMEOUT_MS). |
+| `jev.turn_ref_window_bytes` | `65536` |  | bytes | How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript). |
 | `jev.unlisted_mode` | `shadow` |  |  | Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones). |
 
 ### dispatch.toml / dispatch
@@ -1734,7 +1758,10 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `claim_ledger.dir` | `claim-ledger` |  |  | Directory of the ledger files under the state directory. |
 | `claim_ledger.event` | `Stop` |  |  | The only event this check answers. |
 | `claim_ledger.guard_name` | `claim-ledger` |  |  | The guard id this check answers to in skip.json. |
+| `claim_ledger.jev_false` | `supported by evidence` |  |  | The label for a false answer of the claimLedger question. |
 | `claim_ledger.jev_id` | `claimLedger` |  |  | The Jev integration id of the shadow question asked for each flagged claim. |
+| `claim_ledger.jev_instructions` | `Is this claim unsupported by evidence in the message (no matching value/SHA/s...` |  |  | The Noul question text of the claimLedger shadow ask (byte-identical to the Node hook's). |
+| `claim_ledger.jev_true` | `unsupported by evidence` |  |  | The label for a true answer of the claimLedger question. |
 | `claim_ledger.kind_count` | `count` |  |  | The kind of a flag for a count with a unit noun. |
 | `claim_ledger.kind_days_ago` | `days-ago` |  |  | The kind of a flag for an N days ago claim. |
 | `claim_ledger.kind_sha` | `sha` |  |  | The kind of a flag for a git SHA. |
@@ -1773,7 +1800,11 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `output_verify.exit_fields` | `exit_code, exitCode, exit_status, exitStatus` |  |  | The fields of an object tool response that may hold the exit code, in the order they are tried. |
 | `output_verify.fail_patterns` | `10 items` |  |  | The failing signals, in the order they are tried: regex source, case-insensitive flag, and whether it must start a line. |
 | `output_verify.guard_name` | `output-verify-guard` |  |  | The guard id this check answers to in skip.json, in messages and as the once-per-turn key. |
+| `output_verify.jev_false` | `not a genuine mixed result` |  |  | The label for a false answer of the outputVerifyGuard question. |
 | `output_verify.jev_id` | `outputVerifyGuard` |  |  | The Jev integration id of the shadow question asked for each test-runner output. |
+| `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
+| `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
+| `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
 | `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
@@ -1835,22 +1866,43 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `speculation_guard.curly_single_re` | `‘[^‘’\n]*’` |  |  | Regex source of a curly single-quoted span. |
 | `speculation_guard.event` | `Stop` |  |  | The only event this check answers. |
 | `speculation_guard.fence_line_re` | `^[ \t]{0,3}(`{3,}\|~{3,})` |  |  | Regex source of a code fence line; the first group is the fence marker. |
+| `speculation_guard.frame_heading` | `^\s*#{1,6}\s+(.+?)\s*#*\s*$` |  |  | Regex source of a markdown heading line; group 1 is its text. |
+| `speculation_guard.frame_heading_label` | `^LABEL\b` |  |  | Regex source (case-insensitive) a heading's text must start with to frame what is under it (the token LABEL is replaced by frame_label). |
+| `speculation_guard.frame_inline` | `\(unverified\)\|\bnot yet measured\b` |  |  | Regex source (case-insensitive) of an inline frame on the hit's own line. |
+| `speculation_guard.frame_label` | `(?:expected\|plan\|should\s+be\s+\w+\|should\s+still(?:\s+\w+)?\|unverified\|not\s...` |  |  | Regex source of the labels that frame a hedge as an expectation or a plan (Node: FRAME_LABEL_CORE). |
+| `speculation_guard.frame_line_prefix` | `^\s*(?:(?:[-*+\u2022]\|\d+[.)])\s+)?LABEL\s*[:)]` |  |  | Regex source of a line that starts with a frame label, with an optional list marker (the token LABEL is replaced by frame_label); case-insensitive. |
+| `speculation_guard.framed_false` | `Genuine expectation/plan: a test-plan entry, acceptance criterion, or hypothe...` |  |  | The label for a false answer of the framed-expectation question. |
+| `speculation_guard.framed_instructions` | `This hedge sits under a heading or line labelled as a plan/expectation (e.g. ...` |  |  | The Noul question of the framed-expectation ask (byte-identical to the Node hook's FRAMED_JEV_QUESTION). |
+| `speculation_guard.framed_true` | `Unverified claim presented as fact: despite the label, it asserts what IS tru...` |  |  | The label for a true answer of the framed-expectation question. |
 | `speculation_guard.guard_name` | `speculation-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
 | `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node. |
+| `speculation_guard.jev_false` | `Not speculative: it reports what a tool actually showed (command output such ...` |  |  | The label for a false answer of the speculation question. |
+| `speculation_guard.jev_framed_id` | `speculationFramed` |  |  | The Jev integration id of the framed-expectation question (relax-block trust). |
+| `speculation_guard.jev_id` | `speculation` |  |  | The Jev integration id of the speculation question (add-block trust). |
+| `speculation_guard.jev_instructions` | `Is this assistant message speculative, i.e. does it assert a cause or an outc...` |  |  | The Noul question of the speculation ask (byte-identical to the Node hook's JEV_QUESTION). |
+| `speculation_guard.jev_state_chars` | `8000` |  |  | How many UTF-16 units of the reply the two Jev asks evaluate (Node: jevText.slice(0, 8000)). |
+| `speculation_guard.jev_true` | `Speculative: it asserts a cause, a fix, or a done/works/passes/resolved outco...` |  |  | The label for a true answer of the speculation question. |
+| `speculation_guard.judge_log` | `logs/jev-judge.ndjson` |  |  | The speculation guard's own Jev decision log, relative to the anti-hall home directory (Node: logs/jev-judge.ndjson); holds no message text and no key. |
+| `speculation_guard.judge_log_max_bytes` | `1048576` |  | bytes | The judge log is emptied before an append once it is larger than this (Node: JEV_LOG_MAX_BYTES). |
 | `speculation_guard.markers` | `15 items` |  |  | Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried. |
 | `speculation_guard.max_blocks` | `3` |  |  | Most blocks per session: after this many the guard stays quiet whatever the reply says (the text changes as the model reworks it, which defeats the per-text dedupe). |
 | `speculation_guard.modal_markers` | `must be, should be` |  |  | Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own. |
 | `speculation_guard.msg_instead` | `verify it with a tool, or say what is unverified ('I don't know, here is what...` |  |  | Block advice. |
 | `speculation_guard.msg_what` | `your reply states something speculative ('{marker}') without verifying it or ...` |  |  | Block headline; {marker} is the hedge found. |
+| `speculation_guard.msg_what_jev` | `your reply asserts a cause or outcome without citing evidence (command output...` |  |  | Block headline when Jev added the block. |
 | `speculation_guard.msg_why` | `Unverified claims read as facts.` |  |  | Block reason. |
 | `speculation_guard.obligation_re` | `^\s+(measured\|verified\|tested\|checked\|reviewed\|documented\|validated\|approved\|...` |  |  | Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess. |
 | `speculation_guard.obligation_window` | `40` |  |  | How many UTF-16 units after a must-be or should-be are read for the obligation word. |
+| `speculation_guard.outcome_evidence` | `evidence-added` |  |  | Outcome recorded for the previous block when this reply carries an acknowledgment. |
+| `speculation_guard.outcome_override` | `user-override` |  |  | Outcome recorded for the previous block when the user skipped the guard. |
+| `speculation_guard.outcome_repeat` | `repeat-speculation` |  |  | Outcome recorded for the previous block when this reply hedges again. |
 | `speculation_guard.prune_prefix` | `speculation-guard-state` |  |  | Prefix of the stale-file sweep of the per-session state files. |
 | `speculation_guard.quote_char` | `"` |  |  | The straight double quote that pairs within one line. |
 | `speculation_guard.quote_line_re` | `^[ \t]{0,3}>` |  |  | Regex source of a blockquote line (up to three spaces of indent, then a greater-than sign). |
 | `speculation_guard.quote_separators` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Where a blockquote line turns from the quoted material to the session's own words (an em dash, a double hyphen between spaces, a semicolon or comma then so); the earliest wins. |
 | `speculation_guard.requirement_line_re` | `^\s*(?:(?:[-*+•]\|\d+[.)])\s+)?(?:requirement\|acceptance(?:\s+criteria)?\|ac\|sp...` |  |  | Regex source (case-insensitive) of a line that starts with an explicit requirement label, after an optional list bullet. |
 | `speculation_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.speculationGuard, default on). |
+| `speculation_guard.source_jev` | `jev` |  |  | The source recorded in the pending outcome of a block Jev added. |
 | `speculation_guard.source_regex` | `regex` |  |  | The source recorded in the pending outcome of a block this check made (the Node hook reads it when it reports the outcome). |
 | `speculation_guard.state_prefix` | `speculation-guard-state-` |  |  | Prefix of the per-session state file name under the state directory (the sanitised session id and the JSON extension follow). |
 | `speculation_guard.straight_re` | `"[^"\n]*"` |  |  | Regex source of a straight-quoted span inside one line. |
@@ -2644,11 +2696,14 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.tel_no_db` | The telemetry rollup cannot run: storage did not open. |
 | `git.msg_commit_credit` | Block: an inline commit message with an AI self-credit. |
 | `git.msg_commit_file_credit` | Block: a commit message read from a file or heredoc with an AI self-credit. |
+| `git.msg_commit_file_jev` | Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased). |
+| `git.msg_commit_jev` | Block: Jev judged an inline commit message to credit an AI assistant (paraphrased). |
 | `git.msg_creating_credit` | Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}. |
 | `git.msg_delete_ref` | Block: remote ref deletion. Placeholder: {skip}. |
 | `git.msg_find_push` | Block: a push through find -exec. |
 | `git.msg_force_push` | Block: a force push. |
 | `git.msg_gh_credit` | Block: a gh pr, issue or release body or title carries an AI self-credit. |
+| `git.msg_gh_jev` | Block: Jev judged a gh body or title to credit an AI assistant (paraphrased). |
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |

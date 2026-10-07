@@ -376,7 +376,7 @@ value = "1"
 
 [claim_ledger.summary]
 doc = "One-line description of the claim-ledger check in the generated reference."
-value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; leaves the optional Jev shadow question to Node (port of claim-ledger.js)."
+value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js)."
 
 [claim_ledger.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -516,7 +516,7 @@ value = '\d[\d,]*(?:\.\d+)?'
 
 [output_verify.summary]
 doc = "One-line description of the output-verify-guard check in the generated reference."
-value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; leaves the optional Jev shadow question to Node (port of output-verify-guard.js)."
+value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js)."
 
 [output_verify.guard_name]
 doc = "The guard id this check answers to in skip.json, in messages and as the once-per-turn key."

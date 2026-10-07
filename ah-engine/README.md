@@ -121,8 +121,10 @@ exit 2 with the reason on stderr, as in Node; the handover-budget advisory is a 
 the Node function it mirrors in its doc comment.
 
 Deliberate differences from the Node guard:
-- The Jev add-block consult is not performed. Only mode `on` with Jev enabled can change a verdict, so then the check
-  defers: the daemon replies ERR and the client runs the Node hook.
+- The Jev add-block consult (`gitGuardSelfCredit`) is performed as Node performs it, at the same three places (inline
+  `-m` messages, `-F` files and heredocs, `gh` bodies), after the regex scan found nothing: synchronous, a 1500 ms budget,
+  memoised per text, at most eight distinct texts and four seconds per command. Only mode `on` can add a block; the default
+  `shadow` logs the ask and never changes the verdict. A message window that would cut a surrogate pair defers.
 - A payload `serde_json` rejects but JS accepts (a lone surrogate escape) gets the same deferral.
 - Pathological nesting (more than 1500 levels) and any panic also defer; the check runs on a 64 MB-stack thread.
 - The PostToolUse `--audit` pass is the separate `git-audit` check (below). Plugin options stored in Claude's own settings are not read, only the
@@ -192,11 +194,10 @@ Deliberate differences from the Node guard:
   `cwd`, a date that depends on the time zone, a `.git` file in an unusual shape, JSON with a lone surrogate escape, a git
   probe slower than `session.gitignore_probe_ms`). A deferral always comes before the first write, so Node then sees the
   state it would have seen. Switches and the home directory come from the client's forwarded environment (D76).
-- `merge-gate` (opt-in, `guards.mergeGate`): decided here only where Node exits 0 with no output and no side effect: the
-  gate is off or skipped, the command is not an auto-merge intent, the payload has no absolute transcript path, the
-  transcript cannot be read, or no hedge phrase occurs anywhere in the recent assistant text (Node tests the quote-masked
-  text, which only blanks characters). A hedge phrase, a transcript line the engine cannot parse and a relative transcript
-  path defer: the block, its quote mask and resolution scan, and the fire-and-forget Jev shadow ask stay with Node.
+- `merge-gate` (opt-in, `guards.mergeGate`): decided entirely here: the records of the transcript tail, the quote mask, the
+  hedge and its resolution by a real typed user prompt, the block, and the `mergeGateHedge` Jev shadow ask (asked on the
+  shared Jev lane without waiting). A relative transcript path, a transcript line the engine cannot parse and an ask window
+  that would cut a surrogate pair defer.
 - `api-guard`: decided here only where Node reaches no interpreter probe: the guard or skip switch, a tool that carries no
   code, a target that is not a Python or JavaScript file (by extension, as Node), and code in which no candidate can exist
   (a conservative superset of Node's candidate extraction: no `import` word or no stdlib module name in Python, no global
