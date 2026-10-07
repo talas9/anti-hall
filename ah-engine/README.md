@@ -22,6 +22,7 @@ never a submodule (D69).
 | `src/health.rs`, `src/limits.rs`, `src/paths.rs`, `src/config.rs` | breaker, crash loop, advisory, resource caps, locations, limits |
 | `src/cfgstore.rs` | config layering (env, `settings.json`, `config.toml`, defaults), file watching, atomic hot-swap, `config` command data (D18) |
 | `src/checks/` | the `Check` trait and registry; `checks/git/` is the git-guard port (tokenizer, segments, aliases, heredoc, runners, launcher) |
+| `src/checks/replykit/` | what the four response-correctness checks share (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`): JavaScript-faithful JSON, the transcript tail reader, the once-per-turn gate, the stale-state sweep; tables in `defaults/response_guards.toml` |
 | `src/dispatch/` | the per-event dispatcher (D58): the table and host matcher rules, running Node hooks at once, the built-in checks, combining results as the host would |
 | `src/rules.rs`, `src/hookio.rs` | the rules format (JSON) and hook payload to output translation |
 | `src/telemetry/`, `src/metrics.rs`, `src/impact.rs`, `src/storage.rs` | metrics, the impact ledger, the lock-free telemetry recorder (`recorder`), its event schema, flush, rollups, routing join and NET savings, and reports (D78, D77), and the `Store` trait with its SQLite and in-memory stores |
