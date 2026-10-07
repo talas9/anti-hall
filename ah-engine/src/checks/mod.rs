@@ -154,6 +154,11 @@ pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value
     if env.is_incomplete() {
         return Some(Verdict::Defer);
     }
+    // a settings file only JavaScript can parse (a number like 1e400, nesting past 128) is not "missing": defer to Node
+    let home = env.get(crate::defaults::env_name("home")).or_else(|| env.get(crate::defaults::env_name("home_alt"))).unwrap_or_default();
+    if guardkit::settings::unreadable_settings_file(home) {
+        return Some(Verdict::Defer);
+    }
     check.run_env(subject, payload, opts, env)
 }
 
@@ -311,6 +316,47 @@ pub fn cli_main(name: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review P0 (D74): a settings file that exists but that serde cannot parse while JavaScript can (`1e400` is `Infinity`; nesting
+    /// past 128) was read as missing, so an opt-in block mode was ignored and the engine allowed where Node blocks. Every check now
+    /// defers; a file both parsers reject is missing for both and changes nothing.
+    #[test]
+    fn a_settings_file_only_javascript_can_parse_defers_every_check() {
+        let home = std::env::temp_dir().join(format!("ah-badsettings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+        let h = home.to_string_lossy().to_string();
+        let env = RequestEnv::from_pairs([("HOME", h.as_str())]);
+        let payload = serde_json::json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"header": "DESTRUCTIVE", "question": "q"}]}});
+        let null = Value::Null;
+        let subject = Subject { event: "PreToolUse", tool: Some("AskUserQuestion"), cwd: None, tool_input: &null, prompt: None };
+        let run = || run_env_guarded(&ask_guard::AskGuard, &subject, &payload, &Value::Null, &env);
+        let write = |text: &str| std::fs::write(home.join(".anti-hall/settings.json"), text).unwrap();
+        // the baseline: a readable file with the block mode on is answered, not deferred
+        write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
+        assert_ne!(run(), Some(Verdict::Defer), "a readable settings file is answered by the check");
+        // a number beyond f64 (JavaScript: Infinity)
+        write(r#"{"guards":{"noBlockingQuestions":"block"},"x":1e400}"#);
+        assert_eq!(run(), Some(Verdict::Defer), "1e400");
+        // nesting past serde's recursion limit
+        write(&format!(r#"{{"guards":{{"noBlockingQuestions":"block"}},"deep":{}1{}}}"#, "[".repeat(200), "]".repeat(200)));
+        assert_eq!(run(), Some(Verdict::Defer), "depth 200");
+        // a lone surrogate escape
+        write(r#"{"guards":{"noBlockingQuestions":"block"},"s":"\ud800"}"#);
+        assert_eq!(run(), Some(Verdict::Defer), "lone surrogate");
+        // text both parsers reject is a missing file for both: the check answers (with the defaults)
+        write("{oops");
+        assert_ne!(run(), Some(Verdict::Defer), "a syntax error is missing for Node too");
+        // the host's settings file and the skip file are read by the same chain
+        write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), r#"{"pluginConfigs":{"a":{"n":1e999}}}"#).unwrap();
+        assert_eq!(run(), Some(Verdict::Defer), "~/.claude/settings.json");
+        std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
+        std::fs::write(home.join(".anti-hall/skip.json"), r#"{"ask-guard":1e999}"#).unwrap();
+        assert_eq!(run(), Some(Verdict::Defer), "skip.json");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// Expected values computed with Node: `io.blockDecision(reason)` from `hooks/lib/guard-io.js`.
     #[test]
