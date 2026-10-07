@@ -32,10 +32,7 @@ mod tests;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Defer;
 
-/// `crypto.createHash('sha1').update(bytes).digest('hex')`.
-pub fn sha1_hex(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, bytes).as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use crate::checks::jsport::text::sha1_hex;
 
 /// What `shouldEmit` is asked.
 pub struct Opts<'a> {

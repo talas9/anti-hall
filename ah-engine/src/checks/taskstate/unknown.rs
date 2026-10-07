@@ -4,14 +4,10 @@ use super::TaskMap;
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::taskkit::jsval::{R, Unsure, number_of_str, scalar_string, truthy};
 use crate::defaults;
-use ring::digest;
 use serde_json::Value;
 use std::path::Path;
 
-/// `sha1(text)` as lowercase hex.
-pub fn sha1_hex(text: &[u8]) -> String {
-    digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, text).as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use crate::checks::jsport::text::sha1_hex;
 
 /// `unknownOf(taskMap)`: tasks whose status is unknown, and open tasks whose block state could not be established.
 pub fn unknown_ids(tasks: &TaskMap) -> Vec<String> {

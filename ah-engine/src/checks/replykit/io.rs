@@ -35,10 +35,7 @@ pub fn split_lines(data: &str) -> Vec<&str> {
     data.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect()
 }
 
-/// The lowercase hex SHA-1 of the UTF-8 bytes of `s` (`crypto.createHash('sha1').update(s).digest('hex')`).
-pub fn sha1_hex(s: &str) -> String {
-    ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, s.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use crate::checks::jsport::text::sha1_hex;
 
 /// The home directory of this request (`os.homedir()` is `$HOME` first); `None` when the request carries none, in which
 /// case the caller defers: the Node hook would ask the system for a home the engine cannot see.

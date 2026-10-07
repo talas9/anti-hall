@@ -78,8 +78,10 @@ pub fn sanitize_session(raw: &str, unknown: &str) -> String {
 }
 
 /// Lowercase hexadecimal SHA-1 of `data` (`crypto.createHash('sha1')`); the hooks use it for non-secret identifiers only.
-pub fn sha1_hex(data: &[u8]) -> String {
-    let d = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, data);
+///
+/// The single copy in the engine; every other module re-exports or calls this one.
+pub fn sha1_hex(data: impl AsRef<[u8]>) -> String {
+    let d = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, data.as_ref());
     d.as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 

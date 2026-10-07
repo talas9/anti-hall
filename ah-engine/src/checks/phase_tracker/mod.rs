@@ -53,11 +53,7 @@ pub fn js_parse_int(s: &str) -> Option<f64> {
     n.is_finite().then_some(n)
 }
 
-/// The SHA-1 of `s` as lower-case hex.
-fn sha1_hex(s: &str) -> String {
-    let d = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, s.as_bytes());
-    d.as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
+use crate::checks::jsport::text::sha1_hex;
 
 /// `sessionTag(payload)`: the session id, else a short hash of the working directory, else `unknown`, reduced to letters,
 /// digits, `_` and `-` and cut to the tag length. `None` when the working directory is not a string (defer).
