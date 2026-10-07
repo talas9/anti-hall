@@ -34,17 +34,29 @@ struct Case {
     /// (path relative to the home, content); `{HOME}`, `{NOW}` and `{NOW-<ms>}` are replaced.
     files: Vec<(String, String)>,
     expect: Expect,
+    /// A deferral row where Node must visibly act (print or change a file): proves the deferral is not a lost optimization.
+    acts: bool,
+    /// Do not run the Node hook (it would start a detached repair process); the row only proves the engine defers.
+    skip_node: bool,
 }
 
 impl Case {
     fn new(name: &str, input: impl Into<String>, expect: Expect) -> Case {
-        Case { name: name.into(), input: input.into(), env: Vec::new(), files: Vec::new(), expect }
+        Case { name: name.into(), input: input.into(), env: Vec::new(), files: Vec::new(), expect, acts: false, skip_node: false }
     }
     fn json(name: &str, v: Value, expect: Expect) -> Case {
         Case::new(name, serde_json::to_string(&v).unwrap(), expect)
     }
     fn env(mut self, k: &str, v: &str) -> Case {
         self.env.push((k.into(), v.into()));
+        self
+    }
+    fn acts(mut self) -> Case {
+        self.acts = true;
+        self
+    }
+    fn skip_node(mut self) -> Case {
+        self.skip_node = true;
         self
     }
     fn file(mut self, rel: &str, content: &str) -> Case {
@@ -68,8 +80,13 @@ fn temp_home(tag: &str) -> PathBuf {
     d
 }
 
+fn plugin_version() -> String {
+    let t = std::fs::read_to_string(repo().join("plugins/anti-hall/.claude-plugin/plugin.json")).unwrap();
+    serde_json::from_str::<Value>(&t).unwrap()["version"].as_str().unwrap().to_string()
+}
+
 fn template(s: &str, home: &Path, now: u128) -> String {
-    let mut out = s.replace("{HOME}", &home.to_string_lossy()).replace("{NOW}", &now.to_string());
+    let mut out = s.replace("{HOME}", &home.to_string_lossy()).replace("{NOW}", &now.to_string()).replace("{V}", &plugin_version());
     while let Some(i) = out.find("{NOW-") {
         let j = out[i..].find('}').unwrap() + i;
         let n: u128 = out[i + 5..j].parse().unwrap();
@@ -205,7 +222,7 @@ fn check_rows(hook: &str, check: &str, rows: Vec<Case>) -> (usize, usize) {
         setup(&nh, case, now);
         setup(&rh, case, now);
         let started = now_ms();
-        let node = unhome(run_node(hook, &nh, case), &nh);
+        let node = if case.skip_node { (0, Vec::new(), Vec::new()) } else { unhome(run_node(hook, &nh, case), &nh) };
         let node_snap = snapshot(&nh, started);
         let eng = unhome(run_engine(check, &rh, case), &rh);
         let eng_snap = snapshot(&rh, started);
@@ -216,6 +233,8 @@ fn check_rows(hook: &str, check: &str, rows: Vec<Case>) -> (usize, usize) {
                     bad.push(format!("{}: expected the engine to defer, got {}", case.name, show(&eng)));
                 } else if eng_snap != BTreeMap::from_iter(setup_snapshot(&case.files, &rh, now)) {
                     bad.push(format!("{}: a deferral must leave the home untouched, got {eng_snap:?}", case.name));
+                } else if case.acts && node.1.is_empty() && node_snap == BTreeMap::from_iter(setup_snapshot(&case.files, &nh, now)) {
+                    bad.push(format!("{}: marked as a row where Node acts, but Node printed and wrote nothing", case.name));
                 } else {
                     deferred += 1;
                 }
@@ -491,4 +510,261 @@ fn swarm_guard_matches_node() {
     // the same rows drive both tools: `swarm-guard.js` is registered for Agent and for Task
     let (same, deferred) = check_rows("swarm-guard.js", "swarm-guard", rows);
     assert!(same >= 30 && deferred >= 5);
+}
+
+// ---- jev-weekly-scorecard ------------------------------------------------------------------------------------
+
+fn session_start() -> Value {
+    json!({"hook_event_name":"SessionStart","session_id":"s","cwd":"/tmp","source":"startup"})
+}
+
+const DAY: u64 = 86_400_000;
+
+fn weekly_cases() -> Vec<Case> {
+    let ex = Expect::Same;
+    let df = Expect::Defer;
+    let on = |c: Case| c.file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#);
+    let latch = |age: u64| format!(r#"{{"lastCheckedTs":{{NOW-{age}}}}}"#);
+    let l = ".anti-hall/state/jev-weekly-notice.json";
+    vec![
+        Case::json("jev-off-by-default", session_start(), ex),
+        Case::json("jev-off-explicit", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#),
+        on(Case::json("on-no-latch-defers", session_start(), df).acts()),
+        on(Case::json("on-latch-yesterday-silent", session_start(), ex).file(l, &latch(DAY))),
+        on(Case::json("on-latch-six-days-silent", session_start(), ex).file(l, &latch(6 * DAY))),
+        on(Case::json("on-latch-eight-days-defers", session_start(), df).acts().file(l, &latch(8 * DAY))),
+        on(Case::json("on-latch-in-the-future-silent", session_start(), ex).file(l, r#"{"lastCheckedTs":{NOW}0}"#.replace("{NOW}0", "99999999999999").as_str())),
+        on(Case::json("on-latch-garbage-defers", session_start(), df).acts().file(l, "{torn")),
+        on(Case::json("on-latch-string-ts-defers", session_start(), df).acts().file(l, r#"{"lastCheckedTs":"x"}"#)),
+        on(Case::json("on-latch-array-defers", session_start(), df).acts().file(l, "[1]")),
+        on(Case::json("on-latch-null-defers", session_start(), df).acts().file(l, "null")),
+        Case::json("on-by-env", session_start(), df).acts().env("ANTIHALL_JEV", "1"),
+        Case::json("env-off-beats-settings-on", session_start(), ex).env("ANTIHALL_JEV", "0").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#),
+        Case::json("on-by-legacy-file", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"enabled":true}"#),
+        Case::json("on-by-legacy-file-string", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"enabled":"yes"}"#),
+        Case::json("legacy-file-off", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":false}"#),
+        Case::json("legacy-file-corrupt", session_start(), ex).file(".anti-hall/jev.json", "{torn"),
+        Case::json("settings-off-beats-legacy-on", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":true}"#).file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#),
+        Case::json("on-by-plugin-option", session_start(), df).acts().env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
+        Case::json("plugin-option-default-ignored", session_start(), ex).env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "false"),
+        Case::json("plugin-option-default-never-masks-legacy-on", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"enabled":true}"#).env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "false"),
+        Case::json("unstamped-legacy-off-beats-plugin-option-on", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":false}"#).env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
+        Case::json("stamped-plugin-option-on-beats-legacy-off", session_start(), df)
+            .acts()
+            .file(".anti-hall/jev.json", r#"{"enabled":false}"#)
+            .file(".anti-hall/update-sweep-state.json", r#"{"migrateSettingsFromLegacy":{"completedVersion":"{V}"}}"#)
+            .env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
+        Case::json("stamped-at-other-version-still-legacy-first", session_start(), ex)
+            .file(".anti-hall/jev.json", r#"{"enabled":false}"#)
+            .file(".anti-hall/update-sweep-state.json", r#"{"migrateSettingsFromLegacy":{"completedVersion":"0.0.1"}}"#)
+            .env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
+        Case::json("notice-off-settings", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"enabled":true,"weeklyNotice":false}}"#),
+        on(Case::json("notice-off-legacy-file", session_start(), ex).file(".anti-hall/jev.json", r#"{"weeklyNotice":false}"#)),
+        on(Case::json("notice-off-plugin-option", session_start(), ex).env("CLAUDE_PLUGIN_OPTION_JEV_WEEKLY_NOTICE", "false")),
+        on(Case::json("notice-garbage-stays-on", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"weeklyNotice":"maybe"}"#)),
+        on(Case::json("child-workspace-silent", session_start(), ex).env("DEVSWARM_SOURCE_BRANCH", "feature/x")),
+        on(Case::json("child-env-blank-defers", session_start(), df).acts().env("DEVSWARM_SOURCE_BRANCH", "   ")),
+        on(Case::json("judge-child-silent", session_start(), ex).env("ANTIHALL_JUDGE_CHILD", "1")),
+        on(Case::json("judge-child-other-value-defers", session_start(), df).acts().env("ANTIHALL_JUDGE_CHILD", "0")),
+        on(Case::new("empty-stdin-defers", "", df)),
+        on(Case::new("garbage-stdin-defers", "{nope", df)),
+        on(Case::new("payload-null-defers", "null", df).acts()),
+        on(Case::json("payload-other-event-name", json!({"hook_event_name":"Other"}), df).acts()),
+    ]
+}
+
+#[test]
+fn jev_weekly_scorecard_matches_node() {
+    let rows = weekly_cases();
+    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    let (same, deferred) = check_rows("jev-weekly-scorecard.js", "jev-weekly-scorecard", rows);
+    assert!(same >= 14 && deferred >= 14);
+}
+
+// ---- jev-review-reminder -------------------------------------------------------------------------------------
+
+fn review_cases() -> Vec<Case> {
+    let ex = Expect::Same;
+    let df = Expect::Defer;
+    let l = ".anti-hall/state/jev-recommend-notice.json";
+    let shown = |age: u64| format!(r#"{{"lastShownTs":{{NOW-{age}}}}}"#);
+    let sub = |k: &str, v: Value| {
+        let mut p = session_start();
+        p[k] = v;
+        p
+    };
+    vec![
+        Case::json("first-run-recommend-due", session_start(), df).acts(),
+        Case::json("shown-yesterday-silent", session_start(), ex).file(l, &shown(DAY)),
+        Case::json("shown-29-days-silent", session_start(), ex).file(l, &shown(29 * DAY)),
+        Case::json("shown-31-days-due", session_start(), df).acts().file(l, &shown(31 * DAY)),
+        Case::json("shown-in-the-future-due", session_start(), df).acts().file(l, r#"{"lastShownTs":99999999999999}"#),
+        Case::json("latch-zero-due", session_start(), df).acts().file(l, r#"{"lastShownTs":0}"#),
+        Case::json("latch-garbage-due", session_start(), df).acts().file(l, "{torn"),
+        Case::json("latch-string-due", session_start(), df).acts().file(l, r#"{"lastShownTs":"x"}"#),
+        Case::json("recommend-off-settings", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"recommendNotice":false}}"#),
+        Case::json("recommend-off-env", session_start(), ex).env("ANTIHALL_JEV_RECOMMEND_NOTICE", "off"),
+        Case::json("recommend-off-plugin-option", session_start(), ex).env("CLAUDE_PLUGIN_OPTION_JEV_RECOMMEND_NOTICE", "false"),
+        Case::json("recommend-garbage-stays-on", session_start(), df).acts().file(".anti-hall/settings.json", r#"{"jev":{"recommendNotice":"perhaps"}}"#),
+        Case::json("jev-on-defers", session_start(), df).file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#),
+        Case::json("jev-on-legacy-defers", session_start(), df).file(".anti-hall/jev.json", r#"{"enabled":true}"#),
+        Case::json("jev-on-env-defers", session_start(), df).env("ANTIHALL_JEV", "1"),
+        Case::json("jev-on-but-recent-latch-still-defers", session_start(), df).env("ANTIHALL_JEV", "1").file(l, &shown(DAY)),
+        Case::json("semantic-judge-on-defers", session_start(), df).file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#).file(l, &shown(DAY)),
+        Case::json("semantic-judge-env-defers", session_start(), df).env("ANTIHALL_SEMANTIC_JUDGE", "1").file(l, &shown(DAY)),
+        Case::json("jev-explicitly-off-recent-latch-silent", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#).file(l, &shown(DAY)),
+        Case::json("subagent-agent-id", sub("agent_id", json!("a1")), ex),
+        Case::json("subagent-agent-type", sub("agent_type", json!("Explore")), ex),
+        Case::json("subagent-sidechain", sub("isSidechain", json!(true)), ex),
+        Case::json("subagent-sidechain-snake", sub("is_sidechain", json!(true)), ex),
+        Case::json("sidechain-string-is-not-subagent", sub("isSidechain", json!("true")), df).acts(),
+        Case::json("agent-id-empty-string-is-not-subagent", sub("agent_id", json!("")), df).acts(),
+        Case::json("agent-id-null-is-not-subagent", sub("agent_id", Value::Null), df).acts(),
+        Case::json("agent-id-zero-is-not-subagent", sub("agent_id", json!(0)), df).acts(),
+        Case::json("headless-defers", session_start(), df).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
+        Case::json("headless-model-only-is-not-codex", sub("model", json!("gpt-5")), df).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
+        Case::json("headless-codex-recent-latch-silent", sub("model", json!("gpt-5")).as_object().map(|o| { let mut o = o.clone(); o.insert("turn_id".into(), json!("t1")); Value::Object(o) }).unwrap(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
+        Case::json("interactive-entrypoint-recent-latch-silent", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "cli").file(l, &shown(DAY)),
+        Case::json("judge-child-silent", session_start(), ex).env("ANTIHALL_JUDGE_CHILD", "1"),
+        Case::new("empty-stdin-defers", "", df),
+        Case::new("garbage-stdin-defers", "{nope", df),
+        Case::new("payload-null", "null", df).acts(),
+        Case::json("payload-array", json!([1]), df).acts(),
+    ]
+}
+
+#[test]
+fn jev_review_reminder_matches_node() {
+    let rows = review_cases();
+    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    let (same, deferred) = check_rows("jev-review-reminder.js", "jev-review-reminder", rows);
+    assert!(same >= 10 && deferred >= 14);
+}
+
+// ---- repair-on-reload ----------------------------------------------------------------------------------------
+
+const MIGRATION_KEYS: [&str; 11] = [
+    "mergeSplitBackendStores",
+    "foldAllStores",
+    "healOrphanPartitions",
+    "foldArchivedRows",
+    "foldArchivedFamilyDescriptors",
+    "repairReaderFloors",
+    "reconcileDualPartitionAcks",
+    "markAppArchived",
+    "retireStaleArchivedMarkers",
+    "repairChildSenderLabels",
+    "foldReadReceipts",
+];
+
+fn markers(version_for: impl Fn(&str) -> Option<String>) -> String {
+    let mut o = serde_json::Map::new();
+    for k in MIGRATION_KEYS {
+        if let Some(v) = version_for(k) {
+            o.insert(k.into(), json!({"completedVersion": v}));
+        }
+    }
+    Value::Object(o).to_string()
+}
+
+fn prompt_submit() -> Value {
+    json!({"hook_event_name":"UserPromptSubmit","session_id":"s","cwd":"/tmp","prompt":"hello"})
+}
+
+fn repair_cases() -> Vec<Case> {
+    let ex = Expect::Same;
+    let df = Expect::Defer;
+    let m = ".anti-hall/update-sweep-state.json";
+    let done = markers(|_| Some("{V}".into()));
+    let cool = ".anti-hall/repair-on-reload.last.json";
+    let recent = r#"{"ts":{NOW-1000},"version":"{V}"}"#;
+    let mut rows = vec![
+        Case::json("all-stamped-session-start", session_start(), ex).file(m, &done),
+        Case::json("all-stamped-prompt", prompt_submit(), ex).file(m, &done),
+        Case::json("all-stamped-newer", prompt_submit(), ex).file(m, &markers(|_| Some("99.0.0".into()))),
+        Case::json("all-stamped-equal-version-leading-zero", prompt_submit(), ex).file(m, &markers(|_| Some("00099.00.0".into()))),
+        Case::json("empty-home-pending", prompt_submit(), df).skip_node(),
+        Case::json("stamped-older-pending", prompt_submit(), df).skip_node().file(m, &markers(|_| Some("0.0.1".into()))),
+        Case::json("one-key-missing-pending", prompt_submit(), df).skip_node().file(m, &markers(|k| (k != "foldReadReceipts").then(|| "99.0.0".into()))),
+        Case::json("one-key-garbage-version-pending", prompt_submit(), df).skip_node().file(m, &markers(|k| Some(if k == "foldAllStores" { "abc".into() } else { "99.0.0".into() }))),
+        Case::json("one-key-prerelease-version-pending", prompt_submit(), df).skip_node().file(m, &markers(|k| Some(if k == "foldAllStores" { "99.0.0-rc.1".into() } else { "99.0.0".into() }))),
+        Case::json("markers-corrupt-pending", prompt_submit(), df).skip_node().file(m, "{torn"),
+        Case::json("markers-array-pending", prompt_submit(), df).skip_node().file(m, "[]"),
+        Case::json("markers-entry-not-object-pending", prompt_submit(), df).skip_node().file(m, r#"{"foldAllStores":5}"#),
+        Case::json("extra-key-ignored", prompt_submit(), ex).file(m, &markers(|_| Some("99.0.0".into())).replacen('{', r#"{"someOtherMigration":{"completedVersion":"0.0.1"},"#, 1)),
+        // cooldown
+        Case::json("cooldown-recent-silences-pending", prompt_submit(), ex).file(cool, recent),
+        Case::json("cooldown-other-version-pending", prompt_submit(), df).skip_node().file(cool, r#"{"ts":{NOW-1000},"version":"0.0.1"}"#),
+        Case::json("cooldown-two-hours-old-pending", prompt_submit(), df).skip_node().file(cool, r#"{"ts":{NOW-7200000},"version":"{V}"}"#),
+        Case::json("cooldown-in-the-future-pending", prompt_submit(), df).skip_node().file(cool, r#"{"ts":99999999999999,"version":"{V}"}"#),
+        Case::json("cooldown-string-ts-pending", prompt_submit(), df).skip_node().file(cool, r#"{"ts":"x","version":"{V}"}"#),
+        Case::json("cooldown-garbage-pending", prompt_submit(), df).skip_node().file(cool, "{torn"),
+        Case::json("cooldown-array-pending", prompt_submit(), df).skip_node().file(cool, "[1]"),
+        // switches, skip, payload
+        Case::json("switch-off-env", prompt_submit(), ex).env("ANTIHALL_REPAIR_ON_RELOAD", "off"),
+        Case::json("switch-off-env-zero", prompt_submit(), ex).env("ANTIHALL_REPAIR_ON_RELOAD", "0"),
+        Case::json("switch-off-settings", prompt_submit(), ex).file(".anti-hall/settings.json", r#"{"maintenance":{"repairOnReload":false}}"#),
+        Case::json("switch-off-plugin-option", prompt_submit(), ex).env("CLAUDE_PLUGIN_OPTION_MAINTENANCE_REPAIR_ON_RELOAD", "false"),
+        Case::json("switch-garbage-stays-on", prompt_submit(), df).skip_node().file(".anti-hall/settings.json", r#"{"maintenance":{"repairOnReload":"maybe"}}"#),
+        Case::json("skip-file", prompt_submit(), ex).file(".anti-hall/skip.json", r#"{"repair-on-reload":99999999999999}"#),
+        Case::json("skip-all", prompt_submit(), ex).file(".anti-hall/skip.json", r#"{"all":99999999999999}"#),
+        Case::json("skip-expired-pending", prompt_submit(), df).skip_node().file(".anti-hall/skip.json", r#"{"repair-on-reload":5}"#),
+        Case::json("subagent-agent-id", {
+            let mut p = prompt_submit();
+            p["agent_id"] = json!("a1");
+            p
+        }, ex),
+        Case::json("subagent-agent-type", {
+            let mut p = prompt_submit();
+            p["agent_type"] = json!("Explore");
+            p
+        }, ex),
+        Case::json("subagent-empty-string-marker-still-subagent", {
+            let mut p = prompt_submit();
+            p["agent_id"] = json!("");
+            p
+        }, ex),
+        Case::json("subagent-zero-marker-still-subagent", {
+            let mut p = prompt_submit();
+            p["agent_type"] = json!(0);
+            p
+        }, ex),
+        Case::json("null-marker-is-not-subagent", {
+            let mut p = prompt_submit();
+            p["agent_id"] = Value::Null;
+            p
+        }, df)
+        .skip_node(),
+        Case::json("judge-child-silent", prompt_submit(), ex).env("ANTIHALL_JUDGE_CHILD", "1"),
+        Case::new("empty-stdin-all-stamped-defers", "", df).file(m, &done),
+        Case::new("garbage-stdin-all-stamped-defers", "{nope", df).file(m, &done),
+        Case::new("payload-null-all-stamped", "null", ex).file(m, &done),
+        Case::json("payload-array-all-stamped", json!([1]), ex).file(m, &done),
+    ];
+    rows.push(Case::json("codex-style-payload-all-stamped", json!({"turn_id":"t","model":"gpt-5","hook_event_name":"UserPromptSubmit"}), ex).file(m, &done));
+    rows
+}
+
+#[test]
+fn repair_on_reload_matches_node() {
+    let rows = repair_cases();
+    assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
+    let (same, deferred) = check_rows("repair-on-reload.js", "repair-on-reload", rows);
+    assert!(same >= 15 && deferred >= 12);
+}
+
+/// The migration keys the engine lists must be exactly the Node default (non-opt-in) migrations, in order.
+#[test]
+fn repair_migration_keys_match_the_node_list() {
+    let out = Command::new("node")
+        .arg("-e")
+        .arg("process.stdout.write(JSON.stringify(require('./plugins/anti-hall/companion/lib/migrations.js').defaultMigrations().map(m => m.key)))")
+        .current_dir(repo())
+        .env("ANTIHALL_TEST_ISOLATION", "1")
+        .output()
+        .unwrap();
+    let node: Vec<String> = serde_json::from_slice(&out.stdout).unwrap();
+    let engine: Vec<String> = ah_engine::defaults::list("repair_reload.migration_keys").into_iter().map(String::from).collect();
+    assert_eq!(engine, node, "defaults/session_gates.toml repair_reload.migration_keys drifted from companion/lib/migrations.js");
+    assert_eq!(engine, MIGRATION_KEYS.map(String::from).to_vec());
 }
