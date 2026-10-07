@@ -315,26 +315,56 @@ fn comms_cases() -> Vec<Case> {
         ] {
             c = c.file(&rel, &content);
         }
-        c.file(".claude/sessions/broken.json", "{not json").file(".claude/sessions/notes.txt", "{\"name\":\"txt-peer\",\"cwd\":\"/x\"}").file(".claude/sessions/arr.json", "[1,2]")
+        c.file(".claude/sessions/broken.json", "{not json")
+            .file(".claude/sessions/notes.txt", "{\"name\":\"txt-peer\",\"cwd\":\"/x\"}")
+            .file(".claude/sessions/arr.json", "[1,2]")
     };
     let ex = Expect::Same;
     // inactive without DevSwarm: every target is silent
     out.push(with_sessions(Case::json("inactive-no-env", send(json!("fix-login-9f")), ex)));
-    out.push(with_sessions(Case::json("inactive-disable", send(json!("fix-login-9f")), ex).env("DEVSWARM_REPO_ID", "r1").env("DISABLE_ANTIHALL_DEVSWARM", "1")));
+    out.push(with_sessions(
+        Case::json("inactive-disable", send(json!("fix-login-9f")), ex).env("DEVSWARM_REPO_ID", "r1").env("DISABLE_ANTIHALL_DEVSWARM", "1"),
+    ));
     out.push(with_sessions(Case::json("mode-off", send(json!("fix-login-9f")), ex).env("DEVSWARM_REPO_ID", "r1").env("ANTIHALL_DEVSWARM_SUPERVISOR", "off")));
     out.push(with_sessions(Case::json("mode-on-no-repo-id", send(json!("fix-login-9f")), ex).env("ANTIHALL_DEVSWARM_SUPERVISOR", " ON ")));
-    out.push(with_sessions(Case::json("mode-invalid-falls-to-auto", send(json!("fix-login-9f")), ex).env("DEVSWARM_REPO_ID", "r1").env("ANTIHALL_DEVSWARM_SUPERVISOR", "maybe")));
+    out.push(with_sessions(
+        Case::json("mode-invalid-falls-to-auto", send(json!("fix-login-9f")), ex).env("DEVSWARM_REPO_ID", "r1").env("ANTIHALL_DEVSWARM_SUPERVISOR", "maybe"),
+    ));
     out.push(with_sessions(Case::json("repo-id-blank", send(json!("fix-login-9f")), ex).env("DEVSWARM_REPO_ID", "   ")));
-    out.push(with_sessions(Case::json("mode-from-settings-file", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"supervisorMode":"on"}}"#)));
-    out.push(with_sessions(Case::json("mode-settings-file-invalid", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"supervisorMode":"nope"}}"#).env("DEVSWARM_REPO_ID", "r1")));
-    out.push(with_sessions(Case::json("mode-plugin-option-off", send(json!("fix-login-9f")), ex).env("DEVSWARM_REPO_ID", "r1").env("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "off")));
-    out.push(with_sessions(Case::json("mode-plugin-option-default-ignored", send(json!("fix-login-9f")), ex).env("DEVSWARM_REPO_ID", "r1").env("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "auto")));
+    out.push(with_sessions(
+        Case::json("mode-from-settings-file", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"supervisorMode":"on"}}"#),
+    ));
+    out.push(with_sessions(
+        Case::json("mode-settings-file-invalid", send(json!("fix-login-9f")), ex)
+            .file(".anti-hall/settings.json", r#"{"devswarm":{"supervisorMode":"nope"}}"#)
+            .env("DEVSWARM_REPO_ID", "r1"),
+    ));
+    out.push(with_sessions(
+        Case::json("mode-plugin-option-off", send(json!("fix-login-9f")), ex)
+            .env("DEVSWARM_REPO_ID", "r1")
+            .env("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "off"),
+    ));
+    out.push(with_sessions(
+        Case::json("mode-plugin-option-default-ignored", send(json!("fix-login-9f")), ex)
+            .env("DEVSWARM_REPO_ID", "r1")
+            .env("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "auto"),
+    ));
     // the switch
-    out.push(on(with_sessions(Case::json("switch-off-settings", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"commsGuard":false}}"#))));
-    out.push(on(with_sessions(Case::json("switch-off-string", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"commsGuard":"off"}}"#))));
-    out.push(on(with_sessions(Case::json("switch-garbage-stays-on", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"commsGuard":"banana"}}"#))));
-    out.push(on(with_sessions(Case::json("switch-off-plugin-option", send(json!("fix-login-9f")), ex).env("CLAUDE_PLUGIN_OPTION_DEVSWARM_COMMS_GUARD", "false"))));
-    out.push(on(with_sessions(Case::json("skip-file", send(json!("fix-login-9f")), ex).file(".anti-hall/skip.json", r#"{"devswarm-comms-guard":99999999999999}"#))));
+    out.push(on(with_sessions(
+        Case::json("switch-off-settings", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"commsGuard":false}}"#),
+    )));
+    out.push(on(with_sessions(
+        Case::json("switch-off-string", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"commsGuard":"off"}}"#),
+    )));
+    out.push(on(with_sessions(
+        Case::json("switch-garbage-stays-on", send(json!("fix-login-9f")), ex).file(".anti-hall/settings.json", r#"{"devswarm":{"commsGuard":"banana"}}"#),
+    )));
+    out.push(on(with_sessions(
+        Case::json("switch-off-plugin-option", send(json!("fix-login-9f")), ex).env("CLAUDE_PLUGIN_OPTION_DEVSWARM_COMMS_GUARD", "false"),
+    )));
+    out.push(on(with_sessions(
+        Case::json("skip-file", send(json!("fix-login-9f")), ex).file(".anti-hall/skip.json", r#"{"devswarm-comms-guard":99999999999999}"#),
+    )));
     out.push(on(with_sessions(Case::json("skip-all", send(json!("fix-login-9f")), ex).file(".anti-hall/skip.json", r#"{"all":99999999999999}"#))));
     out.push(on(with_sessions(Case::json("skip-expired", send(json!("fix-login-9f")), ex).file(".anti-hall/skip.json", r#"{"devswarm-comms-guard":1}"#))));
     // targets while active
@@ -432,7 +462,8 @@ fn swarm_cases() -> Vec<Case> {
         Case::json("nineteen-recent-allows", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&recent(19))),
         Case::json("twenty-recent-blocks", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&recent(20))),
         Case::json("twenty-five-recent-blocks", spawn_payload("Task", general(), Some("/t")), ex).file(log, &log_of(&recent(25))),
-        Case::json("twenty-with-one-old-allows", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[70_000, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800])),
+        Case::json("twenty-with-one-old-allows", spawn_payload("Agent", explore(), None), ex)
+            .file(log, &log_of(&[70_000, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800])),
         Case::json("near-window-edge-counts", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[59_000; 20])),
         Case::json("garbage-lines", spawn_payload("Agent", explore(), None), ex).file(log, "abc\n{NOW-1000}abc\n\n-5\n0\n+{NOW-500}\n 12 \n0x10\n1e3\n"),
         Case::json("crlf-log", spawn_payload("Agent", explore(), None), ex).file(log, "{NOW-1000}\r\n{NOW-900}\r\n"),
@@ -440,23 +471,44 @@ fn swarm_cases() -> Vec<Case> {
         Case::json("no-trailing-newline", spawn_payload("Agent", explore(), None), ex).file(log, "{NOW-1000}"),
         Case::json("log-is-a-directory", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/swarm-spawns.log/keep", "x"),
         Case::json("huge-entry-defers", spawn_payload("Agent", explore(), None), Expect::Defer).file(log, "99999999999999999999\n"),
-        Case::json("huge-entry-but-capped-blocks", spawn_payload("Agent", explore(), None), ex).file(log, &format!("99999999999999999999\n{}", log_of(&recent(19)))),
-        Case::json("skip-file", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/skip.json", r#"{"swarm-guard":99999999999999}"#).file(log, &log_of(&recent(25))),
-        Case::json("skip-all", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/skip.json", r#"{"all":99999999999999}"#).file(log, &log_of(&recent(25))),
-        Case::json("skip-expired-still-blocks", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/skip.json", r#"{"swarm-guard":5}"#).file(log, &log_of(&recent(25))),
+        Case::json("huge-entry-but-capped-blocks", spawn_payload("Agent", explore(), None), ex)
+            .file(log, &format!("99999999999999999999\n{}", log_of(&recent(19)))),
+        Case::json("skip-file", spawn_payload("Agent", explore(), None), ex)
+            .file(".anti-hall/skip.json", r#"{"swarm-guard":99999999999999}"#)
+            .file(log, &log_of(&recent(25))),
+        Case::json("skip-all", spawn_payload("Agent", explore(), None), ex)
+            .file(".anti-hall/skip.json", r#"{"all":99999999999999}"#)
+            .file(log, &log_of(&recent(25))),
+        Case::json("skip-expired-still-blocks", spawn_payload("Agent", explore(), None), ex)
+            .file(".anti-hall/skip.json", r#"{"swarm-guard":5}"#)
+            .file(log, &log_of(&recent(25))),
         Case::json("switch-off-env", spawn_payload("Agent", explore(), None), ex).env("ANTIHALL_SWARM_GUARD", "0").file(log, &log_of(&recent(25))),
-        Case::json("switch-off-settings", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/settings.json", r#"{"safety":{"swarmGuard":false}}"#).file(log, &log_of(&recent(25))),
-        Case::json("switch-off-plugin-option", spawn_payload("Agent", explore(), None), ex).env("CLAUDE_PLUGIN_OPTION_SAFETY_SWARM_GUARD", "false").file(log, &log_of(&recent(25))),
-        Case::json("switch-plugin-option-default-ignored", spawn_payload("Agent", explore(), None), ex).env("CLAUDE_PLUGIN_OPTION_SAFETY_SWARM_GUARD", "true").file(log, &log_of(&recent(25))),
-        Case::json("switch-garbage-stays-on", spawn_payload("Agent", explore(), None), ex).file(".anti-hall/settings.json", r#"{"safety":{"swarmGuard":"maybe"}}"#).file(log, &log_of(&recent(25))),
+        Case::json("switch-off-settings", spawn_payload("Agent", explore(), None), ex)
+            .file(".anti-hall/settings.json", r#"{"safety":{"swarmGuard":false}}"#)
+            .file(log, &log_of(&recent(25))),
+        Case::json("switch-off-plugin-option", spawn_payload("Agent", explore(), None), ex)
+            .env("CLAUDE_PLUGIN_OPTION_SAFETY_SWARM_GUARD", "false")
+            .file(log, &log_of(&recent(25))),
+        Case::json("switch-plugin-option-default-ignored", spawn_payload("Agent", explore(), None), ex)
+            .env("CLAUDE_PLUGIN_OPTION_SAFETY_SWARM_GUARD", "true")
+            .file(log, &log_of(&recent(25))),
+        Case::json("switch-garbage-stays-on", spawn_payload("Agent", explore(), None), ex)
+            .file(".anti-hall/settings.json", r#"{"safety":{"swarmGuard":"maybe"}}"#)
+            .file(log, &log_of(&recent(25))),
         // the lock
-        Case::json("fresh-foreign-lock-fails-open-unrecorded", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(100)).file(log, &log_of(&recent(25))),
+        Case::json("fresh-foreign-lock-fails-open-unrecorded", spawn_payload("Agent", explore(), None), ex)
+            .file(lock, &fresh_lock(100))
+            .file(log, &log_of(&recent(25))),
         Case::json("stale-lock-is-taken-over", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(9000)),
         Case::json("stale-lock-then-block", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(9000)).file(log, &log_of(&recent(21))),
         Case::json("corrupt-fresh-lock-fails-open", spawn_payload("Agent", explore(), None), ex).file(lock, "{torn"),
         Case::json("empty-fresh-lock-fails-open", spawn_payload("Agent", explore(), None), ex).file(lock, ""),
-        Case::json("stale-lock-with-stale-reclaim-marker", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(9000)).file(".anti-hall/swarm-spawns.lock.reclaim", &fresh_lock(9000)),
-        Case::json("stale-lock-with-fresh-reclaim-marker", spawn_payload("Agent", explore(), None), ex).file(lock, &fresh_lock(9000)).file(".anti-hall/swarm-spawns.lock.reclaim", &fresh_lock(100)),
+        Case::json("stale-lock-with-stale-reclaim-marker", spawn_payload("Agent", explore(), None), ex)
+            .file(lock, &fresh_lock(9000))
+            .file(".anti-hall/swarm-spawns.lock.reclaim", &fresh_lock(9000)),
+        Case::json("stale-lock-with-fresh-reclaim-marker", spawn_payload("Agent", explore(), None), ex)
+            .file(lock, &fresh_lock(9000))
+            .file(".anti-hall/swarm-spawns.lock.reclaim", &fresh_lock(100)),
         Case::json("lock-without-ts-record", spawn_payload("Agent", explore(), None), ex).file(lock, r#"{"pid":1,"token":"x"}"#),
         // the advisory (needs the transcript scan, so the engine defers whenever it could be due)
         Case::json("general-with-transcript-defers", spawn_payload("Agent", general(), Some("/t.jsonl")), Expect::Defer),
@@ -475,21 +527,27 @@ fn swarm_cases() -> Vec<Case> {
         Case::json("deny-all-writes-silent", spawn_payload("Agent", json!({"disallowedTools":["Edit","Write","MultiEdit"]}), Some("/t.jsonl")), ex),
         Case::json("deny-some-writes-defers", spawn_payload("Agent", json!({"disallowedTools":["Edit","Write"]}), Some("/t.jsonl")), Expect::Defer),
         Case::json("omc-read-only-type-silent", spawn_payload("Agent", json!({"subagent_type":"oh-my-claudecode:Verifier"}), Some("/t.jsonl")), ex),
-        Case::json("shared-tree-switch-off-silent", spawn_payload("Agent", general(), Some("/t.jsonl")), ex).file(".anti-hall/settings.json", r#"{"guards":{"sharedTreeAgentNote":false}}"#),
+        Case::json("shared-tree-switch-off-silent", spawn_payload("Agent", general(), Some("/t.jsonl")), ex)
+            .file(".anti-hall/settings.json", r#"{"guards":{"sharedTreeAgentNote":false}}"#),
         Case::json("shared-tree-env-off-silent", spawn_payload("Agent", general(), Some("/t.jsonl")), ex).env("ANTIHALL_SHARED_TREE_AGENT_NOTE", "off"),
         Case::json("transcript-empty-silent", spawn_payload("Agent", general(), Some("")), ex),
-        Case::json("transcript-number-silent", {
-            let mut p = spawn_payload("Agent", general(), None);
-            p["transcript_path"] = json!(5);
-            p
-        }, ex),
+        Case::json(
+            "transcript-number-silent",
+            {
+                let mut p = spawn_payload("Agent", general(), None);
+                p["transcript_path"] = json!(5);
+                p
+            },
+            ex,
+        ),
         Case::json("tool-input-missing-silent", json!({"tool_name":"Agent","transcript_path":"/t"}), ex),
         Case::json("tool-input-string-silent", spawn_payload("Agent", json!("x"), Some("/t")), ex),
         Case::json("tool-input-null-silent", spawn_payload("Agent", Value::Null, Some("/t")), ex),
         // payload shapes and trip-log labels
         Case::json("label-camel-agent-type-at-cap", spawn_payload("Agent", json!({"agentType":"ünï","prompt":"x"}), None), ex).file(log, &log_of(&recent(20))),
         Case::json("label-snake-agent-type-at-cap", spawn_payload("Task", json!({"agent_type":"snake"}), None), ex).file(log, &log_of(&recent(20))),
-        Case::json("label-empty-type-at-cap", spawn_payload("Task", json!({"subagent_type":"","agentType":"second"}), None), ex).file(log, &log_of(&recent(20))),
+        Case::json("label-empty-type-at-cap", spawn_payload("Task", json!({"subagent_type":"","agentType":"second"}), None), ex)
+            .file(log, &log_of(&recent(20))),
         Case::json("label-no-tool-name-at-cap", json!({"tool_input":{"subagent_type":"x"}}), ex).file(log, &log_of(&recent(20))),
         Case::json("label-numeric-type-at-cap", spawn_payload("Agent", json!({"subagent_type":5}), None), ex).file(log, &log_of(&recent(20))),
         Case::json("payload-array", json!([1]), ex),
@@ -499,7 +557,11 @@ fn swarm_cases() -> Vec<Case> {
         Case::new("payload-garbage", "{nope", Expect::Defer),
     ];
     // a pre-existing trip log keeps its lines and gets one appended
-    out.push(Case::json("trip-log-appends", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&recent(20))).file(".anti-hall/swarm-trips.log", "old\tline\n"));
+    out.push(
+        Case::json("trip-log-appends", spawn_payload("Agent", explore(), None), ex)
+            .file(log, &log_of(&recent(20)))
+            .file(".anti-hall/swarm-trips.log", "old\tline\n"),
+    );
     out
 }
 
@@ -533,7 +595,8 @@ fn weekly_cases() -> Vec<Case> {
         on(Case::json("on-latch-yesterday-silent", session_start(), ex).file(l, &latch(DAY))),
         on(Case::json("on-latch-six-days-silent", session_start(), ex).file(l, &latch(6 * DAY))),
         on(Case::json("on-latch-eight-days-defers", session_start(), df).acts().file(l, &latch(8 * DAY))),
-        on(Case::json("on-latch-in-the-future-silent", session_start(), ex).file(l, r#"{"lastCheckedTs":{NOW}0}"#.replace("{NOW}0", "99999999999999").as_str())),
+        on(Case::json("on-latch-in-the-future-silent", session_start(), ex)
+            .file(l, r#"{"lastCheckedTs":{NOW}0}"#.replace("{NOW}0", "99999999999999").as_str())),
         on(Case::json("on-latch-garbage-defers", session_start(), df).acts().file(l, "{torn")),
         on(Case::json("on-latch-string-ts-defers", session_start(), df).acts().file(l, r#"{"lastCheckedTs":"x"}"#)),
         on(Case::json("on-latch-array-defers", session_start(), df).acts().file(l, "[1]")),
@@ -544,11 +607,18 @@ fn weekly_cases() -> Vec<Case> {
         Case::json("on-by-legacy-file-string", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"enabled":"yes"}"#),
         Case::json("legacy-file-off", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":false}"#),
         Case::json("legacy-file-corrupt", session_start(), ex).file(".anti-hall/jev.json", "{torn"),
-        Case::json("settings-off-beats-legacy-on", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":true}"#).file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#),
+        Case::json("settings-off-beats-legacy-on", session_start(), ex)
+            .file(".anti-hall/jev.json", r#"{"enabled":true}"#)
+            .file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#),
         Case::json("on-by-plugin-option", session_start(), df).acts().env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
         Case::json("plugin-option-default-ignored", session_start(), ex).env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "false"),
-        Case::json("plugin-option-default-never-masks-legacy-on", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"enabled":true}"#).env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "false"),
-        Case::json("unstamped-legacy-off-beats-plugin-option-on", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":false}"#).env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
+        Case::json("plugin-option-default-never-masks-legacy-on", session_start(), df)
+            .acts()
+            .file(".anti-hall/jev.json", r#"{"enabled":true}"#)
+            .env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "false"),
+        Case::json("unstamped-legacy-off-beats-plugin-option-on", session_start(), ex)
+            .file(".anti-hall/jev.json", r#"{"enabled":false}"#)
+            .env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
         Case::json("stamped-plugin-option-on-beats-legacy-off", session_start(), df)
             .acts()
             .file(".anti-hall/jev.json", r#"{"enabled":false}"#)
@@ -612,7 +682,9 @@ fn review_cases() -> Vec<Case> {
         Case::json("jev-on-but-recent-latch-still-defers", session_start(), df).env("ANTIHALL_JEV", "1").file(l, &shown(DAY)),
         Case::json("semantic-judge-on-defers", session_start(), df).file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#).file(l, &shown(DAY)),
         Case::json("semantic-judge-env-defers", session_start(), df).env("ANTIHALL_SEMANTIC_JUDGE", "1").file(l, &shown(DAY)),
-        Case::json("jev-explicitly-off-recent-latch-silent", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#).file(l, &shown(DAY)),
+        Case::json("jev-explicitly-off-recent-latch-silent", session_start(), ex)
+            .file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#)
+            .file(l, &shown(DAY)),
         Case::json("subagent-agent-id", sub("agent_id", json!("a1")), ex),
         Case::json("subagent-agent-type", sub("agent_type", json!("Explore")), ex),
         Case::json("subagent-sidechain", sub("isSidechain", json!(true)), ex),
@@ -623,7 +695,20 @@ fn review_cases() -> Vec<Case> {
         Case::json("agent-id-zero-is-not-subagent", sub("agent_id", json!(0)), df).acts(),
         Case::json("headless-defers", session_start(), df).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
         Case::json("headless-model-only-is-not-codex", sub("model", json!("gpt-5")), df).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
-        Case::json("headless-codex-recent-latch-silent", sub("model", json!("gpt-5")).as_object().map(|o| { let mut o = o.clone(); o.insert("turn_id".into(), json!("t1")); Value::Object(o) }).unwrap(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
+        Case::json(
+            "headless-codex-recent-latch-silent",
+            sub("model", json!("gpt-5"))
+                .as_object()
+                .map(|o| {
+                    let mut o = o.clone();
+                    o.insert("turn_id".into(), json!("t1"));
+                    Value::Object(o)
+                })
+                .unwrap(),
+            ex,
+        )
+        .env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+        .file(l, &shown(DAY)),
         Case::json("interactive-entrypoint-recent-latch-silent", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "cli").file(l, &shown(DAY)),
         Case::json("judge-child-silent", session_start(), ex).env("ANTIHALL_JUDGE_CHILD", "1"),
         Case::new("empty-stdin-defers", "", df),
@@ -686,12 +771,17 @@ fn repair_cases() -> Vec<Case> {
         Case::json("empty-home-pending", prompt_submit(), df).skip_node(),
         Case::json("stamped-older-pending", prompt_submit(), df).skip_node().file(m, &markers(|_| Some("0.0.1".into()))),
         Case::json("one-key-missing-pending", prompt_submit(), df).skip_node().file(m, &markers(|k| (k != "foldReadReceipts").then(|| "99.0.0".into()))),
-        Case::json("one-key-garbage-version-pending", prompt_submit(), df).skip_node().file(m, &markers(|k| Some(if k == "foldAllStores" { "abc".into() } else { "99.0.0".into() }))),
-        Case::json("one-key-prerelease-version-pending", prompt_submit(), df).skip_node().file(m, &markers(|k| Some(if k == "foldAllStores" { "99.0.0-rc.1".into() } else { "99.0.0".into() }))),
+        Case::json("one-key-garbage-version-pending", prompt_submit(), df)
+            .skip_node()
+            .file(m, &markers(|k| Some(if k == "foldAllStores" { "abc".into() } else { "99.0.0".into() }))),
+        Case::json("one-key-prerelease-version-pending", prompt_submit(), df)
+            .skip_node()
+            .file(m, &markers(|k| Some(if k == "foldAllStores" { "99.0.0-rc.1".into() } else { "99.0.0".into() }))),
         Case::json("markers-corrupt-pending", prompt_submit(), df).skip_node().file(m, "{torn"),
         Case::json("markers-array-pending", prompt_submit(), df).skip_node().file(m, "[]"),
         Case::json("markers-entry-not-object-pending", prompt_submit(), df).skip_node().file(m, r#"{"foldAllStores":5}"#),
-        Case::json("extra-key-ignored", prompt_submit(), ex).file(m, &markers(|_| Some("99.0.0".into())).replacen('{', r#"{"someOtherMigration":{"completedVersion":"0.0.1"},"#, 1)),
+        Case::json("extra-key-ignored", prompt_submit(), ex)
+            .file(m, &markers(|_| Some("99.0.0".into())).replacen('{', r#"{"someOtherMigration":{"completedVersion":"0.0.1"},"#, 1)),
         // cooldown
         Case::json("cooldown-recent-silences-pending", prompt_submit(), ex).file(cool, recent),
         Case::json("cooldown-other-version-pending", prompt_submit(), df).skip_node().file(cool, r#"{"ts":{NOW-1000},"version":"0.0.1"}"#),
@@ -705,35 +795,57 @@ fn repair_cases() -> Vec<Case> {
         Case::json("switch-off-env-zero", prompt_submit(), ex).env("ANTIHALL_REPAIR_ON_RELOAD", "0"),
         Case::json("switch-off-settings", prompt_submit(), ex).file(".anti-hall/settings.json", r#"{"maintenance":{"repairOnReload":false}}"#),
         Case::json("switch-off-plugin-option", prompt_submit(), ex).env("CLAUDE_PLUGIN_OPTION_MAINTENANCE_REPAIR_ON_RELOAD", "false"),
-        Case::json("switch-garbage-stays-on", prompt_submit(), df).skip_node().file(".anti-hall/settings.json", r#"{"maintenance":{"repairOnReload":"maybe"}}"#),
+        Case::json("switch-garbage-stays-on", prompt_submit(), df)
+            .skip_node()
+            .file(".anti-hall/settings.json", r#"{"maintenance":{"repairOnReload":"maybe"}}"#),
         Case::json("skip-file", prompt_submit(), ex).file(".anti-hall/skip.json", r#"{"repair-on-reload":99999999999999}"#),
         Case::json("skip-all", prompt_submit(), ex).file(".anti-hall/skip.json", r#"{"all":99999999999999}"#),
         Case::json("skip-expired-pending", prompt_submit(), df).skip_node().file(".anti-hall/skip.json", r#"{"repair-on-reload":5}"#),
-        Case::json("subagent-agent-id", {
-            let mut p = prompt_submit();
-            p["agent_id"] = json!("a1");
-            p
-        }, ex),
-        Case::json("subagent-agent-type", {
-            let mut p = prompt_submit();
-            p["agent_type"] = json!("Explore");
-            p
-        }, ex),
-        Case::json("subagent-empty-string-marker-still-subagent", {
-            let mut p = prompt_submit();
-            p["agent_id"] = json!("");
-            p
-        }, ex),
-        Case::json("subagent-zero-marker-still-subagent", {
-            let mut p = prompt_submit();
-            p["agent_type"] = json!(0);
-            p
-        }, ex),
-        Case::json("null-marker-is-not-subagent", {
-            let mut p = prompt_submit();
-            p["agent_id"] = Value::Null;
-            p
-        }, df)
+        Case::json(
+            "subagent-agent-id",
+            {
+                let mut p = prompt_submit();
+                p["agent_id"] = json!("a1");
+                p
+            },
+            ex,
+        ),
+        Case::json(
+            "subagent-agent-type",
+            {
+                let mut p = prompt_submit();
+                p["agent_type"] = json!("Explore");
+                p
+            },
+            ex,
+        ),
+        Case::json(
+            "subagent-empty-string-marker-still-subagent",
+            {
+                let mut p = prompt_submit();
+                p["agent_id"] = json!("");
+                p
+            },
+            ex,
+        ),
+        Case::json(
+            "subagent-zero-marker-still-subagent",
+            {
+                let mut p = prompt_submit();
+                p["agent_type"] = json!(0);
+                p
+            },
+            ex,
+        ),
+        Case::json(
+            "null-marker-is-not-subagent",
+            {
+                let mut p = prompt_submit();
+                p["agent_id"] = Value::Null;
+                p
+            },
+            df,
+        )
         .skip_node(),
         Case::json("judge-child-silent", prompt_submit(), ex).env("ANTIHALL_JUDGE_CHILD", "1"),
         Case::new("empty-stdin-all-stamped-defers", "", df).file(m, &done),
@@ -767,4 +879,31 @@ fn repair_migration_keys_match_the_node_list() {
     let engine: Vec<String> = ah_engine::defaults::list("repair_reload.migration_keys").into_iter().map(String::from).collect();
     assert_eq!(engine, node, "defaults/session_gates.toml repair_reload.migration_keys drifted from companion/lib/migrations.js");
     assert_eq!(engine, MIGRATION_KEYS.map(String::from).to_vec());
+}
+
+/// The engine's lock file and Node's `companion/lib/lock.js` honour each other: a lock one holds is respected by the other,
+/// and a lock one released can be taken by the other.
+#[test]
+fn the_engine_and_node_respect_each_others_swarm_lock() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let home = temp_home("lock");
+    let lock = home.join(".anti-hall/swarm-spawns.lock");
+    let node = |script: &str| Command::new("node").arg("-e").arg(script).arg(&lock).current_dir(repo()).env("ANTIHALL_TEST_ISOLATION", "1").output().unwrap();
+    let lib = "const L=require('./plugins/anti-hall/companion/lib/lock.js');const p=process.argv[1];";
+    // Node holds, the engine (via a spawn through the check) must not take it: the guard fails open without recording.
+    let held =
+        node(&format!("{lib}const h=L.acquire(p,{{staleMs:5000,liveStaleMs:5000,maxTries:Infinity,waitMs:50,stepMs:5}});process.stdout.write(h?'held':'no');"));
+    assert_eq!(String::from_utf8_lossy(&held.stdout), "held");
+    let case = Case::json("spawn", spawn_payload("Agent", json!({"subagent_type":"Explore"}), None), Expect::Same);
+    let eng = run_engine("swarm-guard", &home, &case);
+    assert_eq!(eng.0, 0);
+    assert!(!home.join(".anti-hall/swarm-spawns.log").exists(), "the engine must not record a spawn it could not lock");
+    let _ = std::fs::remove_file(&lock);
+    let released = node(&format!("{lib}const h=L.acquire(p,{{staleMs:5000}});h.release();process.stdout.write(L.inspect(p)===null?'free':'left');"));
+    assert_eq!(String::from_utf8_lossy(&released.stdout), "free");
+    let eng2 = run_engine("swarm-guard", &home, &case);
+    assert_eq!(eng2.0, 0);
+    assert_eq!(std::fs::read_to_string(home.join(".anti-hall/swarm-spawns.log")).unwrap().lines().count(), 1, "a released lock is taken by the engine");
+    assert!(!lock.exists(), "the engine releases its lock");
+    let _ = std::fs::remove_dir_all(&home);
 }

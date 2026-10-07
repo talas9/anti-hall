@@ -87,7 +87,7 @@ labelled with how it was measured in the README of `ah-engine/`.
   still append a `mode: "off"` row to the Jev decision log per consult; the engine's Jev layer never does (D35), and
   neither do these checks.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  forty: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  forty-five: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -103,7 +103,9 @@ labelled with how it was measured in the README of `ah-engine/`.
   and `stale-agent-stop-note`, which share one streaming port of the transcript agent scan (see the README of `ah-engine/`); and the three edit and shell guards `merge-gate`, `api-guard` and `edit-guard`, which answer only what
   Node answers with no output and no side effect (for `edit-guard`, also the launcher-directory block byte for byte) and
   defer the rest, so a possible block, a Jev shadow ask, an interpreter probe or a coordinator allowlist decision is always
-  the Node hook's.
+  the Node hook's; and the batch 14 to 16 ports: the spawn and comms guards `swarm-guard` (the spawn-rate and
+  memory-pressure limiter, with a lock file shared with the Node hook) and `devswarm-comms-guard`, and the session gates
+  `jev-weekly-scorecard`, `jev-review-reminder` and `repair-on-reload`.
 - **Spawn/path context ports.** `inbox-read-guard` (PreToolUse on Read), `phase-tracker` (PreToolUse on Agent and Task),
   `orch-on-spawn` (PreToolUse on spawns) and `verify-first-orch` (SessionStart, the Claude entry only). They share
   `checks/spawnctx`: the home directory the state files live under (with the test-run refusal of the real home), the
@@ -155,6 +157,9 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `repo-self-drift` check (KB hook and skill counts against disk, model-KB audit age): the scan, its cache and the once-per-finding advisories identical to Node | implemented | D29-D31, D74, D75 |
 | Built-in `defect-nudge` check (once-a-day count of unfinished defect reports or of rulings on this project's reports; counts and ages only): identical to Node; a payload without a working directory or a date the time zone can change defers | implemented | D29-D31, D74, D75 |
 | Built-in `progress-prune` check (archive stale per-session progress files into the history ledger before removing them; weekly gitignore reminder using the client's git): identical to Node; an unusual `.git` file or a slow git defers | implemented | D29-D31, D59, D74, D75 |
+| Built-in `swarm-guard` check (Agent and Task spawns): memory-pressure and spawn-rate blocks with exact parity, the spawn log, trip log and lock file shared with the Node hook; a spawn that might get the shared-tree advisory defers before it is recorded | implemented, advisory deferred | D29-D31, D75 |
+| Built-in `devswarm-comms-guard` check (SendMessage to a DevSwarm workspace peer) with exact parity; a relative session directory defers | implemented | D29-D31, D75 |
+| Built-in `jev-weekly-scorecard`, `jev-review-reminder` and `repair-on-reload` checks: silent when provably nothing would be printed or written, otherwise the Node hook runs (report, review log, migrations and the detached repair stay in Node, D60); no state file is written by the engine | implemented in part | D29-D31, D60, D75 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |
@@ -527,6 +532,8 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `hooks.d/*.toml` | optional: per-batch `[events.<Event>]` / `[entries."<id>"]` defaults (one file per batch of ported hooks, so parallel lanes do not edit a shared file) |
 | `prompt_emit.toml` | switches, limits, patterns and messages of the prompt-emission checks (`verify-first`, `idle-agent-sweep`, `emit-dedupe-reset`) and the emit-dedupe store they share |
 | `session.toml` | the session-maintenance checks: switches, cache and ledger file names, time limits, baselines, claim patterns and messages |
+| `spawn_guards.toml` | switches, limits, paths, memory-tool grammar and messages of the swarm-guard and devswarm-comms-guard ports |
+| `session_gates.toml` | switches, latch files, windows and the default-migration key list of the jev-weekly-scorecard, jev-review-reminder and repair-on-reload gates |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or

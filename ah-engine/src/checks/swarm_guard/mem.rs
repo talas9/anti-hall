@@ -21,7 +21,12 @@ pub struct HostMem;
 
 /// Run `path` and return its standard output, or `None` when it fails, times out or prints non-UTF-8-lossy nothing.
 fn run_capture(path: &str, timeout: Duration) -> Option<String> {
-    let mut child = std::process::Command::new(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let mut child = std::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
     let mut out = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut b = Vec::new();
@@ -35,7 +40,7 @@ fn run_capture(path: &str, timeout: Duration) -> Option<String> {
                 let bytes = reader.join().ok()?;
                 return status.success().then(|| String::from_utf8_lossy(&bytes).to_string());
             }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(defaults::millis("swarm_guard.vm_stat_poll_ms")),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();

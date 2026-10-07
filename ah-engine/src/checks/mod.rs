@@ -33,7 +33,6 @@ pub mod replykit;
 pub mod scan_throttle;
 pub mod session;
 pub mod session_gates;
-pub mod swarm_guard;
 pub mod ship_it;
 pub mod silent_agent_nudge;
 pub mod spawnctx;

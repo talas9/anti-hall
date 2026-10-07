@@ -252,3 +252,102 @@ fn an_enum_switch_is_trimmed_lower_cased_and_one_of_its_values() {
     assert_eq!(get_enum(&num_settings(&[(".anti-hall/settings.json", "{\"devswarm\":{\"supervisorMode\":5}}")], &[]), e), "auto");
     assert_eq!(get_enum(&num_settings(&[], &[("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "off")]), e), "off");
 }
+// ---- the Node-compatible lock file ---------------------------------------------------------------------------
+
+mod nodelock_tests {
+    use crate::checks::guardkit::nodelock::{Params, acquire};
+
+    fn dir(tag: &str) -> String {
+        let d = std::env::temp_dir().join(format!("ah-lock-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.to_string_lossy().to_string()
+    }
+
+    fn quick() -> Params {
+        Params { stale_ms: 300, wait_ms: 40, step_ms: 5, reclaim_stale_ms: 300, release_tries: 3, release_step_ms: 5, boot_slop_s: 5 }
+    }
+
+    fn now() -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+    }
+
+    #[test]
+    fn a_lock_is_exclusive_until_released() {
+        let d = dir("excl");
+        let p = format!("{d}/x.lock");
+        let a = acquire(&p, quick()).expect("first acquire");
+        assert!(acquire(&p, quick()).is_none(), "a fresh lock is respected");
+        assert!(a.release());
+        assert!(!std::path::Path::new(&p).exists());
+        let b = acquire(&p, quick()).expect("free again");
+        assert!(b.release());
+    }
+
+    #[test]
+    fn the_record_has_the_node_shape() {
+        let d = dir("shape");
+        let p = format!("{d}/x.lock");
+        let a = acquire(&p, quick()).unwrap();
+        let rec: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(rec["pid"], std::process::id());
+        assert!(rec["host"].is_string() && rec["ts"].is_u64() && rec["token"].as_str().unwrap().starts_with(&format!("{}:", std::process::id())));
+        let txt = std::fs::read_to_string(&p).unwrap();
+        let pos = |k: &str| txt.find(&format!("\"{k}\"")).unwrap();
+        assert!(pos("pid") < pos("host") && pos("host") < pos("ts") && pos("ts") < pos("token"), "Node's key order: {txt}");
+        a.release();
+    }
+
+    #[test]
+    fn node_reads_the_engines_lock_as_a_live_local_holder() {
+        let d = dir("interop");
+        let p = format!("{d}/x.lock");
+        let a = acquire(&p, quick()).unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let out = std::process::Command::new("node")
+            .arg("-e")
+            .arg("const L=require('./plugins/anti-hall/companion/lib/lock.js');const h=L.inspect(process.argv[1]);process.stdout.write(JSON.stringify({known:h.known,alive:h.alive,dead:h.dead,pid:h.pid,hasToken:typeof h.token==='string'}))")
+            .arg(&p)
+            .current_dir(root)
+            .env("ANTIHALL_TEST_ISOLATION", "1")
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stderr)));
+        assert_eq!(v, serde_json::json!({"known": true, "alive": true, "dead": false, "pid": std::process::id(), "hasToken": true}));
+        a.release();
+    }
+
+    #[test]
+    fn a_stale_lock_is_taken_over_and_a_fresh_one_is_not() {
+        let d = dir("stale");
+        let p = format!("{d}/x.lock");
+        std::fs::write(&p, format!("{{\"pid\":1,\"host\":\"h\",\"ts\":{},\"token\":\"old\"}}", now() - 10_000)).unwrap();
+        let a = acquire(&p, quick()).expect("a stale lock is stolen");
+        assert!(a.release());
+        std::fs::write(&p, format!("{{\"pid\":1,\"host\":\"h\",\"ts\":{},\"token\":\"live\"}}", now())).unwrap();
+        assert!(acquire(&p, quick()).is_none());
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"live\""), "a respected lock is left alone");
+    }
+
+    #[test]
+    fn a_dead_reclaimers_marker_is_taken_over_at_once_and_a_live_one_blocks_the_takeover() {
+        let d = dir("side");
+        let p = format!("{d}/x.lock");
+        let stale = format!("{{\"pid\":1,\"host\":\"h\",\"ts\":{},\"token\":\"old\"}}", now() - 10_000);
+        std::fs::write(&p, &stale).unwrap();
+        std::fs::write(format!("{p}.reclaim"), format!("{{\"pid\":1,\"host\":\"h\",\"ts\":{},\"token\":\"m\"}}", now())).unwrap();
+        assert!(acquire(&p, quick()).is_none(), "a fresh foreign takeover marker means busy: the lock is not stolen meanwhile");
+        std::fs::write(format!("{p}.reclaim"), format!("{{\"pid\":1,\"host\":\"h\",\"ts\":{},\"token\":\"m\"}}", now() - 10_000)).unwrap();
+        assert!(acquire(&p, quick()).is_some(), "a stale marker is taken over");
+    }
+
+    #[test]
+    fn release_leaves_a_lock_that_is_no_longer_ours() {
+        let d = dir("foreign");
+        let p = format!("{d}/x.lock");
+        let a = acquire(&p, quick()).unwrap();
+        std::fs::write(&p, format!("{{\"pid\":1,\"host\":\"h\",\"ts\":{},\"token\":\"someone-else\"}}", now())).unwrap();
+        assert!(!a.release());
+        assert!(std::fs::read_to_string(&p).unwrap().contains("someone-else"));
+    }
+}

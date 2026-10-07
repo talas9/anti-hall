@@ -146,7 +146,12 @@ pub fn decide(p: &Value, st: &Settings, plugin_root: &str) -> Option<Verdict> {
                 let text = msg::message(
                     Kind::Block,
                     defaults::text("devswarm_comms.guard_name"),
-                    &Parts { what: &what, why: defaults::text("devswarm_comms.msg_block_why"), instead: defaults::text("devswarm_comms.msg_block_instead"), ..Parts::default() },
+                    &Parts {
+                        what: &what,
+                        why: defaults::text("devswarm_comms.msg_block_why"),
+                        instead: defaults::text("devswarm_comms.msg_block_instead"),
+                        ..Parts::default()
+                    },
                 );
                 return Some(block_exact(&text));
             }

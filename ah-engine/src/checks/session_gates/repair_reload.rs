@@ -74,7 +74,8 @@ pub(crate) fn decide(payload: &Value, st: &Settings, root: &str) -> Gate {
     if root.is_empty() {
         return Err(Undecidable);
     }
-    let manifest = std::fs::read_to_string(format!("{root}/{}", defaults::text("guardkit.plugin_manifest"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let manifest =
+        std::fs::read_to_string(format!("{root}/{}", defaults::text("guardkit.plugin_manifest"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
     let Some(version) = manifest.as_ref().and_then(|m| m.get("version")).and_then(Value::as_str).filter(|v| !v.is_empty()) else { return Ok(()) };
     // A version that is not a plain three-part one is compared by Node with NaN arithmetic; leave it to Node.
     let Some(running) = triple(js_trim(version)).filter(|_| js_trim(version) == version) else { return Err(Undecidable) };

@@ -81,12 +81,12 @@ fn write_capable(inp: &Value) -> bool {
         return false;
     }
     let write_tools = defaults::list("swarm_guard.write_tools");
-    if let Some(allow) = tool_list(first_truthy(inp, &["tools", "allowed_tools", "allowedTools"]))
+    if let Some(allow) = tool_list(first_truthy(inp, &defaults::list("swarm_guard.allow_fields")))
         && !allow.iter().any(|x| write_tools.contains(&x.as_str()))
     {
         return false;
     }
-    if let Some(deny) = tool_list(first_truthy(inp, &["disallowedTools", "disallowed_tools"]))
+    if let Some(deny) = tool_list(first_truthy(inp, &defaults::list("swarm_guard.deny_fields")))
         && defaults::list("swarm_guard.write_tools_every").iter().all(|x| deny.iter().any(|d| d == x))
     {
         return false;
@@ -118,7 +118,7 @@ fn describe_spawn(p: &Value) -> String {
     let unknown = defaults::text("swarm_guard.unknown_label");
     let tool = p.get("tool_name").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or(unknown);
     let inp = p.get("tool_input");
-    let atype = ["subagent_type", "agentType", "agent_type"]
+    let atype = defaults::list("swarm_guard.agent_type_fields")
         .iter()
         .find_map(|k| inp.and_then(|i| i.get(k)).and_then(Value::as_str).filter(|s| !s.is_empty()))
         .unwrap_or("");
@@ -146,9 +146,6 @@ fn read_timestamps(file: &str) -> Vec<f64> {
     let text = String::from_utf8_lossy(&bytes).to_string();
     js_trim(&text).split('\n').filter_map(|l| js_parse_int(l.strip_suffix('\r').unwrap_or(l))).filter(|n| n.is_finite() && *n > 0.0).collect()
 }
-
-/// The largest integer a double prints exactly in decimal (beyond it JavaScript prints rounded digits).
-const EXACT_INT_LIMIT: f64 = 9_007_199_254_740_992.0;
 
 /// `Date.prototype.toISOString` for a millisecond timestamp.
 fn iso(ms: u64) -> String {
@@ -234,10 +231,15 @@ pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now:
         let reason = msg::message(
             Kind::Block,
             defaults::text("swarm_guard.guard_name"),
-            &Parts { what: &what, why: defaults::text("swarm_guard.msg_rate_why"), instead: defaults::text("swarm_guard.msg_rate_instead"), ..Parts::default() },
+            &Parts {
+                what: &what,
+                why: defaults::text("swarm_guard.msg_rate_why"),
+                instead: defaults::text("swarm_guard.msg_rate_instead"),
+                ..Parts::default()
+            },
         );
         Some((block(&reason), recent.len()))
-    } else if !note_silent || recent.iter().any(|t| *t > EXACT_INT_LIMIT) {
+    } else if !note_silent || recent.iter().any(|t| *t > defaults::num("swarm_guard.exact_int_limit") as f64) {
         lock.release();
         return Some(Verdict::Defer);
     } else {

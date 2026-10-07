@@ -225,6 +225,24 @@ Deliberate differences from the Node guard:
   absolute one defers. A reading that needs a state write (the inferred one-million-token window), a tag that is a hash of
   the transcript path, and a relative `transcript_path` defer to Node. Parity: `node parity/run-ctxbudget.js --engine
   target/release/ah-engine --hooks ../plugins/anti-hall/hooks`.
+- `swarm-guard` (PreToolUse on Agent and Task): the memory gate (macOS `vm_stat`, Linux `MemAvailable`, never the OS "free"
+  figure) and the spawn-rate gate are exact, including the spawn log, the trip log and the lock file, whose format and
+  takeover protocol are the Node ones (`checks/guardkit/nodelock.rs`), so the Node hook and the engine can run against the
+  same files. The shared-tree advisory needs the running-agent scan of the session transcript, which is not ported: when
+  it could be due (a write-capable, non-isolated spawn with a transcript, the advisory switch on) the check defers BEFORE it
+  records the spawn, so Node counts it once; a block never defers. Any trouble taking the lock, reading memory or writing
+  the log allows the spawn, as in Node. A spawn log holding a number above 2^53 defers (JavaScript would print it rounded).
+- `devswarm-comms-guard` (PreToolUse on SendMessage): reads the host's `~/.claude/sessions/*.json` index in name order and
+  blocks a target whose session works under `~/.devswarm/repos`; the labels and the silent cases are Node's. A relative
+  session directory (Node resolves it against the hook's own working directory) defers.
+- `jev-weekly-scorecard`, `jev-review-reminder` and `repair-on-reload` are gates, not ports: each stops at the first
+  condition under which the Node hook prints and writes nothing (switch off, subagent turn, child workspace, a latch
+  younger than its window, a repair stamped at the running version or cooling down) and otherwise defers to the Node hook,
+  which builds the report, reads the review log or takes the lock and starts the detached repair (D60: the repair
+  implementation stays callable with the engine down). The engine never writes a state file for them. The list of default
+  migration keys is shipped in `defaults/session_gates.toml` and a test compares it with `companion/lib/migrations.js`.
+  Codex registers the same three hooks, so the same checks answer its table; it registers neither `swarm-guard` nor
+  `devswarm-comms-guard`.
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 ## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)

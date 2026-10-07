@@ -61,7 +61,9 @@ fn legacy_enabled_strict(st: &Settings) -> bool {
 
 /// The time stored under `key` in a small JSON state file, when it is a finite number (`Number.isFinite`).
 fn stored_time(st: &Settings, rel: &str, key: &str) -> Option<f64> {
-    read_object(st, &format!("{}/{rel}", defaults::text("session_gates.anti_hall_dir"))).and_then(|o| o.get(key).and_then(Value::as_f64)).filter(|n| n.is_finite())
+    read_object(st, &format!("{}/{rel}", defaults::text("session_gates.anti_hall_dir")))
+        .and_then(|o| o.get(key).and_then(Value::as_f64))
+        .filter(|n| n.is_finite())
 }
 
 macro_rules! gate_check {

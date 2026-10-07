@@ -280,3 +280,26 @@ value = "/proc/uptime"
 [swarm_guard.proc_pidns]
 doc = "The Linux link that names this process's pid namespace."
 value = "/proc/self/ns/pid"
+
+[swarm_guard.vm_stat_poll_ms]
+doc = "How often the wait for the memory tool checks whether it has finished."
+value = 2
+unit = "ms"
+min = 1
+max = 100
+
+[swarm_guard.allow_fields]
+doc = "Spawn input fields that list the tools an agent may use, first non-empty one wins."
+value = ["tools", "allowed_tools", "allowedTools"]
+
+[swarm_guard.deny_fields]
+doc = "Spawn input fields that list the tools an agent may not use, first non-empty one wins."
+value = ["disallowedTools", "disallowed_tools"]
+
+[swarm_guard.agent_type_fields]
+doc = "Spawn input fields that name the agent type, first non-empty one wins (the trip log label)."
+value = ["subagent_type", "agentType", "agent_type"]
+
+[swarm_guard.exact_int_limit]
+doc = "The largest integer a JavaScript number prints exactly in decimal (2 to the 53rd); a spawn log holding a larger entry is left to the Node hook."
+value = 9007199254740992

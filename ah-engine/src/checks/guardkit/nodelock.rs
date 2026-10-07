@@ -237,7 +237,7 @@ fn publish(path: &str, payload: &str) -> Published {
 
 #[derive(PartialEq, Eq)]
 enum Reclaimed {
-    Reclaimed,
+    Done,
     Gone,
     Caught,
     Failed,
@@ -271,8 +271,8 @@ fn reclaim(path: &str, h: &Holder) -> Reclaimed {
         return Reclaimed::Caught;
     }
     match std::fs::remove_file(&reap) {
-        Ok(()) => Reclaimed::Reclaimed,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Reclaimed::Reclaimed,
+        Ok(()) => Reclaimed::Done,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Reclaimed::Done,
         Err(_) => {
             if std::fs::metadata(path).is_err() {
                 let _ = std::fs::rename(&reap, path);
@@ -302,7 +302,7 @@ fn take_sidecar(path: &str, p: &Params) -> Option<Sidecar> {
         if !(h.dead || h.age_ms > p.reclaim_stale_ms as f64) {
             return None;
         }
-        if !matches!(reclaim(&side, &h), Reclaimed::Reclaimed | Reclaimed::Gone) {
+        if !matches!(reclaim(&side, &h), Reclaimed::Done | Reclaimed::Gone) {
             return None;
         }
     }
@@ -363,7 +363,7 @@ pub fn acquire(path: &str, p: Params) -> Option<Held> {
             match r {
                 Some(Reclaimed::Caught | Reclaimed::Failed) => return None,
                 Some(other) => {
-                    retry_now = other == Reclaimed::Reclaimed;
+                    retry_now = other == Reclaimed::Done;
                     continue;
                 }
                 None => {} // busy: wait like a respected holder
