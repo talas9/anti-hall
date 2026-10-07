@@ -93,6 +93,11 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `merge-gate` | Opt-in false-done backstop: answers every Bash call the Node merge-gate would allow (gate off, not an auto-merge command, no transcript, no hedge phrase in the recent assistant text) and defers the rest, so a possible block and its Jev shadow ask stay with the Node hook (port of merge-gate.js). |
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
+| `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
+| `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure; defers when a shared-tree advisory may be due (port of swarm-guard.js). |
+| `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); otherwise defers to the Node hook, which builds the report (port of the gates of jev-weekly-scorecard.js). |
+| `jev-review-reminder` | Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn); otherwise defers to the Node hook (port of the gates of jev-review-reminder.js). |
+| `repair-on-reload` | Stays silent when no repair can start (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); otherwise defers to the Node hook, which takes the lock and starts the detached repair (port of the gates of repair-on-reload.js). |
 
 ## Settings
 
@@ -822,16 +827,20 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `guardkit.line_terminators` | `\n\r  ` |  |  | Characters JavaScript's dot excludes, as the body of a regex character class. |
 | `guardkit.lock_stale_ms` | `5000` |  |  | Age, in milliseconds, after which another process's lock on a window file or the metrics is considered abandoned and is taken over (the same limit for a live, a dead and an unknown holder). |
 | `guardkit.lock_step_ms` | `5` |  |  | Pause between two attempts to take a held lock. |
+| `guardkit.migration_markers_file` | `.anti-hall/update-sweep-state.json` |  |  | The per-migration marker file, relative to the home directory. |
 | `guardkit.msg_head` | ` anti-hall · ` |  |  | Text between the icon and the guard name in every block or advisory message. |
 | `guardkit.msg_labels` | `4 entries` |  |  | Labels of the optional lines of a block or advisory message. |
 | `guardkit.plugin_config_keys` | `anti-hall, anti-hall@anti-hall` |  |  | Keys of the host settings file's pluginConfigs map under which this plugin's options may be stored, lowest priority first. |
+| `guardkit.plugin_manifest` | `.claude-plugin/plugin.json` |  |  | The plugin manifest, relative to the plugin root (its version is the one the settings migration stamp is compared with). |
 | `guardkit.plugin_option_prefix` | `CLAUDE_PLUGIN_OPTION_` |  |  | Prefix of the environment variables the host sets from plugin options. |
 | `guardkit.prune_stamp` | `.prune-stamp-{prefix}.json` |  |  | Name of the stamp file that throttles the pruning sweep; {prefix} is the state-file family. |
 | `guardkit.prune_stamp_key` | `lastSweep` |  |  | Key of the stamp file that holds the time of the last sweep. |
 | `guardkit.prune_throttle_ms` | `21600000` |  |  | Minimum time, in milliseconds, between two pruning sweeps of one state-file family (6 hours). |
 | `guardkit.prune_ttl_ms` | `604800000` |  |  | How old, in milliseconds, a per-session state file must be before the pruning sweep removes it (7 days). |
 | `guardkit.session_key_max` | `120` |  |  | Longest session key, in UTF-16 units, after the characters outside letters, digits, dot, underscore and hyphen are replaced (the Node state file name limit). |
+| `guardkit.settings_dir` | `.anti-hall` |  |  | The anti-hall directory under the home directory, where the legacy settings files live. |
 | `guardkit.settings_file` | `.anti-hall/settings.json` |  |  | Settings file, relative to the home directory. |
+| `guardkit.settings_migration_key` | `migrateSettingsFromLegacy` |  |  | Key of the marker that says the legacy settings were forward-migrated into settings.json for a plugin version. |
 | `guardkit.skip_all_key` | `all` |  |  | Key of the skip file that skips every guard not listed in destructive_guards. |
 | `guardkit.skip_file` | `.anti-hall/skip.json` |  |  | Skip file, relative to the home directory (a skipped guard is allowed until its expiry time). |
 | `guardkit.state_cap` | `4096` |  |  | How many per-session state entries the in-memory guard state keeps before it evicts the least recently written one. |
@@ -1966,6 +1975,129 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `stale_note.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.staleAgentStopNote, default on). |
 | `stale_note.summary` | `Advisory: a TaskStop on an agent that was sent a message or resumed after its...` |  |  | One-line description of the stale-agent-stop-note check in the generated reference. |
 | `stale_note.tool` | `TaskStop` |  |  | The tool this check answers. |
+
+### spawn_guards.toml / devswarm_comms
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_comms.agent_id_re` | `^a[0-9a-f]{4,}(?:-[0-9a-f-]+)?$` |  |  | A background agent's raw id: a, then hex digits, optionally dash-separated groups (JavaScript regex, case-insensitive). |
+| `devswarm_comms.coordinator_target` | `main` |  |  | The SendMessage target that is the session's own coordinator address, not a peer. |
+| `devswarm_comms.disable_env` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Environment variable that, set to its off value, switches the DevSwarm integration off. |
+| `devswarm_comms.disable_value` | `1` |  |  | The value of the disable variable that switches the DevSwarm integration off. |
+| `devswarm_comms.guard_name` | `devswarm-comms-guard` |  |  | Guard name in the block message and the skip file. |
+| `devswarm_comms.label_name` | `devswarm-comms` |  |  | Guard name in the advisory labels. |
+| `devswarm_comms.msg_block_instead` | `use the DevSwarm mesh: `node plugins/anti-hall/scripts/devswarm.js send --to ...` |  |  | What to do instead of the blocked send. |
+| `devswarm_comms.msg_block_what` | `SendMessage target "{to}" resolves to a DevSwarm workspace-backed peer sessio...` |  |  | What the block says; {to} is the target and {cwd} the peer session's directory. |
+| `devswarm_comms.msg_block_why` | `Direct Claude remote-agent messaging between a DevSwarm Primary/child and a w...` |  |  | Why the block applies. |
+| `devswarm_comms.msg_main_what` | `SendMessage target "main" is this session's own coordinator address, not a cr...` |  |  | What the label says for the coordinator address. |
+| `devswarm_comms.msg_ok_what` | `target "{to}" resolves to a live session (cwd: {cwd}) that is not a DevSwarm ...` |  |  | What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory. |
+| `devswarm_comms.ref_re` | `^(.*?)\s*\[[0-9a-f]{4,16}\]\s*$` |  |  | A target with a trailing bracketed reference such as `name [3fa9c1]`; group 1 is the bare name (JavaScript regex, case-insensitive). |
+| `devswarm_comms.repo_id_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable DevSwarm sets in a session it runs; in auto mode its presence means DevSwarm is active. |
+| `devswarm_comms.repos_root` | `.devswarm/repos` |  |  | The DevSwarm workspace registry root, relative to the home directory. |
+| `devswarm_comms.session_file_suffix` | `.json` |  |  | Suffix of a session index file. |
+| `devswarm_comms.sessions_dir` | `.claude/sessions` |  |  | Where the host keeps one JSON file per session, relative to the home directory. |
+| `devswarm_comms.setting` | `6 entries` |  |  | The switch devswarm.commsGuard (on by default); off makes the guard a no-op. |
+| `devswarm_comms.summary` | `Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while ...` |  |  | One-line description of the devswarm-comms-guard check in the generated reference. |
+| `devswarm_comms.supervisor_setting` | `7 entries` |  |  | The setting devswarm.supervisorMode (auto, on or off): whether DevSwarm counts as active for this session. |
+| `devswarm_comms.tool` | `SendMessage` |  |  | The only tool this guard decides on. |
+
+### spawn_guards.toml / swarm_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `swarm_guard.agent_type_fields` | `subagent_type, agentType, agent_type` |  |  | Spawn input fields that name the agent type, first non-empty one wins (the trip log label). |
+| `swarm_guard.allow_fields` | `tools, allowed_tools, allowedTools` |  |  | Spawn input fields that list the tools an agent may use, first non-empty one wins. |
+| `swarm_guard.deny_fields` | `disallowedTools, disallowed_tools` |  |  | Spawn input fields that list the tools an agent may not use, first non-empty one wins. |
+| `swarm_guard.exact_int_limit` | `9007199254740992` |  |  | The largest integer a JavaScript number prints exactly in decimal (2 to the 53rd); a spawn log holding a larger entry is left to the Node hook. |
+| `swarm_guard.guard_name` | `swarm-guard` |  |  | Guard name in the block message and the skip file. |
+| `swarm_guard.isolation_values` | `worktree, remote` |  |  | Values of the spawn's isolation field that give the agent its own working tree, lower-case. |
+| `swarm_guard.lock_boot_slop_s` | `5` |  | s | Two boot times closer than this many seconds are the same boot (the uptime clock has whole-second resolution). |
+| `swarm_guard.lock_file` | `swarm-spawns.lock` |  |  | The lock that serializes the read-count-append of the spawn log. |
+| `swarm_guard.lock_reclaim_stale_ms` | `5000` |  | ms | A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over. |
+| `swarm_guard.lock_release_step_ms` | `10` |  | ms | The pause between those tries. |
+| `swarm_guard.lock_release_tries` | `5` |  |  | How many times releasing the lock tries to take the takeover marker before it removes its own lock unguarded. |
+| `swarm_guard.lock_stale_ms` | `5000` |  | ms | A spawn-log lock older than this is taken over, whatever its holder. |
+| `swarm_guard.lock_step_ms` | `5` |  | ms | The pause between attempts to take the spawn-log lock. |
+| `swarm_guard.lock_wait_ms` | `50` |  | ms | How long a spawn waits for the spawn-log lock before it is allowed unrecorded (the guard never deadlocks a spawn). |
+| `swarm_guard.log_file` | `swarm-spawns.log` |  |  | The spawn log: one millisecond timestamp per allowed spawn. |
+| `swarm_guard.mem_floor_percent` | `4` |  |  | A spawn is blocked when available memory is below this percent of total memory. |
+| `swarm_guard.meminfo_available_re` | `MemAvailable:\s+(\d+)\s+kB` |  |  | The available-memory line of the Linux memory report, in kB (JavaScript regex). |
+| `swarm_guard.meminfo_path` | `/proc/meminfo` |  |  | The Linux memory report. |
+| `swarm_guard.meminfo_total_key` | `MemTotal:` |  |  | The total-memory line prefix of the Linux memory report, in kB. |
+| `swarm_guard.msg_mem` | `anti-hall swarm-guard: memory pressure critical ({avail} MB available of {tot...` |  |  | The block reason for critical memory pressure; {avail} and {total} are megabytes. |
+| `swarm_guard.msg_rate_instead` | `pause new agents and let running ones finish, then launch the next wave; resp...` |  |  | What to do instead of spawning past the cap. |
+| `swarm_guard.msg_rate_what` | `agent spawn-rate ceiling reached ({count} spawns in the last 60s, cap is {cap}).` |  |  | What the rate block says; {count} is the spawns in the window and {cap} the cap. |
+| `swarm_guard.msg_rate_why` | `A runaway swarm can make the OS unusable.` |  |  | Why the rate block applies. |
+| `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
+| `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
+| `swarm_guard.read_only_types` | `13 items` |  |  | Agent types that cannot edit files (their definitions exclude the editing tools), lower-case. |
+| `swarm_guard.setting` | `6 entries` |  |  | The switch safety.swarmGuard (on by default); off makes the guard a no-op. |
+| `swarm_guard.shared_tree_setting` | `6 entries` |  |  | The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent. |
+| `swarm_guard.spawn_cap` | `20` |  |  | How many agent spawns are allowed inside the window before the next one is blocked. |
+| `swarm_guard.state_dir` | `.anti-hall` |  |  | The directory of the spawn log, lock and trip log, relative to the home directory. |
+| `swarm_guard.summary` | `Blocks an agent spawn past the spawn-rate cap or under critical memory pressu...` |  |  | One-line description of the swarm-guard check in the generated reference. |
+| `swarm_guard.sysctl_boottime` | `kern.boottime` |  |  | The macOS sysctl name that holds the boot time (the lock records it to tell machines apart). |
+| `swarm_guard.sysctl_memsize` | `hw.memsize` |  |  | The macOS sysctl name that holds the total physical memory in bytes. |
+| `swarm_guard.trip_file` | `swarm-trips.log` |  |  | The trip log: one line per blocked spawn, never read by the rate decision. |
+| `swarm_guard.unknown_label` | `unknown` |  |  | The spawn label in the trip log when the payload names no tool. |
+| `swarm_guard.vm_default_page_size` | `4096` |  |  | The page size assumed when the memory tool does not print one. |
+| `swarm_guard.vm_labels` | `free, inactive, speculative` |  |  | The page kinds that count as available memory (reclaimable on demand). |
+| `swarm_guard.vm_page_size_re` | `page size of (\d+) bytes` |  |  | The page size line of the memory tool's output (JavaScript regex). |
+| `swarm_guard.vm_pages_re` | `Pages {label}:\s+(\d+)` |  |  | A pages line of the memory tool's output, with {label} replaced by free, inactive or speculative (JavaScript regex). |
+| `swarm_guard.vm_stat_path` | `/usr/bin/vm_stat` |  |  | The macOS tool that reports memory pages (an absolute path, so a changed PATH cannot shadow it). |
+| `swarm_guard.vm_stat_poll_ms` | `2` |  | ms | How often the wait for the memory tool checks whether it has finished. |
+| `swarm_guard.vm_stat_timeout_ms` | `1500` |  | ms | How long the memory tool may run before the memory gate is skipped. |
+| `swarm_guard.window_ms` | `60000` |  | ms | The rolling window the spawn cap counts in. |
+| `swarm_guard.write_tools` | `edit, write, multiedit, notebookedit` |  |  | Tools that make an agent write-capable, lower-case. |
+| `swarm_guard.write_tools_every` | `edit, write, multiedit` |  |  | The write tools a disallowed list must all contain for the agent to count as read-only. |
+
+### session_gates.toml / jev_review
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `jev_review.recommend_latch_file` | `state/jev-recommend-notice.json` |  |  | The recommend notice latch, relative to the anti-hall directory: the time it was last shown. |
+| `jev_review.recommend_setting` | `6 entries` |  |  | The setting jev.recommendNotice (on by default): the one-in-30-days notice recommending Jev while it is off. |
+| `jev_review.remind_every_ms` | `2592000000` |  | ms | How long after it was shown the recommend notice stays quiet. |
+| `jev_review.summary` | `Stays silent when no session-start Jev notice can be due (Jev and the semanti...` |  |  | One-line description of the jev-review-reminder check in the generated reference. |
+
+### session_gates.toml / jev_weekly
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `jev_weekly.latch_file` | `state/jev-weekly-notice.json` |  |  | The weekly latch, relative to the anti-hall directory: the time of the last check. |
+| `jev_weekly.notice_setting` | `8 entries` |  |  | The setting jev.weeklyNotice (on by default; a legacy jev.json value is honoured). |
+| `jev_weekly.period_ms` | `604800000` |  | ms | How often the scorecard check may run. |
+| `jev_weekly.summary` | `Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, not...` |  |  | One-line description of the jev-weekly-scorecard check in the generated reference. |
+
+### session_gates.toml / repair_reload
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `repair_reload.cooldown_file` | `repair-on-reload.last.json` |  |  | The record of the last repair start, relative to the anti-hall directory. |
+| `repair_reload.cooldown_ms` | `3600000` |  | ms | How long after a repair start no other one starts at the same plugin version. |
+| `repair_reload.guard_name` | `repair-on-reload` |  |  | Hook name in the skip file. |
+| `repair_reload.migration_keys` | `11 items` |  |  | The keys of the data migrations a reload repairs (the non-opt-in migrations of companion/lib/migrations.js); a test compares this list with the Node one, so a migration added there fails the build until it is added here. |
+| `repair_reload.setting` | `6 entries` |  |  | The switch maintenance.repairOnReload (on by default). |
+| `repair_reload.summary` | `Stays silent when no repair can start (switch off, subagent turn, skipped, no...` |  |  | One-line description of the repair-on-reload check in the generated reference. |
+| `repair_reload.version_re` | `^\d+\.\d+\.\d+$` |  |  | A plain three-part version (JavaScript regex). |
+
+### session_gates.toml / session_gates
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `session_gates.agent_key_markers` | `agent_id, agent_type` |  |  | Payload keys whose presence (with a value other than null) marks a subagent turn. |
+| `session_gates.anti_hall_dir` | `.anti-hall` |  |  | The anti-hall directory under the home directory. |
+| `session_gates.child_branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable DevSwarm sets in a child workspace (a non-blank value marks the session as a child). |
+| `session_gates.codex_fields` | `turn_id, model` |  |  | Payload fields that are both non-empty strings on every Codex turn. |
+| `session_gates.codex_tool` | `apply_patch` |  |  | The tool name only Codex has; its presence marks a Codex payload. |
+| `session_gates.entrypoint_env` | `CLAUDE_CODE_ENTRYPOINT` |  |  | Environment variable that names how the host was started. |
+| `session_gates.headless_prefix` | `sdk-` |  |  | Entry point names starting with this are non-interactive (SDK) runs. |
+| `session_gates.jev_config_file` | `jev.json` |  |  | The legacy Jev configuration file, relative to the anti-hall directory. |
+| `session_gates.jev_enabled_setting` | `8 entries` |  |  | The setting jev.enabled (off by default; a legacy jev.json value is honoured). |
+| `session_gates.jev_semantic_judge_setting` | `6 entries` |  |  | The setting jev.semanticJudge (off by default). |
+| `session_gates.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable the judge child process runs with; every one of these hooks does nothing in it. |
+| `session_gates.judge_child_value` | `1` |  |  | The value of that variable that marks the judge child. |
+| `session_gates.sidechain_flags` | `isSidechain, is_sidechain` |  |  | Payload keys that mark a sidechain (subagent) turn when exactly true. |
 
 ## Messages
 

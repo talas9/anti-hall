@@ -237,7 +237,7 @@ fn config_validate_enforces_the_guard_rule_on_the_real_command() {
         "[events.Stop]\nenabled = false\n",
         "[events.SubagentStop]\nmode = \"shadow\"\n",
         "[events.PermissionRequest]\nmax_rules = 1\n",
-        "[entries.\"swarm-guard\"]\nmode = \"off\"\n",
+        "[entries.\"task-guard\"]\nmode = \"off\"\n",
     ] {
         let (code, out) = validate(bad);
         assert_eq!(code, 1, "{bad}: {out}");

@@ -1028,19 +1028,20 @@ fn two_clients_with_different_environments_get_answers_for_their_own() {
 #[test]
 fn a_finished_hooks_genuine_block_survives_a_check_whose_node_command_cannot_run() {
     let e = Env::new("deferred-block");
-    // On an Agent spawn compact-declaration-guard has no runnable Node command, and with no daemon (NOSPAWN) its built-in
-    // check defers; swarm-guard is a Node-only hook that ran, finished and blocked: its block must be handed back, not
-    // replaced by the generic fail-closed text. (Every Bash entry has a built-in check now, so the spawn event is the one
-    // that still has Node-only hooks next to a check.)
-    let ids = ["compact-declaration-guard", "model-routing-guard", "swarm-guard", "phase-tracker", "orch-on-spawn"];
+    // On Stop, compact-advice-guard has no runnable Node command, and with no daemon (NOSPAWN) its built-in check defers;
+    // task-guard is a Node-only hook that ran, finished and blocked: its block must be handed back, not replaced by the generic
+    // fail-closed text. (Every PreToolUse entry has a built-in check now, so Stop is the event that still has Node-only hooks
+    // next to a check.)
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "Stop").into_iter().map(|x| x.id).collect();
+    assert!(ids.iter().any(|i| i == "task-guard") && ids.iter().any(|i| i == "compact-advice-guard"), "{ids:?}");
     let m: serde_json::Map<String, serde_json::Value> = ids
         .iter()
         .map(|id| {
             (
                 id.to_string(),
-                if *id == "swarm-guard" {
+                if id == "task-guard" {
                     "echo sibling-blocks >&2; exit 2"
-                } else if *id == "compact-declaration-guard" {
+                } else if id == "compact-advice-guard" {
                     ""
                 } else {
                     "true"
@@ -1049,11 +1050,11 @@ fn a_finished_hooks_genuine_block_survives_a_check_whose_node_command_cannot_run
             )
         })
         .collect();
-    let map = e.dir.join("agent-map.json");
-    std::fs::write(&map, serde_json::json!({ "PreToolUse": m }).to_string()).unwrap();
-    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let spawn = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"prompt": "x", "subagent_type": "general-purpose"}}).to_string();
-    let (code, out, err) = e.run_with(&args, false, &spawn, true, &[("AH_ENGINE_NOSPAWN", "1")]);
+    let map = e.dir.join("stop-map.json");
+    std::fs::write(&map, serde_json::json!({ "Stop": m }).to_string()).unwrap();
+    let args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop"}).to_string();
+    let (code, out, err) = e.run_with(&args, false, &stop, true, &[("AH_ENGINE_NOSPAWN", "1")]);
     assert_eq!(code, 2, "{out:?} {err:?}");
     assert!(err.contains("sibling-blocks"), "the finished hook's own block text: {err:?}");
 }
