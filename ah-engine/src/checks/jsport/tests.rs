@@ -176,3 +176,27 @@ fn civil_dates_round_trip() {
         assert_eq!(date::days_from_civil(y, m, dd), d);
     }
 }
+
+#[test]
+fn local_time_needs_proof_that_the_zone_is_the_requests() {
+    use crate::reqenv::RequestEnv;
+    // no guard: refused
+    assert_eq!(date::local_ymd(1.0e12), None);
+    assert_eq!(date::parse("Oct 3 2030 9:11 PM"), Parsed::Unknown);
+    // a request zone that is not this process's: refused
+    let other = RequestEnv::from_pairs([("TZ", "No/Such_Zone_For_Sure")]);
+    {
+        let _g = date::ZoneGuard::new(&other);
+        assert_eq!(date::local_ymd(1.0e12), None);
+        assert_eq!(date::parse("2030-10-08T12:00:00"), Parsed::Unknown);
+        // a zone-less read is never needed for an explicit zone
+        assert_eq!(date::parse("2030-10-08T12:00:00Z"), Parsed::Ms(1917691200000.0));
+    }
+    // the process's own zone: allowed, and the guard is released afterwards
+    let same = RequestEnv::from_pairs(std::env::var("TZ").map(|t| vec![("TZ".to_string(), t)]).unwrap_or_default());
+    {
+        let _g = date::ZoneGuard::new(&same);
+        assert!(date::local_ymd(1.0e12).is_some());
+    }
+    assert_eq!(date::local_ymd(1.0e12), None);
+}

@@ -20,3 +20,6 @@ pub(crate) fn settings_of(env: &RequestEnv) -> Settings {
 pub(crate) fn judge_child(env: &RequestEnv) -> bool {
     env.get(crate::defaults::text("codex_handover.judge_child_env")) == Some(crate::defaults::text("codex_handover.judge_child_on"))
 }
+
+#[cfg(test)]
+mod tests;

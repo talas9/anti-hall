@@ -15,4 +15,6 @@ pub mod num;
 pub mod text;
 
 #[cfg(test)]
+pub(crate) mod testkit;
+#[cfg(test)]
 mod tests;

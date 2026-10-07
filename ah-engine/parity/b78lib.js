@@ -21,7 +21,8 @@ function write(root, rel, content, ageSec) {
   const f = path.join(root, rel);
   fs.mkdirSync(path.dirname(f), { recursive: true });
   fs.writeFileSync(f, content);
-  if (ageSec !== undefined) { const t = Math.floor(Date.now() / 1000) - ageSec; fs.utimesSync(f, t, t); }
+  // one time base per scenario, so the node run and the engine run see the same mtimes
+  if (ageSec !== undefined) { const t = exports.BASE - ageSec; fs.utimesSync(f, t, t); }
   return f;
 }
 function repo(root, rel, files) {
@@ -39,7 +40,8 @@ const jl = (...entries) => entries.map(e => typeof e === 'string' ? e : JSON.str
 const ISO = /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/g;
 const VOLATILE = new Set(['checkedAt', 'recordedAt', 'ts', 'lastSweep']);
 function normText(s, root) {
-  return String(s).split(root).join('$R').replace(ISO, '<ISO>');
+  // an ISO time near now is volatile; any other (a file's fixed mtime, a date in the message) is compared exactly
+  return String(s).split(root).join('$R').replace(ISO, (m) => (Math.abs(Date.parse(m) - Date.now()) < 600000 ? '<NOW>' : m));
 }
 // JSON files: volatile keys are compared as "both recent"; everything else exactly, key order included.
 function normJson(txt, root, nowMs) {
@@ -67,7 +69,8 @@ function snapshot(root, nowMs) {
   walkDir(root, '');
   return out;
 }
-const volatileKeys = rel => /(^|\/)\.prune-stamp-|\.tmp$/.test(rel);
+// Jev decision rows of an integration that is off: the engine writes none by default (jev.log_off_rows), as in the Jev lane.
+const volatileKeys = rel => /\.tmp$|(^|\/)logs\/jev-assist\.ndjson$/.test(rel);
 
 async function runParity(o) {
   const ENGINE = path.resolve(o.engine), HOOKS = path.resolve(o.hooks), hook = path.join(HOOKS, o.hookFile);
@@ -78,9 +81,12 @@ async function runParity(o) {
   for (const sc of o.scenarios) {
     if (only && !String(sc.id).includes(only)) continue;
     stats.n++;
+    exports.BASE = Math.floor(Date.now() / 1000);
     const sides = {};
     for (const side of ['node', 'engine']) {
-      const root = path.join(tmp, `${stats.n}-${side}`);
+      // both sides run at the SAME absolute path (one after the other) so paths in outputs and encoded directory names agree
+      const root = path.join(tmp, `${stats.n}`);
+      fs.rmSync(root, { recursive: true, force: true });
       fs.mkdirSync(path.join(root, 'home', '.anti-hall'), { recursive: true });
       const built = sc.setup ? sc.setup(root) : {};
       const payload = built.payload !== undefined ? built.payload : sc.payload;
@@ -92,6 +98,7 @@ async function runParity(o) {
       const r = side === 'node' ? sh(process.execPath, [hook], { input, env, cwd }) : sh(ENGINE, ['check', o.check], { input, env, cwd });
       const t1 = Date.now();
       sides[side] = { root, r, snap: snapshot(root, (t0 + t1) / 2) };
+      if (side === 'node') fs.renameSync(root, root + '.node');
     }
     const n = sides.node, e = sides.engine;
     const nr = { code: n.r.code, out: normText(n.r.out, n.root), err: normText(n.r.err, n.root) };
@@ -104,7 +111,7 @@ async function runParity(o) {
     const same = nr.code === er.code && nr.out === er.out && nr.err === er.err && JSON.stringify(ns) === JSON.stringify(es);
     if (same) stats.same++;
     else { stats.mismatch++; if (mism.length < 500) mism.push({ id: sc.id, node: nr, engine: er, nodeFiles: ns, engineFiles: es }); }
-    if (!flag('--keep')) { fs.rmSync(n.root, { recursive: true, force: true }); fs.rmSync(e.root, { recursive: true, force: true }); }
+    if (!flag('--keep')) { fs.rmSync(n.root + '.node', { recursive: true, force: true }); fs.rmSync(e.root, { recursive: true, force: true }); }
   }
   console.log(`${o.name}: scenarios=${stats.n} same=${stats.same} deferred=${stats.deferred} MISMATCH=${stats.mismatch} (node printed output in ${stats.nodeOut}, left files in ${stats.nodeFiles})`);
   if (stats.deferred) console.log('  deferred: ' + stats.deferredIds.slice(0, +arg('--show-defer', 12)).join(' | '));
@@ -121,4 +128,5 @@ async function runParity(o) {
   return stats;
 }
 
-module.exports = { arg, flag, sh, git, write, repo, jl, runParity, GITENV };
+exports.BASE = Math.floor(Date.now() / 1000);
+Object.assign(exports, { arg, flag, sh, git, write, repo, jl, runParity, GITENV });

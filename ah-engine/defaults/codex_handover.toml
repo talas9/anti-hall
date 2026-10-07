@@ -847,3 +847,7 @@ value = ["status", "--porcelain"]
 [codex_handover.argv_super]
 doc = "The git arguments that print the superproject checkout of a repository; {root} is the repository."
 value = ["-C", "{root}", "rev-parse", "--show-superproject-working-tree"]
+
+[codex_handover.tz_var]
+doc = "The environment variable that sets the time zone; a request whose value differs from this process's has its local-time conversions left to the Node hook."
+value = "TZ"

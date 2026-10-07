@@ -5,3 +5,6 @@ pub mod find;
 pub mod precompact;
 pub mod resume;
 pub mod transcript;
+
+#[cfg(test)]
+mod tests;

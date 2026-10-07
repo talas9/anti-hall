@@ -89,7 +89,7 @@ fn writer_line(cwd: &str, root: &str, cand: &Cand, home: &str) -> String {
 }
 
 /// `RESUME_CHECKLIST_HEADING`: `/^##\s*Resume-verification checklist\b/im`.
-fn has_checklist(content: &str) -> bool {
+pub(super) fn has_checklist(content: &str) -> bool {
     let needle = defaults::text("codex_handover.checklist_title");
     let is_ws = crate::checks::guardkit::text::is_js_space;
     let mut starts = vec![0usize];

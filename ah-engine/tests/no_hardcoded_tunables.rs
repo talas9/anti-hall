@@ -81,6 +81,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "offsets of a counter slot's fields (count, latency sum, injected bytes, first bucket): the in-memory layout of the recorder, not a tunable",
     ),
     ("src/telemetry/recorder.rs", "static THREAD_ID", "a thread-local cell holding the thread's shard number: structural"),
+    ("src/checks/jsport/date.rs", "static ZONE_OK", "a thread-local cell holding whether the local time zone matches the request's: per-check scratch state, structural"),
     // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
     (
         "src/sql.rs",

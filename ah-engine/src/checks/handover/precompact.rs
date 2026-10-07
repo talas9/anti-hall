@@ -154,6 +154,7 @@ fn build(c: &Ctx<'_>) -> Result<String, Unsure> {
 
 /// The check's decision on one payload.
 pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
+    let _zone = crate::checks::jsport::date::ZoneGuard::new(env);
     let st = crate::checks::codex::settings_of(env);
     if !get_bool(&st, defaults::raw("codex_handover.setting_precompact")) {
         return Ok(None);
@@ -170,7 +171,11 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
     let session = jstext::sanitize_session(&jstext::string_or_empty(member(p, "session_id")), defaults::text("codex_handover.unknown_session"));
     let root = find::handovers_root(cwd, &home, env)?;
     let dir = path_join(&path_join(&root, &find::local_date()?), &session);
-    let lines = str_member(p, "transcript_path").and_then(read_tail);
+    let tp = str_member(p, "transcript_path");
+    if tp.is_some_and(|t| !t.is_empty() && !t.starts_with('/')) {
+        return Err(Unsure); // relative to the hook's own working directory, which is not known here
+    }
+    let lines = tp.and_then(read_tail);
     let refs: Vec<&str> = lines.as_ref().map(|v| v.iter().map(String::as_str).collect()).unwrap_or_default();
     let handover = find::newest_handover(&root, &session)?;
     if !fsx::mkdir_p(&dir) {

@@ -72,6 +72,7 @@ fn quota_note(home: &str, codex: bool) -> Result<String, Unsure> {
 
 /// The check's decision on one payload.
 pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
+    let _zone = crate::checks::jsport::date::ZoneGuard::new(env);
     if super::judge_child(env) {
         return Ok(None);
     }

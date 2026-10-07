@@ -5,6 +5,38 @@
 //! can reproduce exactly (ISO 8601 with a full date, and `Mon D, YYYY [H:MM[:SS] [AM|PM]] [UTC|GMT|Z]`) and strings that
 //! cannot be a date at all (no digit); every other string is [`Parsed::Unknown`], which makes the check defer.
 use crate::defaults;
+use crate::reqenv::RequestEnv;
+use std::cell::Cell;
+
+thread_local! {
+    static ZONE_OK: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Proof, for the length of one check, that the local time zone of this process is the one the hook ran in.
+///
+/// Local calendar dates and zone-less date strings depend on the time zone. The engine process has its own zone, the
+/// hook its own; they agree when the request's `TZ` is the process's `TZ` (both unset means the machine's zone, which
+/// is shared). Without a guard, or when they differ, every local conversion is refused and the check defers to Node.
+pub struct ZoneGuard(bool);
+
+impl ZoneGuard {
+    /// Compare the request's `TZ` with this process's and hold the answer until the guard is dropped.
+    pub fn new(env: &RequestEnv) -> ZoneGuard {
+        let name = defaults::text("codex_handover.tz_var");
+        let ok = env.get(name).map(str::to_string) == std::env::var(name).ok();
+        ZoneGuard(ZONE_OK.with(|z| z.replace(ok)))
+    }
+}
+
+impl Drop for ZoneGuard {
+    fn drop(&mut self) {
+        ZONE_OK.with(|z| z.set(self.0));
+    }
+}
+
+fn zone_ok() -> bool {
+    ZONE_OK.with(Cell::get)
+}
 
 /// The result of parsing a date string.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,6 +104,9 @@ pub fn to_iso(ms: f64) -> Option<String> {
 /// The local calendar date `YYYY-MM-DD` of `ms` (what `getFullYear()`, `getMonth()` and `getDate()` give), by the
 /// process's own time zone.
 pub fn local_ymd(ms: f64) -> Option<String> {
+    if !zone_ok() {
+        return None;
+    }
     let secs = (ms / 1000.0).floor() as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: `secs` is a plain integer and `tm` a writable struct of the right type.
@@ -82,7 +117,7 @@ pub fn local_ymd(ms: f64) -> Option<String> {
 /// Milliseconds of a LOCAL wall-clock time, or `None` when it falls in a daylight-saving gap or overlap (where V8's
 /// choice is not reproduced here).
 fn local_to_ms(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<f64> {
-    if !(1971..=2200).contains(&y) {
+    if !zone_ok() || !(1971..=2200).contains(&y) {
         return None;
     }
     let tm = |isdst: i32| {

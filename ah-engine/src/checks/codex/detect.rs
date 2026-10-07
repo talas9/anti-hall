@@ -84,6 +84,7 @@ fn blob(p: &Value) -> Result<Option<String>, Unsure> {
 
 /// The check's decision on one payload.
 pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
+    let _zone = crate::checks::jsport::date::ZoneGuard::new(env);
     let st = super::settings_of(env);
     if !get_bool(&st, defaults::raw("codex_handover.setting_quota_detect")) {
         return Ok(None);

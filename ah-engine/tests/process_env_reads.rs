@@ -13,6 +13,10 @@ const ALLOW: &[(&str, &str)] = &[
     ("src/defaults.rs", "`AH_ENGINE_*` tunable overrides and names: settings of the engine process itself"),
     ("src/cfgstore.rs", "integer `AH_ENGINE_*` engine tunables only (test `only_engine_tunables_read_the_process_environment`)"),
     (
+        "src/checks/jsport/date.rs",
+        "this process's own time zone variable, read only to prove the request's `TZ` is the zone the process converts local time in (a mismatch defers the check to Node); no request is answered from it",
+    ),
+    (
         "src/jev/settings.rs",
         "`Env::process`, the Jev lane's snapshot constructor, called by `ah-engine jev ask|status|scrub` (the CLI process: its own environment is right). Wiring Jev into the dispatcher (D58) must snapshot the REQUEST's environment (`Env::from_pairs`) instead",
     ),

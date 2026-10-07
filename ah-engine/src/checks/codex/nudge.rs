@@ -278,6 +278,7 @@ fn prune_stale(dir: &str, keep: &str, now: f64) {
 
 /// The check's decision on one payload.
 pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
+    let _zone = crate::checks::jsport::date::ZoneGuard::new(env);
     if super::judge_child(env) {
         return Ok(None);
     }
@@ -286,6 +287,9 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
         return Ok(None);
     }
     let Some(tp) = jstext::str_member(p, "transcript_path").filter(|t| !t.is_empty()) else { return Ok(None) };
+    if !tp.starts_with('/') {
+        return Err(Unsure); // relative to the hook's own working directory, which is not known here
+    }
     let Some(scan) = scan_transcript(tp, p, env)? else { return Ok(None) };
     let min = min_setting(&st)?;
     if (scan.edits as f64) < min || scan.review {
@@ -303,8 +307,10 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
         .map(jstext::js_string)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| jstext::sha1_hex(tp.as_bytes())[..defaults::num("codex_handover.nudge_session_hash_len") as usize].to_string());
-    if jev_on(&home, env) {
-        return Err(Unsure); // the Jev consult belongs to the Node hook
+    // The Jev consult belongs to the Node hook; so does the decision row the Node client logs for an integration that is
+    // off, when the engine is set to write such rows (`jev.log_off_rows`).
+    if jev_on(&home, env) || defaults::num("jev.log_off_rows") == 1 {
+        return Err(Unsure);
     }
     let dir = format!("{home}/{}", defaults::text("codex_handover.state_dir"));
     let state = format!("{dir}/{}-{}.json", defaults::text("codex_handover.nudge_state_prefix"), jstext::safe_name(&session));
