@@ -45,13 +45,23 @@ cp.spawn = function (cmd, args, opts) {
 cp._realSpawn = real;
 `;
 
-// Replace {{NOW-ms}} {{NOW+ms}} {{ISO-ms}} {{ISO+ms}} {{HOME}} {{PROJ}} {{BASE}} {{PLUGIN}} in fixture text.
+// Node's cwdKey (hooks/progress-prune.js): the 31-hash of the UTF-16 units, in base 36, behind "cwd_".
+function cwdKey(cwd) {
+  let hash = 0;
+  const s = String(cwd || '');
+  for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+  return 'cwd_' + Math.abs(hash).toString(36);
+}
+
+// Replace {{NOW-ms}} {{NOW+ms}} {{ISO-ms}} {{ISO+ms}} {{HOME}} {{PROJ}} {{BASE}} {{PLUGIN}} {{TODAY}} and {{KEY[:path]}} (the
+// prune throttle key of a working directory, PROJ by default) in fixture text.
 function expand(text, vars) {
-  return String(text).replace(/\{\{(NOW|ISO)([-+]\d+)?\}\}|\{\{(HOME|PROJ|BASE|PLUGIN|TODAY)\}\}/g, (m, kind, off, name) => {
+  const first = String(text).replace(/\{\{(NOW|ISO)([-+]\d+)?\}\}|\{\{(HOME|PROJ|BASE|PLUGIN|TODAY)\}\}/g, (m, kind, off, name) => {
     if (name) return vars[name];
     const t = vars.now0 + (off ? Number(off) : 0);
     return kind === 'NOW' ? String(t) : new Date(t).toISOString();
   });
+  return first.replace(/\{\{KEY(?::([^}]*))?\}\}/g, (m, p) => cwdKey(p === undefined ? vars.PROJ : p));
 }
 
 function buildTree(base, files, vars) {
@@ -67,6 +77,19 @@ function buildTree(base, files, vars) {
       if (spec.mtimeOffset !== undefined) { const t = (vars.now0 + spec.mtimeOffset) / 1000; fs.utimesSync(full, t, t); }
     }
   }
+}
+
+// Remove a scenario's scratch tree; a scenario may have taken away its own permissions (an unreadable directory), which
+// are given back first so the tree can go.
+function wipe(dir) {
+  const unlock = d => {
+    let st; try { st = fs.lstatSync(d); } catch (_) { return; }
+    if (st.isSymbolicLink()) return;
+    if (st.isDirectory()) { try { fs.chmodSync(d, 0o755); } catch (_) {} let n = []; try { n = fs.readdirSync(d); } catch (_) {} for (const e of n) unlock(path.join(d, e)); }
+    else { try { fs.chmodSync(d, 0o644); } catch (_) {} }
+  };
+  unlock(dir);
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 // Snapshot a tree: relative path -> {type, text|target}; `.git` internals are left out (the hooks only read them).
@@ -163,6 +186,7 @@ async function runParity(o) {
       if (!sc.bare) fs.mkdirSync(path.join(vars.HOME, '.anti-hall'), { recursive: true });
       buildTree(base, sc.files, vars);
       for (const g of sc.git || []) { fs.mkdirSync(path.join(base, g), { recursive: true }); cp.execFileSync('git', ['init', '-q', path.join(base, g)], { stdio: 'ignore' }); }
+      for (const c of sc.exec || []) cp.execFileSync(c[0], c.slice(1).map(a => expand(a, vars)), { cwd: base, stdio: 'ignore', env: Object.assign({}, process.env, { GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b', GIT_AUTHOR_DATE: '2020-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2020-01-01T00:00:00Z' }) });
       for (const [rel, text] of Object.entries(sc.afterGit || {})) { const f = path.join(base, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, expand(text, vars)); }
     };
     const payloadText = sc.raw !== undefined ? expand(sc.raw, vars) : JSON.stringify(Object.assign({ hook_event_name: 'SessionStart', session_id: 'sess-1', cwd: vars.PROJ }, sc.payload || {}), (k, v) => typeof v === 'string' ? expand(v, vars) : v);
@@ -178,12 +202,12 @@ async function runParity(o) {
     const nodeRes = await run(process.execPath, ['-r', path.join(tmp, 'spy.js'), path.join(sc._root, 'hooks', HOOKS[sc.hook])], payloadText, Object.assign({}, env, { ANTIHALL_SPY_LOG: spyLog }), '/tmp');
     const spawned = fs.existsSync(spyLog) ? fs.readFileSync(spyLog, 'utf8').trim().split('\n').filter(Boolean) : [];
     const nodeTree = snapshot(base);
-    fs.rmSync(base, { recursive: true, force: true });
+    wipe(base);
     // 2. the engine, on a fresh copy of the same fixture
     build();
     const engRes = await run(ENGINE, ['check', sc.hook], payloadText, Object.assign({}, env, { AH_ENGINE_PLUGIN_ROOT: sc._root }), '/tmp');
     const engTree = snapshot(base);
-    fs.rmSync(base, { recursive: true, force: true });
+    wipe(base);
     if (nodeRes.out) stats.nodeOut++;
     if (spawned.length) stats.spawned++;
     const nodeChanged = diffTrees(initTree, nodeTree, norm).length > 0;
