@@ -123,7 +123,13 @@ enum Probe {
 /// `git -C root check-ignore -q .anti-hall/probe` with the git environment the client forwarded.
 fn check_ignore(root: &str, env: &RequestEnv) -> Probe {
     let mut cmd = Command::new(defaults::text("session.git_binary"));
-    cmd.args(["-C", root]).args(defaults::list("session.check_ignore_args")).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).env_clear();
+    cmd.args(["-C", root])
+        .args(defaults::list("session.check_ignore_args"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .env_clear();
     let scrub = defaults::list("session.git_scrub_env");
     for (k, v) in env.to_map() {
         if !scrub.contains(&k.as_str()) {

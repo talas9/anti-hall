@@ -192,15 +192,42 @@ fn dates_and_throttle_keys_match_node() {
         assert_eq!(iso_date(ms), &iso[..10]);
     }
     // computed with Node: Date.parse(s + 'T00:00:00Z') / 86400000 (null = NaN)
-    for (s, days) in [("2026-09-03", Some(20699)), ("2026-02-29", None), ("2028-02-29", Some(21243)), ("2026-13-01", None), ("2026-00-10", None), ("2026-04-31", None), ("1999-12-31", Some(10956)), ("abcd-ef-gh", None), ("2026-9-3", None)] {
+    for (s, days) in [
+        ("2026-09-03", Some(20699)),
+        ("2026-02-29", None),
+        ("2028-02-29", Some(21243)),
+        ("2026-13-01", None),
+        ("2026-00-10", None),
+        ("2026-04-31", None),
+        ("1999-12-31", Some(10956)),
+        ("abcd-ef-gh", None),
+        ("2026-9-3", None),
+    ] {
         assert_eq!(days_of_iso_date(s), days, "{s}");
     }
     // computed with Node: cwdKey of progress-prune.js
-    for (cwd, key) in [("/a", "cwd_176"), ("/tmp/x/proj", "cwd_9356nv"), ("/Users/someone/Projects/anti-hall", "cwd_7vldaa"), ("é日本😀", "cwd_guxzw3"), ("/", "cwd_1b"), ("/private/tmp/claude-501/-Users-talas9-Projects-anti-hall/44895798", "cwd_b5iztk"), (&"x".repeat(300), "cwd_t2j4zk")] {
+    for (cwd, key) in [
+        ("/a", "cwd_176"),
+        ("/tmp/x/proj", "cwd_9356nv"),
+        ("/Users/someone/Projects/anti-hall", "cwd_7vldaa"),
+        ("é日本😀", "cwd_guxzw3"),
+        ("/", "cwd_1b"),
+        ("/private/tmp/claude-501/-Users-talas9-Projects-anti-hall/44895798", "cwd_b5iztk"),
+        (&"x".repeat(300), "cwd_t2j4zk"),
+    ] {
         assert_eq!(cwd_key_for_test(cwd), key);
     }
     // computed with Node: lines.map(l => '> ' + l).join('\n') + '\n' over text.split(/\r?\n/)
-    for (c, want) in [("", "> \n"), ("a", "> a\n"), ("a\n", "> a\n> \n"), ("a\r\nb", "> a\n> b\n"), ("a\rb\r", "> a\rb\r\n"), ("\n\n", "> \n> \n> \n"), ("a\r\r\nb\r\r", "> a\r\n> b\r\r\n"), ("a\r\n", "> a\n> \n")] {
+    for (c, want) in [
+        ("", "> \n"),
+        ("a", "> a\n"),
+        ("a\n", "> a\n> \n"),
+        ("a\r\nb", "> a\n> b\n"),
+        ("a\rb\r", "> a\rb\r\n"),
+        ("\n\n", "> \n> \n> \n"),
+        ("a\r\r\nb\r\r", "> a\r\n> b\r\r\n"),
+        ("a\r\n", "> a\n> \n"),
+    ] {
         assert_eq!(blockquote_for_test(c), want, "{c:?}");
     }
 }
@@ -247,7 +274,10 @@ fn a_fresh_cache_with_drift_advises_once_and_keeps_the_other_fields_in_place() {
     h.write(".anti-hall/claude-cli-version.json", &claude_cache("2.2.0", "\"zz\":{\"b\":1,\"a\":[1,2]},", 3_600_000.0));
     let c = crate::checks::get("claude-cli-version").unwrap();
     let v = run(c, &h, &[], json!({"session_id": "s"}), None);
-    assert_eq!(advisory_text(&v), "⚠️ anti-hall · claude-cli-version: Claude Code CLI 2.2.0 is installed; anti-hall's harness KB is audited against 2.1.238.\nWhy: Behavior may have drifted.\nDo instead: see docs/KB-claude-code-harness-features.md.");
+    assert_eq!(
+        advisory_text(&v),
+        "⚠️ anti-hall · claude-cli-version: Claude Code CLI 2.2.0 is installed; anti-hall's harness KB is audited against 2.1.238.\nWhy: Behavior may have drifted.\nDo instead: see docs/KB-claude-code-harness-features.md."
+    );
     let after = h.read(".anti-hall/claude-cli-version.json").unwrap();
     assert!(after.starts_with("{\"source\":\"probe\",\"installed\":\"2.2.0\",\"zz\":{\"b\":1,\"a\":[1,2]},\"checkedAt\":"), "{after}");
     assert!(after.ends_with(",\"lastAdvised\":{\"installed\":\"2.2.0\",\"baseline\":\"2.1.238\"}}"), "{after}");
@@ -271,9 +301,22 @@ fn devswarm_dedupe_only_needs_the_pair_but_claude_cli_needs_exactly_the_pair() {
     let h = Tmp::new("dedupe-shape");
     let la = "\"lastAdvised\":{\"installed\":\"2.6.0\",\"baseline\":\"2.5.1\",\"extra\":1},";
     h.write(".anti-hall/devswarm-version.json", &format!("{{\"installed\":\"2.6.0\",{la}\"checkedAt\":{}}}", (now() - 1000.0 * 60.0) as i64));
-    assert_eq!(run(crate::checks::get("devswarm-version").unwrap(), &h, &[], json!({}), None), Verdict::Allow, "devswarm: an extra key still counts as advised");
-    h.write(".anti-hall/claude-cli-version.json", &format!("{{\"installed\":\"2.2.0\",\"lastAdvised\":{{\"installed\":\"2.2.0\",\"baseline\":\"2.1.238\",\"extra\":1}},\"checkedAt\":{}}}", (now() - 60_000.0) as i64));
-    assert!(matches!(run(crate::checks::get("claude-cli-version").unwrap(), &h, &[], json!({}), None), Verdict::Advisory(_)), "claude-cli: an extra key does not");
+    assert_eq!(
+        run(crate::checks::get("devswarm-version").unwrap(), &h, &[], json!({}), None),
+        Verdict::Allow,
+        "devswarm: an extra key still counts as advised"
+    );
+    h.write(
+        ".anti-hall/claude-cli-version.json",
+        &format!(
+            "{{\"installed\":\"2.2.0\",\"lastAdvised\":{{\"installed\":\"2.2.0\",\"baseline\":\"2.1.238\",\"extra\":1}},\"checkedAt\":{}}}",
+            (now() - 60_000.0) as i64
+        ),
+    );
+    assert!(
+        matches!(run(crate::checks::get("claude-cli-version").unwrap(), &h, &[], json!({}), None), Verdict::Advisory(_)),
+        "claude-cli: an extra key does not"
+    );
 }
 
 #[test]
@@ -333,8 +376,15 @@ fn version_alert_says_update_once_per_session_and_defers_on_a_stale_cache() {
     assert_eq!(run(c, &h, &[], json!({"session_id": "s1"}), Some(&root)), Verdict::Defer, "stale cache");
     h.write(".anti-hall/version-check.json", &cache(60_000.0));
     let t = advisory_text(&run(c, &h, &[], json!({"session_id": "s1"}), Some(&root)));
-    assert!(t.starts_with("⬆️ anti-hall · version-alert: v1.2.4 is available (you are running v1.2.3).\nDo instead: tell the user now: run /anti-hall:update"), "{t}");
-    assert!(h.read(".anti-hall/version-check.json").unwrap().ends_with(",\"lastAdvised\":{\"case\":\"update\",\"sessionId\":\"s1\",\"latest\":\"1.2.4\",\"running\":\"1.2.3\"}}"));
+    assert!(
+        t.starts_with("⬆️ anti-hall · version-alert: v1.2.4 is available (you are running v1.2.3).\nDo instead: tell the user now: run /anti-hall:update"),
+        "{t}"
+    );
+    assert!(
+        h.read(".anti-hall/version-check.json")
+            .unwrap()
+            .ends_with(",\"lastAdvised\":{\"case\":\"update\",\"sessionId\":\"s1\",\"latest\":\"1.2.4\",\"running\":\"1.2.3\"}}")
+    );
     assert_eq!(run(c, &h, &[], json!({"session_id": "s1"}), Some(&root)), Verdict::Allow, "the same session is told once");
     assert!(matches!(run(c, &h, &[], json!({"session_id": "s2"}), Some(&root)), Verdict::Advisory(_)), "another session is told again");
 }
@@ -347,9 +397,17 @@ fn version_alert_case_two_names_the_mirrored_release_and_its_changelog_headline(
     h.write(".claude/plugins/installed_plugins.json", r#"{"version":2,"plugins":{"anti-hall@anti-hall":[{"scope":"user","version":"1.2.3"}]}}"#);
     let c = crate::checks::get("version-alert").unwrap();
     let t = advisory_text(&run(c, &h, &[], json!({"session_id": "s1"}), Some(&root)));
-    assert!(t.contains("v1.2.4 is downloaded locally (you are running v1.2.3) but the Claude Code harness has not registered it yet.") && t.ends_with("\nHighlight: Fixed the thing"), "{t}");
+    assert!(
+        t.contains("v1.2.4 is downloaded locally (you are running v1.2.3) but the Claude Code harness has not registered it yet.")
+            && t.ends_with("\nHighlight: Fixed the thing"),
+        "{t}"
+    );
     let marker = h.read(".anti-hall/version-alert-reload.json").unwrap();
-    assert!(marker.starts_with("{\"checkedAt\":") && marker.ends_with(",\"lastAdvised\":{\"case\":\"reload\",\"sessionId\":\"s1\",\"mirrored\":\"v1.2.4\",\"running\":\"1.2.3\"}}"), "{marker}");
+    assert!(
+        marker.starts_with("{\"checkedAt\":")
+            && marker.ends_with(",\"lastAdvised\":{\"case\":\"reload\",\"sessionId\":\"s1\",\"mirrored\":\"v1.2.4\",\"running\":\"1.2.3\"}}"),
+        "{marker}"
+    );
     assert_eq!(run(c, &h, &[], json!({"session_id": "s1"}), Some(&root)), Verdict::Allow);
 }
 
@@ -381,7 +439,10 @@ fn repo_self_drift_scans_when_stale_writes_the_cache_in_node_order_and_says_the_
     let t = advisory_text(&run(c, &h, &[], json!({}), Some(&root)));
     assert_eq!(t, "anti-hall repo self-drift — hooks: KB.md claims 5, actual 2 (docs/KB.md)");
     let cache = h.read(".anti-hall/repo-self-drift.json").unwrap();
-    assert!(cache.contains("\"claimedHooks\":5,\"actualHooks\":2,\"claimedSkills\":2,\"actualSkills\":2,\"modelKbAuditDate\":\"2026-09-03\",\"modelKbAgeDays\":"), "{cache}");
+    assert!(
+        cache.contains("\"claimedHooks\":5,\"actualHooks\":2,\"claimedSkills\":2,\"actualSkills\":2,\"modelKbAuditDate\":\"2026-09-03\",\"modelKbAgeDays\":"),
+        "{cache}"
+    );
     assert!(cache.ends_with("\"lastAdvised\":{\"counts\":{\"claimedHooks\":5,\"actualHooks\":2,\"claimedSkills\":2,\"actualSkills\":2}}}"), "{cache}");
     assert_eq!(run(c, &h, &[], json!({}), Some(&root)), Verdict::Allow, "said once");
 }
@@ -412,8 +473,19 @@ fn defect_nudge_counts_unfinished_reports_for_the_maintainer_and_arms_the_daily_
     std::fs::write(proj.join("plugins/anti-hall/.claude-plugin/plugin.json"), "{}").unwrap();
     let ago = |days: f64| iso_string(now() - days * 86_400_000.0);
     h.write(".anti-hall/defects/aaaaaaaaaaaa.jsonl", &format!("{}\n", report("p", &ago(5.5))));
-    h.write(".anti-hall/defects/bbbbbbbbbbbb.jsonl", &format!("{}\n{}\n", report("p", &ago(9.5)), json!({"t": "ruling", "status": "fixed", "fixedIn": "1.0.0"})));
-    h.write(".anti-hall/defects/cccccccccccc.jsonl", &format!("{}\n{}\n{}\n", report("p", &ago(20.5)), json!({"t": "ruling", "status": "fixed", "fixedIn": "1.0.0"}), json!({"t":"report","proj":"p","v":"1.0.1","at":ago(1.5)})));
+    h.write(
+        ".anti-hall/defects/bbbbbbbbbbbb.jsonl",
+        &format!("{}\n{}\n", report("p", &ago(9.5)), json!({"t": "ruling", "status": "fixed", "fixedIn": "1.0.0"})),
+    );
+    h.write(
+        ".anti-hall/defects/cccccccccccc.jsonl",
+        &format!(
+            "{}\n{}\n{}\n",
+            report("p", &ago(20.5)),
+            json!({"t": "ruling", "status": "fixed", "fixedIn": "1.0.0"}),
+            json!({"t":"report","proj":"p","v":"1.0.1","at":ago(1.5)})
+        ),
+    );
     let c = crate::checks::get("defect-nudge").unwrap();
     let t = advisory_text(&run(c, &h, &[], json!({"cwd": proj.to_string_lossy()}), None));
     assert_eq!(t, "💡 anti-hall · defect-nudge: 2 unfinished defect reports (1 regressed), oldest 20d.\nDo instead: run /anti-hall:defects.");

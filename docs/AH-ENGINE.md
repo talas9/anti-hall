@@ -67,8 +67,17 @@ labelled with how it was measured in the README of `ah-engine/`.
   a possible recommendation) defers, so the files those hooks write (the per-session latch, the account-switch file, the
   emit-dedupe state, the once-per-declaration hash) are only ever written by the Node implementation (`checks/ctxbudget`,
   `defaults/ctxbudget.toml`).
+- **Session maintenance ports.** `version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`,
+  `defect-nudge` and `progress-prune` are the six SessionStart hooks that keep a small cache or ledger under the home
+  directory. They are not guards (D74: non-guard hooks fail open) and they share `checks/session`: an order-preserving JSON
+  value that prints numbers the way JavaScript does (the Node and Rust writers share the state files), the drift-cache
+  mechanics and the JavaScript date and version reading. Each reproduces its Node hook's output bytes and its state-file
+  writes. The engine never starts a background process: a stale version cache (Node spawns a detached probe), a payload with
+  no working directory (Node reads its own), a `.git` file or date or JSON text it cannot read exactly like JavaScript, or a
+  gitignore probe slower than `session.gitignore_probe_ms` all answer a deferral BEFORE anything is written, so the Node hook
+  then runs whole and sees the state it would have seen.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  twenty-four: `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  thirty: `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -79,7 +88,8 @@ labelled with how it was measured in the README of `ah-engine/`.
   guards: they inject text or record a fact, never block, and anything they cannot reproduce exactly defers to the Node
   hook (D74); the four spawn/path context ports below; and the three prompt-emission ports `verify-first` (the
   short rotating reminder), `idle-agent-sweep` (agents that finished but were never stopped) and `emit-dedupe-reset`
-  (marks a context loss at SessionStart).
+  (marks a context loss at SessionStart); the four context-budget gates; and the six session maintenance ports above:
+  `version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge` and `progress-prune`.
 - **Spawn/path context ports.** `inbox-read-guard` (PreToolUse on Read), `phase-tracker` (PreToolUse on Agent and Task),
   `orch-on-spawn` (PreToolUse on spawns) and `verify-first-orch` (SessionStart, the Claude entry only). They share
   `checks/spawnctx`: the home directory the state files live under (with the test-run refusal of the real home), the
@@ -117,6 +127,10 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `inbox-read-guard`, `phase-tracker`, `orch-on-spawn` and `verify-first-orch` checks (the spawn/path context ports) with exact parity on the paths they answer; the cases that need Node's own probes defer | implemented | D29-D31, D74, D75 |
 | Built-in `model-routing` check for Agent/Task spawns: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches | implemented | D29-D31, D75 |
 | Built-in `verify-first`, `idle-agent-sweep` and `emit-dedupe-reset` checks (prompt emission, advisory only) over the shared emit-dedupe state file, with exact parity including the state files; a DevSwarm Primary session and anything JavaScript might read differently defer to Node | implemented | D29-D31, D74, D75 |
+| Built-in `version-alert`, `devswarm-version`, `claude-cli-version` checks (SessionStart drift and update advisories from a cached probe): output and state file identical to Node on a fresh cache; a stale or absent cache defers because Node starts the detached refresh | implemented | D29-D31, D74, D75 |
+| Built-in `repo-self-drift` check (KB hook and skill counts against disk, model-KB audit age): the scan, its cache and the once-per-finding advisories identical to Node | implemented | D29-D31, D74, D75 |
+| Built-in `defect-nudge` check (once-a-day count of unfinished defect reports or of rulings on this project's reports; counts and ages only): identical to Node; a payload without a working directory or a date the time zone can change defers | implemented | D29-D31, D74, D75 |
+| Built-in `progress-prune` check (archive stale per-session progress files into the history ledger before removing them; weekly gitignore reminder using the client's git): identical to Node; an unusual `.git` file or a slow git defers | implemented | D29-D31, D59, D74, D75 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |
@@ -486,6 +500,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `hooks.toml` | the hook configuration: defaults of `[events.<Event>]` and `[entries.<id>]`, the `when` predicate vocabulary, the plan outcomes and their messages |
 | `hooks.d/*.toml` | optional: per-batch `[events.<Event>]` / `[entries."<id>"]` defaults (one file per batch of ported hooks, so parallel lanes do not edit a shared file) |
 | `prompt_emit.toml` | switches, limits, patterns and messages of the prompt-emission checks (`verify-first`, `idle-agent-sweep`, `emit-dedupe-reset`) and the emit-dedupe store they share |
+| `session.toml` | the session-maintenance checks: switches, cache and ledger file names, time limits, baselines, claim patterns and messages |
 
 Each setting is a table with `value`, `doc` and optionally `env` (an environment variable that overrides a numeric value for
 one process), `min`, `max` and `unit`. Code reads them through one module; a test fails the build if a tunable, table or
