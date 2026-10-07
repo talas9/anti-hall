@@ -1210,3 +1210,52 @@ fn an_empty_home_defers_the_env_reading_checks_in_process_and_through_the_daemon
         e.stop();
     }
 }
+
+/// Review P1: a check that records a spawn and then answers "nothing to say" must answer `Allow`, never `None` (which the
+/// dispatcher hands to the Node hook, and the Node hook records the same spawn a second time: the rate cap was effectively
+/// halved). One Agent call through the real dispatcher, with the real Node hooks behind every entry that defers, writes exactly
+/// one line to the swarm spawn log and one to the phase tracker's agent log.
+#[test]
+fn one_agent_call_records_exactly_one_spawn_per_log() {
+    if Command::new("node").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        eprintln!("skipped: no node on PATH (the real Node hooks are the oracle for a double record)");
+        return;
+    }
+    let e = Env::new("spawn-once");
+    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    let home = e.dir.join("home");
+    let payload = serde_json::json!({
+        "session_id": "once", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Agent",
+        "tool_input": {"description": "read a file", "prompt": "read README.md and report its first line", "subagent_type": "Explore", "model": "haiku"}
+    })
+    .to_string();
+    for in_process in [true, false] {
+        let _ = std::fs::remove_dir_all(home.join(".anti-hall"));
+        let calls = 3;
+        for _ in 0..calls {
+            let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+            c.args(["hook", "--event", "PreToolUse"])
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", &home)
+                .env("AH_ENGINE_DIR", e.state())
+                .env("AH_ENGINE_VERSION", "dispatch-e2e")
+                .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
+                .env("AH_ENGINE_NOSPAWN", if in_process { "0" } else { "1" })
+                .env("CLAUDE_PLUGIN_ROOT", &plugin)
+                .env("ANTIHALL_INGEST_DRY_RUN", "1")
+                .current_dir(&e.dir)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut ch = c.spawn().unwrap();
+            ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+            let o = ch.wait_with_output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+        }
+        let lines = |rel: &str| std::fs::read_to_string(home.join(rel)).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+        let mode = if in_process { "checks answer in the client" } else { "checks down (every entry runs its Node hook)" };
+        assert_eq!(lines(".anti-hall/swarm-spawns.log"), calls, "swarm-spawns.log, {mode}");
+        assert_eq!(lines(".anti-hall/agent-spawns.log"), calls, "agent-spawns.log, {mode}");
+    }
+}

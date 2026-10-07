@@ -184,6 +184,6 @@ impl Check for DevswarmCommsGuard {
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
         let root = crate::checks::guardkit::settings::plugin_root(opts, env);
-        decide(payload, &Settings::from_env(env), &root)
+        decide(payload, &Settings::from_env(env), &root).or(Some(Verdict::Allow))
     }
 }

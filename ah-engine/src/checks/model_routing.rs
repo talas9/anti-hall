@@ -696,7 +696,7 @@ impl Check for ModelRouting {
 
     fn run_env(&self, _subject: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
         match std::panic::catch_unwind(|| decide_inner(payload, env)) {
-            Ok(v) => v,
+            Ok(v) => v.or(Some(Verdict::Allow)),
             Err(_) => Some(fail_closed()),
         }
     }

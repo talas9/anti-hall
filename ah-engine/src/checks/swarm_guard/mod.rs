@@ -221,7 +221,9 @@ pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now:
     let log = format!("{dir}/{}", defaults::text("swarm_guard.log_file"));
     let _local = IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
     // Could not lock: allow without recording, and without the advisory, exactly as Node does.
-    let lock = nodelock::acquire(&format!("{dir}/{}", defaults::text("swarm_guard.lock_file")), Params::swarm())?;
+    // (the Node hook may get the lock where this one could not, and then records the spawn: a spawn this check did not record is
+    // Node's)
+    let Some(lock) = nodelock::acquire(&format!("{dir}/{}", defaults::text("swarm_guard.lock_file")), Params::swarm()) else { return Some(Verdict::Defer) };
 
     let cutoff = now as f64 - defaults::num("swarm_guard.window_ms") as f64;
     let mut recent: Vec<f64> = read_timestamps(&log).into_iter().filter(|t| *t > cutoff).collect();
@@ -273,6 +275,8 @@ impl Check for SwarmGuard {
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        decide(payload, &Settings::from_env(env), &plugin_root(opts, env), &HostMem, now)
+        // a check that decided "nothing to say" answers `Allow`, never `None`: in the dispatcher `None` hands the call to the Node hook, which
+        // would record the same spawn a second time
+        decide(payload, &Settings::from_env(env), &plugin_root(opts, env), &HostMem, now).or(Some(Verdict::Allow))
     }
 }
