@@ -273,6 +273,8 @@ impl Check for SwarmGuard {
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        decide(payload, &Settings::from_env(env), &plugin_root(opts, env), &HostMem, now)
+        // a check that decided "nothing to say" answers `Allow`, never `None`: in the dispatcher `None` hands the call to the Node hook, which
+        // would record the same spawn a second time
+        decide(payload, &Settings::from_env(env), &plugin_root(opts, env), &HostMem, now).or(Some(Verdict::Allow))
     }
 }

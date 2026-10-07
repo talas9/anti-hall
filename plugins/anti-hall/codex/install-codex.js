@@ -6,7 +6,6 @@ const path = require('path');
 const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
-const HOOK_ROOT = path.join(ROOT, 'hooks');
 
 const args = new Set(process.argv.slice(2));
 const globalInstall = args.has('--global');
@@ -15,135 +14,17 @@ const targetRoot = globalInstall ? path.join(os.homedir(), '.codex') : path.join
 const hooksPath = path.join(targetRoot, 'hooks.json');
 const configPath = globalInstall ? path.join(os.homedir(), '.codex', 'config.toml') : path.join(targetRoot, 'config.toml');
 
-// Transcript-heavy hooks get the same V8 flags as in hooks.json (exit-time deadlock; see hooks/lib/node-hook-flags.js).
-const { NODE_HOOK_FLAGS, EXPOSED_HOOKS } = require('../hooks/lib/node-hook-flags.js');
+// The registration is GENERATED, not hand-listed: codex/hooks/hooks.json is one thin wrapper call per event, produced by
+// `ah-gen-fallback-list` from ah-engine/defaults/dispatch.toml (the table of record). Installing it means pointing
+// ${PLUGIN_ROOT} at this checkout; the wrapper and the engine do the per-hook dispatch.
+const THIN_HOOKS = path.join(ROOT, 'codex', 'hooks', 'hooks.json');
 
-// `spec` may carry trailing CLI args after the script name (e.g. 'git-guard.js --audit').
-function hook(spec) {
-  const [file, ...args] = spec.split(' ');
-  const flags = Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, file) ? NODE_HOOK_FLAGS.join(' ') + ' ' : '';
-  return `node ${flags}${JSON.stringify(path.join(HOOK_ROOT, file))}${args.length ? ' ' + args.join(' ') : ''}`;
+function loadAntiHallHooks() {
+  const src = fs.readFileSync(THIN_HOOKS, 'utf8').split('${PLUGIN_ROOT}').join(ROOT.replace(/\\/g, '/'));
+  return JSON.parse(src).hooks;
 }
 
-function group(matcher, files, timeout) {
-  const out = {
-    hooks: files.map((file) => ({
-      type: 'command',
-      command: hook(file),
-      timeout,
-    })),
-  };
-  if (matcher) out.matcher = matcher;
-  return out;
-}
-
-// Codex hook parity is intentionally explicit:
-// - PreToolUse "Bash" carries the shell command guards
-//   (compact-declaration-guard.js included: on Codex it blocks state-changing
-//   shell after a SAFE TO COMPACT declaration; its Agent/Write/Edit arms are
-//   Claude-only).
-// - PreToolUse "apply_patch" carries the edit-time guards: edit-guard, api-guard
-//   (blocking path) and ship-it-guard (existence gate only). Codex runs
-//   PreToolUse for apply_patch edits since rust-v0.124.0 and stamps agent_id on
-//   subagent payloads since rust-v0.134.0; the payload is tool_input.command =
-//   the raw patch, parsed by hooks/lib/codex-apply-patch.js. Codex shell writes
-//   (cat >, sed -i, tee) never reach these guards.
-// - fable-availability.js is deliberately omitted: it probes ~/.claude.json for a
-//   Claude Fable model entitlement (Claude Reviewer-seat fallback only), which is
-//   irrelevant to gpt-5.x Codex/OMX sessions.
-// - The DevSwarm per-turn override/reassert hooks (SessionStart devswarm-child-
-//   role.js; UserPromptSubmit devswarm-parent-inbox.js/devswarm-child-turn.js;
-//   Stop devswarm-parent-gate.js/devswarm-child-gate.js) ARE mirrored here
-//   (corrected — a prior version of this comment claimed the gating DEVSWARM_*
-//   env vars were Claude-only; that was disproven: docs/KB-devswarm-hivecontrol.md
-//   §6/§8.7, from a live-verified env fingerprint, states DEVSWARM_REPO_ID /
-//   DEVSWARM_SOURCE_BRANCH / DEVSWARM_BUILDER_ID are set by hivecontrol
-//   per-workspace regardless of which agent runs there — DEVSWARM_AI_AGENT is
-//   the SEPARATE var naming claude vs codex. command-guard.js's own DevSwarm gate
-//   already relies on this same env and is proven to fire identically on Codex.
-//   These five files are registered VERBATIM, unmodified, from ${HOOK_ROOT} —
-//   same shared-file reuse as every other hook here — because their
-//   hookSpecificOutput.additionalContext (SessionStart/UserPromptSubmit) and
-//   {decision:"block"} (Stop) contracts, and the payload fields they read
-//   (session_id/cwd/transcript_path), already match what verify-first-full.js/
-//   task-tracker.js/task-guard.js/tasklist-guard.js prove works on Codex today.
-//   ANTI-HALL-INTERNAL: devswarm-version.js, claude-cli-version.js, repo-
-//   self-drift.js, and defect-nudge.js (SessionStart) and devswarm-child-
-//   drain.js (PostToolUse) are likewise registered verbatim — same
-//   additionalContext/no-op contract, fail-open + FAIL-OPEN-AND-SILENT on any
-//   parse/probe failure per their own file headers, no Claude-only payload
-//   dependency — closing a parity gap vs codex/hooks/hooks.json (the shipped
-//   Codex template already registers all five; this manual installer had
-//   drifted behind it).
-//   progress-prune.js (SessionStart) is likewise platform-neutral — it only
-//   reads payload.cwd and archives/prunes .anti-hall/progress + .anti-hall/
-//   history files, no Claude-only dependency — and is registered verbatim
-//   here (tests/hygiene/manifest-drift.test.js caught its absence from both
-//   this file AND codex/hooks/hooks.json; fixed in both together).
-//   The liveness SUPERVISOR (companion/devswarm-supervisor.js) remains
-//   Claude-only — unrelated to this hook set, it identity-binds to `claude
-//   --resume` processes specifically (codex/README.md).
-const ANTI_HALL_HOOKS = {
-  SessionStart: [
-    group(null, ['verify-first-full.js'], 10),
-    group(null, ['verify-first-orch.js'], 10),
-    group(null, ['devswarm-child-role.js'], 10),
-    group(null, ['version-alert.js'], 10),
-    group(null, ['codex-availability.js'], 10),
-    group(null, ['devswarm-version.js'], 10),
-    group(null, ['claude-cli-version.js'], 10),
-    group(null, ['repo-self-drift.js'], 10),
-    group(null, ['progress-prune.js'], 10),
-    group(null, ['handover-resume.js'], 10),
-    group(null, ['jev-weekly-scorecard.js'], 10),
-    group(null, ['jev-review-reminder.js'], 10),
-    group(null, ['emit-dedupe-reset.js'], 10),
-    group(null, ['defect-nudge.js'], 10),
-    group(null, ['repair-on-reload.js'], 10),
-  ],
-  UserPromptSubmit: [
-    group(null, ['verify-first.js'], 10),
-    group(null, ['task-tracker.js'], 10),
-    group(null, ['idle-agent-sweep.js'], 10),
-    group(null, ['limit-conserve-inject.js'], 10),
-    group(null, ['devswarm-parent-inbox.js'], 10),
-    group(null, ['devswarm-child-turn.js'], 10),
-    group(null, ['repair-on-reload.js'], 10),
-    group(null, ['auto-handover.js'], 10),
-  ],
-  PreToolUse: [
-    group('Bash', ['git-guard.js'], 10),
-    group('Bash', ['command-guard.js'], 10),
-    group('Bash', ['merge-side-pick.js'], 10),
-    group('Bash', ['merge-gate.js'], 10),
-    group('Bash', ['compact-declaration-guard.js'], 10),
-    group('^(?:collaboration)?spawn_agent$', ['orch-on-spawn.js'], 10),
-    group('apply_patch', ['api-guard.js'], 45),
-    group('apply_patch', ['ship-it-guard.js'], 10),
-    group('apply_patch', ['edit-guard.js'], 10),
-  ],
-  Stop: [
-    group(null, ['task-guard.js'], 30),
-    group(null, ['tasklist-guard.js'], 30),
-    group(null, ['speculation-guard.js'], 30),
-    group(null, ['speculation-judge.js'], 30),
-    group(null, ['claim-ledger.js'], 30),
-    group(null, ['devswarm-parent-gate.js'], 30),
-    group(null, ['devswarm-child-gate.js'], 30),
-    group(null, ['auto-handover-pause-nag.js'], 30),
-    group(null, ['silent-agent-nudge.js'], 30),
-    group(null, ['compact-advice-guard.js'], 30),
-  ],
-  PreCompact: [
-    group(null, ['precompact-snapshot.js'], 10),
-  ],
-  PostToolUse: [
-    group('Bash', ['merge-side-pick.js --post'], 10),
-    group('Bash', ['git-guard.js --audit'], 10),
-    group('Bash', ['devswarm-parent-reply-tracker.js'], 10),
-    group('Bash', ['devswarm-child-drain.js'], 10),
-  ],
-};
+const ANTI_HALL_HOOKS = loadAntiHallHooks();
 
 function readJSON(file) {
   try {
@@ -198,7 +79,7 @@ function isAntiHallGroup(g) {
   // hook() builds paths with path.join, which emits backslashes on Windows;
   // normalize separators before matching so a prior Windows-installed group
   // is still recognized as stale and deduped, not appended alongside a fresh one.
-  return hooks.some((h) => h && typeof h.command === 'string' && h.command.replace(/\\/g, '/').includes('/plugins/anti-hall/hooks/'));
+  return hooks.some((h) => h && typeof h.command === 'string' && /\/plugins\/anti-hall\/hooks\/|\/hooks\/ah-hook\.sh"/.test(h.command.replace(/\\/g, '/')));
 }
 
 function mergeHooks(existing) {

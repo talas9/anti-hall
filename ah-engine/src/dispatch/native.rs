@@ -21,7 +21,7 @@ pub struct Meta {
     /// The plugin root, handed to checks as their `plugin_root` option.
     pub root: Option<String>,
     /// The client's environment (D76): every check is evaluated with it, never with the daemon's own.
-    #[serde(default)]
+    #[serde(default = "crate::reqenv::RequestEnv::incomplete")]
     pub env: crate::reqenv::RequestEnv,
     /// The ids of the entries whose built-in check the client asks for (`None` = every matching entry with a check): the
     /// client has already applied the hook configuration and the entries' predicates (D87).
@@ -61,7 +61,7 @@ pub fn run_entry(entry: &Entry, meta: &Meta, p: &Value) -> Answer {
         prompt: p.get("prompt").and_then(Value::as_str),
     };
     let opts = json!({ "plugin_root": meta.root, "payload_sha1": meta.payload_sha1 });
-    let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check.run_env(&subject, p, &opts, &meta.env)));
+    let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| checks::run_env_guarded(check, &subject, p, &opts, &meta.env)));
     match verdict {
         Ok(v) => answer_of(&entry.id, v),
         Err(_) => Answer::Defer,
@@ -230,6 +230,24 @@ mod tests {
         m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1")]);
         let got = evaluate(&m, &p, &|_, _, _| {});
         assert_eq!(got.iter().find(|(id, _)| id == "ship-it-guard").unwrap().1, Answer::Defer);
+    }
+
+    /// Review P1: an incomplete request environment (dropped over the cap, absent, no HOME) must not be evaluated: with
+    /// it the ship-it gate reads as off and the engine would allow an Edit Node blocks. Every env-reading check defers.
+    #[test]
+    fn an_incomplete_environment_defers_every_check() {
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "migrations/a.sql"}});
+        let mut m = meta();
+        m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1"), ("HOME", "/h")]);
+        let whole = evaluate(&m, &p, &|_, _, _| {});
+        let ship = |got: &[(String, Answer)]| got.iter().find(|(id, _)| id == "ship-it-guard").unwrap().1.clone();
+        assert!(matches!(ship(&whole), Answer::Decided(ref r, _) if r.code == Some(2)), "control: the gate is on, so it blocks");
+        m.env = crate::reqenv::RequestEnv::incomplete();
+        let got = evaluate(&m, &p, &|_, _, _| {});
+        assert!(!got.is_empty() && got.iter().all(|(_, a)| *a == Answer::Defer), "every check defers: {got:?}");
+        let big = "x".repeat(crate::defaults::num("request_env.max_bytes") as usize);
+        m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1".to_string()), ("ANTIHALL_X", big)]);
+        assert_eq!(ship(&evaluate(&m, &p, &|_, _, _| {})), Answer::Defer, "an environment dropped over the cap defers too");
     }
 
     /// Replay payload L3 (a force push): Node's command-guard blocks it as a state-changing remote command. The

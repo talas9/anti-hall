@@ -46,6 +46,10 @@ value = "TYPESAFE_API_KEY"
 doc = "Prefix of the per-integration kill switch: the integration id in upper snake case is appended and a value of 0 forces that one integration off (Node: ANTIHALL_JEV_<ID>)."
 value = "ANTIHALL_JEV_"
 
+[env.jev_audit_snippets]
+doc = "Switch variable of the audit snippets: a boolean word turns them on or off ahead of the settings (Node: ANTIHALL_JEV_AUDIT_SNIPPETS)."
+value = "ANTIHALL_JEV_AUDIT_SNIPPETS"
+
 [env.jev_option_prefix]
 doc = "Prefix Claude Code gives the plugin options it exports to hook processes; the option name in upper case is appended."
 value = "CLAUDE_PLUGIN_OPTION_"
@@ -118,6 +122,10 @@ doc = "Consecutive fallback-eligible failures that open a vendor's breaker (Node
 value = 3
 min = 1
 
+[jev.breaker_file]
+doc = "The breaker state file, relative to the anti-hall home directory; the same file the Node hooks use, so both see one breaker (Node: jev-breaker.json under cache/)."
+value = "cache/jev-breaker.json"
+
 [jev.breaker_cooldown_ms]
 doc = "How long an open breaker skips its vendor before a probe is allowed (Node: BREAKER_COOLDOWN_MS)."
 value = 300000
@@ -185,6 +193,22 @@ value = ["speculation", "triage"]
 doc = "Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off."
 value = "triage"
 
+[jev.relax_sync_cap_ms]
+doc = "Longest a relax-block consult inside a hook that is about to nudge or block waits for Jev when the integration is on; a slower answer keeps today's verdict (Node: RELAX_SYNC_CAP_MS)."
+value = 1500
+min = 1
+max = 3000
+unit = "ms"
+
+[jev.cache_file]
+doc = "The answer cache file, relative to the anti-hall home directory; the same file the Node hooks use (Node: cache/jev-assist.json), so a text asked by either side is asked once."
+value = "cache/jev-assist.json"
+
+[jev.cache_max_depth]
+doc = "Nesting past which the answer cache file is left alone: only JavaScript reads it, so the engine neither serves from it nor rewrites it (JSON.parse reads deeper than this port does)."
+value = 128
+min = 8
+
 [jev.cache_max_entries]
 doc = "Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES)."
 value = 500
@@ -212,6 +236,10 @@ value = "0"
 
 # ---- the decision log ----------------------------------------------------------------------------------------
 
+[jev.log_dir]
+doc = "The directory of the Jev logs (decision log, audit log, daily rollups), relative to the anti-hall home directory."
+value = "logs"
+
 [jev.log_file]
 doc = "The decision log, relative to the anti-hall home directory, in the row shape the Node jev report reads (Node: logs/jev-assist.ndjson)."
 value = "logs/jev-assist.ndjson"
@@ -228,8 +256,8 @@ min = 1
 max = 100
 
 [jev.log_off_rows]
-doc = "1 also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does; 0 (default) writes nothing and does no I/O at all for such a call, so a disabled Jev costs the hot path nothing."
-value = 0
+doc = "1 (default) also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does, so the `jev report` call-volume view is unchanged by the move to the engine; 0 writes nothing and does no I/O at all for such a call."
+value = 1
 min = 0
 max = 1
 
@@ -329,3 +357,64 @@ value = { kind = "histogram", unit = "us", labels = [] }
 doc = "Largest response body read from a vendor; a longer one is treated as unparsable, so a misbehaving endpoint cannot grow the daemon's memory (D15)."
 value = 1048576
 unit = "bytes"
+
+[jev.lane_cap]
+doc = "How many home directories keep a resident Jev lane at once (one per user in practice; the oldest is dropped past the cap)."
+value = 8
+min = 1
+
+[jev.turn_ref_window_bytes]
+doc = "How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript)."
+value = 65536
+unit = "bytes"
+min = 1024
+
+[jev.detached_args]
+doc = "The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does)."
+value = ["jev", "ask", "--json"]
+
+[jev.state_dir]
+doc = "Directory of the Jev budget-watch state, relative to the anti-hall home directory (Node: state/)."
+value = "state"
+
+[jev.budget_file]
+doc = "The budget-watch state file in jev.state_dir: the day, the spend so far and the day a warning was last given (Node: jev-budget.json)."
+value = "jev-budget.json"
+
+[jev.audit_file]
+doc = "The opt-in audit-snippet log, relative to the log directory (Node: jev-audit.ndjson); redacted snippets of decisions that changed the outcome."
+value = "jev-audit.ndjson"
+
+[jev.audit_max_bytes]
+doc = "The audit log rotates (one backup) once it is larger than this (Node: LOG_MAX_BYTES)."
+value = 1048576
+unit = "bytes"
+min = 1024
+
+[jev.audit_head_chars]
+doc = "Characters kept from the start of an audit snippet (Node: SNIPPET_HEAD)."
+value = 200
+min = 1
+
+[jev.audit_tail_chars]
+doc = "Characters kept from the end of a tail-weighted audit snippet, whose verdict sits at the end of the text (Node: SNIPPET_TAIL)."
+value = 400
+min = 1
+
+[jev.audit_tail_ids]
+doc = "Integrations whose audit snippet keeps head and tail (the verdict is at the end of the judged text)."
+value = ["outputVerifyGuard"]
+
+[jev.audit_scrub_chars]
+doc = "Characters of the judged text scrubbed for a head-only audit snippet (Node: state.slice(0, 2000))."
+value = 2000
+min = 1
+
+[jev.audit_plain_chars]
+doc = "Characters kept of a head-only audit snippet after the scrub (Node: slice(0, 200))."
+value = 200
+min = 1
+
+[jev.rollup_dir]
+doc = "Directory of the daily rollups, relative to the log directory (Node: jev-daily); one JSON file per UTC day."
+value = "jev-daily"

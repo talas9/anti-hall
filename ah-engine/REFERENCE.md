@@ -83,14 +83,14 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `repo-self-drift` | SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago (port of repo-self-drift.js). |
 | `defect-nudge` | SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported (port of defect-nudge.js); counts and ages only. |
 | `progress-prune` | SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/ (port of progress-prune.js). |
-| `speculation-guard` | Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag; answers while Jev is off and leaves every Jev path to Node (port of speculation-guard.js). |
+| `speculation-guard` | Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair (port of speculation-guard.js). |
 | `speculation-judge` | Stop: answers the off path of the opt-in semantic judge (switch off, judge child, skip) and leaves every opted-in call, a model call, to Node (port of speculation-judge.js). |
-| `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; leaves the optional Jev shadow question to Node (port of claim-ledger.js). |
-| `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; leaves the optional Jev shadow question to Node (port of output-verify-guard.js). |
+| `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js). |
+| `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js). |
 | `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
 | `silent-agent-nudge` | Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js). |
 | `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
-| `merge-gate` | Opt-in false-done backstop: answers every Bash call the Node merge-gate would allow (gate off, not an auto-merge command, no transcript, no hedge phrase in the recent assistant text) and defers the rest, so a possible block and its Jev shadow ask stay with the Node hook (port of merge-gate.js). |
+| `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
@@ -98,6 +98,22 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); otherwise defers to the Node hook, which builds the report (port of the gates of jev-weekly-scorecard.js). |
 | `jev-review-reminder` | Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn); otherwise defers to the Node hook (port of the gates of jev-review-reminder.js). |
 | `repair-on-reload` | Stays silent when no repair can start (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); otherwise defers to the Node hook, which takes the lock and starts the detached repair (port of the gates of repair-on-reload.js). |
+| `codex-availability` | SessionStart: probes PATH for a real codex executable, records it, folds a Codex job-log usage-limit error into the quota record and tells the session (port of codex-availability.js). |
+| `codex-quota-detect` | Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:codex-rescue Agent result, once, in the shared availability file (port of codex-quota-detect.js). |
+| `codex-nudge` | Stop: one soft nudge to get a Codex second opinion after several substantial code edits with no Codex review; defers when Jev is enabled for it (port of codex-nudge.js). |
+| `precompact-snapshot` | PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it (port of precompact-snapshot.js). |
+| `handover-resume` | SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js). |
+| `task-lifecycle-log` | Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js). |
+| `dispatch-tier` | Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off (port of dispatch-tier.js). |
+| `task-guard` | Stop gate: answers the Stops where the task list has nothing open (the loop state cleared, the advisories printed) and hands every Stop with an open task to the Node hook (port of task-guard.js). |
+| `tasklist-guard` | Stop gate: answers the Stops that do not block (a trivial session, tracked work with a fresh progress file, plan mode, the resume-verification nudge) with the Node hook's file effects, and hands every Stop that would block to the Node hook (port of tasklist-guard.js). |
+| `devswarm-parent-inbox` | DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js). |
+| `devswarm-child-turn` | DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js). |
+| `devswarm-child-role` | SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace (port of devswarm-child-role.js); a Primary session, a stale stable launcher or anything else it cannot prove byte-identical defers to Node. |
+| `devswarm-parent-gate` | Stop: allows without running Node when the Node gate would exit silently before reading any mailbox (switch off, user skip, supervisor inactive, child workspace, judge child); every other session defers to the Node gate (port of devswarm-parent-gate.js, early exits only). |
+| `devswarm-child-gate` | DevSwarm child Stop gate: allows the stop when the hook cannot act (switch off, skip recorded, not a DevSwarm child); a child workspace defers to the Node gate, which owns the heartbeat state, the stop budgets, the mailbox store and the hivecontrol probe (port of devswarm-child-gate.js). |
+| `devswarm-parent-reply-tracker` | DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm send (switch off, child workspace, other tool, command without the devswarm and send words); a plausible send defers to the Node hook, which records the reply state (port of devswarm-parent-reply-tracker.js). |
+| `devswarm-child-drain` | DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child); a child workspace defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js). |
 
 ## Settings
 
@@ -239,9 +255,10 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `request_env.allow` | `34 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. |
+| `request_env.allow` | `40 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). |
+| `request_env.incomplete_key` | `ah_env_incomplete` |  |  | Reserved name, never a forwardable variable, that carries the request's incomplete flag inside the forwarded environment object (the client's variables were dropped or it had no HOME), so the daemon's checks defer to the Node guards. |
 | `request_env.line_prefix` | `E ` |  |  | Prefix of the request line that carries the forwarded environment as one JSON object. |
-| `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them, and the checks that read the environment then see an empty one. |
+| `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them and the request is marked incomplete, so every check defers to the Node guard (a missing or empty HOME marks it incomplete too). |
 
 ### engine.toml / store
 
@@ -323,8 +340,15 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `git.hd_specs` | `10 entries` |  |  | Option grammar per git subcommand for heredoc-fed commands: s = short flags, v = short flags with a value, o = short flags with an optional value, l / big_l / big_o = long flags (none / required value / optional value), num = numeric -<n> allowed, strict = unknown options are not data, read = also accept the shared read-only option sets, l_extra = more long flags. |
 | `git.heredoc_git_msg_subs` | `commit, tag, notes, merge` |  |  | git subcommands that take a message from a heredoc. |
 | `git.heredoc_safe_verbs` | `21 items` |  |  | Commands a data heredoc may be fed to without being treated as a shell script. |
-| `git.jev_file` | `.anti-hall/jev.json` |  |  | Jev configuration file, relative to the home directory. |
-| `git.jev_settings` | `8 entries` |  |  | Names the Jev add-block consult is switched by: the global enable env var, the per-integration env var, the settings.json integration key and mode value. |
+| `git.jev_backstop_ms` | `500` |  | ms | Extra time Node's synchronous worker is allowed beyond the budget; counted in the total-time guard (Node: the +500 in the guard). |
+| `git.jev_budget_ms` | `1500` |  | ms | Time budget of one self-credit consult (Node: CONSULT_BUDGET_MS). |
+| `git.jev_consult_cap` | `8` |  |  | Most distinct texts one command may consult Jev about (Node: JEV_CONSULT_CAP). |
+| `git.jev_false` | `no AI self-credit of any kind` |  |  | The label for a false answer of the self-credit question. |
+| `git.jev_id` | `gitGuardSelfCredit` |  |  | The Jev integration id of the self-credit question (add-block trust). |
+| `git.jev_instructions` | `Does this commit message, or PR/issue/release body or title, credit an AI ass...` |  |  | The Noul question of the self-credit ask (byte-identical to the Node guard's). |
+| `git.jev_state_chars` | `4000` |  |  | How many UTF-16 units of a message the self-credit ask evaluates (Node: String(text).slice(0, 4000)). |
+| `git.jev_total_budget_ms` | `4000` |  | ms | Most time one command may spend on self-credit consults in total; past it a consult is skipped and the regex verdict stands (Node: JEV_TOTAL_BUDGET_MS). |
+| `git.jev_true` | `credits an AI assistant as author/co-author/contributor, in any phrasing` |  |  | The label for a true answer of the self-credit question. |
 | `git.label_allowed` | `Allowed here: ` |  |  | Label of the allowed-here line. |
 | `git.label_instead` | `Do instead: ` |  |  | Label of the remedy line. |
 | `git.label_override` | `Override (only if the user explicitly asked): ` |  |  | Label of the override line. |
@@ -758,6 +782,22 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `coordinator_work.version_keys` | `sessions, calls, work, blocks, skippedWouldBlock` |  |  | The keys of one version's entry in the metrics file, in file order: the number of folded sessions, then the counters. |
 | `coordinator_work.window_setting` | `5 entries` |  |  | Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns the window off. |
 
+### small_guards.toml / devswarm_prompt
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_prompt.branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable whose non-blank value marks a child workspace (hooks/lib/devswarm-role.js). |
+| `devswarm_prompt.child_setting` | `6 entries` |  |  | Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option. |
+| `devswarm_prompt.child_summary` | `DevSwarm child prompt hook: answers the silent cases (not a child workspace, ...` |  |  | One-line description of the devswarm-child-turn check in the generated reference. |
+| `devswarm_prompt.judge_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable that marks a Jev judge child process; its hooks do nothing (hooks/lib/judge-child-exit.js). Only the exact value in judge_value counts. |
+| `devswarm_prompt.judge_value` | `1` |  |  | The value of judge_env that silences the hook. |
+| `devswarm_prompt.kill_env` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Hard kill switch of the DevSwarm integration (hooks/lib/devswarm-detect.js): the exact value in kill_value makes the integration inactive. |
+| `devswarm_prompt.kill_value` | `1` |  |  | The value of kill_env that deactivates the DevSwarm integration. |
+| `devswarm_prompt.mode_setting` | `7 entries` |  |  | Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset, as in hooks/lib/settings.js). |
+| `devswarm_prompt.parent_setting` | `6 entries` |  |  | Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option. |
+| `devswarm_prompt.parent_summary` | `DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwa...` |  |  | One-line description of the devswarm-parent-inbox check in the generated reference. |
+| `devswarm_prompt.repo_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable whose non-blank value makes the DevSwarm integration active in auto mode. |
+
 ### small_guards.toml / edit_guard
 
 | Key | Default | Env override | Unit | What it is |
@@ -823,6 +863,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `guardkit.destructive_guards` | `git-guard, devswarm-read-guard, git-stash-guard` |  |  | Guards that a broad skip of everything does not cover; they must be named in the skip file. |
 | `guardkit.false_tokens` | `0, off, false, no` |  |  | Environment or settings strings that mean off (compared after trimming and lower-casing). |
 | `guardkit.icons` | `6 entries` |  |  | Leading icon of a block or advisory message, by kind. |
+| `guardkit.jev_legacy_file` | `.anti-hall/jev.json` |  |  | The legacy Jev settings file (settings.js reads it below settings.json for the Jev keys), relative to the home directory. |
 | `guardkit.js_space` | `\t\n\x0b\x0c\r    -     　﻿` |  |  | Characters JavaScript treats as white space, written as the body of a regex character class; used to translate the JS escapes for white space exactly (Rust's own class differs: it has U+0085 and lacks U+FEFF). |
 | `guardkit.line_terminators` | `\n\r  ` |  |  | Characters JavaScript's dot excludes, as the body of a regex character class. |
 | `guardkit.lock_stale_ms` | `5000` |  |  | Age, in milliseconds, after which another process's lock on a window file or the metrics is considered abandoned and is taken over (the same limit for a live, a dead and an unknown holder). |
@@ -857,11 +898,24 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `merge_gate.guard_name` | `merge-gate` |  |  | The guard id this check answers to in skip.json. |
 | `merge_gate.hedge_patterns` | `first[- ]pass, not pixel[- ]perfect` |  |  | Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output. |
 | `merge_gate.hedge_phrases` | `7 items` |  |  | Self-hedge phrases, matched case-insensitively as plain text in the recent assistant output. |
+| `merge_gate.injected_user` | `^\s*(<(task-notification\|system-reminder\|command-name\|command-message\|local-c...` |  |  | Regex source (case-insensitive) of the user-role bodies that are not a human typing (task notifications, system reminders, hook feedback, cross-session messages). |
+| `merge_gate.jev_false` | `no unresolved hedge` |  |  | The label for a false answer of the mergeGateHedge question. |
+| `merge_gate.jev_id` | `mergeGateHedge` |  |  | The Jev integration id of the shadow question asked when a hedge is found on a merge command. |
+| `merge_gate.jev_instructions` | `Does the recent reply text below contain an UNRESOLVED self-hedge (e.g. "pend...` |  |  | The Noul question text of the mergeGateHedge shadow ask (byte-identical to the Node gate's). |
+| `merge_gate.jev_state_chars` | `4000` |  |  | How many trailing UTF-16 units of the assistant text the mergeGateHedge ask evaluates (Node: text.slice(-4000)). |
+| `merge_gate.jev_true` | `unresolved hedge present` |  |  | The label for a true answer of the mergeGateHedge question. |
 | `merge_gate.merge_rules` | `2 entries, 3 entries, 4 entries, 2 entries, 2 entries` |  |  | The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target. |
+| `merge_gate.msg_instead` | `verify it against its agreed criterion or get owner sign-off, then merge.` |  |  | The block message's alternative. |
+| `merge_gate.msg_override` | `set ANTIHALL_MERGE_GATE=off, or skip merge-gate` |  |  | The block message's override line. |
+| `merge_gate.msg_what` | `auto-merge blocked: your recent output flagged a deliverable as pending/unver...` |  |  | The block message's first line; {hedge} is the last hedge phrase found. |
+| `merge_gate.msg_why` | `A self-issued hedge blocks auto-merge (false-done backstop).` |  |  | The block message's reason. |
+| `merge_gate.non_human_origins` | `human, user` |  |  | The origin kinds of a user record that still count as a human typing. |
 | `merge_gate.protected_target` | `^(main\|master\|develop\|origin\/(main\|master\|develop))$` |  |  | Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge. |
+| `merge_gate.resolutions` | `owner approved, owner signed off, sign-off received, fidelity verified, verif...` |  |  | Phrases that resolve a hedge when a REAL user prompt typed after the hedge contains one (case-insensitive plain text); the assistant can never clear its own hedge. |
 | `merge_gate.segment_split` | `&&\|\\|\\|\|[;&\|\n]` |  |  | Regex source that splits a Bash command into the segments the auto-merge scan looks at (shell separators; quotes are not honoured, on purpose, as in the Node gate). |
 | `merge_gate.setting` | `6 entries` |  |  | Where the opt-in switch is read from (guards.mergeGate, default off). |
-| `merge_gate.summary` | `Opt-in false-done backstop: answers every Bash call the Node merge-gate would...` |  |  | One-line description of the merge-gate check in the generated reference. |
+| `merge_gate.summary` | `Opt-in false-done backstop: answers every Bash call natively, including the b...` |  |  | One-line description of the merge-gate check in the generated reference. |
+| `merge_gate.system_reminder` | `<system-reminder>[\s\S]*?<\/system-reminder>` |  |  | Regex source (case-insensitive) of a system-reminder block, removed from a user prompt before it is judged. |
 | `merge_gate.window_bytes` | `131072` |  | bytes | How much of the end of the transcript is scanned for a self-hedge (the same bounded tail the Node gate reads). |
 
 ### small_guards.toml / merge_side_pick
@@ -1166,6 +1220,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `env.jev_audit_snippets` | `ANTIHALL_JEV_AUDIT_SNIPPETS` |  |  | Switch variable of the audit snippets: a boolean word turns them on or off ahead of the settings (Node: ANTIHALL_JEV_AUDIT_SNIPPETS). |
 | `env.jev_enabled` | `ANTIHALL_JEV` |  |  | Master switch variable: 1 force-enables Jev, 0 force-disables it and wins over every file setting (Node: ANTIHALL_JEV). |
 | `env.jev_integration_prefix` | `ANTIHALL_JEV_` |  |  | Prefix of the per-integration kill switch: the integration id in upper snake case is appended and a value of 0 forces that one integration off (Node: ANTIHALL_JEV_<ID>). |
 | `env.jev_key_generic` | `CLAUDE_PLUGIN_OPTION_JEV_API_KEY` |  |  | The legacy vendor-less key option, used only for the vendor it is bound to (Node: CLAUDE_PLUGIN_OPTION_JEV_API_KEY). |
@@ -1183,14 +1238,26 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `jev.async_budget_ms` | `3000` |  | ms | Time budget of an asynchronous (fire-and-forget) call: nobody waits for it, so it may use the full ceiling (Node: DETACHED_DEFAULT_BUDGET_MS). |
+| `jev.audit_file` | `jev-audit.ndjson` |  |  | The opt-in audit-snippet log, relative to the log directory (Node: jev-audit.ndjson); redacted snippets of decisions that changed the outcome. |
+| `jev.audit_head_chars` | `200` |  |  | Characters kept from the start of an audit snippet (Node: SNIPPET_HEAD). |
+| `jev.audit_max_bytes` | `1048576` |  | bytes | The audit log rotates (one backup) once it is larger than this (Node: LOG_MAX_BYTES). |
+| `jev.audit_plain_chars` | `200` |  |  | Characters kept of a head-only audit snippet after the scrub (Node: slice(0, 200)). |
+| `jev.audit_scrub_chars` | `2000` |  |  | Characters of the judged text scrubbed for a head-only audit snippet (Node: state.slice(0, 2000)). |
+| `jev.audit_tail_chars` | `400` |  |  | Characters kept from the end of a tail-weighted audit snippet, whose verdict sits at the end of the text (Node: SNIPPET_TAIL). |
+| `jev.audit_tail_ids` | `outputVerifyGuard` |  |  | Integrations whose audit snippet keeps head and tail (the verdict is at the end of the judged text). |
 | `jev.balance_body_bytes` | `2048` |  | bytes | How much of an error body is read to classify an out-of-balance answer; the body is never logged (Node: slice(0, 2048)). |
 | `jev.balance_pattern` | `insufficient\|credit\|balance\|quota\|billing` |  |  | A 400 or 403 body matching this expression (case-insensitive) is an out-of-balance answer and makes the call fallback-eligible (Node: BALANCE_BODY_RE). |
 | `jev.bool_false_tokens` | `0, off, false, no` |  |  | Words that read as false in an environment or settings value (Node: FALSE_TOKENS). |
 | `jev.bool_true_tokens` | `1, on, true, yes` |  |  | Words that read as true in an environment or settings value (Node: TRUE_TOKENS). |
 | `jev.breaker_cooldown_ms` | `300000` |  | ms | How long an open breaker skips its vendor before a probe is allowed (Node: BREAKER_COOLDOWN_MS). |
+| `jev.breaker_file` | `cache/jev-breaker.json` |  |  | The breaker state file, relative to the anti-hall home directory; the same file the Node hooks use, so both see one breaker (Node: jev-breaker.json under cache/). |
 | `jev.breaker_threshold` | `3` |  |  | Consecutive fallback-eligible failures that open a vendor's breaker (Node: BREAKER_THRESHOLD). |
+| `jev.budget_file` | `jev-budget.json` |  |  | The budget-watch state file in jev.state_dir: the day, the spend so far and the day a warning was last given (Node: jev-budget.json). |
+| `jev.cache_file` | `cache/jev-assist.json` |  |  | The answer cache file, relative to the anti-hall home directory; the same file the Node hooks use (Node: cache/jev-assist.json), so a text asked by either side is asked once. |
+| `jev.cache_max_depth` | `128` |  |  | Nesting past which the answer cache file is left alone: only JavaScript reads it, so the engine neither serves from it nor rewrites it (JSON.parse reads deeper than this port does). |
 | `jev.cache_max_entries` | `500` |  |  | Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES). |
 | `jev.confidence_threshold` | `0.85` |  |  | Default minimum confidence for an answer to count as trusted, a decimal between 0 and 1 (Node: DEFAULT_CONFIDENCE_THRESHOLD). |
+| `jev.detached_args` | `jev, ask, --json` |  |  | The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does). |
 | `jev.drain_poll_ms` | `2` |  | ms | How often `drain` checks whether the asynchronous queue has emptied (tests and shutdown only). |
 | `jev.endpoint_typesafe` | `https://api.typesafe.ai/v1/systemone` |  |  | TypeSafe's own direct API endpoint (Node: TYPESAFE.endpoint). |
 | `jev.endpoint_vercel` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` |  |  | Vercel AI Gateway TypeSafe passthrough that serves the Jev system-one API (Node: jev-client.js GATEWAY.endpoint). |
@@ -1203,12 +1270,14 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.key_file_roots` | `.config, .anti-hall` |  |  | Directories under the home directory a key file must really live in once symlinks are resolved (Node: readKeyFile). |
 | `jev.key_file_typesafe` | `.config/typesafe/key` |  |  | Default key file for the TypeSafe vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
 | `jev.key_file_vercel` | `.config/vercel/ai-gateway-key` |  |  | Default key file for the Vercel vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
+| `jev.lane_cap` | `8` |  |  | How many home directories keep a resident Jev lane at once (one per user in practice; the oldest is dropped past the cap). |
 | `jev.legacy_file` | `jev.json` |  |  | The legacy Jev config file, relative to the anti-hall home directory, read below settings.json (Node: jev.json). |
 | `jev.legacy_on_default` | `speculation, triage` |  |  | Integrations that predate the per-integration modes and stay on by default; consulted only for an id missing from the table (Node: LEGACY_ON_DEFAULT). |
 | `jev.legacy_triage_key` | `triage` |  |  | Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off. |
+| `jev.log_dir` | `logs` |  |  | The directory of the Jev logs (decision log, audit log, daily rollups), relative to the anti-hall home directory. |
 | `jev.log_file` | `logs/jev-assist.ndjson` |  |  | The decision log, relative to the anti-hall home directory, in the row shape the Node jev report reads (Node: logs/jev-assist.ndjson). |
 | `jev.log_max_bytes` | `2097152` |  | bytes | Size at which the decision log rotates (Node: DECISION_LOG_MAX_BYTES). |
-| `jev.log_off_rows` | `0` |  |  | 1 also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does; 0 (default) writes nothing and does no I/O at all for such a call, so a disabled Jev costs the hot path nothing. |
+| `jev.log_off_rows` | `1` |  |  | 1 (default) also logs a row for a call whose integration is off or whose Jev is disabled, as the Node client does, so the `jev report` call-volume view is unchanged by the move to the engine; 0 writes nothing and does no I/O at all for such a call. |
 | `jev.log_rotated_files` | `10` |  |  | Rotated generations kept, .1 to .N (Node: the jev.logRotatedFiles setting). |
 | `jev.max_response_bytes` | `1048576` |  | bytes | Largest response body read from a vendor; a longer one is treated as unparsable, so a misbehaving endpoint cannot grow the daemon's memory (D15). |
 | `jev.max_timeout_ms` | `3000` |  | ms | Hard ceiling on any configured or per-call timeout, so a Jev call can never outlast the hook that asked (Node: MAX_TIMEOUT_MS). |
@@ -1219,9 +1288,13 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `jev.price_usd_per_m_output` | `0` |  |  | USD per million output tokens used when a response reports tokens but no cost; output is free on the published rate (Node: jev.priceUsdPerMOutput). |
 | `jev.question_version` | `v1` |  |  | Part of the cache key, bumped when a question's wording changes so old answers are not reused (Node: QUESTION_VERSION). |
 | `jev.queue_cap` | `64` |  |  | Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). |
+| `jev.relax_sync_cap_ms` | `1500` |  | ms | Longest a relax-block consult inside a hook that is about to nudge or block waits for Jev when the integration is on; a slower answer keeps today's verdict (Node: RELAX_SYNC_CAP_MS). |
+| `jev.rollup_dir` | `jev-daily` |  |  | Directory of the daily rollups, relative to the log directory (Node: jev-daily); one JSON file per UTC day. |
 | `jev.settings_file` | `settings.json` |  |  | The unified settings file, relative to the anti-hall home directory (Node: settings.json). |
 | `jev.settings_recheck_ms` | `2000` |  | ms | How often the settings files are re-checked for changes: at most one stat of each of the two files per window, taken by the first call after it elapses; between checks a call costs one clock read, so an off Jev stays off the hot path. |
+| `jev.state_dir` | `state` |  |  | Directory of the Jev budget-watch state, relative to the anti-hall home directory (Node: state/). |
 | `jev.timeout_ms` | `1500` |  | ms | Per-call time budget for one Jev call, request, headers and body together (Node: DEFAULT_TIMEOUT_MS). |
+| `jev.turn_ref_window_bytes` | `65536` |  | bytes | How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript). |
 | `jev.unlisted_mode` | `shadow` |  |  | Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones). |
 
 ### dispatch.toml / dispatch
@@ -1700,7 +1773,10 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `claim_ledger.dir` | `claim-ledger` |  |  | Directory of the ledger files under the state directory. |
 | `claim_ledger.event` | `Stop` |  |  | The only event this check answers. |
 | `claim_ledger.guard_name` | `claim-ledger` |  |  | The guard id this check answers to in skip.json. |
+| `claim_ledger.jev_false` | `supported by evidence` |  |  | The label for a false answer of the claimLedger question. |
 | `claim_ledger.jev_id` | `claimLedger` |  |  | The Jev integration id of the shadow question asked for each flagged claim. |
+| `claim_ledger.jev_instructions` | `Is this claim unsupported by evidence in the message (no matching value/SHA/s...` |  |  | The Noul question text of the claimLedger shadow ask (byte-identical to the Node hook's). |
+| `claim_ledger.jev_true` | `unsupported by evidence` |  |  | The label for a true answer of the claimLedger question. |
 | `claim_ledger.kind_count` | `count` |  |  | The kind of a flag for a count with a unit noun. |
 | `claim_ledger.kind_days_ago` | `days-ago` |  |  | The kind of a flag for an N days ago claim. |
 | `claim_ledger.kind_sha` | `sha` |  |  | The kind of a flag for a git SHA. |
@@ -1739,7 +1815,11 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `output_verify.exit_fields` | `exit_code, exitCode, exit_status, exitStatus` |  |  | The fields of an object tool response that may hold the exit code, in the order they are tried. |
 | `output_verify.fail_patterns` | `10 items` |  |  | The failing signals, in the order they are tried: regex source, case-insensitive flag, and whether it must start a line. |
 | `output_verify.guard_name` | `output-verify-guard` |  |  | The guard id this check answers to in skip.json, in messages and as the once-per-turn key. |
+| `output_verify.jev_false` | `not a genuine mixed result` |  |  | The label for a false answer of the outputVerifyGuard question. |
 | `output_verify.jev_id` | `outputVerifyGuard` |  |  | The Jev integration id of the shadow question asked for each test-runner output. |
+| `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
+| `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
+| `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
 | `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
@@ -1801,22 +1881,43 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `speculation_guard.curly_single_re` | `‘[^‘’\n]*’` |  |  | Regex source of a curly single-quoted span. |
 | `speculation_guard.event` | `Stop` |  |  | The only event this check answers. |
 | `speculation_guard.fence_line_re` | `^[ \t]{0,3}(`{3,}\|~{3,})` |  |  | Regex source of a code fence line; the first group is the fence marker. |
+| `speculation_guard.frame_heading` | `^\s*#{1,6}\s+(.+?)\s*#*\s*$` |  |  | Regex source of a markdown heading line; group 1 is its text. |
+| `speculation_guard.frame_heading_label` | `^LABEL\b` |  |  | Regex source (case-insensitive) a heading's text must start with to frame what is under it (the token LABEL is replaced by frame_label). |
+| `speculation_guard.frame_inline` | `\(unverified\)\|\bnot yet measured\b` |  |  | Regex source (case-insensitive) of an inline frame on the hit's own line. |
+| `speculation_guard.frame_label` | `(?:expected\|plan\|should\s+be\s+\w+\|should\s+still(?:\s+\w+)?\|unverified\|not\s...` |  |  | Regex source of the labels that frame a hedge as an expectation or a plan (Node: FRAME_LABEL_CORE). |
+| `speculation_guard.frame_line_prefix` | `^\s*(?:(?:[-*+\u2022]\|\d+[.)])\s+)?LABEL\s*[:)]` |  |  | Regex source of a line that starts with a frame label, with an optional list marker (the token LABEL is replaced by frame_label); case-insensitive. |
+| `speculation_guard.framed_false` | `Genuine expectation/plan: a test-plan entry, acceptance criterion, or hypothe...` |  |  | The label for a false answer of the framed-expectation question. |
+| `speculation_guard.framed_instructions` | `This hedge sits under a heading or line labelled as a plan/expectation (e.g. ...` |  |  | The Noul question of the framed-expectation ask (byte-identical to the Node hook's FRAMED_JEV_QUESTION). |
+| `speculation_guard.framed_true` | `Unverified claim presented as fact: despite the label, it asserts what IS tru...` |  |  | The label for a true answer of the framed-expectation question. |
 | `speculation_guard.guard_name` | `speculation-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
 | `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node. |
+| `speculation_guard.jev_false` | `Not speculative: it reports what a tool actually showed (command output such ...` |  |  | The label for a false answer of the speculation question. |
+| `speculation_guard.jev_framed_id` | `speculationFramed` |  |  | The Jev integration id of the framed-expectation question (relax-block trust). |
+| `speculation_guard.jev_id` | `speculation` |  |  | The Jev integration id of the speculation question (add-block trust). |
+| `speculation_guard.jev_instructions` | `Is this assistant message speculative, i.e. does it assert a cause or an outc...` |  |  | The Noul question of the speculation ask (byte-identical to the Node hook's JEV_QUESTION). |
+| `speculation_guard.jev_state_chars` | `8000` |  |  | How many UTF-16 units of the reply the two Jev asks evaluate (Node: jevText.slice(0, 8000)). |
+| `speculation_guard.jev_true` | `Speculative: it asserts a cause, a fix, or a done/works/passes/resolved outco...` |  |  | The label for a true answer of the speculation question. |
+| `speculation_guard.judge_log` | `logs/jev-judge.ndjson` |  |  | The speculation guard's own Jev decision log, relative to the anti-hall home directory (Node: logs/jev-judge.ndjson); holds no message text and no key. |
+| `speculation_guard.judge_log_max_bytes` | `1048576` |  | bytes | The judge log is emptied before an append once it is larger than this (Node: JEV_LOG_MAX_BYTES). |
 | `speculation_guard.markers` | `15 items` |  |  | Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried. |
 | `speculation_guard.max_blocks` | `3` |  |  | Most blocks per session: after this many the guard stays quiet whatever the reply says (the text changes as the model reworks it, which defeats the per-text dedupe). |
 | `speculation_guard.modal_markers` | `must be, should be` |  |  | Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own. |
 | `speculation_guard.msg_instead` | `verify it with a tool, or say what is unverified ('I don't know, here is what...` |  |  | Block advice. |
 | `speculation_guard.msg_what` | `your reply states something speculative ('{marker}') without verifying it or ...` |  |  | Block headline; {marker} is the hedge found. |
+| `speculation_guard.msg_what_jev` | `your reply asserts a cause or outcome without citing evidence (command output...` |  |  | Block headline when Jev added the block. |
 | `speculation_guard.msg_why` | `Unverified claims read as facts.` |  |  | Block reason. |
 | `speculation_guard.obligation_re` | `^\s+(measured\|verified\|tested\|checked\|reviewed\|documented\|validated\|approved\|...` |  |  | Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess. |
 | `speculation_guard.obligation_window` | `40` |  |  | How many UTF-16 units after a must-be or should-be are read for the obligation word. |
+| `speculation_guard.outcome_evidence` | `evidence-added` |  |  | Outcome recorded for the previous block when this reply carries an acknowledgment. |
+| `speculation_guard.outcome_override` | `user-override` |  |  | Outcome recorded for the previous block when the user skipped the guard. |
+| `speculation_guard.outcome_repeat` | `repeat-speculation` |  |  | Outcome recorded for the previous block when this reply hedges again. |
 | `speculation_guard.prune_prefix` | `speculation-guard-state` |  |  | Prefix of the stale-file sweep of the per-session state files. |
 | `speculation_guard.quote_char` | `"` |  |  | The straight double quote that pairs within one line. |
 | `speculation_guard.quote_line_re` | `^[ \t]{0,3}>` |  |  | Regex source of a blockquote line (up to three spaces of indent, then a greater-than sign). |
 | `speculation_guard.quote_separators` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Where a blockquote line turns from the quoted material to the session's own words (an em dash, a double hyphen between spaces, a semicolon or comma then so); the earliest wins. |
 | `speculation_guard.requirement_line_re` | `^\s*(?:(?:[-*+•]\|\d+[.)])\s+)?(?:requirement\|acceptance(?:\s+criteria)?\|ac\|sp...` |  |  | Regex source (case-insensitive) of a line that starts with an explicit requirement label, after an optional list bullet. |
 | `speculation_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.speculationGuard, default on). |
+| `speculation_guard.source_jev` | `jev` |  |  | The source recorded in the pending outcome of a block Jev added. |
 | `speculation_guard.source_regex` | `regex` |  |  | The source recorded in the pending outcome of a block this check made (the Node hook reads it when it reports the outcome). |
 | `speculation_guard.state_prefix` | `speculation-guard-state-` |  |  | Prefix of the per-session state file name under the state directory (the sanitised session id and the JSON extension follow). |
 | `speculation_guard.straight_re` | `"[^"\n]*"` |  |  | Regex source of a straight-quoted span inside one line. |
@@ -2099,6 +2200,415 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `session_gates.judge_child_value` | `1` |  |  | The value of that variable that marks the judge child. |
 | `session_gates.sidechain_flags` | `isSidechain, is_sidechain` |  |  | Payload keys that mark a sidechain (subagent) turn when exactly true. |
 
+### codex_handover.toml / codex_handover
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `codex_handover.agent_type_keys` | `subagent_type, agentType, agent_type` |  |  | The fields of a spawn that can name the agent type, in the order they are tried. |
+| `codex_handover.argv_count` | `rev-list, --count, --since=@{since}, HEAD` |  |  | The git arguments that count the commits since a time; {since} is epoch seconds. |
+| `codex_handover.argv_head` | `rev-parse, --short, HEAD` |  |  | The git arguments that print the short HEAD hash. |
+| `codex_handover.argv_log` | `log, -1, --format=%h %s` |  |  | The git arguments that print the newest commit's short hash and subject. |
+| `codex_handover.argv_porcelain` | `status, --porcelain` |  |  | The git arguments that list the dirty files for the resume freshness line. |
+| `codex_handover.argv_status` | `status, --porcelain=v1, --branch` |  |  | The git arguments that list the branch line and the dirty files for a snapshot. |
+| `codex_handover.argv_super` | `-C, {root}, rev-parse, --show-superproject-working-tree` |  |  | The git arguments that print the superproject checkout of a repository; {root} is the repository. |
+| `codex_handover.avail_context_codex` | `Codex binary detected on PATH (per a SessionStart PATH probe). This is NECESS...` |  |  | The availability text for a Codex session (no Claude models, Workflow scripts or codex:codex-rescue agent type). |
+| `codex_handover.avail_event` | `SessionStart` |  |  | The hook event name in the availability advisory. |
+| `codex_handover.avail_guard` | `codex-availability` |  |  | The guard id the availability messages answer to. |
+| `codex_handover.avail_instead` | `Workflow scripts have no filesystem and cannot read this fact, so pass args.c...` |  |  | Advice line of the availability tip. |
+| `codex_handover.avail_note_instead` | `route correctness review to {tier} until then.` |  |  | Advice of the unavailability warning; {tier} is where to route the review. |
+| `codex_handover.avail_note_what` | `Codex unavailable until {until} ({reason}).` |  |  | Headline of the warning that Codex is unavailable; {until} is an ISO time and {reason} the recorded reason. |
+| `codex_handover.avail_source` | `path-probe` |  |  | The source recorded with a PATH probe result. |
+| `codex_handover.avail_summary` | `SessionStart: probes PATH for a real codex executable, records it, folds a Co...` |  |  | One-line description of the codex-availability check in the generated reference. |
+| `codex_handover.avail_tier_claude` | `Sonnet` |  |  | Where a Claude session routes review while Codex is unavailable. |
+| `codex_handover.avail_tier_codex` | `a lower gpt tier` |  |  | Where a Codex session routes review while Codex is unavailable. |
+| `codex_handover.avail_what` | `Codex binary detected on PATH (per a SessionStart PATH probe).` |  |  | Headline of the availability tip when the Codex binary is on PATH. |
+| `codex_handover.avail_why` | `Necessary but not sufficient: it does not prove Codex is authenticated or fun...` |  |  | Reason line of the availability tip. |
+| `codex_handover.availability_file` | `.anti-hall/codex-availability.json` |  |  | The shared Codex availability and quota file, relative to the home directory. |
+| `codex_handover.branch_prefix` | `## ` |  |  | The prefix of the branch line of `git status --porcelain --branch`. |
+| `codex_handover.branch_unknown` | `(unknown)` |  |  | The branch shown when git gives no branch line. |
+| `codex_handover.cell_max` | `200` |  |  | Longest table cell in a snapshot, in UTF-16 units. |
+| `codex_handover.checklist_title` | `Resume-verification checklist` |  |  | The heading text of a handover's resume-verification checklist (compared without case). |
+| `codex_handover.codex_binary` | `codex` |  |  | The executable name probed on PATH. |
+| `codex_handover.codex_dir_name` | `.codex` |  |  | The directory name that marks a Codex path. |
+| `codex_handover.cooldown_default_label` | `(cooldown default)` |  |  | What the quota advisory says when the outage has no end time. |
+| `codex_handover.core_worktree_key` | `worktree` |  |  | The key that, in a git directory's config, names a submodule checkout; a config holding it is left to the Node hook. |
+| `codex_handover.date_max_ms` | `8640000000000000` |  | ms | The largest time a JavaScript Date holds, in milliseconds either side of the epoch. |
+| `codex_handover.default_cooldown_ms` | `21600000` |  | ms | How long an outage with no usable end time is assumed to last. |
+| `codex_handover.detail_files` | `state.md, decisions.md, trials.md, knowledge.md` |  |  | The detail files a handover may sit beside, in the order the resume lists them. |
+| `codex_handover.detail_state` | `state.md` |  |  | The detail file that holds the task list snapshot. |
+| `codex_handover.detail_trials` | `trials.md` |  |  | The detail file that holds the do-not-repeat list. |
+| `codex_handover.details_sep` | ` / ` |  |  | Separator of the detail file names in the resume steps. |
+| `codex_handover.detect_scan_cap` | `20000` |  |  | How much of a Codex result is searched for a quota message, in UTF-16 units. |
+| `codex_handover.detect_summary` | `Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:...` |  |  | One-line description of the codex-quota-detect check in the generated reference. |
+| `codex_handover.git_binary` | `git` |  |  | The git executable the hooks run. |
+| `codex_handover.git_max_buffer` | `1048576` |  | bytes | Most output a git call may produce before it counts as failed. |
+| `codex_handover.git_poll_ms` | `2` |  | ms | How often a running git call is checked for completion. |
+| `codex_handover.git_scrub_env` | `GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_PREFIX` |  |  | Git location variables removed before the identity resolver asks git, so its answer derives from the directory alone. |
+| `codex_handover.gitdir_key` | `gitdir:` |  |  | The key of a `.git` file that names the real git directory. |
+| `codex_handover.handover_plain` | `HANDOVER.md` |  |  | The name of the first handover of a session. |
+| `codex_handover.handover_prefix` | `HANDOVER` |  |  | The start of a handover file name. |
+| `codex_handover.handovers_dir` | `.anti-hall/handovers` |  |  | Where handovers and snapshots live, relative to the repository root. |
+| `codex_handover.head_none` | `(no commits)` |  |  | The HEAD shown when the repository has no commit. |
+| `codex_handover.identity_git_timeout_ms` | `10000` |  | ms | Time limit of the git call that finds a superproject. |
+| `codex_handover.index_file` | `INDEX.md` |  |  | The handover index file name. |
+| `codex_handover.index_sep` | `·` |  |  | The column separator of an INDEX.md row. |
+| `codex_handover.index_seq_prefix` | `seq ` |  |  | The text before the sequence number in the sequence column of an INDEX.md row. |
+| `codex_handover.iso_ms_tail` | `5` |  |  | How many characters the milliseconds and the zone end of an ISO time take (`.123Z`), which the writer note replaces by `Z`. |
+| `codex_handover.job_log_suffix` | `.log` |  |  | The suffix of a Codex job log file name. |
+| `codex_handover.job_logs_dir` | `jobs` |  |  | The directory of job logs inside each repository state directory. |
+| `codex_handover.job_max_age_ms` | `86400000` |  | ms | Oldest job log that is scanned, by modification time. |
+| `codex_handover.job_max_dirs` | `20` |  |  | How many repository job directories are scanned for a usage-limit error. |
+| `codex_handover.job_max_files` | `10` |  |  | How many job logs are scanned for a usage-limit error. |
+| `codex_handover.job_state_dir` | `.claude/plugins/data/codex-openai-codex/state` |  |  | Where the Codex companion keeps its background job state, relative to the home directory. |
+| `codex_handover.job_tail_bytes` | `8192` |  | bytes | How much of the end of a job log is read. |
+| `codex_handover.json_max_depth` | `512` |  |  | Deepest nesting of a state file the port reads; deeper is left to the Node hook. |
+| `codex_handover.json_suffix` | `.json` |  |  | The suffix of a per-session state file name. |
+| `codex_handover.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable that marks a Jev judge child process, whose hooks do nothing. |
+| `codex_handover.judge_child_on` | `1` |  |  | Value of the judge child variable that turns the hooks into no-ops. |
+| `codex_handover.max_dirty_listed` | `50` |  |  | How many dirty files a snapshot lists. |
+| `codex_handover.max_message_chars` | `4000` |  |  | Longest user message a snapshot keeps whole, in UTF-16 units. |
+| `codex_handover.max_submodule_hops` | `32` |  |  | Most superproject levels the identity resolver climbs. |
+| `codex_handover.max_user_messages` | `10` |  |  | How many of the last user messages a snapshot keeps. |
+| `codex_handover.md_suffix` | `.md` |  |  | The suffix of a handover or snapshot file name. |
+| `codex_handover.months` | `12 items` |  |  | Month names, lower case, in calendar order (a date string may use the full name or its first three letters). |
+| `codex_handover.neg_instead` | `the handover skill writes under .anti-hall/handovers/; check there.` |  |  | Advice line when no handover exists at all. |
+| `codex_handover.neg_what` | `No session handover found under .anti-hall/handovers/.` |  |  | Headline when no handover exists at all. |
+| `codex_handover.neg_why` | `If one was written this session, it may be in the wrong location.` |  |  | Reason line when no handover exists at all. |
+| `codex_handover.not_typed_re` | `^<(task-notification\|local-command-\|system-reminder\|bash-std(out\|err)\|command...` |  |  | JavaScript source of the harness-injected user entries that are not something the user typed. |
+| `codex_handover.nudge_agent_re` | `^codex\b\|^codex:` |  |  | JavaScript source (flag i) of an agent type that is a Codex agent. |
+| `codex_handover.nudge_agent_tools` | `Agent, Task` |  |  | Tool names that spawn an agent. |
+| `codex_handover.nudge_allowed` | `skip it if the change is trivial, already reviewed, or Codex is unavailable.` |  |  | Allowed line of the Codex nudge. |
+| `codex_handover.nudge_child_keys` | `content, message, messages, tool_uses, parts` |  |  | Keys under which a transcript entry nests further entries that may hold tool calls. |
+| `codex_handover.nudge_code_ext_re` | `\.(js\|jsx\|mjs\|cjs\|ts\|tsx\|vue\|svelte\|dart\|py\|go\|rs\|java\|kt\|swift\|c\|cc\|cpp\|h\|hp...` |  |  | JavaScript source (flag i) of the file names that count as code for the Codex nudge. |
+| `codex_handover.nudge_codex_word` | `codex` |  |  | The word in a skill call that marks a Codex review (compared without case). |
+| `codex_handover.nudge_edit_tools` | `Edit, Write, MultiEdit` |  |  | Tool names whose calls count as code edits. |
+| `codex_handover.nudge_guard` | `codex-nudge` |  |  | The guard id of the Codex nudge: its messages, its skip-file key and its escape hatch. |
+| `codex_handover.nudge_instead` | `before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:res...` |  |  | Advice line of the Codex nudge. |
+| `codex_handover.nudge_jev_edits_label` | `edits: ` |  |  | The second line of the Codex nudge question's summary, before the edit count. |
+| `codex_handover.nudge_jev_false` | `trivial — only comments/strings/log lines/formatting changed` |  |  | The criterion of a false answer to the Codex nudge question. |
+| `codex_handover.nudge_jev_files` | `20` |  |  | How many edited file names the Codex nudge question's summary lists. |
+| `codex_handover.nudge_jev_files_label` | `files: ` |  |  | The first line of the Codex nudge question's summary, before the file list. |
+| `codex_handover.nudge_jev_id` | `codexNudgeSubstantial` |  |  | The Jev integration the Codex nudge consults. |
+| `codex_handover.nudge_jev_instructions` | `This session is about to be nudged to get an independent Codex review because...` |  |  | The question the Codex nudge puts to Jev (a noul question; Node: the `instructions` of the codexNudgeSubstantial consult). |
+| `codex_handover.nudge_jev_true` | `genuinely substantial — logic/behavior changed` |  |  | The criterion of a true answer to the Codex nudge question. |
+| `codex_handover.nudge_max` | `2` |  |  | The most Codex nudges a session gets. |
+| `codex_handover.nudge_min_default` | `3` |  |  | Edits needed before the Codex nudge fires when nothing sets the threshold. |
+| `codex_handover.nudge_min_env` | `ANTIHALL_CODEX_NUDGE_MIN` |  |  | Environment variable of the Codex nudge threshold. |
+| `codex_handover.nudge_min_floor` | `1` |  |  | Lowest value the Codex nudge threshold can take (a smaller setting is raised to it). |
+| `codex_handover.nudge_min_key` | `min` |  |  | Settings key of the Codex nudge threshold (codexNudge.min). |
+| `codex_handover.nudge_more` | `, …` |  |  | Text after the listed file names when there are more. |
+| `codex_handover.nudge_names_sep` | `, ` |  |  | Separator of the file names the nudge lists. |
+| `codex_handover.nudge_override` | `set ANTIHALL_CODEX_NUDGE=off to silence` |  |  | Override line of the Codex nudge. |
+| `codex_handover.nudge_section` | `codexNudge` |  |  | Settings section of the Codex nudge threshold. |
+| `codex_handover.nudge_session_hash_len` | `16` |  |  | Length of the transcript-path hash used as the session key when a payload has no session id. |
+| `codex_handover.nudge_sig_sep` | `\|` |  |  | Separator of the sorted base names the nudge signature hashes. |
+| `codex_handover.nudge_skill_tool` | `Skill` |  |  | The tool name that invokes a skill. |
+| `codex_handover.nudge_state_prefix` | `codex-nudge-state` |  |  | The start of the Codex nudge per-session state file name (and the prune stamp key). |
+| `codex_handover.nudge_summary` | `Stop: one soft nudge to get a Codex second opinion after several substantial ...` |  |  | One-line description of the codex-nudge check in the generated reference. |
+| `codex_handover.nudge_tail_bytes` | `524288` |  | bytes | How much of the end of the transcript the Codex nudge reads. |
+| `codex_handover.nudge_what` | `this session made {edits} substantial code edit(s) across {files} file(s) ({n...` |  |  | Headline of the Codex nudge; {edits} edits across {files} files, {names} the first file names and {more} the sign of more. |
+| `codex_handover.nudge_why` | `An independent Codex review catches correctness bugs (off-by-one, races, subt...` |  |  | Reason line of the Codex nudge. |
+| `codex_handover.ordinal_re` | `(\d)(?:st\|nd\|rd\|th)\b` |  |  | JavaScript source (flag i) of a day number with its ordinal suffix. |
+| `codex_handover.path_separator` | `:` |  |  | Separator of the entries of the PATH variable. |
+| `codex_handover.precompact_git_timeout_ms` | `2000` |  | ms | Time limit of each git call of the PreCompact snapshot. |
+| `codex_handover.precompact_guard` | `precompact-snapshot` |  |  | The guard id of the PreCompact snapshot (its skip-file key). |
+| `codex_handover.precompact_prefix` | `PRECOMPACT-` |  |  | The start of a PreCompact snapshot file name, through the dash before its number. |
+| `codex_handover.precompact_summary` | `PreCompact: writes a mechanical continuation snapshot (git state, task list, ...` |  |  | One-line description of the precompact-snapshot check in the generated reference. |
+| `codex_handover.prefix_continuation` | `A session handover was found for this continuation` |  |  | Lead-in of the resume pointer after a clear or compaction. |
+| `codex_handover.prefix_previous` | `A previous session left a handover` |  |  | Lead-in of the resume pointer at a fresh start. |
+| `codex_handover.projects_dir` | `.claude/projects` |  |  | The host's per-project transcript directory, relative to the home directory. |
+| `codex_handover.proto_key` | `__proto__` |  |  | A key whose merge into an object JavaScript treats specially; a state file holding it is left to the Node hook. |
+| `codex_handover.prune_stamp_prefix` | `.prune-stamp-` |  |  | The start of the prune throttle stamp file name. |
+| `codex_handover.prune_throttle_ms` | `21600000` |  | ms | The least time between two sweeps for stale Codex nudge state files. |
+| `codex_handover.prune_ttl_ms` | `604800000` |  | ms | Age after which a per-session Codex nudge state file is removed. |
+| `codex_handover.quota_default_reason` | `quota exhausted` |  |  | The reason recorded for an outage that gives none. |
+| `codex_handover.quota_event` | `PostToolUse` |  |  | The hook event name in the quota advisory. |
+| `codex_handover.quota_guard` | `codex-quota` |  |  | The guard id the quota advisory answers to. |
+| `codex_handover.quota_instead` | `route correctness review to Sonnet.` |  |  | Advice line of the quota advisory. |
+| `codex_handover.quota_re` | `\b(out of\|exceed(?:ed\|s)?\|exhausted\|hit (?:your\|the)\|ran out of)\b[^.\n]{0,40...` |  |  | JavaScript source (flag i) of the Codex quota or rate-limit exhaustion message. |
+| `codex_handover.quota_reason_chars` | `120` |  |  | How much of a quota message is kept as its reason, in UTF-16 units. |
+| `codex_handover.quota_reason_max` | `300` |  |  | Longest reason stored in the quota record, in UTF-16 units. |
+| `codex_handover.quota_target_words` | `quota, rate limit, usage limit` |  |  | Words a quota message needs; text with none of them cannot be one (compared without case). |
+| `codex_handover.quota_what` | `codex:codex-rescue reported quota exhaustion ({reason}).` |  |  | Headline of the quota advisory; {reason} is the reason found in the result. |
+| `codex_handover.quota_why` | `Recorded to ~/.anti-hall/codex-availability.json until {until}; Codex is unav...` |  |  | Reason line of the quota advisory; {until} is an ISO time or the cooldown label. |
+| `codex_handover.rescue_re` | `^codex[:/-]?(?:codex-)?rescue$` |  |  | JavaScript source (flag i) of the agent type of the Codex rescue seat. |
+| `codex_handover.resume_do_instead` | `Do instead: follow this guided resume path.` |  |  | The line before the numbered resume steps. |
+| `codex_handover.resume_event` | `SessionStart` |  |  | The hook event name in the resume advisory when the payload names none. |
+| `codex_handover.resume_freshness` | `Freshness (measured now): HEAD {head}; {commits} commit(s) since this handove...` |  |  | The git freshness line; {head}, {commits} and {dirty}. |
+| `codex_handover.resume_git_timeout_ms` | `1500` |  | ms | Time limit of each git call of the handover resume. |
+| `codex_handover.resume_guard` | `handover-resume` |  |  | The guard id the handover resume messages answer to. |
+| `codex_handover.resume_head` | `💡 anti-hall · handover-resume: {prefix}: {path} ({seq_label}{pred} \| date {da...` |  |  | First line of the resume pointer; {prefix}, {path}, {seq_label}, {pred}, {date}, {sid} and {outcome}. |
+| `codex_handover.resume_max_age_ms` | `604800000` |  | ms | Oldest handover or snapshot the resume still points at. |
+| `codex_handover.resume_note` | `Note: this handover supersedes the auto-compact summary and any legacy CONTIN...` |  |  | Closing note of the resume pointer. |
+| `codex_handover.resume_outcome` | ` -- INDEX.md outcome: {outcome}` |  |  | The outcome part of the resume pointer; {outcome}. |
+| `codex_handover.resume_pred` | `, predecessor {pred}` |  |  | The predecessor part of the resume pointer; {pred}. |
+| `codex_handover.resume_sources` | `clear, compact` |  |  | The SessionStart sources that count as a continuation (clear or compaction). |
+| `codex_handover.resume_state_prefix` | `handover-resume-state-` |  |  | The start of the per-session resume state file name. |
+| `codex_handover.resume_summary` | `SessionStart: points a fresh or compacted session at the newest handover with...` |  |  | One-line description of the handover-resume check in the generated reference. |
+| `codex_handover.resume_writer` | `Writer kept running: session {sid} kept running {min} min after this handover...` |  |  | The writer-kept-running line; {sid}, {min} and {iso}. |
+| `codex_handover.rollout_prefix` | `rollout-` |  |  | The start of a Codex rollout transcript file name. |
+| `codex_handover.rollout_suffix` | `.jsonl` |  |  | The end of a Codex rollout transcript file name. |
+| `codex_handover.rule_file_claude` | `CLAUDE.md` |  |  | The rules file a Claude session re-reads. |
+| `codex_handover.rule_file_codex` | `AGENTS.md` |  |  | The rules file a Codex session re-reads. |
+| `codex_handover.scratch_leaf` | `scratchpad` |  |  | The scratchpad directory name inside the session directory. |
+| `codex_handover.scratch_prefix` | `claude-` |  |  | The start of the per-user scratchpad directory name, before the user id. |
+| `codex_handover.seq_max_digits` | `15` |  |  | Most digits of a handover sequence number the port reads; more is left to the Node hook. |
+| `codex_handover.serde_range_msg` | `number out of range` |  |  | Start of the error text of the engine's JSON parser for a number out of range (JavaScript parses it). |
+| `codex_handover.serde_recursion_msg` | `recursion limit exceeded` |  |  | Start of the error text of the engine's JSON parser for nesting past its limit (JavaScript parses it). |
+| `codex_handover.setting_nudge` | `5 entries` |  |  | Where the Codex nudge switch is read from (codexNudge.enabled, default on). |
+| `codex_handover.setting_precompact` | `4 entries` |  |  | Where the PreCompact snapshot switch is read from (maintenance.precompactSnapshot, default on). |
+| `codex_handover.setting_quota_detect` | `5 entries` |  |  | Where the Codex quota detection switch is read from (guards.codexQuotaDetect, default on). |
+| `codex_handover.setting_resume` | `4 entries` |  |  | Where the handover resume switch is read from (context.handoverResume, default on). |
+| `codex_handover.snap_branch` | `branch: {branch}` |  |  | The branch line of a snapshot. |
+| `codex_handover.snap_clean` | ` (clean)` |  |  | The suffix of the dirty files line when none is dirty. |
+| `codex_handover.snap_dirty` | `dirty files: {count}{clean}` |  |  | The dirty files line of a snapshot; {count} and {clean}. |
+| `codex_handover.snap_fence_close` | `````` |  |  | The line that closes a quoted message. |
+| `codex_handover.snap_fence_open` | `````text` |  |  | The line that opens a quoted message. |
+| `codex_handover.snap_h_custom` | `## /compact instructions (verbatim)` |  |  | Heading of the compact instructions section of a snapshot. |
+| `codex_handover.snap_h_handover` | `## Newest handover` |  |  | Heading of the newest handover section of a snapshot. |
+| `codex_handover.snap_h_messages` | `## Last {count} user message(s), verbatim, oldest first` |  |  | Heading of the user messages section; {count}. |
+| `codex_handover.snap_h_repo` | `## Repo state` |  |  | Heading of the repository state section of a snapshot. |
+| `codex_handover.snap_h_tasks` | `## Task list snapshot (from the transcript)` |  |  | Heading of the task list section of a snapshot. |
+| `codex_handover.snap_handover_found` | `{path} (modified {modified})` |  |  | The newest handover line; {path} and {modified} (an ISO time). |
+| `codex_handover.snap_handover_none` | `none found under .anti-hall/handovers/ — no HANDOVER*.md exists for this repo` |  |  | The newest handover line when none exists. |
+| `codex_handover.snap_head` | `HEAD: {head}` |  |  | The HEAD line of a snapshot. |
+| `codex_handover.snap_indent` | `    ` |  |  | The indent of a listed dirty file. |
+| `codex_handover.snap_intro` | `Mechanical crash dump written by anti-hall's PreCompact hook right before com...` |  |  | Explanation line of a snapshot; {trigger} is the compaction trigger. |
+| `codex_handover.snap_messages_none` | `none found in the readable transcript tail` |  |  | The user messages line when none was found. |
+| `codex_handover.snap_more` | `    … +{count} more` |  |  | The line after the listed dirty files when more exist; {count}. |
+| `codex_handover.snap_msg_head` | `### {i}{ts}` |  |  | Heading of one user message; {i} and {ts}. |
+| `codex_handover.snap_newer` | `Pre-compaction snapshot (newer than the handover): {path} -- anti-hall's PreC...` |  |  | Snapshot line when the snapshot is newer than the handover; {path}. |
+| `codex_handover.snap_not_git` | `git: not a git repository (or git unavailable)` |  |  | The git line of a snapshot outside a repository. |
+| `codex_handover.snap_older` | `Pre-compaction snapshot (older than the handover, which already covers it): {...` |  |  | Snapshot line when the handover is newer; {path}. |
+| `codex_handover.snap_pwd` | `pwd: {cwd}` |  |  | The working directory line of a snapshot. |
+| `codex_handover.snap_table_head` | `\| id \| subject \| status \|` |  |  | The header row of the task table. |
+| `codex_handover.snap_table_row` | `\| {id} \| {subject} \| {status} \|` |  |  | One task table row; {id}, {subject} and {status}. |
+| `codex_handover.snap_table_rule` | `\|---\|---\|---\|` |  |  | The rule row of the task table. |
+| `codex_handover.snap_tasks_empty` | `empty list` |  |  | The task list line for an empty list. |
+| `codex_handover.snap_tasks_none` | `not derivable — no TodoWrite/TaskCreate/TaskUpdate calls in the readable tran...` |  |  | The task list line when no list could be read. |
+| `codex_handover.snap_title` | `# PRECOMPACT snapshot — {session} · #{n} · {now}` |  |  | First line of a snapshot; {session}, {n} and {now}. |
+| `codex_handover.snap_truncated` | `{head}\n[… truncated {count} chars]` |  |  | A message cut at the limit; {head} is what is kept and {count} how much was cut. |
+| `codex_handover.snap_ts_sep` | ` · ` |  |  | Separator before a message timestamp. |
+| `codex_handover.snaponly_instead` | `read it fully before trusting the compact summary; once state is re-establish...` |  |  | Advice line when only a snapshot exists. |
+| `codex_handover.snaponly_what` | `no HANDOVER*.md was written for this session, but a pre-compaction snapshot e...` |  |  | Headline when only a snapshot exists; {path} and {written}. |
+| `codex_handover.snaponly_why` | `It holds git state, a task-list snapshot and the last user messages verbatim,...` |  |  | Reason line when only a snapshot exists. |
+| `codex_handover.state_dir` | `.anti-hall` |  |  | The per-user state directory, relative to the home directory. |
+| `codex_handover.status_deleted` | `deleted` |  |  | The status that removes a task from the snapshot. |
+| `codex_handover.status_pending` | `pending` |  |  | The status of a task that has none. |
+| `codex_handover.step_checklist` | `Run its Resume-verification checklist (git status, pwd, {rule} re-read, smoke...` |  |  | Resume step when the handover has a checklist; {rule} and {path}. |
+| `codex_handover.step_continue` | `Continue from the single Next Action.` |  |  | Resume step: continue. |
+| `codex_handover.step_details` | `Load detail files ONLY as needed via the pointer table ({files}).` |  |  | Resume step: the detail files; {files}. |
+| `codex_handover.step_generic` | `No Resume-verification checklist section was found in it -- fall back to a ge...` |  |  | Resume step when the handover has no checklist; {rule} and {path}. |
+| `codex_handover.step_read` | `Read {path} FULLY -- front matter (first ~15 lines) carries Situation + Next ...` |  |  | Resume step: read the handover; {path}. |
+| `codex_handover.step_readback` | `READ-BACK: before any new work, tell the user in your own words (not a paste)...` |  |  | Resume step: tell the user what was understood. |
+| `codex_handover.step_tasks` | `Recreate/reconcile your task list from state.md's Task list snapshot BEFORE w...` |  |  | Resume step: rebuild the task list. |
+| `codex_handover.step_trials` | `Check trials.md do-not-repeat list before re-attempting anything.` |  |  | Resume step: the do-not-repeat list. |
+| `codex_handover.task_created_re` | `Task #(\d+) created successfully` |  |  | JavaScript source of the result text that carries a new task's number. |
+| `codex_handover.task_line_words` | `TodoWrite, TaskCreate, TaskUpdate, created successfully` |  |  | Words a transcript line must contain to be parsed for the task list. |
+| `codex_handover.tmp_default` | `/tmp` |  |  | The temporary directory when none of those variables is set. |
+| `codex_handover.tmp_env` | `TMPDIR, TMP, TEMP` |  |  | Environment variables that name the temporary directory, first set one wins. |
+| `codex_handover.tmp_roots` | `/tmp, /private/tmp` |  |  | Temporary directories always searched for the session scratchpad, besides the one the environment names. |
+| `codex_handover.transcript_tail_bytes` | `1572864` |  | bytes | How much of the end of the transcript the PreCompact snapshot reads. |
+| `codex_handover.trigger_unknown` | `unknown-trigger` |  |  | What a snapshot records for any other trigger. |
+| `codex_handover.triggers` | `manual, auto` |  |  | The PreCompact trigger values a snapshot records as they are. |
+| `codex_handover.try_again_re` | `\btry again (?:at\|after\|on)?\s*([A-Za-z0-9:,+\-\/ ]{1,60})` |  |  | JavaScript source (flag i) of the usage-limit wording that names when to try again. |
+| `codex_handover.tz_var` | `TZ` |  |  | The environment variable that sets the time zone; a request whose value differs from this process's has its local-time conversions left to the Node hook. |
+| `codex_handover.unknown_session` | `unknown-session` |  |  | The session name used when a payload carries no usable session id. |
+| `codex_handover.until_re` | `\b(?:until\|resets?(?: at)?\|resum(?:e\|ing)(?: at)?\|available again(?: at)?)\s+...` |  |  | JavaScript source (flag i) of a trailing clause that names when Codex is back; the original lookahead after the terminator is written as a consumed character, which changes neither the match start nor the capture. |
+| `codex_handover.utc_words` | `utc, gmt, z` |  |  | Words after a date and time that mean UTC (compared without case). |
+| `codex_handover.weekdays` | `7 items` |  |  | Weekday names, lower case (a date string may lead with one, full or its first three letters). |
+| `codex_handover.writer_grace_ms` | `300000` |  | ms | How long after a handover its writer may keep writing before the resume says it kept running. |
+
+### task_guards.toml / dispatch_tier
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `dispatch_tier.jev_id` | `dispatchTier` |  |  | The Jev integration id the dispatch-tier hook asks. |
+| `dispatch_tier.json_max_depth` | `128` |  |  | Deepest JSON nesting the state file parser reads; deeper input is left to the Node hook. |
+| `dispatch_tier.max_sessions` | `50` |  |  | Sessions the state file keeps recommendation tracking for; the longest untouched go first. |
+| `dispatch_tier.owner_marker_setting` | `6 entries` |  |  | Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified. |
+| `dispatch_tier.owner_subject_re` | `^\s*owner(:\|\s+decision\b)` |  |  | JavaScript regex source (case-insensitive) of a subject that marks a task as waiting on the owner (OWNER: ... or OWNER DECISION ...). |
+| `dispatch_tier.owner_values` | `owner, user, human, external` |  |  | The blockedOn values (trimmed, lowercase) that mark a task as waiting on the owner. |
+| `dispatch_tier.question_instructions` | `Classify how an orchestrating agent should dispatch this task.` |  |  | The question put to Jev (a choice question over the three tiers). |
+| `dispatch_tier.request_ttl_ms` | `600000` |  | ms | How long a request marker stops the same task text from being asked again while the first ask may still be in flight; older markers are dropped when the state is written. |
+| `dispatch_tier.state_file` | `dispatch-tier-state.json` |  |  | The state file (requested markers and per-session tracking), inside the anti-hall directory of the home. |
+| `dispatch_tier.summary` | `Asks Jev (dispatchTier, detached) how a new or changed task should be dispatc...` |  |  | One-line description of the dispatch-tier check in the generated reference. |
+| `dispatch_tier.text_cap` | `600` |  |  | Most UTF-16 units of a task's text (subject, newline, description) that Jev is asked about. |
+| `dispatch_tier.tier_subagent` | `the DEFAULT when unsure: a lookup, a bug fix, a UI text or copy change, any c...` |  |  | The description of the subagent tier in the question. |
+| `dispatch_tier.tier_workflow` | `breadth-first or parallelisable work: 3 or more clearly independent or nested...` |  |  | The description of the workflow tier in the question. |
+| `dispatch_tier.tier_workspace` | `a large multi-step feature, migration or release spanning several files or co...` |  |  | The description of the workspace tier in the question. |
+| `dispatch_tier.tools` | `TaskCreate, TaskUpdate` |  |  | The task tools whose text changes the hook classifies. |
+
+### task_guards.toml / task_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `task_guard.guard_name` | `task-guard` |  |  | The guard id of task-guard (the skip key and the message prefix). |
+| `task_guard.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable that marks a judge child process; every task hook is a no-op there. |
+| `task_guard.note_line` | `[task-guard] {note}\n` |  |  | The line that carries the unknown-state note; `{note}` is the note. |
+| `task_guard.prune_advisory` | `[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory...` |  |  | The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit. |
+| `task_guard.prune_setting` | `6 entries` |  |  | How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter). |
+| `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
+| `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
+| `task_guard.state_prefix` | `last-stop-taskset-` |  |  | Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`). |
+| `task_guard.summary` | `Stop gate: answers the Stops where the task list has nothing open (the loop s...` |  |  | One-line description of the task-guard check in the generated reference. |
+| `task_guard.unknown_tag` | `guard` |  |  | The tag of the unknown-state note's state file for task-guard. |
+
+### task_guards.toml / task_lifecycle_log
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `task_lifecycle_log.events` | `TaskCreated, TaskCompleted` |  |  | The hook events the ledger records. |
+| `task_lifecycle_log.history_dir` | `.anti-hall, history` |  |  | The ledger directory under the project root, as path segments. |
+| `task_lifecycle_log.index_name` | `INDEX.md` |  |  | The index file name inside the history directory. |
+| `task_lifecycle_log.ledger_ext` | `.md` |  |  | The ledger file extension. |
+| `task_lifecycle_log.separator` | ` · ` |  |  | The separator between the fields of a ledger line (a middle dot with a space on each side). |
+| `task_lifecycle_log.setting` | `6 entries` |  |  | Where the on/off switch is read from (maintenance.taskLifecycleLog, default on). |
+| `task_lifecycle_log.subject_max` | `200` |  |  | Longest task subject kept in a ledger line, in UTF-16 units. |
+| `task_lifecycle_log.summary` | `Appends one line per TaskCreated/TaskCompleted event to the per-session histo...` |  |  | One-line description of the task-lifecycle-log check in the generated reference. |
+| `task_lifecycle_log.task_id_max` | `200` |  |  | Longest task id kept in a ledger line, in UTF-16 units. |
+| `task_lifecycle_log.teammate_max` | `100` |  |  | Longest teammate name kept in a ledger line, in UTF-16 units. |
+
+### task_guards.toml / taskkit
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `taskkit.codex_dir` | `[\\/]\.codex[\\/]` |  |  | JavaScript regex source of a path with a `.codex` directory in it. |
+| `taskkit.codex_rollout` | `(^\|[\\/])rollout-[^\\/]*\.jsonl$` |  |  | JavaScript regex source of a Codex rollout transcript path. |
+| `taskkit.control_chars` | `[\x00-\x1F\x7F-\x9F]` |  |  | Characters a ledger line replaces with a space (C0 controls, DEL and C1 controls), as the body of a JavaScript regex class. |
+| `taskkit.ellipsis` | `…` |  |  | What is appended to a ledger field that was cut to its limit. |
+| `taskkit.exact_digits` | `15` |  |  | Most significant digits a JSON number may have for its text to be taken as JavaScript prints it; a number with more digits is left to the Node hook (several shortest round-trip texts exist and the two languages may pick different ones). |
+| `taskkit.git_entry` | `.git` |  |  | The name of the entry that marks a git checkout root. |
+| `taskkit.gitdir_line` | `^\s*gitdir:\s*(.+?)\s*$` |  |  | JavaScript regex source of the line that names the git directory in a `.git` file (the `m` flag applies). |
+| `taskkit.session_id_unsafe` | `[^A-Za-z0-9_-]` |  |  | Characters that are removed from a session id before it becomes part of a ledger file name (JavaScript regex source of a negated class). |
+| `taskkit.tmp_env_names` | `TMPDIR, TMP, TEMP` |  |  | The environment variables `os.tmpdir()` reads for the temp directory, in order; without any the temp directory is /tmp. |
+| `taskkit.unknown_session` | `unknown-session` |  |  | The session id used in a file name when the payload carries none, or only characters a file name part may not hold (the Node `UNKNOWN_SESSION`). |
+
+### task_guards.toml / tasklist_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `tasklist_guard.fresh_grace_ms` | `1000` |  |  | How far the newest counted work may run ahead of a progress file's time and still count as covered by it. |
+| `tasklist_guard.fresh_setting` | `6 entries` |  |  | How long (ms) a progress file counts as fresh when no work time is known (guards.progressFreshMs). |
+| `tasklist_guard.guard_name` | `tasklist-guard` |  |  | The guard id of tasklist-guard (the skip key and the message prefix). |
+| `tasklist_guard.history_dir` | `.anti-hall, history` |  |  | The history directory under the project root, as path segments. |
+| `tasklist_guard.low_priorities` | `p2, low, deferred` |  |  | Priorities (lowercase) below the actionable floor for the stalled-in-progress count. |
+| `tasklist_guard.plan_mode_text` | `[tasklist-guard] PLAN MODE — Stop not blocked (progress-file writes are not p...` |  |  | The advisory printed instead of a decision while the session is in plan mode. |
+| `tasklist_guard.plan_mode_value` | `plan` |  |  | The permission_mode value (compared in lowercase) that marks plan mode. |
+| `tasklist_guard.progress_dir` | `.anti-hall, progress` |  |  | The progress directory under the project root, as path segments. |
+| `tasklist_guard.reason_max` | `2000` |  |  | Longest block reason, in UTF-16 units; longer text is cut and ends with an ellipsis. |
+| `tasklist_guard.resume_marker_prefix` | `handover-resume-state-` |  |  | Prefix of the per-session marker the handover resume writes (`<prefix><session>.json` under the anti-hall state directory). |
+| `tasklist_guard.resume_nudged_prefix` | `resume-verify-nudged-` |  |  | Prefix of the per-session file that records the one resume-verification nudge. |
+| `tasklist_guard.resume_text` | `A session handover was resumed this session ({file}) but no `resume-verified:...` |  |  | The resume-verification nudge; `{file}` is the handover file. |
+| `tasklist_guard.resume_verified_marker` | `resume-verified:` |  |  | The text a resumed handover must contain once its resume has been verified. |
+| `tasklist_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.tasklistGuard, default on). |
+| `tasklist_guard.summary` | `Stop gate: answers the Stops that do not block (a trivial session, tracked wo...` |  |  | One-line description of the tasklist-guard check in the generated reference. |
+| `tasklist_guard.task_tool_names` | `TaskCreate, TaskUpdate, TodoWrite` |  |  | The tool names that count as task activity. |
+| `tasklist_guard.threshold_setting` | `6 entries` |  |  | How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold). |
+| `tasklist_guard.wide_window_bytes` | `16777216` |  |  | How much of the transcript the fallback search for any task activity reads when the scan window held none (16 MiB). |
+| `tasklist_guard.window_bytes` | `524288` |  |  | How much of the end of the transcript the work and task scan reads (512 KiB). |
+
+### task_guards.toml / taskstate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `taskstate.backfill_chunk_bytes` | `1048576` |  |  | How much of the transcript the backfill reads at a time. |
+| `taskstate.backfill_exact_bytes` | `8388608` |  |  | How far back the backfill scans before the engine hands the call to Node. Node stops after 150 ms of wall clock (64 MiB at most); the engine scans a fixed number of bytes instead so its answer never depends on machine speed, and past this bound it defers rather than guess where Node would have stopped. |
+| `taskstate.backfill_max_candidates` | `256` |  |  | How many unpaired task-creation results the backfill remembers while scanning backward. |
+| `taskstate.backfill_max_subject` | `200` |  |  | Longest subject the backfill recovers, in UTF-16 units. |
+| `taskstate.backfill_prefix_scan_bytes` | `8388608` |  |  | How far past the window start the backfill looks for the end of the line that straddles it. |
+| `taskstate.done_statuses` | `completed, done, cancelled, canceled` |  |  | Statuses (lowercase) that count as completed for the completed-task advisory. |
+| `taskstate.id_keys` | `taskId, id, task_id` |  |  | The input fields a task tool call may name its task id in, in order: the harness's `taskId`, then `id`, then `task_id`. |
+| `taskstate.open_statuses` | `pending, in_progress, in-progress` |  |  | Statuses (lowercase) that make a task open. |
+| `taskstate.prune_stamp_prefix` | `.prune-stamp-` |  |  | Prefix of the stamp file that throttles one prefix's sweep. |
+| `taskstate.prune_throttle_hours` | `6` |  |  | The sweep of one file prefix runs at most once per this many hours. |
+| `taskstate.prune_ttl_days` | `7` |  |  | Per-session state files older than this many days are removed by the opportunistic sweep. |
+| `taskstate.re_created` | `^Task\s+#(\d+)\s+created\s+successfully` |  |  | JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number. |
+| `taskstate.re_list_empty` | `^\s*No\s+tasks\s+found\b` |  |  | JavaScript regex source (case-insensitive) of the TaskList result that says the task store is empty. |
+| `taskstate.re_not_found` | `^\s*Task\s*(?:#\S+)?\s*not\s+found\b` |  |  | JavaScript regex source (case-insensitive) of the TaskGet or TaskUpdate result that says one task id does not exist. |
+| `taskstate.tail_bytes` | `1572864` |  |  | How much of the end of a transcript the task reconstruction reads (the Node `MAX_TAIL_BYTES`, 1.5 MiB). |
+| `taskstate.terminal_status_re` | `^(completed\|done\|cancelled\|canceled\|deleted)$` |  |  | JavaScript regex source (case-insensitive) of the statuses that close a task for the backfill (`TERMINAL`). |
+| `taskstate.tools_collect_keys` | `content, message, messages, tool_uses, parts` |  |  | The object keys the tool-use collector descends into, in order (the Node `collectToolUses`). |
+| `taskstate.unknown_file_prefix` | `last-unknown` |  |  | Prefix of the per-session file that remembers which unknown set was last announced. |
+| `taskstate.unknown_max_notes` | `3` |  |  | How many times the unknown-state note may be printed for one session and tag. |
+| `taskstate.unknown_note_text` | `{n} task(s) in an unknown state (their records are too far back to read) — re...` |  |  | The unknown-state note; `{n}` is the number of tasks. |
+
+### task_guards.toml / workdetect
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `workdetect.always_work` | `\bgit\s+(?:commit\|rebase\|merge\|cherry-pick\|stash\|reset\|apply\|am)\b\|\bgit\s+(?...` |  |  | JavaScript regex source (case-insensitive) of the shell commands that always count as work: git history and dependency mutations, `sed -i`, installs and `patch`. |
+| `workdetect.command_position` | `(?:^\|[\n\r\u2028\u2029;&\|`(]\|\$\()\s*(?:rm\|cp\|mv\|tee\|mkdir\|touch\|make\|chmod)\b` |  |  | Regex source (case-insensitive) of the bare file verbs that count as work only at command position: at the start of a line, or after a separator, an opening parenthesis, a backtick or `$(`. A JavaScript `^` with the multiline flag also matches after a carriage return and the two Unicode line separators, which the character class lists. |
+| `workdetect.crontab_segment` | `^[({\s]*crontab` |  |  | Regex source (case-insensitive) of the start of a crontab call at command position, optionally inside a leading subshell paren; a name that continues with a word character, dot or hyphen is not a crontab call (checked in code). |
+| `workdetect.dev_null` | `\/dev\/null` |  |  | Regex source of the null device, a redirect target that never counts as a write. |
+| `workdetect.devswarm_housekeeping` | `^\s*(?:node\s+)?(?:\S*[\\/])?devswarm\.js\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*(?:i...` |  |  | Regex source (case-insensitive) of a command segment that is only DevSwarm mesh housekeeping through the stable launcher: an inbox, heartbeat, send, relay, notice, nudge, roster or wake-directive verb. |
+| `workdetect.heredoc_delimiter` | `^<<-?\s*((?:[^\s;&\|()<>'"\\]\|'[^'\n]*'\|"[^"\n]*"\|\\[^\n])+)` |  |  | Regex source of a heredoc operator and its delimiter word, which may be partly quoted or escaped; group 1 is the word. |
+| `workdetect.mutating_tools` | `Edit, Write, MultiEdit, NotebookEdit` |  |  | File-mutating tools: each call counts as work unless it targets an excluded path. |
+| `workdetect.never_work_tools` | `Agent, Task, CronCreate, CronDelete` |  |  | Tools that start or schedule work and never change a file themselves. |
+| `workdetect.scratchpad_path` | `\/scratchpad\/` |  |  | Regex source of a path inside the session scratchpad (a segment literally named scratchpad); writes there are message passing, not project work. |
+| `workdetect.state_dir` | `(?:^\|[\s/])\.anti-hall\/(?:progress\|history\|handovers)\/` |  |  | Regex source of a path inside anti-hall's own progress, history or handover directories; writing the bookkeeping the guard asks for is not work. |
+| `workdetect.tmp_housekeeping_target` | `\/scratchpad\/\|(?:^\|\/)tmp\/` |  |  | Regex source (case-insensitive) of the redirect targets a housekeeping crontab install may write to: the scratchpad or a tmp directory. |
+
+### devswarm_role.toml / devswarm_role
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_role.agent_env` | `DEVSWARM_AI_AGENT` |  |  | Environment variable naming the workspace's agent (claude, codex, ...); only claude is told about the idle-wake cron and monitor tools. |
+| `devswarm_role.bin_dir` | `.anti-hall/bin` |  |  | The directory of the stable launchers, relative to the home directory. |
+| `devswarm_role.branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable that tells a child workspace (non-empty) from a Primary (empty or unset). |
+| `devswarm_role.builder_env` | `DEVSWARM_BUILDER_ID` |  |  | Environment variable holding the workspace id the injected commands name. |
+| `devswarm_role.child_summary` | `SessionStart: injects the DevSwarm mesh-only messaging directive for a child ...` |  |  | One-line description of the devswarm-child-role check in the generated reference. |
+| `devswarm_role.claude_agent` | `claude` |  |  | The agent name that has the idle-wake cron and monitor tools. |
+| `devswarm_role.cron_charset` | `0123456789*/,-` |  |  | The only characters a cron field may contain (anything else would let the setting inject text into the directive). |
+| `devswarm_role.cron_fields` | `5` |  |  | How many whitespace-separated fields a valid cron schedule has. |
+| `devswarm_role.gate_guard` | `devswarm-parent-gate` |  |  | The skip-file name of the parent gate. |
+| `devswarm_role.gate_summary` | `Stop: allows without running Node when the Node gate would exit silently befo...` |  |  | One-line description of the devswarm-parent-gate check in the generated reference. |
+| `devswarm_role.hooks_dir` | `hooks` |  |  | The plugin's hooks directory, relative to the plugin root; the Node hooks resolve their own location from it (real path). |
+| `devswarm_role.id_extra_chars` | `._-` |  |  | Characters besides ASCII letters and digits that a workspace id may contain. |
+| `devswarm_role.id_placeholder` | `<DEVSWARM_BUILDER_ID>` |  |  | What the injected commands name when the workspace id is absent or unsafe. |
+| `devswarm_role.judge_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable that marks the claude -p judge child; hooks that load in it exit silently. |
+| `devswarm_role.kill_env` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Environment variable whose value 1 switches the DevSwarm integration off (checked before the supervisor mode). |
+| `devswarm_role.launcher_cli` | `2 entries` |  |  | The stable launcher of the DevSwarm CLI: its file name under the bin directory and the script it resolves, relative to the plugin root. |
+| `devswarm_role.launcher_src` | `#!/usr/bin/env node\n'use strict';\n// AUTO-GENERATED by anti-hall (hooks/lib...` |  |  | The source of a generated stable launcher (placeholders {segments}: the JSON array of the target's path parts, {fallback}: the JSON string of the target's absolute path at generation time). Compared byte for byte with the file on disk, never executed or written by the engine. |
+| `devswarm_role.launcher_watcher` | `2 entries` |  |  | The stable launcher of the mailbox watcher: its file name under the bin directory and the script it resolves, relative to the plugin root. |
+| `devswarm_role.msg_base` | `💡 anti-hall · devswarm-comms: anti-hall's shared mesh store is this workspace...` |  |  | The mesh-only messaging directive of a child workspace (placeholder {cli}: the DevSwarm CLI path). |
+| `devswarm_role.msg_expiry_inline` | ` + re-arm on its final/expired event` |  |  | The monitor-expiry clause when the monitor is also re-armed inline on its own expiry. |
+| `devswarm_role.msg_expiry_tick` | `. Do NOT re-arm inline when it emits its final/expired event — reply in one l...` |  |  | The monitor-expiry clause when re-arming happens only from the cron tick. |
+| `devswarm_role.msg_wake_claude` | ` MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY exis...` |  |  | The mailbox-wake text of a claude workspace (placeholders {cli}, {watcher}, {id}, {cron}, {expiry}). |
+| `devswarm_role.msg_wake_other` | ` MAILBOX WAKE: this workspace runs `{agent}`, which has NO idle-wake primitiv...` |  |  | The mailbox-wake text of a workspace whose agent is not claude (placeholders {cli}, {id}, {agent}). |
+| `devswarm_role.out_prefix` | `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":` |  |  | The SessionStart hook output up to the directive text (host protocol; the text follows as a JSON string). |
+| `devswarm_role.out_suffix` | `}}` |  |  | The SessionStart hook output after the directive text. |
+| `devswarm_role.real_home_escape` | `ANTIHALL_ALLOW_REAL_HOME_TEST` |  |  | Environment variable that lifts the real-home refusal of the Node settings reader (tests that need the real home). |
+| `devswarm_role.repo_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable DevSwarm sets for a session under it; its presence is the auto-mode detection of an active supervisor. |
+| `devswarm_role.sw_child_role` | `4 entries` |  |  | Switch devswarm.childRole (default on): off makes the SessionStart hook a no-op. |
+| `devswarm_role.sw_parent_gate` | `4 entries` |  |  | Switch devswarm.parentGate (default on): off makes the Stop gate a no-op. |
+| `devswarm_role.sw_rearm` | `5 entries` |  |  | Switch devswarm.rearmOnTickOnly (default on): re-arm a lapsed monitor only from the cron tick, never inline on the monitor's own expiry. |
+| `devswarm_role.sw_stable_launcher` | `4 entries` |  |  | Switch devswarm.stableLauncher (default on): point the injected text at the version-independent launchers under the anti-hall bin directory instead of the plugin's own versioned path. |
+| `devswarm_role.sw_supervisor_mode` | `6 entries` |  |  | Setting devswarm.supervisorMode (auto, on or off): force the supervisor context on or off, or detect it from the environment. default is also the manifest default the plugin option is compared with. |
+| `devswarm_role.sw_wake_cron` | `4 entries` |  |  | Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected. |
+| `devswarm_role.test_markers` | `ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; with one of them set and the home equal to the real home the Node settings reader refuses, so the check defers rather than guess what Node does. |
+
+### devswarm_gates.toml / devswarm_gates
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_gates.bash_tool` | `Bash` |  |  | The tool name the reply tracker and the drain nudge observe. |
+| `devswarm_gates.child_drain_setting` | `6 entries` |  |  | Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable). |
+| `devswarm_gates.child_drain_summary` | `DevSwarm child mailbox drain nudge: allows the call when the hook cannot act ...` |  |  | One-line description of the devswarm-child-drain check in the generated reference. |
+| `devswarm_gates.child_gate_guard_name` | `devswarm-child-gate` |  |  | The guard id the devswarm-child-gate check answers to in skip.json. |
+| `devswarm_gates.child_gate_setting` | `6 entries` |  |  | Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable). |
+| `devswarm_gates.child_gate_summary` | `DevSwarm child Stop gate: allows the stop when the hook cannot act (switch of...` |  |  | One-line description of the devswarm-child-gate check in the generated reference. |
+| `devswarm_gates.kill_env` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Environment variable that, set to exactly `1`, turns the DevSwarm integration off for the process. |
+| `devswarm_gates.kill_env_value` | `1` |  |  | The value of the kill variable that turns the integration off. |
+| `devswarm_gates.mode_off` | `off` |  |  | Supervisor mode value that forces the integration off. |
+| `devswarm_gates.mode_on` | `on` |  |  | Supervisor mode value that forces the integration on. |
+| `devswarm_gates.reply_tracker_setting` | `6 entries` |  |  | Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable). |
+| `devswarm_gates.reply_tracker_summary` | `DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm...` |  |  | One-line description of the devswarm-parent-reply-tracker check in the generated reference. |
+| `devswarm_gates.repo_id_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable DevSwarm sets on a workspace's processes; non-empty means the supervisor is in play in auto mode. |
+| `devswarm_gates.send_words` | `devswarm, send` |  |  | Words that must both appear (ASCII case-insensitive, at word boundaries, in any order) in a Bash command for it to plausibly be a devswarm send; `devswarm` also matches before `.js`. |
+| `devswarm_gates.source_branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable DevSwarm sets only on a child workspace; non-empty means this session is a child. |
+| `devswarm_gates.supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode; headline plugin option). |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -2219,11 +2729,14 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.tel_no_db` | The telemetry rollup cannot run: storage did not open. |
 | `git.msg_commit_credit` | Block: an inline commit message with an AI self-credit. |
 | `git.msg_commit_file_credit` | Block: a commit message read from a file or heredoc with an AI self-credit. |
+| `git.msg_commit_file_jev` | Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased). |
+| `git.msg_commit_jev` | Block: Jev judged an inline commit message to credit an AI assistant (paraphrased). |
 | `git.msg_creating_credit` | Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}. |
 | `git.msg_delete_ref` | Block: remote ref deletion. Placeholder: {skip}. |
 | `git.msg_find_push` | Block: a push through find -exec. |
 | `git.msg_force_push` | Block: a force push. |
 | `git.msg_gh_credit` | Block: a gh pr, issue or release body or title carries an AI self-credit. |
+| `git.msg_gh_jev` | Block: Jev judged a gh body or title to credit an AI assistant (paraphrased). |
 | `git.msg_handover` | Block: a commit that includes a session handover. Placeholders: {shown}, {skip}. |
 | `git.msg_launcher` | Block: a write into the launcher directory. |
 | `git.msg_push_cmdsubst` | Block: a push argument produced by command substitution. |

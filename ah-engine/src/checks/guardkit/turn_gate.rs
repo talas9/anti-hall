@@ -11,6 +11,7 @@ use crate::checks::guardkit::fsio::{prune_stale, write_atomic};
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_string_coerce, js_truthy};
+use crate::checks::taskkit::jsval::Unsure;
 use crate::defaults;
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
@@ -77,15 +78,20 @@ fn read_tail(path: &str, max: u64) -> Option<Vec<String>> {
     Some(lines)
 }
 
-/// `currentTurnId(transcriptPath)`: the id of the newest human prompt in the transcript tail, `None` when it cannot be told.
-pub fn current_turn_id(transcript_path: Option<&Value>) -> Option<String> {
-    let path = transcript_path.and_then(Value::as_str).filter(|p| !p.is_empty())?;
-    let lines = read_tail(path, defaults::num("turn_gate.tail_bytes"))?;
+/// `currentTurnId(transcriptPath)`: the id of the newest human prompt in the transcript tail, `Ok(None)` when it cannot be told.
+/// `Err` when a user line serde rejects but `JSON.parse` reads (see `jsdiff`): Node may name that line's turn, so the caller defers.
+pub fn current_turn_id(transcript_path: Option<&Value>) -> Result<Option<String>, Unsure> {
+    let Some(path) = transcript_path.and_then(Value::as_str).filter(|p| !p.is_empty()) else { return Ok(None) };
+    let Some(lines) = read_tail(path, defaults::num("turn_gate.tail_bytes")) else { return Ok(None) };
     for line in lines.iter().rev() {
         if line.is_empty() || !line.contains("\"user\"") {
             continue;
         }
-        let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
+        let o = match serde_json::from_str::<Value>(line) {
+            Ok(o) => o,
+            Err(_) if crate::checks::guardkit::jsdiff::js_reads_differently_str(line) => return Err(Unsure),
+            Err(_) => continue,
+        };
         if !js_truthy(Some(&o)) || o.get("type").and_then(Value::as_str) != Some("user") || js_truthy(o.get("isMeta")) || js_truthy(o.get("isSidechain")) {
             continue;
         }
@@ -94,9 +100,9 @@ pub fn current_turn_id(transcript_path: Option<&Value>) -> Option<String> {
             continue;
         }
         let id = [o.get("uuid"), o.get("timestamp")].into_iter().flatten().find(|v| js_truthy(Some(v))).map(js_string_coerce).unwrap_or_default();
-        return if id.is_empty() { None } else { Some(id) };
+        return Ok(if id.is_empty() { None } else { Some(id) });
     }
-    None
+    Ok(None)
 }
 
 fn state_path(home: &str, session: &str) -> String {
@@ -117,16 +123,17 @@ fn state_path(home: &str, session: &str) -> String {
 
 static GATE_LOCK: Mutex<()> = Mutex::new(());
 
-/// True when the advisory should be shown (first time this turn, or the turn cannot be determined), recording that it was.
+/// True when the advisory should be shown (first time this turn, or the turn cannot be determined), recording that it was. `Err`
+/// when only Node can tell the turn (see [`current_turn_id`]).
 ///
 /// Mirrors `turn-gate.js` `firstThisTurn`.
-pub fn first_this_turn(a: &Ask<'_>) -> bool {
+pub fn first_this_turn(a: &Ask<'_>) -> Result<bool, Unsure> {
     if !js_truthy(a.session_id) || a.key.is_empty() || a.home.is_empty() {
-        return true;
+        return Ok(true);
     }
     let turn =
-        if a.agent_id.is_empty() { current_turn_id(a.transcript_path) } else { Some(format!("{}{}", defaults::text("turn_gate.agent_prefix"), a.agent_id)) };
-    let Some(turn) = turn else { return true };
+        if a.agent_id.is_empty() { current_turn_id(a.transcript_path)? } else { Some(format!("{}{}", defaults::text("turn_gate.agent_prefix"), a.agent_id)) };
+    let Some(turn) = turn else { return Ok(true) };
     let slot = format!("{}|{}", a.key, if a.agent_id.is_empty() { defaults::text("turn_gate.main_label") } else { a.agent_id });
     let sig = "";
     let session = a.session_id.map(js_string_coerce).unwrap_or_default();
@@ -142,7 +149,7 @@ pub fn first_this_turn(a: &Ask<'_>) -> bool {
         _ => (Vec::new(), false),
     };
     if seen {
-        return false;
+        return Ok(false);
     }
     let keep = (defaults::num("turn_gate.max_sigs") as usize).saturating_sub(1);
     if sigs.len() > keep {
@@ -153,11 +160,36 @@ pub fn first_this_turn(a: &Ask<'_>) -> bool {
         OVal::Obj(_) => state.set(&slot, OVal::Obj(vec![("turn".into(), OVal::Str(turn)), ("sigs".into(), OVal::Arr(sigs))])),
         // an array keeps only its elements when stringified; a truthy primitive cannot take a property (a TypeError in Node)
         OVal::Arr(_) => {}
-        _ => return true,
+        _ => return Ok(true),
     }
     let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
     if write_atomic(&path, &state.stringify()).is_ok() {
         prune_stale(dir, defaults::text("turn_gate.prefix"), Some(&path));
     }
-    true
+    Ok(true)
+}
+
+#[cfg(test)]
+mod js_only_tests {
+    use super::*;
+
+    /// Review 3 (root-cause sweep): a newest user line serde rejects but JavaScript parses names a turn only Node can see.
+    #[test]
+    fn a_user_line_only_javascript_can_parse_is_not_skipped() {
+        let dir = std::env::temp_dir().join(format!("ah-turngate-js-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tp = dir.join("t.jsonl");
+        let old = r#"{"type":"user","uuid":"u1","message":{"content":"first"}}"#;
+        for (name, newest) in [
+            ("surrogate", r#"{"type":"user","uuid":"u2","message":{"content":"x\ud83d"}}"#.to_string()),
+            ("1e400", r#"{"type":"user","uuid":"u2","n":1e400,"message":{"content":"x"}}"#.to_string()),
+        ] {
+            std::fs::write(&tp, format!("{old}\n{newest}\n")).unwrap();
+            assert_eq!(current_turn_id(Some(&Value::String(tp.to_string_lossy().into()))), Err(Unsure), "{name}");
+        }
+        std::fs::write(&tp, format!("{old}\n{{\"type\":\"user\",oops\n")).unwrap();
+        assert_eq!(current_turn_id(Some(&Value::String(tp.to_string_lossy().into()))), Ok(Some("u1".to_string())), "skipped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

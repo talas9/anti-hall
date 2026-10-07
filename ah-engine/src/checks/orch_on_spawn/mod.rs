@@ -67,6 +67,6 @@ impl Check for OrchOnSpawn {
     }
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        decide(payload, &Settings::from_env(env))
+        decide(payload, &Settings::from_env(env)).or(Some(Verdict::Allow))
     }
 }

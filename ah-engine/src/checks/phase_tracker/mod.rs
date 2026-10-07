@@ -134,6 +134,7 @@ impl Check for PhaseTracker {
     }
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        decide(payload, &env.to_map(), now_ms())
+        // recorded, nothing to say: `Allow`, never `None` (a deferral would make the Node hook record the spawn a second time)
+        decide(payload, &env.to_map(), now_ms()).or(Some(Verdict::Allow))
     }
 }

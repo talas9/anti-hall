@@ -116,7 +116,8 @@ function mergeObjects(active, joiners, lenient) {
   }
   const outH = {};
   for (const k of Object.keys(hso)) {
-    if (k === 'additionalContext') outH[k] = contexts.join(joiners.context);
+    // an empty context adds no joiner (the engine's combine.rs, DECISIONS 1.78): a quiet hook among talkative ones delivers nothing
+    if (k === 'additionalContext') outH[k] = contexts.filter((c) => c !== '').join(joiners.context);
     else if (k === 'permissionDecision') { if (decision) outH[k] = decision.value; }
     else if (k === 'permissionDecisionReason') { if (decision && decision.reason !== undefined) outH[k] = decision.reason; }
     else outH[k] = hso[k];

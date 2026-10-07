@@ -88,10 +88,9 @@ test('a new epoch (compaction/resume) re-arms the marker and delivers once more;
   } finally { h.cleanup(); }
 });
 
-test('Codex registrations: orch-on-spawn only on the spawn_agent matcher (template + installer)', () => {
+test('Codex registrations: orch-on-spawn only on the spawn_agent matcher (per-hook registry; the installer writes the thin trigger)', () => {
   const tpl = JSON.parse(fs.readFileSync(path.join(T.PLUGIN, 'codex', 'hooks', 'hooks.registry.json'), 'utf8')).hooks;
-  const { ANTI_HALL_HOOKS } = require(path.join(T.PLUGIN, 'codex', 'install-codex.js'));
-  for (const groups of [tpl.PreToolUse, ANTI_HALL_HOOKS.PreToolUse]) {
+  for (const groups of [tpl.PreToolUse]) {
     const hits = groups.filter((g) => g.hooks.some((x) => /orch-on-spawn\.js/.test(x.command)));
     assert.deepStrictEqual(hits.map((g) => g.matcher), ['^(?:collaboration)?spawn_agent$']);
     const re = new RegExp(hits[0].matcher);

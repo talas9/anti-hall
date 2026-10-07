@@ -193,22 +193,17 @@ test('manifest-drift: every file referenced by either hooks.json exists on disk'
   assert.deepStrictEqual(missing, [], 'hooks.json references a hook file that does not exist on disk: ' + JSON.stringify(missing));
 });
 
-test('manifest-drift: install-codex.js ANTI_HALL_HOOKS references only files that exist on disk', () => {
+test('manifest-drift: install-codex.js ANTI_HALL_HOOKS names only the wrapper, and the wrapper exists on disk', () => {
   delete require.cache[require.resolve(path.join(ANTI_HALL, 'codex', 'install-codex.js'))];
   const { ANTI_HALL_HOOKS } = require(path.join(ANTI_HALL, 'codex', 'install-codex.js'));
-  const missing = [];
+  const bad = [];
   for (const [event, groups] of Object.entries(ANTI_HALL_HOOKS || {})) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
-        const command = (h && h.command) || '';
-        const m = command.match(/([\w.-]+\.js)/);
-        assert.ok(m, 'install-codex command names no .js script: ' + command);
-        // install-codex.js's HOOK_ROOT is always plugins/anti-hall/hooks (the
-        // shared Claude hook files) — see this file's CODEX_HOOKS_DIR comment.
-        const abs = path.join(CLAUDE_HOOKS_DIR, m[1]);
-        if (!fs.existsSync(abs)) missing.push(`${event} -> ${m[1]}`);
+        const m = ((h && h.command) || '').match(/^sh "([^"]+\/ah-hook\.sh)" (\w+) --host codex$/);
+        if (!m || m[2] !== event || !fs.existsSync(m[1])) bad.push(`${event} -> ${h && h.command}`);
       }
     }
   }
-  assert.deepStrictEqual(missing, [], 'install-codex.js references a hook file that does not exist on disk: ' + JSON.stringify(missing));
+  assert.deepStrictEqual(bad, [], 'install-codex.js registers something other than an existing wrapper trigger: ' + JSON.stringify(bad));
 });

@@ -10,19 +10,26 @@ pub mod agent_scan;
 pub mod api_guard;
 pub mod ask_guard;
 pub mod claim_ledger;
+pub mod codex;
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
 pub mod ctxbudget;
 pub mod devswarm_comms;
+pub mod devswarm_gates;
+pub mod devswarm_prompt;
+pub mod devswarm_role;
+pub mod dispatch_tier;
 pub mod edit_guard;
 pub mod emit_dedupe;
 pub mod fable_availability;
 pub mod failure_nudge;
 pub mod git;
 pub mod guardkit;
+pub mod handover;
 pub mod idle_agent_sweep;
 pub mod inbox_read_guard;
+pub mod jsport;
 pub mod merge_gate;
 pub mod merge_side_pick;
 pub mod model_routing;
@@ -40,6 +47,11 @@ pub mod speculation_guard;
 pub mod speculation_judge;
 pub mod stale_agent_stop_note;
 pub mod swarm_guard;
+pub mod task_guard;
+pub mod task_lifecycle_log;
+pub mod taskkit;
+pub mod tasklist_guard;
+pub mod taskstate;
 pub mod verify_first;
 pub mod verify_first_orch;
 pub mod verify_first_prompt;
@@ -134,6 +146,22 @@ pub trait Check: Send + Sync {
     }
 }
 
+/// Evaluate `check` for one request: the one place every dispatcher goes through. When the request's environment is
+/// incomplete (dropped over the cap, absent, or no usable `HOME`) the check is not evaluated at all and the answer is
+/// [`Verdict::Defer`], so Node, which sees the real environment, decides. Evaluating with no home and default switches
+/// would read a gate that is on as off and allow what Node blocks.
+pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+    if env.is_incomplete() {
+        return Some(Verdict::Defer);
+    }
+    // a settings file only JavaScript can parse (a number like 1e400, nesting past 128) is not "missing": defer to Node
+    let home = env.get(crate::defaults::env_name("home")).or_else(|| env.get(crate::defaults::env_name("home_alt"))).unwrap_or_default();
+    if guardkit::settings::unreadable_settings_file(home) {
+        return Some(Verdict::Defer);
+    }
+    check.run_env(subject, payload, opts, env)
+}
+
 /// Compile a regular expression that is a literal in this source.
 ///
 /// Why this exists instead of `Regex::new(..).unwrap()` at every call site: the pattern is fixed text compiled
@@ -145,7 +173,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 45] = [
+    static ALL: [&dyn Check; 61] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -191,6 +219,22 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &session_gates::JevWeeklyScorecard,
         &session_gates::JevReviewReminder,
         &session_gates::RepairOnReload,
+        &codex::availability::CodexAvailability,
+        &codex::detect::CodexQuotaDetect,
+        &codex::nudge::CodexNudge,
+        &handover::precompact::PrecompactSnapshot,
+        &handover::resume::HandoverResume,
+        &task_lifecycle_log::TaskLifecycleLog,
+        &dispatch_tier::DispatchTier,
+        &task_guard::TaskGuard,
+        &tasklist_guard::TasklistGuard,
+        &devswarm_prompt::DevswarmParentInbox,
+        &devswarm_prompt::DevswarmChildTurn,
+        &devswarm_role::DevswarmChildRole,
+        &devswarm_role::DevswarmParentGate,
+        &devswarm_gates::DevswarmChildGate,
+        &devswarm_gates::DevswarmParentReplyTracker,
+        &devswarm_gates::DevswarmChildDrain,
     ];
     &ALL
 }
@@ -226,7 +270,7 @@ pub fn cli_main(name: &str) -> i32 {
         prompt: p.get("prompt").and_then(Value::as_str),
     };
     let opts = serde_json::json!({ "payload_sha1": emit_dedupe::sha1_hex(raw.as_bytes()) });
-    match check.run_env(&subject, &p, &opts, &RequestEnv::capture()) {
+    match run_env_guarded(check, &subject, &p, &opts, &RequestEnv::capture()) {
         None | Some(Verdict::Allow) => 0,
         Some(Verdict::Block(m)) => {
             let _ = writeln!(std::io::stderr(), "{m}");
@@ -272,6 +316,61 @@ pub fn cli_main(name: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review P0 (D74): a settings file that exists but that serde cannot parse while JavaScript can (`1e400` is `Infinity`; nesting
+    /// past 128) was read as missing, so an opt-in block mode was ignored and the engine allowed where Node blocks. Every check now
+    /// defers; a file both parsers reject is missing for both and changes nothing.
+    #[test]
+    fn a_settings_file_only_javascript_can_parse_defers_every_check() {
+        let home = std::env::temp_dir().join(format!("ah-badsettings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+        let h = home.to_string_lossy().to_string();
+        let env = RequestEnv::from_pairs([("HOME", h.as_str())]);
+        let payload = serde_json::json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"header": "DESTRUCTIVE", "question": "q"}]}});
+        let null = Value::Null;
+        let subject = Subject { event: "PreToolUse", tool: Some("AskUserQuestion"), cwd: None, tool_input: &null, prompt: None };
+        let run = || run_env_guarded(&ask_guard::AskGuard, &subject, &payload, &Value::Null, &env);
+        let write = |text: &str| std::fs::write(home.join(".anti-hall/settings.json"), text).unwrap();
+        // the baseline: a readable file with the block mode on is answered, not deferred
+        write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
+        assert_ne!(run(), Some(Verdict::Defer), "a readable settings file is answered by the check");
+        // a number beyond f64 (JavaScript: Infinity)
+        write(r#"{"guards":{"noBlockingQuestions":"block"},"x":1e400}"#);
+        assert_eq!(run(), Some(Verdict::Defer), "1e400");
+        // nesting past serde's recursion limit
+        write(&format!(r#"{{"guards":{{"noBlockingQuestions":"block"}},"deep":{}1{}}}"#, "[".repeat(200), "]".repeat(200)));
+        assert_eq!(run(), Some(Verdict::Defer), "depth 200");
+        // a lone surrogate escape
+        write(r#"{"guards":{"noBlockingQuestions":"block"},"s":"\ud800"}"#);
+        assert_eq!(run(), Some(Verdict::Defer), "lone surrogate");
+        // text both parsers reject is a missing file for both: the check answers (with the defaults)
+        write("{oops");
+        assert_ne!(run(), Some(Verdict::Defer), "a syntax error is missing for Node too");
+        // review 3: the legacy Jev file (`jev.json`) is read below settings.json by Node's resolver, so it counts too
+        write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
+        let jev = home.join(".anti-hall/jev.json");
+        for (name, body) in [
+            ("jev 1e400", r#"{"enabled":true,"integrations":{"dispatchTier":"on"},"x":1e400}"#.to_string()),
+            ("jev bigint", format!(r#"{{"enabled":true,"x":1{}}}"#, "0".repeat(400))),
+            ("jev surrogate", r#"{"enabled":true,"x":"\ud800"}"#.to_string()),
+        ] {
+            std::fs::write(&jev, body).unwrap();
+            assert_eq!(run(), Some(Verdict::Defer), "{name}");
+        }
+        std::fs::write(&jev, r#"{"enabled":true}"#).unwrap();
+        assert_ne!(run(), Some(Verdict::Defer), "a readable jev.json is answered");
+        let _ = std::fs::remove_file(&jev);
+        // the host's settings file and the skip file are read by the same chain
+        write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), r#"{"pluginConfigs":{"a":{"n":1e999}}}"#).unwrap();
+        assert_eq!(run(), Some(Verdict::Defer), "~/.claude/settings.json");
+        std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
+        std::fs::write(home.join(".anti-hall/skip.json"), r#"{"ask-guard":1e999}"#).unwrap();
+        assert_eq!(run(), Some(Verdict::Defer), "skip.json");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// Expected values computed with Node: `io.blockDecision(reason)` from `hooks/lib/guard-io.js`.
     #[test]

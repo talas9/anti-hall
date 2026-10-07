@@ -418,10 +418,6 @@ value = "git-guard"
 doc = "Settings file, relative to the home directory."
 value = ".anti-hall/settings.json"
 
-[git.jev_file]
-doc = "Jev configuration file, relative to the home directory."
-value = ".anti-hall/jev.json"
-
 [git.skip_file]
 doc = "Skip file, relative to the home directory (a skipped guard is allowed until its expiry time)."
 value = ".anti-hall/skip.json"
@@ -449,10 +445,6 @@ value = { section = "guards", key = "gitReusedMessageCheck", env = "ANTIHALL_GIT
 [git.setting_handover_guard]
 doc = "Switch for the handover-commit guard."
 value = { section = "guards", key = "handoverCommitGuard", env = "ANTIHALL_HANDOVER_COMMIT_GUARD", option = "guards_handover_commit_guard" }
-
-[git.jev_settings]
-doc = "Names the Jev add-block consult is switched by: the global enable env var, the per-integration env var, the settings.json integration key and mode value."
-value = { env_enabled = "ANTIHALL_JEV", env_integration = "ANTIHALL_JEV_GIT_GUARD_SELF_CREDIT", integration = "gitGuardSelfCredit", mode_on = "on", section = "jev", enabled_key = "enabled", integrations_key = "jevIntegrations", jev_json_integrations = "integrations" }
 
 [git.launcher_dir_pattern]
 doc = "Pattern (case-insensitive) that recognises a path inside the plugin launcher directory."
@@ -615,6 +607,60 @@ value = { what = "a commit message with an AI/assistant self-credit trailer (Co-
 [git.msg_commit_file_credit]
 doc = "Block: a commit message read from a file or heredoc with an AI self-credit."
 value = { what = "a commit message (via `-F`/`--file`, from a heredoc body or file) with an AI/assistant self-credit trailer is blocked.", why = "Commits carry no AI co-author credit.", instead = "re-run the commit without that trailer." }
+
+[git.msg_gh_jev]
+doc = "Block: Jev judged a gh body or title to credit an AI assistant (paraphrased)."
+value = { what = "a gh pr/issue/release body or title appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) and is blocked.", why = "PRs and issues carry no AI attribution.", instead = "remove it and re-run." }
+
+[git.msg_commit_jev]
+doc = "Block: Jev judged an inline commit message to credit an AI assistant (paraphrased)."
+value = { what = "a commit message that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.", why = "Commits carry no AI co-author credit.", instead = "reword the message and re-run." }
+
+[git.msg_commit_file_jev]
+doc = "Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased)."
+value = { what = "a commit message (via `-F`/`--file`) that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.", why = "Commits carry no AI co-author credit.", instead = "reword the message and re-run." }
+
+[git.jev_id]
+doc = "The Jev integration id of the self-credit question (add-block trust)."
+value = "gitGuardSelfCredit"
+
+[git.jev_instructions]
+doc = "The Noul question of the self-credit ask (byte-identical to the Node guard's)."
+value = "Does this commit message, or PR/issue/release body or title, credit an AI assistant as an author, co-author, or contributor — even paraphrased or indirect (e.g. \"written with help from Claude\", \"AI-assisted commit\", \"co-written by an assistant\") — NOT a canonical trailer/footer/link (those are already caught by regex and never reach this question)?"
+
+[git.jev_true]
+doc = "The label for a true answer of the self-credit question."
+value = "credits an AI assistant as author/co-author/contributor, in any phrasing"
+
+[git.jev_false]
+doc = "The label for a false answer of the self-credit question."
+value = "no AI self-credit of any kind"
+
+[git.jev_state_chars]
+doc = "How many UTF-16 units of a message the self-credit ask evaluates (Node: String(text).slice(0, 4000))."
+value = 4000
+min = 1
+
+[git.jev_budget_ms]
+doc = "Time budget of one self-credit consult (Node: CONSULT_BUDGET_MS)."
+value = 1500
+unit = "ms"
+min = 1
+
+[git.jev_backstop_ms]
+doc = "Extra time Node's synchronous worker is allowed beyond the budget; counted in the total-time guard (Node: the +500 in the guard)."
+value = 500
+unit = "ms"
+
+[git.jev_total_budget_ms]
+doc = "Most time one command may spend on self-credit consults in total; past it a consult is skipped and the regex verdict stands (Node: JEV_TOTAL_BUDGET_MS)."
+value = 4000
+unit = "ms"
+
+[git.jev_consult_cap]
+doc = "Most distinct texts one command may consult Jev about (Node: JEV_CONSULT_CAP)."
+value = 8
+min = 1
 
 [git.msg_creating_credit]
 doc = "Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}."

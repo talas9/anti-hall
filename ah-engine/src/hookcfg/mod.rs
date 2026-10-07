@@ -252,7 +252,11 @@ fn parse_event(path: &Path, origin: Origin, event: &str, v: &Json) -> Result<Eve
     Ok(EventPatch { mode, max_rules, budget_ms, order })
 }
 
-fn parse_entry(path: &Path, origin: Origin, key_name: &str, v: &Json) -> Result<EntryPatch, ConfigError> {
+/// Where an entry id occurs in the table: `(event, has a built-in check)` for each occurrence. A parameter of [`parse_layer_with`] so
+/// a test can name an entry the real table has no example of (a Node-only guard entry: every guard entry has a check by now).
+type Occurrences<'a> = &'a dyn Fn(&str, Option<&str>) -> Vec<(&'static str, bool)>;
+
+fn parse_entry(path: &Path, origin: Origin, key_name: &str, v: &Json, occurrences: Occurrences<'_>) -> Result<EntryPatch, ConfigError> {
     let key = format!("entries.{key_name}");
     let (only, id) = match key_name.split_once('/') {
         Some((ev, id)) if known_events().contains(ev) => (Some(ev), id),
@@ -287,6 +291,11 @@ fn parse_entry(path: &Path, origin: Origin, key_name: &str, v: &Json) -> Result<
 
 /// Parse and validate the `events` and `entries` tables of one config file (as JSON; a TOML file converts to it).
 pub fn parse_layer(path: &Path, origin: Origin, events: Option<&Json>, entries: Option<&Json>) -> Result<Layer, ConfigError> {
+    parse_layer_with(path, origin, events, entries, &occurrences)
+}
+
+/// [`parse_layer`] against the given table occurrences.
+fn parse_layer_with(path: &Path, origin: Origin, events: Option<&Json>, entries: Option<&Json>, occurrences: Occurrences<'_>) -> Result<Layer, ConfigError> {
     let mut layer = Layer::default();
     if let Some(e) = events {
         for (name, v) in expect_object(path, "events", e)? {
@@ -295,7 +304,7 @@ pub fn parse_layer(path: &Path, origin: Origin, events: Option<&Json>, entries: 
     }
     if let Some(e) = entries {
         for (name, v) in expect_object(path, "entries", e)? {
-            layer.entries.insert(name.clone(), parse_entry(path, origin, name, v)?);
+            layer.entries.insert(name.clone(), parse_entry(path, origin, name, v, occurrences)?);
         }
     }
     Ok(layer)
@@ -494,9 +503,20 @@ mod tests {
             assert!(u(&format!("[events.{ev}]\nmax_rules = 1\n")).contains("max_rules"), "{ev} max_rules");
             assert_eq!(u(&format!("[events.{ev}]\nmode = \"on\"\nmax_rules = 0\nbudget_ms = 500\n")), "ok", "{ev}: a budget is allowed (it fails closed)");
         }
-        // an entry with no built-in check decides only through its Node hook: it cannot be turned off or shadowed
-        assert!(u("[entries.\"task-guard\"]\nmode = \"off\"\n").contains("only through its Node hook"));
-        assert!(u("[entries.\"Stop/task-guard\"]\nenabled = false\n").contains("only through its Node hook"));
+        // an entry with no built-in check decides only through its Node hook: it cannot be turned off or shadowed. Every
+        // guard entry of the real table has a check now, so the table is given an entry that has none.
+        let table_with_a_node_only_guard = |id: &str, only: Option<&str>| {
+            if id == "synthetic-node-only" { vec![("Stop", false)] } else { occurrences(id, only) }
+        };
+        let w = |t: &str| {
+            let t: toml::Table = t.parse().unwrap();
+            let p = Path::new("t.toml");
+            let j = |k: &str| t.get(k).map(|v| crate::cfgstore::toml_to_json(p, k, v).unwrap());
+            code(parse_layer_with(p, Origin::User, j("events").as_ref(), j("entries").as_ref(), &table_with_a_node_only_guard))
+        };
+        assert!(w("[entries.\"synthetic-node-only\"]\nmode = \"off\"\n").contains("only through its Node hook"));
+        assert!(w("[entries.\"Stop/synthetic-node-only\"]\nenabled = false\n").contains("only through its Node hook"));
+        assert!(w("[entries.\"synthetic-node-only\"]\nmode = \"on\"\n") == "ok", "mode on changes nothing");
         // an entry with a built-in check keeps its Node hook as the real decider, so off and shadow are allowed
         assert_eq!(u("[entries.\"PreToolUse/git-guard\"]\nmode = \"shadow\"\n"), "ok");
         assert_eq!(u("[entries.\"PreToolUse/git-guard\"]\nmode = \"off\"\n"), "ok");

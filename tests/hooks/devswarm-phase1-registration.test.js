@@ -105,7 +105,7 @@ test('Codex port mirrors the five Phase-1 DevSwarm hooks on the matching events'
   }
 });
 
-test('install-codex.js generates the same five Phase-1 DevSwarm hook registrations', () => {
+test('install-codex.js writes the thin trigger on every event the five Phase-1 DevSwarm hooks live on', () => {
   const { spawnSync } = require('node:child_process');
   const os = require('node:os');
   const installer = path.join(PLUGIN, 'codex', 'install-codex.js');
@@ -114,14 +114,9 @@ test('install-codex.js generates the same five Phase-1 DevSwarm hook registratio
     const r = spawnSync(process.execPath, [installer], { cwd: tmp, encoding: 'utf8' });
     assert.strictEqual(r.status, 0, r.stderr || r.stdout);
     const cfg = JSON.parse(fs.readFileSync(path.join(tmp, '.codex', 'hooks.json'), 'utf8'));
-    const sessionStart = commandsFor(cfg, 'SessionStart');
-    const ups = commandsFor(cfg, 'UserPromptSubmit');
-    const stop = commandsFor(cfg, 'Stop');
-    assert.ok(sessionStart.some((c) => /devswarm-child-role\.js/.test(c)));
-    assert.ok(ups.some((c) => /devswarm-parent-inbox\.js/.test(c)));
-    assert.ok(ups.some((c) => /devswarm-child-turn\.js/.test(c)));
-    assert.ok(stop.some((c) => /devswarm-parent-gate\.js/.test(c)));
-    assert.ok(stop.some((c) => /devswarm-child-gate\.js/.test(c)));
+    for (const ev of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
+      assert.ok(commandsFor(cfg, ev).some((c) => new RegExp('ah-hook\\.sh" ' + ev + ' --host codex').test(c)), ev);
+    }
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
   }
@@ -149,26 +144,8 @@ test('codex/hooks/hooks.json and install-codex.js both register the PostToolUse 
     const r = spawnSync(process.execPath, [installer], { cwd: tmp, encoding: 'utf8' });
     assert.strictEqual(r.status, 0, r.stderr || r.stdout);
     const cfg = JSON.parse(fs.readFileSync(path.join(tmp, '.codex', 'hooks.json'), 'utf8'));
-    const installerPost = commandsFor(cfg, 'PostToolUse');
-    assert.ok(
-      installerPost.some((c) => /devswarm-parent-reply-tracker\.js/.test(c)),
-      'devswarm-parent-reply-tracker.js not registered on PostToolUse by install-codex.js'
-    );
-
-    // Same matcher/timeout as the manifest-path registration, so the two
-    // wiring surfaces stay functionally equivalent.
-    const postGroups = cfg.hooks.PostToolUse || [];
-    const trackerGroup = postGroups.find((g) => (g.hooks || []).some((h) => /devswarm-parent-reply-tracker\.js/.test(h.command || '')));
-    assert.ok(trackerGroup, 'reply-tracker group not found on installer-generated PostToolUse');
-    assert.strictEqual(trackerGroup.matcher, 'Bash');
-    const trackerHook = trackerGroup.hooks.find((h) => /devswarm-parent-reply-tracker\.js/.test(h.command || ''));
-    assert.strictEqual(trackerHook.timeout, 10);
-
-    const manifestGroups = codexCfg.hooks.PostToolUse || [];
-    const manifestTrackerGroup = manifestGroups.find((g) => (g.hooks || []).some((h) => /devswarm-parent-reply-tracker\.js/.test(h.command || '')));
-    assert.strictEqual(manifestTrackerGroup.matcher, trackerGroup.matcher, 'matcher drift between the two Codex wiring surfaces');
-    const manifestTrackerHook = manifestTrackerGroup.hooks.find((h) => /devswarm-parent-reply-tracker\.js/.test(h.command || ''));
-    assert.strictEqual(manifestTrackerHook.timeout, trackerHook.timeout, 'timeout drift between the two Codex wiring surfaces');
+    // the installer writes the generated thin trigger; the tracker itself is dispatched by the engine table
+    assert.ok(commandsFor(cfg, 'PostToolUse').some((c) => /ah-hook\.sh" PostToolUse --host codex/.test(c)));
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
   }

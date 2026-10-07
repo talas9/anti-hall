@@ -86,8 +86,33 @@ labelled with how it was measured in the README of `ah-engine/`.
   weaker than Node's (D74). The one deliberate difference with Jev off: Node's `claim-ledger` and `output-verify-guard`
   still append a `mode: "off"` row to the Jev decision log per consult; the engine's Jev layer never does (D35), and
   neither do these checks.
+- **Handover and Codex ports.** `handover-resume` (SessionStart), `precompact-snapshot` (PreCompact), `codex-availability`
+  (SessionStart), `codex-quota-detect` (PostToolUse on Agent) and `codex-nudge` (Stop) are ported from Node. They share
+  `checks/jsport`, which reproduces the JavaScript behavior the hooks depend on (number formatting, `JSON.parse` key
+  order, `Date` formatting and the part of `Date.parse` whose result is certain, UTF-16 string handling, the
+  repository-identity resolver) and `checks/codex/quota.rs`, the quota record in `~/.anti-hall/codex-availability.json`.
+  A case the port cannot reproduce exactly (a date string in an unfamiliar shape, a state file holding `__proto__`,
+  a Codex result whose key order could change what matches, an enabled Jev consult for the nudge) defers, so Node
+  decides; the deferral happens before any write the Node hook would repeat.
+- **Task checks.** `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` share `checks/taskkit` (the
+  JavaScript string and truthiness semantics over a JSON value, the ledger text sanitizer, the UTC clock text, the project
+  root resolvers `repoRoot` and `sessionProjectRoot` of `handover-find.js` answered from the file system alone, and the
+  work-detection port of `lib/work-detect.js`) and `checks/taskstate` (the task list rebuilt from a transcript tail, the
+  backfill that recovers records before the tail, and the unknown-state note). A task check does the file effects of its
+  Node hook itself and answers exactly what Node would; anything it cannot reproduce byte for byte defers. The two Stop
+  gates never block: they answer the Stops on which Node stays quiet and hand every Stop that would block, and every Stop
+  whose decision needs a running-agent scan, to the Node hook (D74). `task-tracker` (UserPromptSubmit) stays on Node: its
+  output depends on the emit-dedupe state, the Jev decision-log row written on every prompt and the agent scan, which are
+  other lanes' ports.
+- **DevSwarm role ports.** `devswarm-child-role` (SessionStart) and `devswarm-parent-gate` (Stop) share
+  `checks/devswarm_role`. The Stop gate is a guard, so it is never weaker than Node (D74): the engine allows only where
+  the Node hook exits silently before reading any mailbox (switch off, user skip, supervisor inactive, a child
+  workspace, the judge child) and defers every session that could be blocked. The child-role check reproduces a child
+  workspace's directive byte for byte when the stable launchers it names already exist with the content Node would write,
+  and defers a Primary (seat adoption needs the DevSwarm CLI and the mailbox store, D45), a missing or stale launcher, and
+  anything it cannot prove identical. The engine never writes a launcher.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  forty-five: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  sixty-one: `devswarm-child-role`, `devswarm-parent-gate`, `devswarm-child-gate`, `devswarm-parent-reply-tracker` and `devswarm-child-drain` (see DevSwarm role ports above and the table below), `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` (see Task checks above), `devswarm-parent-inbox` and `devswarm-child-turn` (see DevSwarm prompt gates above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -116,6 +141,13 @@ labelled with how it was measured in the README of `ah-engine/`.
   transcript scan), a session where DevSwarm is active for `verify-first-orch` (whether it is a Primary changes the text),
   a working directory that is not a string, and a relative path or config directory that Node resolves against its own
   working directory. A deferral touches no state.
+  ten: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
+  `compact-declaration-guard` (see the README of `ah-engine/`).
+- **DevSwarm prompt gates.** `devswarm-parent-inbox` and `devswarm-child-turn` (the two DevSwarm UserPromptSubmit hooks) answer
+  their silent cases in the engine: not a Primary / not a child workspace, DevSwarm inactive (kill switch, `devswarm.supervisorMode`
+  off, auto mode without `DEVSWARM_REPO_ID`), the hook's own switch off, or a Jev judge child. A session that is an active Primary
+  or an active child defers to the Node hook, which owns the workspace roster, the mailbox and the dedupe state (they need the
+  engine-owned mesh and mailbox, D45, first). The engine renders nothing and keeps no dedupe state of its own for these hooks.
 
 ## What works today
 
@@ -146,11 +178,19 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `merge-gate` check (opt-in false-done backstop): allows every Bash call Node allows with no output (gate off, not an auto-merge command, no hedge phrase in the recent assistant text); a hedge phrase defers to Node, which owns the block and the Jev shadow ask | implemented | D29-D31, D74, D75 |
 | Built-in `api-guard` check: allows every call that reaches no interpreter probe (guard off, not Python or JavaScript, no verifiable module or global named, no code file named in a shell command or patch); everything else defers, so the probes stay with Node | implemented | D29-D31, D62, D74, D75 |
 | Built-in `edit-guard` check: the launcher-directory block (every agent) byte for byte, and every call that is not the main thread; every main-thread call and every `apply_patch` defers to Node, which owns the allowlists, honesty checks and DevSwarm wording | implemented | D29-D31, D74, D75 |
+| Built-in `task-lifecycle-log` check (TaskCreated and TaskCompleted: the per-session history ledger line and its index entry) with exact parity of exit code, output and the files written; a relative `cwd`, a field cut through a surrogate pair and a number JavaScript prints differently defer to Node | implemented | D29-D31, D74, D75 |
+| Built-in `dispatch-tier` check (PostToolUse on TaskCreate and TaskUpdate): asks Jev (`dispatchTier`, detached, advisory) once per task text, with the shared answer cache and the request marker in `dispatch-tier-state.json` as Node keeps them (DECISIONS 1.93); does nothing while the integration is off, and defers only input it cannot read exactly | implemented | D29-D31, D74, D75 |
+| Built-in `task-guard` check (Stop): the Stops where no task is open (loop state removed, pruning advisory and unknown-state note printed exactly); every Stop with an open task, and every transcript record it cannot read exactly, defers to Node | implemented | D29-D31, D74, D75 |
+| Built-in `tasklist-guard` check (Stop): the Stops on which Node does not block, with its file effects (progress directory, progress and history indexes, the resume-verification marker and nudge, the plan-mode advisory); every Stop that would block defers to Node | implemented | D29-D31, D74, D75 |
+| Built-in `devswarm-child-role` check (SessionStart): a child workspace's mesh-only messaging and mailbox-wake directive, byte for byte, when the stable launchers are current; a Primary, a missing launcher and the rest defer to Node | implemented in part | D29-D31, D45, D74 |
+| Built-in `devswarm-parent-gate` check (Stop): the silent exits of the Node gate that happen before it reads any mailbox; every session that could be blocked defers to Node, so the gate is never weaker | implemented in part | D29-D31, D45, D74 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
 | Built-in `fable-availability` check: reads the host's model cache, writes `~/.anti-hall/fable-availability.json` and prints the availability note when a Fable model is entitled; a config file the engine's JSON reader rejects defers | implemented | D29-D31, D74 |
 | Built-in `inbox-read-guard`, `phase-tracker`, `orch-on-spawn` and `verify-first-orch` checks (the spawn/path context ports) with exact parity on the paths they answer; the cases that need Node's own probes defer | implemented | D29-D31, D74, D75 |
+| Built-in `handover-resume` and `precompact-snapshot` checks (handover persistence) with exact parity on the corpus; unreproducible cases defer | implemented | D29-D31, D74 |
+| Built-in `codex-availability`, `codex-quota-detect` and `codex-nudge` checks (Codex availability and quota) with exact parity on the corpus; unreproducible cases defer | implemented | D29-D31, D74 |
 | Built-in `model-routing` check for Agent/Task spawns: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches | implemented | D29-D31, D75 |
 | Built-in `verify-first`, `idle-agent-sweep` and `emit-dedupe-reset` checks (prompt emission, advisory only) over the shared emit-dedupe state file, with exact parity including the state files; a DevSwarm Primary session and anything JavaScript might read differently defer to Node | implemented | D29-D31, D74, D75 |
 | Built-in `version-alert`, `devswarm-version`, `claude-cli-version` checks (SessionStart drift and update advisories from a cached probe): output and state file identical to Node on a fresh cache; a stale or absent cache defers because Node starts the detached refresh | implemented | D29-D31, D74, D75 |
@@ -160,6 +200,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `swarm-guard` check (Agent and Task spawns): memory-pressure and spawn-rate blocks with exact parity, the spawn log, trip log and lock file shared with the Node hook; a spawn that might get the shared-tree advisory defers before it is recorded | implemented, advisory deferred | D29-D31, D75 |
 | Built-in `devswarm-comms-guard` check (SendMessage to a DevSwarm workspace peer) with exact parity; a relative session directory defers | implemented | D29-D31, D75 |
 | Built-in `jev-weekly-scorecard`, `jev-review-reminder` and `repair-on-reload` checks: silent when provably nothing would be printed or written, otherwise the Node hook runs (report, review log, migrations and the detached repair stay in Node, D60); no state file is written by the engine | implemented in part | D29-D31, D60, D75 |
+| Built-in `devswarm-child-gate`, `devswarm-parent-reply-tracker` and `devswarm-child-drain` checks: answer what the Node hook decides before it reads anything but the environment, the settings files and the payload (switch off, skip recorded, not a DevSwarm child, a Bash call that is not a `devswarm send`); a child workspace, and a plausible send, defer to Node, which owns the mailbox store reads, the stop budgets, the hivecontrol probe and the reply-state writes (needs the mailbox in the engine, D45) | implemented in part | D29-D31, D45, D74 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
 | Metrics (counters, gauges, latency percentiles) and `ah-engine metrics`; snapshots in hot.db, rollups in archive.db | implemented | D51 |
@@ -479,9 +520,11 @@ judgement calls do.
   thread or log write.
 - **Budget, queue, cache.** A call has a time budget (default 1.5 s, at most 3 s) covering connect, request and body. A
   caller either waits for it (`ask`) or queues it and moves on (`ask_async`: a bounded queue, a worker thread started on first
-  use, a full queue answered with the baseline). Answers are cached by content hash, bounded to 500 entries, in memory for
-  now (persisting them in `hot.db` is planned, D21). The key covers the vendor, model and endpoint, so one session's answer is
-  never served to a session that would have asked someone else, and an answer from a test endpoint override is never cached.
+  use, a full queue answered with the baseline). Answers are cached by content hash, bounded to 500 entries, in the same
+  file the Node hooks use (`~/.anti-hall/cache/jev-assist.json`, Node's shape and its read-merge-rename protocol, DECISIONS 1.93),
+  so a text asked by either side is asked once. An entry the engine writes also names the vendor chain (vendors, models,
+  endpoints), so one session's answer is never served to a session that would have asked someone else, and an answer from a
+  test endpoint override is never cached.
 - **The log.** One row per decision in `~/.anti-hall/logs/jev-assist.ndjson`, in the row shape `jev report` reads: hashes,
   verdicts, confidences, latencies, costs and the reason a call produced nothing; never prompt text, never a key. It rotates
   at 2 MB. The daily rollups and the spend budget watch the Node client also writes are planned (D38).
@@ -512,12 +555,16 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `engine.toml` | environment variable names, paths and file names, daemon and client limits, project store caps, health policy, hook adapter, socket protocol |
 | `messages.toml` | every message the engine produces (failure hints, advisories, replies, errors, command-line text) |
 | `git.toml` | every table, limit, setting name and block message of the git check |
+| `task_guards.toml` | switches, limits, file layout and messages of the task checks and their shared helpers |
+| `devswarm_role.toml` | names, switches and message templates of the `devswarm-child-role` and `devswarm-parent-gate` checks |
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
 | `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
 | `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |
+| `codex_handover.toml` | patterns, switches, limits, file names and messages of the handover and Codex hook ports and the JavaScript-behavior helpers they share |
+| `devswarm_gates.toml` | switches, role and mode variables and the command pre-filter words of the DevSwarm child gate, reply tracker and drain checks |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |

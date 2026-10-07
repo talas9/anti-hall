@@ -63,21 +63,31 @@ fn devswarm_active(st: &Settings, plugin_root: &str) -> Result<bool, crate::chec
 }
 
 /// `findSessionByName`: the directory of the first session index file (in name order, as `readdirSync` lists them)
-/// whose `name` is exactly `name`. `None` when there is none or the index cannot be read.
-fn find_session(home: &str, name: &str) -> Option<String> {
+/// whose `name` is exactly `name`. `Ok(None)` when there is none or the index cannot be read; `Err` when a file serde rejects but
+/// JavaScript may read comes before a match (Node would read it, so the answer is Node's).
+fn find_session(home: &str, name: &str) -> Result<Option<String>, ()> {
     let dir = paths::join(home, defaults::text("devswarm_comms.sessions_dir"));
     let suffix = defaults::text("devswarm_comms.session_file_suffix");
-    let mut files: Vec<String> = std::fs::read_dir(&dir).ok()?.filter_map(|e| e.ok()).filter_map(|e| e.file_name().into_string().ok()).collect();
+    let mut files: Vec<String> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(_) => return Ok(None),
+    }
+    .filter_map(|e| e.ok())
+    .filter_map(|e| e.file_name().into_string().ok())
+    .collect();
     // libuv sorts a directory listing with strcmp, which is a byte-wise order.
     files.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     for f in files.into_iter().filter(|f| f.ends_with(suffix)) {
         let Ok(bytes) = std::fs::read(format!("{dir}/{f}")) else { continue };
+        if crate::checks::guardkit::jsdiff::js_reads_differently(&bytes) {
+            return Err(());
+        }
         let Ok(Value::Object(o)) = serde_json::from_str::<Value>(&String::from_utf8_lossy(&bytes)) else { continue };
         if o.get("name").and_then(Value::as_str) == Some(name) {
-            return Some(o.get("cwd").and_then(Value::as_str).unwrap_or("").to_string());
+            return Ok(Some(o.get("cwd").and_then(Value::as_str).unwrap_or("").to_string()));
         }
     }
-    None
+    Ok(None)
 }
 
 /// What `isDevswarmWorkspacePath` says about a session directory; `Err` for a relative one (see the module docs).
@@ -138,7 +148,7 @@ pub fn decide(p: &Value, st: &Settings, plugin_root: &str) -> Option<Verdict> {
         return Some(label(Kind::Tip, defaults::text("devswarm_comms.msg_main_what").to_string()));
     }
     let name = strip_ref(to);
-    let session = find_session(&st.home, &name);
+    let Ok(session) = find_session(&st.home, &name) else { return Some(Verdict::Defer) };
     if let Some(cwd) = &session {
         match is_workspace_path(&st.home, cwd) {
             Ok(true) => {
@@ -184,6 +194,6 @@ impl Check for DevswarmCommsGuard {
 
     fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
         let root = crate::checks::guardkit::settings::plugin_root(opts, env);
-        decide(payload, &Settings::from_env(env), &root)
+        decide(payload, &Settings::from_env(env), &root).or(Some(Verdict::Allow))
     }
 }

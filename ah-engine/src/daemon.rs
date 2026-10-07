@@ -816,6 +816,7 @@ pub fn serve() {
     if prev != 0 && prev != std::process::id() && health::pid_is_engine(prev) && crate::client::ping(&sock).is_some() {
         return;
     }
+    crate::jev::shared::set_resident();
     health::reap_marker();
     let _ = lock.set_len(0);
     let _ = (&lock).write_all(std::process::id().to_string().as_bytes());
@@ -1210,7 +1211,9 @@ mod tests {
         let send = |cmd: &str| {
             let payload =
                 serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/tmp", "session_id": "s", "tool_input": {"command": cmd}});
-            handle_request(format!("V 1\n{payload}").as_bytes(), &sh).0
+            // a whole environment: a request without one is incomplete, and every check then defers
+            let env = crate::reqenv::RequestEnv::from_pairs([("HOME", "/tmp")]).to_line();
+            handle_request(format!("V 1\n{env}\n{payload}").as_bytes(), &sh).0
         };
         assert!(matches!(send(&forced), Reply::Ok(_)));
         assert!(matches!(send("ls"), Reply::Ok(_)));

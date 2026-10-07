@@ -21,8 +21,8 @@
 //! Modes: `off` consults nothing, `shadow` consults and logs but never changes the outcome, `on` lets the trust rule
 //! apply. `changed` is `"added"`, `"changed"` or `null`; `wouldChange` reports what the rule would have done had the mode
 //! been `on`, so `jev report` can judge a shadow integration before it is trusted.
-use super::breaker::{Clock, SystemClock};
-use super::cache::{Cached, JevCache, MemCache};
+use super::breaker::{Breakers, Clock, SystemClock, WallClock};
+use super::cache::{Cached, FileCache, JevCache, MemCache};
 use super::client::{Answer, CallResult, JevClient};
 use super::credentials::resolve_key;
 use super::error::Reason;
@@ -320,6 +320,7 @@ impl SettingsCache {
 
 /// The Jev lane: settings, client, cache, log, stats and the asynchronous queue.
 pub struct Jev {
+    home: PathBuf,
     settings: SettingsCache,
     client: JevClient,
     cache: Arc<dyn JevCache>,
@@ -330,6 +331,11 @@ pub struct Jev {
     pending: AtomicUsize,
     this: OnceLock<Weak<Jev>>,
     log_errors: AtomicU64,
+}
+
+/// A number as `JSON.stringify` writes it: a whole value has no fraction (`1000`, not `1000.0`).
+fn jnum(f: f64) -> Value {
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < 9e15 { json!(f as i64) } else { json!(f) }
 }
 
 /// The ISO-8601 UTC time with milliseconds, as `Date.prototype.toISOString` writes it.
@@ -353,16 +359,12 @@ fn now_unix_ms() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The content hash: SHA-256 of the parts joined with U+0001, as lowercase hex cut to `jev.hash_len`.
+/// The content hash: SHA-256 of the parts joined with U+0001, as lowercase hex cut to `jev.hash_len`. It is the log's `h`
+/// and Node's cache key.
 pub fn content_hash(parts: &[&str]) -> String {
-    let hex = full_hash(parts);
-    hex[..(defaults::num("jev.hash_len") as usize).min(hex.len())].to_string()
-}
-
-/// The whole SHA-256 of the parts joined with U+0001, as lowercase hex (the cache key; the log keeps the short form).
-fn full_hash(parts: &[&str]) -> String {
     let joined = parts.join("\u{1}");
-    ring::digest::digest(&ring::digest::SHA256, joined.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+    let hex: String = ring::digest::digest(&ring::digest::SHA256, joined.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    hex[..(defaults::num("jev.hash_len") as usize).min(hex.len())].to_string()
 }
 
 /// Node's `computeFinal` with this engine's trust rules (see the module docs).
@@ -443,7 +445,8 @@ impl Jev {
     /// A Jev lane for `home` using the real network transport and a file log under it. `env` is the environment snapshot
     /// the settings are resolved against.
     pub fn new(home: &Path, env: Env) -> Arc<Jev> {
-        Jev::with_parts(home, env, Arc::new(HttpTransport::new()), Arc::new(SystemClock), None, None)
+        let breakers = Breakers::shared(home.join(defaults::text("paths.base_dir")).join(defaults::text("jev.breaker_file")), Arc::new(WallClock));
+        Jev::build(home, env, Arc::new(HttpTransport::new()), Arc::new(SystemClock), None, None, Some(breakers))
     }
 
     /// A Jev lane with every part replaceable (tests, and the daemon when storage supplies the cache and log).
@@ -455,6 +458,20 @@ impl Jev {
         cache: Option<Arc<dyn JevCache>>,
         log: Option<Arc<dyn DecisionLog>>,
     ) -> Arc<Jev> {
+        Jev::build(home, env, transport, clock, cache, log, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        home: &Path,
+        env: Env,
+        transport: Arc<dyn Transport>,
+        clock: Arc<dyn Clock>,
+        cache: Option<Arc<dyn JevCache>>,
+        log: Option<Arc<dyn DecisionLog>>,
+        breakers: Option<Breakers>,
+    ) -> Arc<Jev> {
+        let production = breakers.is_some();
         let settings = SettingsCache::new(home, env, clock.clone());
         let snapshot = settings.get(None);
         let log = log.unwrap_or_else(|| {
@@ -462,9 +479,13 @@ impl Jev {
             Arc::new(FileLog::new(path, defaults::num("jev.log_max_bytes"), snapshot.log_rotated_files))
         });
         let jev = Arc::new(Jev {
+            home: home.to_path_buf(),
             settings,
-            client: JevClient::new(transport, clock.clone()),
-            cache: cache.unwrap_or_else(|| Arc::new(MemCache::with_defaults())),
+            client: match breakers {
+                Some(b) => JevClient::with_breakers(transport, clock.clone(), b),
+                None => JevClient::new(transport, clock.clone()),
+            },
+            cache: cache.unwrap_or_else(|| if production { Arc::new(FileCache::for_home(home)) } else { Arc::new(MemCache::with_defaults()) }),
             log,
             stats: JevStats::default(),
             queue: OnceLock::new(),
@@ -518,17 +539,84 @@ impl Jev {
         // the same way: the key names the vendor chain, models and endpoints, and a test endpoint override never reads or
         // writes the cache. A hit still needs a key for the CALLING session; without one the call fails as `no-key`.
         let cache_key = self.cache_key_of(&s, req);
-        if let Some(ck) = cache_key.as_deref().filter(|_| resolve_key(&s, s.transport).key.is_some())
-            && let Some(c) = self.cache.get(ck)
+        if let Some((ck, chain)) = cache_key.as_ref().filter(|_| resolve_key(&s, s.transport).key.is_some())
+            && let Some(c) = self.cache.get(ck).filter(|c| c.chain.as_ref().is_none_or(|x| x == chain))
         {
             let r = CallResult::answered(c.answer, c.confidence, 0);
             return self.finish(&s, req, mode, Some(r), true, true);
         }
         let r = self.client.decide(&s, &req.question, &req.state, req.budget_ms);
-        if let (Some(a), Some(ck)) = (&r.answer, &cache_key) {
-            self.cache.put(ck, Cached { answer: a.clone(), confidence: r.confidence });
+        if let (Some(a), Some((ck, chain))) = (&r.answer, &cache_key) {
+            self.cache.put(ck, Cached { answer: a.clone(), confidence: r.confidence, chain: Some(chain.clone()) });
         }
         self.finish(&s, req, mode, Some(r), false, true)
+    }
+
+    /// The budget of a call nobody waits for: the request's own, else the configured timeout when the owner changed it, else
+    /// the asynchronous default (Node: `askDetached`'s `detachedBudgetMs`).
+    fn detached_budget(s: &JevSettings, req: &AskRequest) -> u64 {
+        match req.budget_ms {
+            Some(b) if b > 0 => b,
+            _ if s.timeout_ms != defaults::num("jev.timeout_ms") => s.timeout_ms,
+            _ => defaults::num("jev.async_budget_ms"),
+        }
+    }
+
+    /// The request as the `jev ask` command reads it (one JSON line); the question and the baseline keep their key order.
+    pub fn wire_line(req: &AskRequest, budget_ms: u64) -> String {
+        let q = |s: &str| super::question::json_str(s);
+        let trust = match req.trust {
+            Trust::AddBlock => "add-block",
+            Trust::Advisory => "advisory",
+            Trust::RelaxBlock => "relax-block",
+        };
+        let mut f = vec![
+            format!("\"id\":{}", q(&req.id)),
+            format!("\"question\":{}", req.question.to_wire()),
+            format!("\"state\":{}", q(&req.state)),
+            format!("\"trust\":{}", q(trust)),
+            format!("\"baseline\":{}", req.baseline),
+            format!("\"budgetMs\":{budget_ms}"),
+            format!("\"recordDisagreement\":{}", req.record_disagreement),
+        ];
+        if let Some(c) = &req.cache_key {
+            f.push(format!("\"cacheKey\":{}", q(c)));
+        }
+        if let Some(c) = req.compare {
+            f.push(format!("\"compare\":{c}"));
+        }
+        for (k, v) in [("project", &req.project), ("sessionId", &req.session_id), ("turnRef", &req.turn_ref)] {
+            if let Some(v) = v {
+                f.push(format!("\"{k}\":{}", q(v)));
+            }
+        }
+        format!("{{{}}}", f.join(","))
+    }
+
+    /// Ask without waiting from a process that will exit before an in-process thread could finish (a one-shot hook): the
+    /// check that cannot wait starts a detached `ah-engine jev ask` and returns at once, as Node's `askDetached` starts its
+    /// detached worker. A call that needs no network (the integration is off, or a relax-block guard on a baseline that
+    /// is not blocking) is logged here and no process is started. Never fails: a spawn error is swallowed.
+    pub fn ask_detached_process(&self, req: AskRequest) {
+        let s = self.settings.get(req.env.as_ref());
+        let mode = s.mode(&req.id, false);
+        if mode == Mode::Off || (req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true)) {
+            self.finish(&s, &req, mode, None, false, true);
+            return;
+        }
+        let line = Jev::wire_line(&req, Jev::detached_budget(&s, &req));
+        let Some(exe) = std::env::current_exe().ok() else { return };
+        let _ = (|| -> std::io::Result<()> {
+            use std::os::unix::process::CommandExt;
+            use std::process::{Command, Stdio};
+            let mut child = Command::new(exe); // inherits the hook's own environment, as Node's `env || process.env`
+            child.args(defaults::list("jev.detached_args")).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+            let mut c = child.spawn()?;
+            if let Some(mut stdin) = c.stdin.take() {
+                let _ = std::io::Write::write_all(&mut stdin, format!("{line}\n").as_bytes());
+            }
+            Ok(()) // the child is not waited for; it ends when its one ask has finished
+        })();
     }
 
     /// Queue the call and return at once; the answer lands in the cache and the log for a later turn. A full queue is
@@ -540,9 +628,7 @@ impl Jev {
             return;
         }
         let mut req = req;
-        if req.budget_ms.is_none() {
-            req.budget_ms = Some(if s.timeout_ms != defaults::num("jev.timeout_ms") { s.timeout_ms } else { defaults::num("jev.async_budget_ms") });
-        }
+        req.budget_ms = Some(Jev::detached_budget(&s, &req));
         let tx = self.queue.get_or_init(|| self.start_worker());
         self.pending.fetch_add(1, Ordering::SeqCst);
         match tx.try_send(req) {
@@ -583,11 +669,10 @@ impl Jev {
 
     /// The key an answer is cached under for the session whose settings are `s`; `None` when it must not be cached (a test
     /// endpoint override is in effect). Unlike the logged hash it covers everything that decides who answers and how.
-    fn cache_key_of(&self, s: &JevSettings, req: &AskRequest) -> Option<String> {
+    fn cache_key_of(&self, s: &JevSettings, req: &AskRequest) -> Option<(String, String)> {
         if s.has_endpoint_override() {
             return None;
         }
-        let qv = defaults::text("jev.question_version");
         let vendors: Vec<Vendor> = std::iter::once(s.transport).chain(s.fallback).collect();
         let chain: String = vendors
             .iter()
@@ -595,7 +680,7 @@ impl Jev {
             .map(|(i, v)| format!("{}|{}|{}", v.as_str(), JevClient::model_for(*v), endpoint_for(s, *v, i == 0)))
             .collect::<Vec<_>>()
             .join(">");
-        Some(full_hash(&[&req.id, qv, &chain, req.cache_key.as_deref().unwrap_or(&req.state)]))
+        Some((self.hash_of(req), chain))
     }
 
     fn hash_of(&self, req: &AskRequest) -> String {
@@ -667,6 +752,28 @@ impl Jev {
             }
         }
         if log {
+            // budget watch and audit snippet come before the row, as in Node's `finalize`
+            if r.is_some()
+                && let Some((spent, limit)) = super::keep::maybe_warn_budget(&self.home, s.budget_watch, s.budget_usd_per_day, cost_usd)
+            {
+                let mut w = Row::default();
+                w.put("ts", json!(iso_ms(now_unix_ms())));
+                w.put("type", json!("budget-warning"));
+                w.put("window", json!("daily"));
+                w.put("spentUsd", jnum(spent));
+                w.put("budgetUsd", jnum(limit));
+                self.write(&w);
+            }
+            let (ch, wc) = (direction(req.trust, changed), would_change.clone());
+            super::keep::maybe_write_audit_snippet(
+                &self.home.join(defaults::text("paths.base_dir")).join(defaults::text("jev.log_dir")),
+                s.audit_snippets,
+                &req.id,
+                &hash,
+                &req.state,
+                &ch,
+                &wc,
+            );
             self.write(&self.row(
                 s,
                 req,
@@ -722,7 +829,7 @@ impl Jev {
         row.put("h", json!(hash));
         row.put("base", req.baseline.clone());
         row.put("jev", ok.and_then(|x| x.answer.as_ref()).map_or(Value::Null, Answer::to_json));
-        row.put("conf", ok.map_or(Value::Null, |x| json!(x.confidence)));
+        row.put("conf", ok.map_or(Value::Null, |x| jnum(x.confidence)));
         row.put("ms", json!(r.map_or(0, |x| x.ms)));
         row.put("backend", json!(backend.as_str()));
         row.put("final", outcome.clone());
@@ -753,13 +860,13 @@ impl Jev {
             }
         }
         if let Some(x) = r {
-            row.put("costUsd", cost_usd.map_or(Value::Null, |c| json!(c)));
+            row.put("costUsd", cost_usd.map_or(Value::Null, jnum));
             row.put("costSource", cost_source.map_or(Value::Null, |c| json!(c.as_str())));
             if let Some(t) = x.tokens_in {
-                row.put("tokensIn", json!(t));
+                row.put("tokensIn", jnum(t));
             }
             if let Some(t) = x.tokens_out {
-                row.put("tokensOut", json!(t));
+                row.put("tokensOut", jnum(t));
             }
         }
         if let Some(c) = req.compare {
@@ -833,11 +940,14 @@ mod tests {
     }
 
     #[test]
-    fn jev_off_is_the_baseline_with_no_network_no_cache_and_no_log() {
+    fn jev_off_is_the_baseline_with_no_network_no_cache_and_one_off_row_as_node_writes() {
         let (jev, f, log) = lane(&[], vec![]);
         let d = jev.ask(&req("speculation", Trust::AddBlock, json!(false)));
         assert_eq!((d.outcome, d.backend, d.changed), (json!(false), Backend::BaselineOnly, false));
-        assert!(f.seen.lock().unwrap().is_empty() && log.0.lock().unwrap().is_empty() && jev.cache.is_empty());
+        assert!(f.seen.lock().unwrap().is_empty() && jev.cache.is_empty());
+        let rows = log.0.lock().unwrap();
+        assert_eq!(rows.len(), 1, "Node's finalize logs a skipped call, so `jev report` volume is unchanged");
+        assert_eq!((field(&rows[0], "mode"), field(&rows[0], "backend"), field(&rows[0], "final")), (json!("off"), json!("baseline-only"), json!(false)));
     }
 
     #[test]
@@ -941,7 +1051,9 @@ mod tests {
         let (jev, f, log) = lane(&[("ANTIHALL_JEV", "1"), ("ANTIHALL_JEV_SPECULATION", "0"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")], vec![]);
         jev.ask_async(req("speculation", Trust::AddBlock, json!(false)));
         assert!(jev.queue.get().is_none(), "no worker thread was started");
-        assert!(f.seen.lock().unwrap().is_empty() && log.0.lock().unwrap().is_empty());
+        assert!(f.seen.lock().unwrap().is_empty());
+        let rows = log.0.lock().unwrap();
+        assert_eq!((rows.len(), field(&rows[0], "mode")), (1, json!("off")), "the off row Node's askDetached writes synchronously");
     }
 
     #[test]
@@ -1061,6 +1173,40 @@ mod tests {
         off.env = session(&[]);
         assert_eq!(jev.ask(&off).backend, Backend::BaselineOnly, "nor to one with Jev off");
         assert_eq!(f.seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_lane_shares_nodes_cache_file_a_node_entry_is_a_hit_and_an_engine_entry_is_nodes() {
+        let dir = std::env::temp_dir().join(format!("ah-jev-assist-file-cache-{}", std::process::id()));
+        let path = dir.join("cache").join("jev-assist.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let r = req("speculation", Trust::AddBlock, json!(false));
+        let h = content_hash(&[&r.id, "v1", &r.state]);
+        std::fs::write(&path, format!(r#"{{"{h}":{{"answer":true,"confidence":0.95,"_seq":4}}}}"#)).unwrap();
+        let f = Arc::new(Fake::new(vec![ok(200, &answer(0.01))]));
+        let cache: Arc<dyn JevCache> = Arc::new(FileCache::new(path.clone(), 500));
+        let jev = Jev::with_parts(&dir, Env::from_pairs(ON), f.clone(), Arc::new(ManualClock::default()), Some(cache), None);
+        let mut a = r.clone();
+        a.env = session(&ON);
+        let d = jev.ask(&a);
+        assert_eq!((d.backend, d.outcome), (Backend::Cache, json!(true)), "Node's entry answers without a request");
+        assert!(f.seen.lock().unwrap().is_empty());
+        let mut b = r.clone();
+        b.state = "another text".into();
+        b.env = session(&ON);
+        assert_eq!(jev.ask(&b).backend, Backend::Jev);
+        let written = std::fs::read_to_string(&path).unwrap();
+        let hb = content_hash(&[&b.id, "v1", &b.state]);
+        assert!(written.contains(&format!(r#""{hb}":{{"answer":false,"confidence":0.98,"_seq":5,"chain":""#)), "{written}");
+        assert!(written.starts_with(&format!(r#"{{"{h}":{{"answer":true,"confidence":0.95,"_seq":4}},"#)), "Node's entry is kept byte for byte");
+        // an entry another vendor chain wrote is not served to this session
+        let other = written.replacen(r#","chain":""#, r#","chain":"other|"#, 1);
+        std::fs::write(&path, other).unwrap();
+        let f2 = Arc::new(Fake::new(vec![ok(200, &answer(0.01))]));
+        let cache2: Arc<dyn JevCache> = Arc::new(FileCache::new(path, 500));
+        let jev2 = Jev::with_parts(&dir, Env::from_pairs(ON), f2.clone(), Arc::new(ManualClock::default()), Some(cache2), None);
+        assert_eq!(jev2.ask(&b).backend, Backend::Jev, "a different chain asks again");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

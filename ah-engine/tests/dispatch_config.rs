@@ -13,6 +13,9 @@ struct Env {
 
 const POST_BASH: [&str; 6] =
     ["merge-side-pick:post", "git-guard:audit", "output-verify-guard", "devswarm-parent-reply-tracker", "devswarm-child-drain", "coordinator-work-guard:post"];
+/// Entries the engine answers itself in these tests' environment, so no Node command runs for them. None: the tests run with
+/// the checks down (`AH_ENGINE_NOSPAWN=1`), so every entry runs as its Node command.
+const POST_NATIVE: [&str; 0] = [];
 const PRE_BASH: [&str; 9] = [
     "compact-declaration-guard",
     "git-guard",
@@ -131,7 +134,7 @@ fn without_any_config_every_matching_entry_runs_and_the_answer_is_the_tables_ord
     let map = e.ctx_map("PostToolUse", &POST_BASH);
     let (code, out, err) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(contexts(&out), POST_BASH.iter().map(|id| format!("CTX-{id}")).collect::<Vec<_>>());
+    assert_eq!(contexts(&out), POST_BASH.iter().filter(|i| !POST_NATIVE.contains(i)).map(|id| format!("CTX-{id}")).collect::<Vec<_>>());
     assert!(!e.log().contains("dispatch_plan"), "a default dispatch writes no plan event: {}", e.log());
 }
 
@@ -169,7 +172,11 @@ fn a_shadowed_entry_runs_but_its_answer_is_never_delivered() {
     let map = e.ctx_map("PostToolUse", &POST_BASH);
     let (code, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
     assert_eq!(code, 0);
-    let want: Vec<String> = POST_BASH.iter().filter(|i| !["output-verify-guard", "git-guard:audit"].contains(i)).map(|id| format!("CTX-{id}")).collect();
+    let want: Vec<String> = POST_BASH
+        .iter()
+        .filter(|i| !["output-verify-guard", "git-guard:audit"].contains(i) && !POST_NATIVE.contains(i))
+        .map(|id| format!("CTX-{id}"))
+        .collect();
     assert_eq!(contexts(&out), want);
     assert!(e.ran().contains(&"output-verify-guard".to_string()), "shadow still runs it");
     assert!(!e.ran().contains(&"git-guard:audit".to_string()), "off does not");
@@ -203,7 +210,7 @@ fn a_project_file_applies_below_the_user_file_and_cannot_touch_guards() {
     std::fs::remove_file(e.state().join("config.toml")).unwrap();
     std::fs::write(e.dir.join(".anti-hall/engine.toml"), "[events.PreToolUse]\nbudget_ms = 5\n[events.PostToolUse]\nmax_rules = 1\n").unwrap();
     let (_, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!(contexts(&out).len(), POST_BASH.len(), "an invalid project file is ignored, not half applied");
+    assert_eq!(contexts(&out).len(), POST_BASH.len() - POST_NATIVE.len(), "an invalid project file is ignored, not half applied");
     assert!(e.log().contains("config_invalid") && e.log().contains("project file"), "{}", e.log());
 }
 
@@ -213,7 +220,7 @@ fn an_invalid_user_file_runs_the_defaults_and_says_so() {
     e.config("[events.PostToolUse]\nmode = \"loud\"\n");
     let map = e.ctx_map("PostToolUse", &POST_BASH);
     let (code, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!((code, contexts(&out).len()), (0, POST_BASH.len()));
+    assert_eq!((code, contexts(&out).len()), (0, POST_BASH.len() - POST_NATIVE.len()));
     assert!(e.log().contains("config_invalid"), "{}", e.log());
 }
 
@@ -232,12 +239,12 @@ fn config_validate_enforces_the_guard_rule_on_the_real_command() {
             .unwrap();
         (o.status.code().unwrap(), String::from_utf8_lossy(&o.stdout).to_string())
     };
+    // (the rule for a guard entry with no built-in check is unit-tested in src/hookcfg: every guard entry of the table has a check now)
     for bad in [
         "[events.PreToolUse]\nmode = \"off\"\n",
         "[events.Stop]\nenabled = false\n",
         "[events.SubagentStop]\nmode = \"shadow\"\n",
         "[events.PermissionRequest]\nmax_rules = 1\n",
-        "[entries.\"task-guard\"]\nmode = \"off\"\n",
     ] {
         let (code, out) = validate(bad);
         assert_eq!(code, 1, "{bad}: {out}");
@@ -299,8 +306,8 @@ fn a_non_guard_events_budget_accounts_for_every_entry_exactly_once() {
         .flat_map(|l| l.split("skipped_budget=[").nth(1).and_then(|r| r.split(']').next()).into_iter())
         .flat_map(|r| r.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>())
         .count();
-    assert_eq!(ran + skipped, POST_BASH.len(), "ran {ran} + skipped_budget {skipped}: {log}");
+    assert_eq!(ran + skipped + POST_NATIVE.len(), POST_BASH.len(), "ran {ran} + skipped_budget {skipped}: {log}");
     e.config("[events.PostToolUse]\nbudget_ms = 600000\n");
     let (_, out, _) = e.run("PostToolUse", &map, &post("ls", &e.dir), &[]);
-    assert_eq!(contexts(&out).len(), POST_BASH.len(), "a budget that is not reached skips nothing");
+    assert_eq!(contexts(&out).len(), POST_BASH.len() - POST_NATIVE.len(), "a budget that is not reached skips nothing");
 }

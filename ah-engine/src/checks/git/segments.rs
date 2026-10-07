@@ -613,8 +613,12 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
                 return Some(block("msg_commit_credit", &[]));
             }
         }
-        if _use_jev && inline_commit_messages(&rest).iter().any(|m| !m.is_empty()) {
-            ctx.jev_wanted = true;
+        if _use_jev {
+            for m in inline_commit_messages(&rest) {
+                if !m.is_empty() && ctx.jev_consult(&m) {
+                    return Some(block("msg_commit_jev", &[]));
+                }
+            }
         }
         for spec in file_commit_messages(&rest) {
             let text: Option<String>;
@@ -637,8 +641,8 @@ pub fn git_verdict(ctx: &mut Ctx, ev: &Ev, d: usize, cmd: &str, hb: &Hb, last_cd
             if cached_credit.unwrap_or_else(|| credit_regexes(&text)) {
                 return Some(block("msg_commit_file_credit", &[]));
             }
-            if _use_jev {
-                ctx.jev_wanted = true;
+            if _use_jev && ctx.jev_consult(&text) {
+                return Some(block("msg_commit_file_jev", &[]));
             }
         }
     }

@@ -1,8 +1,11 @@
 //! Built-in `check = "git"`: a port of the Node git-guard (PreToolUse on Bash). Blocks are signalled the way the
 //! Node guard does: exit code 2 plus the reason on stderr; the handover-budget advisory is a stdout JSON line.
 //!
-//! Differences from the Node guard (deliberate, listed in the README): the Jev add-block consult is not
-//! performed (Node falls back to the regex verdict when Jev has no key, which is the default); the
+//! The Jev add-block consult (`gitGuardSelfCredit`) is performed as Node performs it: after the regex scan found nothing,
+//! at the same three places, synchronously inside a 1500 ms budget, memoised per text, at most eight distinct texts and
+//! four seconds per command; in `shadow` (the default) the ask is logged and never changes the verdict.
+//!
+//! Differences from the Node guard (deliberate, listed in the README): the
 //! PostToolUse `--audit` pass is the separate `git-audit` check ([`audit`]); plugin options stored in Claude's own settings are not read
 //! (only the `CLAUDE_PLUGIN_OPTION_*` environment variable form).
 pub mod aliases;
@@ -54,8 +57,12 @@ pub struct Ctx {
     pub self_credit_cache: HashMap<String, bool>,
     /// Whether the raw command text itself credits an AI tool (computed once).
     pub raw_credit: Option<bool>,
-    /// A Jev add-block consult would have run (see `Verdict::Defer`).
-    pub jev_wanted: bool,
+    /// Memo of the Jev self-credit consult per exact text (Node: `consultGitGuardSelfCreditJevMemo`).
+    pub jev_memo: HashMap<String, bool>,
+    /// Milliseconds this command has spent on Jev consults so far (Node: `jevSpentMs`).
+    pub jev_spent_ms: u64,
+    /// The payload's session id, for the Jev decision rows.
+    pub session_id: Option<String>,
     /// Runner recursion depth and whether it hit its bound (the answer is then deferred to the Node hook).
     pub rec: usize,
     /// Set when a bounded recursion (runner expansion) hit its limit; the verdict is then deferred to the Node hook.
@@ -95,7 +102,9 @@ impl Ctx {
             handover_guard_on: None,
             self_credit_cache: HashMap::new(),
             raw_credit: None,
-            jev_wanted: false,
+            jev_memo: HashMap::new(),
+            jev_spent_ms: 0,
+            session_id: None,
             rec: 0,
             overflow: false,
             home: settings.home.clone(),
@@ -157,6 +166,41 @@ impl Ctx {
         crate::defaults::fill(plain("skip_command"), &[("script", &script.replace('\'', "'\\''")), ("key", &key)])
     }
 
+    /// `consultGitGuardSelfCreditJev(text)`: true when Jev, running `on`, confidently judges `text` to credit an AI assistant
+    /// in words the regexes miss. Add-block trust with a baseline of `false`: it can only add a block. A repeated text is
+    /// answered from the memo, a command asks about at most `git.jev_consult_cap` distinct texts and spends at most
+    /// `git.jev_total_budget_ms`; past either the regex verdict (no block) stands. A text window that would cut a surrogate
+    /// pair is Node's lone surrogate: the whole verdict is deferred.
+    pub fn jev_consult(&mut self, text: &str) -> bool {
+        use crate::jev::{AskRequest, Env as JevEnv, Question, Trust};
+        if let Some(v) = self.jev_memo.get(text) {
+            return *v;
+        }
+        if self.jev_memo.len() >= crate::defaults::num("git.jev_consult_cap") as usize {
+            return false;
+        }
+        let budget = crate::defaults::num("git.jev_budget_ms");
+        if self.jev_spent_ms + budget + crate::defaults::num("git.jev_backstop_ms") > crate::defaults::num("git.jev_total_budget_ms") {
+            return false;
+        }
+        let Some(state) = crate::checks::replykit::io::prefix_utf16(text, crate::defaults::num("git.jev_state_chars") as usize) else {
+            self.overflow = true;
+            return false;
+        };
+        let start = std::time::Instant::now();
+        let env = JevEnv::from_pairs(self.settings.env.clone());
+        let q = Question::noul(crate::defaults::text("git.jev_instructions"), crate::defaults::text("git.jev_true"), crate::defaults::text("git.jev_false"));
+        let mut req = AskRequest::new(crate::defaults::text("git.jev_id"), q, &state, Trust::AddBlock, Value::Bool(false));
+        req.budget_ms = Some(budget);
+        req.session_id = self.session_id.clone();
+        req.project = crate::jev::shared::project_for(Some(&self.proc_cwd));
+        req.env = Some(env.clone());
+        let verdict = crate::jev::shared::lane(std::path::Path::new(&self.home), &env).ask(&req).outcome == Value::Bool(true);
+        self.jev_memo.insert(text.to_string(), verdict);
+        self.jev_spent_ms += start.elapsed().as_millis() as u64;
+        verdict
+    }
+
     /// A path as the Node process would open it (relative paths resolve against the hook's cwd).
     pub fn abs_from_cwd(&self, p: &str) -> String {
         if p.starts_with('/') || self.proc_cwd.is_empty() { p.to_string() } else { format!("{}/{}", self.proc_cwd.trim_end_matches('/'), p) }
@@ -185,9 +229,17 @@ fn looks_like_file_write_shape(cmd: &str) -> bool {
 ///
 /// Mirrors `git-guard.js` `main`.
 pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str, env: &crate::reqenv::RequestEnv) -> Verdict {
+    check_bash_session(cmd, cwd, plugin_root, env, None)
+}
+
+/// [`check_bash`] with the payload's session id, which tags the Jev decision rows.
+pub fn check_bash_session(cmd: &str, cwd: Option<&str>, plugin_root: &str, env: &crate::reqenv::RequestEnv, session: Option<&str>) -> Verdict {
     let settings = Settings::from_env(env);
     let r = std::thread::scope(|sc| {
-        std::thread::Builder::new().stack_size(tables().stack_bytes).spawn_scoped(sc, || check_with(settings, cmd, cwd, plugin_root)).map(|h| h.join())
+        std::thread::Builder::new()
+            .stack_size(tables().stack_bytes)
+            .spawn_scoped(sc, || check_with_session(settings, cmd, cwd, plugin_root, session))
+            .map(|h| h.join())
     });
     match r {
         Ok(Ok(o)) => o,
@@ -209,6 +261,11 @@ pub fn check_bash(cmd: &str, cwd: Option<&str>, plugin_root: &str, env: &crate::
 ///
 /// Mirrors `git-guard.js` `main`.
 pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root: &str) -> Verdict {
+    check_with_session(settings, cmd, cwd, plugin_root, None)
+}
+
+/// [`check_with`] with the payload's session id.
+pub fn check_with_session(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root: &str, session: Option<&str>) -> Verdict {
     if !settings.enabled(&tables().setting_git_guard) {
         return Verdict::Allow;
     }
@@ -221,10 +278,11 @@ pub fn check_with(settings: Settings, cmd: &str, cwd: Option<&str>, plugin_root:
     let cwd_s = cwd.unwrap_or("");
     let proc_cwd = if cwd_s.is_empty() { std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default() } else { cwd_s.to_string() };
     let mut ctx = Ctx::new(settings, &proc_cwd, plugin_root);
+    ctx.session_id = session.map(str::to_string);
     ctx.raw_cmd = cmd.to_string();
     let base = if cwd_s.is_empty() { None } else { Some(cwd_s) };
     let hit = segments::scan_command(&mut ctx, cmd, 0, base);
-    if ctx.overflow || (ctx.jev_wanted && ctx.settings.jev_self_credit_on()) {
+    if ctx.overflow {
         return Verdict::Defer;
     }
     if let Some(m) = hit {
@@ -257,12 +315,13 @@ impl Check for GitGuard {
         self.run_env(s, &Value::Null, opts, &crate::reqenv::RequestEnv::default())
     }
 
-    fn run_env(&self, s: &Subject<'_>, _payload: &Value, opts: &Value, env: &crate::reqenv::RequestEnv) -> Option<Verdict> {
+    fn run_env(&self, s: &Subject<'_>, payload: &Value, opts: &Value, env: &crate::reqenv::RequestEnv) -> Option<Verdict> {
         if s.event != "PreToolUse" || s.tool != Some("Bash") {
             return None;
         }
         let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
         let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(crate::defaults::env_name("plugin_root"))).unwrap_or_default();
-        Some(check_bash(cmd, s.cwd, root, env))
+        let session = payload.get("session_id").filter(|v| crate::checks::replykit::io::truthy(v)).and_then(crate::checks::replykit::io::js_id_string);
+        Some(check_bash_session(cmd, s.cwd, root, env, session.as_deref()))
     }
 }

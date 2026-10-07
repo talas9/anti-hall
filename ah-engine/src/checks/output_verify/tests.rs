@@ -80,3 +80,57 @@ fn the_check_answers_only_post_tool_use() {
     let s = Subject { event: "PreToolUse", tool: Some("Bash"), cwd: None, tool_input: &null, prompt: None };
     assert!(OutputVerifyGuard.run_env(&s, &p, &Value::Null, &env).is_none());
 }
+
+mod jev_shadow {
+    use super::*;
+    use crate::jev::testkit::{install_scripted, log_rows, ok};
+
+    fn home(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ah-ov-jev-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn env(h: &std::path::Path, extra: &[(&str, &str)]) -> RequestEnv {
+        let mut pairs = vec![("HOME".to_string(), h.to_string_lossy().into_owned())];
+        pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        RequestEnv::from_pairs(pairs)
+    }
+
+    const ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
+
+    fn payload(out: &str) -> Value {
+        json!({"tool_name":"Bash","tool_input":{"command":"npm test"},"tool_response":{"stdout":out},"session_id":"sv"})
+    }
+
+    #[test]
+    fn a_test_runner_output_is_asked_with_the_regex_verdict_as_baseline_and_the_advisory_is_unchanged() {
+        let h = home("on");
+        let (jev, fake) = install_scripted(&h, &ON, vec![ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]);
+        let v = decide(&payload("Tests: 3 passed, 2 failed"), &env(&h, &ON)).unwrap();
+        assert!(matches!(v, Verdict::Exact(_)), "the advisory is still emitted");
+        assert!(jev.drain(std::time::Duration::from_secs(5)));
+        let seen = fake.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let body: Value = serde_json::from_str(seen[0].2.as_ref().unwrap()).unwrap();
+        assert!(body["state"].as_str().unwrap().contains("3 passed"));
+        let rows = log_rows(&h);
+        assert_eq!(
+            (rows.len(), &rows[0]["id"], &rows[0]["base"], &rows[0]["mode"], &rows[0]["sessionId"]),
+            (1, &json!("outputVerifyGuard"), &json!(true), &json!("shadow"), &json!("sv"))
+        );
+    }
+
+    #[test]
+    fn an_off_integration_logs_the_off_row_and_a_clean_run_is_asked_with_baseline_false() {
+        let h = home("off");
+        let off = [("ANTIHALL_JEV", "0")];
+        let (jev, fake) = install_scripted(&h, &off, vec![]);
+        assert_eq!(decide(&payload("Tests: 5 passed"), &env(&h, &off)).unwrap(), Verdict::Allow);
+        assert!(jev.drain(std::time::Duration::from_secs(5)));
+        assert!(fake.seen.lock().unwrap().is_empty());
+        let rows = log_rows(&h);
+        assert_eq!((rows.len(), &rows[0]["mode"], &rows[0]["base"]), (1, &json!("off"), &json!(false)));
+    }
+}

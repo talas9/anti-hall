@@ -66,8 +66,10 @@ pub fn decide(p: &Value, st: &Settings) -> Option<Verdict> {
         if st.home.is_empty() && js_truthy(ask.session_id) {
             return Some(Verdict::Defer);
         }
-        if !turn_gate::first_this_turn(&ask) {
-            return None;
+        match turn_gate::first_this_turn(&ask) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(_) => return Some(Verdict::Defer),
         }
     }
     let shown = truncate_command(cmd);

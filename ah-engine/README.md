@@ -121,8 +121,10 @@ exit 2 with the reason on stderr, as in Node; the handover-budget advisory is a 
 the Node function it mirrors in its doc comment.
 
 Deliberate differences from the Node guard:
-- The Jev add-block consult is not performed. Only mode `on` with Jev enabled can change a verdict, so then the check
-  defers: the daemon replies ERR and the client runs the Node hook.
+- The Jev add-block consult (`gitGuardSelfCredit`) is performed as Node performs it, at the same three places (inline
+  `-m` messages, `-F` files and heredocs, `gh` bodies), after the regex scan found nothing: synchronous, a 1500 ms budget,
+  memoised per text, at most eight distinct texts and four seconds per command. Only mode `on` can add a block; the default
+  `shadow` logs the ask and never changes the verdict. A message window that would cut a surrogate pair defers.
 - A payload `serde_json` rejects but JS accepts (a lone surrogate escape) gets the same deferral.
 - Pathological nesting (more than 1500 levels) and any panic also defer; the check runs on a 64 MB-stack thread.
 - The PostToolUse `--audit` pass is the separate `git-audit` check (below). Plugin options stored in Claude's own settings are not read, only the
@@ -192,11 +194,10 @@ Deliberate differences from the Node guard:
   `cwd`, a date that depends on the time zone, a `.git` file in an unusual shape, JSON with a lone surrogate escape, a git
   probe slower than `session.gitignore_probe_ms`). A deferral always comes before the first write, so Node then sees the
   state it would have seen. Switches and the home directory come from the client's forwarded environment (D76).
-- `merge-gate` (opt-in, `guards.mergeGate`): decided here only where Node exits 0 with no output and no side effect: the
-  gate is off or skipped, the command is not an auto-merge intent, the payload has no absolute transcript path, the
-  transcript cannot be read, or no hedge phrase occurs anywhere in the recent assistant text (Node tests the quote-masked
-  text, which only blanks characters). A hedge phrase, a transcript line the engine cannot parse and a relative transcript
-  path defer: the block, its quote mask and resolution scan, and the fire-and-forget Jev shadow ask stay with Node.
+- `merge-gate` (opt-in, `guards.mergeGate`): decided entirely here: the records of the transcript tail, the quote mask, the
+  hedge and its resolution by a real typed user prompt, the block, and the `mergeGateHedge` Jev shadow ask (asked on the
+  shared Jev lane without waiting). A relative transcript path, a transcript line the engine cannot parse and an ask window
+  that would cut a surrogate pair defer.
 - `api-guard`: decided here only where Node reaches no interpreter probe: the guard or skip switch, a tool that carries no
   code, a target that is not a Python or JavaScript file (by extension, as Node), and code in which no candidate can exist
   (a conservative superset of Node's candidate extraction: no `import` word or no stdlib module name in Python, no global
@@ -210,6 +211,14 @@ Deliberate differences from the Node guard:
   allowed as Node allows it. Every main-thread call, every `apply_patch` (no patch parser), a relative cwd or home, a
   non-string path and a request environment without a home directory defer; the allowlists, symlink and hard-link honesty
   checks, plan mode, the trusted per-project allowlist and the DevSwarm wording stay with Node.
+- `coordinator-work-guard`: only the exits the payload proves are decided here (not Bash, no session id, a subagent marker
+  in the payload, which on the recorded field data is 88 percent of Bash calls). The window (counters, nudge, block) needs
+  `classifyBashWork` from command-guard and the hook's `CLAUDE_CODE_ENTRYPOINT`, neither of which the engine has yet, so
+  every main-thread call defers to the Node guard, which keeps all of the window's state; the engine keeps none, so the
+  two cannot disagree. The window moves in with the command-guard port (planned, D75).
+- `devswarm-parent-inbox`, `devswarm-child-turn`: the gate of the two DevSwarm prompt hooks. Silent cases (not a Primary or not
+  a child, DevSwarm inactive, the hook's switch off, a Jev judge child) are answered; an active Primary or child defers to the
+  Node hook, which owns the roster, the mailbox and the dedupe state until the engine owns the mesh and mailbox (D45).
 - `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
   exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
   current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both
@@ -243,6 +252,11 @@ Deliberate differences from the Node guard:
   migration keys is shipped in `defaults/session_gates.toml` and a test compares it with `companion/lib/migrations.js`.
   Codex registers the same three hooks, so the same checks answer its table; it registers neither `swarm-guard` nor
   `devswarm-comms-guard`.
+- Handover and Codex hook ports (`handover-resume`, `precompact-snapshot`, `codex-availability`, `codex-quota-detect`,
+  `codex-nudge`): see DECISIONS 1.75. They answer exactly as Node does or defer; they read the request's environment
+  (`HOME`, `PATH`, `TZ`, `TMPDIR`) and write the same files (`~/.anti-hall/codex-availability.json`,
+  `codex-nudge-state-<session>.json`, `handover-resume-state-<session>.json`, `<repo>/.anti-hall/handovers/.../PRECOMPACT-<n>.md`).
+  Parity: `node parity/run-b78.js --hook <name> --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks`.
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 ## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)
@@ -276,6 +290,39 @@ Deliberate differences from the Node hooks:
   over 8 MB; the engine records its own latency.
 - The scan stops being exact when the answers to `TaskOutput` and `SendMessage` calls exceed `agent_scan.retain_bytes`
   (8 MiB): the call defers.
+## Built-in checks: the task checks (`src/checks/taskkit`, `src/checks/taskstate`, one module per hook)
+
+`task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` port the task hooks of batches 9 and 10. Their
+tables, patterns, limits and texts are in `defaults/task_guards.toml`. Every check either answers exactly what the Node
+hook would (exit code, stdout and the files it writes) or defers, so the engine is never a weaker guard than Node (D74).
+`parity/hookfx.js` is the harness: it runs the real Node hook with an isolated `HOME` and the engine check on identical
+worlds and compares exit code, stdout, stderr and the whole file tree; `run-task-lifecycle-log.js`, `run-dispatch-tier.js`,
+`run-task-guard.js` and `run-tasklist-guard.js` hold the corpora (hand-written shapes, fuzz, and real transcripts for the two
+Stop gates).
+
+- `task-lifecycle-log` (TaskCreated, TaskCompleted): the ledger line and the index entry, exactly. The project root is the
+  nearest `.git` ancestor of the real path (`taskkit/root.rs`, from the file system alone, no git process). A relative
+  `cwd`, a field cut through a surrogate pair and a number JavaScript prints with a different digit string defer.
+- `dispatch-tier` (PostToolUse on TaskCreate and TaskUpdate): asks Jev (`dispatchTier`) once per task text, detached.
+  Integration off (the default while Jev is disabled) means nothing is read or written. Otherwise the check builds the
+  task text (a TaskUpdate's from the reconstructed task plus the update), skips owner-blocked tasks, skips a text that has
+  a verdict in the shared answer cache or a live request marker, writes the marker (`dispatch-tier-state.json`) and
+  starts the ask (DECISIONS 1.93).
+- `task-guard` (Stop): rebuilds the task list from the last 1.5 MiB of the transcript with both Node reconstructions
+  (`taskstate/parse.rs`), recovers records before the window (`taskstate/backfill.rs`) and answers only the Stops with no
+  open task: the loop state file is removed, and the pruning advisory and the unknown-state note are printed as Node
+  prints them. Every Stop with an open task defers (its decision needs the running-agent scan, OMC loop detection and the
+  stop budget). The backfill scans a fixed number of bytes where Node stops after 150 ms; the engine defers when the
+  search needs more, so its answer never depends on machine speed.
+- `tasklist-guard` (Stop): the single-pass scan (`tasklist_guard/scan.rs`, work detection in `taskkit/workdetect.rs`),
+  the progress-file freshness rules with their file effects, the plan-mode advisory and the resume-verification nudge. A
+  Stop that would block defers (Node owns the block text, the loop state, the Jev consult, the acknowledgement and the
+  stop budget), and so does one that needs the running-agent scan (two or more tasks in progress on a Claude session). A
+  relative path in a tool call is judged against the payload's `cwd`, which can only make the engine count more work than
+  Node, never less.
+- Not ported: `task-tracker` (UserPromptSubmit). Its output depends on the emit-dedupe state (batch 4), the Jev
+  decision-log row it writes on every prompt, the DevSwarm primary tier and the agent scan, and the Node source moved on
+  the development branch after this lane's base.
 
 ## Built-in checks: the command check
 
@@ -364,9 +411,9 @@ node run-jev.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti
 | resolved settings and modes over a settings matrix | 418 | **100%** |
 | shipped integration table against `settings-schema.js` | 43 | **100%** |
 
-The three deliberate differences (relax-block is observe-only, a `true` advisory baseline is never lowered, an off call
-writes no row) are asserted separately, not skipped. Only the one-shot CLI exists for Jev, so there is no daemon mode until
-the dispatcher lane wires it in. A mutation run (a changed scrub rule and breaker threshold) drops agreement to 99.7%, so the
+The one deliberate difference (a `true` advisory baseline is never lowered, D36) is asserted separately, not skipped;
+relax-block and the `mode: "off"` row of a skipped call are identical to Node's and compared in full. The breaker state is
+Node's own file (`cache/jev-breaker.json`), so hooks and engine share one breaker. A mutation run (a changed scrub rule and breaker threshold) drops agreement to 99.7%, so the
 harness is not vacuous.
 
 `parity/run.js` is the phase-2 decision-agreement harness for the regex rules; the force-push and AI-credit regex rules

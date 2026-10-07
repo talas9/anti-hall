@@ -24,8 +24,9 @@ pub mod setting;
 mod tests;
 
 use crate::checks::Verdict;
-use crate::checks::compact_decl::{has_exponent, json_depth};
+use crate::checks::compact_decl::json_depth;
 use crate::checks::git::util::Settings;
+use crate::checks::guardkit::jsdiff::js_reads_differently_str;
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use serde_json::Value;
@@ -47,7 +48,9 @@ pub(crate) fn read_json(path: &str) -> Jf {
     let text = String::from_utf8_lossy(&bytes);
     match serde_json::from_str::<Value>(&text) {
         Ok(v) => Jf::Ok(v),
-        Err(_) if text.contains("\\u") || json_depth(&text) > defaults::num("ctxbudget.deep_json_depth") as usize || has_exponent(&text) => Jf::Hazard,
+        Err(_) if text.contains("\\u") || json_depth(&text) > defaults::num("ctxbudget.deep_json_depth") as usize || js_reads_differently_str(&text) => {
+            Jf::Hazard
+        }
         Err(_) => Jf::Bad,
     }
 }

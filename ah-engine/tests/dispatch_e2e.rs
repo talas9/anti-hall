@@ -68,7 +68,9 @@ impl Env {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            // the codex-availability check probes PATH for a `codex` binary and answers with a context line when it finds one;
+            // these tests drive the mapped Node commands only
+            .env("PATH", path_without_codex())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
@@ -102,7 +104,9 @@ impl Env {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            // the codex-availability check probes PATH for a `codex` binary and answers with a context line when it finds one;
+            // these tests drive the mapped Node commands only
+            .env("PATH", path_without_codex())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
@@ -187,13 +191,13 @@ fn bash(cmd: &str, cwd: &Path) -> String {
 
 /// A Bash payload on which the built-in `merge-gate` and `api-guard` checks both defer to their Node hooks, which these
 /// tests replace with shell stand-ins: an auto-merge command that names a code file, with the gate switched on in the
-/// test home and a transcript whose assistant text carries a self-hedge.
+/// test home and a RELATIVE transcript path (Node resolves it against its own working directory, so the engine's merge-gate
+/// always leaves it to the Node hook; the gate's other deferrals went native with the Jev port).
 fn node_only_bash(e: &Env) -> String {
     let home = e.dir.join("home");
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
-    let tp = e.dir.join("hedged.jsonl");
-    std::fs::write(&tp, "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"do not merge\"}]}}\n").unwrap();
+    let tp = "hedged.jsonl";
     serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py"}, "transcript_path": tp})
         .to_string()
 }
@@ -253,6 +257,12 @@ fn stop_payload_with_padding(len: usize) -> String {
     p
 }
 
+/// The test process's PATH minus every directory that holds a `codex` binary.
+fn path_without_codex() -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    path.split(':').filter(|d| !d.is_empty() && !std::path::Path::new(d).join("codex").exists()).collect::<Vec<_>>().join(":")
+}
+
 fn session_map(e: &Env, first: &str, rest: &str) -> PathBuf {
     let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "SessionStart").into_iter().map(|x| x.id).collect();
     let m: serde_json::Map<String, serde_json::Value> = ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == 0 { first } else { rest }.into())).collect();
@@ -271,8 +281,12 @@ fn pretool_map(e: &Env, outs: &[(&str, &str)], rest: &str) -> PathBuf {
 }
 
 fn event_map(e: &Env, event: &str, first: &str, rest: &str) -> PathBuf {
-    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", event).into_iter().map(|x| x.id).collect();
-    let m: serde_json::Map<String, serde_json::Value> = ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == 0 { first } else { rest }.into())).collect();
+    // `first` goes to the first entry that always runs its Node hook: an entry a built-in check answers never runs one.
+    let entries = ah_engine::dispatch::table::entries("claude", event);
+    let first_node = entries.iter().position(|x| x.check.is_none()).unwrap_or(0);
+    let ids: Vec<String> = entries.into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().enumerate().map(|(i, id)| (id.clone(), if i == first_node { first } else { rest }.into())).collect();
     let map = e.dir.join(format!("{event}-map.json"));
     let mut events = serde_json::Map::new();
     events.insert(event.to_string(), serde_json::Value::Object(m));
@@ -418,15 +432,16 @@ fn a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node() 
 
 #[test]
 fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_node() {
+    // SessionEnd: its only hook (the MCP reaper) has no built-in check, so a missing script is skipped and logged there
     let e = Env::new("missing-script-nonguard");
     let mark = e.dir.join("fake-node-ran");
     let body = format!(r#": > {}; echo MODULE_NOT_FOUND >&2; exit 1"#, mark.display());
     let bin = e.fake_node(&body);
     let empty_root = e.dir.join("empty-plugin");
     std::fs::create_dir_all(&empty_root).unwrap();
-    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
+    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionEnd", "reason": "other"}).to_string();
     let (code, out, err) = e.run_with(
-        &["hook", "--event", "SessionStart"],
+        &["hook", "--event", "SessionEnd"],
         true,
         &p,
         false,
@@ -434,7 +449,7 @@ fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_n
     );
 
     assert_eq!((code, out.as_str()), (0, ""), "{err}");
-    assert!(err.contains("skipped SessionStart Node hook") && err.contains("no runnable Node command"), "{err}");
+    assert!(err.contains("skipped SessionEnd Node hook") && err.contains("no runnable Node command"), "{err}");
     assert!(!mark.exists(), "missing scripts should be skipped before spawning node");
     let log = std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).unwrap();
     assert!(log.contains("dispatch_defer") && log.contains("skipped"), "{log}");
@@ -669,7 +684,9 @@ fn stop_active_genuine_node_blocks_have_in_cap_and_over_cap_parity_without_count
     let run_results = |payload: &str| -> Vec<(i32, String)> {
         (0..4)
             .map(|_| {
-                let (code, out, err) = e.run(&args, true, payload, true);
+                // checks down (no daemon, none started): every Stop entry has a built-in check by now, so the mapped Node block
+                // only runs when the checks cannot answer
+                let (code, out, err) = e.run_with(&args, false, payload, true, &[("AH_ENGINE_NOSPAWN", "1")]);
                 assert_eq!(out, "");
                 (code, err)
             })
@@ -1123,5 +1140,122 @@ fn wrapper_and_engine_agree_on_unparsable_guard_payloads() {
         let (code, err) = run(engine, nodes, &invalid_utf8);
         assert_eq!(code, 2, "invalid UTF-8, Node {label}: the engine fails closed (D74), stricter than Node: {err}");
         assert!(err.contains("not valid UTF-8"), "{err}");
+    }
+}
+
+const NODE_SHIPIT: &str = "echo NODE-RAN >&2; exit 2";
+
+fn shipit_edit(e: &Env) -> String {
+    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "migrations/a.sql"}}).to_string()
+}
+
+/// Review P1: when the forwarded environment cannot stand for the client's (dropped over the cap, or no usable HOME),
+/// the checks that read it must defer to Node, never evaluate with no home and default switches (a gate that is on
+/// would read as off and the engine would allow what Node blocks).
+fn assert_env_incomplete_defers(name: &str, in_process: bool) {
+    let e = Env::new(name);
+    let map = pretool_map(&e, &[("ship-it-guard", NODE_SHIPIT)], "true");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let p = shipit_edit(&e);
+    let gate = [("ANTIHALL_SHIPIT_GATE", "1")];
+    let pad = "x".repeat(70_000);
+    let broken = |env: &Env| env.run_with(&args, in_process, &p, true, &[("ANTIHALL_SHIPIT_GATE", "1"), ("ANTIHALL_PAD", pad.as_str())]);
+    if in_process {
+        let (code, _, err) = e.run_with(&args, true, &p, true, &gate);
+        assert!(code == 2 && !err.contains("NODE-RAN"), "control: with a whole environment the engine answers itself: {code} {err:?}");
+        let (code, _, err) = broken(&e);
+        e.stop();
+        assert_eq!((code, err.contains("NODE-RAN")), (2, true), "an incomplete environment defers to Node: {err:?}");
+        return;
+    }
+    // warm the daemon: the first call goes through Node, later ones are answered by the daemon
+    let mut native = false;
+    for _ in 0..50 {
+        let (code, _, err) = e.run_with(&args, false, &p, true, &gate);
+        if code == 2 && !err.contains("NODE-RAN") {
+            native = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(native, "control: the warm daemon answers the gated Edit natively");
+    let (code, _, err) = broken(&e);
+    e.stop();
+    assert_eq!((code, err.contains("NODE-RAN")), (2, true), "daemon: an incomplete environment defers to Node: {err:?}");
+}
+
+#[test]
+fn an_environment_dropped_over_the_cap_defers_the_env_reading_checks_in_process() {
+    assert_env_incomplete_defers("capdrop-ip", true);
+}
+
+#[test]
+fn an_environment_dropped_over_the_cap_defers_the_env_reading_checks_through_the_daemon() {
+    assert_env_incomplete_defers("capdrop-d", false);
+}
+
+#[test]
+fn an_empty_home_defers_the_env_reading_checks_in_process_and_through_the_daemon() {
+    for in_process in [true, false] {
+        let e = Env::new(if in_process { "emptyhome-ip" } else { "emptyhome-d" });
+        let map = pretool_map(&e, &[("ship-it-guard", NODE_SHIPIT)], "true");
+        let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+        let p = shipit_edit(&e);
+        let extra = [("ANTIHALL_SHIPIT_GATE", "1"), ("HOME", "")];
+        for _ in 0..if in_process { 1 } else { 12 } {
+            let (code, _, err) = e.run_with(&args, in_process, &p, true, &extra);
+            assert_eq!((code, err.contains("NODE-RAN")), (2, true), "an empty HOME defers to Node (in_process={in_process}): {err:?}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        e.stop();
+    }
+}
+
+/// Review P1: a check that records a spawn and then answers "nothing to say" must answer `Allow`, never `None` (which the
+/// dispatcher hands to the Node hook, and the Node hook records the same spawn a second time: the rate cap was effectively
+/// halved). One Agent call through the real dispatcher, with the real Node hooks behind every entry that defers, writes exactly
+/// one line to the swarm spawn log and one to the phase tracker's agent log.
+#[test]
+fn one_agent_call_records_exactly_one_spawn_per_log() {
+    if Command::new("node").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        eprintln!("skipped: no node on PATH (the real Node hooks are the oracle for a double record)");
+        return;
+    }
+    let e = Env::new("spawn-once");
+    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    let home = e.dir.join("home");
+    let payload = serde_json::json!({
+        "session_id": "once", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Agent",
+        "tool_input": {"description": "read a file", "prompt": "read README.md and report its first line", "subagent_type": "Explore", "model": "haiku"}
+    })
+    .to_string();
+    for in_process in [true, false] {
+        let _ = std::fs::remove_dir_all(home.join(".anti-hall"));
+        let calls = 3;
+        for _ in 0..calls {
+            let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+            c.args(["hook", "--event", "PreToolUse"])
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", &home)
+                .env("AH_ENGINE_DIR", e.state())
+                .env("AH_ENGINE_VERSION", "dispatch-e2e")
+                .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
+                .env("AH_ENGINE_NOSPAWN", if in_process { "0" } else { "1" })
+                .env("CLAUDE_PLUGIN_ROOT", &plugin)
+                .env("ANTIHALL_INGEST_DRY_RUN", "1")
+                .current_dir(&e.dir)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut ch = c.spawn().unwrap();
+            ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+            let o = ch.wait_with_output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+        }
+        let lines = |rel: &str| std::fs::read_to_string(home.join(rel)).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+        let mode = if in_process { "checks answer in the client" } else { "checks down (every entry runs its Node hook)" };
+        assert_eq!(lines(".anti-hall/swarm-spawns.log"), calls, "swarm-spawns.log, {mode}");
+        assert_eq!(lines(".anti-hall/agent-spawns.log"), calls, "agent-spawns.log, {mode}");
     }
 }

@@ -251,7 +251,9 @@ fn merge_objects(active: &[&Res], lenient: bool) -> Merged {
     for (k, v) in &hso {
         match k.as_str() {
             "additionalContext" => {
-                out_h.insert(k.clone(), json!(contexts.join("\n\n")));
+                // deliberate difference from the old registry (DECISIONS 1.78): an empty context adds no joiner, or a quiet hook
+                // among talkative ones would deliver "\n\n" of nothing
+                out_h.insert(k.clone(), json!(contexts.iter().filter(|c| !c.is_empty()).cloned().collect::<Vec<_>>().join("\n\n")));
             }
             "permissionDecision" => {
                 if let Some(d) = &decision {
@@ -490,6 +492,13 @@ impl Rig {
             ("AH_ENGINE_VERSION", "flip-parity".to_string()),
             ("AH_ENGINE_DISPATCH_IN_PROCESS", "1".to_string()),
         ];
+        if row.class == "fuzz" {
+            // checks down: no built-in check answers (the daemon is never started), every entry runs as its fake Node hook, so
+            // the merge, cap and decision logic is fuzzed on every (event, tool), whichever entries have a check by now
+            extra.retain(|(k, _)| *k != "AH_ENGINE_DISPATCH_IN_PROCESS");
+            extra.push(("AH_ENGINE_DISPATCH_IN_PROCESS", "0".to_string()));
+            extra.push(("AH_ENGINE_NOSPAWN", "1".to_string()));
+        }
         if row.fakes.is_some() {
             let (list, map) = self.fake_files(row.host);
             extra.push(("AH_FALLBACK_LIST", list.display().to_string()));
@@ -728,7 +737,7 @@ fn fuzz_spec(r: &mut Lcg, event: &str) -> Spec {
     }
 }
 
-/// (event, tool or payload fields) combinations whose entries have no built-in check, so every entry runs as a fake.
+/// Every (event, tool or payload fields) combination the table has entries for; each entry runs as a fake (checks down).
 fn fake_targets(host: &str) -> Vec<(String, Value)> {
     let mut v = Vec::new();
     for ev in table::events(host) {
@@ -757,12 +766,12 @@ fn fake_targets(host: &str) -> Vec<(String, Value)> {
             }
             for tool in tools {
                 let sel = table::entries(host, ev).into_iter().filter(|e| matches(host, &e.matcher, std::slice::from_ref(&tool))).collect::<Vec<_>>();
-                if sel.iter().any(|e| e.check.is_some()) || sel.is_empty() {
-                    continue; // a built-in check answers there: the recorded-command corpus covers it with the real hooks
+                if sel.is_empty() {
+                    continue;
                 }
                 v.push((ev.to_string(), json!({"tool_name": tool})));
             }
-        } else if entries.iter().all(|e| e.check.is_none()) && !entries.is_empty() {
+        } else if !entries.is_empty() {
             let extra = match ev {
                 "SessionStart" => json!({"source": "startup"}),
                 "SubagentStart" | "SubagentStop" => json!({"agent_type": "general-purpose"}),

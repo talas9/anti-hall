@@ -309,7 +309,8 @@ scripts** (`codex/hooks/hooks.json` points at `${PLUGIN_ROOT}/hooks/*.js`).
   version (`tests/hygiene/manifest-drift.test.js`).
 - **Hook set.** Every Claude hook is on Codex too, unless `CLAUDE_ONLY_ALLOWLIST` in
   `manifest-drift.test.js` gives a reason; stale allowlist entries also fail.
-- **Installer.** `install-codex.js` registers the same files as the Codex template
+- **Installer.** `install-codex.js` writes the generated Codex `hooks.json` (one wrapper call per event, built from
+  `ah-engine/defaults/dispatch.toml`) with `${PLUGIN_ROOT}` resolved to the checkout
   (`tests/codex/codex-hook-parity.test.js`).
 - **Stop behaviour.** The shared Stop hooks run and fail open on a Codex-shaped payload
   (`tests/codex/codex-jev-hooks-parity.test.js`).

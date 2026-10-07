@@ -57,6 +57,48 @@ pub(crate) fn read_object(st: &Settings, rel: &str) -> Option<serde_json::Map<St
     }
 }
 
+type FileVerdicts = std::collections::HashMap<String, (std::time::SystemTime, u64, bool)>;
+
+/// D74: a settings file that EXISTS but that `serde_json` cannot parse while JavaScript could (a number outside the f64 range, nesting past serde's limit, a lone surrogate escape) must
+/// not be read as missing: the opt-in modes it carries (a block mode, say) would be ignored and the engine would allow what Node
+/// blocks. True when any of the files the switch chain reads is such a file; every check then defers to Node (the dispatcher asks
+/// before it runs a check). Cached per file by modification time and length, so a request costs one `stat` per file.
+pub fn unreadable_settings_file(home: &str) -> bool {
+    static SEEN: std::sync::Mutex<Option<FileVerdicts>> = std::sync::Mutex::new(None);
+    if home.is_empty() {
+        return false;
+    }
+    for key in ["guardkit.settings_file", "guardkit.claude_settings_file", "guardkit.skip_file", "guardkit.migration_markers_file", "guardkit.jev_legacy_file"]
+    {
+        let path = format!("{home}/{}", defaults::text(key));
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        let (mtime, len) = (meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len());
+        let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = g.get_or_insert_with(Default::default);
+        if let Some((m, l, bad)) = seen.get(&path)
+            && *m == mtime
+            && *l == len
+        {
+            if *bad {
+                return true;
+            }
+            continue;
+        }
+        drop(g);
+        let bad = std::fs::read(&path).ok().is_some_and(|b| crate::checks::guardkit::jsdiff::js_reads_differently(&b));
+        let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = g.get_or_insert_with(Default::default);
+        if seen.len() > 256 {
+            seen.clear();
+        }
+        seen.insert(path, (mtime, len, bad));
+        if bad {
+            return true;
+        }
+    }
+    false
+}
+
 /// `readStoredPluginOptions`: the options the host stored for this plugin, flat and nested forms merged.
 pub(crate) fn stored_options(st: &Settings) -> Option<serde_json::Map<String, Value>> {
     let host = read_object(st, defaults::text("guardkit.claude_settings_file"))?;

@@ -69,6 +69,10 @@ value = ".claude-plugin/plugin.json"
 doc = "The per-migration marker file, relative to the home directory."
 value = ".anti-hall/update-sweep-state.json"
 
+[guardkit.jev_legacy_file]
+doc = "The legacy Jev settings file (settings.js reads it below settings.json for the Jev keys), relative to the home directory."
+value = ".anti-hall/jev.json"
+
 [guardkit.settings_migration_key]
 doc = "Key of the marker that says the legacy settings were forward-migrated into settings.json for a plugin version."
 value = "migrateSettingsFromLegacy"
@@ -1307,7 +1311,7 @@ value = ["sessions", "calls", "work", "blocks", "skippedWouldBlock"]
 
 [merge_gate.summary]
 doc = "One-line description of the merge-gate check in the generated reference."
-value = "Opt-in false-done backstop: answers every Bash call the Node merge-gate would allow (gate off, not an auto-merge command, no transcript, no hedge phrase in the recent assistant text) and defers the rest, so a possible block and its Jev shadow ask stay with the Node hook (port of merge-gate.js)."
+value = "Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js)."
 
 [merge_gate.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -1331,6 +1335,59 @@ value = ["pending owner", "do not merge", "pending review", "needs your review",
 [merge_gate.hedge_patterns]
 doc = "Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output."
 value = ['first[- ]pass', 'not pixel[- ]perfect']
+
+[merge_gate.resolutions]
+doc = "Phrases that resolve a hedge when a REAL user prompt typed after the hedge contains one (case-insensitive plain text); the assistant can never clear its own hedge."
+value = ["owner approved", "owner signed off", "sign-off received", "fidelity verified", "verified against", "resolved:"]
+
+[merge_gate.injected_user]
+doc = "Regex source (case-insensitive) of the user-role bodies that are not a human typing (task notifications, system reminders, hook feedback, cross-session messages)."
+value = '^\s*(<(task-notification|system-reminder|command-name|command-message|local-command|user-prompt-submit-hook|cross-session-message)\b|Stop hook feedback:)|Another Claude session sent a message|<cross-session-message\b'
+
+[merge_gate.system_reminder]
+doc = "Regex source (case-insensitive) of a system-reminder block, removed from a user prompt before it is judged."
+value = '<system-reminder>[\s\S]*?<\/system-reminder>'
+
+[merge_gate.non_human_origins]
+doc = "The origin kinds of a user record that still count as a human typing."
+value = ["human", "user"]
+
+[merge_gate.jev_id]
+doc = "The Jev integration id of the shadow question asked when a hedge is found on a merge command."
+value = "mergeGateHedge"
+
+[merge_gate.jev_instructions]
+doc = "The Noul question text of the mergeGateHedge shadow ask (byte-identical to the Node gate's)."
+value = 'Does the recent reply text below contain an UNRESOLVED self-hedge (e.g. "pending review", "first-pass", "do not merge") that was never followed by a resolution/sign-off?'
+
+[merge_gate.jev_true]
+doc = "The label for a true answer of the mergeGateHedge question."
+value = "unresolved hedge present"
+
+[merge_gate.jev_false]
+doc = "The label for a false answer of the mergeGateHedge question."
+value = "no unresolved hedge"
+
+[merge_gate.jev_state_chars]
+doc = "How many trailing UTF-16 units of the assistant text the mergeGateHedge ask evaluates (Node: text.slice(-4000))."
+value = 4000
+min = 1
+
+[merge_gate.msg_what]
+doc = "The block message's first line; {hedge} is the last hedge phrase found."
+value = 'auto-merge blocked: your recent output flagged a deliverable as pending/unverified ("{hedge}").'
+
+[merge_gate.msg_why]
+doc = "The block message's reason."
+value = "A self-issued hedge blocks auto-merge (false-done backstop)."
+
+[merge_gate.msg_instead]
+doc = "The block message's alternative."
+value = "verify it against its agreed criterion or get owner sign-off, then merge."
+
+[merge_gate.msg_override]
+doc = "The block message's override line."
+value = "set ANTIHALL_MERGE_GATE=off, or skip merge-gate"
 
 [merge_gate.segment_split]
 doc = "Regex source that splits a Bash command into the segments the auto-merge scan looks at (shell separators; quotes are not honoured, on purpose, as in the Node gate)."
@@ -1491,3 +1548,48 @@ value = "terminal_ide_"
 [coordinator_work.codex_tool]
 doc = "The tool name only Codex sends; a payload naming it is a Codex payload."
 value = "apply_patch"
+# ---- DevSwarm prompt gates (hooks/devswarm-parent-inbox.js, hooks/devswarm-child-turn.js) -------------------------------
+
+[devswarm_prompt.parent_summary]
+doc = "One-line description of the devswarm-parent-inbox check in the generated reference."
+value = "DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js)."
+
+[devswarm_prompt.child_summary]
+doc = "One-line description of the devswarm-child-turn check in the generated reference."
+value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js)."
+
+[devswarm_prompt.parent_setting]
+doc = "Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+value = { section = "devswarm", key = "parentInbox", env = "", aliases = [], option = "devswarm_parent_inbox", default = true }
+
+[devswarm_prompt.child_setting]
+doc = "Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+value = { section = "devswarm", key = "childTurn", env = "", aliases = [], option = "devswarm_child_turn", default = true }
+
+[devswarm_prompt.judge_env]
+doc = "Environment variable that marks a Jev judge child process; its hooks do nothing (hooks/lib/judge-child-exit.js). Only the exact value in judge_value counts."
+value = "ANTIHALL_JUDGE_CHILD"
+
+[devswarm_prompt.judge_value]
+doc = "The value of judge_env that silences the hook."
+value = "1"
+
+[devswarm_prompt.kill_env]
+doc = "Hard kill switch of the DevSwarm integration (hooks/lib/devswarm-detect.js): the exact value in kill_value makes the integration inactive."
+value = "DISABLE_ANTIHALL_DEVSWARM"
+
+[devswarm_prompt.kill_value]
+doc = "The value of kill_env that deactivates the DevSwarm integration."
+value = "1"
+
+[devswarm_prompt.repo_env]
+doc = "Environment variable whose non-blank value makes the DevSwarm integration active in auto mode."
+value = "DEVSWARM_REPO_ID"
+
+[devswarm_prompt.branch_env]
+doc = "Environment variable whose non-blank value marks a child workspace (hooks/lib/devswarm-role.js)."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+[devswarm_prompt.mode_setting]
+doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset, as in hooks/lib/settings.js)."
+value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", manifest_default = "auto", values = ["auto", "on", "off"] }

@@ -294,54 +294,6 @@ impl Settings {
         true
     }
 
-    /// Can the Jev add-block consult for `gitGuardSelfCredit` change a verdict? Only when Jev is enabled AND this
-    /// integration's mode is `on` (the default `shadow` never changes an outcome). Env > settings.json > jev.json.
-    pub fn jev_self_credit_on(&self) -> bool {
-        let read = |rel: &str| -> Option<serde_json::Value> {
-            if self.home.is_empty() {
-                return None;
-            }
-            std::fs::read_to_string(format!("{}/{rel}", self.home)).ok().and_then(|t| serde_json::from_str(&t).ok())
-        };
-        let settings = read(&tables().settings_file);
-        let jevjson = read(&tables().jev_file);
-        let on = |v: Option<&serde_json::Value>| {
-            matches!(v, Some(serde_json::Value::Bool(true))) || v.and_then(|x| x.as_str()).is_some_and(|x| bool_token(x) == Some(true))
-        };
-        let jn = &tables().jev;
-        let mut enabled = on(jevjson.as_ref().and_then(|j| j.get(&jn.enabled_key))) || self.env.get(&jn.env_enabled).is_some_and(|v| v == "1");
-        if let Some(v) = settings.as_ref().and_then(|j| j.get(&jn.section)).and_then(|j| j.get(&jn.enabled_key)) {
-            enabled = on(Some(v));
-        }
-        if let Some(v) = self.env.get(&jn.env_enabled)
-            && v == "0"
-        {
-            enabled = false;
-        }
-        if !enabled {
-            return false;
-        }
-        if self.env.get(&jn.env_integration).is_some_and(|v| v == "0") {
-            return false;
-        }
-        let mode = settings
-            .as_ref()
-            .and_then(|j| j.get(&jn.integrations_key))
-            .and_then(|j| j.get(&jn.integration))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .or_else(|| self.env.get(&jn.env_integration).cloned())
-            .or_else(|| {
-                jevjson
-                    .as_ref()
-                    .and_then(|j| j.get(&jn.jev_json_integrations))
-                    .and_then(|j| j.get(&jn.integration))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            });
-        mode.as_deref() == Some(jn.mode_on.as_str())
-    }
-
     /// skip-guard.js `isSkipped('git-guard')`.
     pub fn is_skipped(&self, name: &str) -> bool {
         if self.home.is_empty() {

@@ -2,6 +2,7 @@
 //! (verified against the Node hook by `parity/run-git.js`; these pin the behaviour without Node).
 use super::util::Settings;
 use super::*;
+use serde_json::json;
 use std::collections::HashMap;
 
 /// One private home per test thread, so the skip-file test cannot leak into the others.
@@ -161,4 +162,97 @@ fn escaped_literal_newline_and_comment_edge_cases() {
     allowed("echo 'a' # git push --force");
     blocked(&format!("git {P} \\\n  {F}"));
     blocked(&format!("echo \\>| git {P} {F}"));
+}
+
+mod jev_self_credit {
+    use super::*;
+    use crate::jev::testkit::{Fake, install_scripted, log_rows, ok};
+    use std::sync::Arc;
+
+    const ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
+
+    fn home(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ah-gg-jev-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn settings(h: &std::path::Path, extra: &[(&str, &str)]) -> Settings {
+        let mut env: HashMap<String, String> = ON.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        env.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        Settings { home: h.to_string_lossy().into_owned(), env }
+    }
+
+    fn on_mode(h: &std::path::Path) {
+        std::fs::create_dir_all(h.join(".anti-hall")).unwrap();
+        std::fs::write(h.join(".anti-hall/settings.json"), r#"{"jevIntegrations":{"gitGuardSelfCredit":"on"}}"#).unwrap();
+    }
+
+    fn lane(h: &std::path::Path, script: Vec<Result<crate::jev::transport::RawResponse, crate::jev::transport::NetError>>) -> Arc<Fake> {
+        install_scripted(h, &ON, script).1
+    }
+
+    const PARAPHRASE: &str = r#"git commit -m "written with help from the assistant""#;
+
+    fn conf(p: f64) -> Result<crate::jev::transport::RawResponse, crate::jev::transport::NetError> {
+        ok(200, &format!(r#"{{"answers":{{"decision":{{"noul":{p}}}}}}}"#))
+    }
+
+    #[test]
+    fn in_on_mode_a_confident_paraphrase_adds_a_block_at_the_commit_site() {
+        let h = home("on");
+        on_mode(&h);
+        lane(&h, vec![conf(0.97)]);
+        let v = check_with_session(settings(&h, &[]), PARAPHRASE, Some("/tmp"), "/plugin", Some("sess"));
+        let Verdict::Block(m) = v else { panic!("expected a block, got {v:?}") };
+        assert!(m.contains("a commit message that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked."), "{m}");
+        let rows = log_rows(&h);
+        assert_eq!(
+            (rows.len(), &rows[0]["id"], &rows[0]["mode"], &rows[0]["base"], &rows[0]["final"], &rows[0]["sessionId"]),
+            (1, &json!("gitGuardSelfCredit"), &json!("on"), &json!(false), &json!(true), &json!("sess"))
+        );
+    }
+
+    #[test]
+    fn in_the_default_shadow_mode_the_ask_is_logged_and_never_changes_the_verdict() {
+        let h = home("shadow");
+        let fake = lane(&h, vec![conf(0.99)]);
+        assert_eq!(check_with(settings(&h, &[]), PARAPHRASE, Some("/tmp"), "/plugin"), Verdict::Allow);
+        assert_eq!(fake.seen.lock().unwrap().len(), 1);
+        assert_eq!(log_rows(&h)[0]["mode"], json!("shadow"));
+    }
+
+    #[test]
+    fn a_text_is_asked_once_per_command_and_at_most_eight_distinct_texts_are_asked() {
+        let h = home("cap");
+        let fake = lane(&h, (0..20).map(|_| conf(0.01)).collect());
+        let one = format!("{PARAPHRASE}; {PARAPHRASE}; {PARAPHRASE}");
+        assert_eq!(check_with(settings(&h, &[]), &one, Some("/tmp"), "/plugin"), Verdict::Allow);
+        assert_eq!(fake.seen.lock().unwrap().len(), 1, "the same text is answered from the memo");
+        let many: Vec<String> = (0..12).map(|i| format!(r#"git commit -m "note {i}""#)).collect();
+        assert_eq!(check_with(settings(&h, &[]), &many.join("; "), Some("/tmp"), "/plugin"), Verdict::Allow);
+        assert_eq!(fake.seen.lock().unwrap().len(), 1 + 8, "past the cap the regex verdict stands without asking");
+    }
+
+    #[test]
+    fn a_regex_hit_never_asks_and_a_failed_ask_leaves_the_verdict_alone() {
+        let h = home("regex");
+        on_mode(&h);
+        let fake = lane(&h, vec![]);
+        let credit = format!(r#"git commit -m "x\n\n{CO}: Claude <noreply@anthropic.com>""#);
+        assert!(matches!(check_with(settings(&h, &[]), &credit, Some("/tmp"), "/plugin"), Verdict::Block(_)));
+        assert!(fake.seen.lock().unwrap().is_empty(), "the regex block returns before the consult");
+        assert_eq!(check_with(settings(&h, &[]), PARAPHRASE, Some("/tmp"), "/plugin"), Verdict::Allow, "no answer: fail open");
+    }
+
+    #[test]
+    fn a_gh_body_is_consulted_too() {
+        let h = home("gh");
+        on_mode(&h);
+        lane(&h, vec![conf(0.97)]);
+        let v = check_with(settings(&h, &[]), r#"gh pr create --title t --body "co-written by an assistant""#, Some("/tmp"), "/plugin");
+        let Verdict::Block(m) = v else { panic!("expected a block, got {v:?}") };
+        assert!(m.contains("a gh pr/issue/release body or title appears to credit an AI assistant"), "{m}");
+    }
 }

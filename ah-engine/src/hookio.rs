@@ -165,7 +165,7 @@ fn quiet_exact(x: &checks::Exact) -> bool {
 
 /// Run a built-in check by name; `None` when it is unknown or does not apply to this payload.
 fn builtin(rule: &crate::rules::Rule, s: &Subject, payload: &Value, env: &RequestEnv) -> Option<Verdict> {
-    checks::get(rule.check.as_deref()?)?.run_env(s, payload, &rule.options, env)
+    checks::run_env_guarded(checks::get(rule.check.as_deref()?)?, s, payload, &rule.options, env)
 }
 
 #[cfg(test)]

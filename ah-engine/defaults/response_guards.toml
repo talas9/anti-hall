@@ -108,7 +108,7 @@ value = '^\s*<(?:task-notification|system-reminder|local-command|command-name|co
 
 [speculation_guard.summary]
 doc = "One-line description of the speculation-guard check in the generated reference."
-value = "Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag; answers while Jev is off and leaves every Jev path to Node (port of speculation-guard.js)."
+value = "Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair (port of speculation-guard.js)."
 
 [speculation_guard.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -259,6 +259,93 @@ value = "Unverified claims read as facts."
 doc = "Block advice."
 value = "verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue."
 
+[speculation_guard.jev_id]
+doc = "The Jev integration id of the speculation question (add-block trust)."
+value = "speculation"
+
+[speculation_guard.jev_framed_id]
+doc = "The Jev integration id of the framed-expectation question (relax-block trust)."
+value = "speculationFramed"
+
+[speculation_guard.jev_instructions]
+doc = "The Noul question of the speculation ask (byte-identical to the Node hook's JEV_QUESTION)."
+value = "Is this assistant message speculative, i.e. does it assert a cause or an outcome about the project without cited evidence?"
+
+[speculation_guard.jev_true]
+doc = "The label for a true answer of the speculation question."
+value = "Speculative: it asserts a cause, a fix, or a done/works/passes/resolved outcome about the project with no cited command output, test result, or file:line reference. Hedged guesses (\"probably\", \"should work\", \"I think\", \"it seems\") and confident but unsupported statements (\"Fixed.\", \"All done\") are both speculative."
+
+[speculation_guard.jev_false]
+doc = "The label for a false answer of the speculation question."
+value = "Not speculative: it reports what a tool actually showed (command output such as \"12 pass, 0 fail\", a commit hash, grep results, a file:line reference like src/app.js:42); or it honestly says something is not yet verified and names the check to run; or it makes no claim about the project at all (a question, a plan, code the user asked for, general technical knowledge, an explicit hypothetical, or small talk)."
+
+[speculation_guard.framed_instructions]
+doc = "The Noul question of the framed-expectation ask (byte-identical to the Node hook's FRAMED_JEV_QUESTION)."
+value = "This hedge sits under a heading or line labelled as a plan/expectation (e.g. \"Expected\", \"Plan\", \"Should be blocked:\", \"Unverified\", \"not yet measured\"). Is it still an unverified claim about the project's CURRENT/actual state presented as fact, or is it a stated expectation/plan/acceptance-criterion for work not yet done or measured?"
+
+[speculation_guard.framed_true]
+doc = "The label for a true answer of the framed-expectation question."
+value = "Unverified claim presented as fact: despite the label, it asserts what IS true right now about the project (a cause, a fix, a done/works/passes outcome) with no cited evidence — the framing is decorative, not honest."
+
+[speculation_guard.framed_false]
+doc = "The label for a false answer of the framed-expectation question."
+value = "Genuine expectation/plan: a test-plan entry, acceptance criterion, or hypothesis about future or hypothetical work (\"Should be blocked: X\", \"Expected: Y\", \"not yet measured\") — not a claim about the project's actual current state."
+
+[speculation_guard.jev_state_chars]
+doc = "How many UTF-16 units of the reply the two Jev asks evaluate (Node: jevText.slice(0, 8000))."
+value = 8000
+min = 1
+
+[speculation_guard.judge_log]
+doc = "The speculation guard's own Jev decision log, relative to the anti-hall home directory (Node: logs/jev-judge.ndjson); holds no message text and no key."
+value = "logs/jev-judge.ndjson"
+
+[speculation_guard.judge_log_max_bytes]
+doc = "The judge log is emptied before an append once it is larger than this (Node: JEV_LOG_MAX_BYTES)."
+value = 1048576
+unit = "bytes"
+min = 1024
+
+[speculation_guard.frame_label]
+doc = "Regex source of the labels that frame a hedge as an expectation or a plan (Node: FRAME_LABEL_CORE)."
+value = '(?:expected|plan|should\s+be\s+\w+|should\s+still(?:\s+\w+)?|unverified|not\s+yet\s+measured)'
+
+[speculation_guard.frame_line_prefix]
+doc = "Regex source of a line that starts with a frame label, with an optional list marker (the token LABEL is replaced by frame_label); case-insensitive."
+value = '^\s*(?:(?:[-*+\u2022]|\d+[.)])\s+)?LABEL\s*[:)]'
+
+[speculation_guard.frame_heading]
+doc = "Regex source of a markdown heading line; group 1 is its text."
+value = '^\s*#{1,6}\s+(.+?)\s*#*\s*$'
+
+[speculation_guard.frame_heading_label]
+doc = "Regex source (case-insensitive) a heading's text must start with to frame what is under it (the token LABEL is replaced by frame_label)."
+value = '^LABEL\b'
+
+[speculation_guard.frame_inline]
+doc = "Regex source (case-insensitive) of an inline frame on the hit's own line."
+value = '\(unverified\)|\bnot yet measured\b'
+
+[speculation_guard.msg_what_jev]
+doc = "Block headline when Jev added the block."
+value = "your reply asserts a cause or outcome without citing evidence (command output, a test result, or a file:line reference)."
+
+[speculation_guard.outcome_override]
+doc = "Outcome recorded for the previous block when the user skipped the guard."
+value = "user-override"
+
+[speculation_guard.outcome_evidence]
+doc = "Outcome recorded for the previous block when this reply carries an acknowledgment."
+value = "evidence-added"
+
+[speculation_guard.outcome_repeat]
+doc = "Outcome recorded for the previous block when this reply hedges again."
+value = "repeat-speculation"
+
+[speculation_guard.source_jev]
+doc = "The source recorded in the pending outcome of a block Jev added."
+value = "jev"
+
 # ---- speculation-judge (hooks/speculation-judge.js) -------------------------------------------------------
 
 [speculation_judge.summary]
@@ -289,7 +376,7 @@ value = "1"
 
 [claim_ledger.summary]
 doc = "One-line description of the claim-ledger check in the generated reference."
-value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; leaves the optional Jev shadow question to Node (port of claim-ledger.js)."
+value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js)."
 
 [claim_ledger.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -306,6 +393,18 @@ value = { section = "guards", key = "claimLedger", env = "", aliases = [], optio
 [claim_ledger.jev_id]
 doc = "The Jev integration id of the shadow question asked for each flagged claim."
 value = "claimLedger"
+
+[claim_ledger.jev_instructions]
+doc = "The Noul question text of the claimLedger shadow ask (byte-identical to the Node hook's)."
+value = "Is this claim unsupported by evidence in the message (no matching value/SHA/state appears anywhere in the session's own tool output and prior messages)?"
+
+[claim_ledger.jev_true]
+doc = "The label for a true answer of the claimLedger question."
+value = "unsupported by evidence"
+
+[claim_ledger.jev_false]
+doc = "The label for a false answer of the claimLedger question."
+value = "supported by evidence"
 
 [claim_ledger.dir]
 doc = "Directory of the ledger files under the state directory."
@@ -417,7 +516,7 @@ value = '\d[\d,]*(?:\.\d+)?'
 
 [output_verify.summary]
 doc = "One-line description of the output-verify-guard check in the generated reference."
-value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; leaves the optional Jev shadow question to Node (port of output-verify-guard.js)."
+value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js)."
 
 [output_verify.guard_name]
 doc = "The guard id this check answers to in skip.json, in messages and as the once-per-turn key."
@@ -442,6 +541,23 @@ value = { section = "guards", key = "outputVerifyOncePerTurn", env = "ANTIHALL_O
 [output_verify.jev_id]
 doc = "The Jev integration id of the shadow question asked for each test-runner output."
 value = "outputVerifyGuard"
+
+[output_verify.jev_instructions]
+doc = "The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's)."
+value = "Does this test-runner output show a GENUINELY mixed pass/fail result (some tests failed alongside others passing), as opposed to both words merely appearing in unrelated text?"
+
+[output_verify.jev_true]
+doc = "The label for a true answer of the outputVerifyGuard question."
+value = "genuinely mixed pass/fail"
+
+[output_verify.jev_false]
+doc = "The label for a false answer of the outputVerifyGuard question."
+value = "not a genuine mixed result"
+
+[output_verify.jev_state_chars]
+doc = "How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000))."
+value = 4000
+min = 1
 
 [output_verify.blob_fields]
 doc = "The payload fields the scanned text is built from, in order."

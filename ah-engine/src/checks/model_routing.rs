@@ -392,7 +392,8 @@ fn consult_model_routing_jev(corpus: &str, payload: &Value, st: &Settings, env: 
     if !jev_enabled_for_routing(st, env) {
         return false;
     }
-    let jev = Jev::new(Path::new(&st.home), jev_env(env));
+    // the shared lane: its cache, breaker and connection pool outlive this call
+    let jev = crate::jev::shared::lane(Path::new(&st.home), &jev_env(env));
     consult_model_routing_jev_with(corpus, payload, env, &jev)
 }
 
@@ -696,7 +697,7 @@ impl Check for ModelRouting {
 
     fn run_env(&self, _subject: &Subject<'_>, payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
         match std::panic::catch_unwind(|| decide_inner(payload, env)) {
-            Ok(v) => v,
+            Ok(v) => v.or(Some(Verdict::Allow)),
             Err(_) => Some(fail_closed()),
         }
     }
