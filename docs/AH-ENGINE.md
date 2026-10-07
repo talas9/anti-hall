@@ -104,8 +104,15 @@ labelled with how it was measured in the README of `ah-engine/`.
   whose decision needs a running-agent scan, to the Node hook (D74). `task-tracker` (UserPromptSubmit) stays on Node: its
   output depends on the emit-dedupe state, the Jev decision-log row written on every prompt and the agent scan, which are
   other lanes' ports.
+- **DevSwarm role ports.** `devswarm-child-role` (SessionStart) and `devswarm-parent-gate` (Stop) share
+  `checks/devswarm_role`. The Stop gate is a guard, so it is never weaker than Node (D74): the engine allows only where
+  the Node hook exits silently before reading any mailbox (switch off, user skip, supervisor inactive, a child
+  workspace, the judge child) and defers every session that could be blocked. The child-role check reproduces a child
+  workspace's directive byte for byte when the stable launchers it names already exist with the content Node would write,
+  and defers a Primary (seat adoption needs the DevSwarm CLI and the mailbox store, D45), a missing or stale launcher, and
+  anything it cannot prove identical. The engine never writes a launcher.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  fifty-six: `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` (see Task checks above), `devswarm-parent-inbox` and `devswarm-child-turn` (see DevSwarm prompt gates above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  fifty-eight: `devswarm-child-role` and `devswarm-parent-gate` (see DevSwarm role ports above), `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` (see Task checks above), `devswarm-parent-inbox` and `devswarm-child-turn` (see DevSwarm prompt gates above), the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -175,6 +182,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `dispatch-tier` check (PostToolUse on TaskCreate and TaskUpdate): the Node hook does nothing while the Jev `dispatchTier` integration is off, and so does the engine, with exact parity; with it on or in shadow the Node hook asks Jev and writes its state, so the engine defers | implemented | D29-D31, D74, D75 |
 | Built-in `task-guard` check (Stop): the Stops where no task is open (loop state removed, pruning advisory and unknown-state note printed exactly); every Stop with an open task, and every transcript record it cannot read exactly, defers to Node | implemented | D29-D31, D74, D75 |
 | Built-in `tasklist-guard` check (Stop): the Stops on which Node does not block, with its file effects (progress directory, progress and history indexes, the resume-verification marker and nudge, the plan-mode advisory); every Stop that would block defers to Node | implemented | D29-D31, D74, D75 |
+| Built-in `devswarm-child-role` check (SessionStart): a child workspace's mesh-only messaging and mailbox-wake directive, byte for byte, when the stable launchers are current; a Primary, a missing launcher and the rest defer to Node | implemented in part | D29-D31, D45, D74 |
+| Built-in `devswarm-parent-gate` check (Stop): the silent exits of the Node gate that happen before it reads any mailbox; every session that could be blocked defers to Node, so the gate is never weaker | implemented in part | D29-D31, D45, D74 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
@@ -544,6 +553,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `messages.toml` | every message the engine produces (failure hints, advisories, replies, errors, command-line text) |
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `task_guards.toml` | switches, limits, file layout and messages of the task checks and their shared helpers |
+| `devswarm_role.toml` | names, switches and message templates of the `devswarm-child-role` and `devswarm-parent-gate` checks |
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
