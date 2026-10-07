@@ -367,7 +367,7 @@ function cmdJudge(args, opts) {
   let hasKey = false;
   try { hasKey = !!require('../hooks/lib/credentials.js').resolveKey('anthropic', { env: process.env }).key; } catch (_) { /* unverifiable */ }
   const be = require('../hooks/lib/jev-assist.js').speculationBackend().backend;
-  const model = settings.get('jev', 'judgeModel', 'claude-haiku-4-5', opts);
+  const model = settings.get('jev', 'judgeModel', 'haiku', opts);
   const out = [];
   out.push('judge: ' + (on ? 'on' : 'off') + (verb === 'off' && on ? ' (still on via env ANTIHALL_SEMANTIC_JUDGE)' : ''));
   const jb = settings.get('jev', 'judgeBackend', 'api', opts);

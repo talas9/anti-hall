@@ -81,8 +81,8 @@ Respond with ONLY valid JSON, no prose, no markdown fences:
 // ANTIHALL_JUDGE_MODEL > settings.json > /config > default), fail-open to the
 // historical env-or-default read.
 function judgeModel() {
-  try { return String(require('./settings.js').get('jev', 'judgeModel') || '').trim() || 'claude-haiku-4-5'; }
-  catch (_) { return process.env.ANTIHALL_JUDGE_MODEL || 'claude-haiku-4-5'; }
+  try { return String(require('./settings.js').get('jev', 'judgeModel') || '').trim() || 'haiku'; }
+  catch (_) { return process.env.ANTIHALL_JUDGE_MODEL || 'haiku'; }
 }
 
 function callHaiku(text, apiKey, timeoutMs) {

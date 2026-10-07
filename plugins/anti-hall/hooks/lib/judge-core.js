@@ -140,7 +140,7 @@ function runCliJudge(o) {
     try {
       if (!opts.cwd) ownDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-judge-'));
       const env = Object.assign({}, opts.env || process.env, { ANTIHALL_JUDGE_CHILD: '1' });
-      child = spawn(opts.bin || 'claude', cliArgs(opts.model || 'claude-haiku-4-5'), {
+      child = spawn(opts.bin || 'claude', cliArgs(opts.model || 'haiku'), {
         env, cwd: opts.cwd || ownDir, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
       });
     } catch (_) {

@@ -32,7 +32,7 @@
 //
 // COST / LATENCY
 //   One model call per Stop event (only when enabled). api: ~$0.0001-0.001 per
-//   turn at claude-haiku-4-5 rates, ~1-3 s (estimate). cli: no API bill (it uses
+//   turn at haiku rates, ~1-3 s (estimate). cli: no API bill (it uses
 //   the Claude login's own usage), ~5-6 s per turn end (measured, claude 2.1.288).
 //   Measured precision on eval/inference-bench.js: 0.78-0.81, recall 1.0 (three
 //   runs) — why the judge stays opt-in.
@@ -185,8 +185,8 @@ function extractLastAssistantText(transcriptPath) {
 // ANTIHALL_JUDGE_MODEL > settings.json > /config > default), fail-open to the
 // historical env-or-default read.
 function judgeModel() {
-  try { return String(require('./lib/settings.js').get('jev', 'judgeModel') || '').trim() || 'claude-haiku-4-5'; }
-  catch (_) { return process.env.ANTIHALL_JUDGE_MODEL || 'claude-haiku-4-5'; }
+  try { return String(require('./lib/settings.js').get('jev', 'judgeModel') || '').trim() || 'haiku'; }
+  catch (_) { return process.env.ANTIHALL_JUDGE_MODEL || 'haiku'; }
 }
 
 function callAnthropicAPI(judgeInput, apiKey, timeoutMs) {
