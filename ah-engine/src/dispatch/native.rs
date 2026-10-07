@@ -193,6 +193,18 @@ mod tests {
         assert_eq!(got.iter().find(|(id, _)| id == "ship-it-guard").unwrap().1, Answer::Defer);
     }
 
+    /// Replay payload L3 (a force push): Node's command-guard blocks it as a state-changing remote command. The
+    /// engine's `command` check cannot prove Node allows it, so it defers (the Node hook still runs and blocks); it must
+    /// never answer allow for it (D74). The git check blocks it natively.
+    #[test]
+    fn a_force_push_is_never_a_native_allow_for_the_command_guard() {
+        let cmd = ["git push", "--force", "origin main"].join(" ");
+        let p = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}});
+        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        assert_eq!(got.iter().find(|(id, _)| id == "command-guard").unwrap().1, Answer::Defer);
+        assert!(matches!(&got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Decided(r, _) if r.code == Some(2)));
+    }
+
     #[test]
     fn an_exact_verdict_becomes_the_entrys_exact_bytes() {
         let x = crate::checks::Exact::json_block("stop");
