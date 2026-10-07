@@ -73,7 +73,7 @@ pub(crate) fn now_ms() -> f64 {
 
 /// `fs.readFileSync(path, 'utf8')`: `None` on any error (absent, a directory, unreadable).
 pub(crate) fn read_text(path: &str) -> Option<String> {
-    std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+    std::fs::read(path).ok().map(|b| crate::checks::guardkit::text::lossy_owned(b))
 }
 
 /// `path.join(a, b)` for two path strings.

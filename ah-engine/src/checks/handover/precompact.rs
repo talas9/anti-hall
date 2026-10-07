@@ -56,7 +56,7 @@ pub fn read_tail(path: &str) -> Option<Vec<String>> {
     let mut buf = vec![0u8; n as usize];
     let got = f.read(&mut buf).ok()?;
     buf.truncate(got);
-    let text = String::from_utf8_lossy(&buf).into_owned();
+    let text = crate::checks::guardkit::text::lossy_owned(buf);
     let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
     if size > n {
         lines.remove(0);

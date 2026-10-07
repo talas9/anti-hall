@@ -130,7 +130,7 @@ fn read_tail(path: &str, window: u64) -> Tail {
     };
     match read() {
         Ok((bytes, truncated)) => {
-            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let text = crate::checks::guardkit::text::lossy_owned(bytes);
             if truncated {
                 // the first line of a cut window is likely partial: drop it, as Node does
                 Tail::Data(text.split_once('\n').map_or(String::new(), |(_, rest)| rest.to_string()))

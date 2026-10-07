@@ -8,7 +8,7 @@ pub fn read_tail(path: &str, window: u64) -> Option<(String, bool)> {
     let size = std::fs::metadata(path).ok()?.len();
     if size <= window {
         let bytes = std::fs::read(path).ok()?;
-        return Some((String::from_utf8_lossy(&bytes).into_owned(), false));
+        return Some((crate::checks::guardkit::text::lossy_owned(bytes), false));
     }
     let mut f = std::fs::File::open(path).ok()?;
     f.seek(SeekFrom::Start(size - window)).ok()?;
@@ -22,7 +22,7 @@ pub fn read_tail(path: &str, window: u64) -> Option<(String, bool)> {
         }
     }
     buf.truncate(got);
-    Some((String::from_utf8_lossy(&buf).into_owned(), true))
+    Some((crate::checks::guardkit::text::lossy_owned(buf), true))
 }
 
 /// The lines of a tail the way `data.split(/\r?\n/)` gives them, the possibly partial first line dropped when the file was cut.

@@ -11,7 +11,7 @@ pub fn mtime_ms(m: &fs::Metadata) -> f64 {
 
 /// `fs.readFileSync(p, 'utf8')`: invalid UTF-8 becomes U+FFFD, as Node's decoder does.
 pub fn read_utf8(p: &str) -> Option<String> {
-    fs::read(p).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+    fs::read(p).ok().map(|b| crate::checks::guardkit::text::lossy_owned(b))
 }
 
 /// Directory entry names in the order `fs.readdirSync` returns them: libuv sorts the names bytewise.

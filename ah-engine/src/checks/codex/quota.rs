@@ -275,5 +275,5 @@ fn read_tail(path: &str, n: u64) -> Option<String> {
     f.seek(SeekFrom::Start(size - len)).ok()?;
     let mut buf = vec![0u8; len as usize];
     f.read_exact(&mut buf).ok()?;
-    Some(String::from_utf8_lossy(&buf).into_owned())
+    Some(crate::checks::guardkit::text::lossy_owned(buf))
 }

@@ -49,13 +49,13 @@ fn read_tail(path: &str) -> Option<(String, bool)> {
     if size <= window {
         let mut b = Vec::new();
         f.read_to_end(&mut b).ok()?;
-        return Some((String::from_utf8_lossy(&b).into_owned(), false));
+        return Some((crate::checks::guardkit::text::lossy_owned(b), false));
     }
     f.seek(SeekFrom::Start(size - window)).ok()?;
     let mut b = vec![0u8; window as usize];
     let n = f.read(&mut b).ok()?;
     b.truncate(n);
-    Some((String::from_utf8_lossy(&b).into_owned(), true))
+    Some((crate::checks::guardkit::text::lossy_owned(b), true))
 }
 
 /// `collectTU`: every `tool_use` node under `node`, parents before children.

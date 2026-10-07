@@ -13,6 +13,15 @@ pub fn is_js_space(c: char) -> bool {
     )
 }
 
+/// `Buffer.toString('utf8')` of an owned buffer: the same text as `String::from_utf8_lossy(&b).into_owned()`, but a buffer that
+/// is already valid UTF-8 (the usual case) is adopted, not copied. A 16 MB transcript read used to peak at twice its size.
+pub fn lossy_owned(b: Vec<u8>) -> String {
+    match String::from_utf8(b) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
+}
+
 /// `String.prototype.trim`.
 pub fn js_trim(s: &str) -> &str {
     s.trim_matches(is_js_space)

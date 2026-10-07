@@ -17,7 +17,7 @@ use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::jsval::to_number;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
 use crate::checks::guardkit::settings::{get_bool, get_number, is_skipped};
-use crate::checks::guardkit::tail::read_tail;
+use crate::checks::guardkit::tail::tail_lines;
 use crate::checks::guardkit::text::{collapse_ws, is_js_space, js_trim, slice_utf16};
 use crate::checks::{Check, Verdict};
 use crate::defaults;
@@ -122,11 +122,11 @@ fn advisory(payload: &Value, st: &Settings) -> Result<Option<String>, Defer> {
         return Err(Defer);
     }
     let codex_run = is_codex(payload, tp);
-    let Some((lines, _)) = read_tail(tp, defaults::num("idle_sweep.scan_bytes")) else { return Ok(None) };
+    let Some((lines, _)) = tail_lines(tp, defaults::num("idle_sweep.scan_bytes")) else { return Ok(None) };
     let mut agents: Vec<Idle> = if codex_run {
-        codex::finished(&lines)?.into_iter().map(|a| Idle { id: a.id, label: a.label, idle_since_ms: a.idle_since_ms }).collect()
+        codex::finished(lines)?.into_iter().map(|a| Idle { id: a.id, label: a.label, idle_since_ms: a.idle_since_ms }).collect()
     } else {
-        scan::finished_teammates(&lines)?.into_iter().map(|f| Idle { id: f.name.clone(), label: f.name, idle_since_ms: f.idle_since_ms }).collect()
+        scan::finished_teammates(lines)?.into_iter().map(|f| Idle { id: f.name.clone(), label: f.name, idle_since_ms: f.idle_since_ms }).collect()
     };
     agents.sort_by(|a, b| a.idle_since_ms.partial_cmp(&b.idle_since_ms).unwrap_or(std::cmp::Ordering::Equal));
     let now_ms = now(st);

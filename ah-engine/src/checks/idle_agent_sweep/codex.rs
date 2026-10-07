@@ -70,13 +70,14 @@ fn truthy_name(v: Option<&Value>) -> String {
 }
 
 /// The agents `codexFinished` lists, in the order the rollout first spawned them.
-pub fn finished(lines: &[String]) -> Result<Vec<CodexAgent>, Defer> {
+pub fn finished<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> Result<Vec<CodexAgent>, Defer> {
     let marks = defaults::list("idle_sweep.codex_prefilter");
     let call_names = defaults::list("idle_sweep.codex_call_names");
     let finished_keys = defaults::list("idle_sweep.codex_finished_keys");
     let mut calls: HashMap<String, (String, Option<Value>)> = HashMap::new();
     let mut agents: Vec<(String, Agent)> = Vec::new();
     for raw in lines {
+        let raw = raw.as_ref();
         if !marks.iter().any(|m| raw.contains(m)) {
             continue;
         }

@@ -134,12 +134,46 @@ fn is_word(c: char) -> bool {
 }
 
 /// `hasTaskActivityInText(text)`: some line holds a TaskCreate, TaskUpdate or TodoWrite tool use.
+#[cfg(test)]
 pub(super) fn has_task_activity_in_text(text: &str) -> R<bool> {
-    let names = defaults::list("tasklist_guard.task_tool_names");
-    if !names.iter().any(|n| text.contains(n)) {
-        return Ok(false);
+    has_task_activity_in_lines(text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()))
+}
+
+/// The same question asked of the last `window` bytes of a file, read one line at a time: the widened scan covers 16 MB and
+/// holding that as one string (plus the parse of its lines) was the biggest transient the daemon had. Lines are the same as
+/// `read_tail` followed by a split would give (the partial first line of a cut window is kept, as the Node check keeps it).
+/// `None` when the file cannot be read.
+fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
+    use std::io::{BufRead, Seek, SeekFrom};
+    let size = std::fs::metadata(path).ok()?.len();
+    let mut f = std::fs::File::open(path).ok()?;
+    if size > window {
+        f.seek(SeekFrom::Start(size - window)).ok()?;
     }
-    for line in text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)) {
+    let mut rd = std::io::BufReader::new(f);
+    let names = defaults::list("tasklist_guard.task_tool_names");
+    let mut buf: Vec<u8> = Vec::new();
+    let mut lines = std::iter::from_fn(move || {
+        buf.clear();
+        match rd.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                }
+                // only a line that names a task tool can matter; the rest is skipped without decoding
+                let relevant = names.iter().any(|n| buf.windows(n.len()).any(|w| w == n.as_bytes()));
+                Some(if relevant { String::from_utf8_lossy(&buf).into_owned() } else { String::new() })
+            }
+        }
+    });
+    Some(has_task_activity_in_lines(&mut lines))
+}
+
+fn has_task_activity_in_lines(lines: impl Iterator<Item = String>) -> R<bool> {
+    let names = defaults::list("tasklist_guard.task_tool_names");
+    for line in lines {
+        let line = line.strip_suffix('\r').unwrap_or(&line);
         if !names.iter().any(|n| line.contains(n)) {
             continue;
         }
@@ -408,8 +442,8 @@ pub fn scan_transcript(path: &str, progress_abs: Option<&str>, codex: bool, cx: 
     let needs_agents = s.in_progress_count > 1 && !codex;
     if !s.saw_task_activity && truncated {
         let wide = defaults::num("tasklist_guard.wide_window_bytes");
-        if let Some((wdata, _)) = read_tail(path, wide)
-            && has_task_activity_in_text(&wdata)?
+        if let Some(found) = has_task_activity_in_file(path, wide)
+            && found?
         {
             s.saw_task_activity = true;
         }

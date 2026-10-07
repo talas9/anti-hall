@@ -20,13 +20,13 @@ pub fn read_window(path: &str, window: u64) -> Option<Tail> {
     let size = std::fs::metadata(path).ok()?.len();
     if size <= window {
         let bytes = std::fs::read(path).ok()?;
-        return Some(Tail { data: String::from_utf8_lossy(&bytes).into_owned(), truncated: false });
+        return Some(Tail { data: crate::checks::guardkit::text::lossy_owned(bytes), truncated: false });
     }
     let mut f = std::fs::File::open(path).ok()?;
     f.seek(SeekFrom::Start(size - window)).ok()?;
     let mut buf = Vec::with_capacity(window as usize);
     f.take(window).read_to_end(&mut buf).ok()?;
-    Some(Tail { data: String::from_utf8_lossy(&buf).into_owned(), truncated: true })
+    Some(Tail { data: crate::checks::guardkit::text::lossy_owned(buf), truncated: true })
 }
 
 /// `data.split(/\r?\n/)`: a line ends at `\n`, and one `\r` just before it belongs to the separator.

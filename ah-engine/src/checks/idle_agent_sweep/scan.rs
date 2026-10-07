@@ -312,7 +312,7 @@ fn teammate_idles(e: &Value, ts: f64, spawned: &OMap<Info>) -> Result<Vec<(Strin
 }
 
 /// The finished-but-not-stopped teammates of the transcript lines, in the order the Node scan lists them.
-pub fn finished_teammates(lines: &[String]) -> Result<Vec<Finished>, Defer> {
+pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> Result<Vec<Finished>, Defer> {
     let r = res();
     let mut sc = Scan {
         tool_uses: std::collections::HashMap::new(),
@@ -328,7 +328,7 @@ pub fn finished_teammates(lines: &[String]) -> Result<Vec<Finished>, Defer> {
     let mut seq = 0usize;
     for raw in lines {
         seq += 1;
-        let line = js_trim(raw);
+        let line = js_trim(raw.as_ref());
         if line.is_empty() || !marks.iter().any(|m| line.contains(m)) {
             continue;
         }
