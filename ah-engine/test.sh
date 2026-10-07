@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 # The full ah-engine test suite, plus the suite-level proof that no daemon survives it (D7): any `ah-engine serve`
 # process started from this build tree during the run and still alive afterwards fails the run, even when every test
-# passed. Extra arguments go to `cargo test`.
+# passed. Extra arguments go to the runner: `cargo nextest run` when cargo-nextest is installed (per-test timeouts from
+# .config/nextest.toml, one process per test), else plain `cargo test` (print how to install nextest). Doctests always run
+# through `cargo test --doc` (nextest cannot run them).
 set -u
 cd "$(dirname "$0")" || exit 1
 tree="$PWD/target"
 daemons() { ps -Ao pid,command | grep -F "$tree" | grep -F "ah-engine serve" | grep -v grep | awk '{print $1}' | sort; }
 before="$(daemons)"
-cargo test --release "$@"
-rc=$?
+if cargo nextest --version >/dev/null 2>&1; then
+  cargo nextest run --release "$@"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    cargo test --release --doc
+    rc=$?
+  fi
+else
+  echo "note: cargo-nextest not found, falling back to cargo test (install: cargo install --locked cargo-nextest, or taiki-e/install-action in CI)" >&2
+  cargo test --release "$@"
+  rc=$?
+fi
 if [ "$rc" -eq 0 ]; then
   sh tests/wrapper.sh
   rc=$?

@@ -1,0 +1,11 @@
+# cargo-nextest config for ah-engine (used by ./test.sh). Per-test timeouts: a hung test (a daemon that never answers,
+# a socket that never closes) is killed and reported instead of stalling the whole run.
+[profile.default]
+# Flag a test as slow after 60 s; terminate it after 3 periods (180 s).
+slow-timeout = { period = "60s", terminate-after = 3 }
+fail-fast = false
+
+[profile.ci]
+inherits = "default"
+slow-timeout = { period = "60s", terminate-after = 5 }
+retries = 0

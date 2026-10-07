@@ -97,6 +97,8 @@ cargo clippy --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 ```
 
+**Engine test runner.** `./test.sh` uses [cargo-nextest](https://nexte.st) when it is installed (`cargo install --locked cargo-nextest`): one process per test, a per-test timeout from `ah-engine/.config/nextest.toml` (a hung test is killed and named instead of stalling the run), and the doctests through `cargo test --doc`. Without it, `./test.sh` prints how to install it and falls back to plain `cargo test`. Extra arguments go to the runner, so `./test.sh --no-fail-fast` works either way.
+
 After you change a command, setting, metric, impact kind or check, regenerate the reference. A test fails when `REFERENCE.md` differs from the generated text.
 
 ```sh
