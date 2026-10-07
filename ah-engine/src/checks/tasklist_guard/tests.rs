@@ -36,3 +36,10 @@ fn the_reason_is_sanitized_like_node() {
     // a cut through a surrogate pair is not ours to make
     assert_eq!(sanitize_reason(&format!("{}😀", "z".repeat(1999))), None);
 }
+
+#[test]
+fn a_task_line_only_javascript_can_parse_is_unsure_not_skipped() {
+    let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"x":1e400}}]}}"#;
+    assert!(scan::has_task_activity_in_text(line).is_err());
+    assert_eq!(scan::has_task_activity_in_text("TaskCreate {oops").ok(), Some(false));
+}

@@ -119,6 +119,9 @@ fn check_resume_verification(home: &str, sid: &str, work: u64, threshold: f64) -
     let dir = Path::new(home).join(".anti-hall");
     let marker_path = dir.join(format!("{}{sid}.json", defaults::text("tasklist_guard.resume_marker_prefix")));
     let Ok(raw) = std::fs::read(&marker_path) else { return Ok(None) };
+    if crate::checks::guardkit::jsdiff::js_reads_differently(&raw) {
+        return Err(Unsure);
+    }
     let Ok(marker) = serde_json::from_str::<Value>(&String::from_utf8_lossy(&raw)) else {
         return Ok(None);
     };

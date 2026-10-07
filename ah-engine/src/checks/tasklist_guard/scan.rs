@@ -135,10 +135,10 @@ fn is_word(c: char) -> bool {
 }
 
 /// `hasTaskActivityInText(text)`: some line holds a TaskCreate, TaskUpdate or TodoWrite tool use.
-fn has_task_activity_in_text(text: &str) -> bool {
+pub(super) fn has_task_activity_in_text(text: &str) -> R<bool> {
     let names = defaults::list("tasklist_guard.task_tool_names");
     if !names.iter().any(|n| text.contains(n)) {
-        return false;
+        return Ok(false);
     }
     for line in text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)) {
         if !names.iter().any(|n| line.contains(n)) {
@@ -148,14 +148,18 @@ fn has_task_activity_in_text(text: &str) -> bool {
         if t.is_empty() {
             continue;
         }
-        let Ok(entry) = serde_json::from_str::<Value>(t) else { continue };
+        let entry = match serde_json::from_str::<Value>(t) {
+            Ok(e) => e,
+            Err(_) if maybe_valid_for_js(t) => return Err(Unsure),
+            Err(_) => continue,
+        };
         let mut uses = Vec::new();
         collect_tool_uses(&entry, &mut uses);
         if uses.iter().any(|tu| get(tu, "name").and_then(Value::as_str).is_some_and(|n| names.contains(&n))) {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// `scanTranscript(path, { progressAbsPath, codex })`. `agent_scan_needed` is set when the answer depends on the running agents
@@ -406,7 +410,7 @@ pub fn scan_transcript(path: &str, progress_abs: Option<&str>, codex: bool, cx: 
     if !s.saw_task_activity && truncated {
         let wide = defaults::num("tasklist_guard.wide_window_bytes");
         if let Some((wdata, _)) = read_tail(path, wide)
-            && has_task_activity_in_text(&wdata)
+            && has_task_activity_in_text(&wdata)?
         {
             s.saw_task_activity = true;
         }
