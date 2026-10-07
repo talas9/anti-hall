@@ -10,6 +10,8 @@ pub mod config;
 pub mod daemon;
 pub mod db;
 pub mod defaults;
+#[cfg(feature = "diag")]
+pub mod diag;
 pub mod dispatch;
 pub mod docs;
 pub mod error;

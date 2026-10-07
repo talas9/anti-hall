@@ -20,6 +20,13 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 # one global deadline). `ring` is already in the tree through rustls; it is named here only for its SHA-256.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 ring = { version = "0.17", default-features = false }
+# Heap profiler for the opt-in `diag` feature only (a dependency no default or release build compiles).
+dhat = { version = "0.3.3", optional = true }
+
+[features]
+# Developer diagnostics only (never in a release build): `ah-engine diag heap` reports heap peak/current bytes per check,
+# measured with the dhat allocator. Off by default; see docs/DEVELOPMENT.md.
+diag = ["dep:dhat"]
 
 [dev-dependencies]
 # Snapshot tests for long reply text (src/checks/idle_agent_sweep): one reviewable .snap file instead of two partial asserts.

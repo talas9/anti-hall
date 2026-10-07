@@ -24,6 +24,16 @@ use std::path::{Path, PathBuf};
 /// (file suffix, substring of the offending line, reason it is structural).
 const ALLOW: &[(&str, &str, &str)] = &[
     // ---- wire and host protocols: part of the interface, versioned with it, not tunables --------------------
+    (
+        "src/diag.rs",
+        "",
+        "the `diag heap` developer report (`--features diag`, absent from every release build): its table layout and usage text are the tool's own output format, not engine messages or tunables",
+    ),
+    (
+        "src/main.rs",
+        "static ALLOC",
+        "the dhat allocator hook of the `diag` feature (developer diagnostics only, not compiled into a release build): a global-allocator declaration, not a tunable",
+    ),
     ("src/frame.rs", "const MAGIC", "reply frame magic: the wire format identifier"),
     ("src/frame.rs", "const END", "reply frame trailer: the wire format identifier"),
     ("src/spool.rs", "const MAGIC", "spool record magic: the on-disk spool format identifier, versioned with the format"),
