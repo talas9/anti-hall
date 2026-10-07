@@ -10,6 +10,7 @@ pub mod agent_scan;
 pub mod api_guard;
 pub mod ask_guard;
 pub mod claim_ledger;
+pub mod codex;
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
@@ -24,6 +25,8 @@ pub mod guardkit;
 pub mod idle_agent_sweep;
 pub mod inbox_read_guard;
 pub mod merge_gate;
+pub mod handover;
+pub mod jsport;
 pub mod merge_side_pick;
 pub mod model_routing;
 pub mod orch_on_spawn;
@@ -156,7 +159,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 45] = [
+    static ALL: [&dyn Check; 50] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -202,6 +205,11 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &session_gates::JevWeeklyScorecard,
         &session_gates::JevReviewReminder,
         &session_gates::RepairOnReload,
+        &codex::availability::CodexAvailability,
+        &codex::detect::CodexQuotaDetect,
+        &codex::nudge::CodexNudge,
+        &handover::precompact::PrecompactSnapshot,
+        &handover::resume::HandoverResume,
     ];
     &ALL
 }

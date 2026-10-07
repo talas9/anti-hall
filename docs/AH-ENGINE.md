@@ -86,8 +86,16 @@ labelled with how it was measured in the README of `ah-engine/`.
   weaker than Node's (D74). The one deliberate difference with Jev off: Node's `claim-ledger` and `output-verify-guard`
   still append a `mode: "off"` row to the Jev decision log per consult; the engine's Jev layer never does (D35), and
   neither do these checks.
+- **Handover and Codex ports.** `handover-resume` (SessionStart), `precompact-snapshot` (PreCompact), `codex-availability`
+  (SessionStart), `codex-quota-detect` (PostToolUse on Agent) and `codex-nudge` (Stop) are ported from Node. They share
+  `checks/jsport`, which reproduces the JavaScript behavior the hooks depend on (number formatting, `JSON.parse` key
+  order, `Date` formatting and the part of `Date.parse` whose result is certain, UTF-16 string handling, the
+  repository-identity resolver) and `checks/codex/quota.rs`, the quota record in `~/.anti-hall/codex-availability.json`.
+  A case the port cannot reproduce exactly (a date string in an unfamiliar shape, a state file holding `__proto__`,
+  a Codex result whose key order could change what matches, an enabled Jev consult for the nudge) defers, so Node
+  decides; the deferral happens before any write the Node hook would repeat.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  forty-five: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  fifty: the five handover and Codex ports above, the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -151,6 +159,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
 | Built-in `fable-availability` check: reads the host's model cache, writes `~/.anti-hall/fable-availability.json` and prints the availability note when a Fable model is entitled; a config file the engine's JSON reader rejects defers | implemented | D29-D31, D74 |
 | Built-in `inbox-read-guard`, `phase-tracker`, `orch-on-spawn` and `verify-first-orch` checks (the spawn/path context ports) with exact parity on the paths they answer; the cases that need Node's own probes defer | implemented | D29-D31, D74, D75 |
+| Built-in `handover-resume` and `precompact-snapshot` checks (handover persistence) with exact parity on the corpus; unreproducible cases defer | implemented | D29-D31, D74 |
+| Built-in `codex-availability`, `codex-quota-detect` and `codex-nudge` checks (Codex availability and quota) with exact parity on the corpus; unreproducible cases defer | implemented | D29-D31, D74 |
 | Built-in `model-routing` check for Agent/Task spawns: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches | implemented | D29-D31, D75 |
 | Built-in `verify-first`, `idle-agent-sweep` and `emit-dedupe-reset` checks (prompt emission, advisory only) over the shared emit-dedupe state file, with exact parity including the state files; a DevSwarm Primary session and anything JavaScript might read differently defer to Node | implemented | D29-D31, D74, D75 |
 | Built-in `version-alert`, `devswarm-version`, `claude-cli-version` checks (SessionStart drift and update advisories from a cached probe): output and state file identical to Node on a fresh cache; a stale or absent cache defers because Node starts the detached refresh | implemented | D29-D31, D74, D75 |
@@ -518,6 +528,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
 | `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
 | `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |
+| `codex_handover.toml` | patterns, switches, limits, file names and messages of the handover and Codex hook ports and the JavaScript-behavior helpers they share |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |

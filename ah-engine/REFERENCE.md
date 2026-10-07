@@ -98,6 +98,11 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); otherwise defers to the Node hook, which builds the report (port of the gates of jev-weekly-scorecard.js). |
 | `jev-review-reminder` | Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn); otherwise defers to the Node hook (port of the gates of jev-review-reminder.js). |
 | `repair-on-reload` | Stays silent when no repair can start (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); otherwise defers to the Node hook, which takes the lock and starts the detached repair (port of the gates of repair-on-reload.js). |
+| `codex-availability` | SessionStart: probes PATH for a real codex executable, records it, folds a Codex job-log usage-limit error into the quota record and tells the session (port of codex-availability.js). |
+| `codex-quota-detect` | Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:codex-rescue Agent result, once, in the shared availability file (port of codex-quota-detect.js). |
+| `codex-nudge` | Stop: one soft nudge to get a Codex second opinion after several substantial code edits with no Codex review; defers when Jev is enabled for it (port of codex-nudge.js). |
+| `precompact-snapshot` | PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it (port of precompact-snapshot.js). |
+| `handover-resume` | SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js). |
 
 ## Settings
 
@@ -239,7 +244,7 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `request_env.allow` | `34 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. |
+| `request_env.allow` | `38 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts. |
 | `request_env.incomplete_key` | `ah_env_incomplete` |  |  | Reserved name, never a forwardable variable, that carries the request's incomplete flag inside the forwarded environment object (the client's variables were dropped or it had no HOME), so the daemon's checks defer to the Node guards. |
 | `request_env.line_prefix` | `E ` |  |  | Prefix of the request line that carries the forwarded environment as one JSON object. |
 | `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them and the request is marked incomplete, so every check defers to the Node guard (a missing or empty HOME marks it incomplete too). |
@@ -2099,6 +2104,218 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `session_gates.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable the judge child process runs with; every one of these hooks does nothing in it. |
 | `session_gates.judge_child_value` | `1` |  |  | The value of that variable that marks the judge child. |
 | `session_gates.sidechain_flags` | `isSidechain, is_sidechain` |  |  | Payload keys that mark a sidechain (subagent) turn when exactly true. |
+
+### codex_handover.toml / codex_handover
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `codex_handover.agent_type_keys` | `subagent_type, agentType, agent_type` |  |  | The fields of a spawn that can name the agent type, in the order they are tried. |
+| `codex_handover.argv_count` | `rev-list, --count, --since=@{since}, HEAD` |  |  | The git arguments that count the commits since a time; {since} is epoch seconds. |
+| `codex_handover.argv_head` | `rev-parse, --short, HEAD` |  |  | The git arguments that print the short HEAD hash. |
+| `codex_handover.argv_log` | `log, -1, --format=%h %s` |  |  | The git arguments that print the newest commit's short hash and subject. |
+| `codex_handover.argv_porcelain` | `status, --porcelain` |  |  | The git arguments that list the dirty files for the resume freshness line. |
+| `codex_handover.argv_status` | `status, --porcelain=v1, --branch` |  |  | The git arguments that list the branch line and the dirty files for a snapshot. |
+| `codex_handover.argv_super` | `-C, {root}, rev-parse, --show-superproject-working-tree` |  |  | The git arguments that print the superproject checkout of a repository; {root} is the repository. |
+| `codex_handover.avail_context_codex` | `Codex binary detected on PATH (per a SessionStart PATH probe). This is NECESS...` |  |  | The availability text for a Codex session (no Claude models, Workflow scripts or codex:codex-rescue agent type). |
+| `codex_handover.avail_event` | `SessionStart` |  |  | The hook event name in the availability advisory. |
+| `codex_handover.avail_guard` | `codex-availability` |  |  | The guard id the availability messages answer to. |
+| `codex_handover.avail_instead` | `Workflow scripts have no filesystem and cannot read this fact, so pass args.c...` |  |  | Advice line of the availability tip. |
+| `codex_handover.avail_note_instead` | `route correctness review to {tier} until then.` |  |  | Advice of the unavailability warning; {tier} is where to route the review. |
+| `codex_handover.avail_note_what` | `Codex unavailable until {until} ({reason}).` |  |  | Headline of the warning that Codex is unavailable; {until} is an ISO time and {reason} the recorded reason. |
+| `codex_handover.avail_source` | `path-probe` |  |  | The source recorded with a PATH probe result. |
+| `codex_handover.avail_summary` | `SessionStart: probes PATH for a real codex executable, records it, folds a Co...` |  |  | One-line description of the codex-availability check in the generated reference. |
+| `codex_handover.avail_tier_claude` | `Sonnet` |  |  | Where a Claude session routes review while Codex is unavailable. |
+| `codex_handover.avail_tier_codex` | `a lower gpt tier` |  |  | Where a Codex session routes review while Codex is unavailable. |
+| `codex_handover.avail_what` | `Codex binary detected on PATH (per a SessionStart PATH probe).` |  |  | Headline of the availability tip when the Codex binary is on PATH. |
+| `codex_handover.avail_why` | `Necessary but not sufficient: it does not prove Codex is authenticated or fun...` |  |  | Reason line of the availability tip. |
+| `codex_handover.availability_file` | `.anti-hall/codex-availability.json` |  |  | The shared Codex availability and quota file, relative to the home directory. |
+| `codex_handover.branch_prefix` | `## ` |  |  | The prefix of the branch line of `git status --porcelain --branch`. |
+| `codex_handover.branch_unknown` | `(unknown)` |  |  | The branch shown when git gives no branch line. |
+| `codex_handover.cell_max` | `200` |  |  | Longest table cell in a snapshot, in UTF-16 units. |
+| `codex_handover.checklist_title` | `Resume-verification checklist` |  |  | The heading text of a handover's resume-verification checklist (compared without case). |
+| `codex_handover.codex_binary` | `codex` |  |  | The executable name probed on PATH. |
+| `codex_handover.codex_dir_name` | `.codex` |  |  | The directory name that marks a Codex path. |
+| `codex_handover.cooldown_default_label` | `(cooldown default)` |  |  | What the quota advisory says when the outage has no end time. |
+| `codex_handover.core_worktree_key` | `worktree` |  |  | The key that, in a git directory's config, names a submodule checkout; a config holding it is left to the Node hook. |
+| `codex_handover.date_max_ms` | `8640000000000000` |  | ms | The largest time a JavaScript Date holds, in milliseconds either side of the epoch. |
+| `codex_handover.default_cooldown_ms` | `21600000` |  | ms | How long an outage with no usable end time is assumed to last. |
+| `codex_handover.detail_files` | `state.md, decisions.md, trials.md, knowledge.md` |  |  | The detail files a handover may sit beside, in the order the resume lists them. |
+| `codex_handover.detail_state` | `state.md` |  |  | The detail file that holds the task list snapshot. |
+| `codex_handover.detail_trials` | `trials.md` |  |  | The detail file that holds the do-not-repeat list. |
+| `codex_handover.details_sep` | ` / ` |  |  | Separator of the detail file names in the resume steps. |
+| `codex_handover.detect_scan_cap` | `20000` |  |  | How much of a Codex result is searched for a quota message, in UTF-16 units. |
+| `codex_handover.detect_summary` | `Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:...` |  |  | One-line description of the codex-quota-detect check in the generated reference. |
+| `codex_handover.git_binary` | `git` |  |  | The git executable the hooks run. |
+| `codex_handover.git_max_buffer` | `1048576` |  | bytes | Most output a git call may produce before it counts as failed. |
+| `codex_handover.git_poll_ms` | `2` |  | ms | How often a running git call is checked for completion. |
+| `codex_handover.git_scrub_env` | `GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_PREFIX` |  |  | Git location variables removed before the identity resolver asks git, so its answer derives from the directory alone. |
+| `codex_handover.gitdir_key` | `gitdir:` |  |  | The key of a `.git` file that names the real git directory. |
+| `codex_handover.handover_plain` | `HANDOVER.md` |  |  | The name of the first handover of a session. |
+| `codex_handover.handover_prefix` | `HANDOVER` |  |  | The start of a handover file name. |
+| `codex_handover.handovers_dir` | `.anti-hall/handovers` |  |  | Where handovers and snapshots live, relative to the repository root. |
+| `codex_handover.head_none` | `(no commits)` |  |  | The HEAD shown when the repository has no commit. |
+| `codex_handover.identity_git_timeout_ms` | `10000` |  | ms | Time limit of the git call that finds a superproject. |
+| `codex_handover.index_file` | `INDEX.md` |  |  | The handover index file name. |
+| `codex_handover.index_sep` | `·` |  |  | The column separator of an INDEX.md row. |
+| `codex_handover.index_seq_prefix` | `seq ` |  |  | The text before the sequence number in the sequence column of an INDEX.md row. |
+| `codex_handover.iso_ms_tail` | `5` |  |  | How many characters the milliseconds and the zone end of an ISO time take (`.123Z`), which the writer note replaces by `Z`. |
+| `codex_handover.job_log_suffix` | `.log` |  |  | The suffix of a Codex job log file name. |
+| `codex_handover.job_logs_dir` | `jobs` |  |  | The directory of job logs inside each repository state directory. |
+| `codex_handover.job_max_age_ms` | `86400000` |  | ms | Oldest job log that is scanned, by modification time. |
+| `codex_handover.job_max_dirs` | `20` |  |  | How many repository job directories are scanned for a usage-limit error. |
+| `codex_handover.job_max_files` | `10` |  |  | How many job logs are scanned for a usage-limit error. |
+| `codex_handover.job_state_dir` | `.claude/plugins/data/codex-openai-codex/state` |  |  | Where the Codex companion keeps its background job state, relative to the home directory. |
+| `codex_handover.job_tail_bytes` | `8192` |  | bytes | How much of the end of a job log is read. |
+| `codex_handover.json_max_depth` | `512` |  |  | Deepest nesting of a state file the port reads; deeper is left to the Node hook. |
+| `codex_handover.json_suffix` | `.json` |  |  | The suffix of a per-session state file name. |
+| `codex_handover.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable that marks a Jev judge child process, whose hooks do nothing. |
+| `codex_handover.judge_child_on` | `1` |  |  | Value of the judge child variable that turns the hooks into no-ops. |
+| `codex_handover.max_dirty_listed` | `50` |  |  | How many dirty files a snapshot lists. |
+| `codex_handover.max_message_chars` | `4000` |  |  | Longest user message a snapshot keeps whole, in UTF-16 units. |
+| `codex_handover.max_submodule_hops` | `32` |  |  | Most superproject levels the identity resolver climbs. |
+| `codex_handover.max_user_messages` | `10` |  |  | How many of the last user messages a snapshot keeps. |
+| `codex_handover.md_suffix` | `.md` |  |  | The suffix of a handover or snapshot file name. |
+| `codex_handover.months` | `12 items` |  |  | Month names, lower case, in calendar order (a date string may use the full name or its first three letters). |
+| `codex_handover.neg_instead` | `the handover skill writes under .anti-hall/handovers/; check there.` |  |  | Advice line when no handover exists at all. |
+| `codex_handover.neg_what` | `No session handover found under .anti-hall/handovers/.` |  |  | Headline when no handover exists at all. |
+| `codex_handover.neg_why` | `If one was written this session, it may be in the wrong location.` |  |  | Reason line when no handover exists at all. |
+| `codex_handover.not_typed_re` | `^<(task-notification\|local-command-\|system-reminder\|bash-std(out\|err)\|command...` |  |  | JavaScript source of the harness-injected user entries that are not something the user typed. |
+| `codex_handover.nudge_agent_re` | `^codex\b\|^codex:` |  |  | JavaScript source (flag i) of an agent type that is a Codex agent. |
+| `codex_handover.nudge_agent_tools` | `Agent, Task` |  |  | Tool names that spawn an agent. |
+| `codex_handover.nudge_allowed` | `skip it if the change is trivial, already reviewed, or Codex is unavailable.` |  |  | Allowed line of the Codex nudge. |
+| `codex_handover.nudge_child_keys` | `content, message, messages, tool_uses, parts` |  |  | Keys under which a transcript entry nests further entries that may hold tool calls. |
+| `codex_handover.nudge_code_ext_re` | `\.(js\|jsx\|mjs\|cjs\|ts\|tsx\|vue\|svelte\|dart\|py\|go\|rs\|java\|kt\|swift\|c\|cc\|cpp\|h\|hp...` |  |  | JavaScript source (flag i) of the file names that count as code for the Codex nudge. |
+| `codex_handover.nudge_codex_word` | `codex` |  |  | The word in a skill call that marks a Codex review (compared without case). |
+| `codex_handover.nudge_edit_tools` | `Edit, Write, MultiEdit` |  |  | Tool names whose calls count as code edits. |
+| `codex_handover.nudge_guard` | `codex-nudge` |  |  | The guard id of the Codex nudge: its messages, its skip-file key and its escape hatch. |
+| `codex_handover.nudge_instead` | `before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:res...` |  |  | Advice line of the Codex nudge. |
+| `codex_handover.nudge_jev_id` | `codexNudgeSubstantial` |  |  | The Jev integration the Codex nudge consults. |
+| `codex_handover.nudge_max` | `2` |  |  | The most Codex nudges a session gets. |
+| `codex_handover.nudge_min_default` | `3` |  |  | Edits needed before the Codex nudge fires when nothing sets the threshold. |
+| `codex_handover.nudge_min_env` | `ANTIHALL_CODEX_NUDGE_MIN` |  |  | Environment variable of the Codex nudge threshold. |
+| `codex_handover.nudge_min_floor` | `1` |  |  | Lowest value the Codex nudge threshold can take (a smaller setting is raised to it). |
+| `codex_handover.nudge_min_key` | `min` |  |  | Settings key of the Codex nudge threshold (codexNudge.min). |
+| `codex_handover.nudge_more` | `, …` |  |  | Text after the listed file names when there are more. |
+| `codex_handover.nudge_names_sep` | `, ` |  |  | Separator of the file names the nudge lists. |
+| `codex_handover.nudge_override` | `set ANTIHALL_CODEX_NUDGE=off to silence` |  |  | Override line of the Codex nudge. |
+| `codex_handover.nudge_section` | `codexNudge` |  |  | Settings section of the Codex nudge threshold. |
+| `codex_handover.nudge_session_hash_len` | `16` |  |  | Length of the transcript-path hash used as the session key when a payload has no session id. |
+| `codex_handover.nudge_sig_sep` | `\|` |  |  | Separator of the sorted base names the nudge signature hashes. |
+| `codex_handover.nudge_skill_tool` | `Skill` |  |  | The tool name that invokes a skill. |
+| `codex_handover.nudge_state_prefix` | `codex-nudge-state` |  |  | The start of the Codex nudge per-session state file name (and the prune stamp key). |
+| `codex_handover.nudge_summary` | `Stop: one soft nudge to get a Codex second opinion after several substantial ...` |  |  | One-line description of the codex-nudge check in the generated reference. |
+| `codex_handover.nudge_tail_bytes` | `524288` |  | bytes | How much of the end of the transcript the Codex nudge reads. |
+| `codex_handover.nudge_what` | `this session made {edits} substantial code edit(s) across {files} file(s) ({n...` |  |  | Headline of the Codex nudge; {edits} edits across {files} files, {names} the first file names and {more} the sign of more. |
+| `codex_handover.nudge_why` | `An independent Codex review catches correctness bugs (off-by-one, races, subt...` |  |  | Reason line of the Codex nudge. |
+| `codex_handover.ordinal_re` | `(\d)(?:st\|nd\|rd\|th)\b` |  |  | JavaScript source (flag i) of a day number with its ordinal suffix. |
+| `codex_handover.path_separator` | `:` |  |  | Separator of the entries of the PATH variable. |
+| `codex_handover.precompact_git_timeout_ms` | `2000` |  | ms | Time limit of each git call of the PreCompact snapshot. |
+| `codex_handover.precompact_guard` | `precompact-snapshot` |  |  | The guard id of the PreCompact snapshot (its skip-file key). |
+| `codex_handover.precompact_prefix` | `PRECOMPACT-` |  |  | The start of a PreCompact snapshot file name, through the dash before its number. |
+| `codex_handover.precompact_summary` | `PreCompact: writes a mechanical continuation snapshot (git state, task list, ...` |  |  | One-line description of the precompact-snapshot check in the generated reference. |
+| `codex_handover.prefix_continuation` | `A session handover was found for this continuation` |  |  | Lead-in of the resume pointer after a clear or compaction. |
+| `codex_handover.prefix_previous` | `A previous session left a handover` |  |  | Lead-in of the resume pointer at a fresh start. |
+| `codex_handover.projects_dir` | `.claude/projects` |  |  | The host's per-project transcript directory, relative to the home directory. |
+| `codex_handover.proto_key` | `__proto__` |  |  | A key whose merge into an object JavaScript treats specially; a state file holding it is left to the Node hook. |
+| `codex_handover.prune_stamp_prefix` | `.prune-stamp-` |  |  | The start of the prune throttle stamp file name. |
+| `codex_handover.prune_throttle_ms` | `21600000` |  | ms | The least time between two sweeps for stale Codex nudge state files. |
+| `codex_handover.prune_ttl_ms` | `604800000` |  | ms | Age after which a per-session Codex nudge state file is removed. |
+| `codex_handover.quota_default_reason` | `quota exhausted` |  |  | The reason recorded for an outage that gives none. |
+| `codex_handover.quota_event` | `PostToolUse` |  |  | The hook event name in the quota advisory. |
+| `codex_handover.quota_guard` | `codex-quota` |  |  | The guard id the quota advisory answers to. |
+| `codex_handover.quota_instead` | `route correctness review to Sonnet.` |  |  | Advice line of the quota advisory. |
+| `codex_handover.quota_re` | `\b(out of\|exceed(?:ed\|s)?\|exhausted\|hit (?:your\|the)\|ran out of)\b[^.\n]{0,40...` |  |  | JavaScript source (flag i) of the Codex quota or rate-limit exhaustion message. |
+| `codex_handover.quota_reason_chars` | `120` |  |  | How much of a quota message is kept as its reason, in UTF-16 units. |
+| `codex_handover.quota_reason_max` | `300` |  |  | Longest reason stored in the quota record, in UTF-16 units. |
+| `codex_handover.quota_target_words` | `quota, rate limit, usage limit` |  |  | Words a quota message needs; text with none of them cannot be one (compared without case). |
+| `codex_handover.quota_what` | `codex:codex-rescue reported quota exhaustion ({reason}).` |  |  | Headline of the quota advisory; {reason} is the reason found in the result. |
+| `codex_handover.quota_why` | `Recorded to ~/.anti-hall/codex-availability.json until {until}; Codex is unav...` |  |  | Reason line of the quota advisory; {until} is an ISO time or the cooldown label. |
+| `codex_handover.rescue_re` | `^codex[:/-]?(?:codex-)?rescue$` |  |  | JavaScript source (flag i) of the agent type of the Codex rescue seat. |
+| `codex_handover.resume_do_instead` | `Do instead: follow this guided resume path.` |  |  | The line before the numbered resume steps. |
+| `codex_handover.resume_event` | `SessionStart` |  |  | The hook event name in the resume advisory when the payload names none. |
+| `codex_handover.resume_freshness` | `Freshness (measured now): HEAD {head}; {commits} commit(s) since this handove...` |  |  | The git freshness line; {head}, {commits} and {dirty}. |
+| `codex_handover.resume_git_timeout_ms` | `1500` |  | ms | Time limit of each git call of the handover resume. |
+| `codex_handover.resume_guard` | `handover-resume` |  |  | The guard id the handover resume messages answer to. |
+| `codex_handover.resume_head` | `💡 anti-hall · handover-resume: {prefix}: {path} ({seq_label}{pred} \| date {da...` |  |  | First line of the resume pointer; {prefix}, {path}, {seq_label}, {pred}, {date}, {sid} and {outcome}. |
+| `codex_handover.resume_max_age_ms` | `604800000` |  | ms | Oldest handover or snapshot the resume still points at. |
+| `codex_handover.resume_note` | `Note: this handover supersedes the auto-compact summary and any legacy CONTIN...` |  |  | Closing note of the resume pointer. |
+| `codex_handover.resume_outcome` | ` -- INDEX.md outcome: {outcome}` |  |  | The outcome part of the resume pointer; {outcome}. |
+| `codex_handover.resume_pred` | `, predecessor {pred}` |  |  | The predecessor part of the resume pointer; {pred}. |
+| `codex_handover.resume_sources` | `clear, compact` |  |  | The SessionStart sources that count as a continuation (clear or compaction). |
+| `codex_handover.resume_state_prefix` | `handover-resume-state-` |  |  | The start of the per-session resume state file name. |
+| `codex_handover.resume_summary` | `SessionStart: points a fresh or compacted session at the newest handover with...` |  |  | One-line description of the handover-resume check in the generated reference. |
+| `codex_handover.resume_writer` | `Writer kept running: session {sid} kept running {min} min after this handover...` |  |  | The writer-kept-running line; {sid}, {min} and {iso}. |
+| `codex_handover.rollout_prefix` | `rollout-` |  |  | The start of a Codex rollout transcript file name. |
+| `codex_handover.rollout_suffix` | `.jsonl` |  |  | The end of a Codex rollout transcript file name. |
+| `codex_handover.rule_file_claude` | `CLAUDE.md` |  |  | The rules file a Claude session re-reads. |
+| `codex_handover.rule_file_codex` | `AGENTS.md` |  |  | The rules file a Codex session re-reads. |
+| `codex_handover.scratch_leaf` | `scratchpad` |  |  | The scratchpad directory name inside the session directory. |
+| `codex_handover.scratch_prefix` | `claude-` |  |  | The start of the per-user scratchpad directory name, before the user id. |
+| `codex_handover.seq_max_digits` | `15` |  |  | Most digits of a handover sequence number the port reads; more is left to the Node hook. |
+| `codex_handover.serde_range_msg` | `number out of range` |  |  | Start of the error text of the engine's JSON parser for a number out of range (JavaScript parses it). |
+| `codex_handover.serde_recursion_msg` | `recursion limit exceeded` |  |  | Start of the error text of the engine's JSON parser for nesting past its limit (JavaScript parses it). |
+| `codex_handover.setting_nudge` | `5 entries` |  |  | Where the Codex nudge switch is read from (codexNudge.enabled, default on). |
+| `codex_handover.setting_precompact` | `4 entries` |  |  | Where the PreCompact snapshot switch is read from (maintenance.precompactSnapshot, default on). |
+| `codex_handover.setting_quota_detect` | `5 entries` |  |  | Where the Codex quota detection switch is read from (guards.codexQuotaDetect, default on). |
+| `codex_handover.setting_resume` | `4 entries` |  |  | Where the handover resume switch is read from (context.handoverResume, default on). |
+| `codex_handover.snap_branch` | `branch: {branch}` |  |  | The branch line of a snapshot. |
+| `codex_handover.snap_clean` | ` (clean)` |  |  | The suffix of the dirty files line when none is dirty. |
+| `codex_handover.snap_dirty` | `dirty files: {count}{clean}` |  |  | The dirty files line of a snapshot; {count} and {clean}. |
+| `codex_handover.snap_fence_close` | `````` |  |  | The line that closes a quoted message. |
+| `codex_handover.snap_fence_open` | `````text` |  |  | The line that opens a quoted message. |
+| `codex_handover.snap_h_custom` | `## /compact instructions (verbatim)` |  |  | Heading of the compact instructions section of a snapshot. |
+| `codex_handover.snap_h_handover` | `## Newest handover` |  |  | Heading of the newest handover section of a snapshot. |
+| `codex_handover.snap_h_messages` | `## Last {count} user message(s), verbatim, oldest first` |  |  | Heading of the user messages section; {count}. |
+| `codex_handover.snap_h_repo` | `## Repo state` |  |  | Heading of the repository state section of a snapshot. |
+| `codex_handover.snap_h_tasks` | `## Task list snapshot (from the transcript)` |  |  | Heading of the task list section of a snapshot. |
+| `codex_handover.snap_handover_found` | `{path} (modified {modified})` |  |  | The newest handover line; {path} and {modified} (an ISO time). |
+| `codex_handover.snap_handover_none` | `none found under .anti-hall/handovers/ — no HANDOVER*.md exists for this repo` |  |  | The newest handover line when none exists. |
+| `codex_handover.snap_head` | `HEAD: {head}` |  |  | The HEAD line of a snapshot. |
+| `codex_handover.snap_indent` | `    ` |  |  | The indent of a listed dirty file. |
+| `codex_handover.snap_intro` | `Mechanical crash dump written by anti-hall's PreCompact hook right before com...` |  |  | Explanation line of a snapshot; {trigger} is the compaction trigger. |
+| `codex_handover.snap_messages_none` | `none found in the readable transcript tail` |  |  | The user messages line when none was found. |
+| `codex_handover.snap_more` | `    … +{count} more` |  |  | The line after the listed dirty files when more exist; {count}. |
+| `codex_handover.snap_msg_head` | `### {i}{ts}` |  |  | Heading of one user message; {i} and {ts}. |
+| `codex_handover.snap_newer` | `Pre-compaction snapshot (newer than the handover): {path} -- anti-hall's PreC...` |  |  | Snapshot line when the snapshot is newer than the handover; {path}. |
+| `codex_handover.snap_not_git` | `git: not a git repository (or git unavailable)` |  |  | The git line of a snapshot outside a repository. |
+| `codex_handover.snap_older` | `Pre-compaction snapshot (older than the handover, which already covers it): {...` |  |  | Snapshot line when the handover is newer; {path}. |
+| `codex_handover.snap_pwd` | `pwd: {cwd}` |  |  | The working directory line of a snapshot. |
+| `codex_handover.snap_table_head` | `\| id \| subject \| status \|` |  |  | The header row of the task table. |
+| `codex_handover.snap_table_row` | `\| {id} \| {subject} \| {status} \|` |  |  | One task table row; {id}, {subject} and {status}. |
+| `codex_handover.snap_table_rule` | `\|---\|---\|---\|` |  |  | The rule row of the task table. |
+| `codex_handover.snap_tasks_empty` | `empty list` |  |  | The task list line for an empty list. |
+| `codex_handover.snap_tasks_none` | `not derivable — no TodoWrite/TaskCreate/TaskUpdate calls in the readable tran...` |  |  | The task list line when no list could be read. |
+| `codex_handover.snap_title` | `# PRECOMPACT snapshot — {session} · #{n} · {now}` |  |  | First line of a snapshot; {session}, {n} and {now}. |
+| `codex_handover.snap_truncated` | `{head}\n[… truncated {count} chars]` |  |  | A message cut at the limit; {head} is what is kept and {count} how much was cut. |
+| `codex_handover.snap_ts_sep` | ` · ` |  |  | Separator before a message timestamp. |
+| `codex_handover.snaponly_instead` | `read it fully before trusting the compact summary; once state is re-establish...` |  |  | Advice line when only a snapshot exists. |
+| `codex_handover.snaponly_what` | `no HANDOVER*.md was written for this session, but a pre-compaction snapshot e...` |  |  | Headline when only a snapshot exists; {path} and {written}. |
+| `codex_handover.snaponly_why` | `It holds git state, a task-list snapshot and the last user messages verbatim,...` |  |  | Reason line when only a snapshot exists. |
+| `codex_handover.state_dir` | `.anti-hall` |  |  | The per-user state directory, relative to the home directory. |
+| `codex_handover.status_deleted` | `deleted` |  |  | The status that removes a task from the snapshot. |
+| `codex_handover.status_pending` | `pending` |  |  | The status of a task that has none. |
+| `codex_handover.step_checklist` | `Run its Resume-verification checklist (git status, pwd, {rule} re-read, smoke...` |  |  | Resume step when the handover has a checklist; {rule} and {path}. |
+| `codex_handover.step_continue` | `Continue from the single Next Action.` |  |  | Resume step: continue. |
+| `codex_handover.step_details` | `Load detail files ONLY as needed via the pointer table ({files}).` |  |  | Resume step: the detail files; {files}. |
+| `codex_handover.step_generic` | `No Resume-verification checklist section was found in it -- fall back to a ge...` |  |  | Resume step when the handover has no checklist; {rule} and {path}. |
+| `codex_handover.step_read` | `Read {path} FULLY -- front matter (first ~15 lines) carries Situation + Next ...` |  |  | Resume step: read the handover; {path}. |
+| `codex_handover.step_readback` | `READ-BACK: before any new work, tell the user in your own words (not a paste)...` |  |  | Resume step: tell the user what was understood. |
+| `codex_handover.step_tasks` | `Recreate/reconcile your task list from state.md's Task list snapshot BEFORE w...` |  |  | Resume step: rebuild the task list. |
+| `codex_handover.step_trials` | `Check trials.md do-not-repeat list before re-attempting anything.` |  |  | Resume step: the do-not-repeat list. |
+| `codex_handover.task_created_re` | `Task #(\d+) created successfully` |  |  | JavaScript source of the result text that carries a new task's number. |
+| `codex_handover.task_line_words` | `TodoWrite, TaskCreate, TaskUpdate, created successfully` |  |  | Words a transcript line must contain to be parsed for the task list. |
+| `codex_handover.tmp_default` | `/tmp` |  |  | The temporary directory when none of those variables is set. |
+| `codex_handover.tmp_env` | `TMPDIR, TMP, TEMP` |  |  | Environment variables that name the temporary directory, first set one wins. |
+| `codex_handover.tmp_roots` | `/tmp, /private/tmp` |  |  | Temporary directories always searched for the session scratchpad, besides the one the environment names. |
+| `codex_handover.transcript_tail_bytes` | `1572864` |  | bytes | How much of the end of the transcript the PreCompact snapshot reads. |
+| `codex_handover.trigger_unknown` | `unknown-trigger` |  |  | What a snapshot records for any other trigger. |
+| `codex_handover.triggers` | `manual, auto` |  |  | The PreCompact trigger values a snapshot records as they are. |
+| `codex_handover.try_again_re` | `\btry again (?:at\|after\|on)?\s*([A-Za-z0-9:,+\-\/ ]{1,60})` |  |  | JavaScript source (flag i) of the usage-limit wording that names when to try again. |
+| `codex_handover.unknown_session` | `unknown-session` |  |  | The session name used when a payload carries no usable session id. |
+| `codex_handover.until_re` | `\b(?:until\|resets?(?: at)?\|resum(?:e\|ing)(?: at)?\|available again(?: at)?)\s+...` |  |  | JavaScript source (flag i) of a trailing clause that names when Codex is back; the original lookahead after the terminator is written as a consumed character, which changes neither the match start nor the capture. |
+| `codex_handover.utc_words` | `utc, gmt, z` |  |  | Words after a date and time that mean UTC (compared without case). |
+| `codex_handover.weekdays` | `7 items` |  |  | Weekday names, lower case (a date string may lead with one, full or its first three letters). |
+| `codex_handover.writer_grace_ms` | `300000` |  | ms | How long after a handover its writer may keep writing before the resume says it kept running. |
 
 ## Messages
 
