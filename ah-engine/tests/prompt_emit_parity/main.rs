@@ -17,8 +17,20 @@ use harness::{Report, Scn};
 fn run_corpus(name: &str, scenarios: Vec<Scn>, min_scenarios: usize, min_handled: usize) -> Report {
     assert!(scenarios.len() >= min_scenarios, "{name}: corpus too small ({} < {min_scenarios})", scenarios.len());
     let r = harness::run_all(name, scenarios);
-    eprintln!("{name}: scenarios={} steps={} handled-by-engine={} deferred-to-node={} divergences={}", r.scenarios, r.steps, r.handled, r.deferred, r.divergences.len());
-    assert!(r.divergences.is_empty(), "{name}: {} divergences, first:\n{}", r.divergences.len(), r.divergences.iter().take(12).cloned().collect::<Vec<_>>().join("\n---\n"));
+    eprintln!(
+        "{name}: scenarios={} steps={} handled-by-engine={} deferred-to-node={} divergences={}",
+        r.scenarios,
+        r.steps,
+        r.handled,
+        r.deferred,
+        r.divergences.len()
+    );
+    assert!(
+        r.divergences.is_empty(),
+        "{name}: {} divergences, first:\n{}",
+        r.divergences.len(),
+        r.divergences.iter().take(12).cloned().collect::<Vec<_>>().join("\n---\n")
+    );
     assert!(r.handled >= min_handled, "{name}: the engine handled only {} steps (< {min_handled}): a corpus the engine defers is not a parity test", r.handled);
     r
 }

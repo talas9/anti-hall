@@ -474,3 +474,6 @@ pub fn js_to_string(v: &Value) -> String {
         Value::Object(_) => "[object Object]".into(),
     }
 }
+
+#[cfg(test)]
+mod tests;

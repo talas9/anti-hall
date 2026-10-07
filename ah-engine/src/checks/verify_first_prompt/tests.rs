@@ -58,7 +58,10 @@ fn the_check_answers_through_the_trait_and_defers_without_a_digest() {
     let p = json!({"session_id": "t", "prompt": "x"});
     assert_eq!(VerifyFirst.run_env(&s, &p, &Value::Null, &env), Some(Verdict::Defer));
     let got = VerifyFirst.run_env(&s, &p, &json!({"payload_sha1": "00000001"}), &env);
-    assert!(matches!(got, Some(Verdict::Advisory(ref j)) if j.starts_with("{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"VERIFY-FIRST: ")), "{got:?}");
+    assert!(
+        matches!(got, Some(Verdict::Advisory(ref j)) if j.starts_with("{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"VERIFY-FIRST: ")),
+        "{got:?}"
+    );
     let judge = RequestEnv::from_pairs([("HOME", "/nonexistent"), ("ANTIHALL_JUDGE_CHILD", "1")]);
     assert_eq!(VerifyFirst.run_env(&s, &p, &json!({"payload_sha1": "0"}), &judge), Some(Verdict::Allow));
 }

@@ -9,6 +9,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+type Edit = std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>;
+
 /// A file to write into the home before a step.
 #[derive(Clone)]
 pub struct W {
@@ -18,7 +20,7 @@ pub struct W {
     /// Set the file's modification time this many seconds in the past.
     pub age_s: Option<u64>,
     /// Rewrite the file's current text instead of writing `body`.
-    pub edit: Option<std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>>,
+    pub edit: Option<Edit>,
 }
 
 pub fn w(rel: &str, body: impl AsRef<[u8]>) -> W {
@@ -120,7 +122,6 @@ impl Scn {
         self.last_defers = true;
         self
     }
-
 }
 
 #[derive(Default)]
@@ -235,7 +236,7 @@ fn sub(s: &str, home: &Path) -> String {
         out.push_str(&rest[..i]);
         let tail = &rest[i + 4..];
         let Some(j) = tail.find(')') else { break };
-        out.push_str(&ah_engine::checks::emit_dedupe::sha1_hex(tail[..j].as_bytes())[..16]);
+        out.push_str(&ah_engine::checks::emit_dedupe::sha1_hex(&tail.as_bytes()[..j])[..16]);
         rest = &tail[j + 1..];
     }
     out.push_str(rest);
@@ -344,7 +345,11 @@ fn show(o: &Out) -> String {
 }
 
 fn run_one(scn: &Scn, root: &Path, report: &Mutex<Report>) {
-    let dir = root.join(format!("{}-{}", COUNTER.fetch_add(1, Ordering::Relaxed), scn.name.chars().filter(|c| c.is_ascii_alphanumeric()).take(40).collect::<String>()));
+    let dir = root.join(format!(
+        "{}-{}",
+        COUNTER.fetch_add(1, Ordering::Relaxed),
+        scn.name.chars().filter(|c| c.is_ascii_alphanumeric()).take(40).collect::<String>()
+    ));
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
     apply(&scn.seed, &home);
@@ -380,7 +385,12 @@ fn run_one(scn: &Scn, root: &Path, report: &Mutex<Report>) {
         if let Some(want) = scn.expect_defer
             && want != was_deferred
         {
-            bad.push(format!("[{}] step {i}: expected {} but the engine {}", scn.name, if want { "a deferral" } else { "an answer" }, if was_deferred { "deferred" } else { "answered" }));
+            bad.push(format!(
+                "[{}] step {i}: expected {} but the engine {}",
+                scn.name,
+                if want { "a deferral" } else { "an answer" },
+                if was_deferred { "deferred" } else { "answered" }
+            ));
         }
         if scn.last_defers && i + 1 == scn.steps.len() && !was_deferred {
             bad.push(format!("[{}] step {i}: expected a deferral on the last step but the engine answered", scn.name));

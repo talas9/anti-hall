@@ -156,7 +156,8 @@ fn a_deferred_verify_first_wrote_no_state_before_deferring() {
     let map = e.map("UserPromptSubmit", "verify-first");
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
     // a relative transcript path is something only Node resolves
-    let p = serde_json::json!({"session_id": "ns", "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "x", "transcript_path": "rel/t.jsonl"}).to_string();
+    let p = serde_json::json!({"session_id": "ns", "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "x", "transcript_path": "rel/t.jsonl"})
+        .to_string();
     let (_, out, _) = e.run(&args, true, &p, &[]);
     assert_eq!(out, "NODE-RAN");
     assert!(!e.home().join(".anti-hall/emit-dedupe").exists(), "the deferral must come before any write");

@@ -61,9 +61,7 @@ fn res() -> &'static Res {
 /// `now()` of the hook: the clock, or the injected one when both test variables are set (as Node does).
 fn now(st: &Settings) -> f64 {
     let on = st.env.get(defaults::text("idle_sweep.env_test_isolation")).map(String::as_str) == Some("1");
-    if on
-        && let Some(raw) = st.env.get(defaults::text("idle_sweep.env_test_now")).filter(|v| !v.is_empty())
-    {
+    if on && let Some(raw) = st.env.get(defaults::text("idle_sweep.env_test_now")).filter(|v| !v.is_empty()) {
         let n = to_number(js_trim(raw));
         if n.is_finite() {
             return n;
@@ -104,10 +102,7 @@ fn message(list: &[Idle], codex: bool, now_ms: f64) -> Result<String, Defer> {
     let n = list.len();
     let be = defaults::text(if n == 1 { "idle_sweep.be_one" } else { "idle_sweep.be_many" });
     let past = words.str_field("past");
-    let call = msg::render(
-        if codex { "idle_sweep.call_codex" } else { "idle_sweep.call_claude" },
-        &[("id", list.first().map_or("", |a| a.id.as_str()))],
-    );
+    let call = msg::render(if codex { "idle_sweep.call_codex" } else { "idle_sweep.call_claude" }, &[("id", list.first().map_or("", |a| a.id.as_str()))]);
     let what = msg::render("idle_sweep.what", &[("n", &n.to_string()), ("be", be), ("past", past), ("shown", &shown.join(", ")), ("more", &more)]);
     let why = msg::render("idle_sweep.why", &[("why_head", words.str_field("why_head")), ("past", past)]);
     let instead = msg::render("idle_sweep.instead", &[("verb", words.str_field("verb")), ("call", &call)]);

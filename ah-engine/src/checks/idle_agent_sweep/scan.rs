@@ -278,9 +278,8 @@ fn teammate_idles(e: &Value, ts: f64, spawned: &OMap<Info>) -> Result<Vec<(Strin
     let skew = defaults::num("idle_sweep.report_future_skew_ms") as f64;
     let skip_ws = |at: usize| at + c[at..].chars().take_while(|ch| is_js_space(*ch)).map(char::len_utf8).sum::<usize>();
     let mut at = skip_ws(prefix.len());
-    loop {
-        // `<teammate-message teammate_id="([^"]+)"[^>]*>\n([\s\S]*?)\n</teammate-message>`, matched at `at` exactly.
-        let Some(rest) = c[at..].strip_prefix(open) else { break };
+    // `<teammate-message teammate_id="([^"]+)"[^>]*>\n([\s\S]*?)\n</teammate-message>`, matched at `at` exactly.
+    while let Some(rest) = c[at..].strip_prefix(open) {
         let Some(q) = rest.find('"') else { break };
         if q == 0 {
             break;
@@ -443,7 +442,11 @@ pub fn finished_teammates(lines: &[String]) -> Result<Vec<Finished>, Defer> {
             let mut texts = Vec::new();
             extract_texts(b.inner, &mut texts);
             for text in texts {
-                if b.is_tool_result && has_launch && sc.answers(b.tuid, "idle_sweep.launch_tools") && text.trim_start_matches(is_js_space).starts_with(launch_phrase) {
+                if b.is_tool_result
+                    && has_launch
+                    && sc.answers(b.tuid, "idle_sweep.launch_tools")
+                    && text.trim_start_matches(is_js_space).starts_with(launch_phrase)
+                {
                     let sid = entry.get("toolUseResult").and_then(|t| str_of(t, "agentId")).filter(|id| r.hex_id.is_match(id)).map(str::to_string);
                     let idm = r.agent_id.captures(&text).map(|c| c[1].to_string());
                     if let Some(id) = sid.or(idm) {

@@ -93,10 +93,21 @@ fn a_line_with_a_marker_that_no_parser_reads_defers_and_an_odd_timestamp_defers(
 
 #[test]
 fn codex_agents_are_finished_until_closed_or_retasked() {
-    let call = |ts: f64, name: &str, args: serde_json::Value, id: &str| json!({"timestamp":iso(ts),"payload":{"type":"function_call","name":name,"arguments":args.to_string(),"call_id":id}}).to_string();
-    let out = |ts: f64, id: &str, o: serde_json::Value| json!({"timestamp":iso(ts),"payload":{"type":"function_call_output","call_id":id,"output":o.to_string()}}).to_string();
+    let call = |ts: f64, name: &str, args: serde_json::Value, id: &str| {
+        json!({"timestamp":iso(ts),"payload":{"type":"function_call","name":name,"arguments":args.to_string(),"call_id":id}}).to_string()
+    };
+    let out = |ts: f64, id: &str, o: serde_json::Value| {
+        json!({"timestamp":iso(ts),"payload":{"type":"function_call_output","call_id":id,"output":o.to_string()}}).to_string()
+    };
     let uuid = "11111111-2222-3333-4444-555555555555";
-    let base = || vec![call(T0 - 5000.0, "spawn_agent", json!({}), "c1"), out(T0 - 4000.0, "c1", json!({"agent_id": uuid, "nickname": "Ada"})), call(T0 - 3000.0, "wait_agent", json!({}), "c2"), out(T0 - 2000.0, "c2", json!({"status": {uuid: {"completed": "ok"}}}))];
+    let base = || {
+        vec![
+            call(T0 - 5000.0, "spawn_agent", json!({}), "c1"),
+            out(T0 - 4000.0, "c1", json!({"agent_id": uuid, "nickname": "Ada"})),
+            call(T0 - 3000.0, "wait_agent", json!({}), "c2"),
+            out(T0 - 2000.0, "c2", json!({"status": {uuid: {"completed": "ok"}}})),
+        ]
+    };
     let got = codex::finished(&base()).unwrap();
     assert_eq!(got, vec![codex::CodexAgent { id: uuid.into(), label: format!("Ada ({uuid})"), idle_since_ms: T0 - 2000.0 }]);
     let mut closed = base();
@@ -114,7 +125,10 @@ fn the_advisory_names_ten_counts_the_rest_and_ends_the_oldest_first() {
     assert!(t.starts_with("\u{1f4a1} anti-hall \u{b7} idle-agents: 12 finished agents are idle and not stopped: a0 (60m), a1 (59m)"), "{t}");
     assert!(t.contains("a9 (51m), and 2 more.\nWhy: each one keeps its process and context alive until it is stopped.\nDo instead: if you have no more work for them, stop each one, e.g. TaskStop {\"task_id\":\"a0\"} (one call per agent)."), "{t}");
     let c = message(&list[..1], true, T0).unwrap();
-    assert!(c.contains("1 finished agent is idle and not closed: a0 (60m).") && c.contains("close_agent {\"target\":\"a0\"}") && c.contains("holds a thread slot"), "{c}");
+    assert!(
+        c.contains("1 finished agent is idle and not closed: a0 (60m).") && c.contains("close_agent {\"target\":\"a0\"}") && c.contains("holds a thread slot"),
+        "{c}"
+    );
 }
 
 #[test]

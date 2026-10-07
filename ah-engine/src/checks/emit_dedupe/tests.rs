@@ -160,7 +160,13 @@ fn keys_unseen_for_a_day_are_dropped_and_other_keys_keep_their_order() {
     let s = st(&h, &[]);
     let now = now_ms();
     std::fs::create_dir_all(state_path(&h, "s").parent().unwrap()).unwrap();
-    let old = format!("{{\"zz\":{{\"lastSeenAt\":{}}},\"kept\":{{\"lastSeenAt\":{}}},\"10\":{{\"lastSeenAt\":{}}},\"2\":{{\"lastSeenAt\":{}}},\"noseen\":{{}}}}", now - 90_000_000.0, now - 1000.0, now - 1000.0, now - 1000.0);
+    let old = format!(
+        "{{\"zz\":{{\"lastSeenAt\":{}}},\"kept\":{{\"lastSeenAt\":{}}},\"10\":{{\"lastSeenAt\":{}}},\"2\":{{\"lastSeenAt\":{}}},\"noseen\":{{}}}}",
+        now - 90_000_000.0,
+        now - 1000.0,
+        now - 1000.0,
+        now - 1000.0
+    );
     std::fs::write(state_path(&h, "s"), old).unwrap();
     assert_eq!(should_emit(&s, &opts("s", "B", None, 0.0)), Ok(true));
     let f = read(&h, "s");

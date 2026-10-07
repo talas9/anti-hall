@@ -69,15 +69,40 @@ pub fn scenarios() -> Vec<Scn> {
     v.push(one("trailing-garbage", format!("{} x", ev(json!("t"), "startup"))).defers());
     // existing state
     let fresh = old_entry(now, 1000.0);
-    v.push(one("state-merge", ev(json!("m"), "startup")).seed(vec![w(&sf("m"), format!("{{\"verify-first\":{fresh},\"__stats\":{{\"suppressed\":3,\"lastSeenAt\":{},\"lastSuppressedAt\":{}}}}}", now - 5000.0, now - 5000.0))]));
-    v.push(one("state-replace-reset", ev(json!("r"), "compact")).seed(vec![w(&sf("r"), format!("{{\"__reset\":{{\"resetAt\":{},\"lastSeenAt\":{}}},\"k\":{fresh}}}", now - 4000.0, now - 4000.0))]));
-    v.push(one("state-prune-old-key", ev(json!("p"), "startup")).seed(vec![w(&sf("p"), format!("{{\"old\":{},\"keep\":{fresh}}}", old_entry(now, 90_000_000.0)))]));
-    v.push(one("state-prune-edge-ttl", ev(json!("pe"), "startup")).seed(vec![w(&sf("pe"), format!("{{\"edge\":{},\"over\":{}}}", old_entry(now, 86_000_000.0), old_entry(now, 86_500_000.0)))]));
-    v.push(one("state-prune-no-seen", ev(json!("pn"), "startup")).seed(vec![w(&sf("pn"), "{\"a\":{\"hash\":\"x\"},\"b\":5,\"c\":\"str\",\"d\":null,\"e\":[1],\"f\":{\"lastSeenAt\":\"123\"}}")]));
-    v.push(one("state-int-keys-order", ev(json!("ik"), "startup")).seed(vec![w(&sf("ik"), format!("{{\"zeta\":{fresh},\"10\":{fresh},\"2\":{fresh},\"abc\":{fresh},\"007\":{fresh},\"4294967295\":{fresh},\"4294967294\":{fresh}}}"))]));
-    v.push(one("state-dup-keys", ev(json!("dk"), "startup")).seed(vec![w(&sf("dk"), format!("{{\"a\":{fresh},\"b\":{fresh},\"a\":{}}}", old_entry(now, 5000.0)))]));
-    v.push(one("state-float-numbers", ev(json!("fn"), "startup")).seed(vec![w(&sf("fn"), format!("{{\"a\":{{\"lastSeenAt\":{}.5,\"x\":1e21,\"y\":1.5e-7,\"z\":0.000001,\"n\":-0,\"big\":12345678901234567890}}}}", now as u64))]));
-    v.push(one("state-unicode-keys", ev(json!("uk"), "startup")).seed(vec![w(&sf("uk"), format!("{{\"k\\u00e9y\":{fresh},\"\\\"q\\\\\":{fresh},\"\\u0001\":{fresh},\"tab\\t\":{fresh}}}"))]));
+    v.push(one("state-merge", ev(json!("m"), "startup")).seed(vec![w(
+        &sf("m"),
+        format!("{{\"verify-first\":{fresh},\"__stats\":{{\"suppressed\":3,\"lastSeenAt\":{},\"lastSuppressedAt\":{}}}}}", now - 5000.0, now - 5000.0),
+    )]));
+    v.push(
+        one("state-replace-reset", ev(json!("r"), "compact"))
+            .seed(vec![w(&sf("r"), format!("{{\"__reset\":{{\"resetAt\":{},\"lastSeenAt\":{}}},\"k\":{fresh}}}", now - 4000.0, now - 4000.0))]),
+    );
+    v.push(
+        one("state-prune-old-key", ev(json!("p"), "startup")).seed(vec![w(&sf("p"), format!("{{\"old\":{},\"keep\":{fresh}}}", old_entry(now, 90_000_000.0)))]),
+    );
+    v.push(
+        one("state-prune-edge-ttl", ev(json!("pe"), "startup"))
+            .seed(vec![w(&sf("pe"), format!("{{\"edge\":{},\"over\":{}}}", old_entry(now, 86_000_000.0), old_entry(now, 86_500_000.0)))]),
+    );
+    v.push(
+        one("state-prune-no-seen", ev(json!("pn"), "startup"))
+            .seed(vec![w(&sf("pn"), "{\"a\":{\"hash\":\"x\"},\"b\":5,\"c\":\"str\",\"d\":null,\"e\":[1],\"f\":{\"lastSeenAt\":\"123\"}}")]),
+    );
+    v.push(one("state-int-keys-order", ev(json!("ik"), "startup")).seed(vec![w(
+        &sf("ik"),
+        format!("{{\"zeta\":{fresh},\"10\":{fresh},\"2\":{fresh},\"abc\":{fresh},\"007\":{fresh},\"4294967295\":{fresh},\"4294967294\":{fresh}}}"),
+    )]));
+    v.push(
+        one("state-dup-keys", ev(json!("dk"), "startup")).seed(vec![w(&sf("dk"), format!("{{\"a\":{fresh},\"b\":{fresh},\"a\":{}}}", old_entry(now, 5000.0)))]),
+    );
+    v.push(one("state-float-numbers", ev(json!("fn"), "startup")).seed(vec![w(
+        &sf("fn"),
+        format!("{{\"a\":{{\"lastSeenAt\":{}.5,\"x\":1e21,\"y\":1.5e-7,\"z\":0.000001,\"n\":-0,\"big\":12345678901234567890}}}}", now as u64),
+    )]));
+    v.push(
+        one("state-unicode-keys", ev(json!("uk"), "startup"))
+            .seed(vec![w(&sf("uk"), format!("{{\"k\\u00e9y\":{fresh},\"\\\"q\\\\\":{fresh},\"\\u0001\":{fresh},\"tab\\t\":{fresh}}}"))]),
+    );
     v.push(one("state-garbage", ev(json!("g"), "startup")).seed(vec![w(&sf("g"), "not json at all")]).defers());
     v.push(one("state-blank", ev(json!("bl"), "startup")).seed(vec![w(&sf("bl"), "  \n ")]));
     v.push(one("state-empty-file", ev(json!("ef"), "startup")).seed(vec![w(&sf("ef"), "")]));
@@ -124,9 +149,19 @@ pub fn scenarios() -> Vec<Scn> {
     ] {
         v.push(one(&format!("switch-{n}"), ev(json!("sw"), "startup")).seed(vec![w(".anti-hall/settings.json", body)]));
     }
-    v.push(one("switch-stored-off", ev(json!("sw"), "startup")).seed(vec![w(".claude/settings.json", "{\"pluginConfigs\":{\"anti-hall\":{\"options\":{\"guards_emit_dedupe\":false}}}}")]));
-    v.push(one("switch-stored-flat-id", ev(json!("sw"), "startup")).seed(vec![w(".claude/settings.json", "{\"pluginConfigs\":{\"anti-hall@anti-hall\":{\"context_dedupe_window_min\":0}}}")]));
-    v.push(one("switch-env-beats-file", ev(json!("sw"), "startup")).env(&[("ANTIHALL_EMIT_DEDUPE", "1")]).seed(vec![w(".anti-hall/settings.json", "{\"guards\":{\"emitDedupe\":false}}")]));
+    v.push(
+        one("switch-stored-off", ev(json!("sw"), "startup"))
+            .seed(vec![w(".claude/settings.json", "{\"pluginConfigs\":{\"anti-hall\":{\"options\":{\"guards_emit_dedupe\":false}}}}")]),
+    );
+    v.push(
+        one("switch-stored-flat-id", ev(json!("sw"), "startup"))
+            .seed(vec![w(".claude/settings.json", "{\"pluginConfigs\":{\"anti-hall@anti-hall\":{\"context_dedupe_window_min\":0}}}")]),
+    );
+    v.push(
+        one("switch-env-beats-file", ev(json!("sw"), "startup"))
+            .env(&[("ANTIHALL_EMIT_DEDUPE", "1")])
+            .seed(vec![w(".anti-hall/settings.json", "{\"guards\":{\"emitDedupe\":false}}")]),
+    );
     // the sweep of idle session files
     let sweep_seed = |stamp: Option<&str>| {
         let mut f = vec![
@@ -151,6 +186,8 @@ pub fn scenarios() -> Vec<Scn> {
     v.push(one("sweep-stamp-edge", ev(json!("self"), "startup")).seed(sweep_seed(Some(&format!("{{\"lastSweep\":{}}}", now - 21_599_000.0)))));
     v.push(one("sweep-blank-stamp", ev(json!("self"), "startup")).seed(sweep_seed(Some("  "))));
     v.push(one("sweep-two-runs", ev(json!("self"), "startup")).seed(sweep_seed(None)));
-    v.push(scn("reset-sweep-second-run", "emit-dedupe-reset", vec![step(ev(json!("self"), "startup")), step(ev(json!("self"), "clear"))]).seed(sweep_seed(None)));
+    v.push(
+        scn("reset-sweep-second-run", "emit-dedupe-reset", vec![step(ev(json!("self"), "startup")), step(ev(json!("self"), "clear"))]).seed(sweep_seed(None)),
+    );
     v
 }

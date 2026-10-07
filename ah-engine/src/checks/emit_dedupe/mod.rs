@@ -169,7 +169,8 @@ fn prune_stale(dir: &std::path::Path, keep: &std::path::Path) {
     let stamp = dir.join(format!("{}{prefix}.json", defaults::text("emit_dedupe.prune_stamp_prefix")));
     let now = now_ms();
     if let Ok(raw) = std::fs::read_to_string(&stamp)
-        && let Some(last) = Js::parse(raw.trim_matches(|c: char| crate::checks::guardkit::text::is_js_space(c))).and_then(|j| j.get("lastSweep").and_then(Js::as_f64))
+        && let Some(last) =
+            Js::parse(raw.trim_matches(|c: char| crate::checks::guardkit::text::is_js_space(c))).and_then(|j| j.get("lastSweep").and_then(Js::as_f64))
         && last.is_finite()
         && last <= now
         && now - last < num("emit_dedupe.prune_throttle_ms")
@@ -224,7 +225,8 @@ fn scan_tail(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
         // A line that holds the marker and that neither parser reads may still be valid JavaScript: defer.
         let Some(e) = parse_line(line) else { return Err(Defer) };
         let Some(a) = (e.get("type").and_then(Value::as_str) == Some("attachment")).then(|| e.get("attachment")).flatten() else { continue };
-        if a.get("type").and_then(Value::as_str) != Some(marker) || a.get("hookEvent").and_then(Value::as_str) != Some(defaults::text("emit_dedupe.hook_event")) {
+        if a.get("type").and_then(Value::as_str) != Some(marker) || a.get("hookEvent").and_then(Value::as_str) != Some(defaults::text("emit_dedupe.hook_event"))
+        {
             continue;
         }
         let ts = match e.get("timestamp") {
@@ -489,7 +491,13 @@ pub fn session_of(p: &Value) -> Result<Option<String>, Defer> {
 /// relative path is [`Defer`]: Node would resolve it against its own working directory, not the daemon's.
 pub fn transcript_of(p: &Value) -> Result<Option<&str>, Defer> {
     match p.get("transcript_path") {
-        Some(Value::String(s)) if !s.is_empty() => if s.starts_with('/') { Ok(Some(s)) } else { Err(Defer) },
+        Some(Value::String(s)) if !s.is_empty() => {
+            if s.starts_with('/') {
+                Ok(Some(s))
+            } else {
+                Err(Defer)
+            }
+        }
         _ => Ok(None),
     }
 }
