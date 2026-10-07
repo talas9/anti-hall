@@ -973,7 +973,7 @@ mod tests {
         // only a hook-section change is still a change
         std::fs::write(&paths.user, "[daemon]\nqueue = 9\n[events.PostToolUse]\nmax_rules = 3\n").unwrap();
         assert_eq!(store.reload(), Reload::Applied(3));
-        assert_eq!((cap(&store), store.snapshot().last_error), (3, None));
+        assert_eq!((cap(&store), store.snapshot().last_error.clone()), (3, None));
         std::fs::remove_file(&paths.user).unwrap();
         assert_eq!(store.reload(), Reload::Applied(4));
         assert_eq!((cap(&store), store.snapshot().hooks.hash()), (0, ""), "a deleted file falls back to the defaults");
