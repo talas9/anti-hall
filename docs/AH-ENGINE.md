@@ -44,18 +44,18 @@ labelled with how it was measured in the README of `ah-engine/`.
   answer, then the old daemon drains and exits so the next call starts the new build (D8).
 - **Rules.** `rules.json`, evaluated in file order; every match contributes and any `deny` wins. A rule may name a built-in
   check instead of a pattern.
-- **Checks.** A check is Rust code behind the `Check` trait, registered by name. Today there is one: `git`, a port of the
-  git-guard hook with 100 percent agreement with the Node original on every corpus tried (see the README of `ah-engine/`).
 - **Small guard ports.** `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
   `compact-declaration-guard` are the five small guards ported from Node. They share `checks/guardkit`: the switch and
   skip-file lookup, the message layout, JavaScript-exact regex translation and a per-session state store that lives in
   memory until storage is wired in (planned, D22). Where the Node verdict cannot be reproduced exactly (a block whose
   stdout and stderr the reply cannot carry yet, a regex construct, a classifier that lives in another port) the check
   defers, so Node decides.
-- **Checks.** A check is Rust code behind the `Check` trait, registered by name. Today there are two: `git`, a port of the
-  git-guard hook with 100 percent agreement with the Node original on every corpus tried, and `command`, a port of the
-  command-guard hook that answers the commands Node allows in every context and defers the rest to the Node hook, also
-  at 100 percent agreement (see the README of `ah-engine/`).
+- **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
+  eight: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
+  `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
+  to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
+  the five small guard ports above: `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
+  `compact-declaration-guard` (see the README of `ah-engine/`).
 
 ## What works today
 
