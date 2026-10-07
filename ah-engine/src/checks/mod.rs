@@ -9,8 +9,8 @@
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
-pub mod failure_nudge;
 pub mod fable_availability;
+pub mod failure_nudge;
 pub mod git;
 pub mod guardkit;
 pub mod merge_side_pick;

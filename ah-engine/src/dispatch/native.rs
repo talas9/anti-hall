@@ -239,7 +239,16 @@ mod tests {
             ("codex", "SessionStart", vec!["verify-first-full"]),
             ("claude", "SubagentStart", vec!["verify-first-subagent"]),
         ] {
-            let meta = Meta { host: host.into(), event: event.into(), tool: None, root: Some(root.clone()), env: env.clone() };
+            let meta = Meta {
+                host: host.into(),
+                event: event.into(),
+                tool: None,
+                root: Some(root.clone()),
+                env: env.clone(),
+                only: None,
+                plan: Vec::new(),
+                cfg: String::new(),
+            };
             let got = evaluate(&meta, &p, &|_, _, _| {});
             assert_eq!(got.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ids, "{host} {event}");
             for (id, a) in &got {
@@ -259,7 +268,7 @@ mod tests {
             }
         }
         // the root is a host fact: with none, the compact text cannot be built and the Node hook answers
-        let meta = Meta { host: "claude".into(), event: "SubagentStart".into(), tool: None, root: None, env };
+        let meta = Meta { host: "claude".into(), event: "SubagentStart".into(), tool: None, root: None, env, only: None, plan: Vec::new(), cfg: String::new() };
         assert_eq!(evaluate(&meta, &p, &|_, _, _| {}).into_iter().map(|(_, a)| a).collect::<Vec<_>>(), vec![Answer::Defer]);
     }
 

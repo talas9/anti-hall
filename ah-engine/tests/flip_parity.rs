@@ -537,12 +537,28 @@ impl Drop for Rig {
     }
 }
 
+/// Built-in checks that inject text (never silent) on a well-formed payload.
+const CONTEXT_CHECKS: [&str; 3] = ["verify-first-subagent", "verify-first-full", "fable-availability"];
+
+fn has_context_check(host: &str, event: &str) -> bool {
+    table::entries(host, event).iter().any(|e| e.check.as_deref().is_some_and(|c| CONTEXT_CHECKS.contains(&c)))
+}
+
 /// One row: the two answers must be identical (or the documented stricter one, for the one documented class).
 fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
     let want = rig.old(row, n);
     let got = rig.new_path(row);
     let ok = if row.stricter {
         got.code == Some(2) && got.err.contains(defaults::text("msg.dispatch_stdin_utf8"))
+    } else if row.class == "well-formed" && has_context_check(row.host, &row.event) {
+        // A context check answers a well-formed payload with real text natively, which the silent fake hooks of the oracle cannot
+        // produce; the exact text is compared with Node by the check's own parity harness. Here: the engine's answer is a clean
+        // exit 0 whose stdout is a JSON object carrying the injected context, and nothing on stderr.
+        got.code == Some(0)
+            && got.err.is_empty()
+            && serde_json::from_str::<Value>(got.out.trim())
+                .ok()
+                .is_some_and(|v| v["hookSpecificOutput"]["additionalContext"].as_str().is_some_and(|s| !s.is_empty()))
     } else {
         got.code == want.code && same_stdout(&got.out, &want.out) && got.err == want.err
     };
