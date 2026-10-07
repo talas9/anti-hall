@@ -187,7 +187,7 @@ impl LiveFacts {
     fn loaded(&self) -> &(Value, crate::cfgstore::Effective) {
         self.loaded.get_or_init(|| {
             let (layers, _) = crate::cfgstore::load_layers_cold(&crate::cfgstore::Paths::from_env());
-            let eff = crate::cfgstore::Effective::resolve(&layers, &|n| std::env::var(n).ok());
+            let eff = crate::cfgstore::Effective::resolve_process(&layers);
             (layers.settings, eff)
         })
     }

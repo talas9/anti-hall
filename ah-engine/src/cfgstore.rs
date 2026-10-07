@@ -418,6 +418,12 @@ impl Effective {
         Effective { map }
     }
 
+    /// The settings of `layers` resolved with this process's own environment (the dispatcher client, which is the process
+    /// the engine tunables configure).
+    pub fn resolve_process(layers: &Layers) -> Effective {
+        Effective::resolve(layers, &|n| std::env::var(n).ok())
+    }
+
     /// The shipped defaults plus the process environment (no files): what the daemon ran with before config files existed.
     pub fn defaults() -> Effective {
         Effective::resolve(&Layers::default(), &|n| std::env::var(n).ok())
