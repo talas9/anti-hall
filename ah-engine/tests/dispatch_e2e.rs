@@ -1005,7 +1005,7 @@ fn wrapper_and_engine_agree_on_unparsable_guard_payloads() {
     let run = |engine: &str, (map, list): &(PathBuf, PathBuf), payload: &[u8]| -> (i32, String) {
         let mut c = Command::new("sh");
         c.arg(&wrapper)
-            .args(["PreToolUse", "--tool", "Bash"])
+            .args(["PreToolUse", "--tool-from-payload"])
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", e.dir.join("home"))

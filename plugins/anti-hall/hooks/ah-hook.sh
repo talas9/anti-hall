@@ -11,6 +11,9 @@
 # - Node hook timeout: host discards that hook; other hooks still decide the event.
 # - Node hook signal death, spawn failure, known-unrunnable command, or incomplete output:
 #   fail closed on guard events, ignored on non-guards.
+# Tool selection is payload-only: the one accepted argument is --tool-from-payload, which reads tool_name structurally from
+# stdin. There is no --tool X: a caller-named tool could narrow the rows run and skip a guard the payload would select.
+# Any other argument is ignored (without --tool-from-payload every row of the event runs, the safe superset).
 # Test-only knobs (honored ONLY when AH_WRAPPER_TEST=1 is also set; otherwise ignored with a one-line
 # stderr note): AH_ENGINE_BIN, AH_FALLBACK_LIST, AH_FALLBACK_MAP, AH_HOOK_TIMEOUT_S, AH_KILL_GRACE_S,
 # AH_HOOK_SWEEP_AGE_S. The engine is otherwise located only at $HOME/.anti-hall/ah-engine/bin/ah-engine
