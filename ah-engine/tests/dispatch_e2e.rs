@@ -480,7 +480,8 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
         )
     };
     let (a, b, c) = (big("a", ""), big("b", ""), big("c", r#","permissionDecision":"ask","permissionDecisionReason":"sure?""#));
-    let map = e.map(&[("merge-side-pick", a.as_str()), ("merge-gate", b.as_str()), ("api-guard", c.as_str())]);
+    // coordinator-work-guard defers a main-session Bash call to Node (merge-side-pick answers it natively), so its map entry runs
+    let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str()), ("api-guard", c.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
     assert_eq!((code, err.as_str()), (0, ""));
@@ -490,7 +491,7 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
     assert_eq!(log.matches("dispatch_context_over_cap").count(), 1, "{log}");
     // two of them fit joined: delivered as one, nothing logged
-    let map = e.map(&[("merge-side-pick", a.as_str()), ("merge-gate", b.as_str())]);
+    let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     assert_eq!(e.run(&args, true, &bash("ls", &e.dir), true).0, 0);
 }
