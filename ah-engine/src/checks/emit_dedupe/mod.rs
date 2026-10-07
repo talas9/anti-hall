@@ -133,7 +133,13 @@ fn write_entry(home: &str, session: &str, key: &str, entry: Js, now: f64) -> Res
     }
     let ttl = num("emit_dedupe.key_ttl_ms");
     state.retain(|(_, e)| now - finite(Some(e), "lastSeenAt").unwrap_or(0.0) <= ttl);
-    crate::atomic::write(&path, Js::Obj(state).stringify()).map_err(|_| WriteErr::Io)?;
+    // Node leaves its temporary file behind when the rename fails; the parity suites compare the directory, so do the same.
+    crate::atomic::write_styled(
+        &path,
+        Js::Obj(state).stringify(),
+        crate::atomic::Style { leave_temp_on_rename_failure: true, ..crate::atomic::Style::default() },
+    )
+    .map_err(|_| WriteErr::Io)?;
     prune_stale(&dir, &path);
     Ok(())
 }

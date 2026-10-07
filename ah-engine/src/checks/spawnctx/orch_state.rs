@@ -59,7 +59,7 @@ pub fn write_marker(home: &str, session_id: &str, decision: &str) -> bool {
     let sent_at = now_ms() as u64;
     let file = marker_path(home, session_id);
     let body = format!("{{\"epochId\":\"{sent_at}\",\"decision\":{},\"sentAt\":{sent_at}}}", serde_json::to_string(decision).unwrap_or_default());
-    if crate::atomic::write(&file, body).is_err() {
+    if crate::atomic::write_styled(&file, body, crate::atomic::Style { keep_json_ext: true, ..crate::atomic::Style::default() }).is_err() {
         return false;
     }
     prune_stale(&dir, &file);

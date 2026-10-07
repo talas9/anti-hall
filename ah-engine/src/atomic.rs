@@ -9,13 +9,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// How [`write_styled`] names its temporary file and what it leaves behind when the rename fails. The two non-default
+/// styles exist for byte-for-byte parity with the Node hooks, whose state files this engine shares. `Style::default()`
+/// appends the tag and removes the temporary file on any failure.
+#[derive(Clone, Copy, Default)]
+pub struct Style {
+    /// A `.json` target keeps a `.json` ending after the tag (`x.<pid>.<n>.tmp.json`), so a sweep that reaps `*.json` also
+    /// reaps a leftover. Otherwise the tag is appended (`x.json.<pid>.<n>.tmp`).
+    pub keep_json_ext: bool,
+    /// Leave the temporary file in place when the final rename fails, as Node's `writeFileSync` + `renameSync` do.
+    pub leave_temp_on_rename_failure: bool,
+}
+
 /// The temporary sibling of `path`. Unique per process and per call (pid + counter), so two threads, or two daemons, never
-/// share one. A `.json` target keeps a `.json` ending so the stale-file sweeps that match `*.json` still reap a leftover.
-fn tmp_path(path: &Path) -> PathBuf {
+/// share one.
+fn tmp_path(path: &Path, style: Style) -> PathBuf {
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut name = path.as_os_str().to_os_string();
     let tag = format!(".{}.{n}{}", std::process::id(), defaults::text("atomic.tmp_suffix"));
-    if let Some(ext) = path.extension().filter(|e| *e == "json") {
+    if let Some(ext) = path.extension().filter(|e| style.keep_json_ext && *e == "json") {
         let mut s = name.to_string_lossy().into_owned();
         s.truncate(s.len() - ext.len() - 1);
         name = format!("{s}{tag}.{}", ext.to_string_lossy()).into();
@@ -25,26 +37,37 @@ fn tmp_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Write `bytes` to `path` atomically (temporary file beside it, `sync_all`, rename).
+/// Write `bytes` to `path` atomically (temporary file beside it, `sync_all`, rename), with the default [`Style`].
 ///
 /// # Errors
 /// Any I/O error from creating, writing, syncing or renaming; on error the temporary file is removed and `path` is left
 /// as it was. The parent directory must already exist.
 pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    write_styled(path, bytes, Style::default())
+}
+
+/// [`write`] with an explicit [`Style`].
+///
+/// # Errors
+/// As [`write`]; with `leave_temp_on_rename_failure` the temporary file stays after a failed rename.
+pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<()> {
     let path = path.as_ref();
-    let tmp = tmp_path(path);
-    let result = (|| {
+    let tmp = tmp_path(path, style);
+    let staged = (|| {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes.as_ref())?;
-        f.sync_all()?;
-        drop(f);
-        std::fs::rename(&tmp, path)
+        f.sync_all()
     })();
-    if result.is_err() {
+    if let Err(e) = staged {
         // Best effort: the original error is the one worth returning; a leftover temp file is swept later.
         crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
+        return Err(e);
     }
-    result
+    let renamed = std::fs::rename(&tmp, path);
+    if renamed.is_err() && !style.leave_temp_on_rename_failure {
+        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
+    }
+    renamed
 }
 
 #[cfg(test)]
@@ -89,6 +112,17 @@ mod tests {
     }
 
     #[test]
+    fn node_parity_style_leaves_the_temp_after_a_failed_rename() {
+        let d = dir("leave");
+        let target = d.join("t");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep"), "x").unwrap();
+        assert!(write_styled(&target, "new", Style { leave_temp_on_rename_failure: true, ..Style::default() }).is_err());
+        assert_eq!(entries(&d).len(), 2, "the temp file stays, as Node leaves it: {:?}", entries(&d));
+        crate::discard::harmless(std::fs::remove_dir_all(&d));
+    }
+
+    #[test]
     fn missing_parent_is_an_error_not_a_panic() {
         let d = dir("noparent");
         assert!(write(d.join("nope/x.json"), "a").is_err());
@@ -101,7 +135,7 @@ mod tests {
         let d = dir("crash");
         let f = d.join("state.json");
         write(&f, "{\"v\":1}").unwrap();
-        std::fs::write(tmp_path(&f), "{\"v\":").unwrap(); // the partial write
+        std::fs::write(tmp_path(&f, Style::default()), "{\"v\":").unwrap(); // the partial write
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "{\"v\":1}");
         write(&f, "{\"v\":2}").unwrap(); // a later write is unaffected by the stray file
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "{\"v\":2}");
@@ -111,10 +145,14 @@ mod tests {
     #[test]
     fn json_temp_keeps_the_json_ending_and_other_names_do_not_collide() {
         let p = Path::new("/x/orch-1.json");
-        let (a, b) = (tmp_path(p), tmp_path(p));
+        let json = Style { keep_json_ext: true, ..Style::default() };
+        let (a, b) = (tmp_path(p, json), tmp_path(p, json));
         assert_ne!(a, b);
         assert!(a.to_string_lossy().ends_with(".tmp.json") && a.to_string_lossy().starts_with("/x/orch-1."));
-        assert!(tmp_path(Path::new("/x/log")).to_string_lossy().ends_with(".tmp"));
+        assert!(
+            tmp_path(p, Style::default()).to_string_lossy().starts_with("/x/orch-1.json.") && tmp_path(p, Style::default()).to_string_lossy().ends_with(".tmp")
+        );
+        assert!(tmp_path(Path::new("/x/log"), json).to_string_lossy().ends_with(".tmp"));
     }
 
     #[test]
