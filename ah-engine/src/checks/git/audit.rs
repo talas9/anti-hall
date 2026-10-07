@@ -2,7 +2,7 @@
 //!
 //! The PreToolUse scan only sees the command line; a self-credit trailer can still land from outside it (a repository
 //! `commit-msg` hook, a commit template, a cherry-picked message, an editor). After a command that ran a commit-creating git
-//! verb, this reads the commits HEAD points at that were committed in the last [`git_audit.window_s`] seconds and advises the
+//! verb, this reads the commits HEAD points at that were committed in the last `git_audit.window_s` seconds and advises the
 //! agent to reword any that carry a self-credit trailer before pushing. It never writes and never blocks.
 //!
 //! Differences from the Node hook (deliberate): a payload without an absolute `cwd` defers (Node would use its own process

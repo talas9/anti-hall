@@ -2,7 +2,7 @@
 //! never stopped (`finishedTeammates`), read from the transcript lines of one session.
 //!
 //! A teammate is spawned by an Agent tool result (`toolUseResult.status` = `teammate_spawned`), is sent messages by
-//! SendMessage ("Message sent to <name>'s inbox"), reports a finished turn with an `idle_notification` block inside a
+//! SendMessage ("Message sent to `<name>`'s inbox"), reports a finished turn with an `idle_notification` block inside a
 //! "Another Claude session sent a message:" user entry, and is ended by TaskStop. Replaying those events in time order
 //! leaves a teammate idle with `idleReason` `available` or `failed` and no later send or stop: finished, not stopped.
 //!
