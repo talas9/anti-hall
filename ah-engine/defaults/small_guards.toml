@@ -1286,3 +1286,200 @@ value = ["calls", "work", "blocks", "skippedWouldBlock"]
 [coordinator_work.version_keys]
 doc = "The keys of one version's entry in the metrics file, in file order: the number of folded sessions, then the counters."
 value = ["sessions", "calls", "work", "blocks", "skippedWouldBlock"]
+
+# ---- merge-gate (hooks/merge-gate.js) ---------------------------------------------------------------------
+
+[merge_gate.summary]
+doc = "One-line description of the merge-gate check in the generated reference."
+value = "Opt-in false-done backstop: answers every Bash call the Node merge-gate would allow (gate off, not an auto-merge command, no transcript, no hedge phrase in the recent assistant text) and defers the rest, so a possible block and its Jev shadow ask stay with the Node hook (port of merge-gate.js)."
+
+[merge_gate.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "merge-gate"
+
+[merge_gate.setting]
+doc = "Where the opt-in switch is read from (guards.mergeGate, default off)."
+value = { section = "guards", key = "mergeGate", env = "ANTIHALL_MERGE_GATE", aliases = [], option = "guards_merge_gate", default = false }
+
+[merge_gate.window_bytes]
+doc = "How much of the end of the transcript is scanned for a self-hedge (the same bounded tail the Node gate reads)."
+value = 131072
+unit = "bytes"
+min = 1024
+max = 16777216
+
+[merge_gate.hedge_phrases]
+doc = "Self-hedge phrases, matched case-insensitively as plain text in the recent assistant output."
+value = ["pending owner", "do not merge", "pending review", "needs your review", "needs your eyes", "review it in the build", "built, pending"]
+
+[merge_gate.hedge_patterns]
+doc = "Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output."
+value = ['first[- ]pass', 'not pixel[- ]perfect']
+
+[merge_gate.segment_split]
+doc = "Regex source that splits a Bash command into the segments the auto-merge scan looks at (shell separators; quotes are not honoured, on purpose, as in the Node gate)."
+value = '&&|\|\||[;&|\n]'
+
+[merge_gate.env_assign]
+doc = "Regex source of a leading environment assignment the scan skips before the command word."
+value = '^[A-Za-z_][A-Za-z0-9_]*='
+
+[merge_gate.protected_target]
+doc = "Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge."
+value = '^(main|master|develop|origin\/(main|master|develop))$'
+
+[merge_gate.merge_rules]
+doc = "The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target."
+value = [
+  { verb = "gh", prefix = ["pr", "merge"] },
+  { verb = "gh", prefix = ["pr", "review"], includes_any = ["--approve"] },
+  { verb = "git", prefix = ["merge"], includes_any = ["--no-ff", "--ff", "--ff-only"], needs_target = true },
+  { verb = "hivecontrol", prefix = ["workspace", "merge-into-source"] },
+  { verb = "hivecontrol", prefix = ["workspace", "merge-from-source"] },
+]
+
+# ---- api-guard (hooks/api-guard.js) -----------------------------------------------------------------------
+
+[api_guard.summary]
+doc = "One-line description of the api-guard check in the generated reference."
+value = "Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js)."
+
+[api_guard.guard_name]
+doc = "The guard id this check answers to in skip.json."
+value = "api-guard"
+
+[api_guard.setting]
+doc = "Where the guard's own on/off switch is read from (guards.apiGuard, default on)."
+value = { section = "guards", key = "apiGuard", env = "", aliases = [], option = "guards_api_guard", default = true }
+
+[api_guard.shell_setting]
+doc = "Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on)."
+value = { section = "guards", key = "shellWriteChecks", env = "ANTIHALL_SHELL_WRITE_CHECKS", aliases = [], option = "", default = true }
+
+[api_guard.thirdparty_setting]
+doc = "Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off)."
+value = { section = "guards", key = "apiGuardThirdparty", env = "ANTIHALL_API_GUARD_THIRDPARTY", aliases = [], option = "", default = false }
+
+[api_guard.tool_write]
+doc = "Tool whose code is `tool_input.content`."
+value = "Write"
+
+[api_guard.tool_edit]
+doc = "Tool whose code is `tool_input.new_string`."
+value = "Edit"
+
+[api_guard.tool_multi]
+doc = "Tool whose code is the `new_string` of each entry of `tool_input.edits`."
+value = "MultiEdit"
+
+[api_guard.tool_shell]
+doc = "Tool whose command can write a code file."
+value = "Bash"
+
+[api_guard.tool_patch]
+doc = "Codex tool whose patch text carries the code."
+value = "apply_patch"
+
+[api_guard.python_extensions]
+doc = "File extensions (lower-case) the guard checks as Python."
+value = ["py", "pyi"]
+
+[api_guard.js_extensions]
+doc = "File extensions (lower-case) the guard checks as JavaScript or TypeScript."
+value = ["js", "mjs", "cjs", "ts", "tsx", "jsx"]
+
+[api_guard.extension_pattern]
+doc = "Regex source (case-insensitive) of a file name's extension, group 1."
+value = '\.([a-z]+)$'
+
+[api_guard.code_name_pattern]
+doc = "Regex source (case-insensitive) that finds a code file name inside a Bash command or an apply_patch text. Written without a word boundary, so it finds every spelling the Node guard's own pattern finds, and more."
+value = '\.(?:py|pyi|js|mjs|cjs|ts|tsx|jsx)'
+
+[api_guard.python_stdlib]
+doc = "Python standard-library modules whose attributes the Node guard verifies by default."
+value = ["os", "sys", "math", "cmath", "random", "json", "re", "collections", "itertools", "functools", "pathlib", "asyncio", "datetime", "time", "statistics", "heapq", "bisect", "string", "textwrap", "shutil", "glob", "csv", "sqlite3", "decimal", "fractions", "secrets", "uuid", "contextlib", "operator", "inspect", "abc", "numbers", "array", "enum", "dataclasses", "typing", "io", "struct", "hashlib", "base64", "binascii", "copy", "pprint", "queue", "threading", "socket"]
+
+[api_guard.node_builtins]
+doc = "Node built-in modules whose attributes the Node guard verifies by default."
+value = ["fs", "path", "os", "crypto", "util", "stream", "buffer", "events", "url", "querystring", "http", "https", "net", "dns", "zlib", "readline", "child_process", "assert", "timers", "string_decoder", "tls", "dgram", "process"]
+
+[api_guard.js_globals]
+doc = "JavaScript global builtins whose members the Node guard verifies by default."
+value = ["Array", "String", "Object", "Promise", "Map", "Set", "WeakMap", "WeakSet", "Number", "Math", "JSON", "Reflect", "Symbol", "Date", "RegExp", "BigInt", "Buffer"]
+
+[api_guard.python_import_word]
+doc = "The word a Python module reference needs before the guard can resolve an attribute against it."
+value = "import"
+
+[api_guard.js_require_word]
+doc = "The text a JavaScript module reference needs before the guard can resolve an attribute against it."
+value = "require"
+
+# ---- edit-guard (hooks/edit-guard.js) ---------------------------------------------------------------------
+
+[edit_guard.summary]
+doc = "One-line description of the edit-guard check in the generated reference."
+value = "Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js)."
+
+[edit_guard.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "edit-guard"
+
+[edit_guard.setting]
+doc = "Where the guard's on/off switch is read from (safety.editGuard, default on)."
+value = { section = "safety", key = "editGuard", env = "ANTIHALL_EDIT_GUARD", aliases = [], option = "safety_edit_guard", default = true }
+
+[edit_guard.edit_tools]
+doc = "The tools whose target file the guard checks."
+value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+[edit_guard.notebook_tool]
+doc = "The tool whose target is `tool_input.notebook_path` instead of `tool_input.file_path`."
+value = "NotebookEdit"
+
+[edit_guard.patch_tool]
+doc = "The Codex tool whose targets are the files of a patch; the engine has no patch parser, so it defers."
+value = "apply_patch"
+
+[edit_guard.launcher_dir]
+doc = "Path of the stable launcher directory under the home directory, as its parts. A write into it is blocked for every agent."
+value = [".anti-hall", "bin"]
+
+[edit_guard.msg_launcher_what]
+doc = "Launcher-directory block headline; {tool} is the tool name."
+value = "{tool} into ~/.anti-hall/bin/ (the stable launcher directory) is blocked."
+
+[edit_guard.msg_launcher_why]
+doc = "Launcher-directory block reason."
+value = "anti-hall installs and refreshes those files itself; overwriting one would run arbitrary code under a trusted name."
+
+[edit_guard.msg_launcher_instead]
+doc = "Launcher-directory block advice."
+value = "leave that directory alone."
+
+[edit_guard.msg_launcher_allowed]
+doc = "What stays allowed next to the launcher directory."
+value = "the rest of .anti-hall/** (handovers, progress, history, state)."
+
+# ---- coordinator detection (hooks/coordinator-detect.js) --------------------------------------------------
+
+[coordinator_work.entrypoint_env]
+doc = "Environment variable the host sets to say how the session was started; it tells the main thread from a subagent."
+value = "CLAUDE_CODE_ENTRYPOINT"
+
+[coordinator_work.subagent_entrypoint]
+doc = "The entry point value of a subagent session."
+value = "agent_tool"
+
+[coordinator_work.main_entrypoints]
+doc = "Entry point values (exact) of a main-thread session."
+value = ["cli", "vscode", "jetbrains", "vim", "emacs"]
+
+[coordinator_work.main_entrypoint_prefix]
+doc = "Entry point prefix of a main-thread session started from a terminal inside an IDE."
+value = "terminal_ide_"
+
+[coordinator_work.codex_tool]
+doc = "The tool name only Codex sends; a payload naming it is a Codex payload."
+value = "apply_patch"

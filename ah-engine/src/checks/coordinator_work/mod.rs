@@ -57,6 +57,28 @@ pub(crate) fn subagent_by_payload(p: &Value) -> bool {
     if payload_is_codex(p) { markers.iter().any(|k| present(p, k)) } else { markers.iter().any(|k| truthy(p.get(k))) }
 }
 
+/// True when the payload is a Codex payload by `coordinator-detect.js` `isCodexPayload`: it names the Codex-only tool, or
+/// carries both Codex marker fields as non-empty strings. A payload that is not a JSON object is not.
+fn is_codex_payload(p: &Value) -> bool {
+    p.is_object() && (p.get("tool_name").and_then(Value::as_str) == Some(defaults::text("coordinator_work.codex_tool")) || is_codex(p))
+}
+
+/// True when the session is the main thread, by `coordinator-detect.js` `isCoordinator`: the payload carries no subagent
+/// marker and the host's entry point (read from the request environment, never the daemon's) is a main-thread one. An
+/// absent or unknown entry point is not the main thread (the Node guards fail open there).
+///
+/// Mirrors `coordinator-detect.js` `isCoordinator`.
+pub(crate) fn is_coordinator(p: &Value, env: &RequestEnv) -> bool {
+    let entry = env.get(defaults::text("coordinator_work.entrypoint_env")).unwrap_or("");
+    if is_codex_payload(p) {
+        return entry.is_empty() && !defaults::list("coordinator_work.agent_markers").iter().any(|k| present(p, k));
+    }
+    if subagent_by_payload(p) || entry == defaults::text("coordinator_work.subagent_entrypoint") {
+        return false;
+    }
+    defaults::list("coordinator_work.main_entrypoints").contains(&entry) || entry.starts_with(defaults::text("coordinator_work.main_entrypoint_prefix"))
+}
+
 /// The check's decision on one payload. `None`: nothing to say.
 ///
 /// Mirrors `hooks/coordinator-work-guard.js` `main`.

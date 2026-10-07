@@ -75,8 +75,9 @@ async function runParity(o) {
   const ENGINE = path.resolve(o.engine), HOOKS = path.resolve(o.hooks), PLUGIN_ROOT = path.resolve(HOOKS, '..');
   const MODE = o.mode || 'both', CONC = o.conc || 8, SHOW = o.show === undefined ? 15 : o.show;
   const tmp = fs.mkdtempSync(path.join('/tmp', `ah-par-${o.name}-`));
-  // a hook that is only a script (no evaluate export) runs as a child process: o.nodeCli
-  const guard = o.nodeCli ? null : require(path.join(HOOKS, o.hookFile));
+  // a hook that is only a script (no evaluate export) runs as a child process: o.nodeCli;
+  // o.nodeFn(payload, env, hooksDir) -> {exitCode, stdout, stderr} runs a Node hook that exposes no evaluate() in-process
+  const guard = o.nodeCli || !o.hookFile ? null : require(path.join(HOOKS, o.hookFile));
   const sentinel = path.join(tmp, 'defer.js');
   fs.writeFileSync(sentinel, "process.stdout.write('AHDEFERRED\\n');\n");
   // o.fallbackReal: a deferral runs the REAL Node hook (as the dispatcher does) in the engine's home, so a stateful guard is
@@ -101,7 +102,7 @@ process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.ex
       const r = cp.spawnSync(process.execPath, [path.join(HOOKS, o.hookFile), ...(step.argv || (o.nodeArgv ? o.nodeArgv(step) : []))], { input: step.raw !== undefined ? step.raw : JSON.stringify(payload), env: nodeEnv(home, ctx), cwd: '/tmp', encoding: 'utf8', timeout: 60000 });
       return norm({ code: r.status === null ? 'sig:' + r.signal : r.status, out: r.stdout, err: r.stderr });
     }
-    const d = guard.evaluate(JSON.parse(JSON.stringify(payload)), nodeEnv(home, ctx), { argv: step.argv || (o.nodeArgv ? o.nodeArgv(step) : []) });
+    const d = o.nodeFn ? o.nodeFn(JSON.parse(JSON.stringify(payload)), nodeEnv(home, ctx), HOOKS) : guard.evaluate(JSON.parse(JSON.stringify(payload)), nodeEnv(home, ctx), { argv: step.argv || (o.nodeArgv ? o.nodeArgv(step) : []) });
     return norm({ code: d.exitCode === 2 ? 2 : 0, out: d.stdout, err: d.stderr });
   };
   // group scenarios by ctx

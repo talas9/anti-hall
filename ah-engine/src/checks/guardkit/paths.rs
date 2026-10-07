@@ -33,3 +33,10 @@ pub fn relative(from: &str, to: &str) -> String {
     parts.extend(&tp[common..]);
     parts.join("/")
 }
+
+/// `path.resolve(base, p)` for an absolute `base`: `p` itself when it is absolute, else `base/p`, normalized with no
+/// trailing slash. The caller has already made sure `base` is absolute (a relative one resolves against the hook's own
+/// working directory, which the engine does not share).
+pub fn resolve(base: &str, p: &str) -> String {
+    if is_absolute(p) { resolve_abs(p) } else { resolve_abs(&format!("{base}/{p}")) }
+}

@@ -20,6 +20,9 @@ pub mod git;
 pub mod guardkit;
 pub mod idle_agent_sweep;
 pub mod inbox_read_guard;
+pub mod api_guard;
+pub mod edit_guard;
+pub mod merge_gate;
 pub mod merge_side_pick;
 pub mod model_routing;
 pub mod orch_on_spawn;
@@ -139,7 +142,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 37] = [
+    static ALL: [&dyn Check; 40] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -177,6 +180,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &ask_guard::AskGuard,
         &silent_agent_nudge::SilentAgentNudge,
         &stale_agent_stop_note::StaleAgentStopNote,
+        &merge_gate::MergeGate,
+        &api_guard::ApiGuard,
+        &edit_guard::EditGuard,
     ];
     &ALL
 }
