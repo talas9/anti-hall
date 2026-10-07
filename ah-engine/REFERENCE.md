@@ -83,6 +83,10 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `repo-self-drift` | SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago (port of repo-self-drift.js). |
 | `defect-nudge` | SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported (port of defect-nudge.js); counts and ages only. |
 | `progress-prune` | SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/ (port of progress-prune.js). |
+| `speculation-guard` | Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag; answers while Jev is off and leaves every Jev path to Node (port of speculation-guard.js). |
+| `speculation-judge` | Stop: answers the off path of the opt-in semantic judge (switch off, judge child, skip) and leaves every opted-in call, a model call, to Node (port of speculation-judge.js). |
+| `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; leaves the optional Jev shadow question to Node (port of claim-ledger.js). |
+| `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; leaves the optional Jev shadow question to Node (port of output-verify-guard.js). |
 
 ## Settings
 
@@ -1610,6 +1614,152 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `session.version_alert_summary` | `SessionStart advisory: a newer anti-hall release is available or already mirr...` |  |  | One-line description of the version-alert check in the generated reference. |
 | `session.version_alert_ttl_ms` | `7200000` |  | ms | How long the remote-latest cache counts as fresh (a release can ship within a day, so this is short). |
 | `session.version_check_file` | `.anti-hall/version-check.json` |  |  | The remote-latest cache the background refresh writes, under the home directory. |
+
+### response_guards.toml / claim_ledger
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `claim_ledger.cls_hard` | `hard` |  |  | The class of a flag that would block once blocking is turned on. |
+| `claim_ledger.cls_soft` | `soft` |  |  | The class of a flag that would only nudge. |
+| `claim_ledger.context_chars` | `160` |  |  | How many UTF-16 units of the line around a flagged token are recorded. |
+| `claim_ledger.count_re` | `(\d{1,6}(?:[.,]\d+)?)\s*(ms\|s\|sec\|seconds\|minutes\|min\|hours\|days?\|weeks?\|work...` |  |  | Regex source (case-insensitive) of a count with a unit noun. The Node source starts with a look-behind that rejects a number glued to an identifier character; the check applies that rule by hand, because the regex engine has no look-behind. |
+| `claim_ledger.days_ago_re` | `\b\d+\s+days?\s+ago\b` |  |  | Regex source (case-insensitive) of an N days ago claim. |
+| `claim_ledger.dir` | `claim-ledger` |  |  | Directory of the ledger files under the state directory. |
+| `claim_ledger.event` | `Stop` |  |  | The only event this check answers. |
+| `claim_ledger.guard_name` | `claim-ledger` |  |  | The guard id this check answers to in skip.json. |
+| `claim_ledger.jev_id` | `claimLedger` |  |  | The Jev integration id of the shadow question asked for each flagged claim. |
+| `claim_ledger.kind_count` | `count` |  |  | The kind of a flag for a count with a unit noun. |
+| `claim_ledger.kind_days_ago` | `days-ago` |  |  | The kind of a flag for an N days ago claim. |
+| `claim_ledger.kind_sha` | `sha` |  |  | The kind of a flag for a git SHA. |
+| `claim_ledger.kind_state` | `state-no-tool` |  |  | The kind of a flag for a runtime-state claim made in a turn with no tool call. |
+| `claim_ledger.kind_task` | `task` |  |  | The kind of a flag for a task N of claim. |
+| `claim_ledger.last_ext` | `.last` |  |  | Extension of the file that holds the hash of the last message recorded for a session. |
+| `claim_ledger.ledger_ext` | `.jsonl` |  |  | Extension of the per-session ledger of flagged claims (one JSON line per flagged reply). |
+| `claim_ledger.max_flags` | `40` |  |  | Most flags recorded for one reply. |
+| `claim_ledger.number_re` | `\d[\d,]*(?:\.\d+)?` |  |  | Regex source of a number in the evidence (thousands separators allowed). |
+| `claim_ledger.role_assistant` | `assistant` |  |  | The role of an assistant transcript entry. |
+| `claim_ledger.role_attachment` | `attachment` |  |  | The role of a hook attachment transcript entry. |
+| `claim_ledger.role_user` | `user` |  |  | The role of a user transcript entry. |
+| `claim_ledger.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.claimLedger, default on). |
+| `claim_ledger.sha_re` | `\b[0-9a-f]{7,40}\b` |  |  | Regex source of a git SHA (7 to 40 lower-case hex digits). |
+| `claim_ledger.state_re` | `\b(?:still\|currently)\s+(?:running\|live\|active\|pending\|blocked)\b` |  |  | Regex source (case-insensitive) of a runtime-state claim. |
+| `claim_ledger.summary` | `Stop, never blocks: records the checkable claims of the last reply that no ev...` |  |  | One-line description of the claim-ledger check in the generated reference. |
+| `claim_ledger.task_re` | `\btask\s+\d+\s+of\b` |  |  | Regex source (case-insensitive) of a task N of claim. |
+| `claim_ledger.type_text` | `text` |  |  | The content block type of a text block. |
+| `claim_ledger.type_tool_result` | `tool_result` |  |  | The content block type of a tool result. |
+| `claim_ledger.type_tool_use` | `tool_use` |  |  | The content block type of a tool call. |
+| `claim_ledger.window_bytes` | `2097152` |  | bytes | How much of the end of the transcript counts as evidence (a huge transcript cannot slow the hook). |
+
+### response_guards.toml / output_verify
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `output_verify.bit_exit` | `a non-zero exit code ({code})` |  |  | One signal of the advisory; {code} is the exit code. |
+| `output_verify.bit_fail` | `a failure signal ({hit})` |  |  | One signal of the advisory; {hit} is the quoted failing text. |
+| `output_verify.bit_pass` | `a passing signal ({hit})` |  |  | One signal of the advisory; {hit} is the quoted passing text. |
+| `output_verify.bits_sep` | ` AND ` |  |  | What joins the signals in the advisory headline. |
+| `output_verify.blob_fields` | `tool_response, tool_output` |  |  | The payload fields the scanned text is built from, in order. |
+| `output_verify.count_marker` | `(\d+)` |  |  | Text in a signal pattern that marks a captured count: such a pattern only hits on a non-zero count, so a clean summary like 0 failed is not a failure. |
+| `output_verify.env_assign_re` | `^[A-Za-z_][A-Za-z0-9_]*=` |  |  | Regex source of a leading environment assignment word, which is skipped. |
+| `output_verify.event` | `PostToolUse` |  |  | The only event this check answers. |
+| `output_verify.exit_code_re` | `exit[_ ]?code["']?\s*[:=]\s*(-?\d+)` |  |  | Regex source (case-insensitive) of an exit code written as text in the output. |
+| `output_verify.exit_fields` | `exit_code, exitCode, exit_status, exitStatus` |  |  | The fields of an object tool response that may hold the exit code, in the order they are tried. |
+| `output_verify.fail_patterns` | `10 items` |  |  | The failing signals, in the order they are tried: regex source, case-insensitive flag, and whether it must start a line. |
+| `output_verify.guard_name` | `output-verify-guard` |  |  | The guard id this check answers to in skip.json, in messages and as the once-per-turn key. |
+| `output_verify.jev_id` | `outputVerifyGuard` |  |  | The Jev integration id of the shadow question asked for each test-runner output. |
+| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
+| `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
+| `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
+| `output_verify.once_setting` | `6 entries` |  |  | Where the once-per-turn switch is read from (guards.outputVerifyOncePerTurn, default on). |
+| `output_verify.pass_patterns` | `8 items` |  |  | The passing signals, in the order they are tried: regex source, case-insensitive flag, and whether it must start a line. |
+| `output_verify.path_sep_re` | `[\\/]` |  |  | Regex source of a path separator; the last part of a command word is its verb, so /usr/bin/pytest counts as pytest. |
+| `output_verify.run_word` | `run` |  |  | The optional word between a package manager and its test script (npm run test). |
+| `output_verify.runner_subcommands` | `7 entries` |  |  | Command verbs that are test runners with this first argument (an optional run word may come before it). |
+| `output_verify.runner_verbs` | `pytest, jest, vitest, cargo` |  |  | Command verbs that are test runners on their own. |
+| `output_verify.scan_cap` | `200000` |  |  | Longest scanned text, in UTF-16 units; a longer one is cut to its head and its tail so the trailing summary line survives. |
+| `output_verify.segment_split_re` | `&&\|\\|\\|\|[;&\|\n]` |  |  | Regex source that splits a command into simple commands (and, or, semicolon, ampersand, pipe, newline). |
+| `output_verify.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.outputVerifyGuard, default on). |
+| `output_verify.sig_sep` | `\|` |  |  | What joins the signals into the once-per-turn signature. |
+| `output_verify.summary` | `PostToolUse advisory: flags a test-runner output with both a passing and a fa...` |  |  | One-line description of the output-verify-guard check in the generated reference. |
+| `output_verify.tool` | `Bash` |  |  | The only tool whose output is read. |
+| `output_verify.truncation_marker` | `\n...(truncated)...\n` |  |  | What joins the head and the tail of a cut scan text. |
+| `output_verify.ws_split_re` | `\s+` |  |  | Regex source that splits a simple command into words. |
+
+### response_guards.toml / reply_turn_gate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `reply_turn_gate.agent_prefix` | `agent:` |  |  | Prefix of the turn id of a subagent payload: a subagent's turn is its own whole run. |
+| `reply_turn_gate.dir` | `turn-gate` |  |  | Directory of the gate's state files under the state directory. |
+| `reply_turn_gate.injected_re` | `^\s*<(?:task-notification\|system-reminder\|local-command\|command-name\|command-...` |  |  | Regex source of the text an injected block starts with (notifications and reminders), which is never a human prompt. |
+| `reply_turn_gate.main_agent` | `main` |  |  | The agent part of a slot key for the main agent (a payload without an agent id). |
+| `reply_turn_gate.max_sigs` | `16` |  |  | How many signatures one slot remembers for a turn (the oldest beyond this are dropped). |
+| `reply_turn_gate.prefix` | `tg-` |  |  | Prefix of a gate state file name (the sanitised session id and the JSON extension follow); also the prefix of its stale-file sweep. |
+| `reply_turn_gate.session_max` | `80` |  |  | Longest session part of a gate state file name, in UTF-16 units. |
+| `reply_turn_gate.sig_max` | `200` |  |  | Longest advisory signature kept, in UTF-16 units. |
+| `reply_turn_gate.tail_bytes` | `524288` |  | bytes | How much of the end of the transcript is read to find the newest human prompt. |
+| `reply_turn_gate.type_text` | `text` |  |  | The content block type of a text block. |
+| `reply_turn_gate.type_tool_result` | `tool_result` |  |  | The content block type of a tool result: an entry holding one is not a human prompt. |
+| `reply_turn_gate.type_user` | `user` |  |  | The type of a user transcript entry. |
+| `reply_turn_gate.user_marker` | `"user"` |  |  | Text a transcript line must contain to be considered as a human prompt (a cheap filter before parsing). |
+
+### response_guards.toml / replykit
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `replykit.json_ext` | `.json` |  |  | File extension of the JSON state files (also the suffix the stale-file sweep looks for). |
+| `replykit.json_max_depth` | `256` |  |  | Deepest JSON nesting the state-file parser reads; deeper input is left to the Node hook, which has a larger stack. |
+| `replykit.prune_stamp_prefix` | `.prune-stamp-` |  |  | Prefix of the stamp file that records the last sweep of stale state files of one writer (the writer's own prefix and the JSON extension follow). |
+| `replykit.prune_throttle_ms` | `21600000` |  | ms | The sweep of stale state files runs at most once per this long for each writer (6 hours). |
+| `replykit.prune_ttl_ms` | `604800000` |  | ms | A per-session state file untouched for this long is removed by the sweep (7 days: long enough that no live session is ever swept). |
+| `replykit.role_assistant` | `assistant` |  |  | The role value of an assistant transcript entry. |
+| `replykit.state_dir` | `.anti-hall` |  |  | The per-user state directory under the home directory, where the guards keep their state files. |
+| `replykit.unsure_parse_errors` | `surrogate, hex escape, recursion limit, out of range` |  |  | Fragments of the JSON parser's error text that mark input the Node hook might still parse (a lone surrogate escape or a short hex escape, a number beyond the double range, nesting beyond the recursion limit): the whole call is then left to Node instead of the line being skipped. |
+
+### response_guards.toml / speculation_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `speculation_guard.ack_ci` | `13 items` |  |  | Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block. |
+| `speculation_guard.ack_cs` | `\b\w+\.\w+:\d+\b` |  |  | Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42. |
+| `speculation_guard.backtick_re` | ``[^`\n]+`` |  |  | Regex source of an inline code span. |
+| `speculation_guard.curly_double_re` | `“[^“”\n]*”` |  |  | Regex source of a curly double-quoted span. |
+| `speculation_guard.curly_single_re` | `‘[^‘’\n]*’` |  |  | Regex source of a curly single-quoted span. |
+| `speculation_guard.event` | `Stop` |  |  | The only event this check answers. |
+| `speculation_guard.fence_line_re` | `^[ \t]{0,3}(`{3,}\|~{3,})` |  |  | Regex source of a code fence line; the first group is the fence marker. |
+| `speculation_guard.guard_name` | `speculation-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
+| `speculation_guard.inference_setting` | `6 entries` |  |  | The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node. |
+| `speculation_guard.markers` | `15 items` |  |  | Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried. |
+| `speculation_guard.max_blocks` | `3` |  |  | Most blocks per session: after this many the guard stays quiet whatever the reply says (the text changes as the model reworks it, which defeats the per-text dedupe). |
+| `speculation_guard.modal_markers` | `must be, should be` |  |  | Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own. |
+| `speculation_guard.msg_instead` | `verify it with a tool, or say what is unverified ('I don't know, here is what...` |  |  | Block advice. |
+| `speculation_guard.msg_what` | `your reply states something speculative ('{marker}') without verifying it or ...` |  |  | Block headline; {marker} is the hedge found. |
+| `speculation_guard.msg_why` | `Unverified claims read as facts.` |  |  | Block reason. |
+| `speculation_guard.obligation_re` | `^\s+(measured\|verified\|tested\|checked\|reviewed\|documented\|validated\|approved\|...` |  |  | Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess. |
+| `speculation_guard.obligation_window` | `40` |  |  | How many UTF-16 units after a must-be or should-be are read for the obligation word. |
+| `speculation_guard.prune_prefix` | `speculation-guard-state` |  |  | Prefix of the stale-file sweep of the per-session state files. |
+| `speculation_guard.quote_char` | `"` |  |  | The straight double quote that pairs within one line. |
+| `speculation_guard.quote_line_re` | `^[ \t]{0,3}>` |  |  | Regex source of a blockquote line (up to three spaces of indent, then a greater-than sign). |
+| `speculation_guard.quote_separators` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Where a blockquote line turns from the quoted material to the session's own words (an em dash, a double hyphen between spaces, a semicolon or comma then so); the earliest wins. |
+| `speculation_guard.requirement_line_re` | `^\s*(?:(?:[-*+•]\|\d+[.)])\s+)?(?:requirement\|acceptance(?:\s+criteria)?\|ac\|sp...` |  |  | Regex source (case-insensitive) of a line that starts with an explicit requirement label, after an optional list bullet. |
+| `speculation_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.speculationGuard, default on). |
+| `speculation_guard.source_regex` | `regex` |  |  | The source recorded in the pending outcome of a block this check made (the Node hook reads it when it reports the outcome). |
+| `speculation_guard.state_prefix` | `speculation-guard-state-` |  |  | Prefix of the per-session state file name under the state directory (the sanitised session id and the JSON extension follow). |
+| `speculation_guard.straight_re` | `"[^"\n]*"` |  |  | Regex source of a straight-quoted span inside one line. |
+| `speculation_guard.summary` | `Stop gate: blocks once per reply that states something with a hedge word and ...` |  |  | One-line description of the speculation-guard check in the generated reference. |
+| `speculation_guard.window_bytes` | `524288` |  | bytes | How much of the end of the transcript is read to find the last assistant message when the payload does not carry it. |
+
+### response_guards.toml / speculation_judge
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `speculation_judge.child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable the judge's own `claude -p` child carries; a hook that runs inside the child does nothing (no recursion). |
+| `speculation_judge.child_value` | `1` |  |  | The value of the judge-child variable that means this process is the judge's child. |
+| `speculation_judge.event` | `Stop` |  |  | The only event this check answers. |
+| `speculation_judge.guard_name` | `speculation-judge` |  |  | The guard id this check answers to in skip.json. |
+| `speculation_judge.setting` | `6 entries` |  |  | Where the opt-in switch is read from (jev.semanticJudge, default off). |
+| `speculation_judge.summary` | `Stop: answers the off path of the opt-in semantic judge (switch off, judge ch...` |  |  | One-line description of the speculation-judge check in the generated reference. |
 
 ## Messages
 

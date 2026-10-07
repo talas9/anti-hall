@@ -34,7 +34,7 @@ pub struct GateInput<'a> {
 
 fn injected_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| jsre::compile(defaults::text("turn_gate.injected_re"), false))
+    R.get_or_init(|| jsre::compile(defaults::text("reply_turn_gate.injected_re"), false))
 }
 
 /// `humanText(msg)` of turn-gate.js: the text of a human prompt, `None` for a tool result or no text.
@@ -45,11 +45,11 @@ fn human_text(msg: &Value) -> Result<Option<String>, Defer> {
     match prop(msg, "content") {
         Some(Value::String(s)) => Ok(Some(s.clone())),
         Some(Value::Array(a)) => {
-            let tool_result = defaults::text("turn_gate.type_tool_result");
+            let tool_result = defaults::text("reply_turn_gate.type_tool_result");
             if a.iter().any(|c| truthy(c) && prop(c, "type").and_then(Value::as_str) == Some(tool_result)) {
                 return Ok(None);
             }
-            let text_type = defaults::text("turn_gate.type_text");
+            let text_type = defaults::text("reply_turn_gate.type_text");
             let mut parts = Vec::new();
             for c in a.iter().filter(|c| truthy(c) && prop(c, "type").and_then(Value::as_str) == Some(text_type)) {
                 match prop(c, "text") {
@@ -66,14 +66,14 @@ fn human_text(msg: &Value) -> Result<Option<String>, Defer> {
     }
 }
 
-/// `currentTurnId(transcriptPath)`: the id of the newest human prompt in the last `turn_gate.tail_bytes` of the
+/// `currentTurnId(transcriptPath)`: the id of the newest human prompt in the last `reply_turn_gate.tail_bytes` of the
 /// transcript, `None` when there is none or the file cannot be read.
 pub fn current_turn_id(transcript: Option<&Value>) -> Result<Option<String>, Defer> {
     let Some(path) = transcript.and_then(Value::as_str).filter(|p| !p.is_empty()) else { return Ok(None) };
     if !path.starts_with('/') {
         return Err(Defer);
     }
-    let want = defaults::num("turn_gate.tail_bytes");
+    let want = defaults::num("reply_turn_gate.tail_bytes");
     let Ok(meta) = std::fs::metadata(path) else { return Ok(None) };
     if meta.len() == 0 {
         return Ok(None);
@@ -84,11 +84,11 @@ pub fn current_turn_id(transcript: Option<&Value>) -> Result<Option<String>, Def
         lines.remove(0);
     }
     for line in lines.iter().rev() {
-        if line.is_empty() || !line.contains(defaults::text("turn_gate.user_marker")) {
+        if line.is_empty() || !line.contains(defaults::text("reply_turn_gate.user_marker")) {
             continue;
         }
         let Some(o) = parse_text(line)? else { continue };
-        if prop(&o, "type").and_then(Value::as_str) != Some(defaults::text("turn_gate.type_user")) {
+        if prop(&o, "type").and_then(Value::as_str) != Some(defaults::text("reply_turn_gate.type_user")) {
             continue;
         }
         if prop(&o, "isMeta").is_some_and(truthy) || prop(&o, "isSidechain").is_some_and(truthy) {
@@ -122,15 +122,15 @@ pub fn first_this_turn(i: &GateInput<'_>) -> Result<bool, Defer> {
             None => return Ok(true),
         }
     } else {
-        format!("{}{}", defaults::text("turn_gate.agent_prefix"), i.agent)
+        format!("{}{}", defaults::text("reply_turn_gate.agent_prefix"), i.agent)
     };
-    let slot = format!("{}|{}", i.key, if i.agent.is_empty() { defaults::text("turn_gate.main_agent") } else { i.agent });
-    let sig = slice_utf16(i.sig, defaults::num("turn_gate.sig_max") as usize).ok_or(Defer)?;
-    let dir = Path::new(i.home).join(defaults::text("replykit.state_dir")).join(defaults::text("turn_gate.dir"));
+    let slot = format!("{}|{}", i.key, if i.agent.is_empty() { defaults::text("reply_turn_gate.main_agent") } else { i.agent });
+    let sig = slice_utf16(i.sig, defaults::num("reply_turn_gate.sig_max") as usize).ok_or(Defer)?;
+    let dir = Path::new(i.home).join(defaults::text("replykit.state_dir")).join(defaults::text("reply_turn_gate.dir"));
     let file_name = format!(
         "{}{}{}",
-        defaults::text("turn_gate.prefix"),
-        safe_session(&session, Some(defaults::num("turn_gate.session_max") as usize)),
+        defaults::text("reply_turn_gate.prefix"),
+        safe_session(&session, Some(defaults::num("reply_turn_gate.session_max") as usize)),
         defaults::text("replykit.json_ext")
     );
     let path = dir.join(&file_name);
@@ -151,7 +151,7 @@ pub fn first_this_turn(i: &GateInput<'_>) -> Result<bool, Defer> {
     {
         return Ok(false);
     }
-    let keep = defaults::num("turn_gate.max_sigs") as usize - 1;
+    let keep = defaults::num("reply_turn_gate.max_sigs") as usize - 1;
     let mut sigs: Vec<Oj> = match same_turn.and_then(|p| p.get("sigs")) {
         Some(Oj::Arr(a)) => a[a.len().saturating_sub(keep)..].to_vec(),
         _ => Vec::new(),
@@ -170,6 +170,6 @@ pub fn first_this_turn(i: &GateInput<'_>) -> Result<bool, Defer> {
     if !persisted {
         return Ok(true);
     }
-    io::prune_stale(&dir, defaults::text("turn_gate.prefix"), Some(&file_name));
+    io::prune_stale(&dir, defaults::text("reply_turn_gate.prefix"), Some(&file_name));
     Ok(true)
 }

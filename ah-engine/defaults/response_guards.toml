@@ -45,62 +45,62 @@ value = "assistant"
 
 # ---- once-per-turn gate (hooks/lib/turn-gate.js) ----------------------------------------------------------
 
-[turn_gate.dir]
+[reply_turn_gate.dir]
 doc = "Directory of the gate's state files under the state directory."
 value = "turn-gate"
 
-[turn_gate.prefix]
+[reply_turn_gate.prefix]
 doc = "Prefix of a gate state file name (the sanitised session id and the JSON extension follow); also the prefix of its stale-file sweep."
 value = "tg-"
 
-[turn_gate.session_max]
+[reply_turn_gate.session_max]
 doc = "Longest session part of a gate state file name, in UTF-16 units."
 value = 80
 min = 8
 max = 200
 
-[turn_gate.tail_bytes]
+[reply_turn_gate.tail_bytes]
 doc = "How much of the end of the transcript is read to find the newest human prompt."
 value = 524288
 unit = "bytes"
 min = 4096
 
-[turn_gate.max_sigs]
+[reply_turn_gate.max_sigs]
 doc = "How many signatures one slot remembers for a turn (the oldest beyond this are dropped)."
 value = 16
 min = 2
 max = 1000
 
-[turn_gate.sig_max]
+[reply_turn_gate.sig_max]
 doc = "Longest advisory signature kept, in UTF-16 units."
 value = 200
 min = 8
 
-[turn_gate.agent_prefix]
+[reply_turn_gate.agent_prefix]
 doc = "Prefix of the turn id of a subagent payload: a subagent's turn is its own whole run."
 value = "agent:"
 
-[turn_gate.main_agent]
+[reply_turn_gate.main_agent]
 doc = "The agent part of a slot key for the main agent (a payload without an agent id)."
 value = "main"
 
-[turn_gate.user_marker]
+[reply_turn_gate.user_marker]
 doc = "Text a transcript line must contain to be considered as a human prompt (a cheap filter before parsing)."
 value = '"user"'
 
-[turn_gate.type_user]
+[reply_turn_gate.type_user]
 doc = "The type of a user transcript entry."
 value = "user"
 
-[turn_gate.type_tool_result]
+[reply_turn_gate.type_tool_result]
 doc = "The content block type of a tool result: an entry holding one is not a human prompt."
 value = "tool_result"
 
-[turn_gate.type_text]
+[reply_turn_gate.type_text]
 doc = "The content block type of a text block."
 value = "text"
 
-[turn_gate.injected_re]
+[reply_turn_gate.injected_re]
 doc = "Regex source of the text an injected block starts with (notifications and reminders), which is never a human prompt."
 value = '^\s*<(?:task-notification|system-reminder|local-command|command-name|command-message)'
 
