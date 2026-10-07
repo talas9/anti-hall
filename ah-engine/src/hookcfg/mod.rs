@@ -495,8 +495,8 @@ mod tests {
             assert_eq!(u(&format!("[events.{ev}]\nmode = \"on\"\nmax_rules = 0\nbudget_ms = 500\n")), "ok", "{ev}: a budget is allowed (it fails closed)");
         }
         // an entry with no built-in check decides only through its Node hook: it cannot be turned off or shadowed
-        assert!(u("[entries.\"task-guard\"]\nmode = \"off\"\n").contains("only through its Node hook"));
-        assert!(u("[entries.\"Stop/task-guard\"]\nenabled = false\n").contains("only through its Node hook"));
+        assert!(u("[entries.\"devswarm-parent-gate\"]\nmode = \"off\"\n").contains("only through its Node hook"));
+        assert!(u("[entries.\"Stop/devswarm-parent-gate\"]\nenabled = false\n").contains("only through its Node hook"));
         // an entry with a built-in check keeps its Node hook as the real decider, so off and shadow are allowed
         assert_eq!(u("[entries.\"PreToolUse/git-guard\"]\nmode = \"shadow\"\n"), "ok");
         assert_eq!(u("[entries.\"PreToolUse/git-guard\"]\nmode = \"off\"\n"), "ok");
