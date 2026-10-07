@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// The shipped defaults files, in the order their entries are listed.
-const FILES: [&str; 16] = [
+const FILES: [&str; 17] = [
     "engine.toml",
     "messages.toml",
     "git.toml",
@@ -22,6 +22,7 @@ const FILES: [&str; 16] = [
     "gitcache.toml",
     "schedules.toml",
     "small_guards.toml",
+    "spawn_context.toml",
     "jev.toml",
     "dispatch.toml",
     "hooks.toml",

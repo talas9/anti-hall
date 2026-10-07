@@ -118,6 +118,60 @@ pub fn get_bool(st: &Settings, entry: &V) -> bool {
     resolve(st, entry).unwrap_or_else(|| entry.get("default").and_then(V::as_bool).unwrap_or(false))
 }
 
+/// `coerceValue` for an enum entry on a JSON value: the trimmed, lower-cased string when it is one of `values`.
+fn coerce_enum(v: &Value, values: &[&str]) -> Option<String> {
+    let Value::String(s) = v else { return None };
+    let t = js_trim(s);
+    if t.is_empty() {
+        return None;
+    }
+    let lower = t.to_lowercase();
+    values.contains(&lower.as_str()).then_some(lower)
+}
+
+/// The effective value of an enum switch: `entry` is the switch table from the defaults (`values` lists the allowed
+/// words, all lower case). Same chain as [`get_bool`]: environment variable, `settings.json`, the plugin option (a
+/// value equal to the default counts as unset), the default.
+///
+/// Mirrors `hooks/lib/settings.js` `get` for an enum setting without a legacy file.
+pub fn get_enum(st: &Settings, entry: &V) -> String {
+    let values = entry.get("values").map(V::strings).unwrap_or_default();
+    let default = entry.str_field("default");
+    let env_name = entry.str_field("env");
+    if !env_name.is_empty() {
+        let names = std::iter::once(env_name).chain(entry.get("aliases").map(V::strings).unwrap_or_default());
+        for n in names {
+            if let Some(v) = st.env.get(n).and_then(|raw| coerce_enum(&Value::String(raw.clone()), &values)) {
+                return v;
+            }
+        }
+    }
+    let (section, key) = (entry.str_field("section"), entry.str_field("key"));
+    if let Some(v) = read_object(st, defaults::text("guardkit.settings_file"))
+        .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|s| s.get(key)).and_then(|raw| coerce_enum(raw, &values)))
+    {
+        return v;
+    }
+    let option = entry.str_field("option");
+    if !option.is_empty() {
+        let env_key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), option.to_ascii_uppercase());
+        if let Some(raw) = st.env.get(&env_key) {
+            if *raw != default
+                && let Some(v) = coerce_enum(&Value::String(raw.clone()), &values)
+            {
+                return v;
+            }
+        } else if let Some(stored) = stored_options(st)
+            && let Some(v) = stored.get(option)
+            && !js_string_of(v).is_some_and(|s| s == default)
+            && let Some(v) = coerce_enum(v, &values)
+        {
+            return v;
+        }
+    }
+    default.to_string()
+}
+
 /// True when an unexpired skip is recorded for `guard` (a broad skip of everything also covers it unless the guard is
 /// one that must be named).
 ///
