@@ -83,7 +83,7 @@ impl Mock {
                 let Ok(mut c) = conn else { break };
                 let Some(req) = read_request(&mut c) else { continue };
                 s2.lock().unwrap().push(req);
-                let body = format!(r#"{{"answers":{{"decision":{{"noul":{noul}}}}}}}"#);
+                let body = format!(r#"{{"answers":{{"decision":{{"noul":{noul}}}}},"usage":{{"input_tokens":1000,"output_tokens":5}}}}"#);
                 let out = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 let _ = c.write_all(out.as_bytes());
             }
@@ -275,6 +275,8 @@ fn stop_with(session: &str, reply: &str) -> Value {
     json!({"hook_event_name":"Stop","session_id":session,"cwd":"/tmp","last_assistant_message":reply})
 }
 
+const KEEP_FILES: &[&str] = &[".anti-hall/state/jev-budget.json", ".anti-hall/logs/jev-audit.ndjson"];
+
 const SPEC_FILES: &[&str] = &[".anti-hall/logs/jev-judge.ndjson", ".anti-hall/speculation-guard-state-sp.json"];
 
 fn spec(name: &'static str, reply: &str, noul: f64, modes: &'static str, requests: usize, rows: usize, seed: &'static [(&'static str, &'static str)]) -> Scenario {
@@ -334,6 +336,21 @@ fn scenarios() -> Vec<Scenario> {
         git("gitGuardSelfCredit: a regex hit never asks", &format!(r#"git commit -m "x\n\n{}: Claude <noreply@anthropic.com>""#, "Co-Authored-By"), 0.97, GIT_ON, 0, 0),
         git("gitGuardSelfCredit off logs the off row", r#"git commit -m "written with help from the assistant""#, 0.97, r#"{"jevIntegrations":{"gitGuardSelfCredit":"off"}}"#, 0, 1),
         git("gitGuardSelfCredit: a long message is cut to 4000 units", &format!(r#"git commit -m "{}""#, "word ".repeat(1200)), 0.03, GIT_ON, 1, 1),
+        Scenario {
+            name: "budget watch and audit snippets ride along with a decision",
+            hook: "merge-gate.js",
+            check: "merge-gate",
+            env: vec![("ANTIHALL_MERGE_GATE", "1")],
+            transcript: vec![asst("this is a first-pass, pending review"), user("ok")],
+            payload: merge("gh pr merge 5"),
+            requests: 1,
+            rows: 2, // the decision and the one budget warning of the day
+            noul: 0.03,
+            deviation: &[],
+            modes: r#"{"jev":{"budget":{"mode":"watch","usdPerDay":0.00000001},"audit":{"snippets":true}}}"#,
+            files: KEEP_FILES,
+            seed: &[],
+        },
         spec("speculation: a long reply is cut to the same 8000 units", &format!("{} it is probably fine", "word ".repeat(1700)), 0.97, "", 1, 1, &[]),
         spec("speculation: Jev confidently adds a block", "All done, it works.", 0.97, "", 1, 1, &[]),
         spec("speculation: Jev says grounded, the regex block stands", "It is probably the cache.", 0.03, "", 1, 1, &[]),

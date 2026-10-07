@@ -333,6 +333,11 @@ pub struct Jev {
     log_errors: AtomicU64,
 }
 
+/// A number as `JSON.stringify` writes it: a whole value has no fraction (`1000`, not `1000.0`).
+fn jnum(f: f64) -> Value {
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < 9e15 { json!(f as i64) } else { json!(f) }
+}
+
 /// The ISO-8601 UTC time with milliseconds, as `Date.prototype.toISOString` writes it.
 pub fn iso_ms(unix_ms: u64) -> String {
     let secs = (unix_ms / 1000) as i64;
@@ -759,8 +764,8 @@ impl Jev {
                 w.put("ts", json!(iso_ms(now_unix_ms())));
                 w.put("type", json!("budget-warning"));
                 w.put("window", json!("daily"));
-                w.put("spentUsd", json!(spent));
-                w.put("budgetUsd", json!(limit));
+                w.put("spentUsd", jnum(spent));
+                w.put("budgetUsd", jnum(limit));
                 self.write(&w);
             }
             let (ch, wc) = (direction(req.trust, changed), would_change.clone());
@@ -820,7 +825,7 @@ impl Jev {
         row.put("h", json!(hash));
         row.put("base", req.baseline.clone());
         row.put("jev", ok.and_then(|x| x.answer.as_ref()).map_or(Value::Null, Answer::to_json));
-        row.put("conf", ok.map_or(Value::Null, |x| json!(x.confidence)));
+        row.put("conf", ok.map_or(Value::Null, |x| jnum(x.confidence)));
         row.put("ms", json!(r.map_or(0, |x| x.ms)));
         row.put("backend", json!(backend.as_str()));
         row.put("final", outcome.clone());
@@ -851,13 +856,13 @@ impl Jev {
             }
         }
         if let Some(x) = r {
-            row.put("costUsd", cost_usd.map_or(Value::Null, |c| json!(c)));
+            row.put("costUsd", cost_usd.map_or(Value::Null, jnum));
             row.put("costSource", cost_source.map_or(Value::Null, |c| json!(c.as_str())));
             if let Some(t) = x.tokens_in {
-                row.put("tokensIn", json!(t));
+                row.put("tokensIn", jnum(t));
             }
             if let Some(t) = x.tokens_out {
-                row.put("tokensOut", json!(t));
+                row.put("tokensOut", jnum(t));
             }
         }
         if let Some(c) = req.compare {
