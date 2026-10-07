@@ -67,7 +67,7 @@ Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex)
 - [CODE_OF_CONDUCT.md](https://github.com/talas9/anti-hall/blob/main/CODE_OF_CONDUCT.md): expected behaviour and how to report a conduct problem.
 - [PRIVACY.md](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md): what data leaves your machine, what stays, and how to turn each off.
 
-## Hooks (plugins/anti-hall/hooks/, registered in hooks.json)
+## Hooks (plugins/anti-hall/hooks/, registered in the dispatch table; hooks.json is one thin trigger per event generated from it, hooks.registry.json lists the hooks)
 
 All fail-open. "Codex" = also registered by the Codex port (`codex/hooks/hooks.json`).
 Switch = the setting (and/or env var) that turns the hook off; every hook has one except the

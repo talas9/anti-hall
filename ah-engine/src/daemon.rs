@@ -527,7 +527,8 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     // D87: what the client's plan did to each entry (ran, skipped by predicate or cap or budget, shadowed, off), by event and entry
     sh.telemetry.with_metrics(|m| {
         for (id, outcome) in &meta.plan {
-            m.inc("dispatch_entries", &[("event", meta.event.as_str()), ("entry", id.as_str()), ("outcome", outcome.as_str())]);
+            let cfg = if meta.cfg.is_empty() { defaults::text("hooks.cfg_default_label") } else { meta.cfg.as_str() };
+            m.inc("dispatch_entries", &[("event", meta.event.as_str()), ("entry", id.as_str()), ("outcome", outcome.as_str()), ("cfg", cfg)]);
         }
     });
     let observe = |e: &crate::dispatch::table::Entry, a: &crate::dispatch::native::Answer, micros: u64| {

@@ -173,8 +173,8 @@ doc = "Built-in check entries the dispatcher sent to the daemon, by event, check
 value = { kind = "counter", unit = "entries", labels = ["event", "check", "answer"] }
 
 [metric.dispatch_entries]
-doc = "What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry and outcome."
-value = { kind = "counter", unit = "entries", labels = ["event", "entry", "outcome"] }
+doc = "What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry, outcome and the hash of the non-default hook configuration the plan was made under (`default` when none)."
+value = { kind = "counter", unit = "entries", labels = ["event", "entry", "outcome", "cfg"] }
 
 [metric.hook_calls]
 doc = "Hook requests served, by hook event."

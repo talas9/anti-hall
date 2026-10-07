@@ -952,6 +952,35 @@ mod tests {
     }
 
     #[test]
+    fn hook_sections_swap_atomically_with_the_settings_and_a_bad_one_keeps_the_last_good_snapshot() {
+        let d = tmp("hooks-reload");
+        let paths = Paths { user: d.join("config.toml"), settings: None };
+        let store = ConfigStore::load_from(paths.clone());
+        let cap = |s: &ConfigStore| s.snapshot().hooks.event("PostToolUse").max_rules;
+        assert_eq!((cap(&store), store.snapshot().hooks.hash()), (0, ""));
+        std::fs::write(&paths.user, "[daemon]\nqueue = 9\n[events.PostToolUse]\nmax_rules = 2\n").unwrap();
+        assert_eq!(store.reload(), Reload::Applied(2));
+        let s = store.snapshot();
+        assert_eq!((s.queue, s.hooks.event("PostToolUse").max_rules), (9, 2), "settings and hook sections swap together");
+        let h = s.hooks.hash().to_string();
+        assert!(!h.is_empty());
+        // a bad hook section rejects the whole file: neither the setting nor the section changes, and the error is reported
+        std::fs::write(&paths.user, "[daemon]\nqueue = 11\n[events.PreToolUse]\nmode = \"off\"\n").unwrap();
+        assert_eq!(store.reload(), Reload::Invalid("hooks"));
+        let s = store.snapshot();
+        assert_eq!((s.queue, s.hooks.event("PostToolUse").max_rules, s.hooks.hash()), (9, 2, h.as_str()), "the previous snapshot stays");
+        assert!(s.last_error.as_deref().unwrap().starts_with("hooks"), "{:?}", s.last_error);
+        // only a hook-section change is still a change
+        std::fs::write(&paths.user, "[daemon]\nqueue = 9\n[events.PostToolUse]\nmax_rules = 3\n").unwrap();
+        assert_eq!(store.reload(), Reload::Applied(3));
+        assert_eq!((cap(&store), store.snapshot().last_error), (3, None));
+        std::fs::remove_file(&paths.user).unwrap();
+        assert_eq!(store.reload(), Reload::Applied(4));
+        assert_eq!((cap(&store), store.snapshot().hooks.hash()), (0, ""), "a deleted file falls back to the defaults");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn restart_only_edits_are_held_pending_and_the_running_value_stays() {
         let d = tmp("restart");
         let paths = Paths { user: d.join("config.toml"), settings: None };
