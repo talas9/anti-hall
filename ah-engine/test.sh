@@ -25,7 +25,7 @@ else
   rc=$?
 fi
 if [ "$rc" -eq 0 ]; then
-  sh tests/wrapper.sh
+  sh tests/wrapper.sh && sh tests/bootstrap.sh
   rc=$?
 fi
 sleep 0.3

@@ -453,6 +453,12 @@ else
   engine=$(command -v ah-engine 2>/dev/null || true)
 fi
 
+# Keep the engine installed and current: once per SessionStart, detached (never delays or fails the hook). The script
+# compares the plugin's ah-engine.lock with what is installed and does nothing when they match; see ah-engine-bootstrap.sh.
+if [ "$event" = SessionStart ] && [ -z "${AH_ENGINE_BIN:-}" ] && [ -f "$dir/../ah-engine.lock" ] && [ -f "$dir/ah-engine-bootstrap.sh" ]; then
+  { sh "$dir/ah-engine-bootstrap.sh" </dev/null >/dev/null 2>&1 & } 2>/dev/null
+fi
+
 event_timeout() {
   awk -F '	' -v ev="$event" '$1 == "@" ev { print $2; found = 1; exit } END { if (!found) print "" }' "$list" 2>/dev/null
 }

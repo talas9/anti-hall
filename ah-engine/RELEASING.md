@@ -41,6 +41,10 @@ JSON, one object:
 
 `SHA256SUMS` is the `assets` map rendered as `<sha256>  <name>` lines.
 
+## Installing the engine on user machines
+
+The plugin installs only `plugins/anti-hall`, so the prepare PR also commits a byte-identical copy of the lock at `plugins/anti-hall/ah-engine.lock` (the publish job fails when the two differ). On every SessionStart, `hooks/ah-hook.sh` starts `hooks/ah-engine-bootstrap.sh` detached (skipped when the lock is absent or `AH_ENGINE_BIN` is set). The script detects the target (macOS arm64/x86_64, Linux x86_64/arm64 on glibc or musl, WSL2 as Linux), downloads `ah-engine-vX.Y.Z-<triple>.tar.gz` from the GitHub Release over HTTPS, and installs it to `~/.anti-hall/ah-engine/bin/ah-engine` only if its sha256 equals the lock's entry; a mismatch is refused (no trust on first use). The install is atomic and keeps the previous binary as `ah-engine.prev`. It never fails a session: any problem (offline, unsupported platform, mismatch, binary that does not run) is written to `~/.anti-hall/ah-engine/bootstrap.log` and the Node hooks stay in use. A failed attempt for a lock is retried after 6 hours. A binary the script did not install is never overwritten. `AH_ENGINE_BOOTSTRAP=0` opts out. Tests: `ah-engine/tests/bootstrap.sh` (local HTTP server, isolated HOME).
+
 ## Building from source
 
 ```sh

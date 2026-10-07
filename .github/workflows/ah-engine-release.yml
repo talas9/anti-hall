@@ -160,7 +160,10 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Update ah-engine.lock
-        run: ah-engine/scripts/update-lock.sh dist ah-engine.lock "$GITHUB_RUN_ID"
+        run: |
+          ah-engine/scripts/update-lock.sh dist ah-engine.lock "$GITHUB_RUN_ID"
+          # The plugin installs only plugins/anti-hall, so its bootstrap (hooks/ah-engine-bootstrap.sh) reads this copy.
+          cp ah-engine.lock plugins/anti-hall/ah-engine.lock
       - name: Open PR
         env:
           BASE: ${{ inputs.base }}
@@ -169,7 +172,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add ah-engine.lock
+          git add ah-engine.lock plugins/anti-hall/ah-engine.lock
           git commit -m "chore(ah-engine): lock v${VERSION}"
           git push origin "$branch"
           [ "$BASE" != main ] || { echo "::error::base must not be main"; exit 1; }
@@ -202,6 +205,7 @@ jobs:
           [ "$(jq -r .version ah-engine.lock)" = "$version" ] || { echo "::error::ah-engine.lock version does not match tag $TAG"; exit 1; }
           [ "$(sed -n 's/^version = "\(.*\)"/\1/p' ah-engine/Cargo.toml | head -1)" = "$version" ] || { echo "::error::ah-engine/Cargo.toml version does not match tag $TAG"; exit 1; }
           [ "$(jq -r .fingerprint ah-engine.lock)" = "$(ah-engine/scripts/fingerprint.sh)" ] || { echo "::error::source fingerprint differs from ah-engine.lock: rerun prepare"; exit 1; }
+          cmp ah-engine.lock plugins/anti-hall/ah-engine.lock || { echo "::error::plugins/anti-hall/ah-engine.lock differs from ah-engine.lock: rerun prepare"; exit 1; }
           jq -e '.prepare_run | type == "number"' ah-engine.lock >/dev/null || { echo "::error::ah-engine.lock has no prepare_run"; exit 1; }
       - name: Fetch prepare artifacts
         run: |
