@@ -359,9 +359,14 @@ pub(crate) fn turn_texts(lines: &[String]) -> Option<Vec<String>> {
         let e: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => {
-                // Node might parse what serde rejects: a lone surrogate escape, nesting past serde's limit, an exponent
-                // out of range. Anything else is invalid JSON for both, and Node skips the line too.
-                if line.contains("\\u") || json_depth(line) > defaults::num("compact_decl.deep_json_depth") as usize || has_exponent(line) {
+                // Node might parse what serde rejects: a lone surrogate escape, nesting past serde's limit, an exponent or
+                // an integer literal out of range (JS reads it as Infinity). A rejected line that holds the safe word could
+                // carry the declaration, so it defers whatever the reason; one without it cannot change the answer.
+                if contains_ci(line.as_bytes(), word)
+                    || line.contains("\\u")
+                    || json_depth(line) > defaults::num("compact_decl.deep_json_depth") as usize
+                    || has_exponent(line)
+                {
                     return None;
                 }
                 continue;

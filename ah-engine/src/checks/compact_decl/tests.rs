@@ -199,3 +199,25 @@ fn run_without_the_payload_defers() {
     let s = Subject { event: "PreToolUse", tool: Some("Write"), cwd: None, tool_input: &ti, prompt: None };
     assert_eq!(CompactDeclarationGuard.run(&s, &Value::Null), Some(Verdict::Defer));
 }
+
+/// Review P2: a line serde rejects only for a number out of range (JS reads a 400-digit integer as Infinity and parses the
+/// line) that holds the safe word must defer to Node, never be skipped as "invalid for both".
+#[test]
+fn a_rejected_line_holding_the_safe_word_defers() {
+    let h = home("bigint");
+    let st = settings(&h);
+    let digits = "9".repeat(400);
+    let big = format!(r#"{{"type":"assistant","n":{digits},"message":{{"content":[{{"type":"text","text":"SAFE TO COMPACT"}}]}}}}"#);
+    assert!(serde_json::from_str::<Value>(&big).is_err(), "the premise: serde rejects the literal");
+    let tp = transcript(&h, "big", &[user("go"), big]);
+    assert_eq!(decide(&call("Write", json!({"file_path": "a"}), &tp), &st), Some(Verdict::Defer));
+    let upper = transcript(
+        &h,
+        "bigl",
+        &[user("go"), format!(r#"{{"type":"assistant","n":{digits},"message":{{"content":[{{"type":"text","text":"is it Safe?"}}]}}}}"#)],
+    );
+    assert_eq!(decide(&call("Write", json!({"file_path": "a"}), &upper), &st), Some(Verdict::Defer), "any case");
+    let no_word =
+        transcript(&h, "bign", &[user("go"), format!(r#"{{"type":"assistant","n":{digits},"message":{{"content":[{{"type":"text","text":"fine"}}]}}}}"#)]);
+    assert!(decide(&call("Write", json!({"file_path": "a"}), &no_word), &st).is_none(), "a rejected line without the word cannot declare");
+}
