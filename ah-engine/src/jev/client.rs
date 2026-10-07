@@ -230,6 +230,11 @@ impl JevClient {
         JevClient { transport, breakers: Breakers::new(clock.clone()), clock }
     }
 
+    /// A client whose breakers are the given ones (the Node breaker file, shared with the hooks).
+    pub fn with_breakers(transport: Arc<dyn Transport>, clock: Arc<dyn Clock>, breakers: Breakers) -> JevClient {
+        JevClient { transport, breakers, clock }
+    }
+
     /// True while `vendor`'s breaker is open.
     pub fn breaker_open(&self, vendor: Vendor) -> bool {
         self.breakers.is_open(vendor)

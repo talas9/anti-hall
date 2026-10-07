@@ -21,7 +21,7 @@
 //! Modes: `off` consults nothing, `shadow` consults and logs but never changes the outcome, `on` lets the trust rule
 //! apply. `changed` is `"added"`, `"changed"` or `null`; `wouldChange` reports what the rule would have done had the mode
 //! been `on`, so `jev report` can judge a shadow integration before it is trusted.
-use super::breaker::{Clock, SystemClock};
+use super::breaker::{Breakers, Clock, SystemClock, WallClock};
 use super::cache::{Cached, JevCache, MemCache};
 use super::client::{Answer, CallResult, JevClient};
 use super::credentials::resolve_key;
@@ -443,7 +443,8 @@ impl Jev {
     /// A Jev lane for `home` using the real network transport and a file log under it. `env` is the environment snapshot
     /// the settings are resolved against.
     pub fn new(home: &Path, env: Env) -> Arc<Jev> {
-        Jev::with_parts(home, env, Arc::new(HttpTransport::new()), Arc::new(SystemClock), None, None)
+        let breakers = Breakers::shared(home.join(defaults::text("paths.base_dir")).join(defaults::text("jev.breaker_file")), Arc::new(WallClock));
+        Jev::build(home, env, Arc::new(HttpTransport::new()), Arc::new(SystemClock), None, None, Some(breakers))
     }
 
     /// A Jev lane with every part replaceable (tests, and the daemon when storage supplies the cache and log).
@@ -455,6 +456,19 @@ impl Jev {
         cache: Option<Arc<dyn JevCache>>,
         log: Option<Arc<dyn DecisionLog>>,
     ) -> Arc<Jev> {
+        Jev::build(home, env, transport, clock, cache, log, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        home: &Path,
+        env: Env,
+        transport: Arc<dyn Transport>,
+        clock: Arc<dyn Clock>,
+        cache: Option<Arc<dyn JevCache>>,
+        log: Option<Arc<dyn DecisionLog>>,
+        breakers: Option<Breakers>,
+    ) -> Arc<Jev> {
         let settings = SettingsCache::new(home, env, clock.clone());
         let snapshot = settings.get(None);
         let log = log.unwrap_or_else(|| {
@@ -463,7 +477,10 @@ impl Jev {
         });
         let jev = Arc::new(Jev {
             settings,
-            client: JevClient::new(transport, clock.clone()),
+            client: match breakers {
+                Some(b) => JevClient::with_breakers(transport, clock.clone(), b),
+                None => JevClient::new(transport, clock.clone()),
+            },
             cache: cache.unwrap_or_else(|| Arc::new(MemCache::with_defaults())),
             log,
             stats: JevStats::default(),

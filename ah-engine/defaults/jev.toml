@@ -118,6 +118,10 @@ doc = "Consecutive fallback-eligible failures that open a vendor's breaker (Node
 value = 3
 min = 1
 
+[jev.breaker_file]
+doc = "The breaker state file, relative to the anti-hall home directory; the same file the Node hooks use, so both see one breaker (Node: jev-breaker.json under cache/)."
+value = "cache/jev-breaker.json"
+
 [jev.breaker_cooldown_ms]
 doc = "How long an open breaker skips its vendor before a probe is allowed (Node: BREAKER_COOLDOWN_MS)."
 value = 300000
