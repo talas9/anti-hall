@@ -240,10 +240,28 @@ fn min_setting(st: &crate::checks::git::util::Settings) -> Result<f64, Unsure> {
     Ok(defaults::num("codex_handover.nudge_min_default") as f64)
 }
 
-fn jev_on(home: &str, env: &RequestEnv) -> bool {
-    let h = std::path::Path::new(home);
-    let sources = crate::jev::settings::Sources::load(h, crate::jev::settings::Env::from_pairs(env.to_map()));
-    crate::jev::JevSettings::resolve(h, sources).mode(defaults::text("codex_handover.nudge_jev_id"), false) != crate::jev::settings::Mode::Off
+/// The `codexNudgeSubstantial` consult; true when Jev, in `on` mode, confidently judged the edits trivial.
+fn consult_jev(p: &Value, transcript: &str, home: &str, session: &str, scan: &Scan, env: &RequestEnv) -> bool {
+    use crate::jev::{AskRequest, Question, Trust};
+    let jenv = crate::jev::Env::from_pairs(env.to_map());
+    let files: Vec<&str> = scan.files.iter().take(defaults::num("codex_handover.nudge_jev_files") as usize).map(String::as_str).collect();
+    let state = format!(
+        "{}{}\n{}{}",
+        defaults::text("codex_handover.nudge_jev_files_label"),
+        files.join(", "),
+        defaults::text("codex_handover.nudge_jev_edits_label"),
+        scan.edits
+    );
+    let q = Question::noul(
+        defaults::text("codex_handover.nudge_jev_instructions"),
+        defaults::text("codex_handover.nudge_jev_true"),
+        defaults::text("codex_handover.nudge_jev_false"),
+    );
+    let mut req = AskRequest::new(defaults::text("codex_handover.nudge_jev_id"), q, &state, Trust::RelaxBlock, Value::Bool(true));
+    req.session_id = Some(session.to_string());
+    req.turn_ref = crate::jev::shared::turn_ref_from_transcript(transcript);
+    req.project = crate::jev::shared::project_for(p.get("cwd").and_then(Value::as_str));
+    crate::jev::shared::consult_relax(std::path::Path::new(home), &jenv, req).is_some_and(|d| d.outcome == Value::Bool(false))
 }
 
 /// `pruneStale` of `hooks/lib/state-prune.js`: remove this hook's per-session state files untouched for the TTL,
@@ -307,10 +325,10 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
         .map(jstext::js_string)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| jstext::sha1_hex(tp.as_bytes())[..defaults::num("codex_handover.nudge_session_hash_len") as usize].to_string());
-    // The Jev consult belongs to the Node hook; so does the decision row the Node client logs for an integration that is
-    // off, when the engine is set to write such rows (`jev.log_off_rows`).
-    if jev_on(&home, env) || defaults::num("jev.log_off_rows") == 1 {
-        return Err(Unsure);
+    // JEV (`codexNudgeSubstantial`, `consultRelax`): on asks inside the cap and a confident "trivial" answer skips the nudge;
+    // shadow and off fire a detached ask (Node's `askDetached`; an off call writes the off row).
+    if consult_jev(p, tp, &home, &session, &scan, env) {
+        return Ok(None);
     }
     let dir = format!("{home}/{}", defaults::text("codex_handover.state_dir"));
     let state = format!("{dir}/{}-{}.json", defaults::text("codex_handover.nudge_state_prefix"), jstext::safe_name(&session));

@@ -444,16 +444,56 @@ fn a_recorded_outage_or_a_switch_stops_the_nudge() {
     assert!(n.run(&[]).unwrap().is_none(), "Codex cannot run a review");
 }
 
+const JEV_ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
+
+fn trivial(p: f64) -> String {
+    format!(r#"{{"answers":{{"decision":{{"noul":{p}}}}}}}"#)
+}
+
 #[test]
-fn an_enabled_jev_integration_is_left_to_node() {
-    let n = nudge_box("nudge-jev");
+fn the_codex_nudge_consults_jev_natively_in_every_mode() {
+    use crate::jev::testkit::{install_scripted, log_rows, ok};
+    // off (Jev disabled): the nudge stands and the off row is written
+    let n = nudge_box("nudge-jev-off");
     n.transcript(&n.edits(4));
-    n.sb.write("home/.anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#);
-    assert_eq!(n.run(&[]), Err(Unsure));
-    n.sb.write("home/.anti-hall/settings.json", r#"{"jev":{"enabled":true},"jevIntegrations":{"codexNudgeSubstantial":"off"}}"#);
+    let home = n.sb.root.join("home");
+    let (jev, fake) = install_scripted(&home, &[], vec![]);
     assert!(n.run(&[]).unwrap().is_some());
-    n.sb.write("home/.anti-hall/settings.json", r#"{"jev":{"enabled":true},"jevIntegrations":{"codexNudgeSubstantial":"shadow"}}"#);
-    assert_eq!(n.run(&[]), Err(Unsure));
+    assert!(jev.drain(std::time::Duration::from_secs(5)));
+    let rows = log_rows(&home);
+    assert_eq!((rows.len(), rows[0]["id"].clone(), rows[0]["mode"].clone()), (1, json!("codexNudgeSubstantial"), json!("off")));
+    assert!(fake.seen.lock().unwrap().is_empty());
+    // shadow: asked, logged, the nudge stands even for a confident "trivial"
+    let n = nudge_box("nudge-jev-shadow");
+    n.transcript(&n.edits(4));
+    let home = n.sb.root.join("home");
+    let (jev, fake) = install_scripted(&home, &JEV_ON, vec![ok(200, &trivial(0.03))]);
+    assert!(n.run(&JEV_ON).unwrap().is_some());
+    assert!(jev.drain(std::time::Duration::from_secs(5)));
+    let rows = log_rows(&home);
+    assert_eq!((rows.len(), rows[0]["mode"].clone(), rows[0]["jev"].clone(), rows[0]["final"].clone()), (1, json!("shadow"), json!(false), json!(true)));
+    let seen = fake.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    let body = seen[0].2.as_deref().unwrap();
+    assert!(body.contains("files: f0.js, f1.js, f2.js, f3.js") && body.contains("edits: 4"), "{body}");
+    drop(seen);
+    // on: a confident "trivial" skips the nudge (and spends no state)
+    let n = nudge_box("nudge-jev-on");
+    n.transcript(&n.edits(4));
+    let home = n.sb.root.join("home");
+    n.sb.write("home/.anti-hall/settings.json", r#"{"jevIntegrations":{"codexNudgeSubstantial":"on"}}"#);
+    let (_jev, _fake) = install_scripted(&home, &JEV_ON, vec![ok(200, &trivial(0.03))]);
+    assert!(n.run(&JEV_ON).unwrap().is_none(), "a confident trivial verdict skips the nudge");
+    let rows = log_rows(&home);
+    assert_eq!((rows.len(), rows[0]["mode"].clone(), rows[0]["final"].clone(), rows[0]["changed"].clone()), (1, json!("on"), json!(false), json!("relaxed")));
+    assert!(!home.join(format!(".anti-hall/codex-nudge-state-{SID}.json")).exists());
+    // on, and the call fails: today's verdict (nudge)
+    let n = nudge_box("nudge-jev-on-fail");
+    n.transcript(&n.edits(4));
+    let home = n.sb.root.join("home");
+    n.sb.write("home/.anti-hall/settings.json", r#"{"jevIntegrations":{"codexNudgeSubstantial":"on"}}"#);
+    let (_jev, _fake) = install_scripted(&home, &JEV_ON, vec![]);
+    assert!(n.run(&JEV_ON).unwrap().is_some(), "fail-open to nudging");
 }
 
 #[test]

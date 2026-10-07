@@ -304,6 +304,31 @@ value = "before calling it done, spawn a `codex:codex-rescue` agent (or run /cod
 doc = "The Jev integration the Codex nudge consults."
 value = "codexNudgeSubstantial"
 
+[codex_handover.nudge_jev_instructions]
+doc = "The question the Codex nudge puts to Jev (a noul question; Node: the `instructions` of the codexNudgeSubstantial consult)."
+value = 'This session is about to be nudged to get an independent Codex review because it made several "substantial" code-file edits. Judge the edit summary below: are these edits genuinely substantial (logic/behavior changes worth a second-opinion review), as opposed to only comments/strings/log lines /formatting?'
+
+[codex_handover.nudge_jev_true]
+doc = "The criterion of a true answer to the Codex nudge question."
+value = "genuinely substantial — logic/behavior changed"
+
+[codex_handover.nudge_jev_false]
+doc = "The criterion of a false answer to the Codex nudge question."
+value = "trivial — only comments/strings/log lines/formatting changed"
+
+[codex_handover.nudge_jev_files]
+doc = "How many edited file names the Codex nudge question's summary lists."
+value = 20
+min = 1
+
+[codex_handover.nudge_jev_files_label]
+doc = "The first line of the Codex nudge question's summary, before the file list."
+value = "files: "
+
+[codex_handover.nudge_jev_edits_label]
+doc = "The second line of the Codex nudge question's summary, before the edit count."
+value = "edits: "
+
 [codex_handover.nudge_max]
 doc = "The most Codex nudges a session gets."
 value = 2

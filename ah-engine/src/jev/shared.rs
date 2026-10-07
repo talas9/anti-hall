@@ -67,6 +67,27 @@ pub fn ask_detached(home: &Path, env: &Env, mut req: super::AskRequest) {
     }
 }
 
+/// The mode of integration `id` for the session whose environment is `env` (Node: `getMode(id, readJevJson(home), home,
+/// {env})`).
+pub fn mode_of(home: &Path, env: &Env, id: &str) -> super::Mode {
+    super::JevSettings::resolve(home, super::settings::Sources::load(home, env.clone())).mode(id, false)
+}
+
+/// Node's `consultRelax`, for a relax-block consult inside a hook that is about to nudge or block: when the integration is
+/// `on` the question is asked here, within `jev.relax_sync_cap_ms`, and its decision returned (a timeout or failure comes
+/// back as the baseline); in `shadow` and `off` it goes out as a detached ask (the decision row lands, nobody waits) and
+/// the result is `None`.
+pub fn consult_relax(home: &Path, env: &Env, mut req: super::AskRequest) -> Option<super::Decision> {
+    if mode_of(home, env, &req.id) != super::Mode::On {
+        ask_detached(home, env, req);
+        return None;
+    }
+    let cap = defaults::num("jev.relax_sync_cap_ms") as u64;
+    req.budget_ms = Some(req.budget_ms.map_or(cap, |b| b.min(cap)));
+    req.env = Some(env.clone());
+    Some(lane(home, env).ask(&req))
+}
+
 /// Put a prepared lane in place of the shared one for `home` (tests only: a lane over a scripted transport).
 #[cfg(test)]
 pub(crate) fn install(home: &Path, jev: Arc<Jev>) {

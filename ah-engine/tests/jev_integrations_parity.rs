@@ -159,9 +159,11 @@ fn run_side(sc: &Scenario, engine: bool) -> Side {
         std::fs::write(f, body).unwrap();
     }
     let t = home.join("transcript.jsonl");
-    std::fs::write(&t, sc.transcript.join("\n") + "\n").unwrap();
+    // `{HOME}` in a transcript line or in the payload is this side's isolated home
+    let at_home = |text: &str| text.replace("{HOME}", &home.to_string_lossy());
+    std::fs::write(&t, at_home(&(sc.transcript.join("\n") + "\n"))).unwrap();
     let mock = Mock::start(sc.noul);
-    let mut payload = sc.payload.clone();
+    let mut payload: Value = serde_json::from_str(&at_home(&sc.payload.to_string())).unwrap();
     payload["transcript_path"] = json!(t.to_string_lossy());
     let mut c = if engine {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
@@ -329,9 +331,35 @@ fn git(name: &'static str, command: &str, noul: f64, modes: &'static str, reques
     }
 }
 
+fn edit_line(file: &str) -> String {
+    json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":format!("{{HOME}}/proj/{file}")}}]}}).to_string()
+}
+
+fn nudge(name: &'static str, modes: &'static str, noul: f64, requests: usize, rows: usize) -> Scenario {
+    Scenario {
+        name,
+        hook: "codex-nudge.js",
+        check: "codex-nudge",
+        env: vec![],
+        transcript: vec![user("go"), edit_line("a.js"), edit_line("b.js"), edit_line("c.js"), edit_line("a.js")],
+        payload: json!({"hook_event_name":"Stop","session_id":"cn","cwd":"{HOME}/proj"}),
+        requests,
+        rows,
+        noul,
+        deviation: &[],
+        modes,
+        files: &[".anti-hall/codex-nudge-state-cn.json"],
+        seed: &[],
+    }
+}
+
 fn scenarios() -> Vec<Scenario> {
     let mixed = "Tests:  2 failed, 8 passed, 10 total\nPASS src/a.test.js\nFAIL src/b.test.js";
     vec![
+        nudge("codexNudgeSubstantial shadow (default): asked, logged, the nudge stands", "", 0.03, 1, 1),
+        nudge("codexNudgeSubstantial on: a confident trivial verdict skips the nudge", r#"{"jevIntegrations":{"codexNudgeSubstantial":"on"}}"#, 0.03, 1, 1),
+        nudge("codexNudgeSubstantial on: a substantial verdict keeps the nudge", r#"{"jevIntegrations":{"codexNudgeSubstantial":"on"}}"#, 0.97, 1, 1),
+        nudge("codexNudgeSubstantial off: the off row, the nudge stands", r#"{"jevIntegrations":{"codexNudgeSubstantial":"off"}}"#, 0.97, 0, 1),
         git("gitGuardSelfCredit on: a confident paraphrase blocks the commit", r#"git commit -m "written with help from the assistant""#, 0.97, GIT_ON, 1, 1),
         git("gitGuardSelfCredit shadow (default) logs and allows", r#"git commit -m "written with help from the assistant""#, 0.97, "", 1, 1),
         git("gitGuardSelfCredit on: a not-credit answer allows", r#"git commit -m "fix the parser""#, 0.03, GIT_ON, 1, 1),

@@ -193,6 +193,13 @@ value = ["speculation", "triage"]
 doc = "Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off."
 value = "triage"
 
+[jev.relax_sync_cap_ms]
+doc = "Longest a relax-block consult inside a hook that is about to nudge or block waits for Jev when the integration is on; a slower answer keeps today's verdict (Node: RELAX_SYNC_CAP_MS)."
+value = 1500
+min = 1
+max = 3000
+unit = "ms"
+
 [jev.cache_file]
 doc = "The answer cache file, relative to the anti-hall home directory; the same file the Node hooks use (Node: cache/jev-assist.json), so a text asked by either side is asked once."
 value = "cache/jev-assist.json"
