@@ -99,6 +99,23 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 
 **Engine test runner.** `./test.sh` uses [cargo-nextest](https://nexte.st) when it is installed (`cargo install --locked cargo-nextest`): one process per test, a per-test timeout from `ah-engine/.config/nextest.toml` (a hung test is killed and named instead of stalling the run), and the doctests through `cargo test --doc`. Without it, `./test.sh` prints how to install it and falls back to plain `cargo test`. Extra arguments go to the runner, so `./test.sh --no-fail-fast` works either way.
 
+**Mutation testing.** `ah-engine/scripts/mutants.sh <module>` runs [cargo-mutants](https://mutants.rs) on one `src/checks/` module (`cargo install --locked cargo-mutants`): it changes the code (flips a comparison, replaces a function body) and expects a test to fail; a surviving mutant is behaviour no test pins, or an equivalent mutant (a change with no observable effect, to be ignored). It is not part of the default gate: a run builds once per mutant, so scope it to one module. Config: `ah-engine/.cargo/mutants.toml`; survivors are listed in `target/mutants.out/missed.txt`.
+
+<!-- doc-check: skip (a mutation run takes minutes; install cargo-mutants first) -->
+```sh
+cd ah-engine
+scripts/mutants.sh git --list
+```
+
+**Heap diagnostics.** `ah-engine diag heap <payloads>` replays hook payloads (a JSON file, a JSON-lines file, or a directory of them) through every built-in check in one process and prints, per check, the heap peak, the bytes still allocated afterwards and the total allocated, measured with [dhat](https://docs.rs/dhat). It exists only in a build with `--features diag` (the release binary does not contain it), and it runs against a scratch `HOME`, never the real one. Use it to find which check holds memory on real payloads; RSS cannot, because macOS keeps freed pages. Read `current` with care: the first evaluation of a check includes one-time lazy state (compiled regexes), so a non-zero `current` is often a cache, not a leak; compare `peak` and `total` across checks.
+
+<!-- doc-check: long -->
+```sh
+cd ah-engine
+printf '%s\n' '{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/tmp","tool_input":{"command":"git status"}}' > "$HOME/payloads.jsonl"
+cargo run -q --locked --features diag -- diag heap "$HOME/payloads.jsonl"
+```
+
 After you change a command, setting, metric, impact kind or check, regenerate the reference. A test fails when `REFERENCE.md` differs from the generated text.
 
 ```sh
