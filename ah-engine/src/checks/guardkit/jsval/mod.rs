@@ -5,6 +5,10 @@
 //! Why not `serde_json::Value`: its object is key-sorted, while the Node hooks write state files in insertion order
 //! (integer-like keys first). A Rust port that re-sorted another hook's entries would change a file Node still reads.
 //! Anything this module cannot decide the way V8 does is reported as unsupported, and the caller defers to Node.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 use std::fmt;

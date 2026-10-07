@@ -1,4 +1,8 @@
 //! File-system helpers with the semantics of the Node calls the hooks make.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::{posix_dirname, posix_normalize};
 use std::fs;
 use std::os::unix::fs::MetadataExt;

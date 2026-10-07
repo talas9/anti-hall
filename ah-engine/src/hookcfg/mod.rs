@@ -10,6 +10,11 @@
 //! an event, `mode` off or shadow and `enabled = false` are errors, `max_rules` must stay 0 and an entry's `when` cannot be
 //! overridden; on one of its entries, off and shadow are allowed only when the entry has a built-in check, because then its
 //! Node hook still runs as the real decider (off skips only the engine's check, shadow runs it and logs whether it agrees).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 pub mod session;
 pub mod when;
 

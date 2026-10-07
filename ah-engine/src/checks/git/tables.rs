@@ -3,6 +3,10 @@
 //! Why a struct built once instead of reading the defaults at each use: the parsers consult these tables in inner
 //! loops (is this word a wrapper? is this option a value option?), so each table is turned into a set or a typed
 //! value on first use and shared for the life of the process. The text of the tables lives only in the TOML file.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use crate::defaults::V;
 use std::collections::{HashMap, HashSet};

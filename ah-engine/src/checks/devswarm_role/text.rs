@@ -5,6 +5,10 @@
 //!
 //! Mirrors `hooks/devswarm-child-role.js` `buildAdditionalContext` (child branch), `hooks/lib/devswarm-wake.js`
 //! (`wakeDirective`, `drainCmd`, `monitorArmLine`) and `hooks/lib/stable-launcher.js` `buildLauncherSource`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 
 /// Replace each `{name}` of `template` that `args` names, in one left-to-right pass; any other brace stays as written.

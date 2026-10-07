@@ -15,6 +15,12 @@
 //! (D74). Any other event runs the hooks it can and logs the ones it cannot. Results one output cannot express are
 //! delivered one after another ([`combine::sequential`]); a join over the host's context cap is handed back to the
 //! wrapper with `dispatch.defer_exit` so the hooks run separately, as the host runs them.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 pub mod combine;
 pub mod native;
 pub mod node;
@@ -115,7 +121,7 @@ impl PayloadInput {
             }
         }
         if let Some(f) = file.as_mut() {
-            let _ = f.sync_all();
+            crate::discard::harmless(f.sync_all()); // keep: a spool file on its way out; durability is best effort
         }
         Ok(PayloadInput { raw, file })
     }
@@ -345,7 +351,7 @@ pub fn sweep_stale_spool() {
 
 fn log_defer(event: &str, why: &str) {
     // the state dir may not exist yet (no daemon ever ran here); the deferral must still be on record
-    let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
     health::log_event("dispatch_defer", event, &defaults::render("dispatch.msg_defer", &[("why", &why)]));
 }
 
@@ -405,7 +411,7 @@ fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> 
     let mut tele = plan::Tele::default();
     let o = run_core(raw, args, payload, complete, &mut tele);
     if tele.notable() {
-        let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+        crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
         health::log_event("dispatch_plan", &args.event, &tele.detail());
     }
     o
@@ -470,7 +476,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             if !ok {
                 let note = defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]);
                 let stderr = defaults::render("dispatch.msg_skipped_entry_stderr", &[("event", &args.event), ("id", &e.id)]);
-                let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+                crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
                 health::log_event("dispatch_defer", &args.event, &note);
                 pre_err.push_str(&stderr);
                 pre_err.push('\n');
@@ -634,7 +640,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             // are delivered, the host spills the over-cap context itself).
             let plain = o.code == 0 && !results.iter().any(|r| r.code.is_some() && combine::json_blocks(&r.out));
             let Some((len, cap)) = over_cap(args, &results, &o.out).filter(|_| plain) else { return o };
-            let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+            crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
             health::log_event("dispatch_context_over_cap", &args.event, &defaults::render("dispatch.msg_context_over_cap", &[("len", &len), ("cap", &cap)]));
             if guard {
                 return combine::sequential(&results, &args.event);
@@ -643,7 +649,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{err}\n") }
         }
         combine::Combined::Conflict(ids) => {
-            let _ = crate::limits::ensure_private_dir(&crate::paths::dir());
+            crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
             health::log_event("dispatch_conflict", &args.event, &defaults::render("dispatch.msg_conflict", &[("ids", &ids.join(","))]));
             let mut o = combine::sequential(&results, &args.event);
             o.err = format!("{}{}", pre_err, o.err);
@@ -656,7 +662,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
 /// engine failure: a hook's own non-zero exit (1, 3, ...) passes through, and must not be answered by running the hooks again.
 fn mark_done() {
     if let Some(p) = defaults::env_var("done_file").filter(|p| !p.is_empty()) {
-        let _ = std::fs::write(p, b"");
+        crate::discard::logged("done_file_write", std::fs::write(p, b""));
     }
 }
 
@@ -671,18 +677,18 @@ pub fn hook_main(args: &[String]) -> i32 {
             Ok(a) => a,
             Err(e) if guard => {
                 let o = fail_closed(&event, &e.to_string());
-                let _ = std::io::stderr().write_all(o.err.as_bytes());
+                crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
                 return o.code;
             }
             Err(e) => {
-                let _ = writeln!(std::io::stderr(), "{e}");
+                crate::discard::harmless(writeln!(std::io::stderr(), "{e}")); // keep: a closed pipe leaves nobody to tell
                 return 64; // a usage error: the host reports it as a non-blocking hook error
             }
         };
         // D87: an event the table has no entry for (a thin trigger only) has nothing to run and nothing to guard, whatever its
         // payload looks like, even invalid UTF-8 or over the cap: answer the neutral no-op after letting the host finish writing
         if table::entries(&a.host, &a.event).is_empty() {
-            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            crate::discard::harmless(std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())); // keep: a closed pipe leaves nobody to tell
             mark_done();
             return 0;
         }
@@ -692,13 +698,13 @@ pub fn hook_main(args: &[String]) -> i32 {
             Err(e) if guard => {
                 let why = defaults::render("msg.dispatch_stdin_spool", &[("err", &e)]);
                 let o = fail_closed(&event, &why);
-                let _ = std::io::stderr().write_all(o.err.as_bytes());
+                crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
                 return o.code;
             }
             Err(e) => {
                 let note = defaults::render("msg.dispatch_stdin_spool_note", &[("event", &event), ("err", &e)]);
                 health::log_event_or_stderr("dispatch_spool_unavailable", &event, &note);
-                let _ = writeln!(std::io::stderr(), "{note}");
+                crate::discard::harmless(writeln!(std::io::stderr(), "{note}")); // keep: a closed pipe leaves nobody to tell
                 return 0;
             }
         };
@@ -708,7 +714,7 @@ pub fn hook_main(args: &[String]) -> i32 {
         if guard && !over_cap && utf8.is_err() {
             let lossy_stop = stoploop::is_stop_event(&a.event).then(|| serde_json::from_str::<Value>(&String::from_utf8_lossy(raw_bytes)).ok()).flatten();
             let o = closed(&a.event, lossy_stop.as_ref(), defaults::text("msg.dispatch_stdin_utf8"));
-            let _ = std::io::stderr().write_all(o.err.as_bytes());
+            crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
             return o.code;
         }
         if over_cap {
@@ -725,10 +731,10 @@ pub fn hook_main(args: &[String]) -> i32 {
         // Non-guard events cannot block; keep matching Node's replacement-character decode there.
         let raw = String::from_utf8_lossy(raw_bytes).to_string();
         let o = run_inner(&raw, &a, payload.file.as_ref(), !over_cap && utf8.is_ok());
-        let _ = std::io::stderr().write_all(o.err.as_bytes());
+        crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
         let mut so = std::io::stdout();
-        let _ = so.write_all(o.out.as_bytes());
-        let _ = so.flush();
+        crate::discard::harmless(so.write_all(o.out.as_bytes())); // keep: a closed pipe leaves nobody to tell
+        crate::discard::harmless(so.flush()); // keep: a closed pipe leaves nobody to tell
         mark_done();
         o.code
     });
@@ -737,7 +743,7 @@ pub fn hook_main(args: &[String]) -> i32 {
             return 0;
         }
         let o = fail_closed(&event, defaults::text("dispatch.msg_panic"));
-        let _ = std::io::stderr().write_all(o.err.as_bytes());
+        crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
         o.code
     })
 }

@@ -1,6 +1,9 @@
 //! Write every file generated from the dispatch table (D87) into a checkout: per host the thin `hooks.json`, the per-hook
 //! registry, the wrapper's fallback list and its fallback map, at the paths `dispatch.generated_files` names. The same
 //! text `ah-engine gen-hooks` prints; `tests/hooks_files.rs` requires the committed files to equal it.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
 
 use ah_engine::dispatch::table;
 use ah_engine::{defaults, hooksgen};

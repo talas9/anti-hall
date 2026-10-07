@@ -19,6 +19,10 @@
 //! than the Node guard's shell-write parser (D74).
 //!
 //! Mirrors `hooks/api-guard.js` `main`, `newCodeChunks`, `langFor`, `pyCandidates` and `jsCandidates`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::settings::{get_bool, is_skipped};

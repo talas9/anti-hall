@@ -6,6 +6,11 @@
 //!
 //! What this port does not do: the Jev consult. When Jev is enabled for the `codexNudgeSubstantial` integration the
 //! check defers to the Node hook, which owns the consult.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::quota::{self, Unsure};
 use crate::checks::git::util::{posix_basename, posix_dirname, resolve};
 use crate::checks::guardkit::jsre;
@@ -276,7 +281,7 @@ fn prune_stale(dir: &str, keep: &str, now: f64) {
     {
         return;
     }
-    let _ = std::fs::write(&stamp, json::stringify(&J::Obj(vec![("lastSweep".into(), J::Num(now))])));
+    crate::discard::harmless(std::fs::write(&stamp, json::stringify(&J::Obj(vec![("lastSweep".into(), J::Num(now))])))); // keep: a lost sweep stamp only repeats the sweep
     let Some(entries) = fsx::read_dir_names(dir) else { return };
     let full_prefix = format!("{prefix}-");
     let ttl = defaults::num("codex_handover.prune_ttl_ms") as f64;
@@ -288,7 +293,7 @@ fn prune_stale(dir: &str, keep: &str, now: f64) {
         if let Ok(md) = std::fs::metadata(&path)
             && now - fsx::mtime_ms(&md) > ttl
         {
-            let _ = std::fs::remove_file(&path);
+            crate::discard::harmless(std::fs::remove_file(&path)); // keep: cleanup that raced; an absent file is the goal state
         }
     }
 }

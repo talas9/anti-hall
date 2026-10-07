@@ -3,6 +3,12 @@
 //!
 //! Mirrors `hooks/lib/orch-full-state.js` (`markerPath`, `writeMarker`, `readMarker`) and the prune sweep of
 //! `hooks/lib/state-prune.js` (`pruneStale`) that `writeMarker` runs. Every function is fail-soft, as the Node ones are.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::spawnctx::{now_ms, sanitize_session};
 use crate::defaults;
@@ -78,7 +84,7 @@ pub fn prune_stale(dir: &Path, keep: &Path) {
             return;
         }
     }
-    let _ = std::fs::write(&stamp, format!("{{\"lastSweep\":{}}}", now as u64));
+    crate::discard::harmless(std::fs::write(&stamp, format!("{{\"lastSweep\":{}}}", now as u64))); // keep: a lost sweep stamp only repeats the sweep
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let keep_name = keep.file_name().and_then(|n| n.to_str()).map(str::to_string);
     let full_prefix = format!("{prefix}-");
@@ -92,7 +98,7 @@ pub fn prune_stale(dir: &Path, keep: &Path) {
         let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) else { continue };
         let ms = mtime.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
         if now - ms > ttl {
-            let _ = std::fs::remove_file(&path);
+            crate::discard::harmless(std::fs::remove_file(&path)); // keep: cleanup that raced; an absent file is the goal state
         }
     }
 }

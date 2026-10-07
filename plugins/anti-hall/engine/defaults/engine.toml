@@ -632,3 +632,11 @@ unit = "min"
 [atomic.tmp_suffix]
 doc = "Suffix of the temporary file every atomic state write goes through before the rename (a `.json` target keeps a `.json` ending after it)."
 value = ".tmp"
+
+# ---- deliberate discards --------------------------------------------------------------------------------
+
+[discard.log_interval_ms]
+doc = "A best-effort operation that fails (a state write the engine fails open on) is logged once per reason code in this many milliseconds; repeats inside the window are dropped so a failing disk cannot flood the event log."
+value = 60000
+unit = "ms"
+min = 1000

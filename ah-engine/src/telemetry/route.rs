@@ -12,6 +12,10 @@
 //! NET, not only the savings. Every figure is an ESTIMATE under one stated assumption (the model asked for would have used
 //! the same tokens), priced from the config price table, which carries its own date and source. A model the table does not
 //! know is counted as unpriced rather than guessed.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::event::{Event, Extras, Route, Spawn, Usage};
 use crate::defaults;
 use serde_json::{Value, json};

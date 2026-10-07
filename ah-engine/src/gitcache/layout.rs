@@ -3,6 +3,10 @@
 //! Discovery mirrors what git does from a directory: walk up to the first `.git` entry that is a repository (a
 //! directory with a `HEAD`) or a `gitdir:` file (a submodule or a linked worktree), then follow `commondir` for a
 //! linked worktree. Bare repositories and `GIT_DIR` are not resolved here; the caller runs git itself for those.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::GitCacheError;
 use crate::defaults;
 use std::os::unix::fs::MetadataExt;
@@ -44,7 +48,7 @@ fn content(p: &Path) -> SigItem {
     use std::io::Read;
     SigItem::Content(std::fs::File::open(p).ok().map(|f| {
         let mut b = Vec::new();
-        let _ = f.take(content_cap() as u64).read_to_end(&mut b);
+        crate::discard::harmless(f.take(content_cap() as u64).read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
         b
     }))
 }

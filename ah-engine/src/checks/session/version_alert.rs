@@ -5,6 +5,12 @@
 //! plugin registry has caught up. Case 1: a fresh remote-latest cache names a newer release, so the user needs to update.
 //! A stale or absent remote cache makes Node start a detached refresh process, which is Node's job, so the engine defers
 //! then (before writing anything).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::drift::{self, Cache};
 use super::jval::{J, Parsed, obj, parse};
 use super::{emit, home_of, is_session_start, is_word, join, js_parse_int, now_ms, plugin_root, read_text, skipped, switch_on, truthy};

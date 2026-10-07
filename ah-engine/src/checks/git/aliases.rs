@@ -1,4 +1,8 @@
 //! git-guard's alias and reused-message checks (lib/git-alias-scan.js).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::Ctx;
 use super::gitcmd::*;
 use super::segments::scan_command;

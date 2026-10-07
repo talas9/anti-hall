@@ -18,6 +18,10 @@
 //!
 //! Mirrors `hooks/lib/devswarm-primary-gate.js` `inert`, `hooks/lib/devswarm-detect.js` `isDevswarmActive` and
 //! `hooks/lib/devswarm-role.js` `isChildWorkspace`, which both hooks call before anything else.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::settings::{get_bool, read_object, stored_options};
 use crate::checks::guardkit::text::{js_string_of, js_trim};

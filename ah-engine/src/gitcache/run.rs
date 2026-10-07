@@ -1,4 +1,8 @@
 //! Running git for a cache miss: bounded, quiet, and in its own process group.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - a panicked or timed-out helper yields no output; the caller treats that as no answer
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::layout::Layout;
 use super::{GitCacheError, GitLimits};
 use crate::defaults;
@@ -45,7 +49,7 @@ impl<'a> Runner<'a> {
         let mut out = child.stdout.take().ok_or_else(|| fail(std::io::Error::other("no stdout")))?;
         let reader = std::thread::spawn(move || {
             let mut b = Vec::new();
-            let _ = out.read_to_end(&mut b);
+            crate::discard::harmless(out.read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
             b
         });
         let start = Instant::now();
@@ -56,8 +60,8 @@ impl<'a> Runner<'a> {
                 Ok(None) => {
                     // the whole group: a git that spawned a helper must not leave it running (D9)
                     unsafe { libc::kill(-pid, libc::SIGKILL) };
-                    let _ = child.wait();
-                    let _ = reader.join();
+                    crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
+                    crate::discard::harmless(reader.join()); // keep: reaping or draining a child or thread that already ended
                     return Err(fail(std::io::Error::from(std::io::ErrorKind::TimedOut)));
                 }
                 Err(e) => return Err(fail(e)),

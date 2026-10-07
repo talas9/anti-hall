@@ -11,6 +11,12 @@
 //! the way `state-prune.js` does. Without a home directory the check defers.
 //!
 //! Mirrors `hooks/merge-side-pick.js` and `hooks/lib/merge-side-pick.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an absent field is the empty value
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};

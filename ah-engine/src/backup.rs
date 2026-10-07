@@ -121,7 +121,7 @@ pub fn backup(dir: &Path, to: Option<&Path>) -> Result<Value, DbError> {
 /// the databases are swapped. The lock is released when the returned file is dropped.
 fn quiesce(dir: &Path) -> Result<std::fs::File, DbError> {
     let sock = crate::paths::socket_in(dir);
-    let _ = crate::client::exchange(&sock, b"CTL stop\n", defaults::millis("client.ctl_timeout_ms"));
+    crate::client::exchange(&sock, b"CTL stop\n", defaults::millis("client.ctl_timeout_ms")); // keep: the daemon may already be gone
     let lock_path = crate::paths::lock_for(&sock);
     let f = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(&lock_path).map_err(|e| DbError::Sql(e.to_string()))?;
     let t = Instant::now();

@@ -11,6 +11,10 @@
 //! | UserPromptSubmit | `{"decision":"block","reason"}`                         | `hookSpecificOutput.additionalContext`  |
 //! | Stop             | `{"decision":"block","reason"}` (never if `stop_hook_active`) | `{"systemMessage"}`               |
 //! | SessionStart / SubagentStart | n/a (treated as context)                    | `hookSpecificOutput.additionalContext`  |
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::{self, Verdict};
 use crate::defaults;
 use crate::reqenv::RequestEnv;

@@ -1,5 +1,10 @@
 //! git argument analysis ported from git-guard.js: subcommand resolution (with inline aliases), push force /
 //! delete detection, command-substitution args, self-credit matching and commit-message extraction.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::Ctx;
 use super::tables::{block, tables};
 use super::tokenize::*;

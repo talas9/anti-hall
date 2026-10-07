@@ -13,6 +13,7 @@ pub mod db;
 pub mod defaults;
 #[cfg(feature = "diag")]
 pub mod diag;
+pub mod discard;
 pub mod dispatch;
 pub mod docs;
 pub mod error;

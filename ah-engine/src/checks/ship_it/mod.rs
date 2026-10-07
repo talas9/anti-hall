@@ -10,6 +10,10 @@
 //! off, or skipped, every call is allowed here, exactly as in Node.
 //!
 //! Mirrors `hooks/ship-it-guard.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};

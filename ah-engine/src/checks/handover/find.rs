@@ -1,4 +1,8 @@
 //! Locating handover artifacts under `<repo>/.anti-hall/handovers/<date>/<session-id>/` (`hooks/lib/handover-find.js`).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::{path_join, posix_dirname};
 use crate::checks::jsport::ident::{self, Ctx};
 use crate::checks::jsport::{date, fsx};

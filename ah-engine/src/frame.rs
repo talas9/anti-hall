@@ -10,6 +10,9 @@
 //! carries the client's environment, D76), so a client and a daemon of different protocols never read each other's
 //! frames as answers; the client treats the mismatch as an engine failure and runs the Node hook.
 //! An empty BODY inside a valid OK frame is the engine's real "nothing to say" answer.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
 
 const MAGIC: &str = "AHR2";
 const END: &[u8] = b"\nAHEND\n";

@@ -11,6 +11,10 @@
 //!
 //! Not supported (and rejected when the pattern is compiled): lookahead, lookbehind and back-references. A guard
 //! that needs them matches by hand.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::lit_re;
 use crate::defaults;
 use regex::Regex;

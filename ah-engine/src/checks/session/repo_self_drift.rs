@@ -3,6 +3,11 @@
 //! Probe 3 of the drift family, with no network and no background process: it compares the hook and skill counts that
 //! `docs/KB.md` claims in its own prose with what is on disk, and says when the model KBs were last audited more than the
 //! threshold ago. The scan is cached for a day; each advisory is said once per unchanged finding.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::drift::{self, Cache};
 use super::jval::{J, js_num, obj};
 use super::time::{days_of_iso_date, iso_date};

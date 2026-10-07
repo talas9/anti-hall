@@ -6,6 +6,10 @@
 //! The payload flag is the host's own "a Stop hook already blocked this turn" signal. The cap (`dispatch.stop_block_cap`)
 //! covers the payloads that cannot carry it (unreadable, cut off) and a host that does not set it. The count lives in a
 //! file per session under the state dir, because every Stop is a new process.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -55,7 +59,7 @@ fn prune() {
     for e in rd.flatten() {
         let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > max);
         if old && e.file_type().is_ok_and(|t| t.is_file()) {
-            let _ = std::fs::remove_file(e.path());
+            crate::discard::harmless(std::fs::remove_file(e.path())); // keep: cleanup that raced; an absent file is the goal state
         }
     }
 }
@@ -81,8 +85,8 @@ pub fn judge(event: &str, payload: Option<&Value>, why: &str) -> Verdict {
 /// A payload-less block counts under the shared unknown key, so a healthy run clears that one too.
 pub fn reset(event: &str, payload: Option<&Value>) {
     if is_stop_event(event) {
-        let _ = std::fs::remove_file(counter(payload, event));
-        let _ = std::fs::remove_file(counter(None, event));
+        crate::discard::harmless(std::fs::remove_file(counter(payload, event))); // keep: cleanup that raced; an absent file is the goal state
+        crate::discard::harmless(std::fs::remove_file(counter(None, event))); // keep: cleanup that raced; an absent file is the goal state
     }
 }
 

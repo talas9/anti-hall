@@ -12,6 +12,10 @@
 //! workspace, and the tier text is not switched off) it defers before anything is written.
 //!
 //! Mirrors `hooks/verify-first.js`; the store is [`crate::checks::emit_dedupe`].
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::emit_dedupe::{self, Defer, Opts};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::msg;

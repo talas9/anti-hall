@@ -21,6 +21,12 @@
 //!
 //! Mirrors `hooks/devswarm-child-role.js`, `hooks/devswarm-parent-gate.js` (early exits), `hooks/lib/devswarm-primary-gate.js`,
 //! `hooks/lib/devswarm-detect.js` `isDevswarmActive`, `hooks/lib/devswarm-role.js` `isChildWorkspace` and `hooks/skip-guard.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::{Settings, posix_normalize};
 use crate::checks::guardkit::settings::{get_bool, is_skipped};
 use crate::checks::guardkit::text::js_trim;

@@ -8,6 +8,11 @@
 //! The project root is the git top level of the working directory, read from the file system the way
 //! `companion/lib/identity.js` reads it. A `.git` file in a shape this port does not read exactly hands the hook back to
 //! Node, before anything is written.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::jval::{J, Parsed, parse};
 use super::time::{iso_date, iso_string};
 use super::{emit, home_of, is_session_start, join, judge_child, now_ms, read_text, switch_on};
@@ -151,7 +156,7 @@ fn check_ignore(root: &str, env: &RequestEnv) -> Probe {
             _ => {
                 // the whole group, so a git helper does not outlive the limit
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
-                let _ = child.wait();
+                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
                 return Probe::Slow;
             }
         }
@@ -366,7 +371,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Verdict {
     let root = repo_root(cwd, top.as_deref(), &home);
     if prune_project(&root, now) {
         state.set(&key, J::Obj(vec![("lastPrunedAt".to_string(), J::Num(now))]));
-        let _ = write_state(&state_file, &state);
+        crate::discard::logged("progress_prune_state_write", write_state(&state_file, &state));
     }
     verdict(hint)
 }

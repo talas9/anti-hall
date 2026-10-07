@@ -6,6 +6,11 @@
 //! `hooks/lib/jev-assist.js`. Every function is best effort: a failure never reaches the caller's decision (D35).
 //! The daily-rollup retention setting (`jev.rollupRetentionDays`, default 0: keep everything) is not applied here: the
 //! engine never removes a rollup file, and the Node hooks still prune when the owner set a retention.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::scrub::scrub_secrets;
 use crate::checks::replykit::json::{js_number, quote};
 use crate::defaults;
@@ -105,8 +110,10 @@ pub fn maybe_warn_budget(home: &Path, watch: bool, usd_per_day: Option<f64>, cos
     }
     let body =
         format!("{{\"date\":{},\"spentUsd\":{},\"warnedDate\":{}}}", quote(&today), js_number(spent), warned.as_deref().map_or("null".to_string(), quote));
-    let _ = path.parent().map(std::fs::create_dir_all);
-    let _ = std::fs::write(&path, body);
+    if let Some(d) = path.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write that follows fails too when the directory is missing
+    }
+    crate::discard::logged("jev_keep_write", std::fs::write(&path, body));
     warning
 }
 
@@ -131,25 +138,28 @@ pub fn maybe_write_audit_snippet(log_dir: &Path, enabled: bool, id: &str, hash: 
         head(&scrub_secrets(&head(state, defaults::num("jev.audit_scrub_chars") as usize)), defaults::num("jev.audit_plain_chars") as usize)
     };
     let path = log_dir.join(defaults::text("jev.audit_file"));
-    let _ = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(log_dir)?;
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > defaults::num("jev.audit_max_bytes")) {
-            let mut old = path.as_os_str().to_os_string();
-            old.push(".1");
-            std::fs::rename(&path, PathBuf::from(old))?; // replaces the one backup, as Node's remove-then-rename does
-        }
-        let shadow = if truthy(changed) || !truthy(would_change) { String::new() } else { ",\"shadow\":true".to_string() };
-        let row = format!(
-            "{{\"ts\":{},\"id\":{},\"h\":{},\"snippet\":{}{shadow}}}\n",
-            quote(&super::assist::iso_ms(now_ms())),
-            quote(id),
-            quote(hash),
-            quote(&snippet)
-        );
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
-        f.write_all(row.as_bytes())?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-    })();
+    crate::discard::logged(
+        "jev_audit_write",
+        (|| -> std::io::Result<()> {
+            std::fs::create_dir_all(log_dir)?;
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > defaults::num("jev.audit_max_bytes")) {
+                let mut old = path.as_os_str().to_os_string();
+                old.push(".1");
+                std::fs::rename(&path, PathBuf::from(old))?; // replaces the one backup, as Node's remove-then-rename does
+            }
+            let shadow = if truthy(changed) || !truthy(would_change) { String::new() } else { ",\"shadow\":true".to_string() };
+            let row = format!(
+                "{{\"ts\":{},\"id\":{},\"h\":{},\"snippet\":{}{shadow}}}\n",
+                quote(&super::assist::iso_ms(now_ms())),
+                quote(id),
+                quote(hash),
+                quote(&snippet)
+            );
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
+            f.write_all(row.as_bytes())?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        })(),
+    );
 }
 
 // ---- daily rollups -----------------------------------------------------------------------------------------------

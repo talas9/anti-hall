@@ -3,9 +3,16 @@
 //! Writes go through the group-committing writer ([`crate::db::Op::Telemetry`]), reads through the same connections the
 //! rest of the Store uses, so telemetry adds no database handle of its own. Counters are kept per UTC day and
 //! (k, h, e, o), merged additively; events keep their typed fields and the JSON form of the whole event.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - serializing a string cannot fail
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::event::Event;
 use super::recorder::Delta;
 use crate::db::{Db, Op};
+use crate::discard::Logged;
 use crate::error::DbError;
 use crate::sql;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -178,20 +185,20 @@ impl TelDb {
 
     /// Counter rows for days `from..=to` (hot.db).
     pub fn counts(&self, from: i64, to: i64) -> Vec<DayRow> {
-        let _ = self.db.barrier();
-        self.db.read(|c| c.prepare_cached(sql::TEL_COUNTS_RANGE)?.query_map(params![from, to], row_of)?.collect()).unwrap_or_default()
+        crate::discard::logged("db_barrier", self.db.barrier());
+        self.db.read(|c| c.prepare_cached(sql::TEL_COUNTS_RANGE)?.query_map(params![from, to], row_of)?.collect()).or_default_logged("db_read")
     }
 
     /// Daily rollup rows for days `from..=to` (archive.db).
     pub fn daily(&self, from: i64, to: i64) -> Vec<DayRow> {
         self.db
             .archive(|c| Ok(c.prepare_cached(sql::TEL_DAILY_RANGE)?.query_map(params![from, to], row_of)?.collect::<rusqlite::Result<Vec<_>>>()?))
-            .unwrap_or_default()
+            .or_default_logged("db_read")
     }
 
     fn events_from(&self, sql_text: &str, p: &[&dyn rusqlite::ToSql]) -> Vec<Event> {
-        let _ = self.db.barrier();
-        let texts: Vec<String> = self.db.read(|c| c.prepare_cached(sql_text)?.query_map(p, |r| r.get::<_, String>(0))?.collect()).unwrap_or_default();
+        crate::discard::logged("db_barrier", self.db.barrier());
+        let texts: Vec<String> = self.db.read(|c| c.prepare_cached(sql_text)?.query_map(p, |r| r.get::<_, String>(0))?.collect()).or_default_logged("db_read");
         texts.iter().filter_map(|t| serde_json::from_str::<Value>(t).ok()).filter_map(|v| Event::from_json(&v).ok()).collect()
     }
 
@@ -209,7 +216,7 @@ impl TelDb {
 
     /// Events held in hot.db.
     pub fn held_events(&self) -> u64 {
-        let _ = self.db.barrier();
+        crate::discard::logged("db_barrier", self.db.barrier());
         self.db.read(|c| c.query_row(sql::TEL_EVENTS_HELD, [], |r| r.get::<_, i64>(0))).map(|n| n.max(0) as u64).unwrap_or(0)
     }
 }

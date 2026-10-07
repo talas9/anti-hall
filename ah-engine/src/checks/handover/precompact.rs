@@ -4,6 +4,11 @@
 //! `<repo>/.anti-hall/handovers/<date>/<session>/PRECOMPACT-<n>.md`: git state, the task list read back from the
 //! transcript, the last user messages verbatim, and the newest handover. It never blocks the compaction and prints
 //! nothing; on any error it just writes no snapshot.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::find::{self, Cand, Kind, Unsure};
 use super::transcript::{self, Task};
 use crate::checks::git::util::path_join;
@@ -212,7 +217,12 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Result<Option<Verdict>, Unsure> {
     let body = build(&ctx)?;
     let file = path_join(&dir, &format!("{}{n}{}", defaults::text("codex_handover.precompact_prefix"), defaults::text("codex_handover.md_suffix")));
     // 'wx': never overwrite an existing snapshot.
-    let _ = std::fs::OpenOptions::new().write(true).create_new(true).open(&file).and_then(|mut f| std::io::Write::write_all(&mut f, body.as_bytes()));
+    // wx: an existing snapshot is never overwritten, so AlreadyExists is expected and anything else is logged
+    if let Err(e) = std::fs::OpenOptions::new().write(true).create_new(true).open(&file).and_then(|mut f| std::io::Write::write_all(&mut f, body.as_bytes()))
+        && e.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        crate::discard::note("handover_snapshot_write", &e.to_string());
+    }
     Ok(None)
 }
 

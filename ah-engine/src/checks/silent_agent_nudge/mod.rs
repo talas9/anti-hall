@@ -17,6 +17,10 @@
 //! and a request without `HOME` defer to Node.
 //!
 //! Mirrors `hooks/silent-agent-nudge.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::agent_scan::{self, Opts, Unsupported, mtime_ms};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::settings::{get_bool, get_number, is_skipped};
@@ -441,12 +445,15 @@ pub fn decide(p: &Value, env: &RequestEnv) -> Verdict {
         next_nudged.set(&c.key, Value::String(c.snapshot.clone()));
     }
     let Ok(text) = render_state(&next_nudged, &next_ever) else { return Verdict::Defer };
-    let _ = (|| -> std::io::Result<()> {
-        if let Some(d) = std::path::Path::new(&state_path).parent() {
-            std::fs::create_dir_all(d)?;
-        }
-        std::fs::write(&state_path, text)
-    })();
+    crate::discard::logged(
+        "silent_nudge_state_write",
+        (|| -> std::io::Result<()> {
+            if let Some(d) = std::path::Path::new(&state_path).parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::write(&state_path, text)
+        })(),
+    );
     Verdict::Allow
 }
 

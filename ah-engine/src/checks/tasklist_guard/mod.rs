@@ -9,6 +9,10 @@
 //! exactly is deferred too.
 //!
 //! Mirrors `hooks/tasklist-guard.js` `main` up to the decision to block.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 mod scan;
 
 use crate::checks::git::util::Settings;

@@ -3,6 +3,10 @@
 //!
 //! Pure file-system first, like the original; the one git call it makes (`rev-parse --show-superproject-working-tree`,
 //! for a repository nested in another one whose layout cannot be classified from disk) is made here too.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::fsx;
 use super::gitrun;
 use crate::checks::git::util::{posix_dirname, resolve};

@@ -83,7 +83,7 @@ fn decide_inner(p: &Value, st: &Settings) -> R<Verdict> {
         // the advisory above itself.
         return Ok(Verdict::Defer);
     }
-    let _ = std::fs::remove_file(&state_file);
+    crate::discard::harmless(std::fs::remove_file(&state_file)); // keep: cleanup that raced; an absent file is the goal state
     let note = unknown_note(&tasks, &st.home, &session_id, defaults::text("task_guard.unknown_tag"))?;
     if !note.is_empty() {
         out.push_str(&defaults::render("task_guard.note_line", &[("note", &note)]));

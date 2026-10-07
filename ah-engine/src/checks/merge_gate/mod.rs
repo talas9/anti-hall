@@ -15,6 +15,10 @@
 //! rejects) and a text window for the ask that would cut a surrogate pair.
 //!
 //! Mirrors `hooks/merge-gate.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};

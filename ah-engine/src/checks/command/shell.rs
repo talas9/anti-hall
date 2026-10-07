@@ -8,6 +8,10 @@
 //!
 //! Every function here is only ever called on ASCII text (the check defers anything else), so byte indexes equal the
 //! UTF-16 indexes of the JavaScript source and `u8::is_ascii_whitespace` plus vertical tab equals JavaScript `\s`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::tables::tables;
 use crate::checks::git::tokenize::{ArithScan, Heredoc, basename, parse_heredoc_at};
 

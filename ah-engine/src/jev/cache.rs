@@ -150,7 +150,7 @@ impl JevCache for FileCache {
             return;
         }
         // best effort: a lost write only means the verdict is asked again
-        let _ = crate::atomic::write(&self.path, json::stringify(&cache));
+        crate::discard::logged("jev_cache_write", crate::atomic::write(&self.path, json::stringify(&cache)));
     }
 
     fn len(&self) -> usize {

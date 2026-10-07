@@ -1,4 +1,9 @@
 //! The gates of `hooks/repair-on-reload.js` (SessionStart and UserPromptSubmit).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::*;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::settings::{enabled, is_skipped};

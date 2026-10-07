@@ -5,6 +5,10 @@
 //! Every function mirrors one Node helper and says which. A function that cannot decide exactly as Node would (a home
 //! that is not an absolute path, a relative path that Node would resolve against the hook's own working directory)
 //! reports that, and the check defers to the Node hook: never a silent allow (D11).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 pub mod orch_state;
 
 #[cfg(test)]

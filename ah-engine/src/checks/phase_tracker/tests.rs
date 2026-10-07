@@ -48,3 +48,26 @@ fn the_log_keeps_recent_lines_of_every_session_and_adds_one() {
     assert_eq!(got, format!("{} keep\n{}\n{} me\n", now - 1000.0, now + 5.0, now));
     assert_eq!(next_log(b"", now, "t"), format!("{} t\n", now));
 }
+
+fn scratch(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("ah-phase-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn record_starts_a_missing_log_and_leaves_an_unreadable_one_alone() {
+    let home = scratch("rec");
+    let h = home.to_string_lossy().to_string();
+    let log = home.join(defaults::text("spawn_ctx.state_root")).join(defaults::text("phase_tracker.log_file"));
+    record(&h, 1_700_000_000_000.0, "a");
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "1700000000000 a\n", "a missing log is started");
+    // A log that cannot be read (here: a directory in its place) is not rewritten from nothing; the failure is logged.
+    std::fs::remove_file(&log).unwrap();
+    std::fs::create_dir(&log).unwrap();
+    record(&h, 1_700_000_000_001.0, "b");
+    assert!(log.is_dir(), "the unreadable log was left alone");
+    assert!(crate::discard::captured().iter().any(|(c, _)| c == "phase_log_read"));
+    let _ = std::fs::remove_dir_all(&home);
+}

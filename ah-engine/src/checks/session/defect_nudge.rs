@@ -7,6 +7,10 @@
 //! The defect files are other agents' data: read-only here, and a line this port cannot judge exactly as `JSON.parse`
 //! and `Date.parse` would (a lone surrogate escape, a date in a form that depends on the time zone) hands the whole hook
 //! back to Node, before the stamp is written.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::drift::parse_semver;
 use super::jval::{J, Parsed, js_num, parse};
 use super::time::days_of_iso_date;
@@ -269,8 +273,8 @@ fn decide(payload: &Value, env: &RequestEnv) -> Verdict {
     let Ok(line) = line else { return Verdict::Defer };
     // arm the stamp first, best effort, as Node does before it sweeps
     if let Some(dir) = std::path::Path::new(&stamp).parent() {
-        let _ = std::fs::create_dir_all(dir);
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write that follows fails too when the directory is missing
     }
-    let _ = std::fs::write(&stamp, J::Obj(vec![("lastSweep".to_string(), J::Num(now))]).stringify());
+    crate::discard::harmless(std::fs::write(&stamp, J::Obj(vec![("lastSweep".to_string(), J::Num(now))]).stringify())); // keep: a lost sweep stamp only repeats the sweep
     if line.is_empty() { Verdict::Allow } else { emit(&line) }
 }

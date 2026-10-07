@@ -2,8 +2,13 @@
 //!
 //! `summary` and `events` ask the running daemon (so they include what it has recorded but not flushed yet) and fall back to
 //! reading the databases. `rollup` works on the database files directly, like `maintain`: it is idempotent, and SQLite's locks keep them apart from the daemon's own writes.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::persist::TelDb;
 use super::report;
+use crate::discard::Logged;
 use crate::{client, defaults, paths};
 use serde_json::{Value, json};
 
@@ -23,7 +28,7 @@ fn open_existing() -> Option<TelDb> {
     if !dir.join(defaults::text("storage.hot_file")).exists() {
         return None;
     }
-    crate::db::Db::open(&dir).ok().map(TelDb::new)
+    crate::db::Db::open(&dir).ok_logged("tel_db_open").map(TelDb::new)
 }
 
 /// Open (creating if needed) the databases for a command that writes.

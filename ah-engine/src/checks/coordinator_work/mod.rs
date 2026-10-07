@@ -11,6 +11,10 @@
 //!
 //! Mirrors `hooks/coordinator-work-guard.js` `main` (the early exits) and `hooks/coordinator-detect.js` `isCoordinator`
 //! (the payload-only part).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::{Check, Verdict};

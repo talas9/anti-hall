@@ -3,6 +3,11 @@
 //! Each report reads what was flushed to the databases and, when it runs inside the daemon, adds what the recorder holds
 //! that has not been flushed yet, so a live report is current. Without a daemon it reads the databases only, and says so:
 //! it then lacks at most the last `telemetry.flush_ms` of data.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::event::{DAY_MS, Extras, day_of};
 use super::persist::{DayRow, TelDb};
 use super::recorder::{Delta, Recorder};

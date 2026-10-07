@@ -1,5 +1,9 @@
 //! The one message layout every guard block or advisory uses (`hooks/lib/block-message.js` `message`), and the JSON
 //! envelope an advisory travels in.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::guardkit::text::{collapse_ws, js_trim};
 use crate::defaults;
 

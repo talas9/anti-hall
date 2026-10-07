@@ -10,6 +10,11 @@
 //! so memory always follows the commit order and never holds anything SQLite does not.
 //! Every SQLite setting (journal mode, synchronous level, fullfsync, cache, mmap, timeouts) comes from
 //! `defaults/storage.toml`; the schema lives in `sql.rs` and is migrated by version on open.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - a panicked or timed-out helper yields no output; the caller treats that as no answer
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use crate::error::DbError;
 use crate::error::StoreError;
@@ -338,7 +343,7 @@ impl Db {
     pub fn close(&self) {
         drop(lk(&self.tx).take());
         if let Some(h) = lk(&self.writer).take() {
-            let _ = h.join();
+            crate::discard::harmless(h.join()); // keep: reaping or draining a child or thread that already ended
         }
     }
 }
@@ -394,7 +399,7 @@ fn commit_batch(conn: &mut Connection, batch: Vec<Job>, mem: &Mem) {
     }
     for (j, r) in batch.into_iter().zip(results) {
         if let Some(tx) = j.reply {
-            let _ = tx.send(r);
+            crate::discard::harmless(tx.send(r)); // keep: the receiver is gone; nobody is waiting for the result
         }
     }
 }
@@ -527,15 +532,15 @@ impl TempDir {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!("ah-db-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
-        let _ = std::fs::remove_dir_all(&p);
-        let _ = std::fs::create_dir_all(&p);
+        crate::discard::harmless(std::fs::remove_dir_all(&p)); // keep: cleanup that raced; an absent file is the goal state
+        crate::discard::harmless(std::fs::create_dir_all(&p)); // keep: the write that follows fails too when the directory is missing
         TempDir(p)
     }
 }
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        crate::discard::harmless(std::fs::remove_dir_all(&self.0)); // keep: cleanup that raced; an absent file is the goal state
     }
 }
 

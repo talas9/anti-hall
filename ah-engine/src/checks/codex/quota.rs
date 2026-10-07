@@ -2,6 +2,10 @@
 //!
 //! One file holds two things: the PATH-probe facts `codex-availability` writes and a `quota` outage record the quota
 //! detection writes. Every write merges into what the file already holds and keeps its key order, as the Node module does.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{collapse_ws, js_trim};
 use crate::checks::jsport::date::{self, Parsed};

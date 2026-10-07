@@ -1,5 +1,9 @@
 //! What the PreCompact snapshot reads out of a transcript tail: the last typed user messages and the task list
 //! (`userMessages` and `taskSnapshot` of `hooks/precompact-snapshot.js`).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::find::Unsure;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{collapse_ws, js_trim};

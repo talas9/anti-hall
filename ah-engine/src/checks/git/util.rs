@@ -1,5 +1,11 @@
 //! Small helpers: message builder, ASCII case-insensitive matching, Node-compatible path functions,
 //! bounded child processes, and the settings / skip.json reads the Node guard performs.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - a missing binary is the same as an absent tool; the caller defers
+// - a panicked or timed-out helper yields no output; the caller treats that as no answer
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::tables::{Switch, tables};
 use super::tokenize::js_trim;
 use crate::defaults;
@@ -211,8 +217,8 @@ pub fn run_capture(
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = out.read_to_end(&mut b);
-        let _ = tx.send(b);
+        crate::discard::harmless(out.read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
+        crate::discard::harmless(tx.send(b)); // keep: the receiver is gone; nobody is waiting for the result
     });
     let start = Instant::now();
     let status = loop {
@@ -220,8 +226,8 @@ pub fn run_capture(
             Ok(Some(st)) => break st,
             Ok(None) if start.elapsed() < timeout => std::thread::sleep(tables().child_poll),
             _ => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::discard::harmless(child.kill()); // keep: reaping or draining a child or thread that already ended
+                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
                 return None;
             }
         }

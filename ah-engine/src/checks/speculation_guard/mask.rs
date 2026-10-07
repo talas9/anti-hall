@@ -3,6 +3,10 @@
 //!
 //! The blanked text keeps every newline and, in UTF-16 units, its length (JavaScript's `[^\n]` matches one unit, so an
 //! astral character becomes two spaces), which is what the offsets the caller computes with rely on.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
 use crate::defaults;

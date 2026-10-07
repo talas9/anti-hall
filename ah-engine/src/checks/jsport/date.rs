@@ -4,6 +4,11 @@
 //! V8's legacy date parser accepts a very wide, partly surprising set of strings. This module recognizes only shapes it
 //! can reproduce exactly (ISO 8601 with a full date, and `Mon D, YYYY [H:MM[:SS] [AM|PM]] [UTC|GMT|Z]`) and strings that
 //! cannot be a date at all (no digit); every other string is [`Parsed::Unknown`], which makes the check defer.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unset or non-UTF-8 variable is an unset one
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use std::cell::Cell;

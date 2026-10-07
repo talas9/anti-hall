@@ -3,6 +3,10 @@
 //!
 //! `spawn_agent`'s output carries the agent id, `wait_agent`'s output a status per id, `close_agent` closes an id and
 //! `send_input` / `resume_agent` naming it re-tasks it. Each call is matched to its output by call id.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::emit_dedupe::Defer;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::jsval::{DateParse, date_parse, js_to_string, parse_line};

@@ -9,6 +9,12 @@
 //! Known limit: the environment is the engine process's, not the hook client's, so a variable set only in the agent's
 //! shell does not reach a resident engine. Until the dispatcher forwards a hook environment snapshot, the switch files
 //! are the reliable route; the git check has the same limit.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::text::{js_string_of, js_trim};
 use crate::checks::lit_re;

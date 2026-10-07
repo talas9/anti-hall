@@ -13,8 +13,15 @@
 //! bounded by its timeout: a subprocess job is killed with its whole process group; an in-process job is recorded as
 //! timed out and the job waits for it before its next run. Failures retry with exponential backoff, then the job cools
 //! down. Every run of a persisted job (and every failed run of the others) is kept in hot.db's run history.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - serializing a string cannot fail
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::db::{Db, Op, SchedOp};
 use crate::defaults;
+use crate::discard::Logged;
 use crate::sql;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -318,7 +325,10 @@ impl Scheduler {
         let now = now_ms();
         let mut saved: HashMap<String, JobState> = HashMap::new();
         if let Some(db) = &db {
-            let _ = db.write(Op::Sched(SchedOp::Interrupted { now_ms: now, status: "interrupted".into(), running: "running".into() }));
+            crate::discard::logged(
+                "sched_write",
+                db.write(Op::Sched(SchedOp::Interrupted { now_ms: now, status: "interrupted".into(), running: "running".into() })),
+            );
             if let Ok(rows) = db.read(|c| {
                 let mut st = c.prepare_cached(sql::SCHED_LOAD)?;
                 let it = st.query_map([], |r| {
@@ -379,12 +389,12 @@ impl Scheduler {
 
     fn save(&self, spec: &JobSpec, st: &JobState) {
         if let (true, Some(db)) = (spec.persist, &self.db) {
-            let _ = db.write(Op::Sched(SchedOp::Save {
+            crate::discard::harmless(db.write(Op::Sched(SchedOp::Save {
                 job: spec.name.clone(),
                 next_ms: st.next_ms,
                 failures: st.failures,
                 cooldown_until_ms: st.cooldown_until_ms,
-            }));
+            }))); // keep: formatting into a String cannot fail
         }
     }
 
@@ -446,9 +456,10 @@ impl Scheduler {
     fn execute(&self, spec: &JobSpec, due_ms: u64, attempt: u32, catch_up: bool) {
         let started = now_ms();
         let id = match (&self.db, spec.persist) {
-            (Some(db), true) => {
-                db.write(Op::Sched(SchedOp::Start { job: spec.name.clone(), due_ms, started_ms: started, attempt })).ok().and_then(|s| s.parse::<i64>().ok())
-            }
+            (Some(db), true) => db
+                .write(Op::Sched(SchedOp::Start { job: spec.name.clone(), due_ms, started_ms: started, attempt }))
+                .ok_logged("sched_write")
+                .and_then(|s| s.parse::<i64>().ok()),
             _ => None,
         };
         let outcome = self.perform(spec);
@@ -482,7 +493,7 @@ impl Scheduler {
                 None => None,
             };
             if let Some(op) = op {
-                let _ = db.write(Op::Sched(op));
+                crate::discard::logged("sched_write", db.write(Op::Sched(op)));
             }
         }
         if outcome.failed() {
@@ -512,7 +523,7 @@ impl Scheduler {
             return subprocess(&argv, timeout);
         }
         if defaults::list("schedule.subprocess_actions").contains(&spec.action.as_str()) {
-            let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).or_default_logged("current_exe");
             return subprocess(&[exe, spec.action.clone(), "--json".into()], timeout);
         }
         // in-process: a helper thread does the work; if it overruns, the run is a timeout, and this thread still waits
@@ -522,7 +533,7 @@ impl Scheduler {
         let work: &InProc = &self.inproc;
         std::thread::scope(|s| {
             s.spawn(move || {
-                let _ = tx.send(work(&action));
+                crate::discard::harmless(tx.send(work(&action))); // keep: the receiver is gone; nobody is waiting for the result
             });
             match rx.recv_timeout(timeout) {
                 Ok(Ok(d)) => Outcome::Ok(d),
@@ -598,14 +609,14 @@ fn subprocess(argv: &[String], timeout: Duration) -> Outcome {
                     child.stderr.take().map(|e| Box::new(e) as Box<dyn Read>)
                 };
                 if let Some(mut p) = pipe {
-                    let _ = p.read_to_string(&mut out);
+                    crate::discard::harmless(p.read_to_string(&mut out)); // keep: reaping or draining a child or thread that already ended
                 }
                 return if status.success() { Outcome::Ok(out.trim().to_string()) } else { Outcome::Failed(out.trim().to_string()) };
             }
             Ok(None) if t.elapsed() < timeout => std::thread::sleep(Duration::from_millis(defaults::num("client.fallback_poll_ms"))),
             _ => {
                 unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-                let _ = child.wait();
+                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
                 return Outcome::Timeout;
             }
         }

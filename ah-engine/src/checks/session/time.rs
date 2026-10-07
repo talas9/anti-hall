@@ -1,5 +1,9 @@
 //! Calendar arithmetic for the UTC dates the hooks print and compare (`Date.prototype.toISOString`, `Date.parse` of a plain
 //! `YYYY-MM-DD`), without a time library.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 
 /// Days from 1970-01-01 to the civil date (proleptic Gregorian), for any `y`.

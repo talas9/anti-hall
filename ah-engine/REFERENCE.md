@@ -184,6 +184,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.workers` | `4` | `AH_ENGINE_WORKERS` |  | Worker threads evaluating requests. |
 | `daemon.write_ms` | `1000` | `AH_ENGINE_WRITE_MS` | ms | Time allowed to write a reply. |
 
+### engine.toml / discard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `discard.log_interval_ms` | `60000` |  | ms | A best-effort operation that fails (a state write the engine fails open on) is logged once per reason code in this many milliseconds; repeats inside the window are dropped so a failing disk cannot flood the event log. |
+
 ### engine.toml / env
 
 | Key | Default | Env override | Unit | What it is |

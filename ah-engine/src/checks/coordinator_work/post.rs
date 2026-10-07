@@ -11,6 +11,12 @@
 //! a deferral to the Node hook, as is a window lock another process holds.
 //!
 //! Mirrors `hooks/coordinator-work-guard.js` `main` (the `--post` branch) and `hooks/lib/coordinator-work.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - serializing a string cannot fail
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::filelock;
 use crate::checks::guardkit::fsio::{state_dir, write_atomic};
@@ -353,14 +359,14 @@ fn iso(ms: f64) -> String {
 /// `logTrip(home, obj)`: one JSON line in the trips log, the log rotated at its size cap. Telemetry only; errors are ignored.
 fn log_trip(home: &str, event: &str, count: usize) {
     let p = named(home, "coordinator_work.trips_file");
-    let _ = std::fs::create_dir_all(state_dir(home));
+    crate::discard::harmless(std::fs::create_dir_all(state_dir(home))); // keep: the write that follows fails too when the directory is missing
     if std::fs::metadata(&p).is_ok_and(|m| m.len() >= defaults::num("coordinator_work.trips_max_bytes")) {
-        let _ = std::fs::rename(&p, format!("{p}.1"));
+        crate::discard::harmless(std::fs::rename(&p, format!("{p}.1"))); // keep: rotation; on failure the line is appended to the oversized file
     }
     let line = format!("{{\"ts\":\"{}\",\"event\":{},\"count\":{count}}}\n", iso(now_ms()), serde_json::to_string(event).unwrap_or_default());
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&p) {
-        let _ = f.write_all(line.as_bytes());
+        crate::discard::logged("coordinator_trip_log", f.write_all(line.as_bytes()));
     }
 }
 
@@ -425,7 +431,7 @@ fn fold_stale(home: &str, now: f64, env: &RequestEnv) -> usize {
         }
         filelock::release(lock);
     }
-    let _ = write_atomic(&stamp, &format!("{{\"ts\":{}}}", js_number_text(now)));
+    crate::discard::harmless(write_atomic(&stamp, &format!("{{\"ts\":{}}}", js_number_text(now)))); // keep: a lost sweep stamp only repeats the sweep
     folded
 }
 
@@ -565,7 +571,7 @@ pub fn decide_post(p: &Value, st: &Settings, env: &RequestEnv, plugin_root: &str
     } else {
         None
     };
-    let _ = write_atomic(&path, &s.dump());
+    crate::discard::logged("coordinator_state_write", write_atomic(&path, &s.dump()));
     filelock::release(lock);
 
     let mut out = Verdict::Allow;

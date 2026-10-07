@@ -12,6 +12,10 @@
 //!   "paths":["/Users/me/proj"]          // optional; rule applies only when payload cwd is at/under one of these
 //! }]}
 //! ```
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::error::RulesError;
 use regex::Regex;
 use serde::Deserialize;

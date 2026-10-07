@@ -18,6 +18,10 @@
 //!
 //! Key order and string escaping follow `JSON.stringify` (keys in order of first appearance), so the merged line
 //! is byte-identical to what the reference combiner in `parity/dispatch-lib.js` builds from the separate Node hooks.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::client::Outcome;
 use crate::defaults;
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};

@@ -1,4 +1,8 @@
 //! xargs / find -exec / parallel / stdin-script handling (placeholders, appended input words).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::Ctx;
 use super::gitcmd::*;
 use super::payloads::*;

@@ -15,6 +15,11 @@
 //! Same as Node: any trouble taking the lock, reading the memory figures or writing the log allows the spawn.
 //!
 //! Mirrors `hooks/swarm-guard.js` and the decision half of `hooks/lib/shared-tree-note.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 pub mod mem;
 
 use crate::checks::git::util::Settings;
@@ -177,10 +182,10 @@ fn js_round(x: f64) -> f64 {
 
 /// `logTrip`: one line per blocked spawn; a failure changes nothing.
 fn log_trip(dir: &str, count: usize, label: &str, now: u64) {
-    let _ = std::fs::create_dir_all(dir);
+    crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write that follows fails too when the directory is missing
     let line = format!("{}\t{count}\t{label}\n", iso(now));
     if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(format!("{dir}/{}", defaults::text("swarm_guard.trip_file"))) {
-        let _ = std::io::Write::write_all(&mut f, line.as_bytes());
+        crate::discard::logged("swarm_trip_log", std::io::Write::write_all(&mut f, line.as_bytes()));
     }
 }
 
@@ -245,8 +250,8 @@ pub fn decide(p: &Value, st: &Settings, root: &str, memory: &dyn MemSource, now:
     } else {
         recent.push(now as f64);
         let body: Vec<String> = recent.iter().map(|t| format!("{}", *t as u64)).collect();
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(&log, format!("{}\n", body.join("\n")));
+        crate::discard::harmless(std::fs::create_dir_all(&dir)); // keep: the write that follows fails too when the directory is missing
+        crate::discard::logged("swarm_state_write", std::fs::write(&log, format!("{}\n", body.join("\n"))));
         None
     };
     lock.release();

@@ -1,5 +1,8 @@
 //! JavaScript string semantics the guards depend on: what counts as white space, `trim`, `replace(/\s+/g, ' ')` and
 //! `slice` (which counts UTF-16 units, not characters).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
 
 /// True for what JavaScript treats as white space (`\s`, `String.prototype.trim`): the ECMAScript WhiteSpace and
 /// LineTerminator sets. Rust's `char::is_whitespace` differs (it includes U+0085 and lacks U+FEFF), so it is not used.

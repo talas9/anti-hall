@@ -8,6 +8,10 @@
 //! Node hook rather than print a different path (D74).
 //!
 //! Mirrors `hooks/verify-first-subagent.js`, `hooks/verify-first-full.js`, `hooks/verify-first-core.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::guardkit::msg::advisory_json;
 use crate::checks::guardkit::settings::{get_bool, get_enum, is_skipped};
 use crate::checks::guardkit::text::js_trim;

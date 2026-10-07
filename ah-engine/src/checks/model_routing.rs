@@ -2,6 +2,11 @@
 //!
 //! Mirrors `hooks/model-routing-guard.js`: row-1/row-2 blocks are exact exit-2 JSON, advisories are exact
 //! `hookSpecificOutput.additionalContext` JSON, and allows are silent.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};

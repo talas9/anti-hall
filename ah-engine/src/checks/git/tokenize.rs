@@ -1,6 +1,9 @@
 //! Shell text primitives ported from git-guard.js and lib/shell-scan.js: tokenizer, segment splitter,
 //! verb resolution (wrappers), heredoc parsing and the quote-blind backstop cutter. Strings are scanned
 //! as `char` vectors (the JS source indexes UTF-16 units; the two agree away from astral characters).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
 
 use super::tables::{OptWrapper, tables};
 

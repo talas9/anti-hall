@@ -9,6 +9,10 @@
 //! detached probe), or whose answer depends on the hook process's own working directory or on JavaScript behaviour this
 //! port does not reproduce byte for byte, answers `Verdict::Defer` BEFORE it writes anything, so the Node hook then runs
 //! whole. A check never defers after a state write, because Node would then see the changed state and say less.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 pub mod claude_cli_version;
 pub mod defect_nudge;
 pub mod devswarm_version;

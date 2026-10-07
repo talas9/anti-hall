@@ -24,6 +24,11 @@
 //! Where the plugin root is found is documented in [`crate::bootstrap`].
 mod load;
 pub use load::{DefaultsError, Fingerprint, fingerprint};
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an unset or non-UTF-8 variable is an unset one
+// A failure that must be seen goes through `crate::discard` instead.
 
 use serde_json::{Value as Json, json};
 use std::path::{Path, PathBuf};

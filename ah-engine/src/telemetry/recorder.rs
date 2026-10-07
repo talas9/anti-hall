@@ -11,6 +11,10 @@
 //! [`Recorder::commit`]; the flusher stores it (`persist`), and only then moves the cursors forward, so a failed
 //! store is retried with nothing lost. Everything recorded after the last flush is lost on `kill -9`: that window is
 //! `telemetry.flush_ms`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::event::{Event, Kind, Outcome, sanitize_name};
 use crate::defaults;
 use std::cell::Cell;
@@ -255,7 +259,7 @@ impl Recorder {
             if cur == 0 {
                 match s.fp.compare_exchange(0, fp, Relaxed, Relaxed) {
                     Ok(_) => {
-                        let _ = s.names.set(names());
+                        crate::discard::harmless(s.names.set(names())); // keep: the cell was already set by another thread
                         return Some(s);
                     }
                     Err(other) if other == fp => return Some(s),

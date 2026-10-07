@@ -8,6 +8,11 @@
 //! Differences from the Node guard (deliberate, listed in the README): the
 //! PostToolUse `--audit` pass is the separate `git-audit` check ([`audit`]); plugin options stored in Claude's own settings are not read
 //! (only the `CLAUDE_PLUGIN_OPTION_*` environment variable form).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 pub mod aliases;
 pub mod audit;
 pub mod gitcmd;

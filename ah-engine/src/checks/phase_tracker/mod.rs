@@ -92,14 +92,26 @@ pub fn record(home: &str, now: f64, tag: &str) {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Path::new(home).join(defaults::text("spawn_ctx.state_root"));
     let log = dir.join(defaults::text("phase_tracker.log_file"));
-    let old = std::fs::read(&log).unwrap_or_default();
-    let text = next_log(&old, now, tag);
-    if std::fs::create_dir_all(&dir).is_ok() {
-        let _ = std::fs::write(&log, text);
+    // A missing log starts a new one; any other read failure leaves the log alone (a rewrite from nothing would drop it).
+    let old = match std::fs::read(&log) {
+        Ok(b) => Some(b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+        Err(e) => {
+            crate::discard::note("phase_log_read", &e.to_string());
+            None
+        }
+    };
+    if let Some(old) = old
+        && std::fs::create_dir_all(&dir).is_ok()
+    {
+        crate::discard::logged("phase_log_write", crate::atomic::write(&log, next_log(&old, now, tag)));
     }
     let agents = dir.join(defaults::text("phase_tracker.agents_dir"));
     if std::fs::create_dir_all(&agents).is_ok() {
-        let _ = std::fs::write(agents.join(defaults::text("phase_tracker.heartbeat_file")), format!("{{\"ts\":{}}}", now as u64));
+        crate::discard::logged(
+            "phase_heartbeat_write",
+            std::fs::write(agents.join(defaults::text("phase_tracker.heartbeat_file")), format!("{{\"ts\":{}}}", now as u64)),
+        );
     }
 }
 

@@ -15,6 +15,10 @@
 //!   a transcript line `JSON.parse` might read differently from `serde_json`; a context line cut inside a surrogate pair.
 //!
 //! Mirrors `hooks/claim-ledger.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::settings::{get_bool, is_skipped};
@@ -360,17 +364,20 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         return Ok(Verdict::Allow);
     }
     let flags = extract_flags(&reply, &evidence, tools)?;
-    let _ = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(&last_file, &hash)?;
-        if !flags.is_empty() {
-            let line = record_line(&session, &hash, tools, utf16_len(&reply), utf16_len(&evidence), tail.truncated, &flags);
-            let mut f =
-                std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{session}{}", defaults::text("claim_ledger.ledger_ext"))))?;
-            f.write_all(line.as_bytes())?;
-        }
-        Ok(())
-    })();
+    crate::discard::logged(
+        "claim_ledger_write",
+        (|| -> std::io::Result<()> {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(&last_file, &hash)?;
+            if !flags.is_empty() {
+                let line = record_line(&session, &hash, tools, utf16_len(&reply), utf16_len(&evidence), tail.truncated, &flags);
+                let mut f =
+                    std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{session}{}", defaults::text("claim_ledger.ledger_ext"))))?;
+                f.write_all(line.as_bytes())?;
+            }
+            Ok(())
+        })(),
+    );
     // The ledger is written first; the asks never wait. The turn pointer is left out when the reply came from the payload:
     // the transcript's last line may then belong to the previous message, and a wrong pointer is worse than none.
     let turn_ref = if from_payload { None } else { crate::jev::shared::turn_ref_from_transcript(transcript) };

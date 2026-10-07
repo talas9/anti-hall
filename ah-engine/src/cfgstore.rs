@@ -35,6 +35,12 @@
 //! Watching is by polling file metadata (mtime, size, inode) every `config.watch_ms`, with a `config.debounce_ms`
 //! settle time. Why not `notify`: it needs one dependency tree per OS (FSEvents, kqueue, inotify), has no good story
 //! for a file that is deleted and re-created by an atomic-rename editor, and the watched set is two tiny files.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an unset or non-UTF-8 variable is an unset one
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::config::Config;
 use crate::defaults::{self, Entry, V};
 use crate::{health, paths};

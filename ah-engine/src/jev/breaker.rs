@@ -11,6 +11,10 @@
 //! The clock is injectable. In memory it is monotonic, so a wall-clock jump can neither hold a vendor open nor close it
 //! early; in the shared file it is the wall clock, because that is what Node writes, and a stored `openUntil` further
 //! out than one cooldown reads as closed (Node's rule: a tampered value never holds a vendor open).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::settings::Vendor;
 use crate::defaults;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -156,12 +160,12 @@ impl Breakers {
                 }
             };
             m.insert(Self::name(vendor).to_string(), serde_json::json!({"fails": next.fails, "openUntil": next.open_until}));
-            let _ = (|| -> std::io::Result<()> {
+            crate::discard::harmless((|| -> std::io::Result<()> {
                 if let Some(d) = p.parent() {
                     std::fs::create_dir_all(d)?;
                 }
                 crate::atomic::write(p, serde_json::Value::Object(m).to_string())
-            })(); // best effort: a lost write only delays the breaker
+            })()); // keep: a lost write only delays the breaker
             return;
         }
         let mut all = self.lock();

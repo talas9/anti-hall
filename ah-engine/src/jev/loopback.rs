@@ -13,6 +13,10 @@
 //! Deliberately stricter than Node (the URL is refused, never accepted): a non-ASCII host (Node's IDNA mapping would turn
 //! full-width digits or letters into `127.0.0.1` or `localhost`), a special-scheme URL without the two slashes after the
 //! scheme, and more than two slashes. A refusal only ever costs a test override, so strictness is the safe side.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::js_trim;
 use std::net::Ipv6Addr;
 

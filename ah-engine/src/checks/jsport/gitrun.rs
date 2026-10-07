@@ -1,4 +1,9 @@
 //! `execFileSync('git', args, { cwd, timeout })` as the hooks call it: stdout only, `None` on any failure.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - a missing binary is the same as an absent tool; the caller defers
+// - a panicked or timed-out helper yields no output; the caller treats that as no answer
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use crate::reqenv::RequestEnv;
 use std::io::Read;
@@ -30,7 +35,7 @@ pub fn git_scrubbed(cwd: &str, args: &[&str], timeout: Duration, env: &RequestEn
     let mut out = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = out.read_to_end(&mut b);
+        crate::discard::harmless(out.read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
         b
     });
     let start = Instant::now();
@@ -41,8 +46,8 @@ pub fn git_scrubbed(cwd: &str, args: &[&str], timeout: Duration, env: &RequestEn
             Ok(None) | Err(_) => {
                 // SAFETY: the pid is our own child's process group.
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
-                let _ = child.wait();
-                let _ = reader.join();
+                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
+                crate::discard::harmless(reader.join()); // keep: reaping or draining a child or thread that already ended
                 return None;
             }
         }

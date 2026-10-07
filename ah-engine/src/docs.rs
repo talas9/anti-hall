@@ -4,6 +4,10 @@
 //! stale: the command registry, the socket protocol, every setting with its default and environment override, the
 //! check registry, the metric and impact registries, and the error codes. A test compares the output with the
 //! committed `REFERENCE.md`, so a new endpoint, key or code has to land in the reference in the same commit.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults::V;
 use crate::{checks, cli, defaults};
 use serde_json::{Value, json};
@@ -42,30 +46,38 @@ fn is_setting(key: &str) -> bool {
 pub fn markdown() -> String {
     let mut o = String::new();
     let all = defaults::all();
-    let _ = writeln!(o, "# ah-engine reference\n\n{}\n", defaults::text("msg.docs_intro"));
+    crate::discard::harmless(writeln!(o, "# ah-engine reference\n\n{}\n", defaults::text("msg.docs_intro"))); // keep: formatting into a String cannot fail
 
-    let _ = writeln!(o, "## Commands\n\nEvery command accepts `--json`. Read-only commands never change state.\n");
-    let _ = writeln!(o, "| Command | Arguments | Read-only | Status | What it does |\n|---|---|---|---|---|");
+    crate::discard::harmless(writeln!(o, "## Commands\n\nEvery command accepts `--json`. Read-only commands never change state.\n")); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "| Command | Arguments | Read-only | Status | What it does |\n|---|---|---|---|---|")); // keep: formatting into a String cannot fail
     for c in cli::commands() {
-        let _ = writeln!(o, "| `{}` | `{}` | {} | {} | {} |", c.name, esc(&c.args), if c.read_only { "yes" } else { "no" }, c.status, esc(&c.doc));
+        crate::discard::harmless(writeln!(
+            o,
+            "| `{}` | `{}` | {} | {} | {} |",
+            c.name,
+            esc(&c.args),
+            if c.read_only { "yes" } else { "no" },
+            c.status,
+            esc(&c.doc)
+        )); // keep: formatting into a String cannot fail
     }
 
-    let _ = writeln!(o, "\n## Socket protocol\n\n| Name | Request | Reply | What it does |\n|---|---|---|---|");
+    crate::discard::harmless(writeln!(o, "\n## Socket protocol\n\n| Name | Request | Reply | What it does |\n|---|---|---|---|")); // keep: formatting into a String cannot fail
     for e in all.iter().filter(|e| e.key.starts_with("protocol.")) {
-        let _ = writeln!(
+        crate::discard::harmless(writeln!(
             o,
             "| `{}` | `{}` | `{}` | {} |",
             &e.key["protocol.".len()..],
             esc(e.value.str_field("request")),
             esc(e.value.str_field("reply")),
             esc(e.doc)
-        );
+        )); // keep: formatting into a String cannot fail
     }
 
-    let _ = writeln!(o, "\n## Checks\n\n{}\n\n{}\n", defaults::text("msg.docs_checks_note"), defaults::text("msg.docs_rule_fields"));
-    let _ = writeln!(o, "| Check | What it does |\n|---|---|");
+    crate::discard::harmless(writeln!(o, "\n## Checks\n\n{}\n\n{}\n", defaults::text("msg.docs_checks_note"), defaults::text("msg.docs_rule_fields"))); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "| Check | What it does |\n|---|---|")); // keep: formatting into a String cannot fail
     for c in checks::registry() {
-        let _ = writeln!(o, "| `{}` | {} |", c.name(), esc(c.summary()));
+        crate::discard::harmless(writeln!(o, "| `{}` | {} |", c.name(), esc(c.summary()))); // keep: formatting into a String cannot fail
     }
 
     let _ = writeln!(
@@ -76,10 +88,10 @@ pub fn markdown() -> String {
     for e in all.iter().filter(|e| is_setting(e.key)) {
         let section = format!("{} / {}", e.file, e.key.split('.').next().unwrap_or(""));
         if section != last {
-            let _ = writeln!(o, "\n### {section}\n\n| Key | Default | Env override | Unit | What it is |\n|---|---|---|---|---|");
+            crate::discard::harmless(writeln!(o, "\n### {section}\n\n| Key | Default | Env override | Unit | What it is |\n|---|---|---|---|---|")); // keep: formatting into a String cannot fail
             last = section;
         }
-        let _ = writeln!(
+        crate::discard::harmless(writeln!(
             o,
             "| `{}` | `{}` | {} | {} | {} |",
             e.key,
@@ -87,35 +99,38 @@ pub fn markdown() -> String {
             e.env.map(|n| format!("`{n}`")).unwrap_or_default(),
             e.unit.unwrap_or(""),
             esc(e.doc)
-        );
+        )); // keep: formatting into a String cannot fail
     }
 
-    let _ = writeln!(o, "\n## Messages\n\nText lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:\n");
-    let _ = writeln!(o, "| Key | When it is shown |\n|---|---|");
+    crate::discard::harmless(writeln!(
+        o,
+        "\n## Messages\n\nText lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:\n"
+    )); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "| Key | When it is shown |\n|---|---|")); // keep: formatting into a String cannot fail
     for e in all.iter().filter(|e| e.key.starts_with("msg.") || e.key.starts_with("git.msg_")) {
-        let _ = writeln!(o, "| `{}` | {} |", e.key, esc(e.doc));
+        crate::discard::harmless(writeln!(o, "| `{}` | {} |", e.key, esc(e.doc))); // keep: formatting into a String cannot fail
     }
 
-    let _ = writeln!(o, "\n## Metrics\n\n| Name | Kind | Unit | Labels | What it counts |\n|---|---|---|---|---|");
+    crate::discard::harmless(writeln!(o, "\n## Metrics\n\n| Name | Kind | Unit | Labels | What it counts |\n|---|---|---|---|---|")); // keep: formatting into a String cannot fail
     for e in all.iter().filter(|e| e.key.starts_with("metric.")) {
         let labels = e.value.get("labels").map(|l| l.strings().join(", ")).unwrap_or_default();
         let _ =
             writeln!(o, "| `{}` | {} | {} | {} | {} |", &e.key["metric.".len()..], e.value.str_field("kind"), e.value.str_field("unit"), labels, esc(e.doc));
     }
 
-    let _ = writeln!(o, "\n## Impact kinds\n\n| Kind | What it records |\n|---|---|");
+    crate::discard::harmless(writeln!(o, "\n## Impact kinds\n\n| Kind | What it records |\n|---|---|")); // keep: formatting into a String cannot fail
     for k in crate::impact::kinds() {
         let doc = all.iter().find(|e| e.key == format!("impact.{k}")).map(|e| e.doc).unwrap_or_default();
-        let _ = writeln!(o, "| `{k}` | {} |", esc(doc));
+        crate::discard::harmless(writeln!(o, "| `{k}` | {} |", esc(doc))); // keep: formatting into a String cannot fail
     }
 
     let _ =
         writeln!(o, "\n## Error codes\n\nEnvironment-class codes get a plain self-fix hint; any other code is a permanent failure that asks for an issue.\n");
-    let _ = writeln!(o, "| Codes | Class | Self-fix hint |\n|---|---|---|");
+    crate::discard::harmless(writeln!(o, "| Codes | Class | Self-fix hint |\n|---|---|---|")); // keep: formatting into a String cannot fail
     for g in defaults::raw("health.error_codes").as_array().unwrap_or_default() {
         let codes = g.get("codes").map(|c| c.strings().iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ")).unwrap_or_default();
         let hint = crate::health::hint_text(g.str_field("hint"));
-        let _ = writeln!(o, "| {codes} | {} | {} |", g.str_field("class"), esc(&hint));
+        crate::discard::harmless(writeln!(o, "| {codes} | {} | {} |", g.str_field("class"), esc(&hint))); // keep: formatting into a String cannot fail
     }
     o
 }

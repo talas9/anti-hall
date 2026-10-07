@@ -10,6 +10,10 @@
 //! balance. A 401 or 403 is deliberately not eligible: a rejected key is a configuration error the owner must see, and
 //! silently using the backup would hide it. Breakers are per vendor: an open primary is skipped, an open backup is not
 //! tried, and when both are open no call is made.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::breaker::{Breakers, Clock};
 use super::credentials::{Key, resolve_key};
 use super::error::Reason;

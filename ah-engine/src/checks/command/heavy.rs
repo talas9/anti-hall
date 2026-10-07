@@ -5,6 +5,10 @@
 //! gh mutations, flagged interpreter scripts) are exact ports, and a light exception the port cannot reproduce exactly
 //! is simply never granted. The one such exception is the stable-launcher form (`node ~/.anti-hall/bin/...`), whose
 //! pattern depends on the home directory of the process that loaded the Node module; it is not granted here.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::shell::{
     blank_pattern_argument, effective_verb, extract_eval_payload, extract_shell_c_payload, extract_substitutions, has_shell_expansion_anywhere,
     has_unquoted_redirect_char, is_ws, neutralize_quoted_contents, split_detailed, split_segments, tokenize_quoted, trim, words,

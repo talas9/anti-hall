@@ -8,6 +8,11 @@
 //! Deliberate difference: the takeover of an old lock and the release do not use Node's reclaim sidecar. The sidecar only
 //! matters when three processes judge the same abandoned lock at once; the lock here is held for a few milliseconds, far below
 //! the age at which anyone takes it over.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,7 +54,7 @@ fn publish(path: &str, body: &str) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
         Err(_) => std::fs::OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(body.as_bytes())),
     };
-    let _ = std::fs::remove_file(&tmp);
+    crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
     r
 }
 
@@ -109,15 +114,15 @@ fn reclaim(path: &str, h: &Holder) -> bool {
         _ => false,
     };
     if same {
-        let _ = std::fs::remove_file(&reap);
+        crate::discard::harmless(std::fs::remove_file(&reap)); // keep: cleanup that raced; an absent file is the goal state
         return true;
     }
     // a fresh lock was caught: put it back without overwriting one published meanwhile, and respect it
     let restored = std::fs::hard_link(&reap, path).is_ok();
     if !restored && !std::path::Path::new(path).exists() {
-        let _ = std::fs::rename(&reap, path);
+        crate::discard::harmless(std::fs::rename(&reap, path)); // keep: cleanup that raced; an absent file is the goal state
     } else {
-        let _ = std::fs::remove_file(&reap);
+        crate::discard::harmless(std::fs::remove_file(&reap)); // keep: cleanup that raced; an absent file is the goal state
     }
     false
 }
@@ -126,7 +131,7 @@ fn reclaim(path: &str, h: &Holder) -> bool {
 /// (moved aside and verified, as `lock.js` does, without its reclaim sidecar). `None` when it stays held or cannot be created.
 pub fn acquire(path: &str, wait_ms: u64) -> Option<Lock> {
     if let Some(dir) = std::path::Path::new(path).parent() {
-        let _ = std::fs::create_dir_all(dir);
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write that follows fails too when the directory is missing
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
     loop {
@@ -159,6 +164,6 @@ pub fn release(lock: Lock) {
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         .is_some_and(|v| v.get("token").and_then(serde_json::Value::as_str) == Some(lock.token.as_str()));
     if ours {
-        let _ = std::fs::remove_file(&lock.path);
+        crate::discard::harmless(std::fs::remove_file(&lock.path)); // keep: cleanup that raced; an absent file is the goal state
     }
 }

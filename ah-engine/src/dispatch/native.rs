@@ -1,6 +1,10 @@
 //! The built-in checks of one dispatch: run inside the daemon (the `D` request, the default) or inside the hook
 //! client (`dispatch.in_process`), each under its own panic isolation (D12). An entry a check does not answer, and
 //! every deferral, becomes that entry's Node hook in the client.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::{self, Verdict};
 use crate::rules::Subject;
 use serde_json::{Value, json};

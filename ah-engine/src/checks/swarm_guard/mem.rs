@@ -3,6 +3,12 @@
 //! Available memory counts reclaimable cache (free, inactive and speculative pages on macOS, `MemAvailable` on Linux),
 //! never the operating system's "free" figure, which reads near zero on a healthy machine. A read that fails or parses to
 //! nothing is `None`, which skips the memory gate (the guard never blocks on a number it could not read).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - a panicked or timed-out helper yields no output; the caller treats that as no answer
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::guardkit::jsre;
 use crate::defaults;
 use std::io::Read;
@@ -30,7 +36,7 @@ fn run_capture(path: &str, timeout: Duration) -> Option<String> {
     let mut out = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = out.read_to_end(&mut b);
+        crate::discard::harmless(out.read_to_end(&mut b)); // keep: reaping or draining a child or thread that already ended
         b
     });
     let deadline = Instant::now() + timeout;
@@ -42,8 +48,8 @@ fn run_capture(path: &str, timeout: Duration) -> Option<String> {
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(defaults::millis("swarm_guard.vm_stat_poll_ms")),
             _ => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::discard::harmless(child.kill()); // keep: reaping or draining a child or thread that already ended
+                crate::discard::harmless(child.wait()); // keep: reaping or draining a child or thread that already ended
                 return None;
             }
         }

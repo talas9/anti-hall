@@ -54,7 +54,7 @@ pub fn same_keys(a: &[(String, J)], b: &[(String, J)]) -> bool {
 /// is returned to the caller (Node throws; each caller decides whether that is swallowed).
 pub fn atomic_write(file: &str, data: &J) -> std::io::Result<()> {
     if let Some(dir) = Path::new(file).parent() {
-        let _ = std::fs::create_dir_all(dir);
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write that follows fails too when the directory is missing
     }
     crate::atomic::write(file, data.stringify())
 }
@@ -63,7 +63,7 @@ pub fn atomic_write(file: &str, data: &J) -> std::io::Result<()> {
 pub fn persist_advised_key(file: &str, cache: &J, key: J) {
     let mut next = cache.clone();
     next.set("lastAdvised", key);
-    let _ = atomic_write(file, &next);
+    crate::discard::logged("drift_write", atomic_write(file, &next));
 }
 
 /// `parseSemver(v)`: `[major, minor, patch]` from `v?N.N(.N)?` (the patch defaults to 0); `None` for anything else or a

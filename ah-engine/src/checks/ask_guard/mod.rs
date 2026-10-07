@@ -11,6 +11,10 @@
 //! The decision is computed before the marker log line is written, so a deferral never leaves a duplicate line.
 //!
 //! Mirrors `hooks/ask-guard.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::agent_scan::{self, Opts, Unsupported};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
@@ -95,18 +99,21 @@ fn is_child(env: &RequestEnv) -> bool {
 fn log_marker(home: &str, marker: &str) {
     let path = format!("{home}/{}", defaults::text("ask_guard.log_file"));
     let dir = std::path::Path::new(&path).parent().map(std::path::Path::to_path_buf);
-    let _ = (|| -> std::io::Result<()> {
-        if let Some(d) = dir {
-            std::fs::create_dir_all(d)?;
-        }
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
-        let line = format!(
-            "{{\"ts\":\"{}\",\"event\":\"{}\",\"marker\":\"{marker}\"}}\n",
-            agent_scan::iso_utc(agent_scan::now_ms()),
-            defaults::text("ask_guard.log_event")
-        );
-        f.write_all(line.as_bytes())
-    })();
+    crate::discard::logged(
+        "ask_log_write",
+        (|| -> std::io::Result<()> {
+            if let Some(d) = dir {
+                std::fs::create_dir_all(d)?;
+            }
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+            let line = format!(
+                "{{\"ts\":\"{}\",\"event\":\"{}\",\"marker\":\"{marker}\"}}\n",
+                agent_scan::iso_utc(agent_scan::now_ms()),
+                defaults::text("ask_guard.log_event")
+            );
+            f.write_all(line.as_bytes())
+        })(),
+    );
 }
 
 /// The check's decision on one payload.

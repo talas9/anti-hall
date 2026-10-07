@@ -5,6 +5,10 @@
 //! be read, when `cwd` sits inside the git directory, or when the checkout is the home directory. The submodule and
 //! worktree climbing of `resolveContext` only changes other fields (`worktreeRoot`, the keys), never `toplevel`, so this
 //! answers from the file system alone and never runs git.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::paths::{is_absolute, resolve_abs};
 use crate::checks::guardkit::text::js_trim;

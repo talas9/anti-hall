@@ -3,6 +3,10 @@
 //! Every metric name is registered in `defaults/telemetry.toml` (`metric.<name>`), so the generated reference lists
 //! it and a test catches a name nobody registered. A series is a metric name plus its label values; the number of
 //! series per metric is capped so a label with unbounded values (a path, a session id) cannot grow memory.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;

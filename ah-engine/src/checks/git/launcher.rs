@@ -1,4 +1,9 @@
 //! Writes into the stable launcher directory (`~/.anti-hall/bin`) and call-literal command extraction.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::Ctx;
 use super::tables::{block, tables};
 use super::tokenize::*;

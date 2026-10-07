@@ -12,6 +12,11 @@
 //!
 //! Every function is a pure function of the shipped table, so `tests/hooks_files.rs` can require that the committed files
 //! equal the output byte for byte, and a new hook is added by one table row.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use crate::dispatch::table::{self, Entry};
 use std::fmt::Write;
@@ -45,12 +50,12 @@ fn q(s: &str) -> String {
 }
 
 fn handler(out: &mut String, command: &str, timeout: u64) {
-    let _ = write!(
+    crate::discard::harmless(write!(
         out,
         "          {{\n            \"type\": \"command\",\n            \"command\": {},\n            \"timeout\": {}\n          }}",
         q(command),
         timeout
-    );
+    )); // keep: formatting into a String cannot fail
 }
 
 /// The thin `hooks.json` of `host`.
@@ -58,7 +63,7 @@ pub fn hooks_json(host: &str) -> String {
     let mut out = String::from("{\n  \"hooks\": {\n");
     let evs = events(host);
     for (i, ev) in evs.iter().enumerate() {
-        let _ = write!(out, "    {}: [\n      {{\n        \"hooks\": [\n", q(ev));
+        crate::discard::harmless(write!(out, "    {}: [\n      {{\n        \"hooks\": [\n", q(ev))); // keep: formatting into a String cannot fail
         handler(&mut out, &thin_command(host, ev), event_timeout(host, ev));
         out.push_str("\n        ]\n      }\n    ]");
         out.push_str(if i + 1 < evs.len() { ",\n" } else { "\n" });
@@ -85,12 +90,12 @@ pub fn registry_json(host: &str) -> String {
     let evs = table::events(host);
     for (i, ev) in evs.iter().enumerate() {
         let entries = table::entries(host, ev);
-        let _ = writeln!(out, "    {}: [", q(ev));
+        crate::discard::harmless(writeln!(out, "    {}: [", q(ev))); // keep: formatting into a String cannot fail
         let gs = groups(&entries);
         for (gi, (matcher, g)) in gs.iter().enumerate() {
             out.push_str("      {\n");
             if !matcher.is_empty() {
-                let _ = writeln!(out, "        \"matcher\": {},", q(matcher));
+                crate::discard::harmless(writeln!(out, "        \"matcher\": {},", q(matcher))); // keep: formatting into a String cannot fail
             }
             out.push_str("        \"hooks\": [\n");
             for (hi, e) in g.iter().enumerate() {
@@ -116,14 +121,14 @@ pub fn fallback_list(host: &str) -> String {
         let entries = table::entries(host, ev);
         let t = event_timeout(host, ev);
         if entries.is_empty() {
-            let _ = writeln!(out, "@{ev}\t{t}\t{}", defaults::text("dispatch.list_empty_word"));
+            crate::discard::harmless(writeln!(out, "@{ev}\t{t}\t{}", defaults::text("dispatch.list_empty_word"))); // keep: formatting into a String cannot fail
             continue;
         }
-        let _ = writeln!(out, "@{ev}\t{t}");
+        crate::discard::harmless(writeln!(out, "@{ev}\t{t}")); // keep: formatting into a String cannot fail
         for e in entries {
             let matcher = if e.matcher.is_empty() { "*" } else { e.matcher.as_str() };
             let timeout = if e.timeout_s == 0 { t } else { e.timeout_s };
-            let _ = writeln!(out, "{matcher}\t{timeout}\t{}", e.command);
+            crate::discard::harmless(writeln!(out, "{matcher}\t{timeout}\t{}", e.command)); // keep: formatting into a String cannot fail
         }
     }
     out

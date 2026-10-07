@@ -10,6 +10,12 @@
 //!
 //! Safety keys are home-only: `allowLegacyKeyRead` and `genericKeyVendor` are read from settings.json alone, never
 //! from the environment, a project file or a plugin option, so a project cannot widen where a key may be sent.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::error::JevError;
 use crate::defaults;
 use serde_json::Value;

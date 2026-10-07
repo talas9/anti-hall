@@ -6,6 +6,11 @@
 //! (a percent, a token count, minutes) and one enum, so the value types and the JavaScript number and string coercions
 //! (`Number()`, `parseInt`, trimming, lower-casing) are written here once, tested against Node, and every entry is a
 //! table in `defaults/ctxbudget.toml`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::settings::{coerce_json, read_object, stored_options, token};
 use crate::checks::guardkit::text::{is_js_space, js_string_of, js_trim};

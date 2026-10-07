@@ -93,7 +93,14 @@ fn append(path: &str, text: &str) -> std::io::Result<()> {
 
 /// `appendIndexLineIfAbsent`: nothing when the index already mentions the session id anywhere.
 pub fn append_index_line_if_absent(index: &str, sid: &str, line: &str) {
-    let existing = std::fs::read(index).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    let existing = match std::fs::read(index) {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            crate::discard::note("task_log_read", &e.to_string());
+            String::new()
+        }
+    };
     if existing.contains(sid) {
         return;
     }
@@ -102,7 +109,7 @@ pub fn append_index_line_if_absent(index: &str, sid: &str, line: &str) {
     {
         return;
     }
-    let _ = append(index, &format!("{line}\n"));
+    crate::discard::logged("task_log_append", append(index, &format!("{line}\n")));
 }
 
 /// The registered `task-lifecycle-log` check.

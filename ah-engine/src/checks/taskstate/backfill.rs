@@ -5,6 +5,11 @@
 //! cannot reproduce a wall-clock stop, so it scans a fixed number of bytes ([`defaults`] `taskstate.backfill_exact_bytes`)
 //! and returns [`Unsure`] when the search would need more: where Node would have stopped on its clock the answer is not
 //! the engine's to give.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::parse::{Facts, is_list_empty, is_not_found};
 use super::{Task, norm_blocked_by, number_of_digits};
 use crate::checks::guardkit::jsre;

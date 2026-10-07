@@ -17,6 +17,11 @@
 //! index, no loaded settings) answers "unknown", and an unknown predicate APPLIES the entry: a guard is never skipped because
 //! the engine could not tell. `all` is false when any part is false, else unknown when any part is, else true; `any` is true
 //! when any part is true, else unknown when any part is; `not` keeps unknown.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults::{self, V};
 use crate::reqenv::RequestEnv;
 use crate::transcript::index::Index;

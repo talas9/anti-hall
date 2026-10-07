@@ -16,6 +16,10 @@
 //! would split a surrogate pair.
 //!
 //! Mirrors `hooks/dispatch-tier.js` and `hooks/lib/dispatch-tier.js` (`request`, `taskText`, `readState`, `writeState`).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::guardkit::jsdiff::js_reads_differently_str;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::settings::get_bool;
@@ -212,7 +216,7 @@ fn write_state(path: &str, s: &mut J, now: f64) -> R<()> {
         && std::fs::create_dir_all(d).is_ok()
     {
         // best effort: a lost write only means the tier question is asked again
-        let _ = crate::atomic::write(path, json::stringify(s));
+        crate::discard::logged("tier_state_write", crate::atomic::write(path, json::stringify(s)));
     }
     Ok(())
 }

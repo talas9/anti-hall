@@ -4,6 +4,11 @@
 //! Why: the guards rewrite state files that other hooks also write. `serde_json::Value` sorts object keys, so a
 //! read-modify-write through it would reorder keys the Node guard keeps in order and the file would differ byte for byte
 //! from the one Node writes.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::fmt;
 

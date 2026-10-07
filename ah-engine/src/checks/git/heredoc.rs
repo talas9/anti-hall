@@ -1,6 +1,10 @@
 //! Data-heredoc masking (guards.gitGuardHeredocData): a heredoc whose consumer is not a shell is data, so its
 //! body is removed before the segment scans. All-or-nothing and fail-closed: any doubt returns the command
 //! unchanged.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::Ctx;
 use super::gitcmd::git_subcommand;
 use super::tables::{Spec, tables};

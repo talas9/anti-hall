@@ -3,6 +3,10 @@
 //!
 //! `serde_json::Value` keeps keys sorted, so a read-merge-write through it would reorder a file the Node hook keeps in
 //! insertion order. This one does not.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::num::to_js_string;
 
 /// One JSON value; an object keeps its keys in the order `JSON.parse` would create them.

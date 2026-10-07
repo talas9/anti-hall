@@ -6,6 +6,10 @@
 //!
 //! Why a trait plus a registry instead of a `match` on names: rules refer to checks by name from data
 //! files, so the set of valid names must be discoverable at runtime (rule validation, `docs`, `status`).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 pub mod agent_scan;
 pub mod api_guard;
 pub mod ask_guard;
@@ -250,15 +254,15 @@ pub fn get(name: &str) -> Option<&'static dyn Check> {
 pub fn cli_main(name: &str) -> i32 {
     use std::io::{Read, Write};
     let Some(check) = get(name) else {
-        let _ = writeln!(std::io::stderr(), "{}", crate::defaults::render("msg.err_unknown_check", &[("name", &format!("{name:?}"))]));
+        crate::discard::harmless(writeln!(std::io::stderr(), "{}", crate::defaults::render("msg.err_unknown_check", &[("name", &format!("{name:?}"))]))); // keep: a closed pipe leaves nobody to tell
         return 64;
     };
     let mut raw = String::new();
-    let _ = std::io::stdin().read_to_string(&mut raw);
+    crate::discard::harmless(std::io::stdin().read_to_string(&mut raw)); // keep: a closed pipe leaves nobody to tell
     // A payload serde_json rejects is deferred to Node, which may still parse it (a lone surrogate escape): the engine
     // must not block what Node would decide on (D74).
     let Ok(p) = serde_json::from_str::<Value>(&raw) else {
-        let _ = writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK);
+        crate::discard::harmless(writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK)); // keep: a closed pipe leaves nobody to tell
         return 0;
     };
     let null = Value::Null;
@@ -273,39 +277,39 @@ pub fn cli_main(name: &str) -> i32 {
     match run_env_guarded(check, &subject, &p, &opts, &RequestEnv::capture()) {
         None | Some(Verdict::Allow) => 0,
         Some(Verdict::Block(m)) => {
-            let _ = writeln!(std::io::stderr(), "{m}");
+            crate::discard::harmless(writeln!(std::io::stderr(), "{m}")); // keep: a closed pipe leaves nobody to tell
             2
         }
         Some(Verdict::Advisory(j)) => {
-            let _ = writeln!(std::io::stdout(), "{j}");
+            crate::discard::harmless(writeln!(std::io::stdout(), "{j}")); // keep: a closed pipe leaves nobody to tell
             0
         }
         Some(Verdict::Exact(x)) => {
-            let _ = std::io::stderr().write_all(x.err.as_bytes());
-            let _ = std::io::stdout().write_all(x.out.as_bytes());
+            crate::discard::harmless(std::io::stderr().write_all(x.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
+            crate::discard::harmless(std::io::stdout().write_all(x.out.as_bytes())); // keep: a closed pipe leaves nobody to tell
             x.code
         }
         Some(Verdict::Defer) => {
-            let _ = writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK);
+            crate::discard::harmless(writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK)); // keep: a closed pipe leaves nobody to tell
             0
         }
         Some(Verdict::Routed(inner, _)) => match *inner {
             Verdict::Allow => 0,
             Verdict::Block(m) => {
-                let _ = writeln!(std::io::stderr(), "{m}");
+                crate::discard::harmless(writeln!(std::io::stderr(), "{m}")); // keep: a closed pipe leaves nobody to tell
                 2
             }
             Verdict::Advisory(j) => {
-                let _ = writeln!(std::io::stdout(), "{j}");
+                crate::discard::harmless(writeln!(std::io::stdout(), "{j}")); // keep: a closed pipe leaves nobody to tell
                 0
             }
             Verdict::Exact(x) => {
-                let _ = std::io::stderr().write_all(x.err.as_bytes());
-                let _ = std::io::stdout().write_all(x.out.as_bytes());
+                crate::discard::harmless(std::io::stderr().write_all(x.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
+                crate::discard::harmless(std::io::stdout().write_all(x.out.as_bytes())); // keep: a closed pipe leaves nobody to tell
                 x.code
             }
             Verdict::Defer => {
-                let _ = writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK);
+                crate::discard::harmless(writeln!(std::io::stdout(), "{}", crate::hookio::FALLBACK)); // keep: a closed pipe leaves nobody to tell
                 0
             }
             Verdict::Routed(_, _) => 0,

@@ -7,6 +7,11 @@
 //! JSON differences from Node: serde_json rejects a lone surrogate escape that `JSON.parse` accepts; such a line is
 //! counted as malformed here. `Date.parse` accepts many forms; only RFC 3339 timestamps (what the harness writes)
 //! are read, anything else is `None` (JS `NaN`).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use regex::Regex;
 use serde_json::{Map, Value};

@@ -7,6 +7,11 @@
 //! edges) decides and writes the state itself (D74).
 //!
 //! Mirrors `hooks/fable-availability.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::msg::{self, Kind, Parts, advisory_json};
 use crate::checks::{Check, Verdict};

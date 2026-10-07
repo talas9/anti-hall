@@ -20,6 +20,10 @@
 //!   `JSON.parse` might read differently from `serde_json`.
 //!
 //! Mirrors `hooks/speculation-guard.js`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::msg::{self, Kind, Parts};
@@ -223,16 +227,19 @@ struct JudgeEntry {
 /// effort: a failure never changes the decision (Node: `appendJevLog`).
 fn append_judge_log(home: &str, line: &str) {
     let path = Path::new(home).join(defaults::text("paths.base_dir")).join(defaults::text("speculation_guard.judge_log"));
-    let _ = (|| -> std::io::Result<()> {
-        if let Some(d) = path.parent() {
-            std::fs::create_dir_all(d)?;
-        }
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > defaults::num("speculation_guard.judge_log_max_bytes")) {
-            std::fs::write(&path, "")?;
-        }
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
-        f.write_all(line.as_bytes())
-    })();
+    crate::discard::logged(
+        "speculation_judge_log",
+        (|| -> std::io::Result<()> {
+            if let Some(d) = path.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > defaults::num("speculation_guard.judge_log_max_bytes")) {
+                std::fs::write(&path, "")?;
+            }
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+            f.write_all(line.as_bytes())
+        })(),
+    );
 }
 
 fn now_iso() -> String {
@@ -349,7 +356,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
             );
         }
         let cleared = format!("{{\"hash\":{},\"blocks\":{},\"pending\":null}}", quote(&prior.last_blocked), js_number(prior.blocks));
-        let _ = std::fs::create_dir_all(&state_dir).and_then(|()| std::fs::write(&state_file, cleared));
+        crate::discard::logged("speculation_state_write", std::fs::create_dir_all(&state_dir).and_then(|()| std::fs::write(&state_file, cleared)));
     }
     if skipped {
         return Ok(Verdict::Allow);

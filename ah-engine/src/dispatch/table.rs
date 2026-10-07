@@ -2,6 +2,12 @@
 //! them a built-in check answers. The table is data (`defaults/dispatch.toml`, edited by hand; the plugin's `hooks.json`
 //! files are generated from it, `hooksgen`); this module reads it and decides which entries a payload matches, the way the
 //! host does.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an unset or non-UTF-8 variable is an unset one
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults::{self, V};
 use crate::error::DispatchError;
 use regex::Regex;

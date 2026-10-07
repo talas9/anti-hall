@@ -3,6 +3,10 @@
 //! Why a struct built once: the scans consult these sets and compiled patterns for every segment, so each table is
 //! turned into a set or a compiled regex on first use and shared for the life of the process. The text of the tables
 //! lives only in the TOML file.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use crate::defaults::V;
 use regex::Regex;

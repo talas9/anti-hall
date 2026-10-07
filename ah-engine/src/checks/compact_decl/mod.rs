@@ -15,6 +15,10 @@
 //!
 //! Mirrors `hooks/compact-declaration-guard.js`, `hooks/lib/transcript-tail.js` and `hooks/lib/compact-advice.js`
 //! (`classify`, `readTurn`), and `hooks/lib/work-detect.js` (`BASH_WORK_RE`, `neutralizeQuotedContents`).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::paths;

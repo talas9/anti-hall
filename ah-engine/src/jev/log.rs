@@ -71,9 +71,9 @@ impl FileLog {
             PathBuf::from(s)
         };
         for i in (1..self.keep).rev() {
-            let _ = std::fs::rename(r#gen(i), r#gen(i + 1)); // a gap in the chain is fine
+            crate::discard::harmless(std::fs::rename(r#gen(i), r#gen(i + 1))); // a gap in the chain is fine
         }
-        let _ = std::fs::rename(&self.path, r#gen(1)); // on failure the row is appended to the oversized file
+        crate::discard::harmless(std::fs::rename(&self.path, r#gen(1))); // on failure the row is appended to the oversized file
     }
 }
 

@@ -4,7 +4,13 @@
 //! [`SqliteStore`], and the rest of the engine does not care which backend it has. [`MemStore`] is the in-memory
 //! implementation: bounded, lost when the process exits, used by tests and as the daemon's fallback when storage cannot
 //! open (hooks never depend on storage, D9).
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::db::{Db, Op};
+use crate::discard::Logged;
 use crate::sql;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
@@ -209,7 +215,7 @@ impl Store for SqliteStore {
     }
 
     fn impact_counts(&self, f: &ImpactFilter) -> Vec<ImpactCount> {
-        let _ = self.db.barrier();
+        crate::discard::logged("db_barrier", self.db.barrier());
         self.db
             .read(|c| {
                 let mut st = c.prepare_cached(sql::IMPACT_TOTALS)?;
@@ -218,11 +224,11 @@ impl Store for SqliteStore {
                 })?;
                 rows.collect()
             })
-            .unwrap_or_default()
+            .or_default_logged("db_read")
     }
 
     fn recent_impact(&self, f: &ImpactFilter, limit: usize) -> Vec<ImpactEvent> {
-        let _ = self.db.barrier();
+        crate::discard::logged("db_barrier", self.db.barrier());
         let mut v: Vec<ImpactEvent> = self
             .db
             .read(|c| {
@@ -232,13 +238,13 @@ impl Store for SqliteStore {
                 })?;
                 rows.collect()
             })
-            .unwrap_or_default();
+            .or_default_logged("db_read");
         v.reverse();
         v
     }
 
     fn held_events(&self) -> usize {
-        let _ = self.db.barrier();
+        crate::discard::logged("db_barrier", self.db.barrier());
         self.db.read(|c| c.query_row(sql::IMPACT_HELD, [], |r| r.get::<_, i64>(0))).map(|n| n.max(0) as usize).unwrap_or(0)
     }
 
@@ -261,12 +267,12 @@ impl Store for SqliteStore {
         if self.db.write(Op::Metrics { ts_ms, body: text.clone() }).is_err() {
             return false;
         }
-        let _ = self.db.archive(|c| {
+        crate::discard::harmless(self.db.archive(|c| {
             for (name, bucket, _) in resolutions() {
                 c.prepare_cached(sql::ROLLUP_SAVE)?.execute(rusqlite::params![name, (ts_ms - ts_ms % bucket) as i64, ts_ms as i64, text])?;
             }
             Ok(())
-        });
+        })); // keep: formatting into a String cannot fail
         true
     }
 
@@ -285,7 +291,7 @@ impl Store for SqliteStore {
                 })?;
                 Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
             })
-            .unwrap_or_default()
+            .or_default_logged("db_read")
     }
 }
 

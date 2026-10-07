@@ -5,6 +5,10 @@
 //! hot row is removed only after it is archived, only once its day is older than `telemetry.retention_days`, and only if
 //! it has not changed since it was copied, so nothing recorded in between is lost. A flush is always tagged with the day
 //! it happens in, so nothing is ever added to a day after its hot row was pruned. Old events are pruned by the same retention. The scheduler runs it once a day (job `telemetry_rollup`, D33), and `ah-engine telemetry rollup` runs it by hand.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use super::event::{DAY_MS, day_of};
 use super::persist::{DayRow, TelDb, TelOp};
 use crate::db::Op;

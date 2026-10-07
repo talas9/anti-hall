@@ -12,6 +12,12 @@
 //! over at once), which is why liveness and the machine identity are implemented.
 //!
 //! Mirrors `companion/lib/lock.js` `acquire`, `inspect`, `reclaim`, `takeSidecar`, `reclaimGuarded` and `release`.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
+// - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
+// - serializing a string cannot fail
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::defaults;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
@@ -224,14 +230,14 @@ fn publish(path: &str, payload: &str) -> Published {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Published::Exists,
         Err(_) => match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
             Ok(mut f) => {
-                let _ = f.write_all(payload.as_bytes());
+                crate::discard::logged("lock_payload_write", f.write_all(payload.as_bytes()));
                 Published::Yes
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Published::Exists,
             Err(_) => Published::Failed,
         },
     };
-    let _ = std::fs::remove_file(&tmp);
+    crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
     out
 }
 
@@ -262,11 +268,11 @@ fn reclaim(path: &str, h: &Holder) -> Reclaimed {
     }
     if !same {
         if std::fs::hard_link(&reap, path).is_ok() {
-            let _ = std::fs::remove_file(&reap);
+            crate::discard::harmless(std::fs::remove_file(&reap)); // keep: cleanup that raced; an absent file is the goal state
         } else if std::fs::metadata(path).is_err() {
-            let _ = std::fs::rename(&reap, path);
+            crate::discard::harmless(std::fs::rename(&reap, path)); // keep: cleanup that raced; an absent file is the goal state
         } else {
-            let _ = std::fs::remove_file(&reap);
+            crate::discard::harmless(std::fs::remove_file(&reap)); // keep: cleanup that raced; an absent file is the goal state
         }
         return Reclaimed::Caught;
     }
@@ -275,7 +281,7 @@ fn reclaim(path: &str, h: &Holder) -> Reclaimed {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Reclaimed::Done,
         Err(_) => {
             if std::fs::metadata(path).is_err() {
-                let _ = std::fs::rename(&reap, path);
+                crate::discard::harmless(std::fs::rename(&reap, path)); // keep: cleanup that raced; an absent file is the goal state
             }
             Reclaimed::Failed
         }
@@ -327,7 +333,7 @@ pub fn acquire(path: &str, p: Params) -> Option<Held> {
     if let Some(i) = path.rfind('/')
         && i > 0
     {
-        let _ = std::fs::create_dir_all(&path[..i]);
+        crate::discard::harmless(std::fs::create_dir_all(&path[..i])); // keep: the write that follows fails too when the directory is missing
     }
     let deadline = std::time::Instant::now() + Duration::from_millis(p.wait_ms);
     let mut retry_now = false;

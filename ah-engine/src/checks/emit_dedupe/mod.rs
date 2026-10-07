@@ -15,6 +15,10 @@
 //! whole hook to Node before anything is written: a state file serde rejects (JavaScript may accept it), a transcript line
 //! that holds a delivered-block marker but that neither parser accepts, a timestamp that is not the strict ISO form, a
 //! relative transcript path, no home directory.
+// Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
+// - an absent field is the empty value
+// A failure that must be seen goes through `crate::discard` instead.
+
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsval::{DateParse, Js, date_parse, js_to_string, number_to_string, parse_line};
 use crate::checks::guardkit::settings::{get_bool, get_number};
@@ -154,7 +158,7 @@ fn prune_stale(dir: &std::path::Path, keep: &std::path::Path) {
     {
         return;
     }
-    let _ = std::fs::write(&stamp, Js::Obj(vec![("lastSweep".into(), Js::Num(now))]).stringify());
+    crate::discard::harmless(std::fs::write(&stamp, Js::Obj(vec![("lastSweep".into(), Js::Num(now))]).stringify())); // keep: a lost sweep stamp only repeats the sweep
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let keep_name = keep.file_name().map(|n| n.to_string_lossy().to_string());
     let (head, tail) = (format!("{prefix}-"), ".json");
@@ -166,7 +170,7 @@ fn prune_stale(dir: &std::path::Path, keep: &std::path::Path) {
         let Ok(m) = e.path().metadata() else { continue };
         let Ok(mtime) = m.modified().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)) else { continue };
         if now - (mtime.as_secs_f64() * 1000.0) > num("emit_dedupe.prune_ttl_ms") {
-            let _ = std::fs::remove_file(e.path());
+            crate::discard::harmless(std::fs::remove_file(e.path())); // keep: cleanup that raced; an absent file is the goal state
         }
     }
 }
@@ -423,7 +427,9 @@ fn bump_suppressed(home: &str, session: &str, now: f64) {
     let key = defaults::text("emit_dedupe.stats_key");
     let count = finite(state_get(&state, key), "suppressed").unwrap_or(0.0);
     let stats = entry(vec![("suppressed", Js::Num(count + 1.0)), ("lastSeenAt", Js::Num(now)), ("lastSuppressedAt", Js::Num(now))]);
-    let _ = write_entry(home, session, key, stats, now);
+    if write_entry(home, session, key, stats, now).is_err() {
+        crate::discard::note("emit_dedupe_write", "");
+    }
 }
 
 /// `resetSession`: mark a context loss, so every record emitted before now counts as absent. Fail-open.
