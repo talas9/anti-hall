@@ -2,6 +2,7 @@
 name = "ah-engine"
 version = "0.1.0"
 edition = "2024"
+default-run = "ah-engine"
 license = "MIT"
 
 [dependencies]
