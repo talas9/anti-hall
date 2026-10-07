@@ -50,6 +50,8 @@ function mkHome(tmp, n, ctx) {
   if (ctx.claude) { fs.mkdirSync(path.join(home, '.claude'), { recursive: true }); fs.writeFileSync(path.join(home, '.claude', 'settings.json'), typeof ctx.claude === 'string' ? ctx.claude : JSON.stringify(ctx.claude)); }
   for (const [rel, body] of Object.entries(ctx.files || {})) { const f = path.join(home, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body); }
   if (ctx.setup) ctx.setup(home);
+  // ctx.links: {rel: target} symlinks created after the files; $HOME in a target is the ctx home
+  for (const [rel, target] of Object.entries(ctx.links || {})) { const f = path.join(home, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.symlinkSync(target.split('$HOME').join(home), f); }
   return home;
 }
 
