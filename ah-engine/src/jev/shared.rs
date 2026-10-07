@@ -20,6 +20,11 @@ pub fn set_resident() {
     RESIDENT.store(true, Ordering::SeqCst);
 }
 
+/// True in the resident engine (the daemon).
+pub fn is_resident() -> bool {
+    RESIDENT.load(Ordering::SeqCst)
+}
+
 static LANES: Mutex<Vec<(PathBuf, Arc<Jev>)>> = Mutex::new(Vec::new());
 
 /// The shared lane for `home`, created on first use with the real transport and the Node files (log, breaker). `env` is
