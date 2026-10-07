@@ -368,7 +368,10 @@ pub fn scenarios() -> Vec<Scn> {
                 .env(&[("ANTIHALL_INJECTION_REPEAT_EVERY", "10")]),
         );
     }
-    for (n, emitted_ago) in [("pending-recent", 60_000.0), ("pending-over-limit", 11.0 * 60_000.0), ("pending-edge", 9.9 * 60_000.0)] {
+    // "edge": just under the ten minute limit. The seeds are stamped when the corpus is built and the scenario runs a few seconds
+    // later (the whole run takes 8 s at an idle load, far more under one), so the margin must be many times the run time: 9.9 minutes
+    // left 6 s and crossed the limit under load.
+    for (n, emitted_ago) in [("pending-recent", 60_000.0), ("pending-over-limit", 11.0 * 60_000.0), ("pending-edge", 9.0 * 60_000.0)] {
         v.push(
             scn(format!("vf-state-{n}"), "verify-first", vec![step(pl("sp", TP, "x")), step(pl("sp", TP, "x"))])
                 .seed(vec![pending_transcript(now), seeded("sp", emitted_ago, emitted_ago, 0, "\"$TP($HOME/t.jsonl)\"")]),
