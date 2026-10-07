@@ -87,7 +87,7 @@ fn ids_for(event: &str, tool: &str) -> Vec<String> {
 }
 
 #[test]
-fn dispatch_tier_does_nothing_while_jev_is_off_and_defers_while_it_is_on() {
+fn dispatch_tier_does_nothing_while_jev_is_off_answers_when_it_is_on_and_defers_input_it_cannot_read() {
     let w = World::new("tier");
     let payload = serde_json::json!({"hook_event_name": "PostToolUse", "tool_name": "TaskCreate", "session_id": "s", "cwd": w.path("proj"), "tool_input": {"subject": "x"}}).to_string();
     let ids = ids_for("PostToolUse", "TaskCreate");
@@ -97,7 +97,8 @@ fn dispatch_tier_does_nothing_while_jev_is_off_and_defers_while_it_is_on() {
         ids.iter().map(|id| (id.clone(), if id == "dispatch-tier" { "exit 99" } else { "true" }.into())).collect();
     let map_path = w.path("map.json");
     std::fs::write(&map_path, serde_json::json!({ "PostToolUse": map }).to_string()).unwrap();
-    for (jev, want) in [(None, 0), (Some("1"), 99)] {
+    let odd = serde_json::json!({"hook_event_name": "PostToolUse", "tool_name": "TaskCreate", "session_id": "s", "cwd": w.path("proj"), "tool_input": {"subject": {"x": 1}}}).to_string();
+    for (jev, want, payload) in [(None, 0, &payload), (Some("1"), 0, &payload), (Some("1"), 99, &odd)] {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["hook", "--event", "PostToolUse", "--tool", "TaskCreate", "--fallback-map"])
             .arg(&map_path)
@@ -119,6 +120,9 @@ fn dispatch_tier_does_nothing_while_jev_is_off_and_defers_while_it_is_on() {
         ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
         assert_eq!(o.status.code(), Some(want), "jev={jev:?}: {}", String::from_utf8_lossy(&o.stderr));
+        if jev.is_some() && want == 0 {
+            assert!(w.path("home").join(".anti-hall/dispatch-tier-state.json").exists(), "the check wrote the request marker itself");
+        }
     }
 }
 
