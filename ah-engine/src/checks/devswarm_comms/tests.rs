@@ -53,8 +53,8 @@ fn the_first_session_file_in_name_order_wins() {
     let h = home("order");
     session(&h, "b.json", "dup", "/second");
     session(&h, "a.json", "dup", "/first");
-    assert_eq!(find_session(&h, "dup").as_deref(), Some("/first"));
-    assert_eq!(find_session(&h, "none"), None);
+    assert_eq!(find_session(&h, "dup"), Ok(Some("/first".to_string())));
+    assert_eq!(find_session(&h, "none"), Ok(None));
 }
 
 #[test]
@@ -72,4 +72,30 @@ fn a_workspace_peer_is_blocked_with_the_node_bytes_and_a_background_agent_is_not
 fn an_unknown_home_defers() {
     let s = Settings { home: String::new(), env: HashMap::new() };
     assert_eq!(decide(&send("x"), &s, ""), Some(Verdict::Defer));
+}
+
+/// Review 3 P1: a session file serde rejects but JavaScript parses (lone surrogate, 1e400, a 400-digit integer, nesting past 128)
+/// belongs to a workspace peer Node blocks; the engine used to skip the file and allow in silence. Now Node decides.
+#[test]
+fn a_session_file_only_javascript_can_read_defers_instead_of_allowing() {
+    let ws = |h: &str| format!("{h}/.devswarm/repos/x/ws1");
+    let big = format!("1{}", "0".repeat(400));
+    let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+    for (tag, extra) in [("e400", "1e400".to_string()), ("surr", "\"\\ud800\"".to_string()), ("big", big), ("deep", deep)] {
+        for target in ["peer", "a1234abcd"] {
+            let h = home(&format!("js-{tag}-{target}"));
+            std::fs::write(format!("{h}/.claude/sessions/1.json"), format!("{{\"name\":\"{target}\",\"cwd\":\"{}\",\"x\":{extra}}}", ws(&h))).unwrap();
+            assert_eq!(decide(&send(target), &st(&h, &[]), ""), Some(Verdict::Defer), "{tag} {target}");
+        }
+    }
+    // a file both parsers reject is skipped by both, and the next file is read
+    let h = home("js-plain-bad");
+    std::fs::write(format!("{h}/.claude/sessions/a.json"), "{bad").unwrap();
+    session(&h, "b.json", "peer", "/tmp/x");
+    assert!(matches!(decide(&send("peer"), &st(&h, &[]), ""), Some(Verdict::Advisory(_))));
+    // a bad-for-serde file ahead of a non-workspace match must defer too (Node reads it first)
+    let h = home("js-first");
+    std::fs::write(format!("{h}/.claude/sessions/a.json"), format!("{{\"name\":\"peer\",\"cwd\":\"{}\",\"n\":1e400}}", ws(&h))).unwrap();
+    session(&h, "b.json", "peer", "/tmp/q");
+    assert_eq!(decide(&send("peer"), &st(&h, &[]), ""), Some(Verdict::Defer));
 }
