@@ -225,6 +225,36 @@ mod tests {
     }
 
     #[test]
+    fn the_session_and_subagent_start_entries_are_answered_with_the_node_hooks_bytes() {
+        let d = std::env::temp_dir().join(format!("ah-native-vf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("plugin/hooks")).unwrap();
+        std::fs::write(d.join("plugin/hooks/verify-first-core.js"), "").unwrap();
+        std::fs::create_dir_all(d.join("home")).unwrap();
+        let root = std::fs::canonicalize(d.join("plugin")).unwrap().to_string_lossy().to_string();
+        let env = crate::reqenv::RequestEnv::from_pairs([("HOME", d.join("home").to_string_lossy().to_string())]);
+        let p = json!({"session_id": "s", "hook_event_name": "SessionStart"});
+        for (host, event, ids) in [("claude", "SessionStart", vec!["verify-first-full", "fable-availability"]), ("codex", "SessionStart", vec!["verify-first-full"]), ("claude", "SubagentStart", vec!["verify-first-subagent"])] {
+            let meta = Meta { host: host.into(), event: event.into(), tool: None, root: Some(root.clone()), env: env.clone() };
+            let got = evaluate(&meta, &p, &|_, _, _| {});
+            assert_eq!(got.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ids, "{host} {event}");
+            for (id, a) in &got {
+                let Answer::Decided(r, _) = a else { panic!("{id} deferred") };
+                assert_eq!(r.code, Some(0), "{id}");
+                if id != "fable-availability" {
+                    assert!(r.out.starts_with(&format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"{event}\",\"additionalContext\":\"ANTI-HALL VERIFY-FIRST")) && r.out.ends_with("}}\n"), "{id}: {}", r.out);
+                    assert!(r.out.contains(&format!("{root}/PROTOCOL.md")), "{id}");
+                } else {
+                    assert!(r.out.is_empty(), "no fable in an empty home");
+                }
+            }
+        }
+        // the root is a host fact: with none, the compact text cannot be built and the Node hook answers
+        let meta = Meta { host: "claude".into(), event: "SubagentStart".into(), tool: None, root: None, env };
+        assert_eq!(evaluate(&meta, &p, &|_, _, _| {}).into_iter().map(|(_, a)| a).collect::<Vec<_>>(), vec![Answer::Defer]);
+    }
+
+    #[test]
     fn an_exact_verdict_becomes_the_entrys_exact_bytes() {
         let x = crate::checks::Exact::json_block("stop");
         let a = answer_of("e", Some(Verdict::Exact(x.clone())));

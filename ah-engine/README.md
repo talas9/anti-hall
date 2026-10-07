@@ -174,6 +174,16 @@ Deliberate differences from the Node guard:
   `turn-gate.js` over the Node file `turn-gate/tg-<session>.json`, rewritten with its key order by `guardkit/ojson.rs`).
   The Node turn gate passes `tg-` as the family name of its pruning sweep, which looks for `tg--*.json` and so never
   removes a file; that is kept so the files on disk stay the same (a finding for the Node side).
+- `verify-first-subagent`, `verify-first-full` and `fable-availability` (context checks, never block; `checks/verify_first`,
+  `checks/fable_availability`; parity harness `parity/run-verify-first.js`): the protocol texts live in
+  `defaults/verify_first.toml`, copied from `hooks/verify-first-core.js`, and the harness fails when either side drifts. The
+  compact text names `<plugin root>/PROTOCOL.md`; the root is derived like Node does (the real location of
+  `hooks/verify-first-core.js`), and a root the engine cannot prove defers. A payload the engine's JSON reader rejects
+  defers for every hook (the dispatcher's rule). `fable-availability` writes the same state file as Node (key order
+  `available`, `checkedAt`, `source`); a `~/.claude.json` the engine's reader rejects (after replacing unpaired surrogate
+  escapes, which JSON.parse accepts) or nests deeper than its limit defers, so Node reads and writes it. The switches are the
+  environment, `settings.json` and plugin options exactly as Node's `settings.js` resolves them; `DEVSWARM_SOURCE_BRANCH`
+  joins the forwarded request environment for the child-workspace note.
 - `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
   exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
   current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both

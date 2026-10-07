@@ -10,12 +10,14 @@ pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
 pub mod failure_nudge;
+pub mod fable_availability;
 pub mod git;
 pub mod guardkit;
 pub mod merge_side_pick;
 pub mod model_routing;
 pub mod scan_throttle;
 pub mod ship_it;
+pub mod verify_first;
 
 use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
@@ -118,7 +120,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 10] = [
+    static ALL: [&dyn Check; 13] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
         &ship_it::ShipItGuard,
@@ -129,6 +131,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &model_routing::ModelRouting,
         &failure_nudge::FailureRootCauseNudge,
         &git::audit::GitAudit,
+        &verify_first::VerifyFirstSubagent,
+        &verify_first::VerifyFirstFull,
+        &fable_availability::FableAvailability,
     ];
     &ALL
 }

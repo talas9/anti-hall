@@ -343,17 +343,17 @@ value = [
 [dispatch.hooks_claude_SubagentStart]
 doc = "The claude SubagentStart hook entries, in dispatch order."
 value = [
-  { id = "verify-first-subagent", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"", timeout = 10, check = "" },
+  { id = "verify-first-subagent", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"", timeout = 10, check = "verify-first-subagent" },
 ]
 
 [dispatch.hooks_claude_SessionStart]
 doc = "The claude SessionStart hook entries, in dispatch order."
 value = [
-  { id = "verify-first-full", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "" },
+  { id = "verify-first-full", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "verify-first-full" },
   { id = "verify-first-orch:host=claude", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js\" --host=claude", timeout = 10, check = "" },
   { id = "devswarm-child-role", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-role.js\"", timeout = 10, check = "" },
   { id = "version-alert", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/version-alert.js\"", timeout = 10, check = "" },
-  { id = "fable-availability", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/fable-availability.js\"", timeout = 10, check = "" },
+  { id = "fable-availability", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/fable-availability.js\"", timeout = 10, check = "fable-availability" },
   { id = "codex-availability", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-availability.js\"", timeout = 10, check = "" },
   { id = "devswarm-version", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-version.js\"", timeout = 10, check = "" },
   { id = "claude-cli-version", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/claude-cli-version.js\"", timeout = 10, check = "" },
@@ -445,7 +445,7 @@ value = [
 [dispatch.hooks_codex_SessionStart]
 doc = "The codex SessionStart hook entries, in dispatch order."
 value = [
-  { id = "verify-first-full", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "" },
+  { id = "verify-first-full", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-full.js\"", timeout = 10, check = "verify-first-full" },
   { id = "verify-first-orch", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/verify-first-orch.js\"", timeout = 10, check = "" },
   { id = "devswarm-child-role", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-child-role.js\"", timeout = 10, check = "" },
   { id = "version-alert", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/version-alert.js\"", timeout = 10, check = "" },

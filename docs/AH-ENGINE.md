@@ -54,12 +54,15 @@ labelled with how it was measured in the README of `ah-engine/`.
   stdout and stderr the reply cannot carry yet, a regex construct, a classifier that lives in another port) the check
   defers, so Node decides.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  ten: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
+  thirteen: `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
   the five small guard ports above: `merge-side-pick`, `ship-it-guard`, `scan-throttle`, `coordinator-work-guard` and
   `compact-declaration-guard` (see the README of `ah-engine/`), and two PostToolUse-side checks: `git-audit` (the
-  `--audit` pass of git-guard) and `failure-root-cause-nudge` (PostToolUseFailure).
+  `--audit` pass of git-guard) and `failure-root-cause-nudge` (PostToolUseFailure), plus the three context checks `verify-first-subagent`
+  (SubagentStart), `verify-first-full` (SessionStart) and `fable-availability` (SessionStart). The context checks are not
+  guards: they inject text or record a fact, never block, and anything they cannot reproduce exactly defers to the Node
+  hook (D74).
 
 ## What works today
 
@@ -81,6 +84,8 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `ship-it-guard` check (opt-in plan gate for Edit, Write and MultiEdit; Bash and apply_patch defer to Node) with exact parity | implemented | D29-D31, D75 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
+| Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
+| Built-in `fable-availability` check: reads the host's model cache, writes `~/.anti-hall/fable-availability.json` and prints the availability note when a Fable model is entitled; a config file the engine's JSON reader rejects defers | implemented | D29-D31, D74 |
 | Built-in `model-routing` check for Agent/Task spawns: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches | implemented | D29-D31, D75 |
 | Check trait and registry, typed errors, documented code | implemented | D30, D39 |
 | Agent CLI: `--json` on every command, read-only vs state-changing registry, generated reference | implemented | D50 |
@@ -435,6 +440,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `messages.toml` | every message the engine produces (failure hints, advisories, replies, errors, command-line text) |
 | `git.toml` | every table, limit, setting name and block message of the git check |
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
+| `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
