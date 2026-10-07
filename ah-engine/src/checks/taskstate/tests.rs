@@ -103,3 +103,27 @@ fn the_session_key_and_hash_follow_node() {
     assert_eq!(safe_key("a/b c😀"), "a_b_c__");
     assert_eq!(sha1_hex(b"/x/y.jsonl"), "95af2b5c45318efd81ab1ea4c5d50b6fd1d9d641");
 }
+
+/// Review 3 P2: a transcript line serde rejects that `JSON.parse` reads (a 309+ digit integer is Infinity, 1e400, a lone surrogate
+/// escape, nesting past 128) is not a skippable bad line: Node counts it, so the reconstruction must say "unsure" (defer).
+#[test]
+fn a_line_only_javascript_can_parse_is_unsure_not_skipped() {
+    let base = json!({"type": "assistant", "message": {"id": "m", "content": [{"type": "tool_use", "id": "t1", "name": "TaskCreate", "input": {"subject": "a", "x": 1}}]}}).to_string();
+    let deep = format!("{}{}", "[".repeat(150), "]".repeat(150));
+    for (name, repl) in [
+        ("big", format!("1{}", "0".repeat(400))),
+        ("neg-big", format!("-1{}", "0".repeat(400))),
+        ("e400", "1e400".into()),
+        ("deep", deep),
+        ("surrogate", "\"\\ud83d\"".into()),
+    ] {
+        let line = base.replace("\"x\":1", &format!("\"x\":{repl}"));
+        assert!(serde_json::from_str::<Value>(&line).is_err(), "{name}: the fixture must be one serde rejects");
+        assert!(super::parse::maybe_valid_for_js(&line), "{name}");
+        assert!(reconstruct(&[line.as_str()], Variant::Guard).is_err(), "{name}: guard variant");
+        assert!(reconstruct(&[line.as_str()], Variant::State).is_err(), "{name}: state variant");
+    }
+    // a line both parsers reject is skipped
+    assert!(!super::parse::maybe_valid_for_js("{\"x\": 1,"));
+    assert!(reconstruct(&["{\"x\": 1,"], Variant::Guard).is_ok());
+}

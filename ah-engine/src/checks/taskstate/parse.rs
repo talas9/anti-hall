@@ -54,29 +54,10 @@ pub fn is_not_found(s: &str) -> bool {
     res().not_found.is_match(s)
 }
 
-/// The most that `JSON.parse` could accept where `serde_json` refuses: a lone surrogate escape, nesting past the parser's
-/// recursion limit, or a number beyond the range of an `f64`. A line that fails to parse and shows none of these is invalid
-/// JSON for JavaScript too and is skipped, as the Node code skips it.
+/// Whether a line `serde_json` refused might still be valid for `JSON.parse` (see [`jsdiff`](crate::checks::guardkit::jsdiff)); any
+/// other bad line is invalid for JavaScript too and is skipped, as the Node code skips it.
 pub fn maybe_valid_for_js(line: &str) -> bool {
-    let b = line.as_bytes();
-    let mut depth = 0usize;
-    let mut i = 0usize;
-    while i < b.len() {
-        match b[i] {
-            b'[' | b'{' => {
-                depth += 1;
-                if depth > 100 {
-                    return true;
-                }
-            }
-            b']' | b'}' => depth = depth.saturating_sub(1),
-            b'\\' if i + 2 < b.len() && b[i + 1] == b'u' && matches!(b[i + 2], b'd' | b'D') => return true,
-            b'e' | b'E' if i > 0 && b[i - 1].is_ascii_digit() => return true,
-            _ => {}
-        }
-        i += 1;
-    }
-    false
+    crate::checks::guardkit::jsdiff::js_reads_differently_str(line)
 }
 
 /// The tool uses inside an entry (`collectToolUses`): the node itself when it is a tool use with a name, then everything
