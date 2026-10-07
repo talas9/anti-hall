@@ -76,8 +76,32 @@ fn a_quiet_prompt_is_answered_without_running_any_node_hook_and_adds_no_joiner()
     let loud = ["limit-conserve-inject", "auto-handover"];
     let map = e.map("UserPromptSubmit", &loud, "echo NODE-{id}");
     let tr = e.transcript(50_000);
-    let (code, out, err) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
+    // with the verify-first reminder switched off the turn is exactly the empty context
+    let (code, out, err) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW, ("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_TURN", "false")]);
     assert_eq!((code, out.as_str(), err.as_str()), (0, QUIET_PROMPT, ""));
+}
+
+/// Regression for the empty-context rule of `dispatch::combine` (a quiet hook adds no joiner): on a quiet UserPromptSubmit turn
+/// every check that answers natively (the context-budget gates print an empty context, the verify-first reminder prints a line,
+/// the idle-agent sweep and the others print nothing) is combined into ONE context with no stray newline, whichever
+/// reminder line the payload happens to pick.
+#[test]
+fn a_quiet_prompt_has_no_stray_newlines_whichever_checks_answer_natively() {
+    let e = Env::new("ups-newlines");
+    let map = e.map("UserPromptSubmit", &[], "true");
+    let tr = e.transcript(50_000);
+    let mut lines = std::collections::BTreeSet::new();
+    for i in 0..40 {
+        let p = serde_json::json!({"session_id": format!("nl{i}"), "hook_event_name": "UserPromptSubmit", "prompt": format!("p{i}"), "cwd": "/tmp", "transcript_path": tr}).to_string();
+        let (code, out, err) = e.run("UserPromptSubmit", &map, &p, &[WINDOW]);
+        assert_eq!((code, err.as_str()), (0, ""), "{out:?}");
+        let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap_or_else(|_| panic!("not JSON: {out:?}"));
+        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("no context: {out:?}"));
+        assert!(!ctx.contains("\n\n") && ctx == ctx.trim(), "stray newline in {ctx:?}");
+        assert_eq!(out.matches('\n').count(), 1, "one JSON line, got {out:?}");
+        lines.insert(ctx.to_string());
+    }
+    assert!(lines.len() > 1, "the payloads must reach more than one reminder line");
 }
 
 #[test]

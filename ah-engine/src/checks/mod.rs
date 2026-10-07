@@ -9,10 +9,10 @@
 pub mod command;
 pub mod compact_decl;
 pub mod coordinator_work;
+pub mod ctxbudget;
 pub mod emit_dedupe;
 pub mod fable_availability;
 pub mod failure_nudge;
-pub mod ctxbudget;
 pub mod git;
 pub mod guardkit;
 pub mod idle_agent_sweep;

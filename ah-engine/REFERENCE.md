@@ -73,6 +73,10 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `verify-first` | UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node (port of verify-first.js). |
 | `idle-agent-sweep` | UserPromptSubmit: lists agents that finished but were never stopped or closed, and the call that ends each (port of idle-agent-sweep.js). |
 | `emit-dedupe-reset` | SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted (port of emit-dedupe-reset.js). |
+| `limit-conserve-inject` | UserPromptSubmit: answers the quiet case (conservation off, no usage cache, or no bucket over the threshold) with an empty context; an active conservation, which needs account-switch state and emit-dedupe writes, defers to the Node hook (port of limit-conserve-inject.js). |
+| `auto-handover` | UserPromptSubmit: answers the cases that write no state and inject nothing (a subagent, a skipped or disabled feature, context below the threshold with the latch not set); a threshold crossing, a nag, the new-work gate and a latch reset defer to the Node hook (port of auto-handover.js). |
+| `auto-handover-pause-nag` | Stop: answers the cases that block nothing and write no state (a subagent, a continued stop, a skipped or disabled feature, context below the threshold with the latch not set, a nag inside its step and quiet window); a fire, a re-arm and a nag defer to the Node hook (port of auto-handover-pause-nag.js). |
+| `compact-advice-guard` | Stop: allows every turn whose final text cannot hold a compact recommendation (no wording a recommendation needs); a possible recommendation defers to the Node hook, which owns the phrase analysis, the context rules and the block (port of compact-advice-guard.js). |
 
 ## Settings
 
@@ -1434,6 +1438,53 @@ Defaults ship in `defaults/*.toml`; a numeric setting with an environment variab
 | `verify_first.sw_dispatch_tier_text` | `4 entries` |  |  | Where the switch of the DevSwarm Primary dispatch-tier text is read from (devswarm.dispatchTierText, default on). |
 | `verify_first.sw_supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode is read from (devswarm.supervisorMode: auto, on or off, default auto): the first condition of the Primary gate. |
 | `verify_first.sw_turn` | `4 entries` |  |  | Where the on/off switch is read from (context.verifyFirstTurn, default on). |
+
+### ctxbudget.toml / ctxbudget
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `ctxbudget.advice_good_word` | `good` |  |  | The word that opens the good-point-to recommendation wording. |
+| `ctxbudget.advice_needs_good` | `compact, clear, /new` |  |  | Words that, together with the word good, can form a good-point-to recommendation (good point to compact, /clear or /new). |
+| `ctxbudget.advice_needs_safe` | `compact, /clear, reset, /new` |  |  | Words that, together with the word safe, can form a compact recommendation (safe to compact, safe to /clear, safe for a reset or /new); a final text with none of the pairs holds no recommendation. |
+| `ctxbudget.advice_prefilter` | `compact, clear, reset, /new` |  |  | Substrings whose absence from the whole transcript tail (and from every unicode escape) proves that no assistant text of it can hold a compact recommendation. |
+| `ctxbudget.advice_safe_word` | `safe` |  |  | The word that opens the safe-to and safe-for recommendation wordings. |
+| `ctxbudget.advice_slash_compact` | `/compact` |  |  | The slash command whose mention alone can be a recommendation (run /compact, a standalone /compact line). |
+| `ctxbudget.context_window_env` | `ANTIHALL_CONTEXT_WINDOW_TOKENS` |  |  | Environment variable that overrides the context window size, in tokens (always wins over the other window sources). |
+| `ctxbudget.deep_json_depth` | `100` |  |  | Nesting depth beyond which a transcript or state line the engine cannot parse is deferred to Node (the Node parser has no such limit). |
+| `ctxbudget.default_window` | `200000` |  | tokens | The context window assumed when no source states one, in tokens (the reading is then flagged as unknown). |
+| `ctxbudget.env_pct_off` | `ANTIHALL_AUTO_HANDOVER_PCT` |  |  | Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express). |
+| `ctxbudget.home_env` | `HOME` |  |  | Environment variable that holds the home directory (Node's os.homedir() reads it first on POSIX). |
+| `ctxbudget.inferred_suffix` | `.inferred-1m.json` |  |  | File name suffix of the inferred one-million-token window latch next to a session's context reading. |
+| `ctxbudget.inferred_window` | `1000000` |  | tokens | The window assumed once the observed usage has exceeded the default window, in tokens. |
+| `ctxbudget.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | Environment variable the judge child sets to 1 so that every hook is a no-op (hooks/lib/judge-child-exit.js). |
+| `ctxbudget.judge_child_on` | `1` |  |  | The value of the judge child variable that turns the hooks into no-ops. |
+| `ctxbudget.latch_dir` | `auto-handover` |  |  | The directory under the state root that holds the per-session auto-handover latch files. |
+| `ctxbudget.pct_dir` | `context-pct` |  |  | The directory under the state root that holds the statusline context readings (context-pct) and the inferred-window latches. |
+| `ctxbudget.pct_fresh_ms` | `600000` |  | ms | How old a statusline context reading may be and still be used before the transcript is consulted instead. |
+| `ctxbudget.session_tag_max` | `64` |  |  | Characters of a session id kept in a state file tag (hooks/lib/auto-handover-state.js sessionTag). |
+| `ctxbudget.set_ah_enabled` | `8 entries` |  |  | The autoHandover.enabled setting: write an automatic handover before the context runs out. |
+| `ctxbudget.set_ah_max_tokens` | `9 entries` |  |  | The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none). |
+| `ctxbudget.set_ah_nag` | `8 entries` |  |  | The autoHandover.nag setting: remind when a handover is due. |
+| `ctxbudget.set_ah_nag_quiet` | `9 entries` |  |  | The autoHandover.nagQuietMin setting: the minutes between two nags at a quiet pause. |
+| `ctxbudget.set_ah_nag_step` | `10 entries` |  |  | The autoHandover.nagStepPct setting: the context points between two nags. |
+| `ctxbudget.set_ah_pct` | `10 entries` |  |  | The autoHandover.pct setting: the context percent that triggers the handover. |
+| `ctxbudget.set_compact_advice_guard` | `8 entries` |  |  | The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or just after a compact. |
+| `ctxbudget.set_limit_mode` | `9 entries` |  |  | The limitConserve.mode setting: force conservation on or off, or auto-detect from the usage cache. |
+| `ctxbudget.set_limit_threshold` | `10 entries` |  |  | The limitConserve.threshold setting: the usage percent at which conservation starts. |
+| `ctxbudget.skip_auto_handover` | `auto-handover` |  |  | The skip-file name of the auto-handover and auto-handover-pause-nag guards. |
+| `ctxbudget.skip_compact_advice` | `compact-advice-guard` |  |  | The skip-file name of the compact-advice-guard. |
+| `ctxbudget.skip_limit_conserve` | `limit-conserve` |  |  | The skip-file name of the limit-conserve-inject guard. |
+| `ctxbudget.state_root` | `.anti-hall` |  |  | The directory under the home directory that holds the guards' state files. |
+| `ctxbudget.summary_auto_handover` | `UserPromptSubmit: answers the cases that write no state and inject nothing (a...` |  |  | One-line description of the auto-handover check in the generated reference. |
+| `ctxbudget.summary_compact_advice` | `Stop: allows every turn whose final text cannot hold a compact recommendation...` |  |  | One-line description of the compact-advice-guard check in the generated reference. |
+| `ctxbudget.summary_limit_conserve` | `UserPromptSubmit: answers the quiet case (conservation off, no usage cache, o...` |  |  | One-line description of the limit-conserve-inject check in the generated reference. |
+| `ctxbudget.summary_pause_nag` | `Stop: answers the cases that block nothing and write no state (a subagent, a ...` |  |  | One-line description of the auto-handover-pause-nag check in the generated reference. |
+| `ctxbudget.tail_bytes` | `1572864` |  | bytes | How many bytes of the end of a transcript the guards read (hooks/lib/transcript-tail.js MAX_TAIL_BYTES). |
+| `ctxbudget.token_count_marker` | `token_count` |  |  | Substring that a Codex rollout line must hold to be parsed as a token_count reading. |
+| `ctxbudget.ups_empty` | `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext"...` |  |  | The exact stdout line of a UserPromptSubmit hook that injects nothing (an empty additionalContext), newline included. |
+| `ctxbudget.usage_cache` | `.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |  |  | The OMC usage cache file, relative to the home directory. |
+| `ctxbudget.usage_marker` | `"usage"` |  |  | Substring that a Claude transcript line must hold to be parsed as an assistant usage reading. |
+| `ctxbudget.usage_max_stale_ms` | `21600000` |  | ms | Snapshot age beyond which a bucket without a usable reset time counts as 0 percent (hooks/limit-conserve.js MAX_STALE_MS). |
 
 ## Messages
 

@@ -9,6 +9,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// The context a UserPromptSubmit answer delivers: the `additionalContext` of its JSON, or the raw text. The context-budget
+/// checks answer a quiet turn natively with an empty context, so the stand-in Node hook's plain text arrives wrapped.
+fn ctx(out: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(out.trim_end())
+        .ok()
+        .and_then(|v| v["hookSpecificOutput"]["additionalContext"].as_str().map(str::to_string))
+        .unwrap_or_else(|| out.to_string())
+}
+
 const NODE_MARK: &str = "printf 'NODE-RAN'";
 
 struct Env {
@@ -144,7 +153,7 @@ fn verify_first_defers_to_the_node_hook_when_the_session_could_be_a_devswarm_pri
     let p = ups("sp", "x", None);
     let (code, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1")]);
     assert_eq!(code, 0);
-    assert_eq!(out, "NODE-RAN", "a possible Primary is the Node hook's");
+    assert_eq!(ctx(&out), "NODE-RAN", "a possible Primary is the Node hook's");
     let (_, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
     assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "a child workspace is answered by the engine: {out}");
     assert!(e.home().join(".anti-hall/emit-dedupe/dedupe-sp.json").exists());
@@ -159,7 +168,7 @@ fn a_deferred_verify_first_wrote_no_state_before_deferring() {
     let p = serde_json::json!({"session_id": "ns", "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "x", "transcript_path": "rel/t.jsonl"})
         .to_string();
     let (_, out, _) = e.run(&args, true, &p, &[]);
-    assert_eq!(out, "NODE-RAN");
+    assert_eq!(ctx(&out), "NODE-RAN");
     assert!(!e.home().join(".anti-hall/emit-dedupe").exists(), "the deferral must come before any write");
 }
 
@@ -224,5 +233,5 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     assert!(joined.starts_with("VERIFY-FIRST: ") && joined.ends_with(&format!("\n\n{advisory}")), "{joined}");
     // the same prompt again is the same block, still undelivered: both are suppressed
     let (_, again, _) = e.run(&args, true, &p, &extra);
-    assert_eq!(again, "", "the dedupe state of the first call must hold");
+    assert_eq!(ctx(&again), "", "the dedupe state of the first call must hold");
 }
