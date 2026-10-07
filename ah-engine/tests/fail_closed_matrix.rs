@@ -443,7 +443,10 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
     // the second hook must have run unless it is a checked entry the engine answered itself (a valid payload answered in the
     // client, or by the daemon)
     let id2_node_only = id2.as_ref().is_some_and(|id| selected.iter().any(|e| &e.id == id && e.check.is_none()));
-    let checks_answer = matches!(row.stdin, Stdin::Valid) && matches!(row.daemon, Daemon::InProcess | Daemon::Blocks);
+    // a Stop payload without a tool name, or with the re-entry flag, is just as readable (no tool selects the entries)
+    let readable = matches!(row.stdin, Stdin::Valid)
+        || (matches!(row.stdin, Stdin::NoToolName | Stdin::StopActive) && matches!(case.event.as_str(), "Stop" | "SubagentStop"));
+    let checks_answer = readable && matches!(row.daemon, Daemon::InProcess | Daemon::Blocks);
     let second_expected = id2.is_some() && second.contains("AH_TEST_MARK2") && (id2_node_only || !checks_answer);
     let events: serde_json::Map<String, Value> = table::entries(case.host, &case.event)
         .into_iter()

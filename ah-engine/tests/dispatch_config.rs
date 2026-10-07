@@ -237,7 +237,7 @@ fn config_validate_enforces_the_guard_rule_on_the_real_command() {
         "[events.Stop]\nenabled = false\n",
         "[events.SubagentStop]\nmode = \"shadow\"\n",
         "[events.PermissionRequest]\nmax_rules = 1\n",
-        "[entries.\"devswarm-parent-gate\"]\nmode = \"off\"\n",
+        "[entries.\"devswarm-child-gate\"]\nmode = \"off\"\n",
     ] {
         let (code, out) = validate(bad);
         assert_eq!(code, 1, "{bad}: {out}");

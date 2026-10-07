@@ -432,15 +432,16 @@ fn a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node() 
 
 #[test]
 fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_node() {
+    // SessionEnd: its only hook (the MCP reaper) has no built-in check, so a missing script is skipped and logged there
     let e = Env::new("missing-script-nonguard");
     let mark = e.dir.join("fake-node-ran");
     let body = format!(r#": > {}; echo MODULE_NOT_FOUND >&2; exit 1"#, mark.display());
     let bin = e.fake_node(&body);
     let empty_root = e.dir.join("empty-plugin");
     std::fs::create_dir_all(&empty_root).unwrap();
-    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
+    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionEnd", "reason": "other"}).to_string();
     let (code, out, err) = e.run_with(
-        &["hook", "--event", "SessionStart"],
+        &["hook", "--event", "SessionEnd"],
         true,
         &p,
         false,
@@ -448,7 +449,7 @@ fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_n
     );
 
     assert_eq!((code, out.as_str()), (0, ""), "{err}");
-    assert!(err.contains("skipped SessionStart Node hook") && err.contains("no runnable Node command"), "{err}");
+    assert!(err.contains("skipped SessionEnd Node hook") && err.contains("no runnable Node command"), "{err}");
     assert!(!mark.exists(), "missing scripts should be skipped before spawning node");
     let log = std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).unwrap();
     assert!(log.contains("dispatch_defer") && log.contains("skipped"), "{log}");
