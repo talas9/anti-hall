@@ -42,6 +42,8 @@ enum Expect {
     Same,
     /// The engine must defer to Node.
     Defer,
+    /// Either: a deferral is allowed only where Node itself would block, an answer must equal Node's.
+    Auto,
 }
 
 #[derive(Clone)]
@@ -54,10 +56,12 @@ struct Sc {
     files: Vec<File>,
     env: Vec<(String, String)>,
     expect: Expect,
+    /// Run the Node hook once in both homes first, so the compared run starts from the state Node left (a nudge already given).
+    warm: bool,
 }
 
 fn sc(name: &str, hook: &'static str, payload: Value) -> Sc {
-    Sc { name: name.into(), hook, payload, raw: None, files: Vec::new(), env: Vec::new(), expect: Expect::Same }
+    Sc { name: name.into(), hook, payload, raw: None, files: Vec::new(), env: Vec::new(), expect: Expect::Same, warm: false }
 }
 
 impl Sc {
@@ -296,6 +300,27 @@ fn snapshot(home: &Path) -> BTreeMap<String, String> {
                 if rel.ends_with("ask-guard.ndjson") {
                     body = body.lines().map(|l| l.split("\"ts\":\"").next().unwrap_or("").to_string() + "\"ts\":\"X\"," + l.split_once("\",").map_or("", |x| x.1)).collect::<Vec<_>>().join("\n");
                 }
+                if rel.ends_with("silent-agent-nudge-state.json") {
+                    // Times differ between the two runs by construction (the run clock, the mtime of each home's own output
+                    // file); everything else, keys, their order and the snapshot text around the times, must be identical.
+                    let mut masked = String::new();
+                    let mut run_len = 0;
+                    for c in body.chars() {
+                        if c.is_ascii_digit() {
+                            run_len += 1;
+                            if run_len == 10 {
+                                masked.truncate(masked.len() - 9);
+                                masked.push('#');
+                            } else if run_len < 10 {
+                                masked.push(c);
+                            }
+                        } else {
+                            run_len = 0;
+                            masked.push(c);
+                        }
+                    }
+                    body = masked;
+                }
                 out.insert(rel, body.replace(&base.to_string_lossy().to_string(), "$HOME"));
             }
         }
@@ -338,6 +363,17 @@ fn check_one(root: &Path, idx: usize, s: &Sc, mismatches: &mut Vec<String>) -> O
         n.env(k, v);
         e.env(k, v);
     }
+    if s.warm {
+        for h in [&nh, &eh] {
+            let mut w = Command::new("node");
+            w.arg(repo().join(format!("plugins/anti-hall/hooks/{}.js", s.hook)));
+            base_env(&mut w, h);
+            for (k, v) in &s.env {
+                w.env(k, v);
+            }
+            run(w, &body(h));
+        }
+    }
     let nr = run(n, &body(&nh));
     let er = run(e, &body(&eh));
     let norm = |t: &str, h: &Path| t.replace(&h.to_string_lossy().to_string(), "$HOME").trim_end().to_string();
@@ -358,7 +394,9 @@ fn check_one(root: &Path, idx: usize, s: &Sc, mismatches: &mut Vec<String>) -> O
     match (s.expect, deferred) {
         (Expect::Defer, false) => mismatches.push(tag(&format!("expected a deferral, engine answered code={} out={:?}", er.code, er.out))),
         (Expect::Same, true) => mismatches.push(tag(&format!("engine deferred where it should answer (node: code={} out={:?})", nr.code, nout))),
-        (Expect::Same, false) => {
+        (Expect::Auto, true) if kind != "stop-block" => mismatches.push(tag(&format!("engine deferred where Node did not block (node: code={} out={:?})", nr.code, nout))),
+        (Expect::Auto, true) => {}
+        (Expect::Same | Expect::Auto, false) => {
             let (eout, eerr) = (norm(&er.out, &eh), norm(&er.err, &eh));
             if nr.code != er.code || nout != eout || nerr != eerr {
                 mismatches.push(tag(&format!("node code={} out={:?} err={:?} | engine code={} out={:?} err={:?}", nr.code, nout, nerr, er.code, eout, eerr)));
@@ -800,4 +838,146 @@ fn silent_agent_nudge_state_with_real_snapshots() {
     }
     let _ = std::fs::remove_dir_all(&root);
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+// ---- a differential fuzz of the scan itself ----------------------------------------------------------------------
+
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 >> 33
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+    fn chance(&mut self, pct: usize) -> bool {
+        self.below(100) < pct
+    }
+}
+
+const BG: [&str; 4] = ["aaaa000011112222", "aaaa0000ffff3333", "bbbb111122223333", "cccc222233334444"];
+const TEAM: [&str; 2] = ["alice", "bob"];
+
+/// One random transcript over a small universe of background agents and teammates, plus the output files their launches name.
+fn fuzz_transcript(r: &mut Rng) -> (Vec<String>, Vec<File>) {
+    let mut lines: Vec<String> = Vec::new();
+    let mut files: Vec<File> = Vec::new();
+    let mut tick = 90.0f64;
+    let mut n = 0usize;
+    let events = 4 + r.below(26);
+    for _ in 0..events {
+        tick -= r.below(5) as f64 * 0.7 + if r.chance(10) { -3.0 } else { 0.1 };
+        let ts = if r.chance(3) { "no-timestamp-here".to_string() } else { ago(tick.max(0.0)) };
+        let ts = if ts == "no-timestamp-here" { String::from("garbage") } else { ts };
+        n += 1;
+        let tu = format!("tu{n}");
+        let b = r.below(BG.len());
+        let id = BG[b];
+        let t = TEAM[r.below(TEAM.len())];
+        match r.below(16) {
+            0 | 1 | 2 => {
+                lines.push(agent_use(&tu, &format!("agent-{b}"), &ts));
+                let out = format!("$HOME/out-{b}.txt");
+                lines.push(if r.chance(30) { launch_sid(&tu, id, &out, &ts) } else { launch(&tu, id, &out, &ts) });
+                if r.chance(80) {
+                    let age = [2.0, 8.0, 30.0, 90.0][r.below(4)];
+                    files.retain(|f| f.rel != format!("out-{b}.txt"));
+                    files.push(File { rel: format!("out-{b}.txt"), body: b"{}\n".to_vec(), age_min: Some(age) });
+                }
+            }
+            3 | 4 => {
+                let status = ["completed", "failed", "stopped", "killed", "cancelled", "canceled", "running", "COMPLETED", " completed ", "done"][r.below(10)];
+                lines.push(match r.below(3) {
+                    0 => notif_user(id, status, &ts),
+                    1 => notif_attachment(id, status, &ts),
+                    _ => notif_queue(id, status, &ts),
+                });
+            }
+            5 | 6 => {
+                if r.chance(60) {
+                    lines.extend(resume_json(id, &id[..7], &ts, &tu));
+                } else {
+                    lines.push(assistant_use(&tu, "SendMessage", json!({"to": &id[..7]}), &ts));
+                    lines.push(result_blocks(&tu, &format!("Resuming agent {} (x)", &id[..7 + r.below(4)]), &ts, json!({})));
+                }
+            }
+            7 => {
+                let target: String = match r.below(4) {
+                    0 => id.to_string(),
+                    1 => t.to_string(),
+                    2 => format!("{t}@session-fx"),
+                    _ => "nobody".to_string(),
+                };
+                lines.extend(stop_call(&tu, &target, &ts, r.chance(80), r.chance(20)));
+            }
+            8 => lines.extend(teammate_spawn(&tu, t, &ts)),
+            9 | 10 => lines.extend(teammate_send(&tu, t, &ts)),
+            11 | 12 => {
+                let inner = if r.chance(10) { ago(tick - 30.0) } else { ago((tick + 0.5).max(0.0)) };
+                lines.push(teammate_idle(t, &inner, &ts));
+            }
+            13 => {
+                if r.chance(50) {
+                    lines.extend(delivery(&tu, id, &ts));
+                } else {
+                    lines.push(assistant_use(&tu, "TaskOutput", json!({"task_id": &id[..8]}), &ts));
+                    lines.push(result_blocks(&tu, &format!("{id}  \u{b7}  general  \u{b7}  running  \u{b7}  started 20m ago"), &ts, json!({})));
+                }
+            }
+            14 => lines.push(task_status(id, ["running", "completed", "failed"][r.below(3)], &format!("$HOME/out-{b}.txt"), &format!("agent-{b}"), &ts)),
+            _ => lines.extend(noise()),
+        }
+    }
+    (lines, files)
+}
+
+#[test]
+fn the_scan_matches_node_on_random_transcripts() {
+    let cases: usize = std::env::var("AH_FUZZ_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let seed: u64 = std::env::var("AH_FUZZ_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+    let root = std::env::temp_dir().join(format!("ah-agent-controls-fuzz-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut r = Rng(seed);
+    let mut mismatches = Vec::new();
+    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+    let mut idx = 0usize;
+    for case in 0..cases {
+        let (lines, files) = fuzz_transcript(&mut r);
+        let mut base = sc(&format!("fuzz{case}"), "ask-guard", ask_payload(q("h", "x"))).transcript(&lines);
+        base.files.extend(files);
+        let mut list = vec![base.clone()];
+        let mut stale_targets: Vec<String> = BG.iter().map(|s| s.to_string()).collect();
+        stale_targets.extend(TEAM.iter().map(|t| t.to_string()));
+        stale_targets.push("alice@session-fx".into());
+        for t in stale_targets {
+            let mut s = base.clone();
+            s.name = format!("fuzz{case}-stale-{t}");
+            s.hook = "stale-agent-stop-note";
+            s.payload = stop_payload(json!(t));
+            list.push(s);
+        }
+        let mut s = base.clone();
+        s.name = format!("fuzz{case}-silent");
+        s.hook = "silent-agent-nudge";
+        s.payload = stop_payload_for(json!("s1"));
+        s.expect = Expect::Auto;
+        let mut warm = s.clone();
+        warm.name = format!("fuzz{case}-silent-warm");
+        warm.warm = true;
+        warm.expect = Expect::Same;
+        list.push(s);
+        list.push(warm);
+        for s in &list {
+            idx += 1;
+            let o = check_one(&root, idx, s, &mut mismatches);
+            *kinds.entry(format!("{}:{}{}", s.hook, o.node_kind, if o.deferred { ":deferred" } else { "" })).or_default() += 1;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    eprintln!("fuzz: {cases} transcripts, outcomes {kinds:?}");
+    assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
+    assert!(kinds.keys().any(|k| k.starts_with("ask-guard:advisory")) && kinds.keys().any(|k| k.starts_with("stale-agent-stop-note:advisory")), "the fuzz is vacuous: {kinds:?}");
 }

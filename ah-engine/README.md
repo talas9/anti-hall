@@ -209,6 +209,38 @@ Deliberate differences from the Node guard:
   target/release/ah-engine --hooks ../plugins/anti-hall/hooks`.
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
+## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)
+
+Three Node hooks read the session transcript to learn which background agents and named teammates are running, and share
+one parser, `hooks/lib/agent-scan.js`. `checks/agent_scan` is its port. It streams the transcript tail line by line (the
+Node hook reads it whole), so a 64 MiB window never sits in the daemon's memory; what it keeps is the small state the walk
+needs, plus the answers to `TaskOutput` and `SendMessage` calls for the delivered-but-unnotified safety net, bounded by
+`agent_scan.retain_bytes`.
+
+- `ask-guard` (PreToolUse on AskUserQuestion, `guards.noBlockingQuestions` off, advise or block, and
+  `guards.questionAgentsNote`): the three modes, the `DESTRUCTIVE:` and `CREDENTIAL:` markers (their use is appended to
+  `~/.anti-hall/logs/ask-guard.ndjson`, after the decision is final, so a deferral never leaves a duplicate line), the
+  child-workspace sentence (`DEVSWARM_SOURCE_BRANCH` is now forwarded to the engine) and the note naming agents still in
+  flight. A block is the JSON decision on stdout with exit 2, as Node writes it.
+- `stale-agent-stop-note` (PreToolUse on TaskStop, `guards.staleAgentStopNote`): the advisory line for an agent that was sent
+  a message or resumed after its last report. Reads the last 64 MiB.
+- `silent-agent-nudge` (Stop, `guards.silentAgentNudge`, `guards.silentAgentNudgeMin`): every Stop that does not nudge is
+  answered here, including the rewrite of `~/.anti-hall/silent-agent-nudge-state.json` (pruned to the agents still live,
+  the same bytes Node writes, the order of its keys kept). A Stop that WOULD nudge is deferred before anything is written:
+  the text carries the stop-ack hint, and whether the running build may block at all is `stop-version-gate`, which only
+  the Node hook can answer for itself.
+
+Deliberate differences from the Node hooks:
+- Anything JavaScript reads that this port cannot reproduce exactly defers to Node: a JSON line with a lone surrogate
+  escape (or any unparsable line that holds one), nesting past serde's limit, a number past f64 range, a timestamp that is
+  not an ISO date-time with `Z` or an offset (V8's legacy date parser reads many other forms, and local time depends on the
+  hook's time zone), a tool input holding a float or an integer past 2^53 (its JavaScript text differs), a description cut
+  inside a surrogate pair, a state file with a list member or number-like keys, and a request without `HOME`.
+- `silent-agent-nudge` does not write the slow-run diagnostics line the Node hook adds to the central log for a transcript
+  over 8 MB; the engine records its own latency.
+- The scan stops being exact when the answers to `TaskOutput` and `SendMessage` calls exceed `agent_scan.retain_bytes`
+  (8 MiB): the call defers.
+
 ## Built-in checks: the command check
 
 A rule with `"check": "command"` runs a port of the Node command-guard (PreToolUse on Bash; source `dev` at 3d36268),

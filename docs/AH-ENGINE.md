@@ -87,7 +87,7 @@ labelled with how it was measured in the README of `ah-engine/`.
   still append a `mode: "off"` row to the Jev decision log per consult; the engine's Jev layer never does (D35), and
   neither do these checks.
 - **Checks.** A check is Rust code behind the `Check` trait, registered by name in `checks::registry()`. Today there are
-  thirty-four: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
+  thirty-seven: the four response-correctness ports above, `limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag` and `compact-advice-guard` (the
   context-budget gates above), `git` (a port of the git-guard hook with 100 percent agreement with the Node original on every corpus tried),
   `command` (a port of the command-guard hook that answers the commands Node allows in every context and defers the rest
   to the Node hook, also at 100 percent agreement), `model-routing` (the model-routing guard for Agent/Task spawns), and
@@ -99,7 +99,8 @@ labelled with how it was measured in the README of `ah-engine/`.
   hook (D74); the four spawn/path context ports below; and the three prompt-emission ports `verify-first` (the
   short rotating reminder), `idle-agent-sweep` (agents that finished but were never stopped) and `emit-dedupe-reset`
   (marks a context loss at SessionStart); the four context-budget gates; and the six session maintenance ports above:
-  `version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge` and `progress-prune`.
+  `version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge` and `progress-prune`; and the three agent and transcript controls `ask-guard`, `silent-agent-nudge`
+  and `stale-agent-stop-note`, which share one streaming port of the transcript agent scan (see the README of `ah-engine/`).
 - **Spawn/path context ports.** `inbox-read-guard` (PreToolUse on Read), `phase-tracker` (PreToolUse on Agent and Task),
   `orch-on-spawn` (PreToolUse on spawns) and `verify-first-orch` (SessionStart, the Claude entry only). They share
   `checks/spawnctx`: the home directory the state files live under (with the test-run refusal of the real home), the
@@ -134,6 +135,9 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Built-in `claim-ledger` check (Stop, ledger only): the ledger and last-message files byte for byte, 91 steps against Node; a flagged turn Jev would be asked about defers | implemented | D29-D31, D74, D75 |
 | Built-in `speculation-guard` check (Stop block on an unverified hedge, once per text, three per session): exact parity, 138 steps against Node, state file included; Jev on, the Stop after a block and `guards.inferenceCheck` on defer | implemented | D29-D31, D74, D75 |
 | Built-in `speculation-judge` check: the off path of the opt-in model judge (switch off, judge child, skip) is answered; every opted-in call defers to Node, which makes the model call | implemented in part | D29-D31, D74, D75 |
+| Built-in `ask-guard` check (PreToolUse on AskUserQuestion: the off, advise and block modes, the DESTRUCTIVE and CREDENTIAL markers and their log, the in-flight agents note) with exact parity; a transcript only JavaScript can read defers | implemented | D29-D31, D75 |
+| Built-in `stale-agent-stop-note` check (PreToolUse on TaskStop: the advisory for an agent sent a message or resumed after its last report) with exact parity | implemented | D29-D31, D75 |
+| Built-in `silent-agent-nudge` check (Stop): answers every Stop that does not nudge, including the rewrite of the nudge state file; a Stop that would nudge defers to Node, which words it and checks the running build | implemented in part | D29-D31, D75 |
 | Built-in `command` check: command-guard's always-allowed commands and every command of a payload-proven subagent, exact; every other command defers to Node | implemented | D29-D31 |
 | `command` check blocks (needs the hook's environment and a stdout-carrying block verdict) | planned (D57) | D57 |
 | Built-in `verify-first-subagent` and `verify-first-full` checks: the verify-first protocol text (compact or full, Claude or Codex) injected at SubagentStart and SessionStart, byte for byte; a plugin root that cannot be proven defers | implemented | D29-D31, D74 |
@@ -502,6 +506,7 @@ Defaults ship in `ah-engine/defaults/` and are compiled into the binary:
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |
 | `ctxbudget.toml` | settings tables, state paths, limits and messages of the context-budget gates (`limit-conserve-inject`, `auto-handover`, `auto-handover-pause-nag`, `compact-advice-guard`) |
 | `response_guards.toml` | patterns, switches, limits and messages of the four response-correctness ports (`speculation-guard`, `speculation-judge`, `claim-ledger`, `output-verify-guard`) and their shared helpers |
+| `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
