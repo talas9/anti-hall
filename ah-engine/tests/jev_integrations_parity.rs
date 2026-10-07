@@ -128,12 +128,18 @@ struct Scenario {
     deviation: &'static [&'static str],
     /// The `jevIntegrations` modes written to the home's settings.json (`""`: none, so every integration is at its default).
     modes: &'static str,
+    /// Files under the home (relative paths) whose content must be the same on both sides, ts and ms removed.
+    files: &'static [&'static str],
+    /// Files seeded into the home before the hook runs.
+    seed: &'static [(&'static str, &'static str)],
 }
 
 struct Side {
     out: (i32, String, String),
     requests: Vec<Seen>,
     rows: Vec<Value>,
+    /// The hook's own files that the scenario compares (`Scenario::files`), clock fields removed.
+    files: Vec<String>,
 }
 
 fn run_side(sc: &Scenario, engine: bool) -> Side {
@@ -145,6 +151,11 @@ fn run_side(sc: &Scenario, engine: bool) -> Side {
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     if !sc.modes.is_empty() {
         std::fs::write(home.join(".anti-hall/settings.json"), sc.modes).unwrap();
+    }
+    for (rel, body) in sc.seed {
+        let f = home.join(rel);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, body).unwrap();
     }
     let t = home.join("transcript.jsonl");
     std::fs::write(&t, sc.transcript.join("\n") + "\n").unwrap();
@@ -184,8 +195,16 @@ fn run_side(sc: &Scenario, engine: bool) -> Side {
     std::thread::sleep(Duration::from_millis(150)); // and a moment for anything extra, which would be a difference
     let requests = mock.seen.lock().unwrap().clone();
     let rows = rows_of();
+    let files = sc
+        .files
+        .iter()
+        .map(|rel| {
+            let text = std::fs::read_to_string(home.join(rel)).unwrap_or_else(|_| "<absent>".into());
+            text.lines().map(|l| serde_json::from_str::<Value>(l).map_or(l.to_string(), |v| normalise_row(&v, &[]).to_string())).collect::<Vec<_>>().join("\n")
+        })
+        .collect();
     let _ = std::fs::remove_dir_all(&home);
-    Side { out, requests, rows }
+    Side { out, requests, rows, files }
 }
 
 fn normalise_request(s: &Seen) -> (String, BTreeMap<String, String>, String) {
@@ -229,6 +248,7 @@ fn compare(sc: &Scenario) {
     };
     assert_eq!(node.rows.len(), sc.rows, "{who}: node wrote {} rows, expected {}", node.rows.len(), sc.rows);
     assert_eq!(rows(&node), rows(&eng), "{who}: the decision-log rows differ");
+    assert_eq!(node.files, eng.files, "{who}: the compared files differ ({:?})", sc.files);
     if !sc.deviation.is_empty() {
         // the deviation is exactly D36's: the engine never lowers a `true` baseline, Node's advisory trust does
         assert!(eng.rows.iter().all(|r| r["final"] == json!(true)) && node.rows.iter().all(|r| r["final"] == json!(false)), "{who}: the deviation is not the D36 one");
@@ -251,15 +271,64 @@ fn merge(cmd: &str) -> Value {
     json!({"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"mg","cwd":"/tmp","tool_input":{"command":cmd}})
 }
 
+fn stop_with(session: &str, reply: &str) -> Value {
+    json!({"hook_event_name":"Stop","session_id":session,"cwd":"/tmp","last_assistant_message":reply})
+}
+
+const SPEC_FILES: &[&str] = &[".anti-hall/logs/jev-judge.ndjson", ".anti-hall/speculation-guard-state-sp.json"];
+
+fn spec(name: &'static str, reply: &str, noul: f64, modes: &'static str, requests: usize, rows: usize, seed: &'static [(&'static str, &'static str)]) -> Scenario {
+    Scenario {
+        name,
+        hook: "speculation-guard.js",
+        check: "speculation-guard",
+        env: vec![],
+        transcript: vec![user("go")],
+        payload: stop_with("sp", reply),
+        requests,
+        rows,
+        noul,
+        deviation: &[],
+        modes,
+        files: SPEC_FILES,
+        seed,
+    }
+}
+
 fn scenarios() -> Vec<Scenario> {
     let mixed = "Tests:  2 failed, 8 passed, 10 total\nPASS src/a.test.js\nFAIL src/b.test.js";
     vec![
-        Scenario { name: "claimLedger shadow, three flags", hook: "claim-ledger.js", check: "claim-ledger", env: vec![], transcript: claim_transcript(), payload: stop("s1"), requests: 3, rows: 3, noul: 0.97, deviation: &[], modes: "" },
-        Scenario { name: "claimLedger on", hook: "claim-ledger.js", check: "claim-ledger", env: vec![], transcript: claim_transcript(), payload: stop("s2"), requests: 3, rows: 3, noul: 0.97, deviation: &[], modes: r#"{"jevIntegrations":{"claimLedger":"on"}}"# },
-        Scenario { name: "claimLedger on, Jev confidently disagrees: relax-block relaxes as in Node", hook: "claim-ledger.js", check: "claim-ledger", env: vec![], transcript: claim_transcript(), payload: stop("s5"), requests: 3, rows: 3, noul: 0.03, deviation: &[], modes: r#"{"jevIntegrations":{"claimLedger":"on"}}"# },
-        Scenario { name: "claimLedger off writes the off rows", hook: "claim-ledger.js", check: "claim-ledger", env: vec![("ANTIHALL_JEV_CLAIM_LEDGER", "0")], transcript: claim_transcript(), payload: stop("s3"), requests: 0, rows: 3, noul: 0.97, deviation: &[], modes: "" },
-        Scenario { name: "claimLedger with Jev disabled", hook: "claim-ledger.js", check: "claim-ledger", env: vec![("ANTIHALL_JEV", "0")], transcript: claim_transcript(), payload: stop("s4"), requests: 0, rows: 3, noul: 0.97, deviation: &[], modes: "" },
-        Scenario { name: "outputVerifyGuard mixed run", hook: "output-verify-guard.js", check: "output-verify-guard", env: vec![], transcript: vec![user("run the tests")], payload: post_bash("npm test", mixed), requests: 1, rows: 1, noul: 0.97, deviation: &[], modes: "" },
+        spec("speculation: a long reply is cut to the same 8000 units", &format!("{} it is probably fine", "word ".repeat(1700)), 0.97, "", 1, 1, &[]),
+        spec("speculation: Jev confidently adds a block", "All done, it works.", 0.97, "", 1, 1, &[]),
+        spec("speculation: Jev says grounded, the regex block stands", "It is probably the cache.", 0.03, "", 1, 1, &[]),
+        spec("speculation: Jev says speculative on a hedge too", "It is probably the cache.", 0.97, "", 1, 1, &[]),
+        spec("speculation: framed hit asks twice and shadow keeps the block", "Should be blocked: X probably fails", 0.03, "", 2, 2, &[]),
+        spec(
+            "speculation: framed hit relaxed in on mode",
+            "Should be blocked: X probably fails",
+            0.03,
+            r#"{"jevIntegrations":{"speculationFramed":"on"}}"#,
+            2,
+            2,
+            &[],
+        ),
+        spec(
+            "speculation: the Stop after a block reports its outcome",
+            "I haven't checked yet.",
+            0.03,
+            "",
+            1,
+            2,
+            &[(".anti-hall/speculation-guard-state-sp.json", r#"{"hash":"old","blocks":1,"pending":{"h":"abc123","source":"jev"}}"#)],
+        ),
+        spec("speculation: integration off logs the off row", "It is probably the cache.", 0.97, r#"{"jevIntegrations":{"speculation":"off"}}"#, 0, 1, &[]),
+        spec("speculation: loop-safe asks nothing", "It is probably the cache.", 0.97, "", 0, 0, &[(".anti-hall/speculation-guard-state-sp.json", r#"{"hash":"750370cdc2d22d0fbff359cb4d01da213431e939","blocks":1,"pending":null}"#)]),
+        Scenario { name: "claimLedger shadow, three flags", hook: "claim-ledger.js", check: "claim-ledger", env: vec![], transcript: claim_transcript(), payload: stop("s1"), requests: 3, rows: 3, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
+        Scenario { name: "claimLedger on", hook: "claim-ledger.js", check: "claim-ledger", env: vec![], transcript: claim_transcript(), payload: stop("s2"), requests: 3, rows: 3, noul: 0.97, deviation: &[], modes: r#"{"jevIntegrations":{"claimLedger":"on"}}"#, files: &[], seed: &[] },
+        Scenario { name: "claimLedger on, Jev confidently disagrees: relax-block relaxes as in Node", hook: "claim-ledger.js", check: "claim-ledger", env: vec![], transcript: claim_transcript(), payload: stop("s5"), requests: 3, rows: 3, noul: 0.03, deviation: &[], modes: r#"{"jevIntegrations":{"claimLedger":"on"}}"#, files: &[], seed: &[] },
+        Scenario { name: "claimLedger off writes the off rows", hook: "claim-ledger.js", check: "claim-ledger", env: vec![("ANTIHALL_JEV_CLAIM_LEDGER", "0")], transcript: claim_transcript(), payload: stop("s3"), requests: 0, rows: 3, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
+        Scenario { name: "claimLedger with Jev disabled", hook: "claim-ledger.js", check: "claim-ledger", env: vec![("ANTIHALL_JEV", "0")], transcript: claim_transcript(), payload: stop("s4"), requests: 0, rows: 3, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
+        Scenario { name: "outputVerifyGuard mixed run", hook: "output-verify-guard.js", check: "output-verify-guard", env: vec![], transcript: vec![user("run the tests")], payload: post_bash("npm test", mixed), requests: 1, rows: 1, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
         Scenario {
             name: "outputVerifyGuard long output is cut to the same window",
             hook: "output-verify-guard.js",
@@ -272,8 +341,10 @@ fn scenarios() -> Vec<Scenario> {
             noul: 0.97,
             deviation: &[],
             modes: "",
+            files: &[],
+            seed: &[],
         },
-        Scenario { name: "outputVerifyGuard clean run", hook: "output-verify-guard.js", check: "output-verify-guard", env: vec![], transcript: vec![user("run the tests")], payload: post_bash("cargo test", "test result: ok. 5 passed; 0 failed"), requests: 1, rows: 1, noul: 0.97, deviation: &[], modes: "" },
+        Scenario { name: "outputVerifyGuard clean run", hook: "output-verify-guard.js", check: "output-verify-guard", env: vec![], transcript: vec![user("run the tests")], payload: post_bash("cargo test", "test result: ok. 5 passed; 0 failed"), requests: 1, rows: 1, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
         Scenario {
             name: "outputVerifyGuard on, Jev disagrees with the regex (D36 deviation)",
             hook: "output-verify-guard.js",
@@ -286,9 +357,11 @@ fn scenarios() -> Vec<Scenario> {
             noul: 0.03,
             deviation: &["final", "changed", "wouldChange"],
             modes: r#"{"jevIntegrations":{"outputVerifyGuard":"on"}}"#,
+            files: &[],
+            seed: &[],
         },
-        Scenario { name: "outputVerifyGuard off", hook: "output-verify-guard.js", check: "output-verify-guard", env: vec![("ANTIHALL_JEV_OUTPUT_VERIFY_GUARD", "0")], transcript: vec![user("run the tests")], payload: post_bash("npm test", mixed), requests: 0, rows: 1, noul: 0.97, deviation: &[], modes: "" },
-        Scenario { name: "mergeGateHedge unresolved", hook: "merge-gate.js", check: "merge-gate", env: vec![("ANTIHALL_MERGE_GATE", "1")], transcript: vec![asst("this is a first-pass, pending review"), user("ok")], payload: merge("gh pr merge 5"), requests: 1, rows: 1, noul: 0.97, deviation: &[], modes: "" },
+        Scenario { name: "outputVerifyGuard off", hook: "output-verify-guard.js", check: "output-verify-guard", env: vec![("ANTIHALL_JEV_OUTPUT_VERIFY_GUARD", "0")], transcript: vec![user("run the tests")], payload: post_bash("npm test", mixed), requests: 0, rows: 1, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
+        Scenario { name: "mergeGateHedge unresolved", hook: "merge-gate.js", check: "merge-gate", env: vec![("ANTIHALL_MERGE_GATE", "1")], transcript: vec![asst("this is a first-pass, pending review"), user("ok")], payload: merge("gh pr merge 5"), requests: 1, rows: 1, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
         Scenario {
             name: "mergeGateHedge resolved is skipped with a row",
             hook: "merge-gate.js",
@@ -301,6 +374,8 @@ fn scenarios() -> Vec<Scenario> {
             noul: 0.97,
             deviation: &[],
             modes: "",
+            files: &[],
+            seed: &[],
         },
         Scenario {
             name: "mergeGateHedge long text keeps the last 4000 characters",
@@ -314,9 +389,11 @@ fn scenarios() -> Vec<Scenario> {
             noul: 0.97,
             deviation: &[],
             modes: "",
+            files: &[],
+            seed: &[],
         },
-        Scenario { name: "mergeGateHedge off", hook: "merge-gate.js", check: "merge-gate", env: vec![("ANTIHALL_MERGE_GATE", "1"), ("ANTIHALL_JEV_MERGE_GATE_HEDGE", "0")], transcript: vec![asst("do not merge")], payload: merge("gh pr merge 5"), requests: 0, rows: 1, noul: 0.97, deviation: &[], modes: "" },
-        Scenario { name: "mergeGateHedge without a hedge asks nothing", hook: "merge-gate.js", check: "merge-gate", env: vec![("ANTIHALL_MERGE_GATE", "1")], transcript: vec![asst("all done")], payload: merge("gh pr merge 5"), requests: 0, rows: 0, noul: 0.97, deviation: &[], modes: "" },
+        Scenario { name: "mergeGateHedge off", hook: "merge-gate.js", check: "merge-gate", env: vec![("ANTIHALL_MERGE_GATE", "1"), ("ANTIHALL_JEV_MERGE_GATE_HEDGE", "0")], transcript: vec![asst("do not merge")], payload: merge("gh pr merge 5"), requests: 0, rows: 1, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
+        Scenario { name: "mergeGateHedge without a hedge asks nothing", hook: "merge-gate.js", check: "merge-gate", env: vec![("ANTIHALL_MERGE_GATE", "1")], transcript: vec![asst("all done")], payload: merge("gh pr merge 5"), requests: 0, rows: 0, noul: 0.97, deviation: &[], modes: "", files: &[], seed: &[] },
     ]
 }
 

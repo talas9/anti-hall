@@ -274,7 +274,10 @@ pub fn run_case(hook: &str, check: &str, case: &Case, t: &mut Tally) {
                     t.failures.push(format!("{who}: output differs\n  node  ={n:?}\n  engine={e:?}\n  payload={input_n}"));
                 }
                 let (tn, te) = (tree(&nh), tree(&eh));
+                // the asks nobody waits for write their rows after the hook returns, on both sides: compared by
+                // tests/jev_integrations_parity.rs, which waits for them
                 let tn: BTreeMap<_, _> = tn.into_iter().filter(|(k, _)| k != ".anti-hall/logs/jev-assist.ndjson").collect();
+                let te: BTreeMap<_, _> = te.into_iter().filter(|(k, _)| k != ".anti-hall/logs/jev-assist.ndjson").collect();
                 if tn.keys().any(|k| k.contains(".jsonl") || k.contains("state-") || k.contains("tg-")) || tn.values().any(|v| v.contains("lastSweep")) {
                     t.wrote += 1;
                 }

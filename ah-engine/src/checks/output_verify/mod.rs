@@ -291,7 +291,25 @@ fn ask_jev(home: &str, env: &RequestEnv, session: Option<String>, text: &str, mi
     crate::jev::shared::ask_detached(Path::new(home), &JevEnv::from_pairs(env.to_map()), req);
 }
 
+/// What the shadow ask needs, held until the rest of the decision is known to be answered here: a call that ends in a
+/// deferral must leave no trace, and Node asks (and logs) when it runs.
+struct PendingAsk {
+    home: String,
+    session: Option<String>,
+    window: String,
+    mismatch: bool,
+}
+
 fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
+    let mut pending = None;
+    let v = decide_inner(payload, env, &mut pending)?;
+    if let Some(a) = pending {
+        ask_jev(&a.home, env, a.session, &a.window, a.mismatch);
+    }
+    Ok(v)
+}
+
+fn decide_inner(payload: &Value, env: &RequestEnv, pending: &mut Option<PendingAsk>) -> Result<Verdict, Defer> {
     let Some(home) = home_of(env) else { return Err(Defer) };
     let st = Settings { home: home.clone(), env: env.to_map() };
     if !get_bool(&st, defaults::raw("output_verify.setting")) || is_skipped(&st, defaults::text("output_verify.guard_name")) {
@@ -317,7 +335,7 @@ fn decide(payload: &Value, env: &RequestEnv) -> Result<Verdict, Defer> {
         Some(s) => Some(crate::checks::replykit::io::js_id_string(s).ok_or(Defer)?),
         None => None,
     };
-    ask_jev(&home, env, session, &window, found.pass.is_some() && (found.fail.is_some() || non_zero));
+    *pending = Some(PendingAsk { home: home.clone(), session, window, mismatch: found.pass.is_some() && (found.fail.is_some() || non_zero) });
     let (Some(pass), true) = (found.pass.as_ref(), found.fail.is_some() || non_zero) else { return Ok(Verdict::Allow) };
     let mut bits: Vec<String> = vec![msg::render("output_verify.bit_pass", &[("hit", &quote(pass))])];
     if let Some(f) = &found.fail {

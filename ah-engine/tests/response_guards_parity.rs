@@ -141,9 +141,9 @@ fn output_verify_cases() -> Vec<Case> {
     v.push(c("ov-skip-all").file(".anti-hall/skip.json", &format!(r#"{{"all": {}}}"#, 4_102_444_800_000u64)).same(post("npm test", json!(mixed))));
     v.push(c("ov-skip-expired").file(".anti-hall/skip.json", r#"{"output-verify-guard": 1000}"#).same(post("npm test", json!(mixed))));
     // jev
-    v.push(c("ov-jev-on-defers").env("ANTIHALL_JEV", "1").defer(post("npm test", json!(mixed))));
+    v.push(c("ov-jev-on-answered").env("ANTIHALL_JEV", "1").same(post("npm test", json!(mixed))));
     v.push(c("ov-jev-on-not-runner-allows").env("ANTIHALL_JEV", "1").same(post("ls", json!(mixed))));
-    v.push(c("ov-jev-settings-defers").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).defer(post("npm test", json!(mixed))));
+    v.push(c("ov-jev-settings-answered").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).same(post("npm test", json!(mixed))));
     v.push(c("ov-jev-on-integration-off-allows").env("ANTIHALL_JEV", "1").env("ANTIHALL_JEV_OUTPUT_VERIFY_GUARD", "0").same(post("npm test", json!(mixed))));
     v.push(
         c("ov-jev-on-integration-off-settings")
@@ -330,7 +330,7 @@ fn claim_ledger_cases() -> Vec<Case> {
     v.push(c("skip").file(".anti-hall/skip.json", &format!(r#"{{"claim-ledger": {future}}}"#)).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
     v.push(c("skip-all").file(".anti-hall/skip.json", &format!(r#"{{"all": {future}}}"#)).transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
     // jev
-    v.push(c("jev-on-flags-defers").env("ANTIHALL_JEV", "1").transcript(&[asst("took 12 seconds")]).defer(stop(json!({}))));
+    v.push(c("jev-on-flags-answered").env("ANTIHALL_JEV", "1").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))));
     v.push(c("jev-on-no-flags-answers").env("ANTIHALL_JEV", "1").transcript(&[asst("all good")]).same(stop(json!({}))));
     v.push(
         c("jev-on-integration-off").env("ANTIHALL_JEV", "1").env("ANTIHALL_JEV_CLAIM_LEDGER", "0").transcript(&[asst("took 12 seconds")]).same(stop(json!({}))),
@@ -513,8 +513,8 @@ fn spec_cases() -> Vec<Case> {
         v.push(c(n).same(msg(t)));
     }
     // loop safety and state
-    v.push(c("block-then-pending-defers").same(msg("It is probably the cache.")).defer(msg("It is probably the cache.")));
-    v.push(c("block-then-other-text-defers").same(msg("It is probably the cache.")).defer(msg("It is likely something else.")));
+    v.push(c("block-then-pending-answered").same(msg("It is probably the cache.")).same(msg("It is probably the cache.")));
+    v.push(c("block-then-other-text-answered").same(msg("It is probably the cache.")).same(msg("It is likely something else.")));
     v.push(
         c("seeded-same-hash-allows")
             .file(".anti-hall/speculation-guard-state-s1.json", &format!(r#"{{"hash":"{}","blocks":1}}"#, sha1("It is probably the cache.")))
@@ -537,9 +537,9 @@ fn spec_cases() -> Vec<Case> {
     v.push(c("seeded-null").file(".anti-hall/speculation-guard-state-s1.json", "null").same(msg("It is probably the cache.")));
     v.push(c("seeded-empty").file(".anti-hall/speculation-guard-state-s1.json", "  \n").same(msg("It is probably the cache.")));
     v.push(
-        c("seeded-pending-defers")
+        c("seeded-pending-answered")
             .file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"regex"}}"#)
-            .defer(msg("It is probably the cache.")),
+            .same(msg("It is probably the cache.")),
     );
     v.push(
         c("seeded-pending-incomplete-ok")
@@ -547,9 +547,9 @@ fn spec_cases() -> Vec<Case> {
             .same(msg("It is probably the cache.")),
     );
     v.push(
-        c("seeded-pending-non-hedge-defers")
+        c("seeded-pending-non-hedge-answered")
             .file(".anti-hall/speculation-guard-state-s1.json", r#"{"hash":"zzz","blocks":1,"pending":{"h":"zzz","source":"jev"}}"#)
-            .defer(msg("All fine.")),
+            .same(msg("All fine.")),
     );
     v.push(c("seeded-unsure-state-defers").file(".anti-hall/speculation-guard-state-s1.json", r#"{"7":1}"#).defer(msg("It is probably the cache.")));
     v.push(c("prune-stale-files").file(".anti-hall/speculation-guard-state-old.json", "{}").same(msg("It is probably the cache.")));
@@ -596,10 +596,10 @@ fn spec_cases() -> Vec<Case> {
     v.push(c("skip").file(".anti-hall/skip.json", &format!(r#"{{"speculation-guard": {future}}}"#)).same(msg("It is probably the cache.")));
     v.push(c("skip-all").file(".anti-hall/skip.json", &format!(r#"{{"all": {future}}}"#)).same(msg("It is probably the cache.")));
     v.push(c("skip-expired").file(".anti-hall/skip.json", r#"{"speculation-guard": 5}"#).same(msg("It is probably the cache.")));
-    v.push(c("jev-env-defers").env("ANTIHALL_JEV", "1").defer(msg("It is probably the cache.")));
-    v.push(c("jev-env-defers-no-hedge").env("ANTIHALL_JEV", "1").defer(msg("All fine.")));
-    v.push(c("jev-settings-defers").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).defer(msg("It is probably the cache.")));
-    v.push(c("jev-legacy-file-defers").file(".anti-hall/jev.json", r#"{"enabled":true}"#).defer(msg("It is probably the cache.")));
+    v.push(c("jev-env-answered").env("ANTIHALL_JEV", "1").same(msg("It is probably the cache.")));
+    v.push(c("jev-env-answered-no-hedge").env("ANTIHALL_JEV", "1").same(msg("All fine.")));
+    v.push(c("jev-settings-answered").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).same(msg("It is probably the cache.")));
+    v.push(c("jev-legacy-file-answered").file(".anti-hall/jev.json", r#"{"enabled":true}"#).same(msg("It is probably the cache.")));
     v.push(
         c("jev-env-zero-wins").env("ANTIHALL_JEV", "0").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#).same(msg("It is probably the cache.")),
     );
