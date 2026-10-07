@@ -8,6 +8,11 @@ use ah_engine::cli;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
+// Counts live heap bytes for `status` (see `memstat`); one relaxed atomic add per allocation. Replaced by dhat under `diag`.
+#[cfg(not(feature = "diag"))]
+#[global_allocator]
+static ALLOC: ah_engine::memstat::Counting = ah_engine::memstat::Counting;
+
 fn main() {
     std::panic::set_hook(Box::new(|_| {})); // a panic must never reach the host's stderr
     let args: Vec<String> = std::env::args().skip(1).collect();

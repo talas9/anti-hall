@@ -104,7 +104,9 @@ pub struct Shared {
     keys: Mutex<KeyCache>,
     /// Counters.
     pub stats: Stats,
-    queue: Mutex<VecDeque<UnixStream>>,
+    queue: Mutex<VecDeque<(UnixStream, Instant, u64)>>,
+    /// Request load per minute (waits, in-flight, p95, sessions): does a call ever wait for another?
+    pub load: crate::load::Load,
     cv: Condvar,
     /// Connections currently queued.
     pub depth: AtomicUsize,
@@ -120,6 +122,8 @@ pub struct Shared {
     stall_ms: AtomicU64,
     /// Last sampled resident set, KB.
     pub rss_kb: AtomicU64,
+    /// Highest sampled resident set since start, KB.
+    pub rss_peak_kb: AtomicU64,
     /// ms since `started` when the last request was handled (idle exit, D7, compares against it).
     last_request: AtomicU64,
     /// Metrics and the impact ledger (D51, D52).
@@ -158,6 +162,7 @@ impl Shared {
             keys: Mutex::new(KeyCache::default()),
             stats: Stats::default(),
             queue: Mutex::new(VecDeque::new()),
+            load: crate::load::Load::new(),
             cv: Condvar::new(),
             depth: AtomicUsize::new(0),
             started: Instant::now(),
@@ -167,6 +172,7 @@ impl Shared {
             busy_since: (0..workers).map(|_| AtomicU64::new(0)).collect(),
             stall_ms: AtomicU64::new(0),
             rss_kb: AtomicU64::new(0),
+            rss_peak_kb: AtomicU64::new(0),
             last_request: AtomicU64::new(0),
             telemetry: Telemetry::new(),
             starts: 0,
@@ -275,7 +281,42 @@ impl Shared {
         *lk(&self.seen) = mtime(&path);
     }
 
+    /// The memory breakdown: the live heap against RSS, and the size of every long-lived in-memory structure, so a growing
+    /// one is named by `status --memory` and by the line logged when the RSS cap trips. The peak is the highest live heap
+    /// since the previous report.
+    pub fn memory(&self) -> serde_json::Value {
+        let heap = crate::memstat::heap();
+        crate::memstat::reset_peak();
+        serde_json::json!({
+            "rss_kb": limits::rss_kb(),
+            "heap_live_kb": heap.live / 1024,
+            "heap_peak_kb": heap.peak / 1024,
+            "allocs": heap.allocs,
+            "components": {
+                "guard_state_entries": crate::checks::guardkit::state::entries(),
+                "hookcfg_session_counters": crate::hookcfg::session::global().len(),
+                "rate_buckets_sessions": lk(&self.sessions).len(),
+                "rate_buckets_projects": lk(&self.projects).len(),
+                "project_key_cache": lk(&self.keys).len(),
+                "jev_lanes": crate::jev::shared::lane_count(),
+                "queued_connections": self.depth.load(SeqCst),
+                "workers": self.busy_since.len(),
+            },
+        })
+    }
+
+    /// The memory breakdown as one short `key=value` line for the event log (which cuts a line at `health.event_text_max`).
+    fn memory_line(&self) -> String {
+        let m = self.memory();
+        let mut parts: Vec<String> = ["rss_kb", "heap_live_kb", "heap_peak_kb", "allocs"].iter().map(|k| format!("{k}={}", m[k])).collect();
+        if let Some(c) = m["components"].as_object() {
+            parts.extend(c.iter().map(|(k, v)| format!("{k}={v}")));
+        }
+        parts.join(" ")
+    }
+
     fn status(&self) -> String {
+        let rss_now = limits::rss_kb();
         let rules = self.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
         let cfg = self.cfg();
         let b = health::breaker_remaining();
@@ -285,7 +326,11 @@ impl Shared {
             "pid": std::process::id(),
             "version": self.own,
             "uptime_s": self.started.elapsed().as_secs(),
-            "rss_kb": limits::rss_kb(),
+            "rss_kb": rss_now,
+            "rss_peak_kb": self.rss_peak_kb.fetch_max(rss_now, SeqCst).max(rss_now),
+            "memory": self.memory(),
+            "load": self.load.report(health::now_ms()),
+            "health": health::summary(),
             "cpu_s": (limits::process_cpu_secs() * 1000.0).round() / 1000.0,
             "queue_depth": self.depth.load(SeqCst),
             "queue_cap": cfg.queue,
@@ -295,6 +340,7 @@ impl Shared {
             "errors": self.stats.errors.load(SeqCst),
             "budget_trips": self.stats.budget_trips.load(SeqCst),
             "panics": self.stats.panics.load(SeqCst),
+            "reply_write_errors": REPLY_WRITE_ERRORS.load(SeqCst),
             "rejected_peers": self.stats.rejected.load(SeqCst),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
@@ -471,6 +517,7 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
         return Reply::Err(defaults::text("msg.reply_malformed").into());
     };
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
+    crate::load::note_request(crate::hookio::event_of(&p).unwrap_or(""), p.get("session_id").and_then(|v| v.as_str()));
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
@@ -523,6 +570,7 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
         sh.config.offer_root(root);
     }
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
+    crate::load::note_request(&meta.event, p.get("session_id").and_then(|v| v.as_str()));
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
@@ -648,12 +696,25 @@ fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static st
 }
 
 fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) {
-    s.set_write_timeout(Some(cfg.write_deadline)).ok();
-    let _ = s.write_all(&r.frame());
+    if let Err(e) = s.set_write_timeout(Some(cfg.write_deadline)) {
+        health::log_event("reply", "set_timeout", &e.to_string());
+    }
+    // A failed write means the client sees a cut frame and falls back to Node (it never mistakes it for an answer); the
+    // cause is logged here so a pattern of them is visible, and `reply_write_errors` counts them.
+    if let Err(e) = s.write_all(&r.frame()) {
+        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+        health::log_event("reply", "write_failed", &e.to_string());
+    }
 }
 
-fn serve_conn(mut s: UnixStream, sh: &Shared) -> After {
+/// Replies the daemon could not write to their client (the client then falls back to Node).
+pub static REPLY_WRITE_ERRORS: AtomicU64 = AtomicU64::new(0);
+
+fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) -> After {
     s.set_nonblocking(false).ok();
+    let started = Instant::now();
+    crate::load::take_scan();
+    crate::load::take_request();
     let cfg = sh.cfg();
     let req = match read_request(&mut s, &cfg) {
         Ok(r) => r,
@@ -675,6 +736,16 @@ fn serve_conn(mut s: UnixStream, sh: &Shared) -> After {
         }
     };
     write_reply(&mut s, &reply, &cfg);
+    let (event, session) = crate::load::take_request();
+    sh.load.record(&crate::load::Sample {
+        at_ms: health::now_ms(),
+        wait_us: wait.as_micros() as u64,
+        proc_us: started.elapsed().as_micros() as u64,
+        in_flight,
+        event,
+        session,
+        scan_bytes: crate::load::take_scan(),
+    });
     after
 }
 
@@ -683,9 +754,9 @@ fn worker(sh: Arc<Shared>, idx: usize) {
         let conn = {
             let mut q = lk(&sh.queue);
             loop {
-                if let Some(c) = q.pop_front() {
+                if let Some((c, queued_at, in_flight)) = q.pop_front() {
                     sh.depth.fetch_sub(1, SeqCst);
-                    break Some(c);
+                    break Some((c, queued_at.elapsed(), in_flight));
                 }
                 let (g, _) = sh.cv.wait_timeout(q, defaults::millis("daemon.worker_wait_ms")).unwrap_or_else(|e| e.into_inner());
                 q = g;
@@ -694,9 +765,9 @@ fn worker(sh: Arc<Shared>, idx: usize) {
                 }
             }
         };
-        let Some(conn) = conn else { continue };
+        let Some((conn, wait, in_flight)) = conn else { continue };
         sh.busy_since[idx].store(sh.ms() + 1, SeqCst);
-        let after = serve_conn(conn, &sh);
+        let after = serve_conn(conn, &sh, wait, in_flight);
         sh.busy_since[idx].store(0, SeqCst);
         if after == After::Exit {
             begin_drain(&sh, defaults::text("msg.exit_reason_handoff"), false);
@@ -762,8 +833,11 @@ fn watchdog(sh: Arc<Shared>) {
             last_rss = Instant::now();
             let rss = limits::rss_kb();
             sh.rss_kb.store(rss, SeqCst);
+            sh.rss_peak_kb.fetch_max(rss, SeqCst);
             if cfg.rss_cap_kb > 0 && rss > cfg.rss_cap_kb {
                 health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &rss), ("cap", &cfg.rss_cap_kb)]));
+                // its own kind: the cap trip above is the one the crash-loop rule counts, this line only explains it
+                health::log_event("memory", "breakdown", &sh.memory_line());
                 begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
             }
         }
@@ -970,7 +1044,10 @@ fn telemetry_flusher(sh: Arc<Shared>) {
 fn next_start_count() -> u64 {
     let p = paths::dir().join("starts");
     let n = std::fs::read_to_string(&p).ok().and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0) + 1;
-    let _ = std::fs::write(&p, n.to_string());
+    if let Err(e) = std::fs::write(&p, n.to_string()) {
+        // the restart count would stall, and `restarts` in `status` with it
+        health::log_event("start", "count_write_failed", &e.to_string());
+    }
     n
 }
 
@@ -1010,7 +1087,9 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 s.set_write_timeout(Some(defaults::millis("daemon.busy_write_ms"))).ok();
                 let _ = s.write_all(&Reply::Busy.frame());
             } else {
-                q.push_back(s);
+                // requests ahead of this one: the queued ones and those a worker is serving now
+                let in_flight = q.len() as u64 + sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;
+                q.push_back((s, Instant::now(), in_flight));
                 sh.depth.fetch_add(1, SeqCst);
                 drop(q);
                 sh.cv.notify_one();

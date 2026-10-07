@@ -823,7 +823,7 @@ function defaultProject() {
   try { return path.basename(process.cwd()) || 'unknown'; } catch (_) { return 'unknown'; }
 }
 
-function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef, recordDisagreement }) {
+function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, cachedFlag, compare, state, project, sessionId, turnRef, recordDisagreement, derivedFrom }) {
   const confident = !!(r && r.ok && Number.isFinite(r.confidence) && r.confidence >= threshold);
   const jevBool = (r && r.ok)
     ? (typeof judge === 'function' ? !!judge(r.answer) : r.answer)
@@ -885,6 +885,9 @@ function finalize({ id, home, hash, mode, trust, baseline, judge, threshold, r, 
   // transcript line count) — see turnRefFromTranscript() below. Optional,
   // same omitted-not-null convention as sessionId/compare.
   if (typeof turnRef === 'string' && turnRef) entry.turnRef = turnRef;
+  // derivedFrom: this row re-reads another integration's label (e.g. 'triage'),
+  // it is NOT an independent Jev decision; jev-report keeps it out of the Jev totals.
+  if (typeof derivedFrom === 'string' && derivedFrom) entry.derivedFrom = derivedFrom;
   if (r && !r.ok && r.reason) entry.reason = r.reason;
   // transport: which vendor served (or last failed) a FRESH call; fellBack:
   // true when the fallback transport answered after the primary failed. Both

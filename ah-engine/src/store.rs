@@ -49,6 +49,14 @@ pub fn project_key(cwd: &str) -> String {
 pub struct KeyCache(HashMap<String, String>);
 
 impl KeyCache {
+    /// Entries held.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    /// True when none is held.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
     /// Project key for `cwd`, cached.
     pub fn key(&mut self, cwd: &str) -> String {
         if let Some(k) = self.0.get(cwd) {

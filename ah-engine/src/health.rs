@@ -138,7 +138,10 @@ pub fn hint_text(key: &str) -> String {
 pub fn record_failure(kind: &str, code: &str, reason: &str) {
     let (class, hint) = classify(code);
     let v = json!({"ts": now_ms(), "class": if class == Class::Env {"env"} else {"permanent"}, "kind": kind, "code": code, "hint": hint, "reason": reason});
-    let _ = std::fs::write(state_file("failure"), v.to_string());
+    if let Err(e) = std::fs::write(state_file("failure"), v.to_string()) {
+        // without the record no advisory is ever shown; the log still has the failure itself
+        log_event_or_stderr("health", "failure_record_write_failed", &format!("{kind}/{code}: {e}"));
+    }
 }
 
 fn read_json(key: &str) -> Option<Value> {
@@ -216,7 +219,10 @@ fn halted(key: &str) -> Option<Duration> {
 }
 
 fn halt(key: &str, cooldown: Duration) {
-    let _ = std::fs::write(state_file(key), (now_ms() + cooldown.as_millis() as u64).to_string());
+    if let Err(e) = std::fs::write(state_file(key), (now_ms() + cooldown.as_millis() as u64).to_string()) {
+        // a cooldown that was not written does not hold: the loop it was meant to stop would go on
+        log_event_or_stderr("health", "halt_write_failed", &format!("{key}: {e}"));
+    }
 }
 
 /// Time left in a crash-loop cooldown, if one is active.
@@ -315,14 +321,50 @@ pub fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 
+/// The engine's health over the last `health.degraded_window_s`: self-restarts by reason, the crash-loop breaker and the client
+/// breaker with when they tripped, and how often a call fell back to Node and why. `degraded` is true when the engine is
+/// not at full strength (a restart in the window, the crash-loop breaker tripped, the client breaker open). Everything is
+/// read from the event log, so it works with the daemon down and survives a restart.
+pub fn summary() -> Value {
+    let window = defaults::secs("health.degraded_window_s");
+    let floor = now_ms().saturating_sub(window.as_millis() as u64);
+    let ev = events();
+    let recent: Vec<&Event> = ev.iter().filter(|e| e.ts >= floor).collect();
+    let tally = |pick: &dyn Fn(&Event) -> Option<String>| -> serde_json::Map<String, Value> {
+        let mut m: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        for e in &recent {
+            if let Some(k) = pick(e) {
+                *m.entry(k).or_insert(0) += 1;
+            }
+        }
+        m.into_iter().map(|(k, v)| (k, json!(v))).collect()
+    };
+    let crashy = crashy();
+    // a crash-loop trip is the consequence of the restarts, not one of them
+    let restarts = tally(&|e| (crashy.contains(&e.kind.as_str()) && e.kind != "crashloop").then(|| format!("{}:{}", e.kind, e.code)));
+    let fallbacks = tally(&|e| matches!(e.kind.as_str(), "dispatch_defer" | "client_fail").then(|| format!("{}:{}", e.kind, e.code)));
+    let total = |m: &serde_json::Map<String, Value>| m.values().filter_map(Value::as_u64).sum::<u64>();
+    let last = |kind: &str| ev.iter().rev().find(|e| e.kind == kind).map(|e| json!({"ts": e.ts, "code": e.code, "detail": e.detail}));
+    let (loop_left, breaker_left) = (crashloop_remaining(), breaker_remaining());
+    let degraded = total(&restarts) > 0 || loop_left.is_some() || breaker_left.is_some();
+    json!({
+        "degraded": degraded,
+        "window_s": window.as_secs(),
+        "restarts": {"total": total(&restarts), "by_reason": restarts, "last_rss_trip": last("rss"), "last_memory_breakdown": last("memory")},
+        "crashloop": {"tripped": loop_left.is_some(), "remaining_s": loop_left.map(|d| d.as_secs() + 1), "last_trip": last("crashloop")},
+        "breaker": {"open": breaker_left.is_some(), "remaining_s": breaker_left.map(|d| d.as_secs() + 1), "last_open": last("breaker_open")},
+        "fallbacks": {"total": total(&fallbacks), "by_reason": fallbacks},
+        "log": file(log_name()).display().to_string(),
+    })
+}
+
 /// The advisory for this session: `Some(text)` the first time a recent failure exists for `session`,
 /// then `None` for the rest of that session. Env failures get a self-fix hint; permanent ones get the
 /// issue-filing text and a scrubbed diagnostic block. Nothing is ever filed automatically.
 pub fn advisory(session: &str) -> Option<String> {
-    let f = read_json("failure")?;
-    if now_ms().saturating_sub(f["ts"].as_u64().unwrap_or(0)) > defaults::num("health.advisory_ttl_ms") {
-        return None;
-    }
+    let Some(f) = read_json("failure").filter(|f| now_ms().saturating_sub(f["ts"].as_u64().unwrap_or(0)) <= defaults::num("health.advisory_ttl_ms")) else {
+        return degraded_notice(session);
+    };
     let dir = state_file("advised_dir");
     let _ = std::fs::create_dir_all(&dir);
     let stamp = dir.join(format!("{:016x}", fnv(&format!("{session}|{}", f["ts"]))));
@@ -335,6 +377,29 @@ pub fn advisory(session: &str) -> Option<String> {
     } else {
         defaults::render("msg.advisory_permanent", &[("reason", &scrub(reason)), ("diagnostics", &diagnostics(code))])
     })
+}
+
+/// A few words, once per session, when the engine is running below full strength (a self-restart in the window, a tripped
+/// breaker) and no failure advisory applies, so the owner learns of a degraded engine without digging through logs.
+fn degraded_notice(session: &str) -> Option<String> {
+    let s = summary();
+    if s["degraded"] != true {
+        return None;
+    }
+    let dir = state_file("advised_dir");
+    let _ = std::fs::create_dir_all(&dir);
+    let stamp = dir.join(format!("{:016x}", fnv(&format!("{session}|degraded"))));
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&stamp).ok()?; // already told => None
+    prune_advised(&dir);
+    Some(defaults::render(
+        "msg.advisory_degraded",
+        &[
+            ("restarts", &s["restarts"]["total"]),
+            ("mins", &(defaults::secs("health.degraded_window_s").as_secs() / 60)),
+            ("fallbacks", &s["fallbacks"]["total"]),
+            ("log", &s["log"].as_str().unwrap_or("")),
+        ],
+    ))
 }
 
 fn prune_advised(dir: &std::path::Path) {

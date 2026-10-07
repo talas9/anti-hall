@@ -165,15 +165,19 @@ fn parse(b: &[u8]) -> Result<(Record, usize), usize> {
 }
 
 fn quarantine(spool: &Path, bytes: &[u8], why: &str) {
-    if let Ok(mut q) = open_locked(&quarantine_path(spool)) {
-        let _ = q.write_all(format!("# {} {why}\n", crate::health::now_ms()).as_bytes());
-        let _ = q.write_all(bytes);
+    let written = open_locked(&quarantine_path(spool)).and_then(|mut q| {
+        q.write_all(format!("# {} {why}\n", crate::health::now_ms()).as_bytes())?;
+        q.write_all(bytes)?;
         if !bytes.ends_with(b"\n") {
-            let _ = q.write_all(b"\n");
+            q.write_all(b"\n")?;
         }
-        let _ = q.sync_all();
+        q.sync_all()
+    });
+    match written {
+        Ok(()) => crate::health::log_event("spool", "quarantine", why),
+        // the record could not be kept anywhere: say so, with the reason it was being quarantined for
+        Err(e) => crate::health::log_event("spool", "quarantine_write_failed", &format!("{why}: {e}")),
     }
-    crate::health::log_event("spool", "quarantine", why);
 }
 
 /// Apply the spool at `p` in order with `apply`, then keep only what was not applied. Safe to run concurrently with
@@ -222,10 +226,12 @@ pub fn drain(p: &Path, apply: &mut dyn FnMut(&Record) -> Applied) -> Drained {
         };
         r = &r[n..];
     }
-    // rewrite with only the unapplied tail (the file is still locked, so no client appends in between)
-    if f.set_len(0).is_ok() {
-        let _ = f.write_all(rest);
-        let _ = f.sync_all();
+    // Rewrite with only the unapplied tail (the file is still locked, so no client appends in between). The file is opened for
+    // appending, so the cut has to come first; a failure after it loses the unapplied records, which is logged with their count
+    // rather than passing in silence.
+    let rewritten = f.set_len(0).and_then(|_| f.write_all(rest)).and_then(|_| f.sync_all());
+    if let Err(e) = rewritten {
+        crate::health::log_event("spool", "rewrite_failed", &format!("{e}; {} unapplied record(s) may be lost", out.left));
     }
     out
 }

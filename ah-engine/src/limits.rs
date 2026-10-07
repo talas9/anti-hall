@@ -26,6 +26,14 @@ impl Buckets {
     pub fn new(rps: f64, burst: f64) -> Buckets {
         Buckets { map: HashMap::new(), rps, burst: burst.max(1.0), cap: crate::defaults::num("daemon.bucket_cap") as usize }
     }
+    /// Keys held.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+    /// True when no key is held.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
     /// Change the rate and burst for later requests (a config swap, D18); existing tokens are kept.
     pub fn set_rate(&mut self, rps: f64, burst: f64) {
         self.rps = rps;
@@ -88,6 +96,18 @@ pub fn rss_kb() -> u64 {
             && let Some(pages) = s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok())
         {
             return pages * (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64) / 1024;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // The kernel's own count, without spawning `ps` on every sample.
+        let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let want = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        // SAFETY: `ti` is a writable `proc_taskinfo` of exactly `want` bytes, the size passed to the call.
+        let got =
+            unsafe { libc::proc_pidinfo(std::process::id() as libc::c_int, libc::PROC_PIDTASKINFO, 0, (&mut ti as *mut libc::proc_taskinfo).cast(), want) };
+        if got == want {
+            return ti.pti_resident_size / 1024;
         }
     }
     let probe = crate::defaults::list("health.rss_probe");

@@ -30,6 +30,10 @@ value = "the OS killed or starved ah-engine (low memory); close other programs o
 doc = "Once-per-session advisory for an environment-class failure. Placeholder: {hint}."
 value = "⚠️ anti-hall · ah-engine: {hint}. Using the built-in checks instead."
 
+[msg.advisory_degraded]
+doc = "Once-per-session notice that the engine is running below full strength. Placeholders: {restarts} self-restarts and {fallbacks} fallbacks to Node in the last {mins} minutes, {log} the event-log path."
+value = "anti-hall engine degraded: {restarts} self-restarts, {fallbacks} Node fallbacks in the last {mins} min (`ah-engine status --json`, log {log})."
+
 [msg.advisory_permanent]
 doc = "Once-per-session advisory for a permanent failure; nothing is ever filed automatically. Placeholders: {reason}, {diagnostics}."
 value = "⚠️ anti-hall · ah-engine: stopped after repeated failures ({reason}). Using the built-in checks instead. Please file an issue: https://github.com/talas9/anti-hall/issues/new\n{diagnostics}"
@@ -67,6 +71,14 @@ value = "node fallback did not finish"
 [msg.log_fallback_read_timeout]
 doc = "Log detail when the Node fallback finished but its stdout or stderr was still open at the deadline."
 value = "node fallback output not read to the end"
+
+[msg.log_fallback_read_error]
+doc = "Log detail when reading the Node fallback's stdout or stderr failed part-way."
+value = "node fallback output could not be read to the end (read error)"
+
+[msg.fallback_read_error]
+doc = "Printed on stderr when reading the Node fallback's output failed part-way, so the output is incomplete and no decision exists (exit 1)."
+value = "anti-hall: the Node hook's output could not be read to the end; no decision was made for this call"
 
 [msg.fallback_read_timeout]
 doc = "Printed on stderr when the Node fallback finished but its output could not be read to the end in time, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1."

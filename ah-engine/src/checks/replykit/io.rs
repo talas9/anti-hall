@@ -18,6 +18,7 @@ pub struct Tail {
 /// Read at most the last `window` bytes of `path`. `None` on any error (the Node reader fails open the same way).
 pub fn read_window(path: &str, window: u64) -> Option<Tail> {
     let size = std::fs::metadata(path).ok()?.len();
+    crate::load::note_scan(size.min(window));
     if size <= window {
         let bytes = std::fs::read(path).ok()?;
         return Some(Tail { data: crate::checks::guardkit::text::lossy_owned(bytes), truncated: false });

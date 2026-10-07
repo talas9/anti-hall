@@ -68,8 +68,14 @@ impl SessionState for MemoryState {
 
 /// The process-wide state the registered checks use.
 pub fn global() -> &'static dyn SessionState {
-    static G: OnceLock<MemoryState> = OnceLock::new();
-    G.get_or_init(MemoryState::new)
+    GLOBAL.get_or_init(MemoryState::new)
+}
+
+static GLOBAL: OnceLock<MemoryState> = OnceLock::new();
+
+/// Entries the process-wide state holds (0 before first use); a memory report reads it.
+pub fn entries() -> usize {
+    GLOBAL.get().map_or(0, |m| m.inner.lock().unwrap_or_else(|e| e.into_inner()).map.len())
 }
 
 /// A session id as the Node guards turn it into a file-name part: every character outside letters, digits, dot,

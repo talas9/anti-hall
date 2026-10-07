@@ -26,7 +26,7 @@ const { isSkipped } = require('./skip-guard.js');
 const DOWNSHIFT_DIRECTIVE =
   'Main-model downshift: if the main agent is on the flagship model ' +
   '(Claude Opus or Codex frontier category), switch it to the cheaper 1M-context variant ' +
-  'to preserve the flagship weekly bucket — ' +
+  'to use less of the shared Claude pool (a cheaper model draws it down more slowly) — ' +
   'Claude → Sonnet (1M context), Codex → the workhorse category\'s 1M-context model ' +
   '(resolve the slug from the live catalog; never pin one). ' +
   'NEVER downshift to a smaller-context model (e.g. a fast-category model may have well ' +
@@ -45,7 +45,7 @@ function buildDirective(state) {
     guard: 'limit-conserve',
     what: 'limit conservation is active (' + state.reason + ').',
     why: 'Usage is near a plan limit.',
-    instead: 'route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet draws on a SEPARATE weekly bucket; Haiku for trivial); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff).' + resetsClause + ' ' + DOWNSHIFT_DIRECTIVE,
+    instead: 'route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet, or Haiku for trivial work, uses less of the shared Claude pool; no Claude model is a separate bucket); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff).' + resetsClause + ' ' + DOWNSHIFT_DIRECTIVE,
   });
 }
 

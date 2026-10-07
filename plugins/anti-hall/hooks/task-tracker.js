@@ -384,6 +384,7 @@ try {
 
   let text;
   let primaryBlock = '';
+  let freshNote = '';
   if (skipped) {
     text = '';
   } else {
@@ -396,6 +397,7 @@ try {
     if (mHome) DD.resolvePending({ home: mHome, sessionId: payload && payload.session_id, transcriptPath: payload && payload.transcript_path });
     const note = freshnessNote(payload);
     if (note) text = text + ' ' + note;
+    freshNote = note;
     // DevSwarm PRIMARY only: name the workspace tier at the dispatch point.
     // KEEPALIVE (0.111 item 1): DEVSWARM_PRIMARY is static and was previously
     // appended to `text` EVERY turn regardless of the FULL/SHORT window above
@@ -445,6 +447,25 @@ try {
   // Official schema: `hookEventName` is NESTED in `hookSpecificOutput`, not a
   // top-level sibling. KB §1.4 specifies `hookSpecificOutput.additionalContext`
   // for UserPromptSubmit; nesting here is correct per the harness contract.
+  // B5: the SHORT reminder (~135 chars, every prompt) was ~$100 of 13 days. It is static, so once the burst
+  // collapse above has decided this turn emits, it follows the same keepalive as the other static reminder
+  // blocks (first sight after the FULL primer / compaction, then every guards.injectionRepeatEvery delivered
+  // turns; 0 = every turn). It rides as its own '\n\n' segment so emit-dedupe can see it consumed. The per-turn
+  // freshness note (open tasks, DISPATCH NOW) still arrives every turn it applies.
+  if (emit && text && text.startsWith(SHORT)) {
+    let showShort = true;
+    try {
+      let repeatEvery = 10;
+      try { repeatEvery = require('./lib/settings.js').get('guards', 'injectionRepeatEvery', 10); } catch (_) {}
+      showShort = require('./lib/emit-dedupe.js').shouldEmit({
+        home: require('../companion/lib/test-home-guard.js').resolveHome(), sessionId: payload && payload.session_id,
+        transcriptPath: payload && payload.transcript_path,
+        key: 'task-tracker-short', content: SHORT,
+        keepaliveTurns: Number.isFinite(repeatEvery) && repeatEvery > 0 ? repeatEvery : 0,
+      });
+    } catch (_) { showShort = true; }
+    text = showShort ? [SHORT, freshNote].filter(Boolean).join('\n\n') : freshNote;
+  }
   const finalText = [emit ? text : '', primaryBlock].filter(Boolean).join('\n\n');
   const out = {
     hookSpecificOutput: {
@@ -453,7 +474,7 @@ try {
     },
   };
   emit = emit || !!primaryBlock;
-  if (emit) process.stdout.write(JSON.stringify(out) + '\n');
+  if (emit && finalText) process.stdout.write(JSON.stringify(out) + '\n');
   const mHome2 = emit && demandShown > 0 ? metricsHome() : null;
   if (mHome2) DD.recordDemand({ home: mHome2, sessionId: payload && payload.session_id, count: demandShown });
 } catch (_) {

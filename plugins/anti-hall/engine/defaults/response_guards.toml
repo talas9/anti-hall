@@ -50,8 +50,8 @@ doc = "Directory of the gate's state files under the state directory."
 value = "turn-gate"
 
 [reply_turn_gate.prefix]
-doc = "Prefix of a gate state file name (the sanitised session id and the JSON extension follow); also the prefix of its stale-file sweep."
-value = "tg-"
+doc = "Family name of a gate state file (`<prefix>-<session>.json`, the sanitised session id and the JSON extension follow); also the family name of its stale-file sweep, which appends the dash itself."
+value = "tg"
 
 [reply_turn_gate.session_max]
 doc = "Longest session part of a gate state file name, in UTF-16 units."

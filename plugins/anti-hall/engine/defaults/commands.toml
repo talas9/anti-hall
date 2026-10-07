@@ -15,7 +15,7 @@ value = { args = "[--fallback <hook.js>] | --event <Event> [--tool <Tool>] [--ho
 
 [cmd.status]
 doc = "Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did."
-value = { args = "", read_only = true, status = "implemented" }
+value = { args = "[--memory]", read_only = true, status = "implemented" }
 
 [cmd.metrics]
 doc = "Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds."

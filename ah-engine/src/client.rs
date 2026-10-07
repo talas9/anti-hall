@@ -99,6 +99,7 @@ pub fn status_value() -> serde_json::Value {
         "running": false,
         "breaker": health::breaker_remaining().map_or("closed".to_string(), |d| defaults::render("msg.state_open", &[("secs", &(d.as_secs() + 1))])),
         "crashloop": health::crashloop_remaining().map_or("clear".to_string(), |d| defaults::render("msg.state_stopped", &[("secs", &(d.as_secs() + 1))])),
+        "health": health::summary(),
         "last_event": ev.last().map(|e| format!("{} {}", e.kind, e.code)),
     })
 }
@@ -118,14 +119,17 @@ pub fn spawn_daemon() -> Option<std::process::Child> {
     if defaults::env_var("nospawn").is_some() {
         return None;
     }
-    Command::new(std::env::current_exe().ok()?)
-        .arg(defaults::text("health.serve_arg"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .ok()
+    let mut cmd = Command::new(std::env::current_exe().ok()?);
+    // The allocator's purge tuning is read by jemalloc at its first allocation, so it has to be in the environment the daemon starts with.
+    let conf = defaults::text("daemon.malloc_conf");
+    if !conf.is_empty() {
+        for var in defaults::list("daemon.malloc_conf_vars") {
+            if std::env::var_os(var).is_none() {
+                cmd.env(var, conf);
+            }
+        }
+    }
+    cmd.arg(defaults::text("health.serve_arg")).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().ok()
 }
 
 /// What `hook` prints and exits with.
@@ -197,13 +201,15 @@ fn log_fallback(kind: &str, code: &str, detail: &str) {
     health::log_event(kind, code, detail);
 }
 
-/// Read `stream` to EOF on a thread; the bytes arrive on the returned channel once, at EOF.
-fn read_to_eof(mut stream: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+/// Read `stream` to EOF on a thread; the bytes arrive on the returned channel once, at EOF, with whether the read reached
+/// the end cleanly (a read error leaves a partial buffer, which must never be taken for the whole output).
+fn read_to_eof(mut stream: impl Read + Send + 'static) -> mpsc::Receiver<(Vec<u8>, bool)> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = stream.read_to_end(&mut b);
-        let _ = tx.send(b);
+        let clean = stream.read_to_end(&mut b).is_ok();
+        // the receiver is gone only when the caller already gave up at its deadline
+        let _ = tx.send((b, clean));
     });
     rx
 }
@@ -246,8 +252,17 @@ fn run_fallback(input: FallbackInput, path: &Path, cfg: &ClientConfig) -> Option
         status = status.or_else(|| child.try_wait().ok().flatten());
         out = out.or_else(|| out_rx.try_recv().ok());
         err = err.or_else(|| err_rx.try_recv().ok());
-        if let (Some(st), Some(o), Some(e)) = (status, &out, &err) {
+        if let (Some(st), Some((o, o_clean)), Some((e, e_clean))) = (status, &out, &err) {
             use std::os::unix::process::ExitStatusExt;
+            if !(*o_clean && *e_clean) {
+                // an unreadable pipe is an incomplete answer: say so (exit 1), never an empty or partial stdout that reads as an allow
+                log_fallback("fallback_fail", "read", defaults::text("msg.log_fallback_read_error"));
+                return Some(FallbackResult::NoDecision(Outcome {
+                    out: String::new(),
+                    code: 1,
+                    err: format!("{}\n", defaults::text("msg.fallback_read_error")),
+                }));
+            }
             let Some(code) = st.code() else {
                 // killed by a signal (out of memory, a crash): no decision, never an exit 0 that reads as an allow
                 let sig = st.signal().unwrap_or(0);

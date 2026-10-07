@@ -200,10 +200,18 @@ env = "AH_ENGINE_MEM_MB"
 unit = "MB"
 
 [daemon.rss_cap_kb]
-doc = "Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none."
-value = 49152
+doc = "Resident-set cap; above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. Set from measurement, not guessed: steady state of the 61-check engine on a mixed real-payload replay (5000 calls, a 142 MB transcript read by the Stop checks) is 33-36 MB RSS with jemalloc (aarch64-apple-darwin, linux-gnu) and 45-52 MB with the system allocator (x86_64-apple-darwin, musl, which the allocator crate does not support); live heap is 16-18 MB in both. The cap sits above the larger figure, so only growth trips it. The previous 48 MB cap sat inside the system-allocator steady state, so the daemon restarted every ~10 s and the crash-loop breaker switched it off."
+value = 65536
 env = "AH_ENGINE_RSS_CAP_KB"
 unit = "KB"
+
+[daemon.malloc_conf]
+doc = "Allocator purge tuning handed to the daemon at start (jemalloc `malloc_conf` syntax): one arena for the four worker threads (less fragmentation) and decay 0 (freed pages go back to the OS at once; the system allocators keep them, which left RSS at 2.5x the live heap). Measured on 1000 mixed calls, this Mac: system allocator 45-48 MB RSS, jemalloc with only decay 0 37 MB, with narenas:1 as well 32 MB (live heap 16 MB), adding tcache:false 27 MB but p50 call latency 10 ms against 6.5-7 ms, so tcache stays on. empty = the allocator's own defaults. A variable the caller already set is not overridden."
+value = "narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0"
+
+[daemon.malloc_conf_vars]
+doc = "Environment variables the allocator reads its tuning from (the crate's prefixed name and the plain one)."
+value = ["_RJEM_MALLOC_CONF", "MALLOC_CONF"]
 
 [daemon.rss_check_ms]
 doc = "How often the watchdog samples resident memory."
@@ -457,6 +465,11 @@ doc = "A recorded failure older than this no longer produces an advisory."
 value = 3600000
 unit = "ms"
 
+[health.degraded_window_s]
+doc = "The window over which `status` counts self-restarts and Node fallbacks, and over which a restart marks the engine degraded (shown by `status`, the shadow report and, once per session, in the session context)."
+value = 3600
+unit = "s"
+
 [health.advised_cap]
 doc = "When more session stamps than this exist, stamps older than advised_expire_s are removed."
 value = 500
@@ -579,3 +592,37 @@ doc = "Largest forwarded environment (sum of names and values); a client whose a
 value = 65536
 unit = "bytes"
 min = 1024
+
+[load.minutes_kept]
+doc = "How many one-minute buckets of request load the daemon keeps (a rolling window; older buckets are dropped, so memory does not grow with traffic)."
+value = 60
+min = 1
+
+[load.sessions_cap]
+doc = "Most distinct session ids remembered per minute bucket; past it sessions are only counted."
+value = 1024
+min = 1
+
+[load.events_cap]
+doc = "Most distinct hook events listed per minute bucket; past it the rest are counted together."
+value = 32
+min = 1
+
+[load.proc_buckets_us]
+doc = "Upper edges of the processing-time histogram (microseconds) the per-minute p95 is read from."
+value = [100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 1000000]
+
+[load.wait_noise_us]
+doc = "A wait up to this long between accept and processing is the hand-off between two threads, not queueing; only longer waits count as `calls_that_waited`."
+value = 1000
+unit = "us"
+
+[load.saturation_wait_ms]
+doc = "A call that waited longer than this between accept and the start of its processing marks that minute saturated: calls are waiting on each other."
+value = 100
+unit = "ms"
+
+[load.saturation_window_minutes]
+doc = "`status` reports the engine saturated while a saturated minute lies within this many minutes."
+value = 10
+unit = "min"

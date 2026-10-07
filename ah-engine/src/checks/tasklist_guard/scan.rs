@@ -147,6 +147,7 @@ fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
     use std::io::{BufRead, Seek, SeekFrom};
     let size = std::fs::metadata(path).ok()?.len();
     let mut f = std::fs::File::open(path).ok()?;
+    crate::load::note_scan(size.min(window));
     if size > window {
         f.seek(SeekFrom::Start(size - window)).ok()?;
     }

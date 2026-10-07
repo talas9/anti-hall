@@ -5,8 +5,8 @@
 //! suppress each other's repeats.
 //!
 //! Mirrors `turn-gate.js` `firstThisTurn` and `currentTurnId`, including what it does with a state file of an unexpected
-//! shape, and its never-pruning prune (the Node code passes the prefix `tg-` where the sweep expects `tg`, so it looks for
-//! `tg--*.json`; that is kept so the files on disk stay the same).
+//! shape, and its never-pruning prune (the Node code passed the prefix `tg-` where the sweep expects `tg`, so it looked for
+//! `tg--*.json` and never pruned; dev fixed that (`PREFIX = 'tg'`, the sweep appends the dash) and so does this port).
 use crate::checks::guardkit::fsio::{prune_stale, write_atomic};
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::ojson::OVal;
@@ -70,7 +70,7 @@ fn read_tail(path: &str, max: u64) -> Option<Vec<String>> {
     f.seek(SeekFrom::Start(size - n)).ok()?;
     let mut buf = Vec::with_capacity(n as usize);
     f.take(n).read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf).to_string();
+    let text = crate::checks::guardkit::text::lossy_owned(buf);
     let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
     if size > n {
         lines.remove(0);
@@ -113,7 +113,7 @@ fn state_path(home: &str, session: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
         .collect();
     format!(
-        "{home}/{}/{}/{}{safe}{}",
+        "{home}/{}/{}/{}-{safe}{}",
         defaults::text("guardkit.state_dir_name"),
         defaults::text("turn_gate.dir"),
         defaults::text("turn_gate.prefix"),

@@ -403,6 +403,7 @@ impl Tail {
         }
         let n = size.min(max);
         f.seek(SeekFrom::Start(size - n)).ok()?;
+        crate::load::note_scan(n);
         Some(Tail { r: std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, f.take(n)), drop_first: size > n })
     }
 

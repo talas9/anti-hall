@@ -960,8 +960,8 @@ doc = "Directory under the state directory that holds the per-session turn-gate 
 value = "turn-gate"
 
 [turn_gate.prefix]
-doc = "File-name prefix of a turn-gate state file (the Node code also hands it to the pruning sweep as the family name)."
-value = "tg-"
+doc = "Family name of a turn-gate state file: the file is `<prefix>-<session>.json` and the pruning sweep takes the same name (the Node hook passes `tg` and the sweep appends the dash itself, commit ef0a30b)."
+value = "tg"
 
 [turn_gate.session_max]
 doc = "Longest session id part, in UTF-16 units, of a turn-gate file name."

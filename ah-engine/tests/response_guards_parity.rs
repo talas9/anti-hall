@@ -218,7 +218,7 @@ fn output_verify_cases() -> Vec<Case> {
             )
             .same(post("npm test", json!(mixed))),
     );
-    v.push(c("ov-once-prune-stale").transcript(&turn).aged(".anti-hall/turn-gate/tg--old.json", "{}").same(post("npm test", json!(mixed))));
+    v.push(c("ov-once-prune-stale").transcript(&turn).aged(".anti-hall/turn-gate/tg-old.json", "{}").same(post("npm test", json!(mixed))));
     // payload shapes
     v.push(c("ov-payload-null").same(Value::Null));
     v.push(c("ov-payload-array").same(json!([1, 2])));

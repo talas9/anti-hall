@@ -41,7 +41,7 @@ fn lines(v: Vec<String>) -> Vec<String> {
 fn a_teammate_that_reported_available_and_was_not_stopped_is_finished() {
     let mut l = spawn("amy", T0 - 3_000_000.0);
     l.push(report("amy", T0 - 2_000_000.0, "available"));
-    assert_eq!(scan::finished_teammates(&lines(l)), Ok(vec![scan::Finished { name: "amy".into(), idle_since_ms: T0 - 2_000_000.0 }]));
+    assert_eq!(scan::finished_teammates(lines(l)), Ok(vec![scan::Finished { name: "amy".into(), idle_since_ms: T0 - 2_000_000.0 }]));
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn codex_agents_are_finished_until_closed_or_retasked() {
             out(T0 - 2000.0, "c2", json!({"status": {uuid: {"completed": "ok"}}})),
         ]
     };
-    let got = codex::finished(&base()).unwrap();
+    let got = codex::finished(base()).unwrap();
     assert_eq!(got, vec![codex::CodexAgent { id: uuid.into(), label: format!("Ada ({uuid})"), idle_since_ms: T0 - 2000.0 }]);
     let mut closed = base();
     closed.push(call(T0 - 1000.0, "close_agent", json!({"targets": [uuid]}), "c3"));

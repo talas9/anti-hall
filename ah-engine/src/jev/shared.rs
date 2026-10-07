@@ -27,6 +27,11 @@ pub fn is_resident() -> bool {
 
 static LANES: Mutex<Vec<(PathBuf, Arc<Jev>)>> = Mutex::new(Vec::new());
 
+/// How many lanes are held (a memory report reads it).
+pub fn lane_count() -> usize {
+    LANES.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
 /// The shared lane for `home`, created on first use with the real transport and the Node files (log, breaker). `env` is
 /// only the snapshot the lane's own default settings resolve against; every ask carries its calling session's
 /// environment in `AskRequest::env`.

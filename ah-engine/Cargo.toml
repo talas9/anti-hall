@@ -23,6 +23,11 @@ ring = { version = "0.17", default-features = false }
 # Heap profiler for the opt-in `diag` feature only (a dependency no default or release build compiles).
 dhat = { version = "0.3.3", optional = true }
 
+# Allocator that returns freed pages (the system allocators keep them, so RSS stayed at the largest transient). Only on the targets
+# the crate supports (see src/main.rs).
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu")))'.dependencies]
+tikv-jemallocator = "0.7"
+
 [features]
 # Developer diagnostics only (never in a release build): `ah-engine diag heap` reports heap peak/current bytes per check,
 # measured with the dhat allocator. Off by default; see docs/DEVELOPMENT.md.

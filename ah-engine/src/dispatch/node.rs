@@ -58,8 +58,9 @@ impl Capture {
             std::thread::sleep(defaults::millis("dispatch.poll_ms"));
         }
         let complete = self.done.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire);
-        let bytes = self.buf.lock().map(|b| b.clone()).unwrap_or_default();
-        (String::from_utf8_lossy(&bytes).to_string(), complete)
+        // decoded straight from the guarded buffer: no intermediate copy of a possibly large capture
+        let text = self.buf.lock().map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+        (text, complete)
     }
 }
 

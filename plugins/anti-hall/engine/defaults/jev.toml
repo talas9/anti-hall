@@ -358,6 +358,11 @@ doc = "Largest response body read from a vendor; a longer one is treated as unpa
 value = 1048576
 unit = "bytes"
 
+[jev.latency_samples_max]
+doc = "Most call-latency samples held between two metrics flushes; past it new samples are dropped until the flush drains them (a bound on memory if the flush stalls)."
+value = 4096
+min = 1
+
 [jev.lane_cap]
 doc = "How many home directories keep a resident Jev lane at once (one per user in practice; the oldest is dropped past the cap)."
 value = 8

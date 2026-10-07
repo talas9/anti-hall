@@ -127,7 +127,7 @@ pub fn first_this_turn(i: &GateInput<'_>) -> Result<bool, Defer> {
     let sig = slice_utf16(i.sig, defaults::num("reply_turn_gate.sig_max") as usize).ok_or(Defer)?;
     let dir = Path::new(i.home).join(defaults::text("replykit.state_dir")).join(defaults::text("reply_turn_gate.dir"));
     let file_name = format!(
-        "{}{}{}",
+        "{}-{}{}",
         defaults::text("reply_turn_gate.prefix"),
         safe_session(&session, Some(defaults::num("reply_turn_gate.session_max") as usize)),
         defaults::text("replykit.json_ext")

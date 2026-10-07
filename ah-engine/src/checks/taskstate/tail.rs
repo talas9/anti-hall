@@ -6,6 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 /// `None` on any read error (Node's `catch` returns null).
 pub fn read_tail(path: &str, window: u64) -> Option<(String, bool)> {
     let size = std::fs::metadata(path).ok()?.len();
+    crate::load::note_scan(size.min(window));
     if size <= window {
         let bytes = std::fs::read(path).ok()?;
         return Some((crate::checks::guardkit::text::lossy_owned(bytes), false));

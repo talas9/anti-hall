@@ -748,7 +748,11 @@ impl Jev {
                 self.stats.cost_micro_usd.fetch_add((cost_usd.unwrap_or(0.0) * 1e6).max(0.0) as u64, Ordering::Relaxed);
             }
             if backend == Backend::Jev {
-                self.stats.latencies_us.lock().unwrap_or_else(|e| e.into_inner()).push(ms.saturating_mul(1000));
+                // bounded: the samples are drained when the metrics flush, and if that stalls the newest ones are not kept
+                let mut samples = self.stats.latencies_us.lock().unwrap_or_else(|e| e.into_inner());
+                if (samples.len() as u64) < defaults::num("jev.latency_samples_max") {
+                    samples.push(ms.saturating_mul(1000));
+                }
             }
         }
         if log {
