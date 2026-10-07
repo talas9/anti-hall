@@ -75,7 +75,8 @@ pub fn session_tag(p: &Value) -> Option<String> {
             }
         }
     }
-    let clean: String = raw.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')).take(defaults::num("phase_tracker.tag_max") as usize).collect();
+    let clean: String =
+        raw.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')).take(defaults::num("phase_tracker.tag_max") as usize).collect();
     Some(if clean.is_empty() { defaults::text("phase_tracker.unknown_tag").to_string() } else { clean })
 }
 
@@ -83,11 +84,8 @@ pub fn session_tag(p: &Value) -> Option<String> {
 pub fn next_log(old: &[u8], now: f64, tag: &str) -> String {
     let text = String::from_utf8_lossy(old);
     let keep = defaults::num("phase_tracker.keep_ms") as f64;
-    let mut lines: Vec<&str> = js_trim(&text)
-        .split('\n')
-        .map(|l| l.strip_suffix('\r').unwrap_or(l))
-        .filter(|l| js_parse_int(l).is_some_and(|ms| now - ms < keep))
-        .collect();
+    let mut lines: Vec<&str> =
+        js_trim(&text).split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).filter(|l| js_parse_int(l).is_some_and(|ms| now - ms < keep)).collect();
     let mine = format!("{} {tag}", now as u64);
     lines.push(&mine);
     format!("{}\n", lines.join("\n"))

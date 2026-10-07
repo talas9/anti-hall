@@ -36,7 +36,9 @@ pub fn is_codex(p: &Value) -> bool {
     }
     static RES: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
     let tp = p.get("transcript_path").and_then(Value::as_str).unwrap_or("");
-    RES.get_or_init(|| defaults::list("verify_first_orch.codex_transcript_patterns").into_iter().map(|s| jsre::compile(s, false)).collect()).iter().any(|re| re.is_match(tp))
+    RES.get_or_init(|| defaults::list("verify_first_orch.codex_transcript_patterns").into_iter().map(|s| jsre::compile(s, false)).collect())
+        .iter()
+        .any(|re| re.is_match(tp))
 }
 
 /// `isClaudeConfident(payload, ['--host=claude'])`: positive evidence that the session runs under Claude Code, namely a
@@ -88,8 +90,10 @@ fn with_root(text: &str, root: &str) -> String {
 
 /// `orchCompact(spawnDelivery, root, codex)`.
 pub fn orch_compact(spawn_delivery: bool, root: &str, codex: bool) -> String {
-    let first = defaults::text("verify_first_orch.compact_first")
-        .replace(defaults::text("verify_first_orch.delivery_placeholder"), if spawn_delivery { defaults::text("verify_first_orch.compact_delivery") } else { "" });
+    let first = defaults::text("verify_first_orch.compact_first").replace(
+        defaults::text("verify_first_orch.delivery_placeholder"),
+        if spawn_delivery { defaults::text("verify_first_orch.compact_delivery") } else { "" },
+    );
     let mn = defaults::text("verify_first_orch.mn_prefix");
     let body = defaults::list("verify_first_orch.compact_body");
     let swapped = body.iter().find(|l| l.starts_with(mn)).copied();

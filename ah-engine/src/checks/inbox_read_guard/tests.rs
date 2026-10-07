@@ -34,7 +34,16 @@ fn an_absolute_path_is_not_normalized_but_a_relative_one_is() {
 
 #[test]
 fn the_store_shapes_are_found_per_project_key_and_flat() {
-    for p in ["devswarm.db", "devswarm.db-wal", "devswarm.db-shm", "devswarm.db-journal", "journal/a.ndjson", "repo-abc123/devswarm.db", "12345678/devswarm.db-shm", "ABCDEF12/journal/x.ndjson"] {
+    for p in [
+        "devswarm.db",
+        "devswarm.db-wal",
+        "devswarm.db-shm",
+        "devswarm.db-journal",
+        "journal/a.ndjson",
+        "repo-abc123/devswarm.db",
+        "12345678/devswarm.db-shm",
+        "ABCDEF12/journal/x.ndjson",
+    ] {
         assert_eq!(c(&format!("/home/u/.anti-hall/devswarm/store/{p}")), Some(Class::Store), "{p}");
     }
     for p in ["", "journal", "journal/a.txt", "devswarm.db-extra", "repo-abc12/devswarm.db", "UPPER-ABCDEF/devswarm.db", "abcdefgh/devswarm.db"] {

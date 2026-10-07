@@ -28,7 +28,11 @@ fn parse_int_reads_a_leading_integer_the_way_javascript_does() {
 #[test]
 fn the_session_tag_prefers_the_session_then_a_hash_of_the_directory() {
     assert_eq!(session_tag(&json!({"session_id": "  abc!d  "})).as_deref(), Some("abcd"));
-    assert_eq!(session_tag(&json!({"session_id": "!!!", "cwd": "/a"})).as_deref(), Some("unknown"), "a session id that sanitizes away does not fall back to the directory");
+    assert_eq!(
+        session_tag(&json!({"session_id": "!!!", "cwd": "/a"})).as_deref(),
+        Some("unknown"),
+        "a session id that sanitizes away does not fall back to the directory"
+    );
     assert_eq!(session_tag(&json!({"session_id": "  ", "cwd": "/a"})).as_deref(), Some("cwd-2256c6ac80d3"), "SHA-1 of /a, first 12 hex digits");
     assert_eq!(session_tag(&json!({"workspace": {"current_dir": "/a"}})).as_deref(), Some("cwd-2256c6ac80d3"));
     assert_eq!(session_tag(&json!({})).as_deref(), Some("unknown"));

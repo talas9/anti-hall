@@ -301,9 +301,21 @@ fn drive(name: &str, h: Hook, cases: Vec<Case>) -> Tally {
         let eng = run_engine(h, &he, case, &render(&he), now);
         let after_n = norm_path_keys(snapshot(&hn, now));
         let after_e = norm_path_keys(snapshot(&he, now));
-        let ctx = |what: &str| format!("{name}/{}: {what}\n node: {:?}\n  eng: {:?}", case.name, (node.0, String::from_utf8_lossy(&node.1), String::from_utf8_lossy(&node.2)), (eng.0, String::from_utf8_lossy(&eng.1), String::from_utf8_lossy(&eng.2)));
+        let ctx = |what: &str| {
+            format!(
+                "{name}/{}: {what}\n node: {:?}\n  eng: {:?}",
+                case.name,
+                (node.0, String::from_utf8_lossy(&node.1), String::from_utf8_lossy(&node.2)),
+                (eng.0, String::from_utf8_lossy(&eng.1), String::from_utf8_lossy(&eng.2))
+            )
+        };
         if case.defer {
-            assert_eq!((eng.0, String::from_utf8_lossy(&eng.1).to_string(), eng.2.clone()), (0, FALLBACK.to_string(), Vec::new()), "{}", ctx("the engine must defer"));
+            assert_eq!(
+                (eng.0, String::from_utf8_lossy(&eng.1).to_string(), eng.2.clone()),
+                (0, FALLBACK.to_string(), Vec::new()),
+                "{}",
+                ctx("the engine must defer")
+            );
             assert_eq!(after_e, seeded, "{}", ctx("a deferral must leave the state as seeded"));
             t.deferred += 1;
         } else {
@@ -398,7 +410,7 @@ fn inbox_cases() -> Vec<Case> {
         v.push(ds(case(name, read(json!(p)))).defer());
     }
     // relative paths and the working directory
-    v.push(ds(case("rel-inbox-cwd-root", json!({"tool_name":"Read","tool_input":{"file_path":"inbox/x"},"cwd":format!("{R}")}))));
+    v.push(ds(case("rel-inbox-cwd-root", json!({"tool_name":"Read","tool_input":{"file_path":"inbox/x"},"cwd":R}))));
     v.push(ds(case("rel-from-home-no-cwd", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"}}))));
     v.push(ds(case("rel-dotdot-from-store", json!({"tool_name":"Read","tool_input":{"file_path":"../inbox/x"},"cwd":format!("{R}/store")}))));
     v.push(ds(case("rel-elsewhere", json!({"tool_name":"Read","tool_input":{"file_path":"x/y"},"cwd":"$HOME/proj"}))));
@@ -446,11 +458,22 @@ fn inbox_cases() -> Vec<Case> {
     v.push(case("supervisor-auto-env", blockable()).env("DEVSWARM_REPO_ID", "r").env("ANTIHALL_DEVSWARM_SUPERVISOR", "auto"));
     v.push(case("supervisor-file-off", blockable()).env("DEVSWARM_REPO_ID", "r").seed(Seed::Settings(json!({"devswarm":{"supervisorMode":"off"}}))));
     v.push(case("supervisor-file-on-padded", blockable()).seed(Seed::Settings(json!({"devswarm":{"supervisorMode":" On "}}))));
-    v.push(case("supervisor-env-beats-file", blockable()).env("DEVSWARM_REPO_ID", "r").env("ANTIHALL_DEVSWARM_SUPERVISOR", "on").seed(Seed::Settings(json!({"devswarm":{"supervisorMode":"off"}}))));
+    v.push(
+        case("supervisor-env-beats-file", blockable())
+            .env("DEVSWARM_REPO_ID", "r")
+            .env("ANTIHALL_DEVSWARM_SUPERVISOR", "on")
+            .seed(Seed::Settings(json!({"devswarm":{"supervisorMode":"off"}}))),
+    );
     v.push(case("supervisor-option-off", blockable()).env("DEVSWARM_REPO_ID", "r").env("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "off"));
     v.push(case("supervisor-option-default-masked", blockable()).env("DEVSWARM_REPO_ID", "r").env("CLAUDE_PLUGIN_OPTION_DEVSWARM_SUPERVISOR_MODE", "auto"));
-    v.push(case("supervisor-stored-option-off", blockable()).env("DEVSWARM_REPO_ID", "r").seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall":{"options":{"devswarm_supervisor_mode":"off"}}}}))));
-    v.push(case("supervisor-stored-flat-on", blockable()).seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall@anti-hall":{"devswarm_supervisor_mode":"on"}}}))));
+    v.push(
+        case("supervisor-stored-option-off", blockable())
+            .env("DEVSWARM_REPO_ID", "r")
+            .seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall":{"options":{"devswarm_supervisor_mode":"off"}}}}))),
+    );
+    v.push(
+        case("supervisor-stored-flat-on", blockable()).seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall@anti-hall":{"devswarm_supervisor_mode":"on"}}}))),
+    );
     // the switch
     let on = |c: Case| c.env("DEVSWARM_REPO_ID", "r");
     v.push(on(case("switch-file-false", blockable())).seed(Seed::Settings(json!({"devswarm":{"inboxReadGuard":false}}))));
@@ -460,7 +483,9 @@ fn inbox_cases() -> Vec<Case> {
     v.push(on(case("switch-file-true", blockable())).seed(Seed::Settings(json!({"devswarm":{"inboxReadGuard":true}}))));
     v.push(on(case("switch-option-false", blockable())).env("CLAUDE_PLUGIN_OPTION_DEVSWARM_INBOX_READ_GUARD", "false"));
     v.push(on(case("switch-option-default-masked", blockable())).env("CLAUDE_PLUGIN_OPTION_DEVSWARM_INBOX_READ_GUARD", "true"));
-    v.push(on(case("switch-stored-false", blockable())).seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall":{"options":{"devswarm_inbox_read_guard":false}}}}))));
+    v.push(
+        on(case("switch-stored-false", blockable())).seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall":{"options":{"devswarm_inbox_read_guard":false}}}}))),
+    );
     v.push(on(case("switch-settings-not-object", blockable())).file(".anti-hall/settings.json", "[1,2]"));
     v.push(on(case("switch-settings-corrupt", blockable())).file(".anti-hall/settings.json", "{oops"));
     v.push(on(case("switch-section-not-object", blockable())).seed(Seed::Settings(json!({"devswarm":"x"}))));
@@ -671,7 +696,12 @@ fn spawn_cases() -> Vec<Case> {
         v.push(if name == "marker-extra-keys-pending-ok" { c.defer() } else { c });
     }
     v.push(case("marker-is-directory", spawn_call("Agent", json!("s1"))).seed(Seed::Dir(marker_file("s1"))));
-    v.push(case("marker-is-symlink-pending", spawn_call("Agent", json!("s1"))).file("m.json", PENDING).seed(Seed::Link(marker_file("s1"), "$HOME/m.json".into())).defer());
+    v.push(
+        case("marker-is-symlink-pending", spawn_call("Agent", json!("s1")))
+            .file("m.json", PENDING)
+            .seed(Seed::Link(marker_file("s1"), "$HOME/m.json".into()))
+            .defer(),
+    );
     v.push(case("marker-invalid-utf8", spawn_call("Agent", json!("s1"))).seed(Seed::File(marker_file("s1"), b"\xff\xfe".to_vec(), 0)));
     // subagent calls
     for (name, extra) in [
@@ -704,7 +734,10 @@ fn spawn_cases() -> Vec<Case> {
     v.push(pend(case("switch-garbage-ignored", call())).seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":"maybe"}}))).defer());
     v.push(pend(case("switch-option-false", call())).env("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_ORCHESTRATION", "false"));
     v.push(pend(case("switch-option-default-masked", call())).env("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_ORCHESTRATION", "true").defer());
-    v.push(pend(case("switch-stored-false", call())).seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall":{"options":{"context_verify_first_orchestration":false}}}}))));
+    v.push(
+        pend(case("switch-stored-false", call()))
+            .seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall":{"options":{"context_verify_first_orchestration":false}}}}))),
+    );
     // the skip file
     let far = 4_102_444_800_000u64;
     v.push(pend(case("skip-named", call())).seed(Seed::Skip(json!({"orch-on-spawn": far}))));
@@ -717,7 +750,12 @@ fn spawn_cases() -> Vec<Case> {
     v.push(pend(case("level-compact-env", call())).env("ANTIHALL_PROTOCOL_LEVEL", "compact").defer());
     v.push(pend(case("level-junk-env", call())).env("ANTIHALL_PROTOCOL_LEVEL", "huge").defer());
     v.push(pend(case("level-full-file", call())).seed(Seed::Settings(json!({"context":{"protocolLevel":"full"}}))));
-    v.push(pend(case("level-env-beats-file", call())).env("ANTIHALL_PROTOCOL_LEVEL", "compact").seed(Seed::Settings(json!({"context":{"protocolLevel":"full"}}))).defer());
+    v.push(
+        pend(case("level-env-beats-file", call()))
+            .env("ANTIHALL_PROTOCOL_LEVEL", "compact")
+            .seed(Seed::Settings(json!({"context":{"protocolLevel":"full"}})))
+            .defer(),
+    );
     // codex
     let mut cx = spawn_call("spawn_agent", json!("s1"));
     cx["turn_id"] = json!("t1");
@@ -787,11 +825,29 @@ fn orch_cases() -> Vec<Case> {
     v.push(ok(case("claude-session-number", start(json!({"session_id":7})))));
     v.push(ok(case("claude-session-weird-chars", start(json!({"session_id":"a/b ü!"})))));
     v.push(ok(case("claude-link-out-of-projects", dflt())).seed(Seed::Link(".claude/projects/-p".into(), "/tmp".into())));
-    v.push(ok(case("claude-link-inside-projects", dflt())).seed(Seed::Dir(".claude/projects/real".into())).seed(Seed::Link(".claude/projects/-p".into(), "$HOME/.claude/projects/real".into())));
+    v.push(
+        ok(case("claude-link-inside-projects", dflt()))
+            .seed(Seed::Dir(".claude/projects/real".into()))
+            .seed(Seed::Link(".claude/projects/-p".into(), "$HOME/.claude/projects/real".into())),
+    );
     v.push(ok(case("claude-dangling-link", dflt())).seed(Seed::Link(".claude/projects/-p".into(), "$HOME/nowhere".into())));
-    v.push(case("claude-projects-is-link", dflt()).seed(Seed::Dir("store/projects".into())).seed(Seed::Link(".claude/projects".into(), "$HOME/store/projects".into())).seed(Seed::Dir("x".into())));
-    v.push(case("claude-config-dir-env", start(json!({"transcript_path":"$HOME/cfg/projects/-p/S1.jsonl"}))).env("CLAUDE_CONFIG_DIR", "$HOME/cfg").seed(Seed::Dir("cfg/projects".into())));
-    v.push(case("claude-config-dir-env-transcript-in-default", dflt()).env("CLAUDE_CONFIG_DIR", "$HOME/cfg").seed(Seed::Dir("cfg/projects".into())).seed(projects()));
+    v.push(
+        case("claude-projects-is-link", dflt())
+            .seed(Seed::Dir("store/projects".into()))
+            .seed(Seed::Link(".claude/projects".into(), "$HOME/store/projects".into()))
+            .seed(Seed::Dir("x".into())),
+    );
+    v.push(
+        case("claude-config-dir-env", start(json!({"transcript_path":"$HOME/cfg/projects/-p/S1.jsonl"})))
+            .env("CLAUDE_CONFIG_DIR", "$HOME/cfg")
+            .seed(Seed::Dir("cfg/projects".into())),
+    );
+    v.push(
+        case("claude-config-dir-env-transcript-in-default", dflt())
+            .env("CLAUDE_CONFIG_DIR", "$HOME/cfg")
+            .seed(Seed::Dir("cfg/projects".into()))
+            .seed(projects()),
+    );
     v.push(case("claude-config-dir-relative-defers", dflt()).env("CLAUDE_CONFIG_DIR", "rel/cfg").seed(projects()).defer());
     v.push(ok(case("claude-config-dir-empty-uses-home", dflt())).env("CLAUDE_CONFIG_DIR", ""));
     // codex
@@ -832,9 +888,17 @@ fn orch_cases() -> Vec<Case> {
     v.push(ok(case("mode-spawn-marker-unwritable", dflt())).env("ANTIHALL_ORCH_FULL_ON", "spawn").file(".anti-hall/orch-full", "i am a file"));
     v.push(ok(case("codex-spawn-optin", start(json!({"turn_id":"t"})))).env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn"));
     v.push(ok(case("codex-spawn-optin-no-session", start(json!({"turn_id":"t","session_id":""})))).env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn"));
-    v.push(ok(case("codex-spawn-optin-off-mode", start(json!({"turn_id":"t"})))).env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn").env("ANTIHALL_ORCH_FULL_ON", "off"));
-    v.push(ok(case("codex-spawn-optin-skipped", start(json!({"turn_id":"t"})))).env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn").seed(Seed::Skip(json!({"orch-on-spawn": 4_102_444_800_000u64}))));
-    v.push(ok(case("codex-rollout-spawn-optin", start(json!({"transcript_path":"$HOME/.codex/s/rollout-1.jsonl"})))).env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn"));
+    v.push(
+        ok(case("codex-spawn-optin-off-mode", start(json!({"turn_id":"t"})))).env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn").env("ANTIHALL_ORCH_FULL_ON", "off"),
+    );
+    v.push(
+        ok(case("codex-spawn-optin-skipped", start(json!({"turn_id":"t"}))))
+            .env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn")
+            .seed(Seed::Skip(json!({"orch-on-spawn": 4_102_444_800_000u64}))),
+    );
+    v.push(
+        ok(case("codex-rollout-spawn-optin", start(json!({"transcript_path":"$HOME/.codex/s/rollout-1.jsonl"})))).env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn"),
+    );
     v.push(ok(case("claude-ignores-codex-optin", dflt())).env("ANTIHALL_CODEX_ORCH_FULL_ON", "spawn"));
     // the switch and the marker it keeps
     let setting_off = Seed::Settings(json!({"context":{"verifyFirstOrchestration":false}}));
@@ -852,23 +916,64 @@ fn orch_cases() -> Vec<Case> {
     // pruning
     let old = 10 * 24 * 3600 * 1000;
     let fresh = 3600 * 1000;
-    v.push(ok(case("prune-removes-stale-claims", dflt())).aged(".anti-hall/orch-full/orch-full-old-1-claim.json", "{}", old).aged(".anti-hall/orch-full/orch-full-new-1-claim.json", "{}", fresh));
-    v.push(ok(case("prune-keeps-non-prefixed", dflt())).aged(".anti-hall/orch-full/other.json", "{}", old).aged(".anti-hall/orch-full/orch-full-x.txt", "{}", old).aged(".anti-hall/orch-full/orch-full-y.json", "{}", old));
-    v.push(ok(case("prune-throttled-by-stamp", dflt())).aged(".anti-hall/orch-full/orch-full-old.json", "{}", old).file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{\"lastSweep\":{NOW-1000}}"));
-    v.push(ok(case("prune-stamp-old-sweeps", dflt())).aged(".anti-hall/orch-full/orch-full-old.json", "{}", old).file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{\"lastSweep\":1000}"));
-    v.push(ok(case("prune-stamp-future-sweeps", dflt())).aged(".anti-hall/orch-full/orch-full-old.json", "{}", old).file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{\"lastSweep\":{NOW+100000}}"));
-    v.push(ok(case("prune-stamp-corrupt-sweeps", dflt())).aged(".anti-hall/orch-full/orch-full-old.json", "{}", old).file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{oops"));
-    v.push(ok(case("prune-stamp-wrong-type-sweeps", dflt())).aged(".anti-hall/orch-full/orch-full-old.json", "{}", old).file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{\"lastSweep\":\"{NOW-5}\"}"));
-    v.push(ok(case("prune-stamp-empty-sweeps", dflt())).aged(".anti-hall/orch-full/orch-full-old.json", "{}", old).file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "  \n"));
+    v.push(ok(case("prune-removes-stale-claims", dflt())).aged(".anti-hall/orch-full/orch-full-old-1-claim.json", "{}", old).aged(
+        ".anti-hall/orch-full/orch-full-new-1-claim.json",
+        "{}",
+        fresh,
+    ));
+    v.push(
+        ok(case("prune-keeps-non-prefixed", dflt()))
+            .aged(".anti-hall/orch-full/other.json", "{}", old)
+            .aged(".anti-hall/orch-full/orch-full-x.txt", "{}", old)
+            .aged(".anti-hall/orch-full/orch-full-y.json", "{}", old),
+    );
+    v.push(
+        ok(case("prune-throttled-by-stamp", dflt()))
+            .aged(".anti-hall/orch-full/orch-full-old.json", "{}", old)
+            .file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{\"lastSweep\":{NOW-1000}}"),
+    );
+    v.push(
+        ok(case("prune-stamp-old-sweeps", dflt()))
+            .aged(".anti-hall/orch-full/orch-full-old.json", "{}", old)
+            .file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{\"lastSweep\":1000}"),
+    );
+    v.push(
+        ok(case("prune-stamp-future-sweeps", dflt()))
+            .aged(".anti-hall/orch-full/orch-full-old.json", "{}", old)
+            .file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{\"lastSweep\":{NOW+100000}}"),
+    );
+    v.push(
+        ok(case("prune-stamp-corrupt-sweeps", dflt()))
+            .aged(".anti-hall/orch-full/orch-full-old.json", "{}", old)
+            .file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{oops"),
+    );
+    v.push(
+        ok(case("prune-stamp-wrong-type-sweeps", dflt()))
+            .aged(".anti-hall/orch-full/orch-full-old.json", "{}", old)
+            .file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "{\"lastSweep\":\"{NOW-5}\"}"),
+    );
+    v.push(
+        ok(case("prune-stamp-empty-sweeps", dflt()))
+            .aged(".anti-hall/orch-full/orch-full-old.json", "{}", old)
+            .file(".anti-hall/orch-full/.prune-stamp-orch-full.json", "  \n"),
+    );
     v.push(ok(case("prune-own-marker-kept-even-if-old", dflt())).aged(&marker_file("S1"), PENDING, old));
-    v.push(ok(case("prune-subdir-ignored", dflt())).seed(Seed::Dir(".anti-hall/orch-full/orch-full-dir.json".into())).aged(".anti-hall/orch-full/orch-full-old.json", "{}", old));
+    v.push(ok(case("prune-subdir-ignored", dflt())).seed(Seed::Dir(".anti-hall/orch-full/orch-full-dir.json".into())).aged(
+        ".anti-hall/orch-full/orch-full-old.json",
+        "{}",
+        old,
+    ));
     // DevSwarm sessions defer to Node
     v.push(ok(case("devswarm-repo-id-defers", dflt())).env("DEVSWARM_REPO_ID", "r").defer());
     v.push(ok(case("devswarm-supervisor-on-defers", dflt())).env("ANTIHALL_DEVSWARM_SUPERVISOR", "on").defer());
     v.push(ok(case("devswarm-kill-switch-proceeds", dflt())).env("DEVSWARM_REPO_ID", "r").env("DISABLE_ANTIHALL_DEVSWARM", "1"));
     v.push(ok(case("devswarm-supervisor-off-proceeds", dflt())).env("DEVSWARM_REPO_ID", "r").env("ANTIHALL_DEVSWARM_SUPERVISOR", "off"));
     v.push(ok(case("devswarm-blank-repo-proceeds", dflt())).env("DEVSWARM_REPO_ID", " "));
-    v.push(ok(case("devswarm-switch-off-no-defer", dflt())).env("DEVSWARM_REPO_ID", "r").seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":false}}))));
+    v.push(
+        ok(case("devswarm-switch-off-no-defer", dflt()))
+            .env("DEVSWARM_REPO_ID", "r")
+            .seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":false}}))),
+    );
     v.push(ok(case("devswarm-codex-defers", start(json!({"turn_id":"t"})))).env("DEVSWARM_REPO_ID", "r").defer());
     // the judge child
     v.push(ok(case("judge-child-silent", dflt())).env("ANTIHALL_JUDGE_CHILD", "1"));
@@ -923,17 +1028,29 @@ console.log(JSON.stringify({ rows: out, manifestSupervisorDefault: sup }));
         if row["type"] == "enum" {
             assert_eq!(ours["values"], row["values"], "{key}.values");
         }
-        assert_eq!((row["legacy"].as_bool(), row["homeOnly"].as_bool()), (Some(false), Some(false)), "{key}: a legacy or home-only entry has a different chain");
+        assert_eq!(
+            (row["legacy"].as_bool(), row["homeOnly"].as_bool()),
+            (Some(false), Some(false)),
+            "{key}: a legacy or home-only entry has a different chain"
+        );
     }
-    assert_eq!(node["manifestSupervisorDefault"], ah_engine::defaults::raw("spawn_ctx.supervisor_setting").to_json()["default"], "the manifest default of the headline option");
+    assert_eq!(
+        node["manifestSupervisorDefault"],
+        ah_engine::defaults::raw("spawn_ctx.supervisor_setting").to_json()["default"],
+        "the manifest default of the headline option"
+    );
 }
 
 /// The skip name the inbox guard honours is one a broad skip does not cover (`skip-guard.js` DESTRUCTIVE).
 #[test]
 fn the_inbox_skip_name_is_a_destructive_guard_in_node_too() {
-    let o = Command::new("node").arg("-e").arg("console.log(JSON.stringify([...require(process.argv[1]+'/hooks/skip-guard.js').DESTRUCTIVE]))").arg(plugin()).output().unwrap();
+    let o = Command::new("node")
+        .arg("-e")
+        .arg("console.log(JSON.stringify([...require(process.argv[1]+'/hooks/skip-guard.js').DESTRUCTIVE]))")
+        .arg(plugin())
+        .output()
+        .unwrap();
     let node: Vec<String> = serde_json::from_slice(&o.stdout).unwrap();
-    for g in ["devswarm-read-guard"] {
-        assert!(node.iter().any(|n| n == g) && ah_engine::defaults::list("guardkit.destructive_guards").contains(&g), "{g}");
-    }
+    let g = "devswarm-read-guard";
+    assert!(node.iter().any(|n| n == g) && ah_engine::defaults::list("guardkit.destructive_guards").contains(&g), "{g}");
 }
