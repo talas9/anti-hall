@@ -281,6 +281,37 @@ Deliberate differences from the Node hooks:
   over 8 MB; the engine records its own latency.
 - The scan stops being exact when the answers to `TaskOutput` and `SendMessage` calls exceed `agent_scan.retain_bytes`
   (8 MiB): the call defers.
+## Built-in checks: the task checks (`src/checks/taskkit`, `src/checks/taskstate`, one module per hook)
+
+`task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` port the task hooks of batches 9 and 10. Their
+tables, patterns, limits and texts are in `defaults/task_guards.toml`. Every check either answers exactly what the Node
+hook would (exit code, stdout and the files it writes) or defers, so the engine is never a weaker guard than Node (D74).
+`parity/hookfx.js` is the harness: it runs the real Node hook with an isolated `HOME` and the engine check on identical
+worlds and compares exit code, stdout, stderr and the whole file tree; `run-task-lifecycle-log.js`, `run-dispatch-tier.js`,
+`run-task-guard.js` and `run-tasklist-guard.js` hold the corpora (hand-written shapes, fuzz, and real transcripts for the two
+Stop gates).
+
+- `task-lifecycle-log` (TaskCreated, TaskCompleted): the ledger line and the index entry, exactly. The project root is the
+  nearest `.git` ancestor of the real path (`taskkit/root.rs`, from the file system alone, no git process). A relative
+  `cwd`, a field cut through a surrogate pair and a number JavaScript prints with a different digit string defer.
+- `dispatch-tier` (PostToolUse on TaskCreate and TaskUpdate): the Node hook only ever asks Jev, and only while the
+  `dispatchTier` integration is not off. Integration off (the default while Jev is disabled) means the hook does nothing,
+  so the engine does nothing; on or shadow defers.
+- `task-guard` (Stop): rebuilds the task list from the last 1.5 MiB of the transcript with both Node reconstructions
+  (`taskstate/parse.rs`), recovers records before the window (`taskstate/backfill.rs`) and answers only the Stops with no
+  open task: the loop state file is removed, and the pruning advisory and the unknown-state note are printed as Node
+  prints them. Every Stop with an open task defers (its decision needs the running-agent scan, OMC loop detection and the
+  stop budget). The backfill scans a fixed number of bytes where Node stops after 150 ms; the engine defers when the
+  search needs more, so its answer never depends on machine speed.
+- `tasklist-guard` (Stop): the single-pass scan (`tasklist_guard/scan.rs`, work detection in `taskkit/workdetect.rs`),
+  the progress-file freshness rules with their file effects, the plan-mode advisory and the resume-verification nudge. A
+  Stop that would block defers (Node owns the block text, the loop state, the Jev consult, the acknowledgement and the
+  stop budget), and so does one that needs the running-agent scan (two or more tasks in progress on a Claude session). A
+  relative path in a tool call is judged against the payload's `cwd`, which can only make the engine count more work than
+  Node, never less.
+- Not ported: `task-tracker` (UserPromptSubmit). Its output depends on the emit-dedupe state (batch 4), the Jev
+  decision-log row it writes on every prompt, the DevSwarm primary tier and the agent scan, and the Node source moved on
+  the development branch after this lane's base.
 
 ## Built-in checks: the command check
 

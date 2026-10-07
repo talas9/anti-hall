@@ -94,6 +94,7 @@ for (const n of [3, 4]) {
 }
 track('tracked-inprogress-one', [...task(1, 'a'), ...T.update(1, { status: 'in_progress' }), ...works(3)], FRESH, { answer: true });
 track('tracked-inprogress-two-agentscan', [...task(1, 'a'), ...task(2, 'b'), ...T.update(1, { status: 'in_progress' }), ...T.update(2, { status: 'in_progress' }), ...works(3)], FRESH);
+track('tracked-inprogress-two-below-threshold', [...task(1, 'a'), ...task(2, 'b'), ...T.update(1, { status: 'in_progress' }), ...T.update(2, { status: 'in_progress' }), ...works(2)], FRESH, { answer: true });
 track('tracked-inprogress-two-low', [...task(1, 'a'), ...task(2, 'b'), ...T.update(1, { status: 'in_progress', priority: 'P2' }), ...T.update(2, { status: 'in_progress', metadata: { priority: 'low' } }), ...works(3)], FRESH, { answer: true });
 track('tracked-inprogress-two-mixed', [...task(1, 'a'), ...task(2, 'b'), ...T.update(1, { status: 'in_progress', priority: 'P2' }), ...T.update(2, { status: 'in_progress', priority: 'P1' }), ...works(3)], FRESH, { answer: true });
 track('tracked-completed', [...task(1, 'a'), ...T.update(1, { status: 'completed' }), ...works(4)], FRESH, { answer: true });
@@ -124,6 +125,23 @@ track('fresh-file-older-than-work', [...task(1, 'a'), ...works(3)], STALE, { sta
   scenarios.push({ id: 'fresh-no-work-ts-stale-file', world: STALE, steps: [Object.assign({ payload: stop(put(nots, 'nots2')) }, staleStep)] });
   scenarios.push({ id: 'fresh-ms-setting-small', world: { gitdirs: ['proj'], files: { [PROG]: 'p', 'home/.anti-hall/settings.json': JSON.stringify({ guards: { progressFreshMs: 1 } }) } }, steps: [{ payload: stop(put(nots, 'nots3')), before: W => { const t = new Date(Date.now() - 5000); fs.utimesSync(path.join(W, PROG), t, t); } }] });
   scenarios.push({ id: 'fresh-ms-setting-large', world: { gitdirs: ['proj'], files: { [PROG]: 'p', 'home/.anti-hall/settings.json': JSON.stringify({ guards: { progressFreshMs: 1e12 } }) } }, steps: [{ payload: stop(put(nots, 'nots4')), before: W => fs.utimesSync(path.join(W, PROG), old, old) }], answerWhenSilent: true });
+}
+
+// a Bash command that writes the progress file counts as a fresh write (FIX 6); one that only reads it does not
+{
+  const PA = '$PROJ/.anti-hall/progress/' + today + '/sess-1.md';
+  for (const [id, cmd, answer] of [['redirect-append', `echo done >> ${PA}`, true], ['redirect-truncate', `echo done > ${PA}`, true], ['redirect-dq', `echo done > "${PA}"`, true], ['redirect-sq', `echo done > '${PA}'`, true], ['tee', `echo done | tee ${PA}`, true], ['tee-flag', `echo done | tee -a ${PA}`, true], ['cp', `cp /x/a ${PA}`, true], ['mv', `mv /x/a ${PA}`, true],
+    ['read-only', `cat ${PA} >> /elsewhere/log`, false], ['other-file', `echo done >> /elsewhere/log`, false], ['fd-dup', `cmd 2>&1 ${PA}`, false], ['quoted-text', `echo "write > ${PA}"`, false], ['two-redirects', `echo a > /x/y; echo b > ${PA}`, false], ['heredoc', `cat >> ${PA} <<EOF\nx\nEOF`, true]]) {
+    const lines = [T.prompt('go'), ...task(1, 'a'), ...works(3), ...T.bash(cmd)];
+    scenarios.push({ id: `fresh-bash-write-${id}`, world: STALE, answerWhenSilent: answer, steps: [Object.assign({ payload: stop(put(lines, 'bw' + id)) }, staleStep)] });
+  }
+}
+// the grace boundary: work exactly 1000 ms newer than the file still counts as covered, 1 ms more does not
+for (const [id, deltaMs, covered] of [['equal', 1000, true], ['plus1', 1001, false], ['minus1', 999, true], ['zero', 0, true]]) {
+  const workTs = Date.UTC(2026, 9, 6, 8, 0, 30, 0);
+  const mk = i => JSON.stringify({ type: 'assistant', timestamp: new Date(workTs).toISOString(), message: { id: 'b' + i, role: 'assistant', content: [T.use('Edit', { file_path: '/p/b' + i })] } });
+  const lines = [T.prompt('go'), ...task(1, 'a'), ...[1, 2, 3].map(mk)];
+  scenarios.push({ id: `fresh-boundary-${id}`, world: FRESH, answerWhenSilent: covered, steps: [{ payload: stop(put(lines, 'bd' + id)), before: W => { const t = new Date(workTs - deltaMs); fs.utimesSync(path.join(W, PROG), t, t); } }] });
 }
 
 // ---- cwd, root, session and payload shapes ---------------------------------------------------------------------------------------------------------

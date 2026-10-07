@@ -184,9 +184,6 @@ fn decide_inner(p: &Value, st: &Settings) -> R<Verdict> {
     let cx = Ctx { tmp: &tmp, cwd: abs_cwd };
     // A scan that throws in Node ends the hook quietly (no decision, nothing written).
     let Some((scan, needs_agents)) = scan::scan_transcript(transcript, progress_abs.as_deref(), codex, cx)? else { return Ok(Verdict::Allow) };
-    if needs_agents {
-        return Err(Unsure);
-    }
     let threshold = get_number(st, defaults::raw("tasklist_guard.threshold_setting"));
     let work = scan.work_count;
     let fresh_ms = get_number(st, defaults::raw("tasklist_guard.fresh_setting"));
@@ -235,7 +232,9 @@ fn decide_inner(p: &Value, st: &Settings) -> R<Verdict> {
     if (work as f64) < threshold {
         return Ok(Verdict::Allow);
     }
-    let should_block = !scan.saw_task_activity || !progress_fresh;
+    // Two or more tasks in progress on a Claude session: whether they are stalled depends on the running agents, which Node
+    // scans and the engine does not, so Node decides unless the Stop is already settled above.
+    let should_block = needs_agents || !scan.saw_task_activity || !progress_fresh;
     if !should_block {
         return Ok(Verdict::Allow);
     }
