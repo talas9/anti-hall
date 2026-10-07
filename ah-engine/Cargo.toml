@@ -21,6 +21,12 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 ring = { version = "0.17", default-features = false }
 
+[dev-dependencies]
+# Snapshot tests for long reply text (src/checks/idle_agent_sweep): one reviewable .snap file instead of two partial asserts.
+# Node stays the byte-parity oracle; a snapshot only pins the Rust wording. Review changes with `cargo insta review`
+# (cargo install --locked cargo-insta) or accept with INSTA_UPDATE=always.
+insta = "1.49.0"
+
 [profile.release]
 opt-level = "z"
 lto = true

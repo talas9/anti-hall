@@ -1,0 +1,7 @@
+---
+source: src/checks/idle_agent_sweep/tests.rs
+expression: c
+---
+💡 anti-hall · idle-agents: 1 finished agent is idle and not closed: a0 (60m).
+Why: an open agent holds a thread slot until it is closed.
+Do instead: if you have no more work for them, close each one, e.g. close_agent {"target":"a0"} (one call per agent). Keep any you will re-task.

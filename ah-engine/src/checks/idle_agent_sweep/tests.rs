@@ -122,13 +122,9 @@ fn codex_agents_are_finished_until_closed_or_retasked() {
 fn the_advisory_names_ten_counts_the_rest_and_ends_the_oldest_first() {
     let list: Vec<Idle> = (0..12).map(|i| Idle { id: format!("a{i}"), label: format!("a{i}"), idle_since_ms: T0 - (60 - i) as f64 * 60_000.0 }).collect();
     let t = message(&list, false, T0).unwrap();
-    assert!(t.starts_with("\u{1f4a1} anti-hall \u{b7} idle-agents: 12 finished agents are idle and not stopped: a0 (60m), a1 (59m)"), "{t}");
-    assert!(t.contains("a9 (51m), and 2 more.\nWhy: each one keeps its process and context alive until it is stopped.\nDo instead: if you have no more work for them, stop each one, e.g. TaskStop {\"task_id\":\"a0\"} (one call per agent)."), "{t}");
+    insta::assert_snapshot!("advisory_twelve_idle_agents", t);
     let c = message(&list[..1], true, T0).unwrap();
-    assert!(
-        c.contains("1 finished agent is idle and not closed: a0 (60m).") && c.contains("close_agent {\"target\":\"a0\"}") && c.contains("holds a thread slot"),
-        "{c}"
-    );
+    insta::assert_snapshot!("advisory_one_codex_agent", c);
 }
 
 #[test]
