@@ -379,7 +379,7 @@ arguments, is in the generated reference.
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
-| `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary` and the plain `heartbeat` itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
+| `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary`, the plain `heartbeat` and `inbox tick <id> --quiet` itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
 
 ### Replacing the Node operator scripts (cutover notes)
 
@@ -502,9 +502,27 @@ verdict and app-cache files it wrote with the engine's. Node's write never runs 
 the state directory: `{"ts","verb","result","ms"}` with `result` `match`, `mismatch` (plus both outputs, capped, and `sameHeartbeat`/`sameVerdict`/`sameCache`) or `error` (Node could not run);
 count mismatches per verb before trusting a port. Keys: `mesh_write.verify_*`.
 
-**Still in Node, on purpose:** `inbox read-primary` (receipt write, sibling-partition merge, gap withholding and the caps are one
-transaction of about 700 lines of Node), `inbox tick` (needs `inbox count` plus the wake-watch lock, live-children, limit-conserve and re-arm
-cues) and the plain `roster` (it spawns `hivecontrol` for native children and renders the archived-row hints). In `shadow` mode a verb that can be replayed on a store copy logs
+**`inbox tick <id> --quiet` (`src/meshw/tick.rs`; Node: `cmdInboxTick`, `inboxTickQuietLine`).** A tick counts the unread mail of the
+workspace (the same NDJSON + store union as the heartbeat, read at the caller's own `reader_cursors` rows when the caller is a declared
+reader, else at the floor), refreshes three records and prints one line. Writes, all best effort as in Node: `wake-tick/<id>.json` (`ts`,
+`unreadTotal`, `meshGapWithheld`, `known`, the carried-over `seq`), the heartbeat refresh (`ts`, `state_ts`, `version` of the existing
+`heartbeats/<id>.json`, or a minimal `inbox-tick` record) and, when it found unread mail and a wake-watch lock exists, a line of
+`cron-found-mail.jsonl` (kept to `mesh_write.cron_found_mail_cap`). The engine answers the steady state only: the `--quiet` form with no
+other flag, a descriptor with an inbox and cursor file, one store partition (a second registry row of the same worktree is a mesh group
+that Node folds: defers), floor rows in place, a known count, a live wake-watch lock (fresh within `mesh_write.wake_lock_stale_ms`, its pid
+not provably gone) so `watcherArmed` is `true`, no delivery-log batch pending, spilled or left in the temp directory, and no trace of the
+`devswarm.tickRosterEvery` setting. Everything else defers before the first write: `--child` (it first imports the native queue), the JSON form,
+an unarmed watcher (the idle, archived and limit skips and the re-arm cue stay in Node), an unknown count, a Primary whose anchor session Node would
+refresh, a child addressing another id. Telemetry: `InboxTick` lines. The background Node check
+(`mesh-verify.jsonl`) re-runs the real tick on a scratch copy of the DevSwarm root (store linked) with the engine's clock and reader nonce and
+compares its line, its refreshed heartbeat, its wake-tick marker and its cron-found-mail file with the engine's. One difference from Node: Node opens the
+store read-write (and would apply a pending schema migration); the engine opens it read only, so the migration waits for the next Node writer.
+
+**Still in Node, on purpose:** `inbox read-primary` (not read-only: it files a read receipt under a fresh random id, promotes an
+`unclaimed:` session, merges the sibling partitions with gap withholding and the caps, runs Jev triage on what it prints and renders
+`ackCommand` from the stable CLI path: about 700 lines of Node, one transaction), `inbox tick` in every form but the one above, and the plain
+`roster` (its rows come from the liveness, transcript, idle, plan, app-database and alias machinery, plus `hivecontrol` for native children;
+no narrow case is both useful and provably identical). In `shadow` mode a verb that can be replayed on a store copy logs
 `match`/`mismatch`/`concurrent`/`defer`; `inbox ack-primary` cannot (it consumes a receipt file outside the store), so Node runs it and the line
 says `skipped`.
 

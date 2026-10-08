@@ -10,5 +10,7 @@ const argv = process.argv.slice(2);
 const now = Number(process.env.AH_ENGINE_MESH_NOW_MS);
 const { code, result } = cli.run(argv, Number.isFinite(now) ? { now } : {});
 const isSendQuiet = argv[0] === 'send' && argv.includes('--quiet');
-const out = isSendQuiet && !argv.includes('--json') ? cli.sendQuietLine(result) : JSON.stringify(result);
+const isTickQuiet = argv[0] === 'inbox' && argv[1] === 'tick' && argv.includes('--quiet');
+const human = !argv.includes('--json');
+const out = isSendQuiet && human ? cli.sendQuietLine(result) : (isTickQuiet && human ? cli.inboxTickQuietLine(result) : JSON.stringify(result));
 process.stdout.write(JSON.stringify({ code, stdout: out + '\n' }) + '\n');
