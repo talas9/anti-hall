@@ -488,11 +488,16 @@ fn breaker_opens_after_repeated_failures_and_skips_engine() {
 fn crash_loop_stops_respawning_records_reason_and_advises_once() {
     let e = Env::new("loop", &[("AH_ENGINE_CRASH_N", "3")]);
     for i in 0..3 {
-        e.warm();
-        let pid = e.pid().unwrap_or_else(|| panic!("no daemon on round {i}"));
+        // Exactly one daemon per round, started directly and awaited with `ctl ping` (which never spawns). `warm()` would
+        // retry the hook, and every retry that still finds no daemon spawns another one; on a loaded machine such a surplus
+        // daemon is still starting when the round's daemon is killed, takes the free lock, and answers after the crash loop
+        // tripped although no client respawned anything.
+        let mut d = e.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        assert!(wait_for(|| e.pid().is_some()), "no daemon on round {i}");
+        assert_eq!(e.pid(), Some(d.id()), "round {i}: the daemon answering is the one this round started");
         // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
-        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-        assert!(wait_for(|| !alive(pid)));
+        unsafe { libc::kill(d.id() as i32, libc::SIGKILL) };
+        d.wait().unwrap(); // reaped: a zombie would still count as alive
     }
     // the next call finds the daemon dead 3 times: no respawn, fallback runs, advisory attached once
     let (out, _, _) = e.hook(DENY_IN, true);
