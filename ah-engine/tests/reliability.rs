@@ -172,8 +172,11 @@ fn bad_replies_run_the_node_fallback_never_allow() {
 fn engine_down_runs_fallback_and_plain_allow_only_without_one() {
     let e = Env::new("down", &[("AH_ENGINE_NOSPAWN", "1")]);
     assert_eq!(e.hook(DENY_IN, true).0, "NODE-FALLBACK");
+    // review finding 21: no engine AND no fallback on a guard event was a plain allow; it hands over to the Node hook instead
     let (out, code, _) = e.hook(DENY_IN, false);
-    assert_eq!((out.as_str(), code), ("", 0), "no engine AND no fallback = plain allow");
+    assert_eq!((out.as_str(), code), ("", ah_engine::defaults::num("dispatch.defer_exit") as i32), "a guard event never reads as an allow");
+    let quiet = r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"Notification","message":"hi"}"#;
+    assert_eq!(e.hook(quiet, false).1, 0, "a non-guard event with no engine and no fallback stays the neutral no-op");
     // fallback unavailable (node missing) is the same plain allow
     let mut c = e.cmd();
     c.env("AH_ENGINE_NODE", "/nonexistent/node").args(["hook", "--fallback"]).arg(e.dir.join("fb.sh"));
@@ -181,6 +184,24 @@ fn engine_down_runs_fallback_and_plain_allow_only_without_one() {
     ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();
     assert!(o.stdout.is_empty() && o.status.success());
+}
+
+#[cfg(target_os = "macos")] // RLIMIT_NPROC counts processes only here (Linux counts threads too, which the client needs)
+#[test]
+fn a_daemon_that_cannot_be_forked_is_logged_with_its_errno() {
+    // review finding 18: spawn_daemon dropped the fork error (`.spawn().ok()`), so EAGAIN left no trace
+    let e = Env::new("nofork", &[]);
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let c = e.cmd();
+    let envs: Vec<(std::ffi::OsString, std::ffi::OsString)> = c.get_envs().filter_map(|(k, v)| Some((k.to_owned(), v?.to_owned()))).collect();
+    let mut sh = Command::new("/bin/sh");
+    // a process limit below what this user already runs: every fork fails with EAGAIN, exec does not fork
+    sh.args(["-c", "ulimit -u 1 2>/dev/null; exec \"$0\" hook", BIN]).envs(envs).env_remove("AH_ENGINE_NOSPAWN");
+    let mut ch = sh.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
+    ah_engine::discard::harmless(ch.wait());
+    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("spawn_fail\tos35"), "the failed fork is logged with EAGAIN: {log:?}");
 }
 
 #[test]
