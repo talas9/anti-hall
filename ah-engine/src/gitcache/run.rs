@@ -44,6 +44,8 @@ impl<'a> Runner<'a> {
         for (k, v) in self.env {
             cmd.env(k, v);
         }
+        // never past the time the daemon's client still waits (review finding 4); a timed-out run is never cached
+        let timeout = crate::deadline::clamp(self.lim.timeout);
         let mut child = cmd.spawn().map_err(fail)?;
         let pid = child.id() as i32;
         let mut out = child.stdout.take().ok_or_else(|| fail(std::io::Error::other("no stdout")))?;
@@ -56,7 +58,7 @@ impl<'a> Runner<'a> {
         let status = loop {
             match child.try_wait() {
                 Ok(Some(st)) => break st,
-                Ok(None) if start.elapsed() < self.lim.timeout => std::thread::sleep(self.lim.poll),
+                Ok(None) if start.elapsed() < timeout => std::thread::sleep(self.lim.poll),
                 Ok(None) => {
                     // the whole group: a git that spawned a helper must not leave it running (D9)
                     // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a pid that already exited just fails with ESRCH.

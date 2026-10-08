@@ -29,8 +29,11 @@ pub enum Exch {
     Reply(Kind, String),
     /// Nothing is listening (no socket, or connection refused).
     Absent,
-    /// A daemon may be there but the exchange failed: timeout, unsafe socket, bad or truncated frame.
+    /// A daemon may be there but the exchange failed: unsafe socket, bad or truncated frame, an I/O error.
     Failed(String),
+    /// No reply within the deadline. A daemon that still answers a ping is slow but healthy, which the client counts apart
+    /// from failures (review finding 4); one that does not is a failure.
+    Slow(String),
 }
 
 fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration) -> Exch {
@@ -57,7 +60,8 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration) -> Exch {
     }
     let mut buf = Vec::new();
     if let Err(e) = (&mut s).take(defaults::num("client.max_reply")).read_to_end(&mut buf) {
-        return Exch::Failed(defaults::render("msg.client_io", &[("what", &"read"), ("err", &e)]));
+        let why = defaults::render("msg.client_io", &[("what", &"read"), ("err", &e)]);
+        return if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) { Exch::Slow(why) } else { Exch::Failed(why) };
     }
     match frame::decode(&buf) {
         Ok((k, body)) => Exch::Reply(k, body),
@@ -73,7 +77,7 @@ pub fn exchange(sock: &Path, payload: &[u8], deadline: Duration) -> Exch {
     std::thread::spawn(move || {
         crate::discard::harmless(tx.send(exchange_inner(&sock, &payload, deadline))); // keep: the receiver is gone; nobody is waiting for the result
     });
-    rx.recv_timeout(deadline + defaults::millis("client.deadline_slack_ms")).unwrap_or_else(|_| Exch::Failed(defaults::text("msg.client_timeout").into()))
+    rx.recv_timeout(deadline + defaults::millis("client.deadline_slack_ms")).unwrap_or_else(|_| Exch::Slow(defaults::text("msg.client_timeout").into()))
 }
 
 fn ctl_body(sock: &Path, req: &str) -> Option<String> {
@@ -86,6 +90,11 @@ fn ctl_body(sock: &Path, req: &str) -> Option<String> {
 /// `Some("pong <version> <pid>")` when a daemon answers on `sock`.
 pub fn ping(sock: &Path) -> Option<String> {
     ctl_body(sock, "CTL ping\n").filter(|r| r.starts_with("pong "))
+}
+
+/// True when a daemon answers a ping on `sock` within `deadline`.
+fn ping_within(sock: &Path, deadline: Duration) -> bool {
+    matches!(exchange(sock, b"CTL ping\n", deadline), Exch::Reply(Kind::Ok, b) if b.starts_with("pong "))
 }
 
 /// Send a control verb (`reload`, `stop`, `ping`, `status`).
@@ -185,6 +194,15 @@ pub(crate) fn attempt(payload: &[u8], cfg: &ClientConfig, have_fallback: bool) -
         Exch::Reply(_, _) => None, // BUSY or ERR: the daemon shed or could not evaluate it
         Exch::Failed(why) => {
             health::breaker_failure(cfg, &why);
+            None
+        }
+        Exch::Slow(why) => {
+            // a quick ping tells a slow request on a healthy daemon (not a reason to bypass the engine) from a hung one
+            if ping_within(&sock, defaults::millis("client.slow_probe_ms")) {
+                health::log_event("client_slow", "engine", &why);
+            } else {
+                health::breaker_failure(cfg, &why);
+            }
             None
         }
         Exch::Absent => {

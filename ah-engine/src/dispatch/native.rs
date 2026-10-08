@@ -41,6 +41,10 @@ pub struct Meta {
     /// stdin (verify-first picks its rotating line from it).
     #[serde(default)]
     pub payload_sha1: Option<String>,
+    /// How long the client waits for the reply, in milliseconds (`client.deadline_ms` on its side): the daemon clamps the
+    /// budgets that could outlast it ([`crate::deadline`]). Absent from an older client: the daemon's own default applies.
+    #[serde(default)]
+    pub deadline_ms: Option<u64>,
 }
 
 /// One built-in check's answer for one entry.
@@ -150,6 +154,7 @@ mod tests {
             plan: vec![],
             cfg: String::new(),
             payload_sha1: None,
+            deadline_ms: None,
         }
     }
 
@@ -297,6 +302,7 @@ mod tests {
                 plan: Vec::new(),
                 cfg: String::new(),
                 payload_sha1: None,
+                deadline_ms: None,
             };
             // the other batches' checks of the same event answer here too (their own tests pin their bytes): only the verify-first
             // family and fable-availability are looked at
@@ -329,6 +335,7 @@ mod tests {
             plan: Vec::new(),
             cfg: String::new(),
             payload_sha1: None,
+            deadline_ms: None,
         };
         assert_eq!(evaluate(&meta, &p, &|_, _, _| {}).into_iter().map(|(_, a)| a).collect::<Vec<_>>(), vec![Answer::Defer]);
     }

@@ -295,6 +295,12 @@ value = 50
 min = 1
 unit = "ms"
 
+[daemon.reply_slack_ms]
+doc = "Time kept back from a request's client deadline (client.deadline_ms, or what a dispatch request says) to write the reply: the inner budgets that could outlast the client's wait (a git call, a Jev consult) are clamped to the deadline minus this, so a slow dependency costs a fallback, not a lost answer."
+value = 150
+min = 0
+unit = "ms"
+
 [daemon.accept_poll_ms]
 doc = "Accept-loop poll interval while serving."
 value = 200
@@ -418,6 +424,12 @@ unit = "bytes"
 doc = "Largest hook payload the client reads from stdin."
 value = 8388608
 unit = "bytes"
+
+[client.slow_probe_ms]
+doc = "After an exchange times out, how long the client waits for a ping: a daemon that answers is slow but healthy (logged as client_slow, not counted toward the breaker); one that does not counts as a failure."
+value = 200
+min = 1
+unit = "ms"
 
 [client.ctl_timeout_ms]
 doc = "Deadline for a control exchange (ping, status, reload, stop, project ops)."

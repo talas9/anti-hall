@@ -175,6 +175,13 @@ impl Ctx {
         if self.jev_spent_ms + budget + crate::defaults::num("git.jev_backstop_ms") > crate::defaults::num("git.jev_total_budget_ms") {
             return false;
         }
+        // inside a daemon request whose client stops waiting before this consult could finish: the reply would be lost
+        // after the regex verdict was taken without Jev, so the whole verdict goes to Node, whose hook consults Jev with its
+        // full budget (review finding 4; never weaker than Node)
+        if crate::deadline::remaining().is_some_and(|left| (left.as_millis() as u64) < budget + crate::defaults::num("git.jev_backstop_ms")) {
+            self.overflow = true;
+            return false;
+        }
         let Some(state) = crate::checks::replykit::io::prefix_utf16(text, crate::defaults::num("git.jev_state_chars") as usize) else {
             self.overflow = true;
             return false;

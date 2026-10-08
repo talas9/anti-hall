@@ -388,6 +388,34 @@ fn a_full_descriptor_table_backs_the_accept_loop_off_instead_of_spinning() {
 }
 
 #[test]
+fn a_slow_but_healthy_daemon_is_not_counted_toward_the_breaker() {
+    // review finding 4: every timeout counted toward the breaker, so a healthy daemon serving slow requests got bypassed
+    let e = Env::new("slowok", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "150"), ("AH_ENGINE_BREAKER_N", "3")]);
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let l = UnixListener::bind(e.eng().join("e.sock")).unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut s = s;
+                let mut b = Vec::new();
+                ah_engine::discard::harmless(s.read_to_end(&mut b));
+                if b.starts_with(b"CTL ping") {
+                    ah_engine::discard::harmless(s.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Ok, "pong 0.1.0 1")));
+                } else {
+                    std::thread::sleep(Duration::from_secs(5)); // a slow request
+                }
+            });
+        }
+    });
+    for _ in 0..5 {
+        assert_eq!(e.hook(DENY_IN, true).0, "NODE-FALLBACK");
+    }
+    assert!(!e.eng().join("breaker.until").exists(), "a daemon that answers pings is slow, not broken");
+    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("client_slow") && !log.contains("client_fail"), "{log}");
+}
+
+#[test]
 fn breaker_opens_after_repeated_failures_and_skips_engine() {
     let e = Env::new("brk", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "150"), ("AH_ENGINE_BREAKER_N", "3")]);
     fake_server(&e, || None);
