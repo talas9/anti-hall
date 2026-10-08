@@ -56,6 +56,22 @@ impl Params {
             boot_slop_s: defaults::num("swarm_guard.lock_boot_slop_s"),
         }
     }
+
+    /// The values of the defaults group `prefix` (`<prefix>.lock_stale_ms`, `.lock_wait_ms`, `.lock_step_ms`,
+    /// `.lock_reclaim_stale_ms`, `.lock_release_tries`, `.lock_release_step_ms`, `.lock_boot_slop_s`). `None` when the group
+    /// is not shipped.
+    pub fn from_group(prefix: &str) -> Option<Params> {
+        let num = |k: &str| defaults::get(&format!("{prefix}.{k}")).and_then(|e| e.value.as_integer()).map(|_| defaults::num(&format!("{prefix}.{k}")));
+        Some(Params {
+            stale_ms: num("lock_stale_ms")?,
+            wait_ms: num("lock_wait_ms")?,
+            step_ms: num("lock_step_ms")?,
+            reclaim_stale_ms: num("lock_reclaim_stale_ms")?,
+            release_tries: num("lock_release_tries")?,
+            release_step_ms: num("lock_release_step_ms")?,
+            boot_slop_s: num("lock_boot_slop_s")?,
+        })
+    }
 }
 
 /// A held lock; release it with [`Held::release`] (dropping it without releasing leaves the file, which goes stale).
