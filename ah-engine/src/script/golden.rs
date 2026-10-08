@@ -128,6 +128,10 @@ fn watched(home: &str, real: &str, rel: &str) -> Value {
 }
 
 /// What a case's `watch` files hold after a run: `{rel: text-with-{TS}-or-null}`.
+pub fn watched_all_pub(case: &Value, l: &Laid) -> Value {
+    watched_all(case, l)
+}
+
 fn watched_all(case: &Value, l: &Laid) -> Value {
     let rels: Vec<&str> = case.get("watch").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     Value::Object(rels.iter().map(|r| (r.to_string(), watched(&l.home, &l.real, r))).collect())

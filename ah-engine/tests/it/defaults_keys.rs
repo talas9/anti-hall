@@ -41,12 +41,11 @@ fn the_compiled_key_list_is_the_scanned_one_and_covers_every_call_shape() {
     let scanned = keyscan::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
     let compiled: BTreeSet<&str> = ah_engine::defaults::required().iter().map(|(k, _)| *k).collect();
     assert_eq!(compiled, scanned.keys().map(String::as_str).collect::<BTreeSet<_>>(), "build.rs and the scanner disagree");
-    for k in ["env.done_file", "sibling_sweep.text_max_bytes", "git.label_override", "files.log", "store.kv_cap", "dispatch.msg_no_fallback"] {
+    for k in ["env.done_file", "files.log", "store.kv_cap", "dispatch.msg_no_fallback"] {
         assert!(compiled.contains(k), "{k} is read by the source but not checked at load");
     }
     let kind = |k: &str| ah_engine::defaults::required().iter().find(|(x, _)| *x == k).map(|(_, t)| *t);
     use ah_engine::defaults::Kind;
-    assert_eq!(kind("sibling_sweep.text_max_bytes"), Some(Kind::Int));
     assert_eq!(kind("env.done_file"), Some(Kind::Str));
     assert_eq!(kind("dispatch.guard_events"), Some(Kind::List));
 }
@@ -90,6 +89,13 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
                 assert!(shipped.contains(&key), "{}: reads defaults key {key}, which is not shipped", f.display());
                 literals.insert(key);
             }
+        }
+    }
+    // the git script reads its `git.*` tables through the one-argument helper `c('short_name')`
+    let c_re = regex::Regex::new(r#"\bc\('([a-z][a-z0-9_]*)'\)"#).unwrap();
+    for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == "git.js")) {
+        for c in c_re.captures_iter(&fs::read_to_string(f).unwrap()) {
+            literals.insert(format!("git.{}", &c[1]));
         }
     }
     let indirect = |k: &str| {

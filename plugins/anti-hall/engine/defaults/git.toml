@@ -61,12 +61,6 @@ value = ["-exec", "-execdir", "-ok", "-okdir"]
 doc = "GNU parallel argument-source separators."
 value = [":::", "::::", ":::+", "::::+"]
 
-[git.redirect_words]
-doc = "Shell redirection operators, which are not command words."
-value = [
-  "<", "<<", "<<<", ">", ">>", "&>", "&>>", ">&", "<&", "<>", ">|",
-]
-
 [git.copy_verbs]
 doc = "Commands that copy, move or link files, checked for a launcher-directory target."
 value = ["cp", "mv", "install", "ln", "rsync", "ditto"]
@@ -374,10 +368,6 @@ value = 10
 doc = "Deepest alias or shell-definition expansion that is rescanned."
 value = 3
 
-[git.max_nest]
-doc = "Nesting limit for the substitution scanners (JS overflows its stack far deeper and its caller then scans the raw text, which is what a bail-out means here)."
-value = 1500
-
 [git.launcher_hops]
 doc = "Most symlink hops followed when resolving a dangling launcher link."
 value = 10
@@ -421,53 +411,31 @@ doc = "Timeout for each git query of the handover check."
 value = 3000
 unit = "ms"
 
-[git.child_poll_ms]
-doc = "Poll interval while a git child process runs."
-value = 1
-unit = "ms"
-
-[git.stack_mb]
-doc = "Stack size of the thread the check runs on: the parsers recurse on nested input, so a pathological command must not overflow a daemon worker."
-value = 64
-unit = "MB"
-
 # ---- settings, files and environment names (read per request) --------------------------------------------
 
 [git.guard_name]
 doc = "The guard id this check answers to in skip.json and in the skip command."
 value = "git-guard"
 
-[git.settings_file]
-doc = "Settings file, relative to the home directory."
-value = ".anti-hall/settings.json"
-
-[git.skip_file]
-doc = "Skip file, relative to the home directory (a skipped guard is allowed until its expiry time)."
-value = ".anti-hall/skip.json"
-
-[git.plugin_option_prefix]
-doc = "Prefix of the environment variables the host sets from plugin options."
-value = "CLAUDE_PLUGIN_OPTION_"
-
 [git.setting_git_guard]
 doc = "Master switch of the check: settings.json section and key, environment variable and plugin-option name."
-value = { section = "safety", key = "gitGuard", env = "ANTIHALL_GIT_GUARD", option = "safety_git_guard" }
+value = { section = "safety", key = "gitGuard", env = "ANTIHALL_GIT_GUARD", option = "safety_git_guard", type = "boolean", default = true }
 
 [git.setting_heredoc_data]
 doc = "Switch for data-heredoc masking."
-value = { section = "guards", key = "gitGuardHeredocData", env = "ANTIHALL_GIT_GUARD_HEREDOC_DATA", option = "" }
+value = { section = "guards", key = "gitGuardHeredocData", env = "ANTIHALL_GIT_GUARD_HEREDOC_DATA", option = "", type = "boolean", default = true }
 
 [git.setting_alias_resolve]
 doc = "Switch for git alias and shell definition resolution."
-value = { section = "guards", key = "gitAliasResolve", env = "ANTIHALL_GIT_ALIAS_RESOLVE", option = "" }
+value = { section = "guards", key = "gitAliasResolve", env = "ANTIHALL_GIT_ALIAS_RESOLVE", option = "", type = "boolean", default = true }
 
 [git.setting_reused_message]
 doc = "Switch for the reused-commit-message check."
-value = { section = "guards", key = "gitReusedMessageCheck", env = "ANTIHALL_GIT_REUSED_MESSAGE_CHECK", option = "" }
+value = { section = "guards", key = "gitReusedMessageCheck", env = "ANTIHALL_GIT_REUSED_MESSAGE_CHECK", option = "", type = "boolean", default = true }
 
 [git.setting_handover_guard]
 doc = "Switch for the handover-commit guard."
-value = { section = "guards", key = "handoverCommitGuard", env = "ANTIHALL_HANDOVER_COMMIT_GUARD", option = "guards_handover_commit_guard" }
+value = { section = "guards", key = "handoverCommitGuard", env = "ANTIHALL_HANDOVER_COMMIT_GUARD", option = "guards_handover_commit_guard", type = "boolean", default = true }
 
 [git.launcher_dir_pattern]
 doc = "Pattern (case-insensitive) that recognises a path inside the plugin launcher directory."

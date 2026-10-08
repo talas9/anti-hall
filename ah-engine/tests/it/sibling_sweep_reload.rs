@@ -1,11 +1,12 @@
-//! Review P2 #7: the sibling-sweep settings cache follows a defaults reload. It was keyed on the user's two config files
-//! only, so an edited shipped default (the layer every unset setting resolves to) was not seen until a restart. One test
-//! in its own binary: it swaps this process's defaults snapshot.
+//! Review P2 #7: the sibling-sweep settings (read by the script through `ahHost.cfgLive`) follow a defaults reload. The cache was
+//! keyed on the user's two config files only, so an edited shipped default (the layer every unset setting resolves to) was not seen
+//! until a restart. One test in its own binary: it swaps this process's defaults snapshot.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-use ah_engine::cfgstore::Paths;
-use ah_engine::checks::sibling_sweep::tune;
+use ah_engine::checks::git::util::Settings;
 use ah_engine::defaults;
+use ah_engine::script::host;
+use std::collections::HashMap;
 use std::path::Path;
 
 fn copy_tree(from: &Path, to: &Path) {
@@ -20,14 +21,21 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
+fn live(home: &str, key: &str) -> u64 {
+    let st = Settings { home: home.to_string(), env: HashMap::new() };
+    host::with_call(st, || host::cfg_live(key)).unwrap().parse().unwrap()
+}
+
 #[test]
 fn an_edited_shipped_default_reaches_the_sibling_sweep_settings_after_a_reload() {
     let root = std::env::temp_dir().join(format!("ah-sweep-reload-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults"), &root.join("engine/defaults"));
     defaults::reload(Some(&root)).unwrap();
-    let paths = Paths { user: root.join("no-user.toml"), settings: None };
-    let before = tune::load(&paths).num("sibling_sweep.text_max_bytes");
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.to_string_lossy().to_string();
+    let before = live(&home, "sibling_sweep.text_max_bytes");
     let file = root.join("engine/defaults/sibling_sweep.toml");
     let text = std::fs::read_to_string(&file).unwrap();
     let head = "[sibling_sweep.text_max_bytes]\n";
@@ -36,6 +44,10 @@ fn an_edited_shipped_default_reaches_the_sibling_sweep_settings_after_a_reload()
     let end = v + text[v..].find('\n').unwrap();
     std::fs::write(&file, format!("{}value = {}{}", &text[..v], before + 1, &text[end..])).unwrap();
     assert_eq!(defaults::reload(Some(&root)).unwrap(), defaults::Reloaded::Applied);
-    assert_eq!(tune::load(&paths).num("sibling_sweep.text_max_bytes"), before + 1, "the reload reaches the cached settings");
+    assert_eq!(live(&home, "sibling_sweep.text_max_bytes"), before + 1, "the reload reaches the cached settings");
+    // the owner's settings.json section wins over the shipped default and is read on the next call
+    std::fs::create_dir_all(format!("{home}/.anti-hall")).unwrap();
+    std::fs::write(format!("{home}/.anti-hall/settings.json"), r#"{"sibling_sweep":{"text_max_bytes":2048}}"#).unwrap();
+    assert_eq!(live(&home, "sibling_sweep.text_max_bytes"), 2048);
     ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
 }

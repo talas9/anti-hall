@@ -89,13 +89,6 @@ unit = "bytes"
 min = 65536
 max = 16777216
 
-[sibling_sweep.read_buf_bytes]
-doc = "The size of the buffer the transcript window is read through."
-value = 65536
-unit = "bytes"
-min = 4096
-max = 1048576
-
 [sibling_sweep.line_max_bytes]
 doc = "A transcript line longer than this is skipped unparsed (almost always one huge tool result); it bounds the memory of the one line being read."
 value = 524288

@@ -15,13 +15,6 @@ ah-engine = { path = ".." }
 [workspace]
 
 [[bin]]
-name = "tokenize"
-path = "fuzz_targets/tokenize.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "heredoc"
 path = "fuzz_targets/heredoc.rs"
 test = false

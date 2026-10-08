@@ -96,8 +96,11 @@ fn scripted_checks_stay_inside_the_latency_budget() {
         let (p50, p95, p99) = (us[us.len() / 2], us[us.len() * 95 / 100], us[us.len() * 99 / 100]);
         println!("LATENCY {:<24} calls={:<6} cold={cold:>6}us p50={p50:>5}us p95={p95:>5}us p99={p99:>5}us budget={budget}us", c.name(), us.len());
         measured += 1;
-        if p95 as u64 > budget {
-            over.push(format!("{} p95 {p95}us", c.name()));
+        // a check that waits on a child process or a disk sync has that wait in its own p95 (the compiled port paid it too): its
+        // budget is set per check in `script.p95_budget_by_check`, with the measured compiled baseline noted beside it
+        let allowed = ah_engine::defaults::raw("script.p95_budget_by_check").get(c.name()).and_then(ah_engine::defaults::V::as_integer).map_or(budget, |b| b as u64);
+        if p95 as u64 > allowed {
+            over.push(format!("{} p95 {p95}us over {allowed}us", c.name()));
         }
     }
     assert!(measured >= 6, "measured the scripted checks that have a corpus: {measured}");

@@ -54,24 +54,6 @@ proptest! {
     #![proptest_config(cfg())]
 
     #[test]
-    fn git_tokenize_never_panics(s in any_text()) {
-        bounded("tokenize", &s, SLOW, || { let t = tk::tokenize(&s); tk::effective_verb(&t); });
-        bounded("split_segments", &s, SLOW, || tk::split_segments(&s));
-    }
-
-    #[test]
-    fn git_backstop_and_heredocs(s in any_text()) {
-        bounded("backstop_pieces", &s, SLOW, || tk::backstop_pieces(&s));
-        bounded("backstop_verb", &s, SLOW, || tk::backstop_verb(&s));
-        let bodies = bounded("extract_heredoc_bodies", &s, SLOW, || tk::extract_heredoc_bodies(&s));
-        // `<<-` strips leading tabs from the body (Node's parseHeredocAt does too, `dashStrip`), so compare tab-free.
-        let flat = s.replace('\t', "");
-        for b in &bodies {
-            prop_assert!(flat.contains(&b.body.replace('\t', "")), "body {:?} is not a substring of {:?}", b.body, s);
-        }
-    }
-
-    #[test]
     fn heredoc_opener_parse_total(s in any_text(), at in 0usize..80) {
         let cs: Vec<char> = s.chars().collect();
         bounded("parse_heredoc_raw", &s, SLOW, || tk::parse_heredoc_raw(&cs, at));
