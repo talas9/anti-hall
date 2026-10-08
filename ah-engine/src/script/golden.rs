@@ -27,7 +27,7 @@ fn plugin() -> String {
 }
 
 fn fill(s: &str, home: &str, real: &str) -> String {
-    s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home)
+    super::expand_now(&s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home), crate::checks::replykit::io::now_ms())
 }
 
 fn sub(v: &Value, home: &str, real: &str) -> Value {
@@ -52,6 +52,8 @@ pub struct Laid {
     pub env: RequestEnv,
     pub home: String,
     pub real: String,
+    /// The case sets `normTs`: runs of 12 or more digits (a clock reading) are `{TS}` in its stored and compared answers.
+    pub norm: bool,
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -90,12 +92,31 @@ pub fn lay(case: &Value) -> Laid {
         env: RequestEnv::from_pairs(env),
         home,
         real,
+        norm: case.get("normTs").and_then(Value::as_bool).unwrap_or(false),
     }
+}
+
+/// `text` with every run of 12 or more digits (a clock reading) replaced by `{TS}`.
+fn norm_ts(text: &str) -> String {
+    let mut out = String::new();
+    let mut run = String::new();
+    for ch in text.chars().chain(std::iter::once('\0')) {
+        if ch.is_ascii_digit() {
+            run.push(ch);
+            continue;
+        }
+        out.push_str(if run.len() >= 12 { "{TS}" } else { &run });
+        run.clear();
+        if ch != '\0' {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// The verdict as the corpus stores it, with the case's directories replaced by their placeholders.
 pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
-    let u = |s: &str| unsub(s, &l.home, &l.real);
+    let u = |s: &str| if l.norm { norm_ts(&unsub(s, &l.home, &l.real)) } else { unsub(s, &l.home, &l.real) };
     match v {
         None => json!({"v": "none"}),
         Some(Verdict::Allow) => json!({"v": "allow"}),
@@ -122,20 +143,7 @@ pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
 /// The text of a watched file with its timestamps (runs of 12 or more digits) replaced by `{TS}`, or `null` when absent.
 fn watched(home: &str, real: &str, rel: &str) -> Value {
     let Ok(text) = std::fs::read_to_string(Path::new(home).join(rel)) else { return Value::Null };
-    let text = unsub(&text, home, real);
-    let mut out = String::new();
-    let mut run = String::new();
-    for ch in text.chars().chain(std::iter::once('\0')) {
-        if ch.is_ascii_digit() {
-            run.push(ch);
-            continue;
-        }
-        out.push_str(if run.len() >= 12 { "{TS}" } else { &run });
-        run.clear();
-        if ch != '\0' {
-            out.push(ch);
-        }
-    }
+    let out = norm_ts(&unsub(&text, home, real));
     Value::String(out)
 }
 

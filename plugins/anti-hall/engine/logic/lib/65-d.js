@@ -26,3 +26,8 @@ ah.plugin = {
 };
 // The CPU count as Node's os.availableParallelism() reads it, or null when the engine cannot read it the same way.
 ah.sys.cores = function () { return ahNull(ahHost.cores()); };
+// The home directory state files may live under: {status: 'ok' | 'guarded' | 'unknown', home} (guarded: a test run against the real
+// home, so a hook reads and writes no state; unknown: no usable HOME).
+ah.homeGuard = function () { return JSON.parse(ahHost.homeGuard()); };
+// The project root of an absolute working directory as the handover finder resolves it, or null when the engine cannot tell.
+ah.project = { root: function (cwd) { return ahNull(ahHost.projectRoot(cwd)); } };
