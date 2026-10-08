@@ -13,7 +13,10 @@ before="$(daemons)"
 # every warning an error. --release shares its build products with the test run below.
 cargo clippy --release --all-targets -- -D warnings || exit 1
 if cargo nextest --version >/dev/null 2>&1; then
-  cargo nextest run --release "$@"
+  # CI (GitHub Actions sets CI=true) runs the `ci` profile of .config/nextest.toml; anywhere else the default one
+  profile=default
+  [ "${CI:-}" = true ] && profile=ci
+  cargo nextest run --release --profile "$profile" "$@"
   rc=$?
   if [ "$rc" -eq 0 ]; then
     cargo test --release --doc
