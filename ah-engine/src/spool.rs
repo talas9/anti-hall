@@ -92,11 +92,17 @@ pub fn new_write_id() -> String {
 /// that is stuck makes this caller give up (`WouldBlock`), not hang. The lock is held while the returned file is open.
 fn lock(p: &Path) -> std::io::Result<File> {
     let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(crate::paths::lock_for(p))?;
+    flock_bounded(&f)?;
+    Ok(f)
+}
+
+/// Take an exclusive flock on `f`, bounded by `spool.lock_wait_ms` (a stuck holder makes this give up with `WouldBlock`).
+fn flock_bounded(f: &File) -> std::io::Result<()> {
     let until = std::time::Instant::now() + defaults::millis("spool.lock_wait_ms");
     loop {
         // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(f);
+            return Ok(());
         }
         let e = std::io::Error::last_os_error();
         if e.kind() != std::io::ErrorKind::WouldBlock || std::time::Instant::now() >= until {
@@ -106,10 +112,13 @@ fn lock(p: &Path) -> std::io::Result<File> {
     }
 }
 
-/// Lock `p` ([`lock`]) and open it for appending (creating it, mode 0600).
+/// Lock `p` ([`lock`]) and open it for appending (creating it, mode 0600). The spool file itself is flocked too: binaries from
+/// before the lock moved to `<p>.lock` serialize on the spool file alone, so during an upgrade (one release) an old appender and
+/// a new drain must still exclude each other. The flock lives as long as the returned append handle.
 fn open_locked(p: &Path) -> std::io::Result<(File, File)> {
     let l = lock(p)?;
     let f = OpenOptions::new().read(true).append(true).create(true).mode(0o600).open(p)?;
+    flock_bounded(&f)?;
     Ok((l, f))
 }
 
@@ -213,7 +222,15 @@ pub fn drain(p: &Path, apply: &mut dyn FnMut(&Record) -> Applied) -> Drained {
         }
     };
     let mut b = Vec::new();
-    if let Err(e) = File::open(p).and_then(|mut f| f.read_to_end(&mut b)) {
+    // the legacy lock (see `open_locked`): held on the spool file's current inode while it is read and replaced
+    let mut legacy = match File::open(p).and_then(|f| flock_bounded(&f).map(|()| f)) {
+        Ok(f) => f,
+        Err(e) => {
+            crate::health::log_event("spool", "drain_lock_failed", &e.to_string());
+            return out;
+        }
+    };
+    if let Err(e) = legacy.read_to_end(&mut b) {
         crate::health::log_event("spool", "drain_read_failed", &e.to_string());
         return out;
     }
@@ -261,6 +278,7 @@ pub fn drain(p: &Path, apply: &mut dyn FnMut(&Record) -> Applied) -> Drained {
     if let Err(e) = rewritten {
         crate::health::log_event("spool", "rewrite_failed", &defaults::render("msg.spool_rewrite_failed", &[("err", &e), ("n", &out.left)]));
     }
+    drop(legacy); // keep the old-inode flock until the replacement is in place
     out
 }
 
@@ -383,6 +401,22 @@ mod tests {
         assert_eq!(r.quarantined, 1);
         let q = std::fs::read_to_string(quarantine_path(&p)).unwrap();
         assert!(q.contains("mailbox full") && q.contains("\"m0\""));
+    }
+
+    #[test]
+    fn an_older_binarys_flock_on_the_spool_file_excludes_append_and_drain() {
+        // P2-7: the lock moved to <spool>.lock; an older binary still flocks the spool file itself, and neither side saw the other
+        let d = TempDir::new("legacy");
+        let p = d.0.join("spool.log");
+        append(&p, &rec(0, "s")).unwrap();
+        let old = File::open(&p).unwrap();
+        flock_bounded(&old).unwrap(); // what an older binary holds while it appends
+        let t = std::time::Instant::now();
+        assert!(matches!(append(&p, &rec(1, "s")), Err(SpoolError::Io(_))), "the append waits out, then gives up");
+        assert_eq!(drain(&p, &mut |_| Applied::Done), Drained::default(), "the drain keeps everything");
+        assert!(t.elapsed() < defaults::millis("spool.lock_wait_ms") * 4, "{:?}", t.elapsed());
+        drop(old);
+        assert_eq!(drain(&p, &mut |_| Applied::Done).applied, 1);
     }
 
     #[test]
