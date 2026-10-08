@@ -19,6 +19,7 @@ pub mod discard;
 pub mod dispatch;
 pub mod docs;
 pub mod doctor;
+pub mod dsact;
 pub mod error;
 pub mod frame;
 pub mod gate;
