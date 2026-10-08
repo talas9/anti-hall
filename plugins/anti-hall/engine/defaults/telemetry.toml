@@ -164,6 +164,10 @@ value = { kind = "counter", unit = "evaluations", labels = [] }
 doc = "Request-handler panics that were contained."
 value = { kind = "counter", unit = "panics", labels = [] }
 
+[metric.accept_errors]
+doc = "Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms."
+value = { kind = "counter", unit = "errors", labels = ["code"] }
+
 [metric.rejected_peers]
 doc = "Connections dropped because the peer uid was not ours."
 value = { kind = "counter", unit = "connections", labels = [] }

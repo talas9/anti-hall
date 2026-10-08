@@ -148,6 +148,18 @@ value = "bind {path}: {err}"
 doc = "Log detail when a built-in check's thread cannot start, so every command is deferred to Node. Placeholder: {err}."
 value = "a check thread could not start ({err}); the data-segment limit daemon.mem_mb may be smaller than git.stack_mb times the workers"
 
+[msg.log_accept_error]
+doc = "Event-log detail (rate-limited) when the daemon's accept failed for a reason other than nothing pending. Placeholders: {code} (os<n>), {err}."
+value = "accept failed ({code}: {err}); backing off before the next poll"
+
+[msg.log_accept_recovered]
+doc = "Event-log detail when the daemon accepts a connection again after accept failures (logged then, because a full descriptor table can keep the failure's own log line from being written). Placeholders: {n}, {code} (os<n> of the last failure)."
+value = "accept works again after {n} failed accepts (last {code})"
+
+[msg.log_lock_no_daemon]
+doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty)."
+value = "lock {path} held (pid {pid}) but no daemon answers; this start gives up and the call falls back to Node"
+
 [msg.exit_reason_handoff]
 doc = "Drain reason for a handoff to a newer build or a stop request."
 value = "handoff or stop"
