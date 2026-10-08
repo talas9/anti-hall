@@ -69,6 +69,7 @@ pub fn run_migrate(p: &Parsed) -> i32 {
         }
     };
     let rows = run(&ctx);
+    crate::telemetry::emit::add_items(rows.iter().filter(|r| r.status == "fixed").count() as u64);
     for n in ctx.take_notes() {
         eprintln!("{}", defaults::render("migrate_msg.note_line", &[("note", &n)]));
     }

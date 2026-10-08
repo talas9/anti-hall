@@ -336,6 +336,9 @@ pub struct Jev {
     pending: AtomicUsize,
     this: OnceLock<Weak<Jev>>,
     log_errors: AtomicU64,
+    /// Record each call in telemetry: on for a production lane, off for the test lanes built with `with_parts` (they must not
+    /// write the state directory's telemetry inbox).
+    telemetry: AtomicBool,
 }
 
 /// A number as `JSON.stringify` writes it: a whole value has no fraction (`1000`, not `1000.0`).
@@ -504,6 +507,7 @@ impl Jev {
             pending: AtomicUsize::new(0),
             this: OnceLock::new(),
             log_errors: AtomicU64::new(0),
+            telemetry: AtomicBool::new(production),
         });
         crate::discard::harmless(jev.this.set(Arc::downgrade(&jev))); // keep: best effort, fail-open
         jev
@@ -819,6 +823,7 @@ impl Jev {
                 "none"
             };
             self.stats.verdict(&req.id, verdict);
+            self.record_call(s, req, mode, r.as_ref(), backend, verdict, reason.as_ref(), cost_usd, changed);
             if backend == Backend::Jev {
                 // whole micro-dollars; a call cheaper than one rounds down, which the unit makes visible
                 self.stats.cost_micro_usd.fetch_add((cost_usd.unwrap_or(0.0) * 1e6).max(0.0) as u64, Ordering::Relaxed);
@@ -883,6 +888,65 @@ impl Jev {
             cost_source,
             changed,
         }
+    }
+
+    /// Record the call in telemetry (`telemetry summary` shows it, not only `metrics`): integration, mode, verdict, confidence,
+    /// latency, cost, cache hit, breaker state and failure reason. Identifiers and numbers only; never the question or state.
+    #[allow(clippy::too_many_arguments)]
+    fn record_call(
+        &self,
+        s: &JevSettings,
+        req: &AskRequest,
+        mode: Mode,
+        r: Option<&CallResult>,
+        backend: Backend,
+        verdict: &str,
+        reason: Option<&Reason>,
+        cost_usd: Option<f64>,
+        changed: bool,
+    ) {
+        if self.telemetry.load(Ordering::Relaxed) {
+            crate::telemetry::emit::event(self.call_event(s, req, mode, r, backend, verdict, reason, cost_usd, changed));
+        }
+    }
+
+    /// The telemetry event for one call (see [`Jev::record_call`]).
+    #[allow(clippy::too_many_arguments)]
+    fn call_event(
+        &self,
+        s: &JevSettings,
+        req: &AskRequest,
+        mode: Mode,
+        r: Option<&CallResult>,
+        backend: Backend,
+        verdict: &str,
+        reason: Option<&Reason>,
+        cost_usd: Option<f64>,
+        changed: bool,
+    ) -> crate::telemetry::event::Event {
+        use crate::telemetry::{emit, event::Outcome};
+        let outcome = match (r, reason) {
+            (None, _) | (_, Some(Reason::Disabled)) => Outcome::Skip,
+            (_, Some(Reason::Timeout)) => Outcome::Timeout,
+            (_, Some(_)) => Outcome::Error,
+            (Some(_), None) if changed => Outcome::Advise,
+            (Some(_), None) => Outcome::Allow,
+        };
+        let asked = r.is_some() && backend != Backend::Cache;
+        let breaker = if asked && self.breaker_open(s.transport) { "open" } else { "closed" };
+        let error = reason.map(ToString::to_string);
+        emit::jev_call(&emit::JevCall {
+            integration: &req.id,
+            mode: mode.as_str(),
+            verdict,
+            outcome,
+            conf_pm: r.filter(|x| x.ok()).map(|x| (x.confidence * 1000.0).clamp(0.0, 1000.0) as u64),
+            ms: r.map_or(0, |x| x.ms),
+            cost_uc: (cost_usd.unwrap_or(0.0) * 1e6).max(0.0) as u64,
+            backend: backend.as_str(),
+            breaker,
+            error: error.as_deref(),
+        })
     }
 
     /// Build the log row; the field order and presence rules are Node's `finalize`.
@@ -1017,6 +1081,38 @@ mod tests {
 
     fn field(row: &Row, k: &str) -> Value {
         row.0.iter().find(|(key, _)| *key == k).map(|(_, v)| v.clone()).unwrap_or(json!("<absent>"))
+    }
+
+    #[test]
+    fn every_call_leaves_a_telemetry_event_with_verdict_latency_cost_and_breaker_state_and_no_text() {
+        use crate::telemetry::emit;
+        use crate::telemetry::event::{Extras, Kind, Outcome};
+        emit::take_queued();
+        let (jev, _, _) = lane(&ON, vec![ok(200, &answer(0.99)), ok(500, "{}")]);
+        jev.telemetry.store(true, Ordering::Relaxed);
+        jev.ask(&req("speculation", Trust::AddBlock, json!(false))); // answers, adds a block
+        jev.ask(&req("speculation", Trust::AddBlock, json!(false))); // cache hit (same state)
+        let mut other = req("speculation", Trust::AddBlock, json!(false));
+        other.state = "a different secret state text".into();
+        jev.ask(&other); // the vendor fails
+        let evs = emit::take_queued();
+        assert_eq!(evs.len(), 3, "one event per call: {evs:?}");
+        let jv = |e: &crate::telemetry::event::Event| match &e.extras {
+            Extras::Jev(j) => j.clone(),
+            other => panic!("not a jev event: {other:?}"),
+        };
+        assert!(evs.iter().all(|e| e.kind == Kind::Jev && e.h.as_str() == "speculation"));
+        let (a, b, c) = (jv(&evs[0]), jv(&evs[1]), jv(&evs[2]));
+        assert_eq!((evs[0].o, a.mode.as_str(), a.verdict.as_str()), (Outcome::Advise, "on", "added"));
+        assert_eq!((a.more.get_tok("backend"), a.more.get_tok("breaker"), a.more.get_num("conf_pm")), (Some("jev"), Some("closed"), Some(980)));
+        assert_eq!((b.more.get_tok("backend"), b.cost_uc, evs[1].ms), (Some("cache"), 0, 0), "a cache hit costs nothing and takes no time");
+        assert_eq!((evs[2].o, c.more.get_tok("backend"), c.verdict.as_str()), (Outcome::Error, Some("baseline-only"), "no-answer"));
+        assert!(c.more.get_tok("error").is_some_and(|e| e.starts_with("http-")), "{:?}", c.more);
+        for e in &evs {
+            let line = e.to_json().to_string();
+            assert!(!line.contains("secret") && !line.contains("some text"), "no state text in {line}");
+            assert_eq!(&crate::telemetry::event::Event::from_json(&e.to_json()).unwrap(), e);
+        }
     }
 
     #[test]

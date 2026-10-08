@@ -980,6 +980,10 @@ pub fn run(args: &[String]) -> Result<i32, SetupError> {
             cx.code = 1;
         }
     }
+    // a verb that changes the Jev settings or keys counts as one change when it succeeded
+    if cx.code == 0 && !matches!(verb, "status" | "") {
+        crate::telemetry::emit::add_items(1);
+    }
     Ok(cx.code)
 }
 

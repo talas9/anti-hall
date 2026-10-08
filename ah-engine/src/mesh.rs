@@ -555,18 +555,21 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     let result: Res<()> = (|| match verb {
         "roster" => {
             let v = Value::Array(reader.roster()?);
+            crate::telemetry::emit::add_items(v.as_array().map_or(0, |a| a.len() as u64));
             crate::discard::harmless(if p.json { writeln!(out, "{v}") } else { writeln!(out, "{}", crate::cli::human(&json!({"roster": v}))) }); // keep: a closed stdout leaves nobody to tell
             Ok(())
         }
         "unread" => {
             let rows: Res<Vec<Value>> = reader.workspace_ids().iter().map(|id| reader.unread(id).map(|u| u.to_json())).collect();
             let v = Value::Array(rows?);
+            crate::telemetry::emit::add_items(v.as_array().map_or(0, |a| a.len() as u64));
             crate::discard::harmless(if p.json { writeln!(out, "{v}") } else { writeln!(out, "{}", crate::cli::human(&json!({"unread": v}))) }); // keep: a closed stdout leaves nobody to tell
             Ok(())
         }
         "read" => {
             let id = flag(p, "id").unwrap_or_default();
             let emit = |m: &Value, out: &mut dyn Write| {
+                crate::telemetry::emit::add_items(1);
                 // keep: a closed stdout leaves nobody to tell
                 crate::discard::harmless(if p.json {
                     writeln!(out, "{m}")

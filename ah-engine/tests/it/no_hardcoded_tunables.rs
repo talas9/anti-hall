@@ -100,6 +100,16 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/telemetry/recorder.rs", "static THREAD_ID", "a thread-local cell holding the thread's shard number: structural"),
     (
+        "src/telemetry/emit.rs",
+        "static BATCH",
+        "a thread-local buffer that starts empty and holds the current call's events until they are written: state, not a tunable",
+    ),
+    (
+        "src/telemetry/emit.rs",
+        "static ITEMS",
+        "a thread-local counter initialised to zero: the items the running command reports as changed: state, not a tunable",
+    ),
+    (
         "src/checks/jsport/date.rs",
         "static ZONE_OK",
         "a thread-local cell holding whether the local time zone matches the request's: per-check scratch state, structural",

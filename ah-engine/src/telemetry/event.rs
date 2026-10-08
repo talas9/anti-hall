@@ -73,6 +73,14 @@ pub enum Kind {
     Spill,
     /// A routing deny that forces delegation to another model (D86).
     Delegate,
+    /// One Node hook the dispatcher ran for a table entry.
+    Node,
+    /// One run of an engine command that writes state.
+    Cmd,
+    /// A periodic snapshot of the daemon's own health.
+    Daemon,
+    /// One model call (the judge, or any other backend call).
+    Model,
 }
 
 impl Kind {
@@ -86,6 +94,10 @@ impl Kind {
             Kind::Jev => "jev",
             Kind::Spill => "spill",
             Kind::Delegate => "delegate",
+            Kind::Node => "node",
+            Kind::Cmd => "cmd",
+            Kind::Daemon => "daemon",
+            Kind::Model => "model",
         }
     }
 
@@ -99,6 +111,10 @@ impl Kind {
             "jev" => Kind::Jev,
             "spill" => Kind::Spill,
             "delegate" => Kind::Delegate,
+            "node" => Kind::Node,
+            "cmd" => Kind::Cmd,
+            "daemon" => Kind::Daemon,
+            "model" => Kind::Model,
             _ => return None,
         })
     }
@@ -119,6 +135,8 @@ pub enum Outcome {
     Error,
     /// The invocation did not apply (disabled, wrong tool, rate limited).
     Skip,
+    /// The invocation ran past its time limit.
+    Timeout,
 }
 
 impl Outcome {
@@ -131,6 +149,7 @@ impl Outcome {
             Outcome::Defer => "defer",
             Outcome::Error => "error",
             Outcome::Skip => "skip",
+            Outcome::Timeout => "timeout",
         }
     }
 
@@ -143,6 +162,7 @@ impl Outcome {
             "defer" => Outcome::Defer,
             "error" => Outcome::Error,
             "skip" => Outcome::Skip,
+            "timeout" => Outcome::Timeout,
             _ => return None,
         })
     }
@@ -305,6 +325,93 @@ pub struct Delegate {
     pub task_class: Token,
 }
 
+/// One value of a schema-driven extra field: a number or an identifier. Never prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Val {
+    /// A whole number.
+    Num(u64),
+    /// An identifier-shaped token.
+    Tok(Token),
+}
+
+/// The extra fields of the kinds whose schema lives in `telemetry.fields` (shipped, not compiled): name to value, kept in
+/// name order so an event reads back equal to the one written.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fields(std::collections::BTreeMap<String, Val>);
+
+impl Fields {
+    /// No fields.
+    pub fn new() -> Fields {
+        Fields::default()
+    }
+
+    /// Add a number.
+    pub fn num(mut self, name: &str, v: u64) -> Fields {
+        self.0.insert(name.to_string(), Val::Num(v));
+        self
+    }
+
+    /// Add an identifier; the text is sanitised, so it can never hold prose.
+    pub fn tok(mut self, name: &str, v: &str) -> Fields {
+        self.0.insert(name.to_string(), Val::Tok(Token::sanitize(v)));
+        self
+    }
+
+    /// The number stored under `name`.
+    pub fn get_num(&self, name: &str) -> Option<u64> {
+        match self.0.get(name) {
+            Some(Val::Num(n)) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// The identifier stored under `name`.
+    pub fn get_tok(&self, name: &str) -> Option<&str> {
+        match self.0.get(name) {
+            Some(Val::Tok(t)) => Some(t.as_str()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn put_json(&self, m: &mut Map<String, Value>) {
+        for (k, v) in &self.0 {
+            m.insert(
+                k.clone(),
+                match v {
+                    Val::Num(n) => json!(n),
+                    Val::Tok(t) => json!(t.as_str()),
+                },
+            );
+        }
+    }
+
+    /// Read the fields `kind` declares in `telemetry.fields` from `m`; a declared field of the wrong type refuses the line.
+    fn read(kind: Kind, m: &Map<String, Value>) -> Result<Fields, TelemetryError> {
+        let mut out = Fields::new();
+        for (name, ty) in schema(kind) {
+            let Some(v) = m.get(name) else { continue };
+            let val = match ty {
+                "num" => Val::Num(v.as_u64().ok_or(TelemetryError::Field("schema"))?),
+                _ => Val::Tok(Token::new(v.as_str().ok_or(TelemetryError::Field("schema"))?)?),
+            };
+            out.0.insert(name.to_string(), val);
+        }
+        Ok(out)
+    }
+}
+
+/// The `(name, type)` pairs `telemetry.fields` declares for `kind` (`num` or `tok`); empty for a kind it does not list.
+fn schema(kind: Kind) -> Vec<(&'static str, &'static str)> {
+    defaults::raw("telemetry.fields")
+        .get(kind.name())
+        .and_then(defaults::V::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(defaults::V::as_str)
+        .filter_map(|d| d.split_once(':'))
+        .collect()
+}
+
 /// A Jev call (the call's latency is the event's `ms`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Jev {
@@ -316,6 +423,8 @@ pub struct Jev {
     pub verdict: Token,
     /// What the call cost, in micro-dollars.
     pub cost_uc: u64,
+    /// The detail fields `telemetry.fields` declares for `jev` (confidence, backend, breaker state, error).
+    pub more: Fields,
 }
 
 /// Typed extras per kind. No variant holds free text.
@@ -333,6 +442,8 @@ pub enum Extras {
     Spill(u64),
     /// A forced delegation decision.
     Delegate(Delegate),
+    /// The schema-driven extras of a Node, Cmd, Daemon or Model event (`telemetry.fields`).
+    Fields(Fields),
 }
 
 /// One telemetry event: the fixed short fields (`k`, `h`, `e`, `o`, `ms`, `ib`) plus typed extras.
@@ -360,15 +471,17 @@ pub struct Event {
 const FIXED: &[&str] = &["ts", "k", "h", "e", "o", "ms", "ib"];
 
 /// The extra fields a kind's events carry; every other field name is refused.
-fn extra_fields(kind: Kind) -> &'static [&'static str] {
-    match kind {
+fn extra_fields(kind: Kind) -> Vec<&'static str> {
+    let fixed: &[&'static str] = match kind {
         Kind::Route => &["requested_model", "parent_model", "task_class", "recommended_tier", "selected_model", "outcome", "spawn_key"],
         Kind::Spawn => &["spawn_key", "actual_model", "in", "out", "cr", "cw"],
         Kind::Jev => &["integration", "mode", "verdict", "cost_uc"],
         Kind::Spill => &["bytes"],
         Kind::Delegate => &["spawn_key", "requested_model", "selected_model", "task_class"],
-        Kind::Hook | Kind::Check => &[],
-    }
+        Kind::Hook | Kind::Check | Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model => &[],
+    };
+    // the schema-driven kinds (and the detail of a Jev call) take their field names from the shipped `telemetry.fields`
+    fixed.iter().copied().chain(schema(kind).into_iter().map(|(n, _)| n)).collect()
 }
 
 impl Event {
@@ -416,7 +529,9 @@ impl Event {
                 m.insert("mode".into(), json!(j.mode.as_str()));
                 m.insert("verdict".into(), json!(j.verdict.as_str()));
                 m.insert("cost_uc".into(), json!(j.cost_uc));
+                j.more.put_json(&mut m);
             }
+            Extras::Fields(f) => f.put_json(&mut m),
             Extras::Spill(b) => {
                 m.insert("bytes".into(), json!(b));
             }
@@ -473,7 +588,13 @@ impl Event {
                 actual_model: tok("actual_model")?,
                 usage: Usage { input: num("in")?, output: num("out")?, cache_read: num("cr")?, cache_write: num("cw")? },
             }),
-            Kind::Jev => Extras::Jev(Jev { integration: tok("integration")?, mode: tok("mode")?, verdict: tok("verdict")?, cost_uc: num("cost_uc")? }),
+            Kind::Jev => Extras::Jev(Jev {
+                integration: tok("integration")?,
+                mode: tok("mode")?,
+                verdict: tok("verdict")?,
+                cost_uc: num("cost_uc")?,
+                more: Fields::read(kind, m)?,
+            }),
             Kind::Spill => Extras::Spill(num("bytes")?),
             Kind::Delegate => Extras::Delegate(Delegate {
                 spawn_key: tok("spawn_key")?,
@@ -481,6 +602,7 @@ impl Event {
                 selected_model: tok("selected_model")?,
                 task_class: tok("task_class")?,
             }),
+            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model => Extras::Fields(Fields::read(kind, m)?),
             Kind::Hook | Kind::Check => Extras::None,
         };
         Ok(Event { ts_ms, kind, h: tok("h")?, e: tok("e")?, o, ms: num("ms")?.min(u32::MAX as u64) as u32, ib: num("ib")?, extras })
@@ -561,6 +683,7 @@ mod tests {
                     mode: Token::new("on").unwrap(),
                     verdict: Token::new("keep").unwrap(),
                     cost_uc: 12,
+                    more: Fields::new(),
                 }),
             ),
             (Kind::Spill, Extras::Spill(9000)),

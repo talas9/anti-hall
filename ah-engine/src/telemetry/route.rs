@@ -302,7 +302,7 @@ mod tests {
             o: Outcome::Advise,
             ms: 90,
             ib: 0,
-            extras: Extras::Jev(Jev { integration: t("speculation"), mode: t("on"), verdict: t("keep"), cost_uc: cost }),
+            extras: Extras::Jev(Jev { integration: t("speculation"), mode: t("on"), verdict: t("keep"), cost_uc: cost, more: Default::default() }),
         }
     }
 

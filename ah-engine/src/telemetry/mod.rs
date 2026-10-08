@@ -13,6 +13,7 @@
 //! * [`route`]: routing events joined to spawn results, and the NET savings estimate (D77);
 //! * [`report`]: the `telemetry` and `impact` report bodies.
 pub mod cli;
+pub mod emit;
 pub mod event;
 pub mod persist;
 pub mod recorder;
@@ -41,6 +42,10 @@ pub struct Telemetry {
     tel: Option<TelDb>,
     /// When the last snapshot was kept (ms since the epoch; 0: none yet).
     snapshot_ms: std::sync::atomic::AtomicU64,
+    /// The inbox other processes append events to, when this handle reads one (the daemon sets it).
+    inbox: Mutex<Option<std::path::PathBuf>>,
+    /// Inbox lines the strict reader refused since start.
+    inbox_bad: std::sync::atomic::AtomicU64,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -87,12 +92,33 @@ impl Telemetry {
     /// A telemetry handle recording impact events in `store` (the daemon passes the SQLite store, D52).
     pub fn with_store(store: Box<dyn Store>) -> Telemetry {
         let tel = store.db().map(TelDb::new);
-        Telemetry { metrics: Mutex::new(Metrics::default()), store, rec: Recorder::from_defaults(), tel, snapshot_ms: std::sync::atomic::AtomicU64::new(0) }
+        Telemetry {
+            metrics: Mutex::new(Metrics::default()),
+            store,
+            rec: Recorder::from_defaults(),
+            tel,
+            snapshot_ms: std::sync::atomic::AtomicU64::new(0),
+            inbox: Mutex::new(None),
+            inbox_bad: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     /// Turn recording on or off (`telemetry.enabled`).
     pub fn set_enabled(&self, on: bool) {
         self.rec.set_enabled(on);
+    }
+
+    /// Read events other processes append to the inbox at `path` on every flush (the daemon sets this; a handle without an
+    /// inbox never touches the state directory).
+    pub fn set_inbox(&self, path: std::path::PathBuf) {
+        *lk(&self.inbox) = Some(path);
+    }
+
+    /// Move the inbox's events into the recorder.
+    fn ingest_inbox(&self) {
+        let Some(path) = lk(&self.inbox).clone() else { return };
+        let r = emit::ingest_from(&path, |ev| self.rec.event(ev));
+        self.inbox_bad.fetch_add(r.bad, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The recorder, for callers that record directly (a ported check, the dispatcher, the Jev lane).
@@ -127,6 +153,7 @@ impl Telemetry {
     /// memory (and is lost with the process, as the not-persisted note says).
     pub fn flush(&self) -> bool {
         let _one_at_a_time = self.rec.flush_guard();
+        self.ingest_inbox();
         let p = self.rec.drain();
         if p.is_empty() {
             return true;
@@ -160,7 +187,11 @@ impl Telemetry {
         let now = now_ms();
         match sub {
             "events" => report::events_json(self.tel.as_ref(), Some(&self.rec), kind, days, limit, now),
-            _ => report::summary_json(self.tel.as_ref(), Some(&self.rec), days, now),
+            _ => {
+                let mut v = report::summary_json(self.tel.as_ref(), Some(&self.rec), days, now);
+                v["dropped"]["inbox_refused"] = json!(self.inbox_bad.load(std::sync::atomic::Ordering::Relaxed));
+                v
+            }
         }
     }
 
@@ -346,6 +377,7 @@ impl Default for Telemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn a_blocking_check_run_is_counted_timed_and_recorded() {
@@ -472,6 +504,91 @@ mod tests {
         let ev = t.telemetry_json("events", "7d", "route", 10);
         assert_eq!(ev["count"], 1);
         assert_eq!(ev["events"][0]["requested_model"], "opus");
+    }
+
+    fn tk(s: &str) -> event::Token {
+        event::Token::new(s).unwrap()
+    }
+
+    #[test]
+    fn events_from_other_processes_reach_the_recorder_through_the_inbox_on_flush() {
+        let (d, _db, t) = durable("tel-inbox");
+        let inbox = d.0.join("inbox.jsonl");
+        // without an inbox the handle never reads one
+        emit::append_to(&inbox, &[emit::command_run("migrate", "-", 0, 2000, 4)]);
+        assert!(t.flush());
+        assert!(std::fs::metadata(&inbox).unwrap().len() > 0, "no inbox set: nothing read");
+        t.set_inbox(inbox.clone());
+        emit::append_to(
+            &inbox,
+            &[
+                emit::node_run(&emit::NodeRun {
+                    id: "git-guard",
+                    event: "PreToolUse",
+                    outcome: Outcome::Block,
+                    micros: 3000,
+                    out_bytes: 9,
+                    err_bytes: 0,
+                    exit: Some(2),
+                    fate: "ran",
+                }),
+                emit::model_call(&emit::ModelCall {
+                    backend: "codex",
+                    model: "sonnet",
+                    purpose: "judge",
+                    outcome: Outcome::Timeout,
+                    micros: 8_000_000,
+                    tokens_in: Some(50),
+                    tokens_out: Some(7),
+                }),
+            ],
+        );
+        std::fs::OpenOptions::new().append(true).open(&inbox).unwrap().write_all(b"{\"k\":\"node\",\"prompt\":\"fix the login bug\"}\n").unwrap();
+        assert!(t.flush());
+        assert_eq!(std::fs::metadata(&inbox).unwrap().len(), 0, "emptied");
+        let s = t.telemetry_json("summary", "1d", "", 10);
+        assert_eq!(s["by_kind"]["node"], 1, "{s}");
+        assert_eq!(s["by_kind"]["cmd"], 1);
+        assert_eq!(s["by_kind"]["model"], 1);
+        assert_eq!(s["dropped"]["inbox_refused"], 1, "the line with text was refused and counted");
+        assert_eq!(s["detail"]["model"]["codex/sonnet"]["tokens_in"], 50);
+        assert_eq!(s["detail"]["cmd"]["migrate"]["items"], 4);
+        let node = s["by_hook"].as_array().unwrap().iter().find(|h| h["k"] == "node").unwrap();
+        assert_eq!((node["h"].as_str(), node["outcomes"]["block"].as_u64(), node["injected_bytes"].as_u64()), (Some("git-guard"), Some(1), Some(9)));
+    }
+
+    #[test]
+    fn the_model_recorder_api_records_backend_alias_latency_tokens_and_outcome() {
+        let t = Telemetry::new();
+        for (o, ms, tin) in [(Outcome::Allow, 400_000, Some(100)), (Outcome::Error, 1_000, None)] {
+            t.event(emit::model_call(&emit::ModelCall {
+                backend: "judge",
+                model: "haiku",
+                purpose: "judge",
+                outcome: o,
+                micros: ms,
+                tokens_in: tin,
+                tokens_out: None,
+            }));
+        }
+        let s = t.telemetry_json("summary", "1d", "", 10);
+        let m = &s["detail"]["model"]["judge/haiku"];
+        assert_eq!((m["calls"].as_u64(), m["errors"].as_u64(), m["tokens_in"].as_u64()), (Some(2), Some(1), Some(100)), "{s}");
+        let ev = t.telemetry_json("events", "1d", "model", 10);
+        assert_eq!(ev["events"][0]["purpose"], "judge");
+        assert_eq!(ev["events"][0]["h"], "judge");
+        assert_eq!(ev["events"][0]["e"], "haiku");
+        let _ = tk("x");
+    }
+
+    #[test]
+    fn a_daemon_snapshot_is_reported_as_the_latest_reading() {
+        let t = Telemetry::new();
+        t.event(emit::daemon_snapshot(false, &[("rss_kb", 90_000), ("rss_cap_kb", 400_000), ("restarts", 1)]));
+        t.event(emit::daemon_snapshot(true, &[("rss_kb", 95_000), ("rss_cap_kb", 400_000), ("restarts", 2), ("saturated", 1)]));
+        let d = &t.telemetry_json("summary", "1d", "", 10)["detail"]["daemon"];
+        assert_eq!(d["snapshots"], 2);
+        assert_eq!((d["latest"]["rss_kb"].as_u64(), d["latest"]["degraded"].as_u64(), d["latest"]["saturated"].as_u64()), (Some(95_000), Some(1), Some(1)));
     }
 
     #[test]

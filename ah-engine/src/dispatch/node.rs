@@ -7,6 +7,7 @@
 use super::combine::{self, HookResult};
 use super::table::Entry;
 use crate::defaults;
+use crate::telemetry::event::Outcome;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::unix::fs::FileExt;
@@ -29,6 +30,19 @@ pub enum Fate {
     Died,
     /// It finished but a process it left behind still held its output open, so the output is incomplete.
     Incomplete,
+}
+
+impl Fate {
+    /// The short name recorded in the hook's telemetry event.
+    pub fn name(self) -> &'static str {
+        match self {
+            Fate::Ran => "ran",
+            Fate::Timeout => "timeout",
+            Fate::Spawn => "spawn",
+            Fate::Died => "died",
+            Fate::Incomplete => "incomplete",
+        }
+    }
 }
 
 /// A hook's result and how it ended.
@@ -67,11 +81,21 @@ impl Capture {
 /// A Node hook that has been started.
 pub struct Running {
     id: String,
+    /// The hook event it runs for (telemetry label only).
+    event: String,
     child: Option<Child>,
     out: Option<Capture>,
     err: Option<Capture>,
     timeout: Duration,
     started: Instant,
+}
+
+impl Running {
+    /// Name the hook event this hook runs for, so its telemetry event carries it.
+    pub fn for_event(mut self, event: &str) -> Running {
+        self.event = event.to_string();
+        self
+    }
 }
 
 fn reader<R: Read + Send + 'static>(r: Option<R>) -> Option<Capture> {
@@ -149,6 +173,7 @@ fn start_with_input(entry: &Entry, input: Option<Input>) -> Running {
     }
     Running {
         id: entry.id.clone(),
+        event: String::new(),
         child,
         out,
         err,
@@ -242,8 +267,41 @@ fn nothing(id: String) -> HookResult {
     HookResult { id, code: None, out: String::new(), err: String::new() }
 }
 
-/// The result of one waited hook: its output when whole, and the right [`Fate`] when it is not.
+/// How a finished hook counts in telemetry: a timeout is a timeout, a hook that could not run or died is an error, one that
+/// blocked (exit 2 or a JSON block) is a block, another non-zero exit is an error, output is an advisory, silence an allow.
+fn telemetry_outcome(f: &Finished) -> Outcome {
+    match f.fate {
+        Fate::Timeout => Outcome::Timeout,
+        Fate::Spawn | Fate::Died | Fate::Incomplete => Outcome::Error,
+        Fate::Ran => match f.result.code {
+            Some(2) => Outcome::Block,
+            Some(c) if c != 0 => Outcome::Error,
+            _ if f.result.out.is_empty() => Outcome::Allow,
+            _ if combine::json_blocks(&f.result.out) => Outcome::Block,
+            _ => Outcome::Advise,
+        },
+    }
+}
+
+/// Wait result of one hook, recorded: the hook's id, event, outcome, wall time and output size (no output text).
 fn conclude(r: Running, w: Waited) -> Finished {
+    let (event, started) = (r.event.clone(), r.started);
+    let f = conclude_output(r, w);
+    crate::telemetry::emit::queue(crate::telemetry::emit::node_run(&crate::telemetry::emit::NodeRun {
+        id: &f.result.id,
+        event: &event,
+        outcome: telemetry_outcome(&f),
+        micros: started.elapsed().as_micros() as u64,
+        out_bytes: f.result.out.len() as u64,
+        err_bytes: f.result.err.len() as u64,
+        exit: f.result.code,
+        fate: f.fate.name(),
+    }));
+    f
+}
+
+/// The result of one waited hook: its output when whole, and the right [`Fate`] when it is not.
+fn conclude_output(r: Running, w: Waited) -> Finished {
     let log = |kind: &str, key: &str| crate::health::log_event(kind, &r.id, defaults::text(key));
     let code = match w {
         Waited::Code(c) => c,
@@ -314,6 +372,44 @@ mod tests {
     }
 
     #[test]
+    fn every_node_hook_leaves_a_telemetry_event_with_its_outcome_duration_and_output_size_and_no_output_text() {
+        use crate::telemetry::emit;
+        use crate::telemetry::event::Extras;
+        emit::take_queued();
+        let deny = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}"#;
+        let es = [
+            ("quiet", "exit 0".to_string(), 5),
+            ("advises", "printf 'secret advice text'".to_string(), 5),
+            ("blocks", "echo nope >&2; exit 2".to_string(), 5),
+            ("json-blocks", format!("echo '{deny}'"), 5),
+            ("fails", "exit 3".to_string(), 5),
+            ("slow", "sleep 30".to_string(), 1),
+            ("died", "kill -9 $$".to_string(), 5),
+        ];
+        let rs = finish(es.iter().map(|(id, c, t)| start(&entry(id, c, *t), b"").for_event("PreToolUse")).collect());
+        assert_eq!(rs.len(), 7);
+        let evs = emit::take_queued();
+        assert_eq!(evs.len(), 7);
+        let by = |id: &str| evs.iter().find(|e| e.h.as_str() == id).unwrap_or_else(|| panic!("no event for {id}"));
+        let o = |id: &str| by(id).o;
+        assert_eq!(
+            [o("quiet"), o("advises"), o("blocks"), o("json-blocks"), o("fails"), o("slow"), o("died")],
+            [Outcome::Allow, Outcome::Advise, Outcome::Block, Outcome::Block, Outcome::Error, Outcome::Timeout, Outcome::Error]
+        );
+        assert!(evs.iter().all(|e| e.kind == crate::telemetry::event::Kind::Node && e.e.as_str() == "PreToolUse"));
+        assert_eq!(by("advises").ib, "secret advice text".len() as u64, "stdout bytes");
+        assert!(by("slow").ms >= 1000, "the timeout wait is the duration: {}", by("slow").ms);
+        let Extras::Fields(f) = &by("blocks").extras else { panic!("fields") };
+        assert_eq!((f.get_num("exit"), f.get_tok("fate"), f.get_num("err_bytes")), (Some(2), Some("ran"), Some(5)));
+        let Extras::Fields(f) = &by("slow").extras else { panic!("fields") };
+        assert_eq!((f.get_num("exit"), f.get_tok("fate")), (None, Some("timeout")));
+        for e in &evs {
+            assert!(!e.to_json().to_string().contains("secret"), "output text is never recorded");
+            assert_eq!(&crate::telemetry::event::Event::from_json(&e.to_json()).unwrap(), e);
+        }
+    }
+
+    #[test]
     fn a_hook_that_exits_with_its_output_still_open_is_an_error_not_an_empty_answer() {
         // the background `sleep` keeps the stdout pipe open past dispatch.read_ms; the shell itself exits at once
         let rs = finish(vec![start(&entry("leaky", "echo early; (exec sleep 4) & exit 0", 30), b"")]);
@@ -375,8 +471,15 @@ mod tests {
 
     #[test]
     fn a_read_error_on_a_pipe_is_incomplete_output_not_a_whole_answer() {
-        let running =
-            Running { id: "broken".into(), child: None, out: reader(Some(Broken(false))), err: None, timeout: Duration::from_secs(5), started: Instant::now() };
+        let running = Running {
+            id: "broken".into(),
+            event: String::new(),
+            child: None,
+            out: reader(Some(Broken(false))),
+            err: None,
+            timeout: Duration::from_secs(5),
+            started: Instant::now(),
+        };
         let f = conclude(running, Waited::Code(0));
         assert_eq!(f.fate, Fate::Incomplete);
         assert_eq!(f.result.code, Some(1));

@@ -137,6 +137,10 @@ value = "starts"
 doc = "The write spool: project writes a client could not deliver, applied by the daemon in order (D24)."
 value = "spool.log"
 
+[files.telemetry_inbox]
+doc = "Events recorded by processes other than the daemon (the hook dispatcher, one-shot commands), one JSON line each, in the state directory; the daemon reads and empties it on every telemetry flush."
+value = "telemetry-inbox.jsonl"
+
 [files.spool_quarantine]
 doc = "Spool records that could not be parsed or that the store refused for good, kept with their reason, never dropped (D24)."
 value = "spool.quarantine"

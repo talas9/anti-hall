@@ -1,0 +1,210 @@
+---
+source: src/telemetry/report.rs
+expression: "serde_json::to_string_pretty(&v).unwrap()"
+---
+{
+  "by_hook": [
+    {
+      "h": "config",
+      "injected_bytes": 0,
+      "k": "cmd",
+      "mean_us": 9000,
+      "n": 1,
+      "outcomes": {
+        "error": 1
+      },
+      "p50_us": 10000,
+      "p95_us": 10000,
+      "p99_us": 10000
+    },
+    {
+      "h": "migrate",
+      "injected_bytes": 0,
+      "k": "cmd",
+      "mean_us": 48000,
+      "n": 1,
+      "outcomes": {
+        "allow": 1
+      },
+      "p50_us": 100000,
+      "p95_us": 100000,
+      "p99_us": 100000
+    },
+    {
+      "h": "daemon",
+      "injected_bytes": 0,
+      "k": "daemon",
+      "mean_us": 0,
+      "n": 2,
+      "outcomes": {
+        "advise": 1,
+        "allow": 1
+      },
+      "p50_us": 100,
+      "p95_us": 100,
+      "p99_us": 100
+    },
+    {
+      "h": "hook",
+      "injected_bytes": 0,
+      "k": "hook",
+      "mean_us": 800,
+      "n": 1,
+      "outcomes": {
+        "allow": 1
+      },
+      "p50_us": 1000,
+      "p95_us": 1000,
+      "p99_us": 1000
+    },
+    {
+      "h": "speculation",
+      "injected_bytes": 0,
+      "k": "jev",
+      "mean_us": 536666,
+      "n": 3,
+      "outcomes": {
+        "advise": 1,
+        "allow": 1,
+        "error": 1
+      },
+      "p50_us": 1000000,
+      "p95_us": null,
+      "p99_us": null
+    },
+    {
+      "h": "codex",
+      "injected_bytes": 0,
+      "k": "model",
+      "mean_us": 2300000,
+      "n": 1,
+      "outcomes": {
+        "allow": 1
+      },
+      "p50_us": null,
+      "p95_us": null,
+      "p99_us": null
+    },
+    {
+      "h": "edit-guard",
+      "injected_bytes": 0,
+      "k": "node",
+      "mean_us": 5000000,
+      "n": 1,
+      "outcomes": {
+        "timeout": 1
+      },
+      "p50_us": null,
+      "p95_us": null,
+      "p99_us": null
+    },
+    {
+      "h": "git-guard",
+      "injected_bytes": 120,
+      "k": "node",
+      "mean_us": 27500,
+      "n": 2,
+      "outcomes": {
+        "allow": 1,
+        "block": 1
+      },
+      "p50_us": 25000,
+      "p95_us": 100000,
+      "p99_us": 100000
+    }
+  ],
+  "by_kind": {
+    "cmd": 2,
+    "daemon": 2,
+    "hook": 1,
+    "jev": 3,
+    "model": 1,
+    "node": 3
+  },
+  "by_outcome": {
+    "advise": 2,
+    "allow": 6,
+    "block": 1,
+    "error": 2,
+    "timeout": 1
+  },
+  "detail": {
+    "cmd": {
+      "config": {
+        "errors": 1,
+        "items": 0,
+        "ms_total": 9,
+        "runs": 1
+      },
+      "migrate": {
+        "items": 2,
+        "ms_total": 48,
+        "runs": 1
+      }
+    },
+    "daemon": {
+      "latest": {
+        "busy": 3,
+        "degraded": 1,
+        "queue_depth": 2,
+        "restarts": 1,
+        "rss_cap_kb": 400000,
+        "rss_kb": 91500,
+        "saturated": 1,
+        "ts_ms": 1789999995000,
+        "workers": 4
+      },
+      "snapshots": 2
+    },
+    "jev": {
+      "breaker_open": 1,
+      "by_integration": {
+        "speculation": {
+          "breaker_open": 1,
+          "cache_hits": 1,
+          "calls": 3,
+          "cost_uc": 85,
+          "errors": 1,
+          "mean_ms": 536,
+          "modes": {
+            "on": 3
+          },
+          "ms_max": 1200,
+          "verdicts": {
+            "added": 1,
+            "no-answer": 1,
+            "none": 1
+          }
+        }
+      },
+      "cache_hits": 1,
+      "calls": 3,
+      "cost_uc": 85,
+      "errors": 1
+    },
+    "model": {
+      "codex/sonnet": {
+        "calls": 1,
+        "ms_total": 2300,
+        "tokens_in": 900,
+        "tokens_out": 60
+      }
+    }
+  },
+  "dropped": {
+    "ring": 0,
+    "slots": 0
+  },
+  "events_held": null,
+  "injected_bytes": 0,
+  "invocations": 12,
+  "latency_note": "upper bound of the histogram bucket holding that rank",
+  "live": true,
+  "note": "counters are kept in memory and flushed to hot.db every 10000 ms and at shutdown; a kill -9 loses at most the data recorded since the last flush",
+  "persisted": false,
+  "window": {
+    "days": 7,
+    "from_day": 20711,
+    "to_day": 20717
+  }
+}

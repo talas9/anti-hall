@@ -142,6 +142,46 @@ value = "-"
 doc = "How the NET figure of `impact` is computed, shown next to it."
 value = "estimate: routing saved minus routing spent up, minus the estimated cost of injected context (injected bytes / bytes_per_token, priced as input tokens of the most common parent model) minus recorded Jev cost; models missing from the price table are counted as unpriced, not guessed"
 
+# ---- coverage telemetry: Node hooks, Jev, commands, daemon health, model calls ------------------------------------------
+# Everything that decides, calls a model or writes state records one event (kind, id, outcome, duration, small typed
+# extras). A process that is not the daemon (the hook dispatcher, a one-shot command, `jev ask`) appends its events to the
+# inbox file in the state directory; the daemon reads and empties that file on every flush, so nothing needs a socket
+# round trip on the hook path. Events hold identifiers and numbers only: never prompt text, paths or secrets.
+
+[telemetry.fields]
+doc = "The extra fields of the event kinds whose schema is data. Each entry is `name:type`, with type `num` (a whole number) or `tok` (an identifier: letters, digits and `._:/[]@+-`, at most token_max_len bytes). A reader refuses any field a kind does not list, so prose cannot be stored. node: one Node hook the dispatcher ran (h = hook id, e = hook event, o = allow|block|advise|error|timeout, ms = wall time, ib = stdout bytes; exit = exit code when it exited, fate = ran|timeout|spawn|died|incomplete, err_bytes = stderr bytes). cmd: one run of a state-writing engine command (h = command, e = its first argument or `-`, o = allow|error, ms = duration; items = what it changed, exit = exit code). daemon: a health snapshot (h and e are daemon_label and daemon_event_label, o = allow, or advise when degraded; fields are readings). model: one model call, recorded by `telemetry::emit::model(&ModelCall { backend, model, purpose, outcome, micros, tokens_in, tokens_out })` once per finished call, from any process (the daemon records at once; any other process appends to the telemetry inbox for the daemon to read); backend and model are identifiers (the model ALIAS, never a pinned version or prompt text), outcome is Allow, Error or Timeout, the token counts are None when the backend did not report them (h = backend, e = model alias, o = allow|error|timeout, ms = latency; tokens_in/tokens_out when known, purpose = what the call was for; counted by backend, alias and outcome with a latency histogram and shown in `telemetry summary` under detail.model). jev: the detail of a Jev call beside integration, mode, verdict and cost_uc (conf_pm = confidence in thousandths, backend = jev|cache|baseline-only, breaker = open|closed, error = the failure reason, absent when there was none)."
+value = { node = ["exit:num", "fate:tok", "err_bytes:num"], cmd = ["items:num", "exit:num"], daemon = ["rss_kb:num", "rss_cap_kb:num", "heap_live_kb:num", "restarts:num", "degraded:num", "queue_depth:num", "queue_cap:num", "workers:num", "busy:num", "saturated:num", "peak_in_flight:num", "max_wait_us:num"], model = ["tokens_in:num", "tokens_out:num", "purpose:tok"], jev = ["conf_pm:num", "backend:tok", "breaker:tok", "error:tok"] }
+
+[telemetry.cmd_record]
+doc = "The engine commands whose runs are recorded as `cmd` events (they write state). Each entry is a command word, or `command:arg|arg` to record only runs that carry one of those arguments (`doctor:--repair|--fix` records a repair, not a read-only check; `config:heal` records the heal, not the show)."
+value = ["mesh", "migrate", "jev-setup", "doctor:--repair|--fix", "config:heal"]
+
+[telemetry.inbox_max_bytes]
+doc = "Largest the telemetry inbox may grow while no daemon reads it; events appended beyond that are not kept (the daemon empties the file on every flush)."
+value = 4194304
+unit = "bytes"
+min = 1024
+
+[telemetry.health_snapshot_ms]
+doc = "How often the daemon records a `daemon` health snapshot event (resident set, its cap, restarts, degraded flag, queue and worker load, saturation). Events are kept for retention_days and capped by max_event_rows."
+value = 60000
+env = "AH_ENGINE_HEALTH_SNAPSHOT_MS"
+unit = "ms"
+min = 50
+
+[telemetry.summary_event_limit]
+doc = "Most events of one kind `telemetry summary` reads to build its jev, cmd, model and daemon sections."
+value = 5000
+min = 10
+
+[telemetry.daemon_label]
+doc = "The `h` label of the daemon health snapshot events."
+value = "daemon"
+
+[telemetry.daemon_event_label]
+doc = "The `e` label of the daemon health snapshot events."
+value = "snapshot"
+
 # ---- metrics --------------------------------------------------------------------------------------------
 
 [metric.requests]

@@ -191,9 +191,32 @@ pub fn run(args: &[String]) -> i32 {
         return 64;
     }
     match handlers().iter().find(|(n, _)| *n == p.command) {
-        Some((_, h)) => h(&p),
+        Some((_, h)) => run_recorded(&p, *h),
         None => 70, // registered as implemented but has no handler: the registry test prevents this
     }
+}
+
+/// True when `telemetry.cmd_record` lists this run: the command word alone, or `command:arg|arg` when one of those arguments is present.
+fn recorded(p: &Parsed) -> bool {
+    defaults::list("telemetry.cmd_record").iter().any(|rule| match rule.split_once(':') {
+        None => *rule == p.command,
+        Some((cmd, args)) => cmd == p.command && args.split('|').any(|a| p.rest.iter().any(|r| r == a)),
+    })
+}
+
+/// Run a handler; a state-writing command listed in `telemetry.cmd_record` leaves one `cmd` event: command, duration,
+/// outcome and the items it reported changing.
+fn run_recorded(p: &Parsed, h: Handler) -> i32 {
+    if !recorded(p) {
+        return h(p);
+    }
+    crate::telemetry::emit::take_items();
+    let started = std::time::Instant::now();
+    let code = h(p);
+    let sub = p.rest.first().filter(|a| !a.starts_with("--")).map_or("", String::as_str);
+    let items = crate::telemetry::emit::take_items();
+    crate::telemetry::emit::event(crate::telemetry::emit::command_run(&p.command, sub, code, started.elapsed().as_micros() as u64, items));
+    code
 }
 
 fn cmd_serve(_: &Parsed) -> i32 {
@@ -489,6 +512,7 @@ fn cmd_config(p: &Parsed) -> i32 {
                 }
             };
             let done = defaults::heal(&root, &report, true);
+            crate::telemetry::emit::add_items(done.len() as u64);
             if done.is_empty() {
                 let msg = defaults::text("defaults_load.msg_heal_none");
                 emit(p, msg.to_string(), json!({"healed": []}));
@@ -553,6 +577,49 @@ mod tests {
         let p = parse(&a("metrics --json --check git"));
         assert_eq!((p.command.as_str(), p.rest.clone()), ("metrics", a("--check git")));
         assert_eq!(flag(&p, "check"), "git");
+    }
+
+    #[test]
+    fn only_state_writing_runs_listed_in_the_settings_are_recorded() {
+        for (line, want) in [
+            ("migrate --dry-run", true),
+            ("mesh roster --db x", true),
+            ("jev-setup enable", true),
+            ("doctor --repair", true),
+            ("doctor --fix", true),
+            ("doctor --check", false),
+            ("doctor", false),
+            ("config heal", true),
+            ("config", false),
+            ("config validate f.toml", false),
+            ("status", false),
+        ] {
+            assert_eq!(recorded(&parse(&a(line))), want, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_recorded_command_leaves_one_cmd_event_with_its_exit_duration_and_items() {
+        use crate::telemetry::{
+            emit,
+            event::{Extras, Kind, Outcome},
+        };
+        emit::take_queued();
+        let ok = run_recorded(&parse(&a("migrate --dry-run")), |_| {
+            emit::add_items(3);
+            0
+        });
+        let bad = run_recorded(&parse(&a("config heal")), |_| 1);
+        let quiet = run_recorded(&parse(&a("status")), |_| 0);
+        assert_eq!((ok, bad, quiet), (0, 1, 0));
+        let evs = emit::take_queued();
+        assert_eq!(evs.len(), 2, "status is not recorded: {evs:?}");
+        assert_eq!((evs[0].kind, evs[0].h.as_str(), evs[0].e.as_str(), evs[0].o), (Kind::Cmd, "migrate", "-", Outcome::Allow));
+        let Extras::Fields(f) = &evs[0].extras else { panic!("fields") };
+        assert_eq!((f.get_num("items"), f.get_num("exit")), (Some(3), Some(0)));
+        assert_eq!((evs[1].h.as_str(), evs[1].e.as_str(), evs[1].o), ("config", "heal", Outcome::Error));
+        let Extras::Fields(f) = &evs[1].extras else { panic!("fields") };
+        assert_eq!((f.get_num("items"), f.get_num("exit")), (Some(0), Some(1)), "items do not leak between runs");
     }
 
     #[test]

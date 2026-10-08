@@ -8,7 +8,7 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
-use super::event::{DAY_MS, Extras, day_of};
+use super::event::{DAY_MS, Event, Extras, Fields, Kind, day_of};
 use super::persist::{DayRow, TelDb};
 use super::recorder::{Delta, Recorder};
 use super::rollup::merge_days;
@@ -84,6 +84,121 @@ fn add(m: &mut Map<String, Value>, key: &str, by: u64) {
     m.insert(key.to_string(), json!(cur + by));
 }
 
+/// The events of `kind` in the last `days` days, flushed and not yet flushed, oldest first, at most `telemetry.summary_event_limit`.
+fn kind_events(tel: Option<&TelDb>, rec: Option<&Recorder>, kind: Kind, days: u64, now_ms: u64) -> Vec<Event> {
+    let since = now_ms.saturating_sub(days * DAY_MS);
+    let limit = defaults::num("telemetry.summary_event_limit") as usize;
+    let mut ev = tel.map(|t| t.events(kind.name(), since, limit)).unwrap_or_default();
+    if let Some(r) = rec {
+        ev.extend(r.pending_events().into_iter().filter(|e| e.kind == kind && e.ts_ms >= since));
+    }
+    ev.sort_by_key(|e| e.ts_ms);
+    let skip = ev.len().saturating_sub(limit);
+    ev.into_iter().skip(skip).collect()
+}
+
+fn fields_of(e: &Event) -> Option<&Fields> {
+    match &e.extras {
+        Extras::Fields(f) => Some(f),
+        Extras::Jev(j) => Some(&j.more),
+        _ => None,
+    }
+}
+
+fn bump(m: &mut Map<String, Value>, key: &str) {
+    add(m, key, 1);
+}
+
+/// `telemetry summary`'s per-kind detail: what the Jev calls, state-writing commands, model calls and daemon health snapshots
+/// of the window said. The counters (`by_hook`) already carry every kind's count, outcomes and latency; these sections add the
+/// numbers the counters do not hold (cost, items changed, tokens, readings).
+fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_ms: u64) -> Value {
+    // jev: per integration
+    let mut jev: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+    let (mut j_calls, mut j_cache, mut j_err, mut j_open, mut j_cost) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    for e in kind_events(tel, rec, Kind::Jev, days, now_ms) {
+        let Extras::Jev(j) = &e.extras else { continue };
+        let slot = jev.entry(j.integration.as_str().to_string()).or_default();
+        let (backend, breaker) = (j.more.get_tok("backend").unwrap_or(""), j.more.get_tok("breaker").unwrap_or(""));
+        let failed = matches!(e.o, super::event::Outcome::Error | super::event::Outcome::Timeout);
+        add(slot, "calls", 1);
+        add(slot, "cost_uc", j.cost_uc);
+        add(slot, "ms_sum", e.ms as u64);
+        let max = slot.get("ms_max").and_then(Value::as_u64).unwrap_or(0).max(e.ms as u64);
+        slot.insert("ms_max".into(), json!(max));
+        let verdicts = slot.entry("verdicts").or_insert_with(|| json!({}));
+        if let Some(m) = verdicts.as_object_mut() {
+            bump(m, j.verdict.as_str());
+        }
+        let modes = slot.entry("modes").or_insert_with(|| json!({}));
+        if let Some(m) = modes.as_object_mut() {
+            bump(m, j.mode.as_str());
+        }
+        if backend == "cache" {
+            add(slot, "cache_hits", 1);
+            j_cache += 1;
+        }
+        if failed {
+            add(slot, "errors", 1);
+            j_err += 1;
+        }
+        if breaker == "open" {
+            add(slot, "breaker_open", 1);
+            j_open += 1;
+        }
+        j_calls += 1;
+        j_cost += j.cost_uc;
+    }
+    let jev_by: Map<String, Value> = jev
+        .into_iter()
+        .map(|(k, mut m)| {
+            let calls = m.get("calls").and_then(Value::as_u64).unwrap_or(0);
+            let sum = m.remove("ms_sum").and_then(|v| v.as_u64()).unwrap_or(0);
+            m.insert("mean_ms".into(), json!(sum.checked_div(calls).unwrap_or(0)));
+            (k, Value::Object(m))
+        })
+        .collect();
+    // cmd: per command
+    let mut cmd: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+    for e in kind_events(tel, rec, Kind::Cmd, days, now_ms) {
+        let slot = cmd.entry(e.h.as_str().to_string()).or_default();
+        add(slot, "runs", 1);
+        add(slot, "ms_total", e.ms as u64);
+        if e.o == super::event::Outcome::Error {
+            add(slot, "errors", 1);
+        }
+        add(slot, "items", fields_of(&e).and_then(|f| f.get_num("items")).unwrap_or(0));
+    }
+    // model: per backend and model alias
+    let mut model: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+    for e in kind_events(tel, rec, Kind::Model, days, now_ms) {
+        let slot = model.entry(format!("{}/{}", e.h, e.e)).or_default();
+        add(slot, "calls", 1);
+        add(slot, "ms_total", e.ms as u64);
+        if e.o != super::event::Outcome::Allow {
+            add(slot, "errors", 1);
+        }
+        add(slot, "tokens_in", fields_of(&e).and_then(|f| f.get_num("tokens_in")).unwrap_or(0));
+        add(slot, "tokens_out", fields_of(&e).and_then(|f| f.get_num("tokens_out")).unwrap_or(0));
+    }
+    // daemon: the newest snapshot
+    let snaps = kind_events(tel, rec, Kind::Daemon, days, now_ms);
+    let latest = snaps.last().map(|e| {
+        let mut m = Map::new();
+        m.insert("ts_ms".into(), json!(e.ts_ms));
+        if let Some(f) = fields_of(e) {
+            f.put_json(&mut m);
+        }
+        Value::Object(m)
+    });
+    json!({
+        "jev": {"calls": j_calls, "cache_hits": j_cache, "errors": j_err, "breaker_open": j_open, "cost_uc": j_cost, "by_integration": jev_by},
+        "cmd": cmd,
+        "model": model,
+        "daemon": {"snapshots": snaps.len(), "latest": latest},
+    })
+}
+
 /// The `telemetry summary` report for the last `days` days.
 pub fn summary_json(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_ms: u64) -> Value {
     let rows = window_rows(tel, rec, days, now_ms);
@@ -135,6 +250,7 @@ pub fn summary_json(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_
         "latency_note": defaults::text("msg.metrics_quantile_note"),
         "dropped": drops.map(|d| json!({"slots": d.slots, "ring": d.ring})),
         "events_held": tel.map(|t| t.held_events()),
+        "detail": detail_sections(tel, rec, days, now_ms),
     })
 }
 
@@ -185,6 +301,75 @@ mod tests {
         assert_eq!(parse_window("soon"), None);
         assert_eq!(parse_window(""), None);
         assert_eq!(window_days("bogus"), defaults::num("telemetry.default_window_days"));
+    }
+
+    /// A fixed moment so the report is the same text on every run.
+    const NOW: u64 = 1_790_000_000_000;
+
+    fn at(mut e: Event, back_s: u64) -> Event {
+        e.ts_ms = NOW - back_s * 1000;
+        e
+    }
+
+    #[test]
+    fn the_summary_covers_node_hooks_jev_commands_model_calls_and_daemon_health_snapshot() {
+        use super::super::emit::{self, JevCall, ModelCall, NodeRun};
+        use super::super::event::Outcome;
+        let rec = Recorder::from_defaults();
+        rec.record(Kind::Hook, "hook", "PreToolUse", Outcome::Allow, 800, 0);
+        let node = |id, o, micros, out_bytes, exit, fate| {
+            at(emit::node_run(&NodeRun { id, event: "PreToolUse", outcome: o, micros, out_bytes, err_bytes: 0, exit, fate }), 600)
+        };
+        rec.event(node("git-guard", Outcome::Allow, 21_000, 0, Some(0), "ran"));
+        rec.event(node("git-guard", Outcome::Block, 34_000, 120, Some(2), "ran"));
+        rec.event(node("edit-guard", Outcome::Timeout, 5_000_000, 0, None, "timeout"));
+        let jev = |verdict, o, ms, cost_uc, backend, breaker, error| {
+            at(
+                emit::jev_call(&JevCall {
+                    integration: "speculation",
+                    mode: "on",
+                    verdict,
+                    outcome: o,
+                    conf_pm: Some(940),
+                    ms,
+                    cost_uc,
+                    backend,
+                    breaker,
+                    error,
+                }),
+                300,
+            )
+        };
+        rec.event(jev("added", Outcome::Advise, 410, 85, "jev", "closed", None));
+        rec.event(jev("none", Outcome::Allow, 0, 0, "cache", "closed", None));
+        rec.event(jev("no-answer", Outcome::Error, 1200, 0, "baseline-only", "open", Some("http-500")));
+        rec.event(at(emit::command_run("migrate", "-", 0, 48_000, 2), 120));
+        rec.event(at(emit::command_run("config", "heal", 1, 9_000, 0), 90));
+        rec.event(at(
+            emit::model_call(&ModelCall {
+                backend: "codex",
+                model: "sonnet",
+                purpose: "judge",
+                outcome: Outcome::Allow,
+                micros: 2_300_000,
+                tokens_in: Some(900),
+                tokens_out: Some(60),
+            }),
+            60,
+        ));
+        rec.event(at(
+            emit::daemon_snapshot(false, &[("rss_kb", 88_000), ("rss_cap_kb", 400_000), ("restarts", 0), ("workers", 4), ("busy", 1), ("queue_depth", 0)]),
+            30,
+        ));
+        rec.event(at(
+            emit::daemon_snapshot(
+                true,
+                &[("rss_kb", 91_500), ("rss_cap_kb", 400_000), ("restarts", 1), ("workers", 4), ("busy", 3), ("queue_depth", 2), ("saturated", 1)],
+            ),
+            5,
+        ));
+        let v = summary_json(None, Some(&rec), 7, NOW);
+        insta::assert_snapshot!("summary_with_coverage_telemetry", serde_json::to_string_pretty(&v).unwrap());
     }
 
     #[test]

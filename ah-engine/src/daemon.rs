@@ -322,6 +322,31 @@ impl Shared {
         parts.join(" ")
     }
 
+    /// The `daemon` health snapshot event: resident set against its cap, restarts, the degraded flag, queue and worker load, and
+    /// saturation. Numbers only (the fields are declared in `telemetry.fields`).
+    pub fn health_event(&self) -> crate::telemetry::event::Event {
+        let cfg = self.cfg();
+        let load = self.load.report(health::now_ms());
+        let degraded = health::summary()["degraded"].as_bool().unwrap_or(false);
+        let busy = self.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;
+        crate::telemetry::emit::daemon_snapshot(
+            degraded,
+            &[
+                ("rss_kb", limits::rss_kb()),
+                ("rss_cap_kb", cfg.rss_cap_kb),
+                ("heap_live_kb", crate::memstat::heap().live / 1024),
+                ("restarts", self.starts.saturating_sub(1)),
+                ("queue_depth", self.depth.load(SeqCst) as u64),
+                ("queue_cap", cfg.queue as u64),
+                ("workers", cfg.workers as u64),
+                ("busy", busy),
+                ("saturated", u64::from(load["saturated"].as_bool().unwrap_or(false))),
+                ("peak_in_flight", load["peak_in_flight"].as_u64().unwrap_or(0)),
+                ("max_wait_us", load["max_wait_us"].as_u64().unwrap_or(0)),
+            ],
+        )
+    }
+
     fn status(&self) -> String {
         let rss_now = limits::rss_kb();
         let rules = self.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1008,6 +1033,17 @@ pub fn serve() {
     }
     drain_spool(&sh); // writes spooled while the engine was down, before any new one
     let sh = Arc::new(sh);
+    // events from other processes (the hook dispatcher, one-shot commands) arrive through the inbox; events from inside
+    // this process (Jev, health snapshots) go straight to the recorder
+    sh.telemetry.set_inbox(crate::telemetry::emit::inbox_path());
+    {
+        let weak = Arc::downgrade(&sh);
+        crate::telemetry::emit::install(Box::new(move |ev| {
+            if let Some(sh) = weak.upgrade() {
+                sh.telemetry.event(ev);
+            }
+        }));
+    }
     for i in 0..sh.cfg().workers {
         let s = sh.clone();
         std::thread::spawn(move || worker(s, i));
@@ -1017,7 +1053,7 @@ pub fn serve() {
         std::thread::spawn(move || watchdog(s));
     }
     start_scheduler(&sh);
-    if sh.db.is_some() {
+    {
         let s = sh.clone();
         std::thread::spawn(move || telemetry_flusher(s));
     }
@@ -1090,12 +1126,19 @@ fn schedule_ctl(sh: &Shared, args: &str) -> serde_json::Value {
 /// each round so an edit applies without a restart. Everything recorded after the last flush is lost on `kill -9`.
 fn telemetry_flusher(sh: Arc<Shared>) {
     let slice = defaults::millis("daemon.worker_wait_ms");
-    let mut last = Instant::now();
+    let (mut last, mut last_health) = (Instant::now(), Instant::now());
     while !sh.draining.load(SeqCst) {
         std::thread::sleep(slice);
-        if last.elapsed() >= Duration::from_millis(sh.cfg().effective.num("telemetry.flush_ms")) {
+        let cfg = sh.cfg();
+        if last_health.elapsed() >= Duration::from_millis(cfg.effective.num("telemetry.health_snapshot_ms")) {
+            last_health = Instant::now();
+            sh.telemetry.event(sh.health_event());
+        }
+        if last.elapsed() >= Duration::from_millis(cfg.effective.num("telemetry.flush_ms")) {
             last = Instant::now();
-            sh.telemetry.flush();
+            if sh.db.is_some() {
+                sh.telemetry.flush();
+            }
         }
     }
 }
@@ -1408,5 +1451,23 @@ mod tests {
         assert!(v["note"].as_str().unwrap().contains("kill -9"));
         let e: serde_json::Value = serde_json::from_str(ok(&handle_request(b"CTL telemetry events kind=route\n", &sh).0)).unwrap();
         assert_eq!(e["count"], 0);
+    }
+
+    #[test]
+    fn a_health_snapshot_carries_the_daemons_readings_and_shows_in_the_summary() {
+        let sh = shared();
+        let ev = sh.health_event();
+        let crate::telemetry::event::Extras::Fields(f) = &ev.extras else { panic!("fields") };
+        assert!(f.get_num("rss_kb").is_some_and(|n| n > 0), "{f:?}");
+        assert_eq!(f.get_num("rss_cap_kb"), Some(sh.cfg().rss_cap_kb));
+        assert_eq!((f.get_num("workers"), f.get_num("busy"), f.get_num("restarts")), (Some(sh.cfg().workers as u64), Some(0), Some(0)));
+        for k in ["degraded", "queue_depth", "queue_cap", "saturated", "peak_in_flight", "max_wait_us", "heap_live_kb"] {
+            assert!(f.get_num(k).is_some(), "missing {k}");
+        }
+        assert_eq!(&crate::telemetry::event::Event::from_json(&ev.to_json()).unwrap(), &ev);
+        sh.telemetry.event(ev);
+        let v: serde_json::Value = serde_json::from_str(ok(&handle_request(b"CTL telemetry summary window=1d\n", &sh).0)).unwrap();
+        assert_eq!(v["detail"]["daemon"]["snapshots"], 1);
+        assert_eq!(v["detail"]["daemon"]["latest"]["rss_cap_kb"], sh.cfg().rss_cap_kb);
     }
 }

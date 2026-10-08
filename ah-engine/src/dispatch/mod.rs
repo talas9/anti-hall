@@ -411,9 +411,15 @@ fn start_node(e: &table::Entry, raw: &[u8], payload: Option<&File>) -> node::Run
     payload.map_or_else(|| node::start(e, raw), |p| node::start_file(e, p))
 }
 
+/// [`start_node`] for a hook that runs for `event`, so its telemetry event says which.
+fn start_node_for(e: &table::Entry, event: &str, raw: &[u8], payload: Option<&File>) -> node::Running {
+    start_node(e, raw, payload).for_event(event)
+}
+
 fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> Outcome {
     let mut tele = plan::Tele::default();
     let o = run_core(raw, args, payload, complete, &mut tele);
+    crate::telemetry::emit::flush(); // the Node hooks' telemetry events of this call, in one append
     if tele.notable() {
         crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
         health::log_event("dispatch_plan", &args.event, &tele.detail());
@@ -530,7 +536,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             tele.mark(&e.id, plan::Outcome::SkippedBudget);
             continue;
         }
-        started.push((i, start_node(e, raw.as_bytes(), payload)));
+        started.push((i, start_node_for(e, &args.event, raw.as_bytes(), payload)));
     }
     let meta = Meta {
         host: args.host.clone(),
@@ -599,7 +605,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 pre_err.push_str(&stderr);
                 pre_err.push('\n');
             }
-            _ => started.push((i, start_node(e, raw.as_bytes(), payload))),
+            _ => started.push((i, start_node_for(e, &args.event, raw.as_bytes(), payload))),
         }
     }
     let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();

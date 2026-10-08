@@ -274,6 +274,7 @@ fn engine_section(doc: &mut Doc) {
 fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags) {
     doc.head(defaults::text(if f.dry_run { "doctor_msg.repair_heading_dry" } else { "doctor_msg.repair_heading" }));
     let rows = migrate::run(ctx);
+    crate::telemetry::emit::add_items(rows.iter().filter(|r| r.status == "fixed").count() as u64);
     if rows.is_empty() && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }
