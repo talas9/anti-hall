@@ -45,7 +45,7 @@ every other case to that Node hook, so it is never weaker than Node. With no bin
 hooks run exactly as before. The Codex hook table, its rules, settings and texts are the plugin's `engine/` files (shared with
 Claude, hot-reloaded, with last-known-good and pristine fallbacks). `PermissionRequest`, `PostCompact` and `SubagentStart` have a
 thin trigger but no hook entries yet, so they answer with the neutral no-op. Opt out of the download with
-`AH_ENGINE_BOOTSTRAP=0`. Full description, rollback and the list of what still runs on Node:
+the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0`. Full description, rollback and the list of what still runs on Node:
 [AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md). Telemetry is local only and read with
 `ah-engine telemetry summary`.
 

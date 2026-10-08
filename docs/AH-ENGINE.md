@@ -263,7 +263,7 @@ SessionStart, `hooks/ah-hook.sh` starts `hooks/ah-engine-bootstrap.sh` detached.
 It is idempotent (the same lock does nothing), rate limited (a failed attempt for a lock is retried after 6 hours), and it never
 overwrites a binary it did not install (a local build is left alone). Every outcome is written to
 `~/.anti-hall/ah-engine/bootstrap.log`. A plugin tree without `ah-engine.lock` installs nothing and stays on Node. Opt out with
-an environment variable named in [RELEASING.md](../ah-engine/RELEASING.md) and the plugin README. This download is the only network request the engine's install makes; see [PRIVACY.md](../PRIVACY.md).
+the setting `engine.bootstrap` = false (`/config`, `/anti-hall:settings`; stored in `~/.anti-hall/settings.json`) or the environment variable `AH_ENGINE_BOOTSTRAP=0`, which overrides the setting (see also [RELEASING.md](../ah-engine/RELEASING.md)). This download is the only network request the engine's install makes; see [PRIVACY.md](../PRIVACY.md).
 
 **Go-live.** An engine check is trusted only after it has agreed with the Node hook it replaces. Before release the whole
 dispatcher was replayed against Node (see [Measured results](#measured-results-pre-release)); per entry the engine can also run
@@ -277,7 +277,7 @@ entries). A check that cannot reproduce Node exactly defers (exit 75 from the en
 |---|---|
 | one check | set `mode = "off"` on its `[entries."<id>"]` in the engine's `config.toml`: only the engine's check is skipped, its Node hook decides (hot reload, no restart) |
 | the engine, for now | `ah-engine stop`, then remove `~/.anti-hall/ah-engine/bin/ah-engine`; the wrapper finds no binary and runs the Node hooks |
-| the engine, for good | also set the opt-out variable (see Install above), or the next SessionStart reinstalls the pinned binary |
+| the engine, for good | also set `engine.bootstrap` = false or the opt-out variable (see Install above), or the next SessionStart reinstalls the pinned binary |
 | a bad engine build | copy `bin/ah-engine.prev` back over `bin/ah-engine` |
 | a bad plugin edit of the engine files | nothing to do: the layered failover below falls back by itself |
 

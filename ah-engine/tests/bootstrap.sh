@@ -148,6 +148,21 @@ t_opt_out() {
   AH_ENGINE_BOOTSTRAP=0 run || return 1
   [ ! -e "$(engine)" ] && [ ! -e "$HOME/.anti-hall" ]
 }
+t_opt_out_setting() {
+  # settings key engine.bootstrap=false opts out; the env var 1 overrides it; true / absent installs.
+  newhome offset; write_lock "$tmp/lock" "$ver" "$triple" "$good"
+  mkdir -p "$HOME/.anti-hall"
+  printf '{\n  "jev": {"enabled": true},\n  "engine": {\n    "bootstrap": false\n  }\n}\n' >"$HOME/.anti-hall/settings.json"
+  run || return 1
+  [ ! -e "$(engine)" ] || return 1
+  AH_ENGINE_BOOTSTRAP=1 run || return 1
+  [ -x "$(engine)" ] || return 1
+  newhome onset; write_lock "$tmp/lock" "$ver" "$triple" "$good"
+  mkdir -p "$HOME/.anti-hall"
+  printf '{"engine":{"bootstrap":true},"other":{"bootstrap":false}}' >"$HOME/.anti-hall/settings.json"
+  run || return 1
+  [ -x "$(engine)" ]
+}
 t_wrapper_spawns() {
   # SessionStart through the wrapper installs the engine in the background when the plugin ships a lock; a copy of the
   # hooks dir stands in for the plugin so the repo tree is not touched.
@@ -215,6 +230,7 @@ check t_wsl
 check t_unknown_arch
 check t_no_lock_or_bad_lock
 check t_opt_out
+check t_opt_out_setting
 check t_wrapper_spawns
 
 printf 'bootstrap: %s passed, %s failed\n' "$pass" "$fail"

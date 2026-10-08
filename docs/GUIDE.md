@@ -133,7 +133,7 @@ An optional small Rust program, `ah-engine`, can answer the hook calls without s
 thin trigger per event; when the engine binary is installed it decides natively what it can prove identical to the Node hook and
 defers the rest to Node (never weaker than Node), and with no binary the Node hooks run as before. The binary is downloaded once
 from the GitHub Release by a shell bootstrap and installed only if its sha256 equals the one pinned in the plugin's `ah-engine.lock`
-(`AH_ENGINE_BOOTSTRAP=0` skips it). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
+(the setting `engine.bootstrap` = false, or `AH_ENGINE_BOOTSTRAP=0`, skips it). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
 time with hot reload and fallbacks (edited, then last-known-good, then pristine, then Node), and `ah-engine config heal` restores a
 missing key. Still on Node: the DevSwarm mesh writes and daemons, every call that consults Jev, the semantic judge's model call and the
 statusline. macOS and Linux only; Windows is not supported yet.
@@ -146,7 +146,7 @@ The short form is in the README; the full table is [PRIVACY.md](../PRIVACY.md). 
 here goes beyond it: no analytics and nothing reported to anyone; one default-on update check (a tag-list request to
 `github.com/talas9/anti-hall`, no project data; off via `versionAlerts.antiHall` or
 `ANTIHALL_VERSION_ALERT=off`); a one-time download of the optional `ah-engine` binary from the GitHub Release
-(sha256-pinned in the plugin, nothing about you sent; off via `AH_ENGINE_BOOTSTRAP=0`); local-only engine usage counters
+(sha256-pinned in the plugin, nothing about you sent; off via the setting `engine.bootstrap` or `AH_ENGINE_BOOTSTRAP=0`); local-only engine usage counters
 (identifiers and counts, never content; `telemetry.enabled`; read with `ah-engine telemetry summary`); the Jev classifier, the semantic judge
 (`jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1`) and mesh message triage are off by default and send the
 text they judge only to the provider you configure. API keys come from sensitive plugin
@@ -1566,6 +1566,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Suppress the email segment in the statusline. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |
 | `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
+| `engine.bootstrap` | `true` | `AH_ENGINE_BOOTSTRAP` | Download and install the sha256-pinned ah-engine binary from the GitHub Release on SessionStart (once per pinned release). Off: nothing is downloaded and the Node hooks answer everything. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
 | `defects.defaultProj` | — | `ANTIHALL_DEFECT_PROJ` | Default project tag used when filing an anti-hall defect (max 64 chars). |
 
 ## Configuration / tuning

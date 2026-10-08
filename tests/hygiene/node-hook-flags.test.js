@@ -88,16 +88,54 @@ test('exactly the EXPOSED_HOOKS entries carry the flags; every other command kee
   for (const f of Object.keys(EXPOSED_HOOKS)) assert.ok(fs.existsSync(path.join(HOOKS, f)), f);
 });
 
-test('install-codex flags the same scripts and nothing else', () => {
+// Since the engine, install-codex registers thin triggers (`ah-hook.sh <Event> --host codex`), not direct node
+// commands. Node is now launched only by the wrapper fallback (ah-fallback*.list / .map.json) and the engine
+// dispatcher (engine/defaults/dispatch.toml), both generated from the registry. The flags must be present there.
+test('install-codex registers only thin ah-hook.sh triggers (no direct node command)', () => {
   const { ANTI_HALL_HOOKS } = require(path.join(PLUGIN, 'codex', 'install-codex.js'));
   const cmds = [];
   for (const groups of Object.values(ANTI_HALL_HOOKS)) for (const g of groups) for (const h of g.hooks) cmds.push(h.command);
-  assert.ok(cmds.length > 30);
-  const bad = cmds.filter((c) => {
-    const file = path.basename(JSON.parse(c.match(/"(?:[^"\\]|\\.)*"/)[0]));
-    return c.startsWith(PREFIX + '"') !== Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, file);
-  });
+  assert.ok(cmds.length >= 5);
+  const bad = cmds.filter((c) => !/^sh "[^"]*\/hooks\/ah-hook\.sh" [A-Za-z]+ --host codex$/.test(c));
   assert.deepStrictEqual(bad, []);
+});
+
+function launchCommands(file) {
+  const t = fs.readFileSync(file, 'utf8');
+  const out = [];
+  if (file.endsWith('.list')) {
+    for (const l of t.split('\n')) { if (!l || l[0] === '#' || l[0] === '@') continue; out.push(l.split('\t').slice(2).join('\t')); }
+  } else if (file.endsWith('.json')) {
+    const walk = (o) => { if (typeof o === 'string') out.push(o); else if (o && typeof o === 'object') Object.values(o).forEach(walk); };
+    walk(JSON.parse(t));
+  } else {
+    for (const m of t.matchAll(/command = "((?:[^"\\]|\\.)*)"/g)) out.push(m[1].replace(/\\"/g, '"'));
+  }
+  return out.filter((c) => /^node /.test(c) && /hooks\/[\w-]+\.js"/.test(c));
+}
+
+test('every path that still launches a Node hook (dispatch.toml, fallback lists and maps) carries the flags exactly for EXPOSED_HOOKS', () => {
+  const files = [
+    path.join(PLUGIN, 'engine', 'defaults', 'dispatch.toml'),
+    path.join(HOOKS, 'ah-fallback.list'),
+    path.join(HOOKS, 'ah-fallback.codex.list'),
+    path.join(HOOKS, 'ah-fallback.map.json'),
+    path.join(HOOKS, 'ah-fallback.codex.map.json'),
+  ];
+  for (const f of files) {
+    const cmds = launchCommands(f);
+    assert.ok(cmds.length > 20, `${path.basename(f)}: expected the node commands, got ${cmds.length}`);
+    const bad = cmds.filter((c) => {
+      const file = c.match(/hooks\/([\w-]+\.js)"/)[1];
+      return c.startsWith(PREFIX + '"') !== Object.prototype.hasOwnProperty.call(EXPOSED_HOOKS, file);
+    });
+    assert.deepStrictEqual(bad, [], path.basename(f));
+    assert.ok(cmds.some((c) => c.startsWith(PREFIX)), `${path.basename(f)}: no flagged command found`);
+  }
+});
+
+test('the Claude hooks.json launches no direct node command (thin triggers only)', () => {
+  assert.deepStrictEqual(commands(path.join(HOOKS, 'hooks.json')).filter((c) => /^node /.test(c)), []);
 });
 
 test('this Node accepts the flags (an unknown V8 flag makes node refuse to start)', () => {

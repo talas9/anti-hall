@@ -470,6 +470,14 @@ const SECTIONS = [
     ],
   },
   {
+    key: 'engine',
+    label: 'Engine',
+    description: 'The optional ah-engine binary (native hook answers).',
+    settings: [
+      { key: 'bootstrap', type: 'boolean', default: true, env: 'AH_ENGINE_BOOTSTRAP', description: 'Download and install the sha256-pinned ah-engine binary from the GitHub Release on SessionStart (once per pinned release). Off: nothing is downloaded and the Node hooks answer everything. AH_ENGINE_BOOTSTRAP=0/1 overrides this key.' },
+    ],
+  },
+  {
     key: 'defects',
     label: 'Defects',
     description: 'The two-way defect-reporting channel.',

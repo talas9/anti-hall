@@ -15,7 +15,8 @@
 # usage: ah-engine-bootstrap.sh [--lock FILE] [--print-target] [-v]
 #   --print-target  print the detected release triple (or "unsupported") and exit
 #   -v              also print log lines on stderr
-# Opt out: AH_ENGINE_BOOTSTRAP=0.
+# Opt out: settings key engine.bootstrap=false (/config, /anti-hall:settings; stored in $HOME/.anti-hall/settings.json) or the
+# env var AH_ENGINE_BOOTSTRAP=0. The env var, when set to 0 or 1, overrides the setting.
 # Test-only knobs (honored ONLY with AH_WRAPPER_TEST=1): AH_ENGINE_RELEASE_BASE (download base URL, http allowed),
 # AH_BOOTSTRAP_UNAME_S / _M / _R, AH_BOOTSTRAP_LIBC (gnu|musl), AH_BOOTSTRAP_RETRY_S.
 
@@ -34,7 +35,19 @@ done
 test_mode=0
 [ "${AH_WRAPPER_TEST:-}" = 1 ] && test_mode=1
 
-[ "${AH_ENGINE_BOOTSTRAP:-1}" = 0 ] && exit 0
+# Opt-out: env var first (0 = off, 1 = on, overriding the setting), then the settings key engine.bootstrap in
+# $HOME/.anti-hall/settings.json ({"engine": {"bootstrap": false}}). A missing or unreadable file means on.
+case "${AH_ENGINE_BOOTSTRAP:-}" in
+  0) exit 0 ;;
+  1) ;;
+  *)
+    sf=${HOME:-}/.anti-hall/settings.json
+    if [ -f "$sf" ] && tr -d '\n\r' < "$sf" 2>/dev/null \
+      | grep -Eq '"engine"[[:space:]]*:[[:space:]]*\{[^}]*"bootstrap"[[:space:]]*:[[:space:]]*(false|"(false|off|0|no)"|0)[[:space:]]*[,}]'; then
+      exit 0
+    fi
+    ;;
+esac
 
 here=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
 [ -n "$lock" ] || lock=$here/../ah-engine.lock

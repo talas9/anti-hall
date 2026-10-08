@@ -276,7 +276,7 @@ The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honou
 `engine/` directory plus the engine's `config.toml`. Show them with `ah-engine config --json` (each value with its source),
 validate an edit with `ah-engine config validate <file>`, restore a missing key with `ah-engine config heal`. A bad edit falls back
 to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. Skipping the engine
-download is `AH_ENGINE_BOOTSTRAP=0`.
+download is the setting `engine.bootstrap` (boolean, default true; `settings.js set engine.bootstrap false`), or the env var `AH_ENGINE_BOOTSTRAP=0`, which overrides the setting.
 
 ## Resetting a setting
 
