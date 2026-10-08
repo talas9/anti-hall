@@ -236,9 +236,12 @@ mod tests {
     /// The other side of the fix: where a check cannot prove Node is silent it still defers (D74).
     #[test]
     fn a_check_that_cannot_prove_silence_still_defers() {
-        // coordinator-work-guard: a main-session Bash call needs Node's own state, the check says Defer.
-        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}});
-        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        // coordinator-work-guard: a main-session Bash call whose command is not provably non-work needs the Node classifier,
+        // the check says Defer (a provably read-only command such as `ls` is answered natively since the pre-pass port).
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "make deploy"}});
+        let mut cm = meta();
+        cm.env = crate::reqenv::RequestEnv::from_pairs([("CLAUDE_CODE_ENTRYPOINT", "cli"), ("HOME", "/h")]);
+        let got = evaluate(&cm, &p, &|_, _, _| {});
         assert_eq!(got.iter().find(|(id, _)| id == "coordinator-work-guard").unwrap().1, Answer::Defer);
         // ship-it-guard with its opt-in gate on: Bash targets need the command-guard parser, so it defers.
         let mut m = meta();

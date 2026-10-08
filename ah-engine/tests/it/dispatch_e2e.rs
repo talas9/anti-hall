@@ -195,7 +195,8 @@ fn bash(cmd: &str, cwd: &Path) -> String {
 }
 
 /// A Bash payload on which the built-in `merge-gate` and `api-guard` checks both defer to their Node hooks, which these
-/// tests replace with shell stand-ins: an auto-merge command that names a code file, with the gate switched on in the
+/// tests replace with shell stand-ins: an auto-merge command that names a code file and also writes one with a verifiable
+/// reference (api-guard answers a Bash command natively unless its text could carry one), with the gate switched on in the
 /// test home and a RELATIVE transcript path (Node resolves it against its own working directory, so the engine's merge-gate
 /// always leaves it to the Node hook; the gate's other deferrals went native with the Jev port).
 fn node_only_bash(e: &Env) -> String {
@@ -203,7 +204,7 @@ fn node_only_bash(e: &Env) -> String {
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
     let tp = "hedged.jsonl";
-    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py"}, "transcript_path": tp})
+    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py"}, "transcript_path": tp})
         .to_string()
 }
 
@@ -421,7 +422,7 @@ fn an_event_no_entry_matches_says_nothing_and_starts_no_daemon() {
 fn a_guard_event_that_cannot_run_its_node_hooks_fails_closed() {
     let e = Env::new("closed");
     // no plugin root: the table's Node commands name ${CLAUDE_PLUGIN_ROOT}, so they cannot run
-    let (code, out, err) = e.run(&["hook", "--event", "PreToolUse"], true, &bash("ls", &e.dir), false);
+    let (code, out, err) = e.run(&["hook", "--event", "PreToolUse"], true, &node_only_bash(&e), false);
     assert_eq!((code, out.as_str()), (2, ""), "{err}");
     assert!(err.contains("could not run the guards for PreToolUse") && err.contains("no runnable Node command"), "{err}");
     // a broken fallback map, plugin root set
@@ -451,7 +452,7 @@ fn a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node() 
     let (code, out, err) = e.run_with(
         &["hook", "--event", "PreToolUse"],
         true,
-        &bash("ls", &e.dir),
+        &node_only_bash(&e),
         false,
         &[("CLAUDE_PLUGIN_ROOT", empty_root.to_str().unwrap()), ("PATH", bin.to_str().unwrap())],
     );
@@ -586,10 +587,12 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
         )
     };
     let (a, b, c) = (big("a", ""), big("b", ""), big("c", r#","permissionDecision":"ask","permissionDecisionReason":"sure?""#));
-    // coordinator-work-guard defers a main-session Bash call to Node (merge-side-pick answers it natively), so its map entry runs
+    // coordinator-work-guard defers a main-session Bash call that is not provably non-work to Node (an interactive entry point
+    // makes the session the main thread; merge-side-pick answers natively), so its map entry runs
     let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str()), ("api-guard", c.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run(&args, true, &node_only_bash(&e), true);
+    let main_thread = [("CLAUDE_CODE_ENTRYPOINT", "cli")];
+    let (code, out, err) = e.run_with(&args, true, &node_only_bash(&e), true, &main_thread);
     assert_eq!((code, err.as_str()), (0, ""));
     let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask", "the decision survives the join");
@@ -599,7 +602,7 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     // two of them fit joined: delivered as one, nothing logged
     let map = e.map(&[("coordinator-work-guard", a.as_str()), ("merge-gate", b.as_str())]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    assert_eq!(e.run(&args, true, &node_only_bash(&e), true).0, 0);
+    assert_eq!(e.run_with(&args, true, &node_only_bash(&e), true, &main_thread).0, 0);
 }
 
 /// An event that cannot block still hands an over-cap join back to the wrapper with `dispatch.defer_exit`.

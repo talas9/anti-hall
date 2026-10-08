@@ -22,6 +22,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
 | `jev` | `<ask\|status\|scrub\|evidence>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
 | `jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|mode> [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` | no | implemented | Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on\|shadow\|off`; `test` and the review verbs stay in the Node script. |
+| `jev_sweep` | `` | no | implemented | The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment. |
 | `maintain` | `` | no | implemented | Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report. |
 | `mesh` | `<roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | implemented | Read a repo's DevSwarm store (D45 stage S0), read-only: `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node. The store is opened read-only and never created; a journal-backed store is refused (Node owns it). |
 | `metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds. |
@@ -99,10 +100,10 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `silent-agent-nudge` | Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge (port of silent-agent-nudge.js). |
 | `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
 | `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
-| `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
+| `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
-| `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure; defers when a shared-tree advisory may be due (port of swarm-guard.js). |
+| `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the shared-tree advisory to an allowed write-capable spawn that shares a working tree with a running write-capable agent (port of swarm-guard.js and lib/shared-tree-note.js). |
 | `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when the check is due and the Jev decision log holds no rows it stamps the weekly latch itself; otherwise defers to the Node hook, which builds the report (port of jev-weekly-scorecard.js). |
 | `jev-review-reminder` | Stays silent when no session-start Jev notice can be due (Jev and the semantic judge off, the recommend notice off or shown within 30 days, a subagent turn, a non-interactive run); shows the recommend-Jev notice and stamps its latch itself when that is the only notice due; otherwise defers to the Node hook (port of jev-review-reminder.js). |
 | `repair-on-reload` | Stays silent when no repair can start (switch off, subagent turn, skipped, nothing pending at the running version, cooldown); otherwise defers to the Node hook, which takes the lock and starts the detached repair (port of the gates of repair-on-reload.js). |
@@ -449,6 +450,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.plugin_option_prefix` | `CLAUDE_PLUGIN_OPTION_` |  |  | Prefix of the environment variables the host sets from plugin options. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
+| `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
+| `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
+| `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
+| `git.re_file_write_tee` | `\btee\b\s+(?:-a\s+)?[^\s&;\|<>()-][^\s&;\|<>()]*` |  |  | JavaScript regex source: a tee into a file, which counts as a redirect for the file-write shape. |
 | `git.redirect_words` | `11 items` |  |  | Shell redirection operators, which are not command words. |
 | `git.setting_alias_resolve` | `4 entries` |  |  | Switch for git alias and shell definition resolution. |
 | `git.setting_git_guard` | `4 entries` |  |  | Master switch of the check: settings.json section and key, environment variable and plugin-option name. |
@@ -785,11 +790,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `api_guard.js_globals` | `17 items` |  |  | JavaScript global builtins whose members the Node guard verifies by default. |
 | `api_guard.js_require_word` | `require` |  |  | The text a JavaScript module reference needs before the guard can resolve an attribute against it. |
 | `api_guard.node_builtins` | `23 items` |  |  | Node built-in modules whose attributes the Node guard verifies by default. |
+| `api_guard.noise_pattern` | `[^A-Za-z0-9_.]` |  |  | Regex source (global) of the characters dropped from a Bash command before the verifiable-reference test: every character that is not an ASCII letter, digit, underscore or dot. The code a shell write puts in a file is built from the command text by quote removal and escape decoding, so its words are contiguous runs of what remains. |
 | `api_guard.python_extensions` | `py, pyi` |  |  | File extensions (lower-case) the guard checks as Python. |
 | `api_guard.python_import_word` | `import` |  |  | The word a Python module reference needs before the guard can resolve an attribute against it. |
 | `api_guard.python_stdlib` | `46 items` |  |  | Python standard-library modules whose attributes the Node guard verifies by default. |
 | `api_guard.setting` | `6 entries` |  |  | Where the guard's own on/off switch is read from (guards.apiGuard, default on). |
 | `api_guard.shell_setting` | `6 entries` |  |  | Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on). |
+| `api_guard.shell_write_pattern` | `[>]\|\btee\b\|\bsed\b\|\bperl\b\|\bcp\b\|\bmv\b\|\bopen\b\|createWriteStream\|File(?:...` |  |  | Regex source (case-sensitive) of the Node pre-filter that says a Bash command could write a file (a redirect, tee, an in-place editor, cp or mv, an inline-code write); a command it does not match yields no code chunk, so the guard allows it. |
 | `api_guard.summary` | `Fabricated-API guard: answers every call the Node api-guard would allow witho...` |  |  | One-line description of the api-guard check in the generated reference. |
 | `api_guard.thirdparty_setting` | `6 entries` |  |  | Where the switch for also verifying installed third-party packages is read from (guards.apiGuardThirdparty, default off). |
 | `api_guard.tool_edit` | `Edit` |  |  | Tool whose code is `tool_input.new_string`. |
@@ -1667,6 +1674,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.poll_ms` | `2` |  | ms | How often the dispatcher checks whether its Node hooks have finished. |
 | `dispatch.read_ms` | `2000` |  | ms | How long the dispatcher waits for a finished Node hook's output pipes to drain. |
 | `dispatch.reason_joiner` | `\n\n` |  |  | Text placed between the block reasons of several hooks that block the same event, when they are joined into the one block the dispatcher answers (the host shows the model every hook's block reason; Claude Code gives each Stop/SubagentStop block its own message). |
+| `dispatch.rerun_reserve_ms` | `5000` |  | ms | The least host time that must be left (the event's longest hooks.json timeout minus the time the dispatcher has used) for a spent budget to defer to the wrapper's Node rerun (dispatch.defer_exit). With less left the rerun would be killed by the host, which treats a timed-out hook as an allow, so a guard event fails closed instead. |
 | `dispatch.root_vars` | `2 entries` |  |  | Per host, the environment variables that hold the plugin root, first set one wins; the host exports them to hook commands, a command naming an unset one cannot run, and a built-in check gets the root as its plugin_root. |
 | `dispatch.shell` | `/bin/sh, -c` |  |  | The shell a Node hook command runs under, with its command flag (hooks.json commands are shell-form strings). |
 | `dispatch.spool_stale_s` | `1800` |  | s | Age at which a named raw-payload stdin spool file from an older build or unlink failure is considered stale and removed. Keep this larger than the longest hook timeout. |
@@ -1883,15 +1891,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `verify_first.dedupe_key` | `verify-first` |  |  | The emit-dedupe key of the reminder. |
 | `verify_first.dedupe_normalized` | `VERIFY-FIRST` |  |  | What every rotating line is normalized to before hashing, so a different line is still the same block. |
+| `verify_first.dedupe_normalized_primary` | `VERIFY-FIRST+PRIMARY` |  |  | What the block is normalized to before hashing when the Primary sentence is appended. |
 | `verify_first.env_devswarm_disable` | `DISABLE_ANTIHALL_DEVSWARM` |  |  | Setting this variable to 1 turns the DevSwarm integration off. |
 | `verify_first.env_devswarm_repo` | `DEVSWARM_REPO_ID` |  |  | The variable DevSwarm sets for a session it runs; a non-blank value makes the session a DevSwarm session in auto mode. |
 | `verify_first.env_devswarm_source_branch` | `DEVSWARM_SOURCE_BRANCH` |  |  | The variable DevSwarm sets for a child workspace; a non-blank value means this session is a child, never a Primary. |
 | `verify_first.event` | `UserPromptSubmit` |  |  | The hook event name in the check's output. |
+| `verify_first.no_ws_docs` | `CLAUDE.md, AGENTS.md` |  |  | The repo documents searched for the no-workspaces rule, at each directory level, in this order. |
+| `verify_first.no_ws_levels` | `8` |  |  | How many directory levels the search climbs from the working directory (it stops earlier at the repository root). |
+| `verify_first.no_ws_pattern` | `no\s+workspaces?\s+for\s+real\s+work` |  |  | JavaScript regex source (flags: i) matched against a repo's CLAUDE.md / AGENTS.md: a match means the repo forbids workspaces for real work, so the Primary dispatch-tier text is withheld. |
 | `verify_first.nudges` | `20 items` |  |  | The rotating reminder lines, in the order the Node hook lists them (the index is the payload digest modulo their number). |
 | `verify_first.num_repeat_every` | `6 entries` |  |  | Where the repeat interval is read from (guards.injectionRepeatEvery, delivered turns, default 10); 0 repeats the reminder every turn. |
 | `verify_first.prefix` | `VERIFY-FIRST: ` |  |  | Text in front of the rotating line. |
+| `verify_first.primary_joiner` | ` ` |  |  | Text between the rotating line and the Primary sentence. |
+| `verify_first.primary_nudge` | `DEVSWARM PRIMARY: the workspace is your TOP fan-out tier. A workspace-scale M...` |  |  | The sentence appended to the rotating line in a DevSwarm Primary session that may dispatch workspaces (byte-identical to the Node hook's DEVSWARM_PRIMARY_NUDGE). |
 | `verify_first.summary` | `UserPromptSubmit: the short rotating verify-first reminder, deduplicated per ...` |  |  | One-line description of the verify-first check in the generated reference. |
 | `verify_first.sw_dispatch_tier_text` | `4 entries` |  |  | Where the switch of the DevSwarm Primary dispatch-tier text is read from (devswarm.dispatchTierText, default on). |
+| `verify_first.sw_no_ws_detect` | `4 entries` |  |  | Where the switch of the CLAUDE.md / AGENTS.md no-workspaces detection is read from (jev.dispatchTierDetectNoWorkspaces, default on). |
+| `verify_first.sw_no_ws_repos` | `4 entries` |  |  | Where the list of repos that forbid workspaces is read from (jev.dispatchTierNoWorkspaceRepos, comma separated: absolute path prefixes, directory names, or * for all). |
 | `verify_first.sw_supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode is read from (devswarm.supervisorMode: auto, on or off, default auto): the first condition of the Primary gate. |
 | `verify_first.sw_turn` | `4 entries` |  |  | Where the on/off switch is read from (context.verifyFirstTurn, default on). |
 
@@ -2315,8 +2331,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n
-  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
@@ -2649,10 +2664,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.msg_rate_instead` | `pause new agents and let running ones finish, then launch the next wave; resp...` |  |  | What to do instead of spawning past the cap. |
 | `swarm_guard.msg_rate_what` | `agent spawn-rate ceiling reached ({count} spawns in the last 60s, cap is {cap}).` |  |  | What the rate block says; {count} is the spawns in the window and {cap} the cap. |
 | `swarm_guard.msg_rate_why` | `A runaway swarm can make the OS unusable.` |  |  | Why the rate block applies. |
+| `swarm_guard.msg_shared_instead` | `pass isolation:"worktree", serialize them, or give each its own scratch clone.` |  |  | What to do instead, when the repo does not forbid worktrees. |
+| `swarm_guard.msg_shared_instead_no_worktrees` | `serialize them or give each its own scratch clone.` |  |  | What to do instead, when the repo forbids worktrees. |
+| `swarm_guard.msg_shared_what` | `another write-capable agent is still running in this working tree, and this s...` |  |  | What the shared-tree advisory says. |
+| `swarm_guard.msg_shared_why` | `Two such agents can stage and commit each other's uncommitted changes.` |  |  | Why the shared-tree advisory applies. |
 | `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
 | `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
+| `swarm_guard.re_in_place` | `\bin\s+place\b\|\bin\s+(?:the\s+)?(?:session\s+)?repo\b\|\brepo\s+files\b\|\b(?:...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading. |
+| `swarm_guard.re_no_worktrees` | `\bno\s+(?:git\s+)?worktrees?\b` |  |  | JavaScript regex source (case-insensitive) matched against the CLAUDE.md / AGENTS.md files of the repo: a rule that forbids worktrees, which drops the isolation hint from the advisory. |
+| `swarm_guard.re_scratch_negated` | `\b(?:not\|no\|without\|instead\s+of)\s+(?:in\s+\|a\s+\|the\s+\|any\s+)?scratch\b` |  |  | JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading. |
 | `swarm_guard.read_only_types` | `13 items` |  |  | Agent types that cannot edit files (their definitions exclude the editing tools), lower-case. |
+| `swarm_guard.repo_docs` | `CLAUDE.md, AGENTS.md` |  |  | The files read at each directory level when looking for the no-worktrees rule. |
+| `swarm_guard.repo_docs_levels` | `8` |  |  | How many directory levels up from the spawn's working directory the rule search climbs at most. |
+| `swarm_guard.scratch_alternatives` | `\bwork(?:ing)?\s+(?:in\\|inside)\s+(?:a\\|an\\|the\\|your)?\s*scratch\s+(?:clone\...` |  |  | JavaScript regex sources, joined with \| and matched case-insensitively against the spawn's prompt and description: the statements that establish a scratch working location outside the session's git tree. |
+| `swarm_guard.scratch_path` | `[\x60'"]?(?:\/private\/tmp\/\|\/tmp\/\|\/var\/folders\/\|[^\s\x60'"]*scratchpad\b)` |  |  | JavaScript regex source for a scratch location in a spawn prompt (a /tmp, /private/tmp, /var/folders or scratchpad path); {path} in the scratch alternatives is replaced by it. |
 | `swarm_guard.setting` | `6 entries` |  |  | The switch safety.swarmGuard (on by default); off makes the guard a no-op. |
+| `swarm_guard.shared_tree_label` | `shared-tree` |  |  | Guard name in the shared-tree advisory. |
 | `swarm_guard.shared_tree_setting` | `6 entries` |  |  | The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent. |
 | `swarm_guard.spawn_cap` | `20` |  |  | How many agent spawns are allowed inside the window before the next one is blocked. |
 | `swarm_guard.state_dir` | `.anti-hall` |  |  | The directory of the spawn log, lock and trip log, relative to the home directory. |
@@ -4162,6 +4189,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.open_zero` | `open tasks: 0{blocked}.` |  |  | The open-tasks line when no countable task is open; `{blocked}` is the blocked-tasks tail. |
 | `task_tracker.owner_word` | `owner` |  |  | Who a blocked task waits on when it names nobody. |
 | `task_tracker.pending_status` | `pending` |  |  | The status (lowercase) of a task nobody has started. |
+| `task_tracker.primary_instead` | `a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, own rev...` |  |  | The 'instead' line of the DevSwarm Primary dispatch-tier block. |
+| `task_tracker.primary_key` | `task-tracker-primary` |  |  | The emit-dedupe key of the Primary block, rationed apart from the reminder. |
+| `task_tracker.primary_what` | `Primary dispatch tier: classify each task before you dispatch it.` |  |  | The 'what' line of the DevSwarm Primary dispatch-tier block. |
 | `task_tracker.prune_prefix` | `task-tracker` |  |  | The prefix the sweep of stale per-session state files is stamped under. |
 | `task_tracker.segment_joiner` | `\n\n` |  |  | What joins the short reminder and the open-tasks line in the output (a separate segment, so the dedupe store sees it consumed). |
 | `task_tracker.session_hash_len` | `16` |  |  | How many hexadecimal digits of the working directory's hash name a session that has no id. |
