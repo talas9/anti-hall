@@ -21,6 +21,10 @@ const ALLOW: &[(&str, &str)] = &[
     ),
     ("src/defaults.rs", "`AH_ENGINE_*` tunable overrides and names: settings of the engine process itself"),
     ("src/migrate/cli.rs", "the migrate and doctor command-line process: its own environment IS the caller's (the daemon is not involved, D76)"),
+    (
+        "src/meshw/mod.rs",
+        "the `ah-engine mesh` command-line process (D45 stage 2): it stands in for `node devswarm.js`, whose context is its own process environment, home and cwd; the daemon is not involved",
+    ),
     ("src/cfgstore.rs", "integer `AH_ENGINE_*` engine tunables only (test `only_engine_tunables_read_the_process_environment`)"),
     (
         "src/checks/jsport/date.rs",

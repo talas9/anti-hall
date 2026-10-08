@@ -245,7 +245,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Agent-targeted jobs delivered to a session's mailbox | planned (D45) | D45 |
 | Adding and removing jobs from the command line, schedules in versioned config | planned (D33, D18) | D33, D18 |
 | Mesh messaging, Monitor push, chat database | planned (D45) | D45 |
-| Read-only reader of the per-repo DevSwarm stores Node writes (`ah-engine mesh`, `src/mesh.rs`): roster, per-workspace counts, messages, gates, cursors, reader cursors; byte-equal to Node's reader on every live store copy (parity P1). Writes, locking, the summary projection and ingest are the later D45 stages | implemented in part | D45 |
+| Read-only reader of the per-repo DevSwarm stores Node writes (`ah-engine mesh`, `src/mesh.rs`): roster, per-workspace counts, messages, gates, cursors, reader cursors; byte-equal to Node's reader on every live store copy (parity P1). Stage 2 (`src/meshw/`, switch `mesh.engine_writes`, default off): `send`, `mesh read`, `mesh history`, `roster --ack` and `inbox ack-primary` (the successful path: the caller's own-partition cursor moves of a read receipt) with Node's store writes, locking and output, the summary projection refresh those verbs make (`summaries/<repoKey>.json`), a shadow mode that replays each store-writing verb on a store copy and logs the comparison, and deferral to Node for anything not reproduced exactly (decided before any write; after its own write the engine never reruns the verb in Node, it exits 70 instead). Turn it off with `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. Still Node: `inbox read-primary`, `heartbeat`, `inbox tick`, plain `roster`, and ingest (their shared unread count, the loss-free NDJSON-plus-store union, is not ported yet), and the sibling and NDJSON-inbox cursor moves of `ack-primary` | implemented in part | D45 |
 | Jev lane: Vercel and TypeSafe transports with fallback and breaker, Noul and Choice calls, off/shadow/on modes, add-block and advisory trust, cache, async queue with budgets, the `jev-assist.ndjson` rows, `ah-engine jev` | implemented, one-shot only | D34-D38 |
 | Jev wired into the dispatcher and the daemon, spend budget watch, audit snippets, daily rollups, persisted breaker and cache | planned (D58, D38) | D38, D58 |
 | Operator helpers: `ah-engine jev-setup` (status, enable, disable, set-key, bind-generic-key, mode), `capability-scan`, `harvest`, `briefing`, byte-for-byte with the Node scripts | implemented | D81 |
@@ -369,6 +369,7 @@ arguments, is in the generated reference.
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
+| `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary` and the plain `heartbeat` itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
 
 ## Metrics and the impact ledger
 
@@ -397,6 +398,86 @@ and histograms are snapshotted into `hot.db`, and the same snapshot is rolled up
 (`telemetry.rollups`: per minute kept 24 h, per hour kept 30 days; pruned by `ah-engine maintain`). A new daemon starts
 from the last snapshot, so counts survive a restart; after a crash they lose at most what came after the last snapshot.
 Gauges are live readings and are not kept. `ah-engine metrics --rollup minute --since 3600` lists the stored rollups.
+
+## Mesh verbs: the exit-code contract and per-verb telemetry (D45 stage 2)
+
+**Exit codes of `ah-engine mesh <devswarm.js argv>`** (`mesh_write.exit_defer`, `mesh_write.exit_committed_failure`):
+
+| Code | Meaning | Caller does |
+|---|---|---|
+| the verb's own | the engine answered (or Node did, after a deferral); the code is the verb's result | passes it through |
+| 75 | DEFERRED, NOTHING WRITTEN, and the engine could not start Node itself (no Node CLI, `node` not found) | runs the verb in Node; the stable launcher does, and logs the fallback in `mesh-route.log` |
+| 70 | the engine WROTE and then failed (a panic, or a late deferral that is a bug) | reports it; never runs Node: running the verb again would write twice |
+
+A deferral is always decided before the first store write, and `ah-engine mesh` runs a deferred verb in Node itself, so 75 is rare. 75 is never
+returned after a write: that is 70, a different code on purpose, because 75 is the one code a caller may answer by running Node. The decision is
+one pure function (`meshw::next_step`) unit-tested for every combination; `tests/mesh_ack_parity.rs` proves, for every deferral case of
+`inbox ack-primary`, that an engine that cannot run Node exits 75, prints nothing, and leaves the store and the home tree byte-identical.
+
+**Telemetry per verb.** Each `on`-mode call appends one JSON line to `mesh-shadow.jsonl` in the state directory:
+`{"ts", "verb", "mode", "result", "reason", "ms"}`, with `verb` one of `Send`, `MeshRead` (also `roster --ack`), `MeshHistory`, `InboxAckPrimary`, `Heartbeat` and `result`:
+
+| `result` | counts as | `reason` |
+|---|---|---|
+| `native` | a call the engine answered | empty |
+| `defer` | a deferral (Node ran it) | the deferral case, e.g. `receipt-reader`, `cursor-import`, `not-owner`, `lock-busy` |
+| `panic` | an engine error before any write (Node ran it) | empty |
+| `committed-failure` | an error after the first write (exit 70) | the late deferral, or empty for a panic |
+
+`ms` is the engine's own time for the attempt (it excludes Node's run after a deferral). Per verb: calls = lines, defers = `defer` lines, errors =
+`panic` plus `committed-failure` lines, latency = `ms`. For example
+`jq -s 'group_by(.verb)[] | {verb: .[0].verb, calls: length, defers: map(select(.result=="defer"))|length, errors: map(select(.result=="panic" or .result=="committed-failure"))|length, p50_ms: (map(.ms)|sort|.[length/2|floor])}' mesh-shadow.jsonl`.
+Group `defer` lines by `reason` to see which unported case to port next.
+
+**`heartbeat` (plain form) and the unread union.** `ah-engine mesh heartbeat <id> --session S [--progress N --phase T --wip T --blockers T]`
+writes `heartbeats/<id>.json` and refreshes `liveness/<id>.json` to `alive` with `pending`, `notDraining` and `oldestUnreadAgeMs` from the
+NDJSON-inbox + store-partition union (`src/meshw/union.rs`: Node's `unionUnread`, deduplicated by `_h`, the legacy line hash and, last, by
+body; read bases from the partition's `reader_cursors` floor rows). Besides the heartbeat and verdict files it writes what the call asks for (below). It defers (before
+writing anything; nothing is lost) when the call has no `--session` (Node would log the caller process), is
+a `primary-<hash>` label, is a child addressing another id (Node warns on stderr), is a Primary checkout whose anchor session Node would
+refresh, meets a partition without `#floor` rows (`cursor-import`),
+a journal or unmarked store (`journal-backend`, `store-backend`), a store file it cannot open, a cursor file whose `line` is not a scalar,
+or an inbox line whose `_h` is not a string, number or boolean, or an app database value it cannot convert like JavaScript (see below), or one of the write-side cases below.
+`--step` for a workspace WITHOUT a plan is answered natively (`"plan":{"ok":false,"reason":"no-plan","hint":...}`, exactly Node's text). Telemetry: `Heartbeat` lines; the `reason` of a `defer` line is one of those
+names.
+
+**Heartbeat write side: `--summary` and a step plan (`src/meshw/plan.rs`, Node: `devswarm-lib/heartbeat-plan.js`, `companion/lib/devswarm-plan.js`,
+`devswarm-supervision-metrics.js`).** `--summary TEXT` appends a heartbeat broadcast row (`is_heartbeat = 1`, sender = the id, urgency `mesh_write.hb_urgency_default`)
+to the project's shared store and refreshes the summary projection, in Node's order (heartbeat record, verdict, row, summary, plan), after the ownership check
+(the caller is the id, or owns it by its registry row, or by the identity family: cross-linked rows, the row's session, a placeholder). `--step N [--status S]`,
+and a `--summary` for a workspace that has a plan, update the plan file read-modify-write under its lock (`<key>.json.lock`, 5 s wait, 30 s stale, dead holder taken over at once),
+as an ordered JSON value so every key the supervisor keeps survives in place, and append the supervision events (`step`, `correction-followed`, `respawn-progress`) to
+`logs/devswarm-supervision.ndjson`. A busy lock answers `lock-busy` and a bad step `bad-step` (exit 2), exactly as Node. Defers, before any write: a refused or first-claim
+ownership (Node drops the summary and writes an attempt record), an archived workspace, no project, a bad `--urgency` (Node logs these through the verb-outcome log), a
+plan whose steps are not objects or whose file is not UTF-8, a `respawn` that is an array, a non-ASCII summary for a workspace WITH a plan (JavaScript's UTF-16 slicing
+and lowercase tables), a `devswarm.stepStallMin` set anywhere (env, settings, plugin option) when a correction is being matched, and a supervision log past 1 MB (rotation stays
+Node's). A failure after the heartbeat record was written (a store another process holds past the busy timeout, a plan write error) exits 70 and Node is never run. The Node
+check copies the store with SQLite's online backup (never a link) and compares stdout, the heartbeat, verdict and cache files, the plan, the log lines, the summary projection and the
+appended row (without the process-ancestry nonce); `mesh-verify.jsonl` lines carry `diff` and a `detail` window of the first difference.
+
+**The DevSwarm app database reader (`src/meshw/appdb.rs`, Node: `companion/lib/devswarm-app-db.js`).** A heartbeat for a workspace with a
+descriptor asks whether the app reports the workspace archived (`builders.isActive = 0 AND isHidden = 1`; without an `isHidden` column, `isActive = 0`;
+by id first, else by worktree: an active builder there means not archived, only archived twins mean archived). Archived: the verdict is NOT cleared to `alive`
+and the answer carries `"appArchived":true`; the heartbeat record is still written. The reader opens the file read only and never waits for a lock
+(`mesh_write.app_busy_timeout_ms`, Node's `node:sqlite` does not either), so a missing, empty, non-SQLite, truncated, exclusively locked or
+schema-less database is "no opinion" exactly as in Node, and any read that fails in `builder_terminals`, `pull_requests` or `repositories` makes the whole
+snapshot null, as in Node. It keeps Node's cross-invocation cache `<devswarm root>/cache/app-archived.json` (30 s, keyed by the database's mtime, size and `-wal` file's,
+integer-like ids come first in the file, as `OVal` serialises them like JavaScript); the cache write happens after the heartbeat record. Defers (before any write): a relative `worktreePath` (resolved against the cwd by
+Node), a text or blob value in `id`/`isActive`/`isHidden`/`builderType`/`worktreePath` (JavaScript converts them in ways the engine does not copy), an integer beyond 2^53, a cache
+file whose `states` or an entry has the wrong shape. Keys: `mesh_write.app_*`.
+
+**Node stays as a background check.** In `on` mode every answered `heartbeat` is verified: before the engine writes, the parts of the DevSwarm
+root a heartbeat touches are copied into a scratch home (the store is linked, read only; the plan and app-cache directories are copied); after it answers, a detached copy of the engine
+(`ah-engine mesh --shadow-verify ...`) runs the real `devswarm.js` there with the engine's clock (and the real app database, read only) and compares Node's stdout and the heartbeat,
+verdict and app-cache files it wrote with the engine's. Node's write never runs twice on the real home. One line per call goes to `mesh-verify.jsonl` in
+the state directory: `{"ts","verb","result","ms"}` with `result` `match`, `mismatch` (plus both outputs, capped, and `sameHeartbeat`/`sameVerdict`/`sameCache`) or `error` (Node could not run);
+count mismatches per verb before trusting a port. Keys: `mesh_write.verify_*`.
+
+**Still in Node, on purpose:** `inbox read-primary` (receipt write, sibling-partition merge, gap withholding and the caps are one
+transaction of about 700 lines of Node), `inbox tick` (needs `inbox count` plus the wake-watch lock, live-children, limit-conserve and re-arm
+cues) and the plain `roster` (it spawns `hivecontrol` for native children and renders the archived-row hints). In `shadow` mode a verb that can be replayed on a store copy logs
+`match`/`mismatch`/`concurrent`/`defer`; `inbox ack-primary` cannot (it consumes a receipt file outside the store), so Node runs it and the line
+says `skipped`.
 
 ## Telemetry (D78, D77)
 
@@ -731,7 +812,8 @@ Files:
 | `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |
 | `codex_handover.toml` | patterns, switches, limits, file names and messages of the handover and Codex hook ports and the JavaScript-behavior helpers they share |
 | `devswarm_gates.toml` | switches, role and mode variables and the command pre-filter words of the DevSwarm child gate, reply tracker and drain checks |
-| `mesh.toml` | the mesh store reader (D45 S0): store and marker file names, the SQLite busy timeout and page cache, the preview length, the read byte cap and the `--last` bounds |
+| `mesh.toml` | the mesh store reader (D45 S0): store and marker file names, the SQLite busy timeout and page cache, the preview length, the read byte cap and the `--last` bounds; and `mesh.engine_writes` (off, shadow, on), the switch of the stage 2 mesh writers |
+| `mesh_write.toml` | the mesh store writers (D45 stage 2, `ah-engine mesh <devswarm.js argv>`): Node's store names and statements' column list, the busy retry, the per-workspace lock budget and steal limits, the identity file and variable names, argv flag names, output texts, and the shadow log, scratch and snapshot settings |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
