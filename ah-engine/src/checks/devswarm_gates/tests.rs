@@ -129,3 +129,20 @@ fn the_drain_nudge_defers_only_for_a_child_workspace() {
     std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"devswarm":{"childDrain":false}}"#).unwrap();
     assert_eq!(decide_child_drain(&st(&h, &CHILD)), Verdict::Allow);
 }
+
+mod readside_unit {
+    use super::super::readside::*;
+    use crate::checks::Verdict;
+    use crate::reqenv::RequestEnv;
+    use serde_json::json;
+
+    #[test]
+    fn without_a_usable_home_or_plugin_root_both_defer() {
+        let env = RequestEnv::from_pairs([("DEVSWARM_REPO_ID", "r"), ("DEVSWARM_SOURCE_BRANCH", "b")]);
+        assert!(matches!(child_drain(&json!({"tool_name": "Read"}), &env, None), Verdict::Defer), "no home, no plugin root");
+        let env = RequestEnv::from_pairs([("HOME", "/nonexistent-home-ds")]);
+        assert!(matches!(child_drain(&json!({"tool_name": "Read"}), &env, None), Verdict::Defer), "no plugin root");
+        assert!(matches!(child_drain(&json!({"tool_name": "Read"}), &env, Some("/nonexistent-root")), Verdict::Defer), "unresolvable root");
+        assert!(matches!(parent_gate(&json!({"stop_hook_active": true}), &env, Some("/nonexistent-root")), Verdict::Defer));
+    }
+}

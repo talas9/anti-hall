@@ -30,6 +30,8 @@ use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use serde_json::Value;
 
+pub mod readside;
+
 #[cfg(test)]
 mod tests;
 
@@ -183,7 +185,13 @@ impl Check for DevswarmChildDrain {
         Some(Verdict::Defer)
     }
 
-    fn run_env(&self, _s: &Subject<'_>, _payload: &Value, _opts: &Value, env: &RequestEnv) -> Option<Verdict> {
-        Some(decide_child_drain(&Settings::from_env(env)))
+    fn run_env(&self, _s: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+        Some(match decide_child_drain(&Settings::from_env(env)) {
+            Verdict::Defer => {
+                let root = opts.get("plugin_root").and_then(Value::as_str).or_else(|| env.get(defaults::env_name("plugin_root")));
+                readside::child_drain(payload, env, root)
+            }
+            v => v,
+        })
     }
 }

@@ -9,7 +9,7 @@ value = "SessionStart: injects the DevSwarm mesh-only messaging directive for a 
 
 [devswarm_role.gate_summary]
 doc = "One-line description of the devswarm-parent-gate check in the generated reference."
-value = "Stop: allows without running Node when the Node gate would exit silently before reading any mailbox (switch off, user skip, supervisor inactive, child workspace, judge child); every other session defers to the Node gate (port of devswarm-parent-gate.js, early exits only)."
+value = "Stop: allows without running Node when the Node gate would exit silently before reading any mailbox (switch off, user skip, supervisor inactive, child workspace, judge child, or the model already continuing after a Stop block); every other session defers to the Node gate (port of devswarm-parent-gate.js, early exits only)."
 
 [devswarm_role.gate_guard]
 doc = "The skip-file name of the parent gate."
