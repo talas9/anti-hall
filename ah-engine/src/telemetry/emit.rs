@@ -34,6 +34,14 @@ thread_local! {
     static ITEMS: Cell<u64> = const { Cell::new(0) };
 }
 
+static READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Make this process write no telemetry at all (a read-only command such as `doctor --check`): its events are dropped, and the
+/// inbox and the state directory are never created on its behalf.
+pub fn set_read_only() {
+    READ_ONLY.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Send this process's events to `sink` instead of the inbox. Called once by the daemon; a second call changes nothing.
 pub fn install(sink: Sink) {
     crate::discard::harmless(SINK.set(sink).map_err(|_| ())); // keep: already installed by an earlier start in this process
@@ -85,7 +93,7 @@ pub fn flush() {
 /// Append `evs` to the inbox at `path`. Best effort: a full inbox, a missing directory that cannot be made or an I/O error
 /// loses the events and nothing else.
 pub fn append_to(path: &Path, evs: &[Event]) {
-    if evs.is_empty() {
+    if evs.is_empty() || READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
     let mut bytes = Vec::new();

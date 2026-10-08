@@ -694,12 +694,11 @@ fn dmn_10_two_daemons_in_one_state_directory() {
 fn st_01_missing_is_created_by_the_repair_and_a_second_run_finds_nothing() {
     let mut sc = Sc::new();
     sc.own_plugin();
-    // the shell doctor first: running the engine afterwards leaves its telemetry line, which creates the directory
     sc.shell().has("info", &["does not exist yet; it is created on first use"]);
     let d = sc.doctor(&[]);
     d.has("info", &["does not exist yet; it is created on first use"]);
     assert_eq!(d.code, 0);
-    fs::remove_dir_all(sc.state()).ok();
+
     let dry = sc.doctor_raw(&["--dry-run"]);
     dry.has("info", &["state-dir-create", "would have created the private state directory"]);
     fs::remove_dir_all(sc.state()).ok(); // (the run's own telemetry line may have created it; the repair below must do so itself)
@@ -1339,4 +1338,41 @@ fn claude_doctor_missing_clean_problems_unsupported_and_hung() {
     fs::write(sc.plugin.join("engine/defaults.pristine/doctor.toml"), fs::read_to_string(&toml).unwrap()).unwrap();
     sc.programs(&[("claude", &script("exec sleep 30"))], &[]);
     sc.doctor(&[]).has("info", &["did not finish in time; skipped"]);
+}
+
+// ---- regressions -----------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn the_plugin_root_flag_wins_over_the_environment() {
+    // the environment names a plugin whose pristine copy is missing and whose limits.toml is broken; the flag names a healthy one
+    let mut broken = Sc::new();
+    broken.own_plugin();
+    fs::write(broken.plugin.join("engine/defaults/limits.toml"), "[[[ nope").unwrap();
+    let mut good = Sc::new();
+    good.own_plugin();
+    let mut c = Command::new(BIN);
+    c.arg("doctor").arg("--check").arg("--plugin-root").arg(&good.plugin);
+    good.env(&mut c);
+    c.env("AH_ENGINE_PLUGIN_ROOT", &broken.plugin);
+    let d = good.finish(c);
+    d.lacks("limits.toml:");
+    d.has("ok", &["configuration:", "settings read from the plugin's defaults"]);
+    // and the other way round: the flag at the broken plugin is what is read, whatever the variable says
+    let mut c = Command::new(BIN);
+    c.arg("doctor").arg("--check").arg("--plugin-root").arg(&broken.plugin);
+    good.env(&mut c);
+    let d = good.finish(c);
+    d.has("warn", &["limits.toml", "using the pristine copy instead"]);
+}
+
+#[test]
+fn doctor_check_leaves_the_state_directory_alone() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let d = sc.doctor(&[]);
+    assert_eq!(d.code, 0, "{}", d.text);
+    assert!(!sc.home.join(".anti-hall").exists(), "a check created {}", sc.home.join(".anti-hall").display());
+    // the repair, which does write, still may
+    sc.doctor_raw(&["--repair"]);
+    assert!(sc.state().exists());
 }
