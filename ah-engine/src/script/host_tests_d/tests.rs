@@ -173,3 +173,19 @@ fn the_jev_cache_probe_and_the_outcome_record_work_on_the_request_home() {
     put_override(&h, "zz-jev2", "function decide(p){ return ah.jev.cacheHas('abc') === true && ah.jev.cacheHas('zzz') === false ? 'allow' : 'defer'; }");
     assert_eq!(run("zz-jev2", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
 }
+
+#[test]
+fn ah_clock_now_reads_the_engine_clock_and_follows_an_injected_one() {
+    let h = home("clock");
+    put_override(&h, "zz-clock", "function decide(p){ var t = ah.clock.now(); return typeof t === 'number' && t === ah.clock.now() ? 'allow' : 'defer'; }");
+    put_override(&h, "zz-clock2", "function decide(p){ return ah.clock.now() === 1700000000123 && ah.clock.local().year === 2023 ? 'allow' : 'defer'; }");
+    host::set_clock(Some(1_700_000_000_123.0));
+    assert_eq!(run("zz-clock2", &json!({}), &env(&h)), Some(Some(Verdict::Allow)), "the injected clock, with no script-side override");
+    host::set_clock(None);
+    let real = host::now_ms();
+    assert_eq!(run("zz-clock2", &json!({}), &env(&h)), Some(Some(Verdict::Defer)), "the system clock when nothing is injected");
+    assert!(real > 1_700_000_000_000.0);
+    host::set_clock(Some(5.0));
+    assert_eq!(run("zz-clock", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
+    host::set_clock(None);
+}
