@@ -33,6 +33,11 @@ fn compiled(check: &dyn Check, p: &Value, e: &RequestEnv) -> Option<Verdict> {
     check.run_env(&subject, p, &Value::Null, e)
 }
 
+/// `run_forced` for a payload with no options, as a PreToolUse call.
+fn run_forced(name: &str, p: &Value, e: &RequestEnv) -> Option<Option<Verdict>> {
+    super::run_forced(name, p, &Value::Null, "PreToolUse", e)
+}
+
 fn user(t: &str) -> String {
     json!({"type": "user", "message": {"role": "user", "content": t}}).to_string()
 }

@@ -12,12 +12,26 @@ var ah = {
     return v;
   },
   cfgNum: function (key) { return ahHost.cfgNum(key); },
+  // The hook's own environment (the request's, never the daemon's); null when a variable is unset.
+  env: {
+    get: function (name) { return ahHost.env(name); },
+    passwdHome: function () { return ahHost.passwdHome(); },
+  },
+  // The SCOPED write: an atomic write of `text` to `rel`, a relative path under the state directory (~/.anti-hall). Throws
+  // for a path outside it, a link below it or a text over the cap (the check then takes its failure policy); returns false
+  // when the disk refuses.
+  state: {
+    writeAtomic: function (rel, t) { return ahHost.writeAtomic(rel, t); },
+  },
   settings: {
     bool: function (key) { return ahHost.settingBool(key); },
+    enum: function (key) { return ahHost.settingEnum(key); },
+    num: function (key) { return ahHost.settingNum(key); },
     skipped: function (guard) { return ahHost.skipped(guard); },
   },
   fs: {
     isFile: function (p) { return ahHost.isFile(p); },
+    realpath: function (p) { return ahHost.realpath(p); },
     readText: function (p, max) { return ahHost.readText(p, max === undefined ? 0 : max); },
   },
   path: {
@@ -26,6 +40,7 @@ var ah = {
     join: function (a, b) { return ahHost.pathJoin(a, b); },
     resolveAbs: function (p) { return ahHost.pathResolveAbs(p); },
     relative: function (a, b) { return ahHost.pathRelative(a, b); },
+    resolve: function (a, b) { return ahHost.pathResolve(a, b); },
   },
   // Linear-time regex (no catastrophic backtracking): flags 'i' ignore case, 'r' engine syntax, else JavaScript syntax.
   re: {

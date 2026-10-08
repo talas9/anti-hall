@@ -83,3 +83,58 @@ value = "{key} is not a number"
 [script.msg_bad_verdict]
 doc = "Logged reason (then the call defers) when a script returns a value that is not a verdict."
 value = "unexpected verdict {value}"
+
+[script.engine_only_checks]
+doc = "Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision."
+value = ["sibling-sweep"]
+
+[script.msg_fail_closed]
+doc = "Block reason of an engine-only check on a guard event whose script could not answer. Placeholders: {check}, {why}."
+value = "anti-hall {check}: BLOCKED. Its check script failed ({why}) and this guard has no fallback, so the call is refused rather than allowed unchecked. Fix or remove the script in engine/logic or ~/.anti-hall/logic, or skip the guard."
+
+[script.msg_no_script]
+doc = "Reason logged (then the failure policy applies) when a check whose logic is a script has no script file."
+value = "no script file"
+
+[script.write_root]
+doc = "Directory under the home directory that a script may write to through `ah.state.writeAtomic` (nothing outside it, no link below it)."
+value = ".anti-hall"
+
+[script.write_max_bytes]
+doc = "Largest text one `ah.state.writeAtomic` call may write; a larger text is refused."
+value = 1048576
+min = 1024
+unit = "bytes"
+
+[script.write_path_max]
+doc = "Longest relative path one `ah.state.writeAtomic` call may name."
+value = 240
+min = 16
+
+[script.write_why_home]
+doc = "Refusal reason of a scripted write when the request has no absolute home directory."
+value = "no absolute home directory"
+
+[script.write_why_size]
+doc = "Refusal reason of a scripted write whose text is over script.write_max_bytes."
+value = "text over the size cap"
+
+[script.write_why_path]
+doc = "Refusal reason of a scripted write whose path is absolute, empty, too long, or has an empty, `.` or `..` part."
+value = "path outside the allowed shape"
+
+[script.write_why_link]
+doc = "Refusal reason of a scripted write that would pass through a symbolic link below the write root."
+value = "symbolic link below the write root"
+
+[script.msg_write_refused]
+doc = "Error a script sees when its write was refused. Placeholder: {why}."
+value = "write refused: {why}"
+
+[script.msg_env_incomplete]
+doc = "Reason logged (then the failure policy applies) when the request's environment is incomplete, so no check can be evaluated."
+value = "request environment incomplete"
+
+[script.msg_settings_unreadable]
+doc = "Reason logged (then the failure policy applies) when the settings file holds something only JavaScript can parse."
+value = "settings file readable only by JavaScript"

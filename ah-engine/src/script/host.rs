@@ -16,6 +16,12 @@
 //! | `pathIsAbsolute`, `pathBasename`, `pathJoin`, `pathResolveAbs`, `pathRelative` | Node `path` (posix) functions |
 //! | `reTest(src, flags, text)` | a linear-time regex test (`flags`: `i` ignore case, `r` engine syntax; else JavaScript syntax) |
 //! | `reFind(src, flags, text)` / `reFindAll` | match positions in UTF-16 units: `[start, end]` / `[s0, e0, s1, e1, ...]` |
+//! | `env(name)` | a variable of the hook's own environment (the request's, never the daemon's), or `null` |
+//! | `settingEnum(key)` / `settingNum(key)` | the effective value of the enum / numeric setting described by defaults entry `key` |
+//! | `passwdHome()` | the user's home as the passwd database has it, or `null` |
+//! | `realpath(path)` | the canonical path (links resolved), or `null` when it does not exist |
+//! | `pathResolve(base, p)` | Node `path.resolve(base, p)` (posix) |
+//! | `writeAtomic(rel, text)` | the SCOPED write: see [`write_atomic`] |
 //! | `turnText(path, maxBytes, hint)` | the current turn's assistant text of a transcript, as JSON text (see [`turn_text`]) |
 //!
 //! Request state (the settings of the hook's own environment) is set for the duration of one call by [`with_call`].
@@ -26,6 +32,7 @@
 use crate::checks::compact_decl::{contains_ci, read_tail, turn_texts};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::{jsre, paths, settings};
+use std::path::{Path, PathBuf};
 use crate::defaults;
 use regex::Regex;
 use rquickjs::{Ctx, Error, Function, Object};
@@ -95,6 +102,64 @@ pub fn turn_text(path: &str, max: u64, hint: &str) -> String {
     }
 }
 
+/// Why a scripted write was refused (a policy violation, as opposed to an I/O failure, which only makes the write return
+/// `false`).
+fn refused(why: &str) -> Error {
+    err("writeAtomic", defaults::render("script.msg_write_refused", &[("why", &why)]))
+}
+
+/// The scoped write API (D88 condition a): write `text` atomically to `rel`, a path RELATIVE to the script write root
+/// (`<home>/<script.write_root>`, the anti-hall state directory), through the engine's atomic helper.
+///
+/// Refused (the call throws, so the check takes its failure policy): an absolute path, a `..` / `.` / empty / NUL-bearing
+/// component, a text over `script.write_max_bytes`, a relative path longer than `script.write_path_max`, a symlink at ANY
+/// existing component under the root (an escape through a link), a target that is not a regular file, and a root that is
+/// not an absolute directory. An I/O failure (disk full, permission) returns `false`. Directories under the root are
+/// created as needed. The check and the write are separate steps, so a process that races a link into the tree between
+/// them is not excluded; the root is the owner's own state directory, so that is the owner racing themselves.
+pub fn write_atomic(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool> {
+    if !paths::is_absolute(home) {
+        return Err(refused(defaults::text("script.write_why_home")));
+    }
+    if text.len() as u64 > defaults::num("script.write_max_bytes") {
+        return Err(refused(defaults::text("script.write_why_size")));
+    }
+    if rel.len() as u64 > defaults::num("script.write_path_max") || rel.is_empty() || rel.contains('\0') {
+        return Err(refused(defaults::text("script.write_why_path")));
+    }
+    let parts: Vec<&str> = rel.split('/').collect();
+    if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
+        return Err(refused(defaults::text("script.write_why_path")));
+    }
+    let root: PathBuf = Path::new(home).join(defaults::text("script.write_root"));
+    let mut cur = root.clone();
+    let last = parts.len() - 1;
+    for (i, part) in parts.iter().enumerate() {
+        cur.push(part);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => return Err(refused(defaults::text("script.write_why_link"))),
+            Ok(m) if i < last && !m.is_dir() => return Err(refused(defaults::text("script.write_why_path"))),
+            Ok(m) if i == last && !m.is_file() => return Err(refused(defaults::text("script.write_why_path"))),
+            _ => {}
+        }
+    }
+    // the root itself may be a link the owner set up (a state directory on another disk); what is refused is a link BELOW it
+    let Some(parent) = cur.parent() else { return Ok(false) };
+    if std::fs::create_dir_all(parent).is_err() {
+        return Ok(false);
+    }
+    let (Ok(real_root), Ok(real_parent)) = (std::fs::canonicalize(&root), std::fs::canonicalize(parent)) else { return Ok(false) };
+    if !real_parent.starts_with(&real_root) {
+        return Err(refused(defaults::text("script.write_why_link")));
+    }
+    Ok(crate::atomic::write(&cur, text).is_ok())
+}
+
+/// The user's home as the passwd database has it.
+fn passwd_home() -> Option<String> {
+    crate::checks::spawnctx::passwd_home()
+}
+
 /// Install `ahHost` in a fresh context.
 pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     let h = Object::new(c.clone())?;
@@ -125,6 +190,31 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
             let mut buf = Vec::new();
             f.take(n).read_to_end(&mut buf).ok()?;
             Some(crate::checks::guardkit::text::lossy_owned(buf))
+        })?,
+    )?;
+    h.set("env", Function::new(c.clone(), |name: String| -> rquickjs::Result<Option<String>> { with_settings(|st| st.env.get(&name).cloned()) })?)?;
+    h.set(
+        "settingEnum",
+        Function::new(c.clone(), |key: String| -> rquickjs::Result<String> {
+            let e = entry(&key)?;
+            with_settings(|st| settings::get_enum(st, &e.value))
+        })?,
+    )?;
+    h.set(
+        "settingNum",
+        Function::new(c.clone(), |key: String| -> rquickjs::Result<f64> {
+            let e = entry(&key)?;
+            with_settings(|st| settings::get_number(st, &e.value))
+        })?,
+    )?;
+    h.set("passwdHome", Function::new(c.clone(), passwd_home)?)?;
+    h.set("realpath", Function::new(c.clone(), |p: String| std::fs::canonicalize(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
+    h.set("pathResolve", Function::new(c.clone(), |a: String, b: String| paths::resolve(&a, &b))?)?;
+    h.set(
+        "writeAtomic",
+        Function::new(c.clone(), |rel: String, text: String| -> rquickjs::Result<bool> {
+            let home = with_settings(|st| st.home.clone())?;
+            write_atomic(&home, &rel, &text)
         })?,
     )?;
     h.set("pathIsAbsolute", Function::new(c.clone(), |p: String| paths::is_absolute(&p))?)?;

@@ -164,25 +164,49 @@ fn verdict_of(v: &Value) -> Result<Option<Verdict>, String> {
     })
 }
 
+/// What a check does when its script cannot give an answer (missing file, exception, interrupt, out of memory, a verdict of
+/// the wrong shape). The rule (D88 condition b), all of it configuration:
+///
+/// - a check that has a Node twin (every check not listed in `script.engine_only_checks`) DEFERS: the Node hook decides, so a
+///   broken script never changes a decision;
+/// - an ENGINE-ONLY check has no Node hook to defer to (its fallback command is a no-op). On a guard event
+///   (`dispatch.guard_events`) it BLOCKS with `script.msg_fail_closed`, because allowing silently would let through what the
+///   check exists to stop; on any other event it ALLOWS quietly, because a broken script must never block ordinary work.
+pub fn failed(name: &str, event: &str, why: &str) -> Verdict {
+    crate::discard::note("script_error", &format!("{name}: {why}"));
+    if !defaults::list("script.engine_only_checks").contains(&name) {
+        return Verdict::Defer;
+    }
+    if defaults::list("dispatch.guard_events").contains(&event) {
+        return Verdict::Block(defaults::render("script.msg_fail_closed", &[("check", &name), ("why", &why)]));
+    }
+    Verdict::Allow
+}
+
 /// Run the script of check `name` on one payload. `None`: no script for this check (or scripts are off), so the compiled
-/// port decides. `Some(v)`: the script's answer, a deferral on any failure.
-pub fn run(name: &str, payload: &Value, env: &RequestEnv) -> Option<Option<Verdict>> {
+/// port decides. `Some(v)`: the script's answer, [`failed`] on any failure.
+pub fn run(name: &str, payload: &Value, opts: &Value, event: &str, env: &RequestEnv) -> Option<Option<Verdict>> {
     if defaults::num("script.enabled") == 0 {
         return None;
     }
     let st = Settings::from_env(env);
     let fp = resolve(name, &st.home)?;
-    Some(call(name, &fp, payload, st))
+    Some(call(name, &fp, payload, opts, event, st))
 }
 
 /// Run the script of `name` regardless of `script.enabled` (parity tests and measurements). `None` when no script exists.
-pub fn run_forced(name: &str, payload: &Value, env: &RequestEnv) -> Option<Option<Verdict>> {
+pub fn run_forced(name: &str, payload: &Value, opts: &Value, event: &str, env: &RequestEnv) -> Option<Option<Verdict>> {
     let st = Settings::from_env(env);
     let fp = resolve(name, &st.home)?;
-    Some(call(name, &fp, payload, st))
+    Some(call(name, &fp, payload, opts, event, st))
 }
 
-fn call(name: &str, fp: &Fingerprint, payload: &Value, st: Settings) -> Option<Verdict> {
+/// The answer for a check whose logic is a script (no compiled port) when no script file is found.
+pub fn missing(name: &str, event: &str) -> Option<Verdict> {
+    Some(failed(name, event, defaults::text("script.msg_no_script")))
+}
+
+fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -202,13 +226,15 @@ fn call(name: &str, fp: &Fingerprint, payload: &Value, st: Settings) -> Option<V
         }
         let ctx = pool.loaded.get(name).map(|l| l.ctx.clone()).ok_or("context")?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
+        let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
         let limit = defaults::num("script.time_limit_ms").saturating_mul(1_000_000);
         host::with_call(st, || {
             pool.deadline.store((pool.epoch.elapsed().as_nanos() as u64).saturating_add(limit).max(1), Ordering::Relaxed);
             let out = ctx.with(|c| -> Result<String, String> {
                 let f: Function = c.globals().get(defaults::text("script.entry")).catch(&c).map_err(|e| e.to_string())?;
                 let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
-                let v: JsValue = f.call((p,)).catch(&c).map_err(|e| e.to_string())?;
+                let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
+                let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
                 if v.is_undefined() || v.is_null() {
                     return Ok("null".into());
                 }
@@ -224,8 +250,7 @@ fn call(name: &str, fp: &Fingerprint, payload: &Value, st: Settings) -> Option<V
     match r {
         Ok(v) => v,
         Err(e) => {
-            crate::discard::note("script_error", &format!("{name}: {e}"));
-            Some(Verdict::Defer)
+            Some(failed(name, event, &e))
         }
     }
 }
@@ -237,3 +262,5 @@ pub fn p95_budget_us() -> u64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod golden;

@@ -42,7 +42,7 @@ pub fn os_homedir(env: &HashMap<String, String>) -> Option<String> {
 }
 
 /// The user's real home as the passwd database has it (`os.userInfo().homedir`), `None` when it cannot be read.
-fn passwd_home() -> Option<String> {
+pub(crate) fn passwd_home() -> Option<String> {
     // SAFETY: getpwuid returns null or a pointer to a static record valid until the next passwd call; the directory
     // string is copied out immediately, on this thread, before any other call.
     unsafe {

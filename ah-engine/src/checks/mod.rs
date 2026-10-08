@@ -42,6 +42,7 @@ pub mod output_verify;
 pub mod phase_tracker;
 pub mod replykit;
 pub mod scan_throttle;
+pub mod scripted;
 pub mod session;
 pub mod session_gates;
 pub mod ship_it;
@@ -149,6 +150,17 @@ pub trait Check: Send + Sync {
     fn run_env(&self, subject: &Subject<'_>, payload: &Value, opts: &Value, _env: &RequestEnv) -> Option<Verdict> {
         self.run_payload(subject, payload, opts)
     }
+    /// True when the decision logic of this check is a plugin script (D88): the registered struct is a name plus a
+    /// summary and holds no decision of its own. The v1.0 gate counts the checks for which this is false.
+    fn scripted(&self) -> bool {
+        false
+    }
+}
+
+/// How many registry checks still decide in compiled Rust (`compiled_logic_checks_remaining`, the v1.0 gate of D88: it
+/// reaches 0 when every check's logic is a plugin script).
+pub fn compiled_logic_checks_remaining() -> usize {
+    registry().iter().filter(|c| !c.scripted()).count()
 }
 
 /// Evaluate `check` for one request: the one place every dispatcher goes through. When the request's environment is
@@ -157,15 +169,15 @@ pub trait Check: Send + Sync {
 /// would read a gate that is on as off and allow what Node blocks.
 pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
     if env.is_incomplete() {
-        return Some(Verdict::Defer);
+        return Some(crate::script::failed(check.name(), subject.event, crate::defaults::text("script.msg_env_incomplete")));
     }
     // a settings file only JavaScript can parse (a number like 1e400, nesting past 128) is not "missing": defer to Node
     let home = env.get(crate::defaults::env_name("home")).or_else(|| env.get(crate::defaults::env_name("home_alt"))).unwrap_or_default();
     if guardkit::settings::unreadable_settings_file(home) {
-        return Some(Verdict::Defer);
+        return Some(crate::script::failed(check.name(), subject.event, crate::defaults::text("script.msg_settings_unreadable")));
     }
     // D88: a check whose logic ships as a plugin script runs the script (unless `script.enabled` is 0).
-    if let Some(v) = crate::script::run(check.name(), payload, env) {
+    if let Some(v) = crate::script::run(check.name(), payload, opts, subject.event, env) {
         return v;
     }
     check.run_env(subject, payload, opts, env)
