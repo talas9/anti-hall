@@ -186,8 +186,8 @@ doc = "Printed on stderr (exit 2) when a Stop or SubagentStop cannot run its gua
 value = "anti-hall: the engine could not run the guards for {event} ({why}). The agent is held from finishing rather than let go unguarded; repair the install (`doctor --repair`) or retry (it is let finish after a few attempts)."
 
 [dispatch.msg_panic]
-doc = "Reason given in dispatch.msg_fail_closed when the dispatcher panicked."
-value = "the dispatcher hit an internal error"
+doc = "Deferral reason (event log and stderr) when the dispatcher panicked on a guard event: the Node hooks answer instead of a block."
+value = "the dispatcher hit an internal error: the Node hooks decide"
 
 [dispatch.msg_defer_separately]
 doc = "Printed on stderr with dispatch.defer_exit when the joined output is over the host's cap. Placeholders: {event}, {len}, {cap}."

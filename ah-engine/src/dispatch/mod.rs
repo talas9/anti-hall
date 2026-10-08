@@ -689,7 +689,8 @@ fn mark_done() {
 }
 
 /// `ah-engine hook --event ...`: read stdin, dispatch, print, exit with the combined code. Never panics out, and never
-/// turns a failure into an allow for a guard event: a usage error or a panic there answers exit 2 like [`fail_closed`].
+/// turns a failure into an allow for a guard event: a usage error there answers exit 2 like [`fail_closed`], and a panic
+/// hands the event to the Node hooks ([`on_panic`]).
 pub fn hook_main(args: &[String]) -> i32 {
     let event = flag(args, "--event").unwrap_or_default();
     let guard = guarded(&event);
@@ -766,11 +767,37 @@ pub fn hook_main(args: &[String]) -> i32 {
         o.code
     });
     res.unwrap_or_else(|_| {
-        if !guard {
-            return 0;
-        }
-        let o = fail_closed(&event, defaults::text("dispatch.msg_panic"));
+        let o = on_panic(&event, guard);
         crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
         o.code
     })
+}
+
+/// The answer after a panic in [`hook_main`]: the engine cannot say what the hooks decide, so a guard event is handed to the
+/// Node hooks (`dispatch.defer_exit`), never blocked (which locked the user out of tools) and never allowed. The defer code is
+/// read under its own guard: when the panic came from the defaults themselves, the wrapper's fixed protocol code stands in.
+fn on_panic(event: &str, guard: bool) -> Outcome {
+    if !guard {
+        return Outcome { out: String::new(), code: 0, err: String::new() };
+    }
+    let read = std::panic::catch_unwind(|| (defaults::num("dispatch.defer_exit") as i32, defaults::text("dispatch.msg_panic").to_string()));
+    let (code, why) = read.unwrap_or_else(|_| (crate::bootstrap::UNAVAILABLE_EXIT, String::new()));
+    if !why.is_empty() {
+        crate::discard::harmless(std::panic::catch_unwind(|| log_defer(event, &why))); // keep: the deferral stands without its log line
+    }
+    Outcome { out: String::new(), code, err: if why.is_empty() { why } else { format!("{why}\n") } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_in_a_guard_event_defers_to_node_instead_of_blocking() {
+        // review P1 #2: a panic went to fail_closed (exit 2), locking the user out of tools on a bug of the engine's own
+        let o = on_panic("PreToolUse", true);
+        assert_eq!(o.code, defaults::num("dispatch.defer_exit") as i32, "a guard-event panic must defer, not block: {o:?}");
+        assert_ne!(o.code, 2);
+        assert_eq!(on_panic("Notification", false).code, 0, "a non-guard event stays the neutral no-op");
+    }
 }

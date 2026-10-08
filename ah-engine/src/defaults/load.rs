@@ -11,7 +11,7 @@
 //! also written to ONE small file in the state directory ([`write_cache`]), regenerated on every successful load. The
 //! client reads that file instead ([`Lazy`]): one `read`, an index of its lines, and a JSON parse of only the keys a
 //! call actually asks for. The cache is derived data, never configuration: delete it and the next load rebuilds it.
-use super::{Entry, V};
+use super::{Entry, Kind, V};
 use crate::bootstrap;
 use crate::dispatch::table;
 use serde_json::Value as Json;
@@ -26,7 +26,7 @@ use std::time::SystemTime;
 /// Why the defaults could not be loaded. `code` is stable and short; the other fields say where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefaultsError {
-    /// Reason code (`no_root`, `io`, `parse`, `index`, `entry`, `doc`, `value`, `field`, `unsupported`, `duplicate`, `missing_key`, `hooks`, `dispatch`).
+    /// Reason code (`no_root`, `io`, `parse`, `index`, `entry`, `doc`, `value`, `field`, `unsupported`, `duplicate`, `missing_key`, `hooks`, `dispatch`, `type`, `range`).
     pub code: &'static str,
     /// The file the problem is in (relative to the defaults directory), if any.
     pub file: String,
@@ -135,12 +135,57 @@ fn file_list(dir: &Path) -> Result<Vec<String>, DefaultsError> {
 
 const FIELDS: [&str; 6] = ["value", "doc", "env", "min", "max", "unit"];
 
+/// The checks of one setting's fields beyond their presence: `env` and `unit` are strings; `min` and `max` are integers, in
+/// order, bound an integer value and hold it; a setting with `env` (a numeric override) is an integer; and the value has the type the source reads it as (`kind`, from
+/// [`super::required`]). A value of the wrong type would make its reader panic; a panic in a guard event used to block.
+fn check_entry(file: &str, key: &str, e: &toml::Table, kind: Option<Kind>) -> Result<(), DefaultsError> {
+    for f in ["env", "unit"] {
+        if e.get(f).is_some_and(|x| !x.is_str()) {
+            return Err(DefaultsError::new("field", file, key, format!("`{f}` must be a string")));
+        }
+    }
+    let bound = |f: &str| match e.get(f) {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) => Ok(Some(*n)),
+        Some(_) => Err(DefaultsError::new("range", file, key, format!("`{f}` must be an integer"))),
+    };
+    let (min, max) = (bound("min")?, bound("max")?);
+    let value = e.get("value");
+    if let (Some(a), Some(b)) = (min, max)
+        && a > b
+    {
+        return Err(DefaultsError::new("range", file, key, format!("min {a} is above max {b}")));
+    }
+    if e.contains_key("env") && !value.is_some_and(toml::Value::is_integer) {
+        return Err(DefaultsError::new("type", file, key, "a setting with `env` is numeric: its value must be an integer"));
+    }
+    if min.is_some() || max.is_some() {
+        let Some(n) = value.and_then(toml::Value::as_integer) else {
+            return Err(DefaultsError::new("range", file, key, "`min` and `max` bound an integer value only"));
+        };
+        if min.is_some_and(|m| n < m) || max.is_some_and(|m| n > m) {
+            return Err(DefaultsError::new("range", file, key, format!("value {n} is outside min {min:?} .. max {max:?}")));
+        }
+    }
+    let ok = match kind {
+        None | Some(Kind::Any) => true,
+        Some(Kind::Int) => value.is_some_and(toml::Value::is_integer),
+        Some(Kind::Str) => value.is_some_and(toml::Value::is_str),
+        Some(Kind::List) => value.is_some_and(toml::Value::is_array),
+    };
+    if !ok {
+        return Err(DefaultsError::new("type", file, key, format!("the engine reads this setting as {kind:?}")));
+    }
+    Ok(())
+}
+
 /// Read and validate the defaults of the plugin at `root`. `prev` lets unchanged entries be reused instead of leaked again.
 pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
     let dir = root.join(bootstrap::DEFAULTS_DIR);
     let mut entries: Vec<&'static Entry> = Vec::new();
     let mut canon: HashMap<&'static str, String> = HashMap::new();
     let mut seen: HashMap<String, String> = HashMap::new();
+    let kinds: HashMap<&str, Kind> = super::generated::REQUIRED.iter().copied().collect();
     for file in file_list(&dir)? {
         let text = read(&dir.join(&file), &file)?;
         let table: toml::Table = text.parse().map_err(|e: toml::de::Error| DefaultsError::new("parse", &file, "", e))?;
@@ -157,6 +202,7 @@ pub fn load(root: &Path, prev: Option<&Data>) -> Result<Data, DefaultsError> {
                 if let Some(k) = e.keys().find(|k| !FIELDS.contains(&k.as_str())) {
                     return Err(DefaultsError::new("field", &file, &key, format!("unknown field {k:?}")));
                 }
+                check_entry(&file, &key, e, kinds.get(key.as_str()).copied())?;
                 if let Some(first) = seen.insert(key.clone(), file.clone()) {
                     return Err(DefaultsError::new("duplicate", &file, &key, format!("also in {first}")));
                 }
@@ -469,6 +515,26 @@ mod tests {
             replace_table(&root, file, name, "");
             let e = load(&root, None).err().unwrap_or_else(|| panic!("a plugin without {name} must be rejected"));
             assert_eq!((e.code, e.key.as_str()), ("missing_key", name), "{e}");
+            crate::discard::harmless(std::fs::remove_dir_all(&root));
+        }
+    }
+
+    #[test]
+    fn a_wrong_type_or_out_of_range_value_is_rejected_not_read() {
+        // review P1 #2: these used to load and then panic in the reader (`num` of a string, a clamp the value breaks)
+        let cases = [
+            ("engine.toml", "daemon.queue", "[daemon.queue]\ndoc = \"Queue.\"\nvalue = \"sixteen\"\nenv = \"AH_ENGINE_QUEUE\"\n", "type"),
+            ("engine.toml", "daemon.accept_poll_ms", "[daemon.accept_poll_ms]\ndoc = \"Poll.\"\nvalue = true\n", "type"),
+            ("engine.toml", "daemon.queue", "[daemon.queue]\ndoc = \"Queue.\"\nvalue = 16\nmin = 32\nmax = 8\n", "range"),
+            ("engine.toml", "daemon.queue", "[daemon.queue]\ndoc = \"Queue.\"\nvalue = 4096\nmin = 1\nmax = 1024\n", "range"),
+            ("engine.toml", "daemon.queue", "[daemon.queue]\ndoc = \"Queue.\"\nvalue = 16\nmax = \"big\"\n", "range"),
+            ("dispatch.toml", "dispatch.guard_events", "[dispatch.guard_events]\ndoc = \"Guards.\"\nvalue = \"PreToolUse\"\n", "type"),
+        ];
+        for (file, key, with, code) in cases {
+            let root = plugin_copy("badvalue");
+            replace_table(&root, file, key, with);
+            let e = load(&root, None).err().unwrap_or_else(|| panic!("{key} = {with:?} must be rejected"));
+            assert_eq!((e.code, e.key.as_str()), (code, key), "{e}");
             crate::discard::harmless(std::fs::remove_dir_all(&root));
         }
     }
