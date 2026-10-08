@@ -48,10 +48,7 @@ pub fn n(x: f64) -> String {
 
 /// `parseInt(String(v), 10)`.
 pub fn parse_int_of(v: Option<&J>) -> Option<f64> {
-    let s = match v {
-        None => return None,
-        Some(x) => j_string(x),
-    };
+    let s = j_string(v?);
     crate::setup::jsfmt::parse_int(&s)
 }
 

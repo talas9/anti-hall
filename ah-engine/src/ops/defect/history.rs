@@ -453,7 +453,10 @@ fn is_version(s: &str) -> bool {
     rx("defect.version_re", false).is_match(s)
 }
 
-fn since_filter(since: Option<&str>) -> Result<Box<dyn Fn(&Record) -> bool>, Defer> {
+/// A record predicate.
+type RecordFilter = Box<dyn Fn(&Record) -> bool>;
+
+fn since_filter(since: Option<&str>) -> Result<RecordFilter, Defer> {
     let Some(since) = since.filter(|s| !s.is_empty()) else { return Ok(Box::new(|_| true)) };
     if is_version(since) {
         let v = since.strip_prefix('v').unwrap_or(since).to_string();
