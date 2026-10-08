@@ -300,6 +300,11 @@
             "type": "command",
             "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/gh-rt-advisory\"",
+            "timeout": 10
           }
         ]
       }

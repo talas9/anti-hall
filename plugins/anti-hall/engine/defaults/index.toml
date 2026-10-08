@@ -46,5 +46,6 @@ files = [
     "script.toml",
     "mcp_reaper.toml",
     "task_tracker.toml",
+    "github_rt.toml",
 ]
 extra_dir = "hooks.d"

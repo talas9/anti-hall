@@ -140,3 +140,6 @@ pub static AUTO_HANDOVER: Scripted = Scripted::new("auto-handover", "ctxbudget.s
 
 /// `handover-resume` (SessionStart).
 pub static HANDOVER_RESUME: Scripted = Scripted::new("handover-resume", "codex_handover.resume_summary");
+
+/// `gh-rt-advisory` (UserPromptSubmit; engine-only): tells a session about GitHub edges (CI red or green, PR merged, changes requested).
+pub static GH_RT_ADVISORY: Scripted = Scripted::new("gh-rt-advisory", "github_rt.advisory_summary");

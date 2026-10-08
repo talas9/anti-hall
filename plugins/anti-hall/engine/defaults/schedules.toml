@@ -70,11 +70,11 @@ unit = "ms"
 
 [schedule.actions]
 doc = "Actions a job may name; anything else in a user override is refused and logged."
-value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "noop"]
+value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "gh_poll", "noop"]
 
 [schedule.subprocess_actions]
 doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."
-value = ["maintain", "backup"]
+value = ["maintain", "backup", "gh_poll"]
 
 [schedule.test_sleep_argv]
 doc = "Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts."

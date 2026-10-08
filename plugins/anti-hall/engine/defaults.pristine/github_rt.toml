@@ -1,0 +1,254 @@
+# ah-engine shipped defaults for GitHub realtime (feature #20, the `ghrt` module, `ah-engine gh`, the scheduled job `gh_poll`).
+# Format: see the header of engine.toml. It is INDEPENDENT of DevSwarm: the repos watched are the git repos of the working
+# directories of the user's live sessions (every hook payload carries `cwd`; the daemon records the directories it sees), with or
+# without DevSwarm. For each repo's current branch it follows the pull request (number, state, review state, mergeability), the
+# check runs and workflow runs of the head commit, the required checks and the failing jobs, through `gh api -i` with ETags
+# (a 304 is read from the status line, never the exit code), at a cadence that depends on the state, within a share of the hourly
+# rate limit, backing off on 403/429/Retry-After. A push (the repo's HEAD or branch refs change) polls at once. Consumers:
+# `ah-engine gh status|segment`, an advisory on edges only (the `gh-rt-advisory` check, logic/gh-rt-advisory.js), and opt-in owner
+# notifications. Every limit, interval, command, endpoint, pattern and word is here, never in Rust. It does nothing, and says
+# nothing, when `gh` is missing, not logged in or offline.
+
+[github_rt.enabled]
+doc = "Follow the pull request and CI state of the repos of the user's live sessions. Off stops the polling and records no directories; what was recorded stays."
+value = true
+
+[schedule.gh_poll_ms]
+doc = "Interval of the gh_poll job, the tick that decides which repos are due (the cadences below decide how often a repo is really polled); 0 turns GitHub realtime off."
+value = 20000
+env = "AH_ENGINE_GH_POLL_MS"
+unit = "ms"
+
+[job.gh_poll]
+doc = "GitHub realtime tick: for each repo of a recent session, notice a push (HEAD or branch refs changed), poll what is due within the rate budget and record the edges (CI red or green, PR merged, changes requested). Runs as a subprocess so a timeout kills it and every gh call it started."
+value = { kind = "engine", action = "gh_poll", every_key = "schedule.gh_poll_ms", jitter_ms = 2000, timeout_ms = 120000, retries = 0, backoff_ms = 20000, backoff_max_ms = 120000, cooldown_ms = 20000, catch_up = "skip", persist = false }
+
+# ---- cadence ----------------------------------------------------------------------------------------------
+
+[github_rt.poll_running_ms]
+doc = "How often a repo is polled while its checks are queued or running."
+value = 30000
+min = 5000
+unit = "ms"
+
+[github_rt.poll_idle_ms]
+doc = "How often a repo with an open pull request and no check running is polled."
+value = 180000
+min = 5000
+unit = "ms"
+
+[github_rt.poll_nopr_ms]
+doc = "How often a repo whose branch has no pull request is polled (its commit's checks only); a push polls at once."
+value = 600000
+min = 5000
+unit = "ms"
+
+[github_rt.poll_done_ms]
+doc = "How often a repo whose pull request is merged or closed, with its checks finished, is polled."
+value = 1800000
+min = 5000
+unit = "ms"
+
+[github_rt.push_watch_ms]
+doc = "After a push (the remote ref of the branch changed) or a checkout, a repo with no checks yet is polled at the running cadence for this long, since the checks of a new commit appear a few seconds late."
+value = 180000
+min = 0
+unit = "ms"
+
+[github_rt.poll_error_ms]
+doc = "How long a repo that answered 403/404 (no access, no such repo) is left alone."
+value = 1800000
+min = 5000
+unit = "ms"
+
+[github_rt.rules_ms]
+doc = "How often the branch rules that name the required checks of the pull request's base branch are read (an ETag-conditional call)."
+value = 900000
+min = 5000
+unit = "ms"
+
+[github_rt.auth_retry_ms]
+doc = "After gh said it is not logged in, how long before it is tried again."
+value = 1800000
+min = 5000
+unit = "ms"
+
+[github_rt.offline_retry_ms]
+doc = "After a gh call failed for lack of a network, how long before it is tried again."
+value = 120000
+min = 5000
+unit = "ms"
+
+# ---- budget and backoff ---------------------------------------------------------------------------------
+
+[github_rt.budget_pct]
+doc = "The share, in percent, of the hourly rate limit the polling may use in total. A 304 answered from an ETag costs nothing (measured: the `used` counter does not move) and is not counted unless count_304 is 1."
+value = 10
+min = 1
+max = 90
+
+[github_rt.count_304]
+doc = "1 counts a 304 answer against the budget (the cautious reading), 0 does not (what was measured: see `ah-engine gh status`, section measure)."
+value = 0
+min = 0
+max = 1
+
+[github_rt.assumed_limit]
+doc = "The hourly limit assumed until a response has reported the real one."
+value = 5000
+min = 60
+
+[github_rt.min_remaining]
+doc = "Polling stops while the remaining requests the API reports are below this, until the limit resets."
+value = 200
+min = 0
+
+[github_rt.window_ms]
+doc = "The length of the budget window (the rate limit's own window is one hour)."
+value = 3600000
+min = 60000
+unit = "ms"
+
+[github_rt.backoff_ms]
+doc = "The first wait after a 403/429 that is a secondary limit or that carries Retry-After without one longer; it doubles with every repeat."
+value = 60000
+min = 1000
+unit = "ms"
+
+[github_rt.backoff_max_ms]
+doc = "The longest backoff wait, and the longest Retry-After honoured."
+value = 3600000
+min = 1000
+unit = "ms"
+
+[github_rt.etag_cap]
+doc = "ETags kept (the oldest used are dropped past this)."
+value = 400
+min = 10
+
+[github_rt.call_timeout_ms]
+doc = "The time one gh call may take."
+value = 20000
+min = 1000
+unit = "ms"
+
+# ---- which repos ----------------------------------------------------------------------------------------
+
+[github_rt.max_repos]
+doc = "The most repos followed at once (the most recently active first)."
+value = 12
+min = 1
+
+[github_rt.cwd_ttl_ms]
+doc = "A working directory seen by a hook this recently makes its repo followed; an older one is dropped."
+value = 7200000
+min = 60000
+unit = "ms"
+
+[github_rt.note_every_ms]
+doc = "The daemon records a directory it saw at most this often (the hook path only checks a map in memory between)."
+value = 60000
+min = 1000
+unit = "ms"
+
+[github_rt.max_cwds]
+doc = "The most directories kept in the record of recent working directories."
+value = 200
+min = 5
+
+[github_rt.files]
+doc = "Where GitHub realtime keeps its files, relative to the engine state directory: the recent directories, the state, the edge log."
+value = { dir = "ghrt", cwds = "cwds.json", state = "state.json", edges = "edges.json", cursor_dir = "cursor" }
+
+[github_rt.git]
+doc = "The read-only git commands used ({root} is the directory; {gitdir} is added where named). toplevel: the repo root of a directory; branch: the current branch (the word HEAD when detached); sha: the head commit; remote: the origin URL; dirs: the git dir and the common git dir, one per line. timeout_ms bounds each."
+value = { toplevel = ["git", "-C", "{root}", "rev-parse", "--show-toplevel"], branch = ["git", "-C", "{root}", "rev-parse", "--abbrev-ref", "HEAD"], sha = ["git", "-C", "{root}", "rev-parse", "HEAD"], remote = ["git", "-C", "{root}", "remote", "get-url", "origin"], dirs = ["git", "-C", "{root}", "rev-parse", "--absolute-git-dir", "--git-common-dir"], timeout_ms = 5000, detached_word = "HEAD" }
+
+[github_rt.remote]
+doc = "How an origin URL is read: host_patterns are the hosts that are GitHub (a remote on any other host is not followed); slug_re captures the owner and the repository from the part after the host (group 1 and 2), the .git suffix being dropped."
+value = { hosts = ["github.com", "ssh.github.com", "www.github.com"], slug_re = "^[:/]*([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\\.git)?/?$" }
+
+[github_rt.push_signature]
+doc = "The files, relative to the git dir (head) or the common git dir (the others), whose change means a commit, a checkout or a push: head, the branch ref ({branch}), the remote ref of the branch ({branch}) and packed-refs."
+value = { head = "HEAD", heads = "refs/heads/{branch}", remotes = "refs/remotes/origin/{branch}", packed = "packed-refs" }
+
+# ---- gh and the API -------------------------------------------------------------------------------------
+
+[github_rt.gh]
+doc = "The GitHub CLI call: argv is the command and its fixed arguments (the endpoint is appended after the api -i arguments), etag_header is the request header that carries the ETag ({etag}), accept the Accept header. Replace argv[0] to point at another gh."
+value = { argv = ["gh", "api", "-i", "-H", "X-GitHub-Api-Version: 2022-11-28"], etag_header = "If-None-Match: {etag}", accept = "Accept: application/vnd.github+json" }
+
+[github_rt.endpoints]
+doc = "The API paths, per call ({owner} {repo} {branch} {sha} {number} {base}). pulls: the pull requests whose head is the branch; pull: one pull request (mergeability); reviews: its reviews; checks: the check runs of the head commit; runs: the workflow runs of the head commit; rules: the branch rules of the base branch (the required checks)."
+value = { pulls = "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=5&head={owner}:{branch}", pull = "repos/{owner}/{repo}/pulls/{number}", reviews = "repos/{owner}/{repo}/pulls/{number}/reviews?per_page=100", checks = "repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100", runs = "repos/{owner}/{repo}/actions/runs?head_sha={sha}&per_page=30", rules = "repos/{owner}/{repo}/rules/branches/{base}" }
+
+[github_rt.headers]
+doc = "The response headers read (lower case): the rate limit (limit, remaining, used, reset in epoch seconds), retry_after (seconds), poll_interval (seconds, a floor on the cadence), etag."
+value = { limit = "x-ratelimit-limit", remaining = "x-ratelimit-remaining", used = "x-ratelimit-used", reset = "x-ratelimit-reset", retry_after = "retry-after", poll_interval = "x-poll-interval", etag = "etag" }
+
+[github_rt.patterns]
+doc = "Case-insensitive substrings that classify a failed call. secondary: a 403/429 body that means a secondary (abuse) limit; unauth: gh's text when it is not logged in; offline: gh's text when it could not reach GitHub; missing_repo: a 404 body for a repo that is gone or private to this login."
+value = { secondary = ["secondary rate limit", "abuse detection", "exceeded a secondary"], unauth = ["gh auth login", "not logged in", "authentication required", "bad credentials", "http 401"], offline = ["error connecting", "dial tcp", "no such host", "network is unreachable", "i/o timeout", "tls handshake", "connection refused", "timeout awaiting"], missing_repo = ["not found"] }
+
+[github_rt.statuses]
+doc = "How check and run fields are read. running_statuses: a check or run in one of these is not finished; failing: conclusions that count as failed; passing: conclusions that count as passed (the rest, such as skipped, neither); review_changes, review_approved: review states; merged_conflict_states: mergeable_state values that mean the branch conflicts."
+value = { running = ["queued", "in_progress", "waiting", "pending", "requested"], failing = ["failure", "timed_out", "action_required", "startup_failure", "cancelled"], passing = ["success", "neutral"], skipped = ["skipped", "stale"], review_changes = "CHANGES_REQUESTED", review_approved = "APPROVED", review_dismissed = "DISMISSED", review_commented = "COMMENTED", conflict_states = ["dirty"] }
+
+# ---- edges and consumers ----------------------------------------------------------------------------------
+
+[github_rt.edge_cooldown_ms]
+doc = "The same edge (repo, kind, pull request or commit) is recorded at most once in this time."
+value = 600000
+min = 0
+unit = "ms"
+
+[github_rt.max_edges]
+doc = "The most edges kept in the edge file."
+value = 100
+min = 5
+
+[github_rt.advisory_kinds]
+doc = "The edges a session is told about (once per session each): ci_red, ci_green, pr_merged, pr_closed, changes_requested, approved, conflict. Empty turns the advisory off."
+value = ["ci_red", "ci_green", "pr_merged", "changes_requested", "conflict"]
+
+[github_rt.advisory_summary]
+doc = "One-line description of the gh-rt-advisory check in the generated reference."
+value = "Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js)."
+
+[github_rt.edges_read_bytes]
+doc = "The most bytes of the edge file the advisory script reads."
+value = 262144
+min = 1024
+
+[github_rt.advisory_max_age_ms]
+doc = "An edge older than this is no longer told to a session."
+value = 1800000
+min = 1000
+unit = "ms"
+
+[github_rt.advisory_max_per_prompt]
+doc = "The most edges told in one prompt."
+value = 3
+min = 1
+
+[github_rt.notify_kinds]
+doc = "The edges that also notify the owner (opt-in; empty, the default, notifies nothing) by running notify_argv."
+value = []
+
+[github_rt.notify_argv]
+doc = "The command run for an owner notification ({title} {text} are filled in); empty means none. Example: [\"osascript\", \"-e\", \"display notification \\\"{text}\\\" with title \\\"{title}\\\"\"]."
+value = []
+
+[github_rt.statusline_kinds]
+doc = "What the statusline segment shows for the repo of the current directory, in this order of importance: any of checks, pr, review."
+value = ["checks", "pr", "review"]
+
+[github_rt.stale_ms]
+doc = "A repo state older than this is shown as stale (the segment is left empty)."
+value = 1800000
+min = 1000
+unit = "ms"
+
+[github_rt.words]
+doc = "The words GitHub realtime writes. Placeholders: {slug} {branch} {number} {sha} {jobs} {n} {title}. Edge lines: ci_red, ci_green, pr_merged, pr_closed, changes_requested, approved, conflict. advisory_head is the first line of an advisory. segment_*: the statusline pieces; gh states: ok, missing, logged_out, offline, backoff, budget, disabled."
+value = { ci_red = "CI failed on {slug}@{branch} ({sha}): {jobs}", ci_green = "CI passed on {slug}@{branch} ({sha})", pr_merged = "PR #{number} of {slug} was merged", pr_closed = "PR #{number} of {slug} was closed without a merge", changes_requested = "Changes were requested on PR #{number} of {slug}", approved = "PR #{number} of {slug} was approved", conflict = "PR #{number} of {slug} has merge conflicts", no_jobs = "a check", advisory_head = "GitHub:", title = "anti-hall", segment_checks_running = "CI running", segment_checks_red = "CI red", segment_checks_green = "CI green", segment_pr = "PR #{number}", segment_merged = "PR #{number} merged", segment_closed = "PR #{number} closed", segment_changes = "changes requested", segment_approved = "approved", segment_conflict = "conflict", segment_sep = " ", state_ok = "ok", state_missing = "gh not installed", state_logged_out = "gh not logged in", state_offline = "offline", state_backoff = "backing off", state_budget = "over budget", state_disabled = "off", no_repos = "no repos followed yet", no_pr = "no PR", head_status = "{slug}@{branch}", detached = "detached HEAD", not_github = "not a GitHub remote", job_sep = ", " }

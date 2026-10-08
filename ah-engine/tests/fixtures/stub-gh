@@ -1,0 +1,16 @@
+#!/bin/sh
+# A stub for `gh api -i`: usage `stub-gh <scenario dir> <gh arguments...>`; the endpoint is the last argument.
+# It appends its arguments to <dir>/calls.log and prints <dir>/<endpoint with / ? & = : replaced by _> (a complete `gh api -i`
+# answer: status line, headers, blank line, body), exiting with the number in <that file>.exit (default 1 for a non-2xx
+# status, as gh 2.102 does for every non-2xx answer, a 304 included). A missing file is gh's "not logged in" text on stderr.
+dir=$1; shift
+for last; do :; done
+echo "$*" >> "$dir/calls.log"
+f="$dir/$(printf %s "$last" | tr '/?&=:' '_____')"
+if [ ! -f "$f" ]; then
+  echo "To use GitHub CLI, run: gh auth login" >&2
+  exit 4
+fi
+cat "$f"
+if [ -f "$f.exit" ]; then exit "$(cat "$f.exit")"; fi
+case "$(head -1 "$f")" in *" 200 "*|*" 201 "*) exit 0 ;; *) echo "gh: HTTP error" >&2; exit 1 ;; esac

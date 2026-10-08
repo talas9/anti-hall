@@ -357,6 +357,8 @@ arguments, is in the generated reference.
 | `ah-engine doctor [--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet]` | no | The health check and repair, in the Node doctor's layout and finding texts. Read-only unless `--repair`; `--dry-run` previews; `--migrations-only` with either prints only the migration report as one JSON line. Each built-in guard is run in-process on a crafted payload (a payload the engine defers is run through its Node hook, as the dispatcher would; with no Node it is reported as a deferral, never a pass). |
 | `ah-engine migrate [--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | The persisted-state migrations and sweeps of the Node doctor's repair pass, with Node's report: legacy progress/history copy, reply-state, gate-intent and auto-archive forward migrations, the `settings.json` migration, the Jev triage cache repair, the lock scratch sweep and the retention sweeps. Idempotent, fail-open, no repo file is moved or deleted. |
 | `ah-engine jev-setup <status\|enable\|disable\|set-key\|bind-generic-key\|mode>` | no | The port of `scripts/jev-setup.js` (D81): `status` prints the resolved settings, key presence yes or no, every integration's mode, the calls of the last 24 hours and the Vercel credit balance; `enable`, `disable`, `bind-generic-key` and `mode <integration> on\|shadow\|off` write `settings.json` and `jev.json` the way the script does (read-modify-write, key order kept, a corrupt file moved aside); `set-key` reads the key from stdin only and writes the key file with mode 0600. `test` and the review verbs stay in the Node script. |
+| `ah-engine gh <status\|segment\|poll>` | no | GitHub realtime (#20, independent of DevSwarm): `status` prints the followed repos with their pull request, review, CI and mergeability, the rate budget, the hold in force and the measured rate-limit cost of 200 and 304 answers (state file only, no network); `segment [--cwd <dir>]` prints the statusline piece for the repo that holds the directory; `poll [--force]` runs one tick now. |
+| `ah-engine gh_poll` | no | The scheduled `gh_poll` job (`ghrt::poll`): one tick of GitHub realtime; always exits 0. |
 | `ah-engine capability-scan [--root <plugin dir>]` | yes | The port of `scripts/capability-scan.js` (D81): which opt-in capabilities of a plugin tree are shipped and active on this machine, and how to enable the ones that are not; prints the JSON report, then one line per capability. |
 | `ah-engine harvest [--dir <path>] [--stale-days <n>]` | yes | The port of `scripts/harvest-debt.js` (D81): the `anti-hall: <ceiling>, <when>` debt markers of a code tree, flagged when they have no payback trigger or sit in files git says are old. |
 | `ah-engine briefing [--root <plugin dir>]` | yes | The port of `scripts/briefing.js` (D81): a derived inventory of a plugin tree, the registered hooks by event with the purpose from each hook's header comment, the skills, the DevSwarm substrate and the docs map. |
@@ -634,6 +636,36 @@ judgement calls do.
 - **The log.** One row per decision in `~/.anti-hall/logs/jev-assist.ndjson`, in the row shape `jev report` reads: hashes,
   verdicts, confidences, latencies, costs and the reason a call produced nothing; never prompt text, never a key. It rotates
   at 2 MB. The daily rollups and the spend budget watch the Node client also writes are planned (D38).
+- **GitHub realtime (`ghrt`, feature #20).** Independent of DevSwarm: the repos followed are the git repos of the working
+  directories of the user's live sessions. The daemon records the `cwd` of every hook it answers (at most once per
+  `github_rt.note_every_ms` per directory, in `ghrt/cwds.json` under the engine state directory); the scheduled job `gh_poll`
+  (a subprocess, `schedule.gh_poll_ms`, 20 s) drops directories older than `cwd_ttl_ms`, resolves each to its repo root,
+  `origin` slug (hosts in `remote.hosts`; any other remote is listed as `not_github` and never asked about) and branch
+  (a detached HEAD asks for no pull request, only its commit's checks), and polls what is due. Calls are `gh api -i` with
+  `If-None-Match`; the answer is read from the status line, never the exit code (gh 2.102 exits 1 for a 304). Per repo: the
+  pull requests of the branch, then (open) the pull request, its reviews and the branch rules that name the required checks,
+  then the check runs and workflow runs of the head commit. Cadence by state: `poll_running_ms` while checks run,
+  `poll_idle_ms` for an open pull request, `poll_nopr_ms` with none, `poll_done_ms` once merged or closed. A push is noticed
+  by stat: the repo's HEAD, branch ref, remote-tracking ref (`refs/remotes/origin/<branch>`) and `packed-refs` (resolved
+  through `rev-parse --absolute-git-dir --git-common-dir`, so linked worktrees work); a moved remote ref polls at once and,
+  for `push_watch_ms`, a commit with no checks yet reads as running. A local commit alone does not poll. Rate limits: every
+  response's `X-Ratelimit-*` is kept; calls in the window are held to `budget_pct` of the limit (the real limit once seen,
+  `assumed_limit` before), and below `min_remaining` nothing is called until the reset. A 403/429/5xx waits `Retry-After`
+  (capped by `backoff_max_ms`), or `backoff_ms` doubling per repeat; a 403 with `remaining: 0` waits for the reset; any other
+  403/404 puts that repo aside for `poll_error_ms` without holding the others. `gh` missing, not logged in or offline are
+  states shown by `gh status`, retried after `auth_retry_ms` / `offline_retry_ms`, with no output and no error from the job.
+  **Measured, not assumed:** a 304 answered from an ETag does not move `X-Ratelimit-Used` (10 consecutive 304s on
+  2026-10-08: used stayed 16; the 200 after them took it to 17), so 304s are not counted in the budget
+  (`github_rt.count_304 = 0`); the poller records the `used` delta of every answer by kind (`gh status`, section `measure`) so
+  this stays checked on every machine. Edges (CI red or green on a commit, pull request merged or closed, changes requested,
+  approved, conflict) are compared against the status of the previous complete poll of the same branch (the first sight is a
+  baseline and raises none), deduped by repo, kind and commit or pull request inside `edge_cooldown_ms`, and kept in
+  `ghrt/edges.json` (`max_edges`). Consumers: `ah-engine gh status|segment`; the engine-only check `gh-rt-advisory`
+  (UserPromptSubmit, plugin script `engine/logic/gh-rt-advisory.js`, fallback no-op `hooks/gh-rt-advisory`) tells each session
+  about the edges of its own repo once, only for the kinds in `advisory_kinds`, newer than `advisory_max_age_ms`, at most
+  `advisory_max_per_prompt` per prompt, with a per-session cursor file; owner notifications are opt-in (`notify_kinds` and
+  `notify_argv`, both empty by default; substituted text has shell metacharacters removed). Everything tunable is in
+  `github_rt.toml`; `settings.json` section `github_rt` overrides it (e.g. `{"github_rt": {"enabled": false, "budget_pct": 5}}`).
 - **Parity.** `parity/run-jev.js` checks request bodies, headers, decisions, log rows, settings and the scrub against the Node
   client (`ah-engine/parity/run-jev.js`). The deliberate differences (relax-block, a `true` advisory baseline, no row for an
   off call) are asserted separately.
@@ -709,6 +741,7 @@ Files:
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
 | `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
+| `github_rt.toml` | GitHub realtime: the `gh_poll` job and interval, cadences, rate budget and backoff, which repos, the git and `gh` commands, endpoints, header and pattern names, status words, edge and advisory kinds, notification and statusline settings, the words |
 | `jev.toml` | the Jev lane: vendor endpoints and models, budgets, breaker and fallback timing, the integration table with its default modes, cache and log limits, key-file rules, messages |
 | `setup.toml` | the operator helper commands (`jev-setup`, `capability-scan`, `harvest`, `briefing`): the shared limits, the marker grammar and table widths, the briefing's scan limits, the settings lock timing, and the message texts, which are the Node scripts' own |
 | `dispatch.toml` | the dispatcher's settings and the hand-maintained per-event table of hook entries (the table of record: the plugin's `hooks.json` files are generated from it) |

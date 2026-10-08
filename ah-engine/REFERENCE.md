@@ -17,6 +17,8 @@ Every command accepts `--json`. Read-only commands never change state.
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON. |
 | `gen-hooks` | `--host claude\|codex [--kind hooks\|registry\|list\|map]` | yes | implemented | Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host. |
+| `gh` | `<status\|segment\|poll> [--cwd <dir>] [--force]` | no | implemented | GitHub realtime (feature #20, independent of DevSwarm): `status` prints, from the state file with no network, what is followed (the repos of the working directories of live sessions, their pull request, review, CI and mergeability), the rate-limit budget, the hold in force (backoff, budget, gh missing, logged out or offline) and the measured rate-limit cost of 200 and 304 answers; `segment [--cwd <dir>]` prints the statusline piece for the repo that holds the directory (empty when there is nothing to say); `poll [--force]` runs one tick now. |
+| `gh_poll` | `` | no | implemented | The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos that are due inside the rate budget and records the edges; prints its counts with --json and always exits 0. |
 | `harvest` | `[--dir <path>] [--stale-days <n>]` | yes | implemented | Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of scripts/harvest-debt.js), and flag the ones with no payback trigger or in files untouched for the stale window. |
 | `hook` | `[--fallback <hook.js>] \| --event <Event> [--tool <Tool>] [--host claude\|codex] [--fallback-map <file>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would. |
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
@@ -101,6 +103,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js). |
+| `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
 | `swarm-guard` | Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the shared-tree advisory to an allowed write-capable spawn that shares a working tree with a running write-capable agent (port of swarm-guard.js and lib/shared-tree-note.js). |
 | `jev-weekly-scorecard` | Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when the check is due and the Jev decision log holds no rows it stamps the weekly latch itself; otherwise defers to the Node hook, which builds the report (port of jev-weekly-scorecard.js). |
@@ -1534,14 +1537,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_SubagentStop` | `5 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `5 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCreated` | `5 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
-| `dispatch.hooks_claude_UserPromptSubmit` | `8 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_claude_UserPromptSubmit` | `9 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreToolUse` | `9 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `15 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `5 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
-| `dispatch.hooks_codex_UserPromptSubmit` | `8 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_UserPromptSubmit` | `9 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |
 | `dispatch.list_comment_mark` | `#` |  |  | The mark that starts a comment line of the generated fallback list. |
@@ -3915,7 +3918,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `script.call_memory_bytes` | `16777216` |  | bytes | Heap a single script call may allocate above the runtime's size after its scripts were loaded; past it the call fails and defers. |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `sibling-sweep` |  |  | Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision. |
+| `script.engine_only_checks` | `sibling-sweep, gh-rt-advisory` |  |  | Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -4083,6 +4086,67 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.what_short` | `capture every request as a priority-sorted task; keep statuses current; deleg...` |  |  | The short per-turn reminder. |
 | `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
 | `task_tracker.window_ms` | `21600000` |  | ms | How long the full directive stays fresh before it is injected again. |
+
+### github_rt.toml / github_rt
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `github_rt.advisory_kinds` | `ci_red, ci_green, pr_merged, changes_requested, conflict` |  |  | The edges a session is told about (once per session each): ci_red, ci_green, pr_merged, pr_closed, changes_requested, approved, conflict. Empty turns the advisory off. |
+| `github_rt.advisory_max_age_ms` | `1800000` |  | ms | An edge older than this is no longer told to a session. |
+| `github_rt.advisory_max_per_prompt` | `3` |  |  | The most edges told in one prompt. |
+| `github_rt.advisory_summary` | `Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges ...` |  |  | One-line description of the gh-rt-advisory check in the generated reference. |
+| `github_rt.assumed_limit` | `5000` |  |  | The hourly limit assumed until a response has reported the real one. |
+| `github_rt.auth_retry_ms` | `1800000` |  | ms | After gh said it is not logged in, how long before it is tried again. |
+| `github_rt.backoff_max_ms` | `3600000` |  | ms | The longest backoff wait, and the longest Retry-After honoured. |
+| `github_rt.backoff_ms` | `60000` |  | ms | The first wait after a 403/429 that is a secondary limit or that carries Retry-After without one longer; it doubles with every repeat. |
+| `github_rt.budget_pct` | `10` |  |  | The share, in percent, of the hourly rate limit the polling may use in total. A 304 answered from an ETag costs nothing (measured: the `used` counter does not move) and is not counted unless count_304 is 1. |
+| `github_rt.call_timeout_ms` | `20000` |  | ms | The time one gh call may take. |
+| `github_rt.count_304` | `0` |  |  | 1 counts a 304 answer against the budget (the cautious reading), 0 does not (what was measured: see `ah-engine gh status`, section measure). |
+| `github_rt.cwd_ttl_ms` | `7200000` |  | ms | A working directory seen by a hook this recently makes its repo followed; an older one is dropped. |
+| `github_rt.edge_cooldown_ms` | `600000` |  | ms | The same edge (repo, kind, pull request or commit) is recorded at most once in this time. |
+| `github_rt.edges_read_bytes` | `262144` |  |  | The most bytes of the edge file the advisory script reads. |
+| `github_rt.enabled` | `true` |  |  | Follow the pull request and CI state of the repos of the user's live sessions. Off stops the polling and records no directories; what was recorded stays. |
+| `github_rt.endpoints` | `6 entries` |  |  | The API paths, per call ({owner} {repo} {branch} {sha} {number} {base}). pulls: the pull requests whose head is the branch; pull: one pull request (mergeability); reviews: its reviews; checks: the check runs of the head commit; runs: the workflow runs of the head commit; rules: the branch rules of the base branch (the required checks). |
+| `github_rt.etag_cap` | `400` |  |  | ETags kept (the oldest used are dropped past this). |
+| `github_rt.files` | `5 entries` |  |  | Where GitHub realtime keeps its files, relative to the engine state directory: the recent directories, the state, the edge log. |
+| `github_rt.gh` | `3 entries` |  |  | The GitHub CLI call: argv is the command and its fixed arguments (the endpoint is appended after the api -i arguments), etag_header is the request header that carries the ETag ({etag}), accept the Accept header. Replace argv[0] to point at another gh. |
+| `github_rt.git` | `7 entries` |  |  | The read-only git commands used ({root} is the directory; {gitdir} is added where named). toplevel: the repo root of a directory; branch: the current branch (the word HEAD when detached); sha: the head commit; remote: the origin URL; dirs: the git dir and the common git dir, one per line. timeout_ms bounds each. |
+| `github_rt.headers` | `7 entries` |  |  | The response headers read (lower case): the rate limit (limit, remaining, used, reset in epoch seconds), retry_after (seconds), poll_interval (seconds, a floor on the cadence), etag. |
+| `github_rt.max_cwds` | `200` |  |  | The most directories kept in the record of recent working directories. |
+| `github_rt.max_edges` | `100` |  |  | The most edges kept in the edge file. |
+| `github_rt.max_repos` | `12` |  |  | The most repos followed at once (the most recently active first). |
+| `github_rt.min_remaining` | `200` |  |  | Polling stops while the remaining requests the API reports are below this, until the limit resets. |
+| `github_rt.note_every_ms` | `60000` |  | ms | The daemon records a directory it saw at most this often (the hook path only checks a map in memory between). |
+| `github_rt.notify_argv` | `` |  |  | The command run for an owner notification ({title} {text} are filled in); empty means none. Example: ["osascript", "-e", "display notification \"{text}\" with title \"{title}\""]. |
+| `github_rt.notify_kinds` | `` |  |  | The edges that also notify the owner (opt-in; empty, the default, notifies nothing) by running notify_argv. |
+| `github_rt.offline_retry_ms` | `120000` |  | ms | After a gh call failed for lack of a network, how long before it is tried again. |
+| `github_rt.patterns` | `4 entries` |  |  | Case-insensitive substrings that classify a failed call. secondary: a 403/429 body that means a secondary (abuse) limit; unauth: gh's text when it is not logged in; offline: gh's text when it could not reach GitHub; missing_repo: a 404 body for a repo that is gone or private to this login. |
+| `github_rt.poll_done_ms` | `1800000` |  | ms | How often a repo whose pull request is merged or closed, with its checks finished, is polled. |
+| `github_rt.poll_error_ms` | `1800000` |  | ms | How long a repo that answered 403/404 (no access, no such repo) is left alone. |
+| `github_rt.poll_idle_ms` | `180000` |  | ms | How often a repo with an open pull request and no check running is polled. |
+| `github_rt.poll_nopr_ms` | `600000` |  | ms | How often a repo whose branch has no pull request is polled (its commit's checks only); a push polls at once. |
+| `github_rt.poll_running_ms` | `30000` |  | ms | How often a repo is polled while its checks are queued or running. |
+| `github_rt.push_signature` | `4 entries` |  |  | The files, relative to the git dir (head) or the common git dir (the others), whose change means a commit, a checkout or a push: head, the branch ref ({branch}), the remote ref of the branch ({branch}) and packed-refs. |
+| `github_rt.push_watch_ms` | `180000` |  | ms | After a push (the remote ref of the branch changed) or a checkout, a repo with no checks yet is polled at the running cadence for this long, since the checks of a new commit appear a few seconds late. |
+| `github_rt.remote` | `2 entries` |  |  | How an origin URL is read: host_patterns are the hosts that are GitHub (a remote on any other host is not followed); slug_re captures the owner and the repository from the part after the host (group 1 and 2), the .git suffix being dropped. |
+| `github_rt.rules_ms` | `900000` |  | ms | How often the branch rules that name the required checks of the pull request's base branch are read (an ETag-conditional call). |
+| `github_rt.stale_ms` | `1800000` |  | ms | A repo state older than this is shown as stale (the segment is left empty). |
+| `github_rt.statuses` | `9 entries` |  |  | How check and run fields are read. running_statuses: a check or run in one of these is not finished; failing: conclusions that count as failed; passing: conclusions that count as passed (the rest, such as skipped, neither); review_changes, review_approved: review states; merged_conflict_states: mergeable_state values that mean the branch conflicts. |
+| `github_rt.statusline_kinds` | `checks, pr, review` |  |  | What the statusline segment shows for the repo of the current directory, in this order of importance: any of checks, pr, review. |
+| `github_rt.window_ms` | `3600000` |  | ms | The length of the budget window (the rate limit's own window is one hour). |
+| `github_rt.words` | `33 entries` |  |  | The words GitHub realtime writes. Placeholders: {slug} {branch} {number} {sha} {jobs} {n} {title}. Edge lines: ci_red, ci_green, pr_merged, pr_closed, changes_requested, approved, conflict. advisory_head is the first line of an advisory. segment_*: the statusline pieces; gh states: ok, missing, logged_out, offline, backoff, budget, disabled. |
+
+### github_rt.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.gh_poll` | `11 entries` |  |  | GitHub realtime tick: for each repo of a recent session, notice a push (HEAD or branch refs changed), poll what is due within the rate budget and record the edges (CI red or green, PR merged, changes requested). Runs as a subprocess so a timeout kills it and every gh call it started. |
+
+### github_rt.toml / schedule
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `schedule.gh_poll_ms` | `20000` | `AH_ENGINE_GH_POLL_MS` | ms | Interval of the gh_poll job, the tick that decides which repos are due (the cadences below decide how often a repo is really polled); 0 turns GitHub realtime off. |
 
 ## Messages
 

@@ -569,6 +569,7 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
     crate::load::note_request(crate::hookio::event_of(&p).unwrap_or(""), p.get("session_id").and_then(|v| v.as_str()));
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
+    crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
     if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
         sh.stats.busy.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
@@ -625,6 +626,7 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
     crate::load::note_request(&meta.event, p.get("session_id").and_then(|v| v.as_str()));
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
+    crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
     if !lk(&sh.sessions).allow(session) || !lk(&sh.projects).allow(&pkey) {
         sh.stats.busy.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
