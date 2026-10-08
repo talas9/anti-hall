@@ -63,11 +63,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/docs.rs", "\\n## ", "section headings and intro lines of the generated Markdown reference: the generator's own format"),
     ("src/memstat.rs", "static INNER", "the allocator the counters wrap: a compile-time choice by target, code not configuration"),
     ("src/main.rs", "static ALLOC", "the global allocator item: a language construct, not a value"),
-    (
-        "src/checks/command/heavy.rs",
-        "static LAUNCHERS",
-        "a thread-local slot initialised empty (the stable-launcher patterns of the request being judged): state, not a tunable",
-    ),
     ("src/load.rs", "static SCAN_BYTES", "a thread-local counter initialised to zero: state, not a tunable"),
     ("src/load.rs", "static REQUEST", "a thread-local slot initialised empty: state, not a tunable"),
     (

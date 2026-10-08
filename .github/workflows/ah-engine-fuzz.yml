@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [tokenize, heredoc, shell, json, glob]
+        target: [heredoc, json, glob]
     defaults:
       run:
         working-directory: ah-engine

@@ -7,4 +7,5 @@
 # Lane d88fb moved dispatch-tier, model-routing, speculation-judge, speculation-guard, silent-agent-nudge, task-guard and tasklist-guard to scripts (-1 each).
 # Lane d88fc moved ask-guard, phase-tracker, failure-root-cause-nudge, output-verify-guard, the six session checks, emit-dedupe-reset,
 # precompact-snapshot, handover-resume, limit-conserve-inject and auto-handover to scripts.
-21
+# Lane d88fd moved command (command-guard, which is also the shared command classifier) and coordinator-work-guard to scripts.
+19

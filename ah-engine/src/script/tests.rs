@@ -405,6 +405,21 @@ fn phase_tracker_script_matches_the_compiled_port() {
     golden_report("phase-tracker", 12);
 }
 
+// The command corpus was frozen from the compiled port before it was removed; the three cases of non-ASCII or non-blank-ASCII
+// white space the port deferred are now answered as Node answers them (parity/run-golden.js replays the whole corpus against
+// hooks/command-guard.js).
+#[test]
+fn command_script_matches_the_compiled_port() {
+    golden_report("command", 12);
+}
+
+// The coordinator-work-guard corpus was written from the script and replayed against hooks/coordinator-work-guard.js (the PreToolUse
+// cases; the PostToolUse ones are compared by the coordinator_post parity lane, which runs both hooks through whole sessions).
+#[test]
+fn coordinator_work_guard_script_matches_its_golden_corpus() {
+    golden_report("coordinator-work-guard", 12);
+}
+
 // ---- swarm-guard (ported from the compiled check's unit tests; the memory figures and the clock are replaced by an owner-style
 // override of the lib helper, exactly the editable-script mechanism a user has) ----
 
