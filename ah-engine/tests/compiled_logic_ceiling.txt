@@ -3,4 +3,4 @@
 # session-end-mcp-reaper, verify-first-orch-codex): 58. Migrating those three to scripts lowers it again.
 # Batch 5 (lane d88b5) moved git, git-audit, swarm-guard and sibling-sweep to scripts: 54.
 # Batch 6 (lane d88fc) moved the checks listed in DECISIONS 1.106 to scripts; the number below is where it stands.
-51
+39

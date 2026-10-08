@@ -194,17 +194,7 @@ pub fn fire(r: &Reading, tokens: bool, p: &Value, max_tokens: f64, hp: Option<&s
     warn(&what, t("ctxbudget.ah_fire_why"), &instead)
 }
 
-/// `buildMilestoneNag(pct, payload)`.
-pub fn milestone(pct: f64, p: &Value) -> String {
-    let what = msg::render("ctxbudget.ah_nag_what", &[("pct", &round_str(pct))]);
-    tip(&what, "", &msg::render("ctxbudget.ah_nag_instead", &[("bloat", t("ctxbudget.ah_bloat")), ("reset", reset(platform(p)))]))
-}
 
-/// `buildSoftAdvisory(pct)`.
-pub fn soft(pct: f64) -> String {
-    let what = msg::render("ctxbudget.ah_soft_what", &[("pct", &round_str(pct))]);
-    tip(&what, t("ctxbudget.ah_soft_why"), &msg::render("ctxbudget.ah_soft_instead", &[("bloat", t("ctxbudget.ah_bloat"))]))
-}
 
 /// `buildPauseNag(pct, payload)`.
 pub fn pause(pct: f64, p: &Value) -> String {
@@ -224,36 +214,5 @@ pub fn decisive_suffix(p: &Value, path: &str, fresh: Option<bool>, complete: boo
     }
 }
 
-/// `budgetLabel(budgetPct, max)`.
-fn budget_label(budget: f64, max: Option<f64>) -> String {
-    let tok = max.filter(|m| m.is_finite() && *m > 0.0).map(|m| js_round(m * budget / 100.0 / 1000.0)).filter(|k| *k != 0.0 && !k.is_nan());
-    let tok = tok.map(|k| msg::render("ctxbudget.ah_budget_tokens", &[("k", &number_to_string(k))])).unwrap_or_default();
-    msg::render("ctxbudget.ah_budget", &[("b", &number_to_string(budget)), ("tok", &tok)])
-}
 
-/// `buildGateDirective(result, latch, cfg, payload)`.
-pub fn gate(r: &Reading, handover_pct: f64, budget: f64, p: &Value) -> String {
-    let pl = platform(p);
-    let ask = t(if pl == Platform::Codex { "ctxbudget.ah_gate_ask_codex" } else { "ctxbudget.ah_gate_ask_claude" });
-    let what = msg::render("ctxbudget.ah_gate_what", &[("pct", &round_str(r.pct)), ("hp", &round_str(handover_pct)), ("budget", &budget_label(budget, r.max))]);
-    let instead = msg::render("ctxbudget.ah_gate_instead", &[("ask", ask), ("reset", reset(pl))]);
-    msg::message(
-        Kind::Warn,
-        t("ctxbudget.ah_guard"),
-        &Parts {
-            what: &what,
-            why: t("ctxbudget.ah_gate_why"),
-            instead: &instead,
-            allowed: t("ctxbudget.ah_gate_allowed"),
-            override_: t("ctxbudget.ah_gate_override"),
-            ..Parts::default()
-        },
-    )
-}
 
-/// `buildGateBackstop(pct, latch, cfg, payload)`.
-pub fn backstop(pct: f64, handover_pct: f64, budget: f64, p: &Value) -> String {
-    let pl = platform(p);
-    let what = msg::render("ctxbudget.ah_backstop_what", &[("pct", &round_str(pct)), ("b", &number_to_string(budget)), ("hp", &round_str(handover_pct))]);
-    warn(&what, "", &msg::render("ctxbudget.ah_backstop_instead", &[("skill", skill(pl)), ("reset", reset(pl))]))
-}

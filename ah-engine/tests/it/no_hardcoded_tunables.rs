@@ -160,7 +160,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "a Unicode plane (private use B) holding the stand-ins of UTF-16 surrogate units: an encoding fact, not a tunable",
     ),
     ("src/checks/ctxbudget/phrase.rs", "const SURROGATE: u32", "the first UTF-16 high-surrogate code unit: an encoding fact, not a tunable"),
-    ("src/checks/ctxbudget/limit.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),
+    ("src/dispatch/inject.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),
     ("src/transcript/record.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),
     ("src/transcript/record.rs", "b.len() < 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
     ("src/jev/keep.rs", "b.len() < 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
@@ -197,7 +197,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/checks/guardkit/ojson.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/checks/session/jval.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/jev/question.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
-    ("src/checks/guardkit/turn_gate.rs", "t.jsonl", "a file name in a unit-test fixture"),
     // ---- git output and flag layouts ------------------------------------------------------------------------------
     // ---- layouts of generated output and the wire --------------------------------------------------------------------
     ("src/docs.rs", "chars().count() > 80", "the width a value is cut to in the generated Markdown reference (the generator's format)"),

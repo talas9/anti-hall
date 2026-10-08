@@ -982,6 +982,11 @@ value = 16
 min = 1
 max = 1024
 
+[turn_gate.sig_max]
+doc = "Longest signature, in UTF-16 units, kept for one advisory (a longer one is cut)."
+value = 200
+min = 8
+
 [turn_gate.injected_re]
 doc = "Regex source (JavaScript syntax) of the text an injected, non-human user entry starts with."
 value = '^\s*<(?:task-notification|system-reminder|local-command|command-name|command-message)'

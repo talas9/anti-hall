@@ -45,65 +45,6 @@ value = "assistant"
 
 # ---- once-per-turn gate (hooks/lib/turn-gate.js) ----------------------------------------------------------
 
-[reply_turn_gate.dir]
-doc = "Directory of the gate's state files under the state directory."
-value = "turn-gate"
-
-[reply_turn_gate.prefix]
-doc = "Family name of a gate state file (`<prefix>-<session>.json`, the sanitised session id and the JSON extension follow); also the family name of its stale-file sweep, which appends the dash itself."
-value = "tg"
-
-[reply_turn_gate.session_max]
-doc = "Longest session part of a gate state file name, in UTF-16 units."
-value = 80
-min = 8
-max = 200
-
-[reply_turn_gate.tail_bytes]
-doc = "How much of the end of the transcript is read to find the newest human prompt."
-value = 524288
-unit = "bytes"
-min = 4096
-
-[reply_turn_gate.max_sigs]
-doc = "How many signatures one slot remembers for a turn (the oldest beyond this are dropped)."
-value = 16
-min = 2
-max = 1000
-
-[reply_turn_gate.sig_max]
-doc = "Longest advisory signature kept, in UTF-16 units."
-value = 200
-min = 8
-
-[reply_turn_gate.agent_prefix]
-doc = "Prefix of the turn id of a subagent payload: a subagent's turn is its own whole run."
-value = "agent:"
-
-[reply_turn_gate.main_agent]
-doc = "The agent part of a slot key for the main agent (a payload without an agent id)."
-value = "main"
-
-[reply_turn_gate.user_marker]
-doc = "Text a transcript line must contain to be considered as a human prompt (a cheap filter before parsing)."
-value = '"user"'
-
-[reply_turn_gate.type_user]
-doc = "The type of a user transcript entry."
-value = "user"
-
-[reply_turn_gate.type_tool_result]
-doc = "The content block type of a tool result: an entry holding one is not a human prompt."
-value = "tool_result"
-
-[reply_turn_gate.type_text]
-doc = "The content block type of a text block."
-value = "text"
-
-[reply_turn_gate.injected_re]
-doc = "Regex source of the text an injected block starts with (notifications and reminders), which is never a human prompt."
-value = '^\s*<(?:task-notification|system-reminder|local-command|command-name|command-message)'
-
 # ---- speculation-guard (hooks/speculation-guard.js) -------------------------------------------------------
 
 [speculation_guard.summary]
@@ -583,10 +524,6 @@ value = '''exit[_ ]?code["']?\s*[:=]\s*(-?\d+)'''
 [output_verify.count_marker]
 doc = "Text in a signal pattern that marks a captured count: such a pattern only hits on a non-zero count, so a clean summary like 0 failed is not a failure."
 value = '(\d+)'
-
-[output_verify.line_terminators]
-doc = "The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor)."
-value = "\n\r  "
 
 [output_verify.fail_patterns]
 doc = "The failing signals, in the order they are tried: regex source, case-insensitive flag, and whether it must start a line."

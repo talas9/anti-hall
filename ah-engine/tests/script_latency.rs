@@ -21,8 +21,40 @@ fn plugin() -> String {
     std::fs::canonicalize(ah_engine::defaults::root().expect("plugin root")).unwrap().to_string_lossy().into_owned()
 }
 
+/// The time tokens of a golden case (`{MS:-300000}`, `{ISO:..}`, `{HM:..}`, `{DATE:..}`, `{LDATE:..}`) at the real clock, the
+/// `{HOMEENC}` token and the `{HOME...}` directories; only the shape of the work is measured here, not the answers.
 fn fill(s: &str, home: &str, real: &str) -> String {
-    s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home)
+    let enc: String = real.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '.') { '-' } else { c }).collect();
+    let mut out = s.replace("{PLUGIN}", &plugin()).replace("{HOMEENC}", &enc).replace("{HOMEREAL}", real).replace("{HOME}", home);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let re = regex::Regex::new(r"\{(MS|ISO|HM|DATE|LDATE):(-?[0-9]+)\}").unwrap();
+    let tokens: Vec<(String, String, i64)> = re.captures_iter(&out).map(|c| (c[0].to_string(), c[1].to_string(), c[2].parse().unwrap())).collect();
+    for (tok, kind, off) in tokens {
+        let t = now + off;
+        let iso = || {
+            let d = std::time::UNIX_EPOCH + std::time::Duration::from_millis(t.max(0) as u64);
+            let secs = d.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+            let z = days + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let day = doy - (153 * mp + 2) / 5 + 1;
+            let month = if mp < 10 { mp + 3 } else { mp - 9 };
+            let year = yoe + era * 400 + i64::from(month <= 2);
+            (format!("{year:04}-{month:02}-{day:02}"), format!("{:02}:{:02}:{:02}", rem / 3600, rem % 3600 / 60, rem % 60), t.rem_euclid(1000))
+        };
+        let text = match kind.as_str() {
+            "MS" => t.to_string(),
+            "ISO" => { let (d, h, ms) = iso(); format!("{d}T{h}.{ms:03}Z") }
+            "HM" => { let (_, h, _) = iso(); format!("{} UTC", &h[..5]) }
+            _ => iso().0,
+        };
+        out = out.replace(&tok, &text);
+    }
+    out
 }
 
 fn sub(v: &Value, home: &str, real: &str) -> Value {
@@ -41,11 +73,12 @@ fn lay(case: &Value, seq: usize) -> Laid {
     let home = home.to_string_lossy().into_owned();
     if let Some(files) = case.get("files").and_then(Value::as_object) {
         for (rel, spec) in files {
-            let path = Path::new(&home).join(rel.replace("{HOME}/", ""));
+            let path = Path::new(&home).join(fill(&rel.replace("{HOME}/", ""), &home, &real));
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             match spec {
                 Value::String(t) => std::fs::write(&path, fill(t, &home, &real)).unwrap(),
                 Value::Object(o) if o.contains_key("link") => std::os::unix::fs::symlink(fill(o["link"].as_str().unwrap(), &home, &real), &path).unwrap(),
+                Value::Object(o) if o.contains_key("text") => std::fs::write(&path, fill(o["text"].as_str().unwrap(), &home, &real)).unwrap(),
                 _ => std::fs::create_dir_all(&path).unwrap(),
             }
         }
