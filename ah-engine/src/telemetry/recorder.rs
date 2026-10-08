@@ -15,12 +15,12 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
-use super::event::{Event, Kind, Outcome, sanitize_name};
+use super::event::{Event, Kind, Outcome, day_of, sanitize_name};
 use crate::defaults;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// Position of the count in a slot's fields; the latency sum (microseconds) and injected bytes follow, then the buckets.
 const F_N: usize = 0;
@@ -64,18 +64,21 @@ impl Delta {
     }
 }
 
-/// The labels of a slot, set once by the thread that claimed it.
+/// The labels of a slot, set once by the thread that claimed it, and the day (UTC, days since the epoch) its counts were
+/// recorded on: a slot counts one day only, so a flush stamps every count with the day it happened, not the day of the
+/// flush (review finding 15).
 struct Names {
     k: &'static str,
     h: String,
     e: String,
     o: &'static str,
+    day: i64,
 }
 
 struct Slot {
     /// Fingerprint of the labels; 0 while the slot is free.
     fp: AtomicU64,
-    names: OnceLock<Names>,
+    names: Mutex<Option<Arc<Names>>>,
     f: Box<[AtomicU64]>,
     /// What the flusher has already stored, per field.
     flushed: Box<[AtomicU64]>,
@@ -86,7 +89,7 @@ struct Slot {
 impl Slot {
     fn new(fields: usize) -> Slot {
         let zeros = |n: usize| (0..n).map(|_| AtomicU64::new(0)).collect::<Vec<_>>().into_boxed_slice();
-        Slot { fp: AtomicU64::new(0), names: OnceLock::new(), f: zeros(fields), flushed: zeros(fields), mirrored: [AtomicU64::new(0), AtomicU64::new(0)] }
+        Slot { fp: AtomicU64::new(0), names: Mutex::new(None), f: zeros(fields), flushed: zeros(fields), mirrored: [AtomicU64::new(0), AtomicU64::new(0)] }
     }
 }
 
@@ -98,7 +101,7 @@ struct Shard {
 type Published = Option<(u64, Event)>;
 
 /// One claimed slot as the flusher sees it: shard, slot, labels, current fields, flushed fields.
-type SlotView<'a> = (usize, usize, &'a Names, Vec<u64>, Vec<u64>);
+type SlotView = (usize, usize, Arc<Names>, Vec<u64>, Vec<u64>);
 
 /// A bounded ring of events written by index.
 struct Ring {
@@ -119,6 +122,8 @@ fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub struct Pending {
     /// Counter deltas since the last commit, merged across shards.
     pub deltas: Vec<Delta>,
+    /// The day each delta of `deltas` was recorded on (same order).
+    pub days: Vec<i64>,
     /// Ring events since the last commit, oldest first.
     pub events: Vec<Event>,
     cells: Vec<(usize, usize, Vec<u64>)>,
@@ -173,7 +178,7 @@ fn thread_id() -> usize {
 }
 
 /// FNV-1a over the labels (names capped to `cap` bytes, the same cap the stored names get).
-fn fingerprint(kind: Kind, h: &str, e: &str, o: Outcome, cap: usize) -> u64 {
+fn fingerprint(kind: Kind, h: &str, e: &str, o: Outcome, day: i64, cap: usize) -> u64 {
     let mut x: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |b: u8| x = (x ^ b as u64).wrapping_mul(0x0100_0000_01b3);
     for b in h.bytes().take(cap) {
@@ -185,6 +190,9 @@ fn fingerprint(kind: Kind, h: &str, e: &str, o: Outcome, cap: usize) -> u64 {
     }
     eat(kind as u8);
     eat(o as u8);
+    for b in day.to_le_bytes() {
+        eat(b);
+    }
     if x == 0 { 1 } else { x }
 }
 
@@ -259,7 +267,7 @@ impl Recorder {
             if cur == 0 {
                 match s.fp.compare_exchange(0, fp, Relaxed, Relaxed) {
                     Ok(_) => {
-                        crate::discard::harmless(s.names.set(names())); // keep: the cell was already set by another thread
+                        *lk(&s.names) = Some(Arc::new(names()));
                         return Some(s);
                     }
                     Err(other) if other == fp => return Some(s),
@@ -274,13 +282,24 @@ impl Recorder {
     /// Count one invocation: kind, hook or check, event, outcome, latency in microseconds, bytes injected into model
     /// context. No I/O, no lock, no allocation unless the combination is new.
     pub fn record(&self, kind: Kind, h: &str, e: &str, o: Outcome, micros: u64, ib: u64) {
+        self.record_on(day_of(crate::health::now_ms()), kind, h, e, o, micros, ib);
+    }
+
+    /// [`Recorder::record`] on a given day (UTC, days since the epoch).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_on(&self, day: i64, kind: Kind, h: &str, e: &str, o: Outcome, micros: u64, ib: u64) {
         if !self.enabled.load(Relaxed) {
             return;
         }
-        let fp = fingerprint(kind, h, e, o, self.name_cap);
+        let fp = fingerprint(kind, h, e, o, day, self.name_cap);
         let shard = &self.shards[thread_id() % self.shards.len()];
-        let make =
-            || Names { k: kind.name(), h: sanitize_name(h.as_bytes()).unwrap_or_default(), e: sanitize_name(e.as_bytes()).unwrap_or_default(), o: o.name() };
+        let make = || Names {
+            k: kind.name(),
+            h: sanitize_name(h.as_bytes()).unwrap_or_default(),
+            e: sanitize_name(e.as_bytes()).unwrap_or_default(),
+            o: o.name(),
+            day,
+        };
         let Some(s) = self.find(shard, fp, make) else {
             self.dropped_slots.fetch_add(1, Relaxed);
             return;
@@ -318,11 +337,11 @@ impl Recorder {
     }
 
     /// Walk every claimed slot: `(shard, slot, names, current fields, flushed fields)`.
-    fn cells(&self) -> Vec<SlotView<'_>> {
+    fn cells(&self) -> Vec<SlotView> {
         let mut out = Vec::new();
         for (si, sh) in self.shards.iter().enumerate() {
             for (i, s) in sh.slots.iter().enumerate() {
-                let Some(names) = s.names.get() else { continue };
+                let Some(names) = lk(&s.names).clone() else { continue };
                 let cur: Vec<u64> = s.f.iter().map(|a| a.load(Relaxed)).collect();
                 let fl: Vec<u64> = s.flushed.iter().map(|a| a.load(Relaxed)).collect();
                 out.push((si, i, names, cur, fl));
@@ -335,7 +354,7 @@ impl Recorder {
     pub fn pending_deltas(&self) -> Vec<Delta> {
         let mut by: BTreeMap<(String, String, String, String), Delta> = BTreeMap::new();
         for (_, _, names, cur, fl) in self.cells() {
-            let d = self.delta_of(names, &cur, &fl);
+            let d = self.delta_of(&names, &cur, &fl);
             if d.n == 0 && d.us_sum == 0 && d.ib_sum == 0 {
                 continue;
             }
@@ -377,23 +396,24 @@ impl Recorder {
     /// Take everything recorded since the last commit. The caller stores it and then calls [`Recorder::commit`]; until
     /// then nothing is forgotten, so a failed store is simply retried. One flusher at a time (see [`Recorder::flush_guard`]).
     pub fn drain(&self) -> Pending {
-        let mut by: BTreeMap<(String, String, String, String), Delta> = BTreeMap::new();
+        let mut by: BTreeMap<(i64, String, String, String, String), Delta> = BTreeMap::new();
         let mut cells = Vec::new();
         for (si, i, names, cur, fl) in self.cells() {
-            let d = self.delta_of(names, &cur, &fl);
+            let d = self.delta_of(&names, &cur, &fl);
             if d.n == 0 && d.us_sum == 0 && d.ib_sum == 0 {
                 continue;
             }
-            match by.get_mut(&(d.k.clone(), d.h.clone(), d.e.clone(), d.o.clone())) {
+            match by.get_mut(&(names.day, d.k.clone(), d.h.clone(), d.e.clone(), d.o.clone())) {
                 Some(x) => x.merge(&d),
                 None => {
-                    by.insert((d.k.clone(), d.h.clone(), d.e.clone(), d.o.clone()), d);
+                    by.insert((names.day, d.k.clone(), d.h.clone(), d.e.clone(), d.o.clone()), d);
                 }
             }
             cells.push((si, i, cur));
         }
         let (events, ring_to, ring_lost) = self.read_ring();
-        Pending { deltas: by.into_values().collect(), events, cells, ring_to, ring_lost }
+        let (days, deltas) = by.into_iter().map(|((day, ..), d)| (day, d)).unzip();
+        Pending { deltas, days, events, cells, ring_to, ring_lost }
     }
 
     /// The deltas and events in `p` are stored: move the cursors past them.
@@ -403,8 +423,30 @@ impl Recorder {
                 a.store(v, Relaxed);
             }
         }
+        self.reclaim(day_of(crate::health::now_ms()));
         self.ring.lost.fetch_add(p.ring_lost, Relaxed);
         self.ring.cursor.fetch_max(p.ring_to, Relaxed);
+    }
+
+    /// Free the slots of days before yesterday whose counts are all stored and mirrored, so a resident daemon keeps room
+    /// for each new day's label combinations. Nothing records into such a slot any more (its day is in the fingerprint).
+    fn reclaim(&self, today: i64) {
+        for sh in self.shards.iter() {
+            for s in sh.slots.iter() {
+                let mut names = lk(&s.names);
+                let Some(nm) = names.as_ref() else { continue };
+                let stored = s.f.iter().zip(s.flushed.iter()).all(|(a, b)| a.load(Relaxed) == b.load(Relaxed));
+                let mirrored = s.mirrored[0].load(Relaxed) == s.f[F_N].load(Relaxed) && s.mirrored[1].load(Relaxed) == s.f[F_IB].load(Relaxed);
+                if nm.day + 1 >= today || !stored || !mirrored {
+                    continue;
+                }
+                *names = None;
+                for a in s.f.iter().chain(s.flushed.iter()).chain(s.mirrored.iter()) {
+                    a.store(0, Relaxed);
+                }
+                s.fp.store(0, Relaxed);
+            }
+        }
     }
 
     /// Held for the whole drain-store-commit cycle, so two flushers cannot store the same delta twice.
@@ -420,22 +462,22 @@ impl Recorder {
     /// Add what was recorded since the last call to the metrics registry as `tel_events` and `tel_injected_bytes`, so
     /// `ah-engine metrics` shows the same counts (D51). The caller holds the registry's lock, which also serialises calls.
     pub fn mirror_into(&self, m: &mut crate::metrics::Metrics) {
-        let mut n_by: BTreeMap<(&str, &str, &str, &str), u64> = BTreeMap::new();
-        let mut ib_by: BTreeMap<(&str, &str), u64> = BTreeMap::new();
+        let mut n_by: BTreeMap<(&str, String, String, &str), u64> = BTreeMap::new();
+        let mut ib_by: BTreeMap<(String, String), u64> = BTreeMap::new();
         for sh in self.shards.iter() {
             for s in sh.slots.iter() {
-                let Some(nm) = s.names.get() else { continue };
+                let Some(nm) = lk(&s.names).clone() else { continue };
                 let (n, ib) = (s.f[F_N].load(Relaxed), s.f[F_IB].load(Relaxed));
                 let (dn, dib) = (n.saturating_sub(s.mirrored[0].swap(n, Relaxed)), ib.saturating_sub(s.mirrored[1].swap(ib, Relaxed)));
-                *n_by.entry((nm.k, nm.h.as_str(), nm.e.as_str(), nm.o)).or_insert(0) += dn;
-                *ib_by.entry((nm.h.as_str(), nm.e.as_str())).or_insert(0) += dib;
+                *n_by.entry((nm.k, nm.h.clone(), nm.e.clone(), nm.o)).or_insert(0) += dn;
+                *ib_by.entry((nm.h.clone(), nm.e.clone())).or_insert(0) += dib;
             }
         }
         for ((k, h, e, o), n) in n_by.into_iter().filter(|(_, n)| *n > 0) {
-            m.add("tel_events", &[("k", k), ("h", h), ("e", e), ("o", o)], n);
+            m.add("tel_events", &[("k", k), ("h", h.as_str()), ("e", e.as_str()), ("o", o)], n);
         }
         for ((h, e), n) in ib_by.into_iter().filter(|(_, n)| *n > 0) {
-            m.add("tel_injected_bytes", &[("h", h), ("e", e)], n);
+            m.add("tel_injected_bytes", &[("h", h.as_str()), ("e", e.as_str())], n);
         }
         let d = self.drops();
         for (reason, n) in [("slots", d.slots), ("ring", d.ring)] {
@@ -455,6 +497,28 @@ mod tests {
 
     fn rec() -> Recorder {
         Recorder::new(4, 64, 8, vec![100, 1000])
+    }
+
+    #[test]
+    fn counts_carry_the_day_they_were_recorded_on_and_old_days_free_their_slots() {
+        // review finding 15: a flush stamped every delta with the flush's day, so a count from before midnight (or from a
+        // flush that failed for days) landed on the wrong day
+        let today = day_of(crate::health::now_ms());
+        let r = Recorder::new(1, 16, 8, vec![100]);
+        r.record_on(today - 3, Kind::Hook, "h", "Stop", Outcome::Allow, 5, 0);
+        r.record_on(today - 3, Kind::Hook, "h", "Stop", Outcome::Allow, 5, 0);
+        r.record_on(today, Kind::Hook, "h", "Stop", Outcome::Allow, 5, 0);
+        let p = r.drain();
+        let mut by_day: Vec<(i64, u64)> = p.days.iter().copied().zip(p.deltas.iter().map(|d| d.n)).collect();
+        by_day.sort();
+        assert_eq!(by_day, vec![(today - 3, 2), (today, 1)]);
+        assert_eq!(r.cells().len(), 2);
+        r.mirror_into(&mut crate::metrics::Metrics::default());
+        r.commit(p); // stored and mirrored: the old day's slot is freed, today's is kept
+        assert_eq!(r.cells().len(), 1, "the slot of three days ago is freed, today's kept");
+        r.record_on(today - 3, Kind::Hook, "h", "Stop", Outcome::Allow, 5, 0);
+        let p = r.drain();
+        assert_eq!((p.days.as_slice(), p.deltas[0].n), ([today - 3].as_slice(), 1), "a freed slot counts from zero again");
     }
 
     fn total(r: &Recorder) -> (u64, u64, u64) {

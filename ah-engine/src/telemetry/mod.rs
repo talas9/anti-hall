@@ -25,7 +25,7 @@ use crate::defaults;
 use crate::metrics::Metrics;
 use crate::rules::Action;
 use crate::storage::{ImpactEvent, ImpactFilter, MemStore, Store};
-use event::{Event, Kind, Outcome, day_of};
+use event::{Event, Kind, Outcome};
 use persist::{Flushed, TelDb};
 use recorder::Recorder;
 use serde_json::{Value, json};
@@ -190,7 +190,8 @@ impl Telemetry {
             return true;
         }
         let Some(t) = &self.tel else { return false };
-        match t.flush(day_of(now_ms()), p.deltas.clone(), p.events.clone()) {
+        // each delta on the day it was recorded, not the day of this flush (review finding 15)
+        match t.flush_days(p.days.iter().copied().zip(p.deltas.iter().cloned()).collect(), p.events.clone()) {
             Flushed::Stored | Flushed::Unknown => {
                 self.rec.commit(p);
                 true
