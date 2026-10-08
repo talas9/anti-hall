@@ -1534,3 +1534,113 @@ value = 60
 [mesh_write.verify_window_after]
 doc = "Bytes from the first difference on that the background check logs from a differing file."
 value = 100
+
+# ---- inbox tick --quiet (scripts/devswarm-lib/inbox-cmd.js cmdInboxTick, inboxTickQuietLine) ----
+
+[mesh_write.verb_tick]
+doc = "The tick subverb of `inbox`."
+value = "tick"
+
+[mesh_write.tick_line]
+doc = "The one line `inbox tick --quiet` prints (inboxTickQuietLine); `{id}`, `{unread}`, `{known}`, `{gap}` and `{armed}` are filled in."
+value = "tick {id}: unread {unread}, known {known}, meshGap {gap}, watcherArmed {armed}"
+
+[mesh_write.dir_wake_tick]
+doc = "The wake-tick marker directory under the DevSwarm state directory (core.js wakeTickDir)."
+value = "wake-tick"
+
+[mesh_write.file_cron_found_mail]
+doc = "The cron-found-mail measurement file under the DevSwarm state directory (core.js cronFoundMailPath)."
+value = "cron-found-mail.jsonl"
+
+[mesh_write.cron_found_mail_cap]
+doc = "How many lines the cron-found-mail file keeps (core.js CRON_FOUND_MAIL_CAP)."
+value = 1000
+
+[mesh_write.tick_tmp_suffix]
+doc = "Suffix of the staged file a tick marker or heartbeat refresh is written to before the rename (after `.<pid>.<clock>`)."
+value = ".tick.tmp"
+
+[mesh_write.heartbeat_source_tick]
+doc = "The `source` a tick stamps on a heartbeat record it has to create (cmdInboxTick)."
+value = "inbox-tick"
+
+[mesh_write.wake_lock_prefix]
+doc = "File-name prefix of the wake-watch lock of a workspace in the locks directory (devswarm-wake-watch.js lockPathFor)."
+value = "wake-watch-"
+
+[mesh_write.wake_lock_suffix]
+doc = "File-name suffix of the wake-watch lock."
+value = ".lock"
+
+[mesh_write.wake_lock_stale_ms]
+doc = "A wake-watch lock older than this is not a live watcher (devswarm-wake-watch.js WATCH_LOCK_STALE_MS)."
+value = 120000
+
+[mesh_write.dir_wal]
+doc = "The delivery write-ahead-log directory under the DevSwarm state directory (devswarm-read-wal.js)."
+value = "wal"
+
+[mesh_write.dir_wal_spill]
+doc = "The directory the delivery log spills batches to when the log itself is not writable."
+value = "wal-spill"
+
+[mesh_write.wal_suffix]
+doc = "File-name suffix of a delivery log."
+value = ".ndjson"
+
+[mesh_write.wal_lastresort_prefix]
+doc = "Prefix of the last-resort delivery batches written to the temp directory; their presence sends a tick to Node."
+value = "anti-hall-wal-lastresort-"
+
+[mesh_write.env_tmpdir]
+doc = "The environment variables that name the temp directory, in the order Node's os.tmpdir() reads them."
+value = ["TMPDIR", "TMP", "TEMP"]
+
+[mesh_write.default_tmpdir]
+doc = "The temp directory when none of those variables is set."
+value = "/tmp"
+
+[mesh_write.tick_roster_setting]
+doc = "Name of the setting (devswarm.tickRosterEvery) that makes a quiet tick append the roster; any trace of it sends the tick to Node."
+value = "tickRosterEvery"
+
+[mesh_write.tick_roster_env]
+doc = "The environment variable of that setting."
+value = "ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY"
+
+[mesh_write.tick_settings_files]
+doc = "The settings files, relative to the home directory, in which a trace of the roster setting sends a tick to Node."
+value = [".anti-hall/settings.json", ".claude/settings.json"]
+
+[mesh_write.verify_tick_node_snippet]
+doc = "The Node program of the tick verifier: runs the real devswarm.js `run()` with the engine's clock and prints the line `inbox tick --quiet` would print. Arguments: the CLI path, the clock, then the verb's argv."
+value = "const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Number(process.argv[2]),instanceNonce:process.env.AH_ENGINE_VERIFY_NONCE||undefined});process.stdout.write(c.inboxTickQuietLine(r.result)+'\\n');"
+
+[mesh_write.verify_tick_copy_dirs]
+doc = "Directories of the DevSwarm root copied into the scratch home before the engine writes for a tick (what Node reads or writes for it)."
+value = ["workspaces", "heartbeats", "liveness", "cursors", "archived", "cache", "plans", "wake-tick", "locks", "wal", "wal-spill"]
+
+[mesh_write.verify_tick_copy_files]
+doc = "Files of the DevSwarm root copied into the scratch home before the engine writes for a tick."
+value = ["cron-found-mail.jsonl"]
+
+[mesh_write.js_true]
+doc = "JavaScript's text for true, as a tick line prints a boolean."
+value = "true"
+
+[mesh_write.js_false]
+doc = "JavaScript's text for false, as a tick line prints a boolean."
+value = "false"
+
+[mesh_write.env_verify_nonce]
+doc = "The environment variable that hands the engine's reader nonce to the tick verifier (the detached verifier does not share the caller's process ancestry, which Node derives the reader from); it is the name the verify_tick_node_snippet reads."
+value = "AH_ENGINE_VERIFY_NONCE"
+
+[mesh_write.verify_names_heartbeat]
+doc = "The names under which a heartbeat verification mismatch reports whether the heartbeat record, the liveness verdict and the app-state cache are equal."
+value = ["sameHeartbeat", "sameVerdict", "sameCache"]
+
+[mesh_write.verify_names_tick]
+doc = "The names under which a tick verification mismatch reports whether the heartbeat record, the wake-tick marker and the cron-found-mail file are equal."
+value = ["sameHeartbeat", "sameMarker", "sameCronFound"]
