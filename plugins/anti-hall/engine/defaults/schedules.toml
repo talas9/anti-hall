@@ -44,6 +44,12 @@ env = "AH_ENGINE_TICK_MS"
 unit = "ms"
 min = 10
 
+[schedule.backoff_shift_max]
+doc = "The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing."
+value = 30
+min = 0
+max = 62
+
 [schedule.maintain_ms]
 doc = "Interval of the maintain job (D26); 0 turns it off."
 value = 86400000

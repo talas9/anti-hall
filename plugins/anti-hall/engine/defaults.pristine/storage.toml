@@ -138,6 +138,12 @@ doc = "Longest retry delay."
 value = 400
 unit = "ms"
 
+[spool.backoff_shift_max]
+doc = "The largest doubling exponent of a spool retry delay (backoff_ms times 2^n, at most this power), before backoff_max_ms; it keeps the shift from overflowing."
+value = 16
+min = 0
+max = 62
+
 [spool.max_bytes]
 doc = "Largest spool; a write that would grow it past this is refused instead of spooled, so the client learns it was not kept."
 value = 16777216

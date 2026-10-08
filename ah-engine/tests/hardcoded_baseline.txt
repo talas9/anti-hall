@@ -21,7 +21,6 @@
 [number] src/checks/guardkit/jsval/mod.rs: let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
 [number] src/checks/guardkit/jsval/mod.rs: let era = if y >= 0 { y } else { y - 399 } / 400;
 [number] src/checks/guardkit/jsval/mod.rs: } else if 0 < n && n <= 21 {
-[number] src/checks/guardkit/msg.rs: let mut out = String::with_capacity(t.len() + 32);
 [number] src/checks/guardkit/ojson.rs: k.parse::<u64>().ok().filter(|n| *n < 4_294_967_295).map(|n| n as u32)
 [number] src/checks/guardkit/text.rs: if m >= 2_147_483_648 { m - 4_294_967_296 } else { m }
 [number] src/checks/jsport/date.rs: None if h > 23 => return Parsed::Unknown,
@@ -53,9 +52,6 @@
 [number] src/checks/taskstate/tail.rs: let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
 [number] src/jev/assist.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
 [number] src/jev/assist.rs: let y = yoe + era * 400 + i64::from(m <= 2);
-[number] src/jev/client.rs: Some(Reason::Http(s)) => *s >= 500 || *s == 402 || *s == 429 || ((*s == 400 || *s == 403) && r.balance),
 [number] src/jev/client.rs: defaults::num("jev.fallback_reserve_ms").min(total_ms.saturating_mul(defaults::num("jev.fallback_reserve_pct")) / 100)
 [number] src/jev/keep.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 59 {
-[number] src/schedule.rs: let delay = spec.backoff_ms.saturating_mul(1u64 << (failures - 1).min(30)).min(spec.backoff_max_ms);
-[number] src/spool.rs: let base = defaults::num("spool.backoff_ms").saturating_mul(1u64 << n.min(16));
 [number] src/transcript/record.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 24 || mi > 59 || sec > 59 {

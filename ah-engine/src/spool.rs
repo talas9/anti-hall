@@ -253,7 +253,7 @@ pub enum Outcome {
 /// Backoff before retry `n` (0-based): exponential from `spool.backoff_ms`, capped at `spool.backoff_max_ms`, with
 /// jitter of up to half the delay so concurrent clients do not retry in step.
 fn backoff(n: u32) -> Duration {
-    let base = defaults::num("spool.backoff_ms").saturating_mul(1u64 << n.min(16));
+    let base = defaults::num("spool.backoff_ms").saturating_mul(1u64 << u64::from(n).min(defaults::num("spool.backoff_shift_max")));
     let capped = base.min(defaults::num("spool.backoff_max_ms"));
     let jitter = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0) % (capped / 2 + 1);
     Duration::from_millis(capped / 2 + jitter)

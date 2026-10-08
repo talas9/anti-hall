@@ -89,6 +89,13 @@ value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "✅", update = "�
 doc = "Text between the icon and the guard name in every block or advisory message."
 value = " anti-hall · "
 
+[guardkit.render_reserve]
+doc = "Extra bytes reserved beyond a message template's length when its placeholders are filled (a capacity hint, not a limit)."
+value = 32
+unit = "bytes"
+min = 0
+max = 65536
+
 [guardkit.msg_labels]
 doc = "Labels of the optional lines of a block or advisory message."
 value = { why = "Why: ", instead = "Do instead: ", allowed = "Allowed here: ", override = "Override (only if the user explicitly asked): " }

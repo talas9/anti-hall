@@ -147,6 +147,20 @@ value = 40
 min = 0
 max = 100
 
+[jev.retry_status_min]
+doc = "An HTTP status at or above this one is a retry-eligible failure of the primary (Node: status >= 500)."
+value = 500
+min = 100
+max = 599
+
+[jev.retry_statuses]
+doc = "HTTP statuses below jev.retry_status_min that are retry-eligible (Node: 402, 429)."
+value = [402, 429]
+
+[jev.retry_statuses_balance]
+doc = "HTTP statuses that are retry-eligible only when the response body names an exhausted balance (Node: 400 and 403 with the balance pattern)."
+value = [400, 403]
+
 [jev.balance_pattern]
 doc = "A 400 or 403 body matching this expression (case-insensitive) is an out-of-balance answer and makes the call fallback-eligible (Node: BALANCE_BODY_RE)."
 value = "insufficient|credit|balance|quota|billing"

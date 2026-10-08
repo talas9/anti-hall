@@ -234,7 +234,7 @@ pub fn next_after(spec: &JobSpec, now: u64) -> u64 {
 pub fn after_failure(spec: &JobSpec, st: &JobState, now: u64) -> JobState {
     let failures = st.failures + 1;
     if failures <= spec.retries {
-        let delay = spec.backoff_ms.saturating_mul(1u64 << (failures - 1).min(30)).min(spec.backoff_max_ms);
+        let delay = spec.backoff_ms.saturating_mul(1u64 << u64::from(failures - 1).min(defaults::num("schedule.backoff_shift_max"))).min(spec.backoff_max_ms);
         JobState { next_ms: st.next_ms.min(now + delay), failures, cooldown_until_ms: 0, running: st.running }
     } else {
         let until = now.saturating_add(spec.cooldown_ms);

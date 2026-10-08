@@ -90,7 +90,7 @@ pub fn render(key: &str, args: &[(&str, &str)]) -> String {
 
 /// [`render`] for a template that did not come from the shipped defaults (one resolved from the user's config layers).
 pub fn render_with(t: &str, args: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(t.len() + 32);
+    let mut out = String::with_capacity(t.len() + defaults::num("guardkit.render_reserve") as usize);
     let mut rest = t;
     while let Some(open) = rest.find('{') {
         out.push_str(&rest[..open]);
