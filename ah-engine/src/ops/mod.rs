@@ -18,19 +18,48 @@ pub(crate) mod allow;
 pub(crate) mod defect;
 pub(crate) mod js;
 pub(crate) mod settings;
+pub(crate) mod shadow;
+pub(crate) mod statusline;
 
 use crate::cli::Parsed;
 use crate::defaults;
 use std::collections::BTreeMap;
 use std::io::Write;
 
+static OUT_CAPTURE: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+static ERR_CAPTURE: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+
+/// From now on keep a copy of everything written through [`out`] and [`err`] (for the Node shadow comparison).
+pub(crate) fn start_capture() {
+    *OUT_CAPTURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+    *ERR_CAPTURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+}
+
+/// The captured stdout, emptied.
+pub(crate) fn out_capture_take() -> Vec<u8> {
+    OUT_CAPTURE.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default()
+}
+
+/// The captured stderr, emptied.
+pub(crate) fn err_capture_take() -> Vec<u8> {
+    ERR_CAPTURE.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default()
+}
+
+fn tee(cap: &std::sync::Mutex<Option<Vec<u8>>>, text: &str) {
+    if let Some(buf) = cap.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        buf.extend_from_slice(text.as_bytes());
+    }
+}
+
 /// Text on stdout. A closed pipe has nobody left to tell, so the failure is dropped.
 pub(crate) fn out(text: &str) {
+    tee(&OUT_CAPTURE, text);
     crate::discard::harmless(std::io::stdout().lock().write_all(text.as_bytes())); // keep: stdout closed, nowhere to report it
 }
 
 /// Text on stderr (same rule as [`out`]).
 pub(crate) fn err(text: &str) {
+    tee(&ERR_CAPTURE, text);
     crate::discard::harmless(std::io::stderr().lock().write_all(text.as_bytes())); // keep: stderr closed, nowhere to report it
 }
 
@@ -69,4 +98,14 @@ pub fn cmd_settings(p: &Parsed) -> i32 {
 /// `defect <verb> ...`
 pub fn cmd_defect(p: &Parsed) -> i32 {
     defect::run(p)
+}
+
+/// `statusline`
+pub fn cmd_statusline(p: &Parsed) -> i32 {
+    statusline::run(p)
+}
+
+/// `shadow-compare <dir>` (internal): the detached half of a Node shadow.
+pub fn cmd_shadow_compare(p: &Parsed) -> i32 {
+    p.raw.first().map_or(1, |d| shadow::compare(std::path::Path::new(d)))
 }

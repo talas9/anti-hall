@@ -4,6 +4,7 @@
 //! The design rules are the Node module's and are unchanged: derived state only (no index file), every write verified by
 //! reading the line back, every line capped, torn lines skipped and never repaired, and nothing ever deleted (archival is a
 //! rename). The caps, the enums and the field limits are the plugin's `engine/defaults/defect.toml`.
+use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{collapse_ws, js_trim};
 use crate::checks::jsport::json::{self, J};
 use crate::checks::jsport::date;
@@ -60,26 +61,9 @@ pub struct Clamped {
 
 /// The sanitising half of `clampFieldInfo`: ANSI sequences, then control characters, then surrounding white space.
 fn sanitize(value: &str) -> String {
-    let c: Vec<char> = value.chars().collect();
-    let mut out = String::with_capacity(value.len());
-    let mut i = 0;
-    while i < c.len() {
-        if c[i] == '\u{1b}' && c.get(i + 1) == Some(&'[') {
-            let mut j = i + 2;
-            while j < c.len() && (c[j].is_ascii_digit() || c[j] == ';') {
-                j += 1;
-            }
-            if c.get(j).is_some_and(char::is_ascii_alphabetic) {
-                i = j + 1;
-                continue;
-            }
-        }
-        if !(c[i] < '\u{20}' || c[i] == '\u{7f}') {
-            out.push(c[i]);
-        }
-        i += 1;
-    }
-    js_trim(&out).to_string()
+    let no_ansi = jsre::compile(defaults::text("defect.ansi_re"), false).replace_all(value, "");
+    let no_ctl = jsre::compile(defaults::text("defect.control_re"), false).replace_all(&no_ansi, "");
+    js_trim(&no_ctl).to_string()
 }
 
 /// `truncationNotice(originalLength, continued)`
@@ -154,7 +138,7 @@ pub fn normalize_component(p: &str) -> Result<Option<String>, Defer> {
         let (re, with) = step.split_once(defaults::text("defect.step_sep")).unwrap_or((step, ""));
         s = crate::checks::guardkit::jsre::compile(re, false).replace_all(&s, with).into_owned();
     }
-    let s: String = s.chars().filter(|c| !(*c < '\u{20}' || *c == '\u{7f}')).collect();
+    let s = jsre::compile(defaults::text("defect.control_re"), false).replace_all(&s, "").into_owned();
     let s = head16(&s, defaults::num("defect.component_cap") as usize)?;
     Ok((!s.is_empty()).then_some(s))
 }
@@ -219,7 +203,7 @@ pub fn norm_sym(sym: &str) -> String {
 /// `fingerprint(cls, sym)`: 12 hex characters.
 pub fn fingerprint(cls: &str, sym: &str) -> String {
     let d = digest::digest(&digest::SHA256, format!("{cls}\n{}", norm_sym(sym)).as_bytes());
-    d.as_ref().iter().take(6).map(|b| format!("{b:02x}")).collect()
+    d.as_ref().iter().take(defaults::num("defect.fp_len") as usize / 2).map(|b| format!("{b:02x}")).collect()
 }
 
 // ---- reading ----------------------------------------------------------------------------------------------------------

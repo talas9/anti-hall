@@ -332,7 +332,7 @@ pub fn backfill(repo_arg: &str, dry_run: bool, home: &str) -> Result<Backfill, R
         if let Some(cl) = cl {
             rec.push(("changelog".to_string(), J::Str(store::clamp_field(&cl, defaults::num("defect.history_changelog_cap") as usize).map_err(Err)?)));
         }
-        let file = dir.join(format!("{}{}", &c.sha[..c.sha.len().min(12)], defaults::text("defect.file_ext")));
+        let file = dir.join(format!("{}{}", &c.sha[..c.sha.len().min(defaults::num("defect.fp_len") as usize)], defaults::text("defect.file_ext")));
         if file.exists() {
             res.existing += 1;
             continue;
@@ -915,15 +915,17 @@ pub fn format_recurring(rep: &Recurring, top: usize) -> Result<String, Defer> {
             let what = if g.fix_commit.as_deref().is_some_and(|s| !s.is_empty()) { short(&g.fix_commit)? } else { g.fp.clone() };
             let was = if g.earlier_commit.as_deref().is_some_and(|s| !s.is_empty()) { short(&g.earlier_commit)? } else { g.earlier_fp.clone() };
             let explicit = if g.explicit { h("defect.explicit_word") } else { "" };
-            l.push(format!(
-                "{ind}{} {} {}{} {} {} [{}]{explicit}",
-                pad(&what, 12)?,
-                pad(g.fixed_in.as_deref().filter(|s| !s.is_empty()).unwrap_or(h("defect.unreleased")), 11)?,
-                h("defect.refixes"),
-                pad(&was, 12)?,
-                pad(g.earlier_fixed_in.as_deref().filter(|s| !s.is_empty()).unwrap_or(h("defect.dash")), 9)?,
-                g.component.as_deref().unwrap_or(""),
-                g.cause.as_deref().unwrap_or("")
+            l.push(defaults::render(
+                "defect.rec_regression_row",
+                &[
+                    ("what", &pad(&what, 12)?),
+                    ("fixed", &pad(g.fixed_in.as_deref().filter(|s| !s.is_empty()).unwrap_or(h("defect.unreleased")), 11)?),
+                    ("was", &pad(&was, 12)?),
+                    ("earlier", &pad(g.earlier_fixed_in.as_deref().filter(|s| !s.is_empty()).unwrap_or(h("defect.dash")), 9)?),
+                    ("component", &g.component.as_deref().unwrap_or("")),
+                    ("cause", &g.cause.as_deref().unwrap_or("")),
+                    ("explicit", &explicit),
+                ],
             ));
         }
         if rep.regressions.len() > top {

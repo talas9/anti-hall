@@ -70,6 +70,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("mesh", crate::mesh::run_cmd),
         ("settings", crate::ops::cmd_settings),
         ("defect", crate::ops::cmd_defect),
+        ("statusline", crate::ops::cmd_statusline),
+        ("shadow-compare", crate::ops::cmd_shadow_compare),
     ]
 }
 
@@ -165,10 +167,12 @@ pub fn run(args: &[String]) -> i32 {
         return 0;
     }
     // commands that only talk to the daemon or print a version need a few settings, not the docs of all of them
-    if hook || ["version", "status", "ping", "ctl", "stop"].contains(&p.command.as_str()) {
+    // the status line runs after every turn: like the hook client it reads the snapshot cache instead of parsing every file
+    let statusline = p.command == "statusline";
+    if hook || statusline || ["version", "status", "ping", "ctl", "stop"].contains(&p.command.as_str()) {
         defaults::use_cache();
     }
-    if hook || p.command == "serve" {
+    if hook || statusline || p.command == "serve" {
         defaults::write_cache_on_load();
     }
     if let Err(e) = defaults::init() {

@@ -49,6 +49,7 @@ mod migrate_parity;
 mod model_routing_parity;
 mod no_compiled_config;
 mod no_hardcoded_tunables;
+mod operator_parity;
 mod node_parity;
 mod port_guards_parity;
 mod process_env_reads;
