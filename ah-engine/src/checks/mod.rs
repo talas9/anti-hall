@@ -41,7 +41,6 @@ pub mod scan_throttle;
 pub mod scripted;
 pub mod session;
 pub mod session_gates;
-pub mod ship_it;
 pub mod sibling_sweep;
 pub mod silent_agent_nudge;
 pub mod spawnctx;
@@ -193,7 +192,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
     static ALL: [&dyn Check; 65] = [
         &git::GitGuard,
         &merge_side_pick::MergeSidePick,
-        &ship_it::ShipItGuard,
+        &scripted::SHIP_IT_GUARD,
         &scan_throttle::ScanThrottle,
         &coordinator_work::CoordinatorWorkGuard,
         &compact_decl::CompactDeclarationGuard,

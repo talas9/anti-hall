@@ -132,58 +132,6 @@ fn compact_declaration_guard_script_matches_the_compiled_port() {
 }
 
 #[test]
-fn ship_it_guard_script_matches_the_compiled_port() {
-    let h = home("si");
-    std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"shipitGate":true}}"#).unwrap();
-    let with_plan = format!("{h}/withplan");
-    let no_plan = format!("{h}/noplan");
-    let no_phase = format!("{h}/nophase");
-    std::fs::create_dir_all(&with_plan).unwrap();
-    std::fs::create_dir_all(&no_plan).unwrap();
-    std::fs::create_dir_all(&no_phase).unwrap();
-    std::fs::write(
-        format!("{with_plan}/PLAN.md"),
-        "# Plan\n\n## Phases\n\n### Phase 1 \u{e9}t\u{e9} \u{1F600}\n- files: `src/a.rs`, src/b.rs, ./lib/c.js.\n- goal: x\n\n### Phase 2\n- Files:\n  - docs/x.md\n  - auth/login.ts\n\n## Risks\n- files: nope/z.rs\n",
-    )
-    .unwrap();
-    std::fs::write(format!("{no_phase}/PLAN.md"), "# Plan\nnothing\n").unwrap();
-    let files = [
-        "src/a.rs",
-        "src/b.rs",
-        "lib/c.js",
-        "src/other.rs",
-        "auth/login.ts",
-        "migrations/001.sql",
-        ".github/workflows/ci.yml",
-        "README.md",
-        "src/x.test.ts",
-        "tests/a.rs",
-        "PLAN.md",
-        "nope/z.rs",
-        "a\\b\\c.rs",
-        "",
-        "user_session.py",
-    ];
-    let mut payloads = vec![json!(null), json!([1]), json!({"tool_name": "Bash", "tool_input": {"command": "x"}}), json!({"tool_name": "apply_patch"})];
-    for cwd in [json!(with_plan), json!(no_plan), json!(no_phase), json!("rel"), Value::Null] {
-        for f in files {
-            let abs = format!("{}/{f}", cwd.as_str().unwrap_or(""));
-            for fp in [json!(f), json!(abs)] {
-                payloads.push(json!({"tool_name": "Write", "cwd": cwd, "tool_input": {"file_path": fp}}));
-            }
-            payloads.push(json!({"tool_name": "MultiEdit", "cwd": cwd, "tool_input": {"file_path": "README.md", "edits": [{"file_path": f}, {"x": 1}, 5]}}));
-        }
-        payloads.push(json!({"tool_name": "Edit", "cwd": cwd, "tool_input": "str"}));
-    }
-    let (n, kinds) = assert_parity(&crate::checks::ship_it::ShipItGuard, &env(&h), &payloads);
-    assert!(["allow", "defer", "block", "advisory"].iter().all(|k| kinds.contains(k)), "a corpus that exercises every answer: {kinds:?}");
-    std::fs::remove_file(format!("{h}/.anti-hall/settings.json")).unwrap();
-    let (off, _) = assert_parity(&crate::checks::ship_it::ShipItGuard, &env(&h), &payloads);
-    assert!(n + off > 300, "corpus size {n} {off}");
-    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
-}
-
-#[test]
 fn an_owner_override_wins_and_an_edit_reloads_without_a_restart() {
     let h = home("ov");
     let e = env(&h);
@@ -476,4 +424,12 @@ fn a_config_over_the_read_cap_defers_instead_of_being_read_truncated() {
     std::fs::write(format!("{h}/.claude.json"), format!("{{\"pad\":\"{}\"}}", "x".repeat(cap))).unwrap();
     assert_eq!(run_forced("fable-availability", &json!({}), &env(&h)), Some(Some(Verdict::Defer)));
     assert!(!std::path::Path::new(&format!("{h}/.anti-hall/fable-availability.json")).exists(), "nothing written before the deferral");
+}
+
+#[test]
+fn ship_it_guard_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("ship-it-guard");
+    for k in ["allow", "defer", "block", "advisory"] {
+        assert!(kinds.get(k).copied().unwrap_or(0) > 5, "a corpus that exercises {k}: {kinds:?}");
+    }
 }

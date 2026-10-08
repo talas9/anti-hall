@@ -62,3 +62,6 @@ pub static FABLE_AVAILABILITY: Scripted = Scripted::new("fable-availability", "f
 
 /// `edit-guard` (PreToolUse on Edit, Write, MultiEdit, NotebookEdit; apply_patch for Codex).
 pub static EDIT_GUARD: Scripted = Scripted::new("edit-guard", "edit_guard.summary");
+
+/// `ship-it-guard` (PreToolUse on Edit, Write, MultiEdit; Bash and apply_patch defer to Node).
+pub static SHIP_IT_GUARD: Scripted = Scripted::new("ship-it-guard", "ship_it.summary");
