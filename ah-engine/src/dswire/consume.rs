@@ -42,50 +42,39 @@ fn label(rt: &Rt, ws: &str) -> String {
         .unwrap_or_else(|| ws.chars().take(defaults::num("devswarm_wire.label_chars") as usize).collect())
 }
 
-/// The advisory text for `session`: the changes since the generation it was last told about, within the size caps. `None` when
-/// there is nothing new, the layer is off, or the seen-generation file cannot be written (an unrecorded advisory would repeat).
-/// Each call that returns text moves the session's marker, so two sessions each see a change once and one session never twice.
+/// The advisory text for `session`: the changes since the generation it was last told about, within the size caps. The engine reads
+/// the state and the session's marker; whether to speak, the text and the generation to remember are decided by the plugin script
+/// `devswarm-rt-advisory.js`. `None` when there is nothing new, the layer is off, the script fails, or the marker cannot be written
+/// (an unrecorded advisory would repeat). Two sessions each see a change once; one session never twice.
 pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<String> {
-    if rt.mode() != Mode::On || !defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false) {
-        return None;
-    }
-    let path = seen_path(state_dir, session)?;
+    let path = seen_path(state_dir, session);
     let gen_now = rt.current().generation;
-    let seen = read_seen(&path);
-    let Some(seen) = seen else {
-        // the first look of a session: it starts from now, so a new session is not told the whole history
-        write_seen(&path, gen_now, now)?;
-        return None;
+    let seen = path.as_deref().and_then(read_seen);
+    let edges: Vec<Value> = seen
+        .map(|s| rt.edges_since(s))
+        .unwrap_or_default()
+        .iter()
+        .map(|e| json!({"ws": e.ws, "label": label(rt, &e.ws), "kind": e.kind.as_str(), "from": e.from, "to": e.to}))
+        .collect();
+    let payload = json!({
+        "enabled": rt.mode() == Mode::On && defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false),
+        "sessionOk": path.is_some(), "seen": seen, "generation": gen_now, "edges": edges,
+    });
+    let env = crate::reqenv::RequestEnv::from_pairs([(defaults::env_name("home"), rt.detection().home.to_string_lossy().into_owned())]);
+    let ans = match crate::script::run_forced(
+        defaults::text("devswarm_wire.check_script"),
+        &payload,
+        &Value::Null,
+        defaults::text("devswarm_wire.check_event"),
+        &env,
+    ) {
+        Some(Some(crate::checks::Verdict::Exact(x))) => serde_json::from_str::<Value>(&x.out).ok()?,
+        _ => return None,
     };
-    let kinds = list("devswarm_wire.advisory_kinds");
-    let edges: Vec<Edge> = rt.edges_since(seen).into_iter().filter(|e| kinds.iter().any(|k| k == e.kind.as_str())).collect();
-    if gen_now != seen {
-        write_seen(&path, gen_now, now)?;
+    if let Some(mark) = ans.get("mark").and_then(Value::as_u64) {
+        write_seen(path.as_deref()?, mark, now)?;
     }
-    if edges.is_empty() {
-        return None;
-    }
-    let (max_edges, max_chars) = (defaults::num("devswarm_wire.advisory_max_edges") as usize, defaults::num("devswarm_wire.advisory_max_chars") as usize);
-    let mut parts: Vec<String> = Vec::new();
-    for e in edges.iter().take(max_edges) {
-        let (ws, kind) = (label(rt, &e.ws), e.kind.as_str().to_string());
-        let key = if e.from.is_empty() { "devswarm_wire.msg_edge_new" } else { "devswarm_wire.msg_edge" };
-        parts.push(render_with(defaults::text(key), &[("ws", &ws), ("kind", &kind), ("from", &e.from), ("to", &e.to)]));
-    }
-    let build = |parts: &[String], left: usize| {
-        let more = if left > 0 { render_with(defaults::text("devswarm_wire.msg_more"), &[("n", &left.to_string())]) } else { String::new() };
-        render_with(
-            defaults::text("devswarm_wire.msg_advisory"),
-            &[("changes", &parts.join(defaults::text("devswarm_wire.msg_separator"))), ("more", &more), ("generation", &gen_now.to_string())],
-        )
-    };
-    let mut shown = parts.len();
-    let mut text = build(&parts, edges.len() - shown);
-    while text.chars().count() > max_chars && shown > 1 {
-        shown -= 1;
-        text = build(&parts[..shown], edges.len() - shown);
-    }
-    Some(text.chars().take(max_chars).collect())
+    ans.get("advise").and_then(Value::as_str).map(str::to_string)
 }
 
 fn write_seen(path: &Path, gen_now: u64, now: i64) -> Option<()> {
@@ -184,6 +173,10 @@ impl crate::checks::Check for RtAdvisory {
 
     fn run(&self, _s: &crate::rules::Subject<'_>, _opts: &Value) -> Option<crate::checks::Verdict> {
         Some(crate::checks::Verdict::Allow)
+    }
+
+    fn scripted(&self) -> bool {
+        true
     }
 
     fn run_payload(&self, s: &crate::rules::Subject<'_>, payload: &Value, _opts: &Value) -> Option<crate::checks::Verdict> {
