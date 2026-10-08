@@ -111,6 +111,10 @@ value = "\n\n"
 doc = "Events on which plain-text stdout (exit 0) is context for the model (docs/KB-claude-code-hooks.md: UserPromptSubmit, UserPromptExpansion, SessionStart, PostModelSwitch). When the dispatcher must deliver such text next to a hook's JSON it folds it into the merged additionalContext instead of moving it to stderr, where the model would not see it."
 value = ["UserPromptSubmit", "UserPromptExpansion", "SessionStart", "PostModelSwitch"]
 
+[dispatch.reason_joiner]
+doc = "Text placed between the block reasons of several hooks that block the same event, when they are joined into the one block the dispatcher answers (the host shows the model every hook's block reason; Claude Code gives each Stop/SubagentStop block its own message)."
+value = "\n\n"
+
 [dispatch.message_joiner]
 doc = "Text placed between the systemMessage values of several hooks when they are joined into one."
 value = "\n"

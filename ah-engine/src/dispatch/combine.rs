@@ -4,14 +4,18 @@
 //! quoted in `defaults/dispatch.toml`). One process has one exit code and one stdout, so the dispatcher answers as
 //! follows, in `hooks.json` order:
 //!
-//! 1. **A block wins.** The first entry that exited 2 is the answer, byte for byte (exit 2 blocks and no JSON can
-//!    override it). Failing that, the first entry whose JSON blocks (`dispatch.blocking_decisions`) is the answer.
+//! 1. **A block wins.** One blocking entry (exit 2, or JSON that blocks per `dispatch.blocking_decisions`) is the answer,
+//!    byte for byte. Several blocking entries are one block that carries every one of their reasons, in table order, as the
+//!    host shows the model each of them ([`blocked`]); the JSON advisories of the entries that did not block are not shown,
+//!    their plain stdout is kept where the host would not show it to the model either.
 //! 2. **One answer passes through.** When exactly one entry printed anything or exited non-zero, its output, stderr
 //!    and exit code are the answer, byte for byte.
 //! 3. **Several answers merge.** Each stdout must be a JSON object. Their fields are merged in order of first
 //!    appearance: `additionalContext` values are joined (`dispatch.context_joiner`), `systemMessage` values are
 //!    joined (`dispatch.message_joiner`), the strongest `permissionDecision` wins (`dispatch.decision_precedence`)
 //!    with its own reason, and any other field must be equal everywhere it appears. stderr is concatenated.
+//!    An empty `additionalContext` says nothing to the host (it skips an empty one), so an answer never carries one
+//!    ([`tidy`]): the field is left out, and an output left with nothing is no output.
 //! 4. **Anything else is a conflict** (plain-text stdout next to another answer, a non-zero exit next to another
 //!    answer, or two different values for one field): the dispatcher cannot express it, so it defers the whole call
 //!    rather than guess.
@@ -219,7 +223,7 @@ pub fn sequential(results: &[HookResult], event: &str) -> Outcome {
         },
     };
     err.push_str(&lines(&plain));
-    Outcome { out, code: 0, err }
+    Outcome { out: tidy(&out), code: 0, err }
 }
 
 /// True when this output blocks through its JSON (`dispatch.blocking_decisions`).
@@ -235,21 +239,129 @@ fn verbatim(r: &HookResult) -> Combined {
     Combined::Answer(Outcome { out: r.out.clone(), code: r.code.unwrap_or(0), err: r.err.clone() })
 }
 
+/// `out` without what says nothing to the host (it ignores an empty `additionalContext`): an empty context is left out, then
+/// a `hookSpecificOutput` left with only its `hookEventName`, and an object left with no field is no output at all. Any other
+/// output is returned as it is, byte for byte.
+pub fn tidy(out: &str) -> String {
+    let Some(Ordered::Obj(mut top)) = parse_object(out) else { return out.to_string() };
+    let Some((_, Ordered::Obj(hso))) = top.iter_mut().find(|(k, _)| k == HSO_KEY) else { return out.to_string() };
+    if !hso.iter().any(|(k, v)| k == HSO_CTX && *v == Ordered::Str(String::new())) {
+        return out.to_string();
+    }
+    hso.retain(|(k, _)| k != HSO_CTX);
+    if hso.iter().all(|(k, _)| k == HSO_EVENT) {
+        top.retain(|(k, _)| k != HSO_KEY);
+    }
+    if top.is_empty() { String::new() } else { format!("{}\n", Ordered::Obj(top).to_json()) }
+}
+
+/// True when this result blocks: exit 2, or a JSON block from a hook that finished.
+pub(crate) fn blocks(r: &HookResult) -> bool {
+    r.code == Some(2) || (r.code.is_some() && json_blocks(&r.out))
+}
+
+const TOP_DECISION: &str = "decision";
+const TOP_REASON: &str = "reason";
+const TOP_MSG: &str = "systemMessage";
+const HSO_KEY: &str = "hookSpecificOutput";
+const HSO_REASON: &str = "permissionDecisionReason";
+const HSO_CTX: &str = "additionalContext";
+const HSO_EVENT: &str = "hookEventName";
+
+/// True when a top-level `decision` value blocks: the block's reason is then the top-level `reason`; any other JSON block is
+/// a `hookSpecificOutput` deny, whose reason is its `permissionDecisionReason`.
+fn decision_blocks(d: Option<&Ordered>) -> bool {
+    let table = defaults::raw("dispatch.blocking_decisions");
+    d.and_then(Ordered::as_str).is_some_and(|s| table.get(TOP_DECISION).is_some_and(|l| l.strings().contains(&s)))
+}
+
+/// The text the host gives the model for one blocking result: a JSON block's reason (the host takes it over stderr even on
+/// exit 2), else the stderr of the exit 2, without its trailing newlines.
+fn block_reason(r: &HookResult) -> String {
+    let text = match parse_object(&r.out).filter(|_| json_blocks(&r.out)) {
+        Some(v) if decision_blocks(v.get(TOP_DECISION)) => v.get(TOP_REASON).and_then(Ordered::as_str).unwrap_or_default().to_string(),
+        Some(v) => v.get(HSO_KEY).and_then(|h| h.get(HSO_REASON)).and_then(Ordered::as_str).unwrap_or_default().to_string(),
+        None => r.err.clone(),
+    };
+    text.trim_end_matches('\n').to_string()
+}
+
+/// Set `key` in an object: in place when it is there, else at the end.
+fn set(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) {
+    match obj.iter_mut().find(|(k, _)| k == key) {
+        Some(slot) => slot.1 = v,
+        None => obj.push((key.to_string(), v)),
+    }
+}
+
+/// The answer for several blocking results (rule 1 of the module docs). The host runs the hooks separately and gives the
+/// model every block's reason (each Stop or SubagentStop block is its own message), so one process must carry them all, in
+/// table order, joined with `dispatch.reason_joiner`. A reason is what the host reads: a JSON block's reason (taken over
+/// stderr even on exit 2), else the stderr of the exit 2.
+///
+/// - When a block is JSON, the first such object is the answer, its reason field set to the joined reasons and its
+///   `systemMessage` to the joined messages of every block; the exit code is 2 when any block exited 2. On exit 2 stderr is
+///   the joined reasons too (the host reads stderr when the JSON's block is a `permissionDecision`), else the blocks' own
+///   stderr. The plain stdout of an exit-2 block cannot share stdout with the JSON; the host does not show it to the model.
+/// - Otherwise the answer is exit 2 with the joined reasons on stderr, and the plain stdout of the blocks, in order, on
+///   stdout (the host does not read it on exit 2, as for one hook).
+///
+/// `notes` is the plain stdout of the entries that exited 0 without blocking (a guard's informational line). The host does not
+/// give the model such text on an event whose plain stdout is not context (Stop, PreToolUse, ...), so it is kept where it says
+/// nothing to the model either: after the blocks' plain stdout on an exit 2 without JSON, else on stderr after the rest, as
+/// [`sequential`] moves plain text next to JSON. It is only added when there is some: a lone block stays byte for byte.
+fn blocked(blockers: &[&HookResult], notes: &str) -> Combined {
+    if let ([one], "") = (blockers, notes) {
+        return verbatim(one);
+    }
+    let reasons: Vec<String> = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect();
+    let joined = reasons.join(defaults::text("dispatch.reason_joiner"));
+    let line = |s: &str| if s.ends_with('\n') { s.to_string() } else { format!("{s}\n") };
+    let reasons_err = if joined.is_empty() { String::new() } else { line(&joined) };
+    let exit2 = blockers.iter().any(|r| r.code == Some(2));
+    let Some(Ordered::Obj(mut top)) = blockers.iter().find(|r| json_blocks(&r.out)).and_then(|r| parse_object(&r.out)) else {
+        let plain: String = blockers.iter().filter(|r| !r.out.is_empty() && parse_object(&r.out).is_none()).map(|r| line(&r.out)).collect();
+        return Combined::Answer(Outcome { out: plain + notes, code: 2, err: reasons_err });
+    };
+    if decision_blocks(top.iter().find(|(k, _)| k == TOP_DECISION).map(|(_, v)| v)) {
+        set(&mut top, TOP_REASON, Ordered::Str(joined));
+    } else if let Some((_, Ordered::Obj(hso))) = top.iter_mut().find(|(k, _)| k == HSO_KEY) {
+        set(hso, HSO_REASON, Ordered::Str(joined));
+    }
+    let messages: Vec<String> =
+        blockers.iter().filter_map(|r| parse_object(&r.out)?.get(TOP_MSG)?.as_str().map(str::to_string)).filter(|m| !m.is_empty()).collect();
+    if !messages.is_empty() {
+        set(&mut top, TOP_MSG, Ordered::Str(messages.join(defaults::text("dispatch.message_joiner"))));
+    }
+    let mut err = if exit2 { reasons_err } else { blockers.iter().map(|r| r.err.as_str()).collect() };
+    err.push_str(notes);
+    Combined::Answer(Outcome { out: format!("{}\n", Ordered::Obj(top).to_json()), code: if exit2 { 2 } else { 0 }, err })
+}
+
 /// Combine the results of one event's entries, given in table order.
 pub fn combine(results: &[HookResult]) -> Combined {
-    if let Some(r) = results.iter().find(|r| r.code == Some(2)) {
-        return verbatim(r);
-    }
-    if let Some(r) = results.iter().find(|r| r.code.is_some() && json_blocks(&r.out)) {
-        return verbatim(r);
+    let blockers: Vec<&HookResult> = results.iter().filter(|r| blocks(r)).collect();
+    if !blockers.is_empty() {
+        let notes: String = results
+            .iter()
+            .filter(|r| r.code == Some(0) && !blocks(r) && !r.out.trim().is_empty() && parse_object(&r.out).is_none())
+            .map(|r| if r.out.ends_with('\n') { r.out.clone() } else { format!("{}\n", r.out) })
+            .collect();
+        return blocked(&blockers, &notes);
     }
     let active: Vec<&HookResult> = results.iter().filter(|r| r.active()).collect();
-    match active.len() {
+    let answer = match active.len() {
         0 => return Combined::Answer(Outcome { out: String::new(), code: 0, err: String::new() }),
-        1 => return verbatim(active[0]),
-        _ => {}
+        1 => verbatim(active[0]),
+        _ => merge(&active, false),
+    };
+    match answer {
+        Combined::Answer(mut o) if o.code == 0 => {
+            o.out = tidy(&o.out);
+            Combined::Answer(o)
+        }
+        other => other,
     }
-    merge(&active, false)
 }
 
 /// Merge several answers (rule 3 of the module docs); a conflict names the entries involved. `lenient` keeps the first
@@ -365,13 +477,62 @@ mod tests {
     }
 
     #[test]
-    fn the_first_exit_two_wins_byte_for_byte() {
+    fn one_block_wins_byte_for_byte() {
         let o = ans(combine(&[
             r("a", 0, "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"x\"}}\n", ""),
             r("b", 2, "{\"decision\":\"block\",\"reason\":\"B\"}\n", "B\n"),
-            r("c", 2, "", "C\n"),
+            r("c", 0, "", "w\n"),
         ]));
         assert_eq!(o, Outcome { code: 2, out: "{\"decision\":\"block\",\"reason\":\"B\"}\n".into(), err: "B\n".into() });
+    }
+
+    #[test]
+    fn several_blocks_keep_every_reason_in_table_order() {
+        // an exit 2 with a JSON block (the host reads its reason, not stderr) and a plain exit 2 (the host reads stderr)
+        let o = ans(combine(&[
+            r("a", 0, "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"x\"}}\n", ""),
+            r("b", 2, "{\"decision\":\"block\",\"reason\":\"B\"}\n", "B\n"),
+            r("c", 2, "", "C\n"),
+        ]));
+        assert_eq!(o, Outcome { code: 2, out: "{\"decision\":\"block\",\"reason\":\"B\\n\\nC\"}\n".into(), err: "B\n\nC\n".into() });
+        // two plain exit 2: both stderr texts, the plain stdout stays on stdout (the host does not read it on exit 2)
+        let o = ans(combine(&[r("a", 2, "out A", "A\n"), r("b", 0, "", ""), r("c", 2, "", "C")]));
+        assert_eq!(o, Outcome { code: 2, out: "out A\n".into(), err: "A\n\nC\n".into() });
+        // a JSON block first in the table and a plain exit 2 later: exit 2, the JSON keeps its message, every reason in order
+        let o = ans(combine(&[r("a", 0, "{\"decision\":\"block\",\"reason\":\"A\",\"systemMessage\":\"mA\"}", "dbg\n"), r("b", 2, "plain B\n", "B\n")]));
+        assert_eq!(o, Outcome { code: 2, out: "{\"decision\":\"block\",\"reason\":\"A\\n\\nB\",\"systemMessage\":\"mA\"}\n".into(), err: "A\n\nB\n".into() });
+        // two JSON blocks without exit 2: one JSON block, the reasons and messages joined
+        let o = ans(combine(&[
+            r("a", 0, "{\"decision\":\"block\",\"reason\":\"A\",\"systemMessage\":\"mA\"}\n", ""),
+            r("b", 0, "{\"systemMessage\":\"mB\",\"decision\":\"block\",\"reason\":\"B\"}\n", "e\n"),
+        ]));
+        assert_eq!(o, Outcome { code: 0, out: "{\"decision\":\"block\",\"reason\":\"A\\n\\nB\",\"systemMessage\":\"mA\\nmB\"}\n".into(), err: "e\n".into() });
+    }
+
+    #[test]
+    fn a_plain_note_next_to_a_block_is_kept_off_the_model_channel() {
+        let block = "{\"decision\":\"block\",\"reason\":\"B\"}\n";
+        let note = "[task-guard] deferring Stop block.\n";
+        // one JSON block: the note goes to stderr (stdout must stay one object)
+        let o = ans(combine(&[r("a", 0, note, ""), r("b", 0, block, "e\n")]));
+        assert_eq!(o, Outcome { code: 0, out: block.into(), err: format!("e\n{note}") });
+        // one plain exit 2: the note follows on stdout, which the host does not read on exit 2; stderr stays the reason
+        let o = ans(combine(&[r("a", 0, note, ""), r("b", 2, "", "B\n")]));
+        assert_eq!(o, Outcome { code: 2, out: note.into(), err: "B\n".into() });
+        // no note: a lone block is byte for byte
+        assert_eq!(ans(combine(&[r("a", 0, "", "x\n"), r("b", 2, "o", "B\n")])), Outcome { code: 2, out: "o".into(), err: "B\n".into() });
+    }
+
+    #[test]
+    fn several_denies_keep_every_reason_in_the_first_deny() {
+        let deny = |why: &str| {
+            format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"{why}\"}}}}\n")
+        };
+        let o = ans(combine(&[r("a", 0, &deny("A"), ""), r("b", 0, "{\"systemMessage\":\"m\"}", ""), r("c", 0, &deny("C"), "")]));
+        assert_eq!(o.out, deny("A\\n\\nC"));
+        // a deny next to an exit 2: exit 2 decides, its stderr and the deny's reason both reach the model
+        let o = ans(combine(&[r("a", 0, &deny("A"), ""), r("b", 2, "", "B\n")]));
+        assert_eq!(o, Outcome { code: 2, out: deny("A\\n\\nB"), err: "A\n\nB\n".into() });
     }
 
     #[test]
@@ -408,7 +569,10 @@ mod tests {
     fn a_hook_with_nothing_to_say_adds_no_joiner() {
         let q = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n";
         let a = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"one\"}}\n";
-        assert_eq!(ans(combine(&[r("a", 0, q, ""), r("b", 0, q, "")])).out, q, "all quiet is one empty context");
+        assert_eq!(ans(combine(&[r("a", 0, q, ""), r("b", 0, q, "")])).out, "", "all quiet is no output, not an empty context");
+        assert_eq!(ans(combine(&[r("a", 0, q, "")])).out, "", "one quiet hook too");
+        let m = "{\"systemMessage\":\"m\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n";
+        assert_eq!(ans(combine(&[r("a", 0, m, "")])).out, "{\"systemMessage\":\"m\"}\n", "the other fields stay");
         assert_eq!(ans(combine(&[r("a", 0, q, ""), r("b", 0, a, ""), r("c", 0, q, "")])).out, a, "a quiet hook around a loud one adds nothing");
     }
 

@@ -1383,3 +1383,90 @@ fn a_missing_table_row_defers_to_node_instead_of_allowing() {
     assert_eq!((code, out.as_str()), (0, ""), "a thin trigger stays the neutral no-op: err={err}");
     assert!(done.exists(), "the neutral no-op is the answer, so the dispatch is marked done");
 }
+
+// ---- several blocks in one dispatch: every block reason reaches the host, in table order --------------------------------------
+
+/// A map for `event` that gives the listed entries their commands and every other entry `true` (says nothing).
+fn ids_map(e: &Env, event: &str, outs: &[(&str, &str)]) -> PathBuf {
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", event).into_iter().map(|x| x.id).collect();
+    for (id, _) in outs {
+        assert!(ids.iter().any(|i| i == id), "{event} has no entry {id}: {ids:?}");
+    }
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().map(|id| (id.clone(), outs.iter().find(|(k, _)| k == id).map_or("true".to_string(), |(_, c)| c.to_string()).into())).collect();
+    let map = e.dir.join(format!("{event}-ids-map.json"));
+    let mut events = serde_json::Map::new();
+    events.insert(event.to_string(), serde_json::Value::Object(m));
+    std::fs::write(&map, serde_json::Value::Object(events).to_string()).unwrap();
+    map
+}
+
+#[test]
+fn a_built_in_block_and_a_deferred_node_block_both_reach_the_host() {
+    let e = Env::new("two-blocks-pre");
+    // git-guard's built-in check blocks the force push in process; merge-gate defers to its Node hook (node_only_bash), which
+    // blocks too: the host, running both hooks, would show both reasons
+    let map = e.map(&[("merge-gate", "printf 'node merge-gate says' ; echo MERGE-GATE-REASON >&2; exit 2")]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let mut p: serde_json::Value = serde_json::from_str(&node_only_bash(&e)).unwrap();
+    p["tool_input"]["command"] = "git push --force origin main && gh pr merge 1 # a.py".into();
+    let (code, out, err) = e.run(&args, true, &p.to_string(), true);
+    assert_eq!(code, 2, "{out:?} {err:?}");
+    let (git_at, node_at) = (err.find("force push"), err.find("MERGE-GATE-REASON"));
+    assert!(git_at.is_some() && node_at.is_some() && git_at < node_at, "both reasons, in table order: {err:?}");
+    assert_eq!(out, "node merge-gate says\n", "the plain stdout of an exit 2 stays on stdout, where the host leaves it");
+}
+
+#[test]
+fn deferred_stop_blocks_keep_every_reason_and_message() {
+    let e = Env::new("two-blocks-stop");
+    // no daemon and not in process: every Stop check defers to its Node hook
+    let map = ids_map(
+        &e,
+        "Stop",
+        &[
+            ("task-guard", r#"printf '{"decision":"block","reason":"TASK-REASON","systemMessage":"task msg"}\n'"#),
+            ("speculation-guard", "printf 'spec plain out'; echo SPEC-REASON >&2; exit 2"),
+            ("codex-nudge", "echo advisory plain text"),
+        ],
+    );
+    let args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop"}).to_string();
+    let (code, out, err) = e.run_with(&args, false, &stop, true, &[("AH_ENGINE_NOSPAWN", "1")]);
+    assert_eq!(code, 2, "{out:?} {err:?}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("one JSON object: {out:?}"));
+    let joiner = ah_engine::defaults::text("dispatch.reason_joiner");
+    assert_eq!(v["decision"], "block");
+    assert_eq!(v["reason"], format!("TASK-REASON{joiner}SPEC-REASON"), "{out:?}");
+    assert_eq!(v["systemMessage"], "task msg");
+    // exit 2: stderr carries every reason too, then codex-nudge's plain note (the host shows neither to the model next to
+    // the JSON block's reason, and stdout must stay one object)
+    assert_eq!(err, format!("TASK-REASON{joiner}SPEC-REASON\nadvisory plain text\n"));
+    assert_no_stop_counters(&e);
+}
+
+#[test]
+fn two_exit_two_blocks_on_an_advisory_event_keep_both_stderr_texts() {
+    let e = Env::new("two-blocks-post");
+    let map = ids_map(&e, "PostToolUse", &[("merge-side-pick:post", "echo FIRST >&2; exit 2"), ("output-verify-guard", "echo SECOND >&2; exit 2")]);
+    let args = ["hook", "--event", "PostToolUse", "--fallback-map", map.to_str().unwrap()];
+    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": {"stdout": ""}}).to_string();
+    let (code, out, err) = e.run_with(&args, false, &p, true, &[("AH_ENGINE_NOSPAWN", "1")]);
+    let joiner = ah_engine::defaults::text("dispatch.reason_joiner");
+    assert_eq!((code, out.as_str(), err), (2, "", format!("FIRST{joiner}SECOND\n")));
+}
+
+#[test]
+fn a_reminder_the_gate_cuts_is_no_output_not_an_empty_context() {
+    let e = Env::new("inject-gate-empty");
+    let say = format!(r#"printf '{{"hookSpecificOutput":{{"hookEventName":"UserPromptSubmit","additionalContext":"{}"}}}}\n'"#, short_reminder());
+    let map = event_map(&e, "UserPromptSubmit", &say, "true");
+    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    warm(&e, &args, &on);
+    let first = e.run_with(&args, false, &ups_payload("sess-empty"), true, &on);
+    let second = e.run_with(&args, false, &ups_payload("sess-empty"), true, &on);
+    e.stop();
+    assert!(context_of(&first.1).contains(short_reminder()), "{first:?}");
+    assert_eq!(second, (0, String::new(), String::new()), "a suppressed reminder prints nothing, not an empty additionalContext");
+}

@@ -73,15 +73,47 @@ function jsonBlocks(out) {
 const deepEq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // results: [{code (null = timed out), out, err}] in hooks.json order. Returns {code, out, err} or {conflict: true}.
-function combine(results, joiners = { context: '\n\n', message: '\n' }) {
-  const ex2 = results.find(r => r.code === 2);
-  if (ex2) return { code: 2, out: ex2.out, err: ex2.err };
-  const jb = results.find(r => r.code !== null && jsonBlocks(r.out));
-  if (jb) return { code: jb.code, out: jb.out, err: jb.err };
+// The host skips an empty additionalContext: an answer leaves it out, then a hookSpecificOutput left with only its
+// hookEventName, and an object left empty is no output (src/dispatch/combine.rs `tidy`).
+function tidy(out) {
+  const v = parseObject(out);
+  const h = v && v.hookSpecificOutput;
+  if (!h || typeof h !== 'object' || Array.isArray(h) || h.additionalContext !== '') return out;
+  delete h.additionalContext;
+  if (Object.keys(h).every(k => k === 'hookEventName')) delete v.hookSpecificOutput;
+  return Object.keys(v).length === 0 ? '' : JSON.stringify(v) + '\n';
+}
+// The reason the host gives the model for one block: a JSON block's reason (taken over stderr even on exit 2), else stderr.
+function blockReason(r) {
+  const v = jsonBlocks(r.out) ? parseObject(r.out) : null;
+  const t = !v ? r.err : v.decision === 'block' ? v.reason : (v.hookSpecificOutput || {}).permissionDecisionReason;
+  return (typeof t === 'string' ? t : '').replace(/\n+$/, '');
+}
+// Several blocks (src/dispatch/combine.rs `blocked`): the host shows the model every reason, so the one answer carries all.
+function blocked(blockers, joiners, notes = '') {
+  if (blockers.length === 1 && notes === '') return { code: blockers[0].code, out: blockers[0].out, err: blockers[0].err };
+  const joined = blockers.map(blockReason).filter(s => s !== '').join(joiners.reason);
+  const line = s => s.endsWith('\n') ? s : s + '\n';
+  const reasonsErr = joined === '' ? '' : line(joined);
+  const exit2 = blockers.some(r => r.code === 2);
+  const first = blockers.find(r => jsonBlocks(r.out));
+  if (!first) return { code: 2, out: blockers.filter(r => r.out !== '' && !parseObject(r.out)).map(r => line(r.out)).join('') + notes, err: reasonsErr };
+  const top = parseObject(first.out);
+  if (top.decision === 'block') top.reason = joined; else top.hookSpecificOutput.permissionDecisionReason = joined;
+  const messages = blockers.map(r => (parseObject(r.out) || {}).systemMessage).filter(m => typeof m === 'string' && m !== '');
+  if (messages.length) top.systemMessage = messages.join(joiners.message);
+  return { code: exit2 ? 2 : 0, out: JSON.stringify(top) + '\n', err: (exit2 ? reasonsErr : blockers.map(r => r.err).join('')) + notes };
+}
+function combine(results, joiners = { context: '\n\n', message: '\n', reason: '\n\n' }) {
+  const isBlock = r => r.code === 2 || (r.code !== null && jsonBlocks(r.out));
+  const blockers = results.filter(isBlock);
+  // the plain stdout of the hooks that exited 0 without blocking: kept off the model channel (combine.rs `blocked`)
+  const notes = results.filter(r => r.code === 0 && !isBlock(r) && r.out.trim() !== '' && !parseObject(r.out)).map(r => r.out.endsWith('\n') ? r.out : r.out + '\n').join('');
+  if (blockers.length) return blocked(blockers, joiners, notes);
   const active = results.filter(r => r.code !== null && (r.code !== 0 || r.out !== '' || r.err !== ''));
   if (active.length === 0) return { code: 0, out: '', err: '' };
-  if (active.length === 1) return { code: active[0].code, out: active[0].out, err: active[0].err };
-  return mergeObjects(active, joiners, false);
+  const a = active.length === 1 ? { code: active[0].code, out: active[0].out, err: active[0].err } : mergeObjects(active, joiners, false);
+  return a.code === 0 ? { ...a, out: tidy(a.out) } : a;
 }
 
 // Merge several answers (src/dispatch/combine.rs `merge`); `lenient` keeps the first value of a field two answers set
@@ -149,7 +181,7 @@ function sequential(results, joiners = { context: '\n\n', message: '\n' }, event
   if (json.length === 0) return { code: 0, out: lines(plain), err };
   const out = json.length === 1 ? lines(json) : mergeObjects(json, joiners, true).out;
   err += lines(plain);
-  return { code: 0, out, err };
+  return { code: 0, out: tidy(out), err };
 }
 // Several hooks' contexts joined past the host's inline cap: the dispatcher hands the event back (exit 75).
 function overCap(results, combined, cap) {

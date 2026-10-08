@@ -289,18 +289,83 @@ fn merge_objects(active: &[&Res], lenient: bool) -> Merged {
     Merged::Answer(Res { code: Some(0), out: Value::Object(out_top).to_string() + "\n", err })
 }
 
-fn combine(results: &[Res]) -> Merged {
-    if let Some(r) = results.iter().find(|r| r.code == Some(2)) {
-        return Merged::Answer(r.clone());
+/// The host skips an empty additionalContext: an answer leaves it out, then a hookSpecificOutput left with only its
+/// hookEventName, and an object left empty is no output.
+fn tidy(out: &str) -> String {
+    let Some(mut top) = parse_object(out) else { return out.to_string() };
+    let Some(Value::Object(hso)) = top.get_mut("hookSpecificOutput") else { return out.to_string() };
+    if hso.get("additionalContext") != Some(&json!("")) {
+        return out.to_string();
     }
-    if let Some(r) = results.iter().find(|r| r.code.is_some() && json_blocks(&r.out)) {
-        return Merged::Answer(r.clone());
+    hso.remove("additionalContext");
+    if hso.keys().all(|k| k == "hookEventName") {
+        top.remove("hookSpecificOutput");
+    }
+    if top.is_empty() { String::new() } else { Value::Object(top).to_string() + "\n" }
+}
+
+/// The reason the host gives the model for one block: a JSON block's reason (taken over stderr even on exit 2), else stderr.
+fn block_reason(r: &Res) -> String {
+    let text = match parse_object(&r.out).filter(|_| json_blocks(&r.out)) {
+        Some(v) if v.get("decision").and_then(Value::as_str) == Some("block") => v.get("reason").and_then(Value::as_str).unwrap_or("").to_string(),
+        Some(v) => v.get("hookSpecificOutput").and_then(|h| h.get("permissionDecisionReason")).and_then(Value::as_str).unwrap_or("").to_string(),
+        None => r.err.clone(),
+    };
+    text.trim_end_matches('\n').to_string()
+}
+
+/// Several blocks: the host shows the model every reason, so the one answer carries them all, in order.
+/// `notes`: the plain stdout of the hooks that exited 0 without blocking, kept off the model channel.
+fn blocked(blockers: &[&Res], notes: &str) -> Res {
+    if let ([one], "") = (blockers, notes) {
+        return (*one).clone();
+    }
+    let joined = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+    let line = |s: &str| if s.ends_with('\n') { s.to_string() } else { format!("{s}\n") };
+    let reasons_err = if joined.is_empty() { String::new() } else { line(&joined) };
+    let exit2 = blockers.iter().any(|r| r.code == Some(2));
+    let Some(mut top) = blockers.iter().find(|r| json_blocks(&r.out)).and_then(|r| parse_object(&r.out)) else {
+        let plain: String = blockers.iter().filter(|r| !r.out.is_empty() && parse_object(&r.out).is_none()).map(|r| line(&r.out)).collect();
+        return Res { code: Some(2), out: plain + notes, err: reasons_err };
+    };
+    if top.get("decision").and_then(Value::as_str) == Some("block") {
+        top.insert("reason".into(), json!(joined));
+    } else if let Some(Value::Object(h)) = top.get_mut("hookSpecificOutput") {
+        h.insert("permissionDecisionReason".into(), json!(joined));
+    }
+    let messages: Vec<String> =
+        blockers.iter().filter_map(|r| parse_object(&r.out)?.get("systemMessage")?.as_str().map(str::to_string)).filter(|m| !m.is_empty()).collect();
+    if !messages.is_empty() {
+        top.insert("systemMessage".into(), json!(messages.join("\n")));
+    }
+    let mut err = if exit2 { reasons_err } else { blockers.iter().map(|r| r.err.as_str()).collect::<String>() };
+    err.push_str(notes);
+    Res { code: Some(if exit2 { 2 } else { 0 }), out: Value::Object(top).to_string() + "\n", err }
+}
+
+fn combine(results: &[Res]) -> Merged {
+    let is_block = |r: &Res| r.code == Some(2) || (r.code.is_some() && json_blocks(&r.out));
+    let blockers: Vec<&Res> = results.iter().filter(|r| is_block(r)).collect();
+    if !blockers.is_empty() {
+        let notes: String = results
+            .iter()
+            .filter(|r| r.code == Some(0) && !is_block(r) && !r.out.trim().is_empty() && parse_object(&r.out).is_none())
+            .map(|r| if r.out.ends_with('\n') { r.out.clone() } else { format!("{}\n", r.out) })
+            .collect();
+        return Merged::Answer(blocked(&blockers, &notes));
     }
     let active: Vec<&Res> = results.iter().filter(|r| r.code.is_some() && (r.code != Some(0) || !r.out.is_empty() || !r.err.is_empty())).collect();
-    match active.len() {
-        0 => Merged::Answer(Res { code: Some(0), out: String::new(), err: String::new() }),
+    let answer = match active.len() {
+        0 => return Merged::Answer(Res { code: Some(0), out: String::new(), err: String::new() }),
         1 => Merged::Answer(active[0].clone()),
         _ => merge_objects(&active, false),
+    };
+    match answer {
+        Merged::Answer(mut a) if a.code == Some(0) => {
+            a.out = tidy(&a.out);
+            Merged::Answer(a)
+        }
+        other => other,
     }
 }
 
@@ -329,7 +394,7 @@ fn sequential(results: &[Res], event: &str) -> Res {
         }
     };
     err.push_str(&lines(&plain));
-    Res { code: Some(0), out, err }
+    Res { code: Some(0), out: tidy(&out), err }
 }
 
 /// Two stdouts are the same to a host when they are the same bytes, or both JSON objects with the same content.

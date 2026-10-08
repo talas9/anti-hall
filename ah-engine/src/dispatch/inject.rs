@@ -214,14 +214,15 @@ fn parse_reply(body: &str) -> Option<Vec<Decision>> {
         .collect()
 }
 
-/// `out` with its `hookSpecificOutput.additionalContext` replaced, keys kept in the order the hook printed them.
+/// `out` with its `hookSpecificOutput.additionalContext` replaced, keys kept in the order the hook printed them. A context
+/// cut to nothing is left out, not printed empty ([`super::combine::tidy`]).
 fn with_context(out: &str, new: &str) -> Option<String> {
     let Ordered::Obj(mut top) = parse_object(out)? else { return None };
     let (_, hso) = top.iter_mut().find(|(k, _)| k == defaults::text("inject_gate.field_hso"))?;
     let Ordered::Obj(inner) = hso else { return None };
     let (_, c) = inner.iter_mut().find(|(k, _)| k == defaults::text("inject_gate.field_ctx"))?;
     *c = Ordered::Str(new.to_string());
-    Some(format!("{}\n", Ordered::Obj(top).to_json()))
+    Some(super::combine::tidy(&format!("{}\n", Ordered::Obj(top).to_json())))
 }
 
 /// Gate the results of one dispatch in place.

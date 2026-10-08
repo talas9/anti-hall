@@ -455,9 +455,10 @@ safety guard is never left silently disabled.
 
 > **Several Stop hooks are registered** (`task-guard`, `speculation-guard`,
 > `speculation-judge`, `tasklist-guard`, `codex-nudge`), all emitting the top-level `{"decision":"block","reason":...}`
-> Stop schema. Claude Code does not merge `reason` strings across Stop hooks: if multiple fire on
-> the same Stop, all block but only one reason is shown that turn. `task-guard` is registered
-> **first** because open-task discipline is higher-stakes, so its reason wins precedence.
+> Stop schema. When several fire on the same Stop, all block and Claude Code gives the model each
+> reason as its own message; the engine's dispatcher answers them as one block that carries every
+> reason in registration order. `task-guard` is registered **first** because open-task discipline
+> is higher-stakes, so its reason comes first.
 > Each is capped (task-guard caps at `MAX_BLOCKS`;
 > speculation-guard blocks once per distinct speculative message hash; speculation-judge
 > blocks once per distinct message hash; `tasklist-guard` has its own independent block cap

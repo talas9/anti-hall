@@ -377,11 +377,14 @@ pub fn closed(event: &str, payload: Option<&Value>, why: &str) -> Outcome {
     Outcome { out: String::new(), code: 2, err: format!("{}\n", defaults::render(key, &[("event", &event), ("why", &why)])) }
 }
 
-/// The first genuine block among the results that did run (exit 2, or a JSON block), as the answer to hand back verbatim.
+/// The genuine blocks among the results that did run (exit 2, or a JSON block) as one answer: one block verbatim, several as
+/// one block that carries every reason ([`combine::combine`]).
 fn genuine_block(done: Vec<Option<combine::HookResult>>) -> Option<Outcome> {
-    let done: Vec<combine::HookResult> = done.into_iter().flatten().collect();
-    let blocker = done.iter().find(|r| r.code == Some(2)).or_else(|| done.iter().find(|r| r.code.is_some() && combine::json_blocks(&r.out)))?;
-    match combine::combine(std::slice::from_ref(blocker)) {
+    let blockers: Vec<combine::HookResult> = done.into_iter().flatten().filter(combine::blocks).collect();
+    if blockers.is_empty() {
+        return None;
+    }
+    match combine::combine(&blockers) {
         combine::Combined::Answer(o) => Some(o),
         _ => None,
     }

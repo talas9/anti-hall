@@ -207,10 +207,33 @@ fn a_rewritten_output_keeps_the_hooks_key_order_and_its_other_fields() {
         let mut r = vec![HookResult { id: "limit-conserve-inject".into(), code: Some(0), out: raw.clone(), err: String::new() }];
         sim.run("UserPromptSubmit", "", &e, &mut r);
         if i == 1 {
-            assert_eq!(r[0].out, "{\"systemMessage\":\"m\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n");
+            // the cut context is left out, not printed empty; the hook's other field stays
+            assert_eq!(r[0].out, "{\"systemMessage\":\"m\"}\n");
         } else {
             assert_eq!(r[0].out, raw, "the first injection is the hook's own bytes");
         }
+    }
+}
+
+#[test]
+fn a_context_cut_to_nothing_is_no_output_not_an_empty_field() {
+    let (sim, e) = (Sim::new("s-empty"), env(&[]));
+    let t = limit_text("2026-10-07T07:00:00.000Z", "weekly");
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        sim.turn();
+        let mut r = vec![res("limit-conserve-inject", &t)];
+        sim.run("UserPromptSubmit", "", &e, &mut r);
+        seen.push(r[0].out.clone());
+    }
+    assert_eq!(seen[0], out(&t), "the first injection is the hook's own bytes");
+    assert_eq!(seen[1], "", "a suppressed turn says nothing: no empty additionalContext, no bare hookSpecificOutput");
+    // the dispatcher's merge of a quiet result next to a talkative one adds nothing
+    let other = res("other", "kept");
+    let rs = [HookResult { out: seen[1].clone(), ..res("limit-conserve-inject", "") }, other.clone()];
+    match crate::dispatch::combine::combine(&rs) {
+        crate::dispatch::combine::Combined::Answer(o) => assert_eq!(o.out, other.out),
+        c => panic!("{c:?}"),
     }
 }
 

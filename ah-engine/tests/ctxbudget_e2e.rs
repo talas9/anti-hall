@@ -59,7 +59,9 @@ impl Env {
     }
 }
 
-const QUIET_PROMPT: &str = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n";
+/// A quiet prompt turn says nothing: the context-budget checks print an empty context, which the host skips, so the
+/// dispatcher leaves it out instead of printing an empty field (`dispatch::combine::tidy`).
+const QUIET_PROMPT: &str = "";
 
 fn prompt(tr: &str) -> String {
     serde_json::json!({"session_id":"e2e","hook_event_name":"UserPromptSubmit","prompt":"x","cwd":"/tmp","transcript_path":tr}).to_string()
@@ -77,7 +79,7 @@ fn a_quiet_prompt_is_answered_without_running_any_node_hook_and_adds_no_joiner()
     let loud = ["limit-conserve-inject", "auto-handover"];
     let map = e.map("UserPromptSubmit", &loud, "echo NODE-{id}");
     let tr = e.transcript(50_000);
-    // with the verify-first reminder switched off the turn is exactly the empty context
+    // with the verify-first reminder switched off the turn is no output at all
     let (code, out, err) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW, ("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_TURN", "false")]);
     assert_eq!((code, out.as_str(), err.as_str()), (0, QUIET_PROMPT, ""));
 }

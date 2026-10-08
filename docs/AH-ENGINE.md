@@ -750,7 +750,10 @@ dispatcher logs `dispatch_context_over_cap`. On an event that cannot block it al
 `dispatch.defer_exit` (75), asking its wrapper to run the Node hooks one by one as the host does (the host shows that
 non-blocking error, so it is never silent); only a plain answer (exit 0, no JSON block) is handed back, so a block or a
 decision is never lost to it. On a guard event it never exits 75: it delivers the merged answer, and the host spills the
-over-cap context itself. When one entry blocks, the advisories of the others are not shown. Results that cannot be
+over-cap context itself. When one entry blocks, the advisories of the others are not shown; when several block, the
+one block answered carries every block reason in table order (`dispatch.reason_joiner`), as the host would show the model
+each of them. An empty `additionalContext` (a quiet turn, or a context the injection gate cut) is left out, never printed
+empty. Results that cannot be
 combined exactly (plain text next to another answer, a non-zero exit other than 2 next to another answer, two different
 values for one field) are delivered as one answer and logged as `dispatch_conflict`: the JSON objects among the stdouts of
 the hooks that exited 0 are merged into one line (the host reads a whole stdout as one object or as text, so two JSON lines
