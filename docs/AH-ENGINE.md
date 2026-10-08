@@ -379,7 +379,7 @@ arguments, is in the generated reference.
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
-| `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack` and `inbox ack-primary` itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
+| `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary` and the plain `heartbeat` itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
 
 ### Replacing the Node operator scripts (cutover notes)
 
@@ -444,7 +444,7 @@ one pure function (`meshw::next_step`) unit-tested for every combination; `tests
 `inbox ack-primary`, that an engine that cannot run Node exits 75, prints nothing, and leaves the store and the home tree byte-identical.
 
 **Telemetry per verb.** Each `on`-mode call appends one JSON line to `mesh-shadow.jsonl` in the state directory:
-`{"ts", "verb", "mode", "result", "reason", "ms"}`, with `verb` one of `Send`, `MeshRead`, `MeshHistory`, `InboxAckPrimary` and `result`:
+`{"ts", "verb", "mode", "result", "reason", "ms"}`, with `verb` one of `Send`, `MeshRead` (also `roster --ack`), `MeshHistory`, `InboxAckPrimary`, `Heartbeat` and `result`:
 
 | `result` | counts as | `reason` |
 |---|---|---|
@@ -456,7 +456,27 @@ one pure function (`meshw::next_step`) unit-tested for every combination; `tests
 `ms` is the engine's own time for the attempt (it excludes Node's run after a deferral). Per verb: calls = lines, defers = `defer` lines, errors =
 `panic` plus `committed-failure` lines, latency = `ms`. For example
 `jq -s 'group_by(.verb)[] | {verb: .[0].verb, calls: length, defers: map(select(.result=="defer"))|length, errors: map(select(.result=="panic" or .result=="committed-failure"))|length, p50_ms: (map(.ms)|sort|.[length/2|floor])}' mesh-shadow.jsonl`.
-Group `defer` lines by `reason` to see which unported case to port next. In `shadow` mode a verb that can be replayed on a store copy logs
+Group `defer` lines by `reason` to see which unported case to port next.
+
+**`heartbeat` (plain form) and the unread union.** `ah-engine mesh heartbeat <id> --session S [--progress N --phase T --wip T --blockers T]`
+writes `heartbeats/<id>.json` and refreshes `liveness/<id>.json` to `alive` with `pending`, `notDraining` and `oldestUnreadAgeMs` from the
+NDJSON-inbox + store-partition union (`src/meshw/union.rs`: Node's `unionUnread`, deduplicated by `_h`, the legacy line hash and, last, by
+body; read bases from the partition's `reader_cursors` floor rows). It reads the store and the inbox, never writes either. It defers (before
+writing anything; nothing is lost) when the call has `--summary` or `--step`, has no `--session` (Node would log the caller process), is
+a `primary-<hash>` label, is a child addressing another id (Node warns on stderr), is a Primary checkout whose anchor session Node would
+refresh, finds the DevSwarm app database (Node reads and caches its archive state), meets a partition without `#floor` rows (`cursor-import`),
+a journal or unmarked store (`journal-backend`, `store-backend`), a store file it cannot open, a cursor file whose `line` is not a scalar,
+or an inbox line whose `_h` is not a string, number or boolean. Telemetry: `Heartbeat` lines; the `reason` of a `defer` line is one of those
+names. **Node stays as a background check.** In `on` mode every answered `heartbeat` is verified: before the engine writes, the parts of the DevSwarm
+root a heartbeat touches are copied into a scratch home (the store is linked, read only); after it answers, a detached copy of the engine
+(`ah-engine mesh --shadow-verify ...`) runs the real `devswarm.js` there with the engine's clock and compares Node's stdout and the heartbeat
+and verdict files it wrote with the engine's. Node's write never runs twice on the real home. One line per call goes to `mesh-verify.jsonl` in
+the state directory: `{"ts","verb","result","ms"}` with `result` `match`, `mismatch` (plus both outputs, capped) or `error` (Node could not run);
+count mismatches per verb before trusting a port. Keys: `mesh_write.verify_*`.
+
+**Still in Node, on purpose:** `inbox read-primary` (receipt write, sibling-partition merge, gap withholding and the caps are one
+transaction of about 700 lines of Node), `inbox tick` (needs `inbox count` plus the wake-watch lock, live-children, limit-conserve and re-arm
+cues) and the plain `roster` (it spawns `hivecontrol` for native children and renders the archived-row hints). In `shadow` mode a verb that can be replayed on a store copy logs
 `match`/`mismatch`/`concurrent`/`defer`; `inbox ack-primary` cannot (it consumes a receipt file outside the store), so Node runs it and the line
 says `skipped`.
 

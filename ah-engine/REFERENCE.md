@@ -4056,6 +4056,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `mesh_write.action_ack_primary` | `ack-primary` |  |  | The `action` of an ack-primary result. |
+| `mesh_write.action_heartbeat` | `heartbeat` |  |  | The `action` of a heartbeat result. |
 | `mesh_write.action_mesh_history` | `mesh-history` |  |  | `action` of a mesh history result. |
 | `mesh_write.action_mesh_read` | `mesh-read` |  |  | `action` of a mesh read result. |
 | `mesh_write.action_send` | `send` |  |  | `action` of a send result. |
@@ -4088,6 +4089,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.cursor_log_cap` | `2000` |  |  | Records a cursor-write journal keeps (CURSOR_LOG_CAP); older ones move to the `.1` file. |
 | `mesh_write.cursor_log_old_suffix` | `.1` |  |  | Suffix of the file that receives the records rotated out of a journal. |
 | `mesh_write.cursor_log_unknown_key` | `unknown` |  |  | Journal file name used when the project key is missing or unsafe. |
+| `mesh_write.cursor_max_digits` | `15` |  |  | Longest all-digit NDJSON cursor file the engine reads (parseInt of a longer digit string is only approximated by the specification, so such a file goes to Node). |
 | `mesh_write.cursor_namespaces` | `store, nd` |  |  | The two cursor namespaces of `reader_cursors`, in Node's order (NAMESPACES): the store and the NDJSON inbox. |
 | `mesh_write.cursor_ns_nd` | `nd` |  |  | The reader_cursors namespace of the durable NDJSON inbox side. |
 | `mesh_write.cursor_ns_store` | `store` |  |  | The reader_cursors namespace of the store side. |
@@ -4099,6 +4101,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.dir_devswarm` | `devswarm` |  |  | The DevSwarm state directory under it. |
 | `mesh_write.dir_drain` | `drain` |  |  | Directory of the drain markers under the DevSwarm root (devswarm-drain-marker.js). |
 | `mesh_write.dir_heartbeats` | `heartbeats` |  |  | The heartbeats directory under the DevSwarm state directory. |
+| `mesh_write.dir_liveness` | `liveness` |  |  | Directory of the persisted liveness verdicts under the DevSwarm root (liveness.js livenessPathFor). |
 | `mesh_write.dir_locks` | `locks` |  |  | The locks directory under the DevSwarm state directory. |
 | `mesh_write.dir_plans` | `plans` |  |  | The plans directory under the DevSwarm state directory (devswarm-plan.js). |
 | `mesh_write.dir_read_receipts` | `read-receipts` |  |  | Directory of read receipts under the DevSwarm root (readReceiptDir). |
@@ -4117,6 +4120,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.env_on_value` | `1` |  |  | Its on value. |
 | `mesh_write.env_project_dir` | `CLAUDE_PROJECT_DIR` |  |  | The harness's project directory variable (projectCwdFor's last fallback). |
 | `mesh_write.env_session_id` | `CLAUDE_CODE_SESSION_ID` |  |  | The variable naming the caller's session (the Primary seat guard reads it). |
+| `mesh_write.env_source_branch` | `DEVSWARM_SOURCE_BRANCH` |  |  | The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace). |
 | `mesh_write.env_store_backend` | `ANTIHALL_DEVSWARM_STORE_BACKEND` |  |  | The variable that forces Node's store backend (ANTIHALL_DEVSWARM_STORE_BACKEND). |
 | `mesh_write.env_xdg_config` | `XDG_CONFIG_HOME` |  |  | The XDG config directory variable (Linux). |
 | `mesh_write.err_cursor_import_needed` | `reader_cursors floor row missing (legacy import needed)` |  |  | Failure text when a partition has no floor row and the engine will not import the legacy cursors itself (Node's reader-cursors import). |
@@ -4125,6 +4129,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.exit_signal_base` | `128` |  |  | A Node child killed by signal N exits as this plus N (the shell convention). |
 | `mesh_write.field_cursor_path` | `cursorPath` |  |  | Descriptor field naming the durable inbox's cursor file. |
 | `mesh_write.field_enabled` | `enabled` |  |  | Jev's on/off field. |
+| `mesh_write.field_id` | `id` |  |  | The descriptor field holding the workspace id. |
+| `mesh_write.field_inbox_path` | `inboxPath` |  |  | The descriptor field holding the NDJSON inbox path. |
 | `mesh_write.field_kind` | `kind` |  |  | Field of a triage label that holds its kind. |
 | `mesh_write.field_owner_key` | `ownerKey` |  |  | A descriptor's owner store key (a re-home candidate when it is the legacy hash bucket). |
 | `mesh_write.field_repo_key` | `repoKey` |  |  | A descriptor's persisted project key. |
@@ -4133,6 +4139,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_ack` | `ack` |  |  | roster's consume flag. |
 | `mesh_write.flag_ack_as_owner` | `ack-as-owner` |  |  | The flag that skips the ownership check of ack-primary. |
 | `mesh_write.flag_answers` | `answers` |  |  | send's reply-correlation flag. |
+| `mesh_write.flag_blockers` | `blockers` |  |  | The repeatable heartbeat flag for blockers. |
 | `mesh_write.flag_broadcast` | `broadcast` |  |  | send's broadcast flag. |
 | `mesh_write.flag_cc_primary` | `cc-primary` |  |  | send's copy-the-Primary flag (Node only). |
 | `mesh_write.flag_dash_h` | `-h` |  |  | The `-h` word. |
@@ -4145,16 +4152,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_message_file` | `message-file` |  |  | send's body-from-file flag. |
 | `mesh_write.flag_message_stdin` | `message-stdin` |  |  | send's body-from-stdin flag. |
 | `mesh_write.flag_peek` | `peek` |  |  | mesh read's non-consuming flag. |
+| `mesh_write.flag_phase` | `phase` |  |  | The heartbeat flag for the phase text. |
+| `mesh_write.flag_progress` | `progress` |  |  | The heartbeat flag for the progress percentage. |
 | `mesh_write.flag_question` | `question` |  |  | send's needs-reply flag. |
 | `mesh_write.flag_quiet` | `quiet` |  |  | send's one-line output flag. |
 | `mesh_write.flag_receipt` | `receipt` |  |  | The ack-primary flag naming the read receipt. |
 | `mesh_write.flag_seq` | `seq` |  |  | mesh read's explicit baseline flag. |
+| `mesh_write.flag_session` | `session` |  |  | The heartbeat flag naming the session; without it Node logs the caller (heartbeat-callers.log), which the engine cannot reproduce, so the call goes to Node. |
 | `mesh_write.flag_since` | `since` |  |  | mesh read's time filter (Node only). |
+| `mesh_write.flag_step` | `step` |  |  | The heartbeat flag that records plan progress; with it the call goes to Node. |
+| `mesh_write.flag_summary` | `summary` |  |  | The heartbeat flag that also broadcasts a mesh heartbeat row; with it the call goes to Node. |
 | `mesh_write.flag_tail` | `tail` |  |  | A window flag the acking inbox verbs refuse (INBOX_WINDOW_FLAGS); with --since it sends the call to Node. |
 | `mesh_write.flag_to` | `to` |  |  | send's recipient flag. |
 | `mesh_write.flag_to_primary` | `to-primary` |  |  | send's Primary flag. |
 | `mesh_write.flag_type` | `type` |  |  | send's type flag (`--type broadcast`). |
 | `mesh_write.flag_urgency` | `urgency` |  |  | send's urgency flag. |
+| `mesh_write.flag_wip` | `wip` |  |  | The repeatable heartbeat flag for work in progress. |
 | `mesh_write.floor_reader` | `#floor` |  |  | The reader name of the floor row in `reader_cursors` (FLOOR). |
 | `mesh_write.gate_done` | `done` |  |  | The gate a child's `done` verb sets. |
 | `mesh_write.gate_merged_verified` | `merged_verified` |  |  | The report-only gate recording the merged ancestry check. |
@@ -4168,6 +4181,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.heal_no_worktree` | `no-worktree` |  |  | daemonWarning when the cwd is not in a checkout. |
 | `mesh_write.heal_stale` | `stale` |  |  | daemonWarning when the ingest daemon looks stale or missing. |
 | `mesh_write.heal_warning` | `daemonWarning` |  |  | The self-heal field naming a daemon problem. |
+| `mesh_write.heartbeat_source` | `cli-heartbeat` |  |  | The `source` a CLI heartbeat stamps on its record (cmdHeartbeat). |
 | `mesh_write.held_partitions_default` | `` |  |  | Schema default of devswarm.heldPartitions (none held). |
 | `mesh_write.held_partitions_env` | `ANTIHALL_DEVSWARM_HELD_PARTITIONS` |  |  | Environment variable of devswarm.heldPartitions. |
 | `mesh_write.held_partitions_key` | `heldPartitions` |  |  | settings.json key of the owner-held partition ids. |
@@ -4203,6 +4217,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.kind_unresolvable` | `unresolvable` |  |  | Caller identity kind: neither (a hash of the raw cwd). |
 | `mesh_write.legacy_cursor_forbidden` | `#, .seen-` |  |  | Texts a partition id must not contain to have legacy cursor files (reader-cursors.js legacySafeId). |
 | `mesh_write.legacy_cursor_short_len` | `6` |  |  | Length of the hex instance tag in a legacy cursor file name (reader-cursors.js listLegacy). |
+| `mesh_write.legacy_hash_prefix` | `legacy:` |  |  | Prefix of the dedupe hash of one physical legacy inbox line (devswarm-unread.js legacyLineHash). |
+| `mesh_write.liveness_alive` | `alive` |  |  | The `status` a heartbeat writes into the liveness verdict (a heartbeat is proof of life). |
 | `mesh_write.lock_suffix` | `.lock` |  |  | File-name suffix of a lock file. |
 | `mesh_write.log_ns_store` | `reader_cursors:store` |  |  | The journal `ns` of a store-namespace reader cursor move. |
 | `mesh_write.max_ppid_hops` | `6` |  |  | Parent hops the reader-nonce walk takes looking for a harness session record (reader-identity.js MAX_PPID_HOPS). |
@@ -4225,16 +4241,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_registry_collision` | `[devswarm-store] upsertRegistry: id {id} already maps to worktree_path {exist...` |  |  | stderr line of a registry upsert refused by the id-collision guard. Placeholders: {id}, {existing}, {incoming} (JSON-quoted). |
 | `mesh_write.mtype_broadcast` | `broadcast` |  |  | The `mtype` of a broadcast (also `send --type broadcast`). |
 | `mesh_write.mtype_direct` | `direct` |  |  | The `mtype` of a direct message. |
+| `mesh_write.ndjson_created_field` | `createdAt` |  |  | The field of an NDJSON line that carries its creation time (second choice, the native pull shape). |
+| `mesh_write.ndjson_hash_field` | `_h` |  |  | The field of an NDJSON inbox line that carries the content hash of a natively drained message. |
 | `mesh_write.ndjson_suffix` | `.ndjson` |  |  | Suffix of a journal file. |
+| `mesh_write.ndjson_ts_field` | `ts` |  |  | The field of an NDJSON line that carries its timestamp (first choice). |
 | `mesh_write.node_bin` | `node` |  |  | The Node binary the engine hands a verb to. |
 | `mesh_write.node_cli` | `scripts/devswarm.js` |  |  | Node's mesh CLI, relative to the plugin root. |
 | `mesh_write.nonce_prefix` | `h:` |  |  | Prefix of a reader nonce (`h:<pid>:<startMs>`). |
+| `mesh_write.not_draining_age_ms` | `1200000` |  |  | Age of the oldest unread row past which a backlog is also flagged notDraining (liveness.js NOT_DRAINING_AGE_MS, 20 minutes). |
 | `mesh_write.ns_store` | `store` |  |  | The store cursor namespace of `reader_cursors` (the position in the store's messages). |
 | `mesh_write.on_native` | `native` |  |  | On-mode result: the engine answered the call itself. |
 | `mesh_write.op_nd` | `nd` |  |  | The `k` of a read-receipt op that moves the NDJSON inbox cursor (Node's). |
 | `mesh_write.op_own` | `own` |  |  | The `k` of a read-receipt op that moves the caller's own partition cursor. |
 | `mesh_write.op_sibling` | `sibling` |  |  | The `k` of a read-receipt op that moves a sibling partition's cursor (Node's). |
 | `mesh_write.pid_reuse_margin_ms` | `1000` |  |  | A process whose start time is later than the recorded one by more than this is a reused pid (PID_REUSE_MARGIN_MS). |
+| `mesh_write.plugin_manifest_dir` | `.claude-plugin` |  |  | Directory of the plugin manifest under the plugin root. |
+| `mesh_write.plugin_manifest_file` | `plugin.json` |  |  | The plugin manifest whose `version` a heartbeat stamps (runningAntiHallVersion). |
 | `mesh_write.primary_prefix` | `primary-` |  |  | Prefix of a worktree meshId (`primary-<hash>`). |
 | `mesh_write.ps_bin` | `ps` |  |  | The process-table tool the nonce walk runs, as Node does. |
 | `mesh_write.ps_lstart_args` | `-o, lstart=, -p` |  |  | Its arguments for one process's start time, followed by the pid (liveness.js processStartMs). |
@@ -4294,6 +4316,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.urgency_rank` | `low, normal, high, urgent` |  |  | Urgency words from lowest to highest (devswarm-store.js URGENCY_RANK); any other word is ignored. |
 | `mesh_write.value_required_flags` | `message, message-file` |  |  | Flags that always take the next word as their value (Node's VALUE_REQUIRED_FLAGS). |
 | `mesh_write.verb_ack_primary` | `ack-primary` |  |  | The inbox sub-verb that applies a read receipt's cursor moves. |
+| `mesh_write.verb_heartbeat` | `heartbeat` |  |  | The heartbeat verb. |
 | `mesh_write.verb_help` | `help` |  |  | The help verb. |
 | `mesh_write.verb_history` | `history` |  |  | Its history subcommand. |
 | `mesh_write.verb_inbox` | `inbox` |  |  | The inbox verb. |
@@ -4301,6 +4324,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verb_read` | `read` |  |  | Its read subcommand. |
 | `mesh_write.verb_roster` | `roster` |  |  | The roster verb (`roster --ack` is `mesh read`). |
 | `mesh_write.verb_send` | `send` |  |  | The send verb. |
+| `mesh_write.verify_cap` | `600` |  |  | Characters of each output kept in a mismatch record. |
+| `mesh_write.verify_copy_dirs` | `workspaces, heartbeats, liveness, cursors, archived` |  |  | Directories of the DevSwarm root copied into the scratch home before the engine writes (what Node reads or writes for a heartbeat). |
+| `mesh_write.verify_dir` | `mesh-verify` |  |  | Directory in the state directory that holds the scratch homes of pending verifications. |
+| `mesh_write.verify_error` | `error` |  |  | Log result of a verification that could not run Node. |
+| `mesh_write.verify_flag` | `--shadow-verify` |  |  | The word after `mesh` that makes the engine run as the background verifier of an answered heartbeat (never a devswarm.js verb). |
+| `mesh_write.verify_link_dirs` | `store` |  |  | Directories of the DevSwarm root linked, not copied, into the scratch home (read only for a heartbeat). |
+| `mesh_write.verify_log` | `mesh-verify.jsonl` |  |  | File in the state directory that receives one JSON line per background verification (`verb`, `result` match or mismatch, `ms`; on a mismatch both outputs, capped). |
+| `mesh_write.verify_match` | `match` |  |  | Log result of a verification whose Node output and written files equal the engine's. |
+| `mesh_write.verify_mismatch` | `mismatch` |  |  | Log result of a verification that found a difference. |
+| `mesh_write.verify_node_snippet` | `const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Num...` |  |  | The Node program of the verifier: runs the real devswarm.js `run()` with the engine's clock, prints the result object the CLI would print. Arguments: the CLI path, the clock, then the verb's argv. |
 | `mesh_write.write_seq_column` | `write_seq` |  |  | The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn). |
 | `mesh_write.xdg_default` | `.config` |  |  | Its default under the home directory. |
 
