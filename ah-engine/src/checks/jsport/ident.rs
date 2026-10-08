@@ -192,3 +192,17 @@ pub fn resolve_context(cwd: &str, ancestor: bool, env: &RequestEnv) -> Ctx {
     ctx.worktree_root = Some(root);
     ctx
 }
+
+/// `rawGitInfo(dir)`: the common git directory and the toplevel of the checkout `dir` lies in, `None` when `dir` does not exist
+/// or lies in no repository. The flag is the resolver's "unsure" (a `.git` file layout this port does not classify).
+pub fn raw_git_info(dir: &str) -> Option<(String, String, bool)> {
+    if !dir.starts_with('/') {
+        return None;
+    }
+    let abs = resolve(dir, "", "/");
+    let r = real(&abs)?;
+    let t = nearest_dot_git(&r)?;
+    let mut unsure = false;
+    let info = gitdir_of(&t, &mut unsure)?;
+    Some((info.common, t, unsure))
+}

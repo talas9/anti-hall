@@ -19,14 +19,21 @@
 //! A command that passes all three gets exit 0 with no output from Node whether the session is a coordinator or a
 //! subagent, whatever the switches say, so the engine's Allow equals Node's answer exactly. Anything else (including
 //! every non-ASCII command that is not from a proven subagent, see `shell`) is a deferral, never a guess.
+mod carve;
+mod cx;
+mod devswarm;
+mod editpar;
+mod guard;
 pub mod heavy;
 pub mod shell;
 pub mod tables;
 #[cfg(test)]
 mod tests;
+mod verify;
 pub mod writes;
 
 use crate::checks::{Check, Verdict};
+use crate::defaults;
 use crate::rules::Subject;
 use serde_json::Value;
 use tables::tables;
@@ -75,7 +82,7 @@ fn has_path_part(text: &str) -> bool {
 /// guards need a DevSwarm CLI verb ([`devswarm_cli_in`]). The raw-read guard resolves a path against the payload cwd and
 /// denies only an `inbox` or `store` directory under the DevSwarm root, so that name must be a component of a word in
 /// the command or of the cwd. Quote characters are removed before splitting, as the Node tokenizer joins quoted pieces.
-fn special_guard_may_fire(cmd: &str, cwd: Option<&str>) -> bool {
+pub(super) fn special_guard_may_fire(cmd: &str, cwd: Option<&str>) -> bool {
     let t = tables();
     let norm: String = cmd.chars().filter(|c| !matches!(c, '\'' | '"' | '\\')).collect::<String>().to_lowercase();
     if t.defer_substrings.iter().any(|w| norm.contains(w.as_str())) {
@@ -166,5 +173,25 @@ impl Check for CommandGuard {
         let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
         let sub = crate::checks::coordinator_work::subagent_by_payload(payload);
         Some(std::panic::catch_unwind(|| decide_in(cmd, s.cwd, sub)).unwrap_or(Verdict::Defer))
+    }
+
+    /// With the request's environment the engine makes Node's whole decision (`guard::evaluate`): the special guards, the
+    /// switches, the coordinator test, the Bash edit parity and the heavy-command gate with its block message.
+    fn run_env(&self, s: &Subject<'_>, payload: &Value, opts: &Value, env: &crate::reqenv::RequestEnv) -> Option<Verdict> {
+        let cmd = s.tool_input.get("command").and_then(Value::as_str)?;
+        let t = tables();
+        if cmd.len() > t.max_len || s.cwd.is_some_and(folds_to_ascii) {
+            return Some(Verdict::Defer);
+        }
+        if !cmd.is_ascii() {
+            // a subagent by payload or by entry point: past the special guards Node allows it whatever the command is
+            let sub = crate::checks::coordinator_work::subagent_by_payload(payload)
+                || env.get(defaults::text("command.entrypoint_env")) == Some(defaults::text("command.subagent_entrypoint"));
+            return Some(if sub && !unicode_trigger_may_fire(cmd, s.cwd) { Verdict::Allow } else { Verdict::Defer });
+        }
+        let st = crate::checks::git::util::Settings::from_env(env);
+        let root = crate::checks::guardkit::settings::plugin_root(opts, env);
+        let cx = cx::Cx { payload, st: &st, env, plugin_root: &root };
+        Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard::evaluate(&cx, cmd))).unwrap_or(Verdict::Defer))
     }
 }

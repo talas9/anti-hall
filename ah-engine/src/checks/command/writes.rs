@@ -90,10 +90,10 @@ fn keep(out: &mut Vec<String>, t: Option<String>) {
 }
 
 /// The paths one segment writes. For `cp`/`mv` without `-t` or a trailing `/`, Node asks the file system whether the
-/// destination is a directory; this port returns the targets of both answers (a superset).
+/// destination is a directory: with `cwd` this port asks too; without it returns the targets of both answers (a superset).
 ///
 /// Mirrors `command-guard.js` `bashWriteTargets`.
-pub fn bash_write_targets(segment: &str) -> Vec<String> {
+pub fn bash_write_targets(segment: &str, cwd: Option<&str>) -> Vec<String> {
     static OP: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static REDIR_TOK: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static BARE_REDIR_TOK: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
@@ -273,11 +273,26 @@ pub fn bash_write_targets(segment: &str) -> Vec<String> {
                 }
             };
             let known_dir = tdir.is_some() || dest.ends_with('/');
-            for s in &srcs {
-                keep(&mut out, Some(path_join(&dest, &basename(s))));
-            }
-            if !known_dir {
-                keep(&mut out, Some(dest.clone()));
+            match cwd {
+                // exact: Node asks the file system whether the destination is a directory
+                Some(c) => {
+                    let is_dir = known_dir || std::fs::metadata(crate::checks::guardkit::paths::resolve(c, &dest)).is_ok_and(|m| m.is_dir());
+                    if is_dir {
+                        for s in &srcs {
+                            keep(&mut out, Some(path_join(&dest, &basename(s))));
+                        }
+                    } else {
+                        keep(&mut out, Some(dest.clone()));
+                    }
+                }
+                None => {
+                    for s in &srcs {
+                        keep(&mut out, Some(path_join(&dest, &basename(s))));
+                    }
+                    if !known_dir {
+                        keep(&mut out, Some(dest.clone()));
+                    }
+                }
             }
             if verb == "mv" {
                 for s in &srcs {
@@ -294,7 +309,7 @@ pub fn bash_write_targets(segment: &str) -> Vec<String> {
 ///
 /// A superset of `command-guard.js` `inlineWriteLiterals` (via `inlineCodeBody`): every literal-write pattern there
 /// needs one of the `inline_write_markers` in the code.
-fn inline_may_write(segment: &str) -> bool {
+pub(super) fn inline_may_write(segment: &str) -> bool {
     let t = tables();
     let verb = effective_verb(segment).replace(['"', '\''], "");
     if !t.inline_verbs.contains(&verb) {
@@ -358,7 +373,7 @@ pub fn may_write(command: &str, depth: usize) -> bool {
         if effective_verb(seg) == "git" {
             continue;
         }
-        if bash_write_targets(seg).iter().any(|x| resolvable(x)) || inline_may_write(seg) {
+        if bash_write_targets(seg, None).iter().any(|x| resolvable(x)) || inline_may_write(seg) {
             return true;
         }
     }
