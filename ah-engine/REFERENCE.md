@@ -500,37 +500,151 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `command.agent_markers` | `agent_id, agent_type` |  |  | The payload fields that mark a subagent (coordinator-detect.js). |
+| `command.allow_dir_rel` | `.anti-hall` |  |  | The per-project allowlist directory, relative to the repository toplevel. |
+| `command.allow_file_rel` | `.anti-hall/command-allow.json` |  |  | The per-project command allowlist file. |
+| `command.allow_list_key` | `patterns` |  |  | The key of the command allowlist file that holds the patterns. |
+| `command.allow_subagent_mailbox_setting` | `7 entries` |  |  | guards.allowSubagentMailbox: a one-off allow of the subagent mailbox verbs (default off). |
+| `command.allow_trust_file_rel` | `.anti-hall/trusted-command-allow.json` |  |  | The record of trusted command allowlists, relative to the home directory. |
+| `command.audit_file` | `command-allow.ndjson` |  |  | The audit log of allowlisted commands. |
+| `command.audit_logs_dir` | `logs` |  |  | The log directory under the state directory. |
+| `command.audit_state_dir` | `.anti-hall` |  |  | The anti-hall state directory under the home directory. |
+| `command.background_chain_delims` | `;, &&, \\|, end` |  |  | Delimiters a background scratch script chain may use. |
+| `command.background_script_interpreters` | `python3, node, sh, bash` |  |  | Interpreters of a background scratch script (command-guard.js BACKGROUND_SCRIPT_INTERPRETERS). |
+| `command.cd_contexts_max` | `8` |  |  | Most working-directory possibilities kept per segment after a cd (command-guard.js cdAwareContexts). |
+| `command.cd_delims` | `&&, ;, \\|\\|, \n` |  |  | The delimiters after which a leading cd carries into the next segment (command-guard.js cdAwareContexts). |
+| `command.check_flag_refused_verbs` | `20 items` |  |  | Verbs that never get the --check/--dry-run/--list inline allowance (command-guard.js CHECK_FLAG_REFUSED_VERBS). |
 | `command.check_summary` | `command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation g...` |  |  | One-line description of the command check for the generated reference. |
+| `command.child_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace). |
+| `command.classify_pull_subs` | `pull, fetch` |  |  | git subcommands that label a block a remote pull or fetch. |
+| `command.classify_push_subs` | `push` |  |  | git subcommands that label a block a remote push. |
+| `command.claude_subagent` | `a subagent` |  |  | How the block messages name a worker on Claude. |
+| `command.cli_entrypoint` | `cli` |  |  | The entry point value of the terminal CLI. |
 | `command.cloud_binaries` | `gcloud, gh, kubectl` |  |  | Cloud CLIs with a read-only inspect exemption (command-guard.js CLOUD_BINARIES). |
 | `command.cloud_mutating_verbs` | `17 items` |  |  | Words that disqualify the gh/kubectl read-only exemption (command-guard.js CLOUD_MUTATING_VERBS). |
 | `command.cloud_readonly_verbs` | `describe, list, get, view` |  |  | First words after gh/kubectl that read only (command-guard.js CLOUD_READONLY_VERBS). |
+| `command.codex_cheap` | `a sub-agent (spawn_agent, fast-tier model)` |  |  | How the block messages name the cheap worker on Codex (host-text.js CODEX_CHEAP). |
+| `command.codex_patch_tool` | `apply_patch` |  |  | The tool name that marks a Codex payload on its own (coordinator-detect.js isCodexPayload). |
+| `command.codex_subagent` | `a sub-agent (spawn_agent)` |  |  | How the block messages name a worker on Codex (host-text.js CODEX_SUBAGENT). |
 | `command.control_keyword_prefix` | `^\s*(?:(?:do\|then\|else\|if\|while\|until\|!)\s+)+` |  |  | Leading shell keywords stripped before a segment is judged (command-guard.js CONTROL_KEYWORD_PREFIX_RE). |
+| `command.curl_bare_flags` | `--silent, --show-error, --fail` |  |  | Valueless curl flags of the token-authorized silent GET. |
 | `command.defer_path_parts` | `inbox, store` |  |  | If the command or the payload cwd has one of these as a path component (lower-cased; split at slashes, backslashes, blanks and shell punctuation), the engine defers: the raw DevSwarm inbox/store read guard denies only paths whose first component under the DevSwarm root is one of them (lib/devswarm-inbox-paths.js classifyDevswarmPath). |
 | `command.defer_substrings` | `devswarm.js, stash` |  |  | If the command, lower-cased with quotes and backslashes removed, contains any of these, the engine defers: the DevSwarm subagent-mailbox guard needs the literal script name (devswarm.js) and the git-stash guard a `stash` word, and both need state the engine does not mirror. |
+| `command.devswarm_cli_rel` | `scripts/devswarm.js` |  |  | The devswarm CLI, relative to the plugin root. |
 | `command.devswarm_cli_verbs` | `hivecontrol, devswarm` |  |  | If any segment the DevSwarm read/send guards scan has one of these as its effective verb, the engine defers (command-guard.js DEVSWARM_CLI_VERBS). |
+| `command.devswarm_inbox_dir` | `inbox` |  |  | The inbox directory under the DevSwarm root (a raw read is blocked). |
+| `command.devswarm_root_rel` | `.anti-hall/devswarm` |  |  | The DevSwarm state root under the home directory. |
+| `command.devswarm_store_dir` | `store` |  |  | The store directory under the DevSwarm root. |
+| `command.dsread_guard` | `devswarm-read-guard` |  |  | The skip id and message id of the DevSwarm destructive-read guard. |
+| `command.dssend_guard` | `devswarm-send-guard` |  |  | The skip id of the DevSwarm native-send guard. |
+| `command.edit_file_rel` | `.anti-hall/edit-allow.json` |  |  | The per-project edit allowlist file. |
+| `command.edit_guard_name` | `edit-guard` |  |  | The skip.json id of edit-guard, whose verdict the Bash edit parity applies. |
+| `command.edit_list_key` | `paths` |  |  | The key of the edit allowlist file that holds the paths. |
+| `command.edit_trust_file_rel` | `.anti-hall/trusted-edit-allow.json` |  |  | The record of trusted edit allowlists, relative to the home directory. |
+| `command.eg_allow_setting` | `6 entries` |  |  | guards.editGuardAllow: extra file globs edit-guard allows (comma or colon separated, empty by default). |
+| `command.eg_claude_dir` | `.claude` |  |  | The host's configuration directory under the home directory. |
+| `command.eg_default_allow` | `10 items` |  |  | Files and globs edit-guard always allows (edit-guard.js DEFAULT_ALLOW). |
+| `command.eg_edit_allow_file` | `.anti-hall/edit-allow.json` |  |  | The repository-relative path of the edit allowlist, which no one edits through the guard. |
+| `command.eg_hooks_file` | `hooks.json` |  |  | A file with this name is never allowed by the per-project edit allowlist. |
+| `command.eg_plan_mode` | `plan` |  |  | The permission mode in which non-source files may be edited. |
+| `command.eg_plans_rel` | `.claude/plans` |  |  | The host's plan directory under the home directory. |
+| `command.eg_project_deny_segments` | `.git, .anti-hall, .claude, .codex, .husky, .githooks` |  |  | Path segments the per-project edit allowlist never reaches (edit-guard.js PROJECT_EDIT_DENY_SEGMENTS). |
+| `command.entrypoint_env` | `CLAUDE_CODE_ENTRYPOINT` |  |  | The environment variable that names the host entry point (coordinator-detect.js isCoordinator). |
+| `command.file_read_verbs` | `12 items` |  |  | Verbs that read file contents (the raw DevSwarm inbox read guard). |
 | `command.gcloud_boolean_flags` | `--quiet, --uri` |  |  | gcloud flags without a value the read-only grammar accepts (command-guard.js GCLOUD_BOOLEAN_FLAGS). |
 | `command.gcloud_inspect_verbs` | `describe, list, get, view, read` |  |  | gcloud command-path verbs that read only (command-guard.js GCLOUD_INSPECT_VERBS). |
 | `command.gcloud_logging_group` | `logging` |  |  | The only gcloud group whose `read` verb is read-only (command-guard.js `g.path[last] !== 'logging'`). |
+| `command.gcloud_read_verbs` | `describe, list, get-iam-policy, read` |  |  | The gcloud verbs of the narrow read-only access. |
 | `command.gcloud_refused_path` | `^(?:access\|ssh\|scp\|run\|sign\|print-[^\n\r]*\|attach-[^\n\r]*\|detach-[^\n\r]*\|ad...` |  |  | gcloud command-path words that refuse the read-only grammar (command-guard.js GCLOUD_REFUSED_PATH_RE). |
+| `command.gcloud_sink_verbs` | `tail, head, wc, grep` |  |  | Sinks the narrow gcloud read may pipe into besides jq. |
+| `command.gcloud_token_vars` | `T, TOKEN, ACCESS_TOKEN, GCLOUD_TOKEN` |  |  | Variable names the gcloud token prefix may use. |
 | `command.gcloud_value_flags` | `8 items` |  |  | gcloud flags whose separated value the whole-command read-only form accepts (command-guard.js GCLOUD_VALUE_FLAGS). |
 | `command.gh_api_field_flags` | `-f, -F, --field, --raw-field` |  |  | gh api options that send a request body (command-guard.js isHeavyGhSegment and GH_GQL_FIELD_FLAGS). |
 | `command.gh_api_mutating_methods` | `POST, PATCH, PUT, DELETE` |  |  | gh api methods that are heavy (command-guard.js GH_API_MUTATING_METHODS). |
 | `command.gh_gql_bool_flags` | `--paginate, --slurp, --silent, -i, --include, --verbose` |  |  | gh api graphql options without a value (command-guard.js GH_GQL_BOOL_FLAGS). |
 | `command.gh_gql_value_flags` | `8 items` |  |  | gh api graphql options that take a value (command-guard.js GH_GQL_VALUE_FLAGS). |
 | `command.gh_mutating_subcommands` | `6 entries` |  |  | gh group and subcommand pairs that are heavy (command-guard.js GH_MUTATING_SUBCOMMANDS, plus `workflow run`). |
+| `command.git_branch_argv` | `symbolic-ref, --short, HEAD` |  |  | The git arguments that print the current branch (plain-push carve-out). |
 | `command.git_fetch_dangerous_flags` | `--prune, -p, --prune-tags, --force, -f` |  |  | git fetch options that rewrite or delete local refs (command-guard.js GIT_FETCH_DANGEROUS_FLAGS). |
 | `command.git_global_value_opts` | `8 items` |  |  | git global options that take a value (command-guard.js GIT_GLOBAL_VALUE_OPTS). |
 | `command.git_heavy_subs` | `push, pull, clone` |  |  | git subcommands that are always heavy (command-guard.js isHeavyGitSegment). |
+| `command.git_timeout_ms` | `5000` |  | ms | How long a git question of the plain-push carve-out may take (command-guard.js: 5000 ms). |
+| `command.guard_name` | `command-guard` |  |  | The guard id command-guard answers to in skip.json and in its messages. |
+| `command.heavy_default_label` | `heavy` |  |  | The category label when a heavy command has no classification. |
+| `command.heavy_pattern_label` | `heavy-pattern` |  |  | The category label of a heavy command found by a pattern. |
 | `command.heavy_patterns` | `7 items` |  |  | Patterns over the quote-neutralized segment that make it heavy (command-guard.js HEAVY_PATTERNS). |
 | `command.heavy_verbs` | `63 items` |  |  | Effective verbs that are always heavy in the main thread (command-guard.js HEAVY_VERBS). |
+| `command.ide_entrypoint_prefix` | `terminal_ide_` |  |  | Entry points that start with this are IDE terminals (a main thread). |
+| `command.ide_entrypoints` | `vscode, jetbrains, vim, emacs` |  |  | Entry points of editor hosts (main threads). |
+| `command.inbox_cmd_setting` | `6 entries` |  |  | devswarm.inboxCmd: a consumer-configured command to read pending mesh messages (no default). |
 | `command.inline_other_flags` | `-e, -E` |  |  | The inline-code flags of perl, ruby and node (command-guard.js inlineCodeBody). |
 | `command.inline_python_flags` | `-c` |  |  | The inline-code flag of the python interpreters (command-guard.js inlineCodeBody). |
 | `command.inline_verbs` | `python, python3, perl, ruby, node` |  |  | Interpreters whose inline code is scanned for literal write targets (command-guard.js INLINE_VERBS). |
 | `command.inline_write_markers` | `open, File, createWriteStream, .write(` |  |  | If inline interpreter code contains any of these, it may name a literal write target and the engine defers (a superset of command-guard.js INLINE_OPEN_RE, INLINE_PERL_OPEN3_RE, INLINE_PERL_OPEN2_RE, INLINE_WRITEFILE_RE and INLINE_FILE_WRITE_RE, which all need one of them). |
+| `command.jq_refused_words` | `env, input, inputs, input_filename, import, include` |  |  | jq words the narrow gcloud read refuses in a filter (environment, input and import access). |
+| `command.jq_safe_flags` | `9 items` |  |  | jq flags the narrow gcloud read accepts. |
+| `command.launcher_marker` | `.anti-hall` |  |  | A command without this text cannot name a stable launcher. |
+| `command.launcher_scripts` | `devswarm.js, wake-watch.js` |  |  | The stable launcher scripts under ~/.anti-hall/bin that are light (command-guard.js ANTI_HALL_CLI_PATTERNS). |
 | `command.light_exceptions` | `17 items` |  |  | Patterns over the raw segment (and the segment without a leading `timeout N`) that make it light (command-guard.js LIGHT_EXCEPTIONS, the entries without a negative lookahead; a trailing `(?=\s\|$)` is written as `(?:\s\|$)`). |
 | `command.light_exceptions_neg` | `3 entries, 3 entries, 3 entries` |  |  | LIGHT_EXCEPTIONS entries of the form HEAD`\b(?![^\n]*NOT)`: the segment is light when some match of `head` ends (at a word boundary, right after the text `end`) where `not_after` does not match before the end of that line (jev-report.js, doctor.js and `go env`). |
+| `command.mailbox_flag_skip` | `(?:-\S+(?:\s+[^-\s]\S*)?\s+)*` |  |  | Regex source: optional flags (with an optional value each) before a devswarm.js verb (command-guard.js FLAG_SKIP_SRC). |
+| `command.mailbox_guard` | `devswarm-subagent-mailbox-guard` |  |  | The skip id of the subagent mailbox guard. |
+| `command.mailbox_js_prefix` | `(?:node\s+)?(?:\S*[\\/])?scripts[\\/]devswarm\.js` |  |  | Regex source: an invocation of the devswarm.js CLI (command-guard.js DEVSWARM_JS_PREFIX_SRC). |
 | `command.max_classify_len` | `65536` |  |  | Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it). |
 | `command.max_depth` | `3` |  |  | Nesting depth of inline shells, eval and command substitutions the heavy and write scans follow (command-guard.js `d < 3`). |
+| `command.msg_dsread_inbox_cmd_prefix` | `read via the configured ANTIHALL_DEVSWARM_INBOX_CMD, or ` |  |  | Added before the text above when a consumer-configured inbox command is set. |
+| `command.msg_dsread_instead` | ``devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>` (durable cur...` |  |  | What to do instead of a native read. |
+| `command.msg_dsread_monitor_what` | ``hivecontrol workspace monitor` is blocked.` |  |  | Heading of the monitor block. |
+| `command.msg_dsread_monitor_why` | `It is a long-poll with no default timeout: it hangs the shell until a message...` |  |  | Why monitor is blocked. |
+| `command.msg_dsread_override` | `set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely` |  |  | The override of the native read block. |
+| `command.msg_dsread_rm_allowed` | ``message-count` reflects the NATIVE queue only; a 0 does not mean nothing is ...` |  |  | What stays allowed. |
+| `command.msg_dsread_rm_what` | ``hivecontrol workspace read-messages` is blocked.` |  |  | Heading of the read-messages block. |
+| `command.msg_dsread_rm_why` | `It mark-reads and drains the native queue, losing messages the durable inbox ...` |  |  | Why read-messages is blocked. |
+| `command.msg_edit_instead` | `spawn {sub} to make this edit and have it report a tight summary.` |  |  | What to do instead ({sub} names the worker). |
+| `command.msg_edit_instead_tier` | `workspace-scale matter (feature/fix/deploy, own branch + review): `node scrip...` |  |  | What to do instead for a DevSwarm Primary whose repo allows workspaces. |
+| `command.msg_edit_notes` | `session notes/reports in .anti-hall/history/** or the scratchpad; repo docs n...` |  |  | What stays allowed (Claude). |
+| `command.msg_edit_notes_codex` | `session notes/reports in .anti-hall/history/**; repo docs need {sub} or a tru...` |  |  | What stays allowed (Codex). |
+| `command.msg_edit_override` | `{skip} (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry` |  |  | The override line ({skip} is the command above). |
+| `command.msg_edit_skip_cmd` | `node {cli} skip edit-guard` |  |  | The command that records consent to skip edit-guard ({cli} is the quoted devswarm CLI path). |
+| `command.msg_edit_what` | `Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write) blocked: the {who}...` |  |  | Heading of the Bash edit parity block ({who} is the next text). |
+| `command.msg_edit_who_coord` | `coordinator` |  |  | Who is blocked otherwise. |
+| `command.msg_edit_who_orch` | `orchestrator` |  |  | Who is blocked when DevSwarm is active. |
+| `command.msg_edit_why` | `Raw edits never happen in the main thread; the coordinator synthesizes a summ...` |  |  | Why a Bash write is blocked. |
+| `command.msg_edit_why_orch` | `Raw edits in the main thread flood it; a worker returns a tight summary instead.` |  |  | Why a Bash write is blocked while DevSwarm is active. |
+| `command.msg_heavy_allowed` | `piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest ...` |  |  | What stays allowed inline (first part). |
+| `command.msg_heavy_allowed_claude` | `; or a read-only scratchpad script (executable, absolute path, no VAR= prefix...` |  |  | End of the allowed text on Claude (the scratchpad script path). |
+| `command.msg_heavy_allowed_codex` | `.` |  |  | End of the allowed text on Codex. |
+| `command.msg_heavy_cd_hint` | ` To run the check inline, use `cd <dir> &&`, not `;`.` |  |  | Added when the same command joined with && would qualify for the inline check. |
+| `command.msg_heavy_delegate` | `delegate to {to} (it returns a short summary)` |  |  | What to do instead ({to} names the worker). |
+| `command.msg_heavy_detail_category` | ` (category: {label})` |  |  | Detail of a block caused by a heavy pattern or category. |
+| `command.msg_heavy_detail_verb` | ` (verb: {label})` |  |  | Detail of a block caused by a heavy verb. |
+| `command.msg_heavy_instead_tier` | `workspace-scale matter (feature/fix/deploy): `node scripts/devswarm.js spawn ...` |  |  | What to do instead for a DevSwarm Primary whose repo allows workspaces. |
+| `command.msg_heavy_plain` | `heavy command` |  |  | The kind of any other heavy command. |
+| `command.msg_heavy_remote` | `state-changing remote command` |  |  | The kind of a state-changing remote command. |
+| `command.msg_heavy_what` | `{kind}{detail} blocked in the main thread.` |  |  | Heading of the heavy-command block ({kind} and {detail} are the next two texts). |
+| `command.msg_heavy_why` | `Raw output floods the main thread.` |  |  | Why a heavy command is blocked. |
+| `command.msg_mailbox_allowed` | ``inbox count`, `inbox peek-primary`, `mesh read --peek`, plain `roster`.` |  |  | What stays allowed. |
+| `command.msg_mailbox_guard` | `devswarm-mailbox` |  |  | The message id of the mailbox block. |
+| `command.msg_mailbox_instead` | `report what you learned to your parent; the main thread drains the mailbox it...` |  |  | What to do instead. |
+| `command.msg_mailbox_override` | `set ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1 to disable this guard entirely` |  |  | The override of the mailbox block. |
+| `command.msg_mailbox_what` | `a DevSwarm mailbox verb (inbox pull/ack/ack-primary/read/read-primary/drain-p...` |  |  | Heading of the subagent mailbox block. |
+| `command.msg_mailbox_why` | `A subagent that acks or reads advances the shared cursor, so the main thread ...` |  |  | Why a subagent may not touch the mailbox. |
+| `command.msg_rawread_inbox_guard` | `devswarm-inbox-read` |  |  | The message id of the raw inbox read block. |
+| `command.msg_rawread_inbox_instead` | ``devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.` |  |  | What to do instead of a raw inbox read. |
+| `command.msg_rawread_inbox_what` | `a shell read of the raw DevSwarm inbox file is blocked.` |  |  | Heading of the raw inbox read block. |
+| `command.msg_rawread_inbox_why` | `It does not drain the queue, but bypasses the durable cursor, so messages get...` |  |  | Why a raw inbox read is blocked. |
+| `command.msg_rawread_override` | `set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely` |  |  | The override of the raw read block. |
+| `command.msg_send_guard` | `devswarm-mesh-only` |  |  | The message id of the native-send block. |
+| `command.msg_send_instead` | ``node scripts/devswarm.js send --to-primary --message-file <path>` (or `--to ...` |  |  | What to do instead of a native send. |
+| `command.msg_send_override` | `set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely` |  |  | The override of the native-send block. |
+| `command.msg_send_what` | ``hivecontrol workspace {kind}` is blocked.` |  |  | Heading of the native-send block. |
+| `command.msg_send_why` | `anti-hall's shared mesh store is the only agent-initiated messaging transport...` |  |  | Why a native send is blocked. |
+| `command.msg_stash_allowed` | ``git stash list` (read-only).` |  |  | What stays allowed. |
+| `command.msg_stash_instead` | `commit the work (even as a WIP commit); never delegate a stash to a subagent.` |  |  | What to do instead of a stash. |
+| `command.msg_stash_scope_armed` | `this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH...` |  |  | Scope text for an armed repository. |
+| `command.msg_stash_scope_subagent` | `a subagent (workers must never touch the coordinator's working tree via stash)` |  |  | Scope text for a subagent. |
+| `command.msg_stash_what` | ``git stash {sub}` is blocked for {scope}.` |  |  | Heading of the git stash block ({sub} is the subcommand, {scope} the next two texts). |
+| `command.msg_stash_why` | `A stash can swallow another agent's protected WIP (defect b08b26566b92).` |  |  | Why a stash is blocked. |
 | `command.nice_value_flags` | `-n, --adjustment` |  |  | nice options that take a value (command-guard.js effectiveVerb). |
 | `command.node_eval_deny` | `8 items` |  |  | Patterns that make a `node -e` payload unsafe (command-guard.js NODE_EVAL_UNSAFE_RE, NODE_EVAL_BRACKET_ACCESS_RE and the inline denials of isSafeNodeEvalPayload). |
 | `command.node_eval_flags` | `-e, --eval` |  |  | node options whose next word is inline code (command-guard.js isSafeNodeEval). |
@@ -538,17 +652,51 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.node_fs_read_allowlist` | `readFileSync, readdirSync, statSync, existsSync, lstatSync` |  |  | fs methods a safe `node -e` payload may call (command-guard.js NODE_FS_READ_ALLOWLIST). |
 | `command.node_script_ext` | `(?i)\.(?:js\|mjs\|cjs)$` |  |  | Script file extensions of node for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
 | `command.pattern_first_verbs` | `grep, sed, awk` |  |  | Verbs whose first operand is a pattern, blanked before the heavy patterns run (command-guard.js PATTERN_FIRST_VERBS). |
+| `command.pipeline_ends` | `end, ;, &&, \\|\\|, \n` |  |  | The delimiters that end a pipeline in the bounded verification scan (command-guard.js PIPELINE_ENDS). |
 | `command.plain_read_git_segments` | `^git\s+log\s+--oneline(?:\s+-\d+)?\s*$, ^git\s+status(?:\s+(?:--short\\|-s))?\...` |  |  | Exact shapes of one plain read-only git segment inside a chain, after a trailing `2>&1` is stripped (command-guard.js PLAIN_LOG_SEGMENT_RE, PLAIN_STATUS_SEGMENT_RE, PLAIN_SHOW_SEGMENT_RE, PLAIN_REVPARSE_SEGMENT_RE; the JavaScript negative lookahead on the first character is the equivalent first-character class). |
+| `command.plugin_manifest_rel` | `.claude-plugin/plugin.json` |  |  | The plugin manifest, relative to a plugin root. |
+| `command.plugin_name` | `anti-hall` |  |  | The name anti-hall's manifest carries. |
+| `command.port_digits_max` | `5` |  |  | Most digits a URL port may have. |
+| `command.port_max` | `65535` |  |  | Largest TCP port a URL may carry. |
 | `command.python_script_ext` | `(?i)\.py$` |  |  | Script file extension of the other interpreters for the flagged-interpreter test (command-guard.js isFlaggedInterpreterScript). |
+| `command.scratch_leaf` | `scratchpad` |  |  | Name of the scratchpad directory of a session. |
+| `command.scratch_uid_prefix` | `claude-` |  |  | Prefix of the per-user directory under a tmp root that holds session scratchpads. |
 | `command.script_check_interpreter` | `^(?:python[0-9.]*\|node\|ruby\|perl\|php)$` |  |  | Interpreters whose flagged script runs are heavy (command-guard.js SCRIPT_CHECK_INTERPRETER_RE). |
+| `command.setting_allow_bg_scratch` | `7 entries` |  |  | guards.allowBackgroundScratchScripts: the background scratch script allowance (default on). |
+| `command.setting_allow_gcloud_reads` | `7 entries` |  |  | guards.allowGcloudReads: the narrow read-only Google Cloud access (default on). |
+| `command.setting_allow_plain_push` | `7 entries` |  |  | guards.allowPlainPush: the plain git push chain allowance (default on). |
+| `command.setting_allow_read_only_verify` | `7 entries` |  |  | guards.allowReadOnlyVerify: the bounded single-target verification allowance (default on). |
+| `command.setting_allow_read_only_verify_scripts` | `7 entries` |  |  | guards.allowReadOnlyVerifyScripts: the script form of that allowance (default on). |
+| `command.setting_bash_edit_parity` | `7 entries` |  |  | guards.bashEditParity: edit-guard's verdict applied to Bash writes (default on). |
+| `command.setting_project_command_allow` | `7 entries` |  |  | guards.projectCommandAllow: the per-project command allowlist (default on). |
+| `command.setting_project_edit_allow` | `7 entries` |  |  | guards.projectEditAllow: the per-project edit allowlist (default on). |
 | `command.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument or heredoc body is itself a script (lib/shell-scan.js SHELL_VERBS). |
 | `command.sqlite_dangerous` | `(?i)(^\|[\s;])\.(shell\|system\|output\|once\|import\|save)\b\|\bATTACH\b` |  |  | sqlite3 dot-commands and SQL that write despite -readonly (command-guard.js SQLITE_DANGEROUS_RE). |
+| `command.stash_global_value_opts` | `-C, -c, --git-dir, --work-tree, --namespace, --exec-path` |  |  | git global options that take a value, skipped to find the subcommand (git-stash guard). |
+| `command.stash_guard` | `git-stash-guard` |  |  | The skip id and message id of the git stash guard. |
+| `command.stash_guard_setting` | `7 entries` |  |  | guards.stashGuard: arms the git stash guard for every repository (default off). |
+| `command.stash_marker_rel` | `.anti-hall/protected-stashes` |  |  | The per-repository file that arms the stash guard, relative to the toplevel. |
+| `command.stash_mutating_subs` | `push, pop, drop, clear, apply, save` |  |  | git stash subcommands the guard blocks. |
+| `command.stash_push_value_flags` | `-m, --message` |  |  | git stash push flags that take a value. |
+| `command.stash_read_subs` | `list, show, branch` |  |  | git stash subcommands that never mutate. |
+| `command.store_deny_patterns` | `9 items` |  |  | Paths under the store directory that are raw store files (lib/devswarm-inbox-paths.js isStoreDenyTarget). A raw store read depends on the store module being present, so the engine defers it. |
+| `command.subagent_entrypoint` | `agent_tool` |  |  | The entry point value of a subagent process. |
 | `command.sudo_value_flags` | `16 items` |  |  | sudo options that take a value (command-guard.js effectiveVerb SUDO_VAL). |
 | `command.taskpolicy_value_flags` | `-c, -t, -p` |  |  | taskpolicy options that take a value (command-guard.js effectiveVerb). |
 | `command.test_keywords` | `7 items` |  |  | Words after which a `[[` or `((` is at command position, so its `<`/`>` are comparisons, not redirects (command-guard.js TEST_KEYWORDS). |
+| `command.tier_detect_setting` | `7 entries` |  |  | jev.dispatchTierDetectNoWorkspaces: also read CLAUDE.md and AGENTS.md for the no-workspaces rule (default on). |
+| `command.tier_doc_files` | `CLAUDE.md, AGENTS.md` |  |  | The repository docs searched for the no-workspaces rule. |
+| `command.tier_doc_levels` | `8` |  |  | How many directory levels the no-workspaces search climbs (dispatch-tier.js: 8). |
+| `command.tier_repos_setting` | `6 entries` |  |  | jev.dispatchTierNoWorkspaceRepos: repositories where workspaces are off-limits (comma separated, empty by default). |
+| `command.tier_text_setting` | `7 entries` |  |  | devswarm.dispatchTierText: the DevSwarm Primary dispatch-tier text (default on). |
 | `command.timeout_prefix` | `^\s*timeout\s+(?:-[ks]\s+\S+\s+\|-\S+\s+)*\d+[smhd]?\s+` |  |  | A leading `timeout [opts] N` stripped for the light-exception test (command-guard.js TIMEOUT_PREFIX_RE). |
 | `command.timeout_value_flags` | `-s, --signal, -k, --kill-after` |  |  | timeout options that take a value (command-guard.js effectiveVerb). |
+| `command.tmp_default` | `/tmp` |  |  | os.tmpdir() when none is set. |
+| `command.tmp_env_names` | `TMPDIR, TMP, TEMP` |  |  | The variables os.tmpdir() reads, in order. |
+| `command.tmp_fixed_roots` | `/tmp, /private/tmp` |  |  | The tmp roots added after os.tmpdir() (scratchpad.js tmpRoots). |
 | `command.trailing_stderr_merge` | `\s+2>&1\s*$` |  |  | A trailing `2>&1` stripped before a plain git chain segment is classified (command-guard.js TRAILING_STDERR_MERGE_RE). |
+| `command.verify_syntax_only_compilers` | `c++, cc, gcc, clang, clang++, g++` |  |  | Compilers whose -fsyntax-only run is an inline check. |
+| `command.verify_trivial_verbs` | `cd, pwd, true` |  |  | Verbs that are harmless in a verification chain. |
 | `command.whole_command_clis` | `12 items` |  |  | CLIs whose whole-command read-only form (version query or gcloud read piped to a closed sink) is light (command-guard.js isWholeCommandReadOnlyForm and VERSION_CLI_RE). |
 | `command.wrappers` | `18 items` |  |  | Words skipped when finding a segment's effective verb (command-guard.js WRAPPERS). |
 | `command.write_target_unknowable` | `$`*?[]{}` |  |  | A write target containing one of these characters cannot be resolved and is skipped (command-guard.js resolveWriteTarget). |

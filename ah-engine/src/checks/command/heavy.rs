@@ -1,10 +1,7 @@
 //! The heavy-command classifier of command-guard.js (`isHeavyCommand` and everything it calls).
 //!
-//! The engine only ever acts on a "not heavy" answer (it then allows); a "heavy" answer defers to the Node hook. So
-//! every predicate here may err only toward heavy: the heavy tests (verbs, patterns, `node -e`, git push/pull/fetch,
-//! gh mutations, flagged interpreter scripts) are exact ports, and a light exception the port cannot reproduce exactly
-//! is simply never granted. The one such exception is the stable-launcher form (`node ~/.anti-hall/bin/...`), whose
-//! pattern depends on the home directory of the process that loaded the Node module; it is not granted here.
+//! Every predicate is an exact port. The stable-launcher light exception (`node ~/.anti-hall/bin/...`), whose pattern
+//! depends on the home directories of the request, is installed for the decision in progress by [`set_launchers`].
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
@@ -18,6 +15,31 @@ use crate::checks::git::tokenize::basename;
 use crate::checks::lit_re;
 use regex::Regex;
 use std::collections::HashSet;
+
+thread_local! {
+    /// The stable-launcher light exceptions of the request being judged (`anchoredAntiHallStableLauncher`): they depend on the
+    /// home directories of the request, so they are set for the duration of one decision.
+    static LAUNCHERS: std::cell::RefCell<Vec<Regex>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Clears the request's launcher patterns when the decision ends.
+pub struct LauncherGuard;
+
+impl Drop for LauncherGuard {
+    fn drop(&mut self) {
+        LAUNCHERS.with(|l| l.borrow_mut().clear());
+    }
+}
+
+/// Install the launcher light exceptions for the decision in progress on this thread.
+pub fn set_launchers(res: Vec<Regex>) -> LauncherGuard {
+    LAUNCHERS.with(|l| *l.borrow_mut() = res);
+    LauncherGuard
+}
+
+fn launcher_match(text: &str) -> bool {
+    LAUNCHERS.with(|l| l.borrow().iter().any(|r| r.is_match(text)))
+}
 
 /// True when `text[..e]` ends where JavaScript `\b` holds after a word character.
 fn word_boundary_after(text: &str, e: usize) -> bool {
@@ -48,7 +70,7 @@ fn neg_light_match(nl: &NegLight, text: &str) -> bool {
 /// The index of the git subcommand after the `git` word at `git_idx`, skipping global options.
 ///
 /// Mirrors `command-guard.js` `gitSubcommandIndex`.
-fn git_subcommand_index(tokens: &[String], git_idx: usize) -> Option<usize> {
+pub(super) fn git_subcommand_index(tokens: &[String], git_idx: usize) -> Option<usize> {
     let t = tables();
     let mut idx = git_idx + 1;
     while idx < tokens.len() {
@@ -142,13 +164,17 @@ fn is_safe_sqlite_readonly(segment: &str, whole: &str) -> bool {
 }
 
 /// A parsed gcloud read: its command path and verb.
-struct GcloudRead {
-    path: Vec<String>,
-    verb: String,
+pub(super) struct GcloudRead {
+    /// The command path before the verb.
+    pub path: Vec<String>,
+    /// The verb.
+    pub verb: String,
+    /// The accepted flags (`--name=value`, with a separated value joined by `=`).
+    pub flags: Vec<String>,
 }
 
 /// Mirrors `command-guard.js` `gcloudReadGrammar`.
-fn gcloud_read_grammar(rest: &[String], sep_values: bool) -> Option<GcloudRead> {
+pub(super) fn gcloud_read_grammar(rest: &[String], sep_values: bool, verbs: &HashSet<String>) -> Option<GcloudRead> {
     let t = tables();
     static PATH_WORD: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static FLAG_EQ: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
@@ -157,7 +183,7 @@ fn gcloud_read_grammar(rest: &[String], sep_values: bool) -> Option<GcloudRead> 
     let mut i = 0;
     let mut path = Vec::new();
     while i < rest.len() && !rest[i].starts_with('-') {
-        if t.gcloud_inspect.contains(&rest[i].to_lowercase()) {
+        if verbs.contains(&rest[i].to_lowercase()) {
             break;
         }
         path.push(rest[i].clone());
@@ -185,6 +211,7 @@ fn gcloud_read_grammar(rest: &[String], sep_values: bool) -> Option<GcloudRead> 
     if i < rest.len() && !rest[i].starts_with('-') {
         i += 1;
     }
+    let mut flags = Vec::new();
     while i < rest.len() {
         let tok = &rest[i];
         if !tok.starts_with("--") {
@@ -194,29 +221,32 @@ fn gcloud_read_grammar(rest: &[String], sep_values: bool) -> Option<GcloudRead> 
             if tok.starts_with("--flags-file=") {
                 return None;
             }
+            flags.push(tok.clone());
             i += 1;
             continue;
         }
         if t.gcloud_bool.contains(tok) {
+            flags.push(tok.clone());
             i += 1;
             continue;
         }
         if sep_values && t.gcloud_value.contains(tok) && i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+            flags.push(format!("{tok}={}", rest[i + 1]));
             i += 2;
             continue;
         }
         return None;
     }
-    Some(GcloudRead { path, verb })
+    Some(GcloudRead { path, verb, flags })
 }
 
 /// True when a gcloud read may stand: `read` only on the logging group.
-fn gcloud_read_ok(g: &GcloudRead) -> bool {
+pub(super) fn gcloud_read_ok(g: &GcloudRead) -> bool {
     !(g.verb == "read" && g.path.last().map(String::as_str) != Some(tables().gcloud_logging.as_str()))
 }
 
 /// Mirrors `command-guard.js` `stripGcloudStderrMerge`.
-fn strip_gcloud_stderr_merge(segment: &str) -> String {
+pub(super) fn strip_gcloud_stderr_merge(segment: &str) -> String {
     static RE: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     RE.get_or_init(|| lit_re(r"(^|[^\\])\s+2>&1\s*$")).replacen(segment, 1, "$1").into_owned()
 }
@@ -235,7 +265,7 @@ fn is_read_only_cloud_inspect(segment: &str) -> bool {
         }
         let st = tokenize_quoted(&stripped);
         let Some(s_idx) = st.iter().position(|x| basename(x).to_lowercase() == "gcloud") else { return false };
-        return gcloud_read_grammar(&st[s_idx + 1..], false).is_some_and(|g| gcloud_read_ok(&g));
+        return gcloud_read_grammar(&st[s_idx + 1..], false, &t.gcloud_inspect).is_some_and(|g| gcloud_read_ok(&g));
     }
     let first = rest.first().map(|s| s.to_lowercase()).unwrap_or_default();
     if !t.cloud_readonly.contains(&first) {
@@ -245,7 +275,7 @@ fn is_read_only_cloud_inspect(segment: &str) -> bool {
 }
 
 /// Mirrors `command-guard.js` `closedSinkTokens`.
-fn closed_sink_tokens(t: &[String]) -> bool {
+pub(super) fn closed_sink_tokens(t: &[String]) -> bool {
     static HEAD1: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static NUM: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     static WC: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
@@ -292,7 +322,7 @@ fn closed_sink_tokens(t: &[String]) -> bool {
 }
 
 /// Mirrors `command-guard.js` `isClosedSinkStage`.
-fn is_closed_sink_stage(segment: &str) -> bool {
+pub(super) fn is_closed_sink_stage(segment: &str) -> bool {
     if has_unquoted_redirect_char(segment) || has_shell_expansion_anywhere(segment) {
         return false;
     }
@@ -334,7 +364,8 @@ fn is_whole_command_read_only_form(command: &str) -> bool {
             false
         } else {
             let st = tokenize_quoted(&stripped);
-            st.first().map(String::as_str) == Some("gcloud") && gcloud_read_grammar(&st[1..], true).is_some_and(|g| gcloud_read_ok(&g))
+            st.first().map(String::as_str) == Some("gcloud")
+                && gcloud_read_grammar(&st[1..], true, &tables().gcloud_inspect).is_some_and(|g| gcloud_read_ok(&g))
         }
     };
     ok && segs[1..].iter().all(|s| is_closed_sink_stage(trim(s)))
@@ -463,11 +494,11 @@ fn is_flagged_interpreter_script(segment: &str) -> bool {
 }
 
 /// Mirrors `command-guard.js` `isHeavySegment`.
-fn is_heavy_segment(segment: &str, command: &str) -> bool {
+pub(super) fn is_heavy_segment(segment: &str, command: &str) -> bool {
     let t = tables();
     let segment = t.control_prefix.replacen(segment, 1, "").into_owned();
     let unwrapped = t.timeout_prefix.replacen(&segment, 1, "").into_owned();
-    if t.light.iter().any(|re| re.is_match(&segment) || re.is_match(&unwrapped)) {
+    if t.light.iter().any(|re| re.is_match(&segment) || re.is_match(&unwrapped)) || launcher_match(&segment) || launcher_match(&unwrapped) {
         return false;
     }
     if t.light_neg.iter().any(|nl| neg_light_match(nl, &segment) || neg_light_match(nl, &unwrapped)) {
