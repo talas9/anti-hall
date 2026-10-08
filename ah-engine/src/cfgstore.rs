@@ -924,8 +924,19 @@ mod tests {
         // review finding 19: the daemon resolves the env layer from its own environment, fixed at start; that is only right
         // while no env-overridable setting decides anything for one request. A new `env` key outside these sections fails
         // here until it is reviewed (and, if it is per request, read from the request's environment instead).
-        const PROCESS: &[&str] =
-            &["daemon.", "client.", "storage.", "schedule.", "telemetry.", "spool.", "config.", "tier.", "dispatch.in_process", "dispatch.max_timeout_s", "session.gitignore_probe_ms"];
+        const PROCESS: &[&str] = &[
+            "daemon.",
+            "client.",
+            "storage.",
+            "schedule.",
+            "telemetry.",
+            "spool.",
+            "config.",
+            "tier.",
+            "dispatch.in_process",
+            "dispatch.max_timeout_s",
+            "session.gitignore_probe_ms",
+        ];
         let odd: Vec<&str> = defaults::all().iter().filter(|e| e.env.is_some() && !PROCESS.iter().any(|p| e.key.starts_with(p))).map(|e| e.key).collect();
         assert!(odd.is_empty(), "env-overridable settings that are not process tunables: {odd:?}");
     }

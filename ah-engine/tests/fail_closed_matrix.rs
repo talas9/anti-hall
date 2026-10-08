@@ -679,10 +679,9 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
             let row = Row { daemon: effective_daemon(case, &row), ..row };
             let label = |v: &str| format!("[{}/{}] {} ({v})", case.host, case.event, row.name);
             let attempts: Vec<(String, Run, Want)> = match row.hook {
-                Hook::Crossed if matches!(row.want, Want::Closed | Want::InfraDefer) => vec![
-                    (label("allowing hook"), run(case, &row, MARK, MARK2), row.want),
-                    (label("blocking hook"), run(case, &row, BLOCK, MARK2), row.want),
-                ],
+                Hook::Crossed if matches!(row.want, Want::Closed | Want::InfraDefer) => {
+                    vec![(label("allowing hook"), run(case, &row, MARK, MARK2), row.want), (label("blocking hook"), run(case, &row, BLOCK, MARK2), row.want)]
+                }
                 // A complete in-cap payload, and an over-cap UTF-8 payload whose full bytes are available to Node,
                 // run every hook. The outcome is exact: the hook's own allow or block, never the engine's prefix-based
                 // fail-closed answer.

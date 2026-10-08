@@ -75,9 +75,10 @@ pub fn judge(event: &str, payload: Option<&Value>, why: &str) -> Verdict {
     let cap = defaults::num("dispatch.stop_block_cap");
     // two Stops of one session at once must not both read n and write n+1 (review finding 11): the read-increment-write
     // runs under an exclusive lock on the counter's lock file; the count is replaced atomically
-    let lock = path.parent().filter(|d| crate::limits::ensure_private_dir(d).is_ok()).and_then(|_| {
-        std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(crate::paths::lock_for(&path)).ok()
-    });
+    let lock = path
+        .parent()
+        .filter(|d| crate::limits::ensure_private_dir(d).is_ok())
+        .and_then(|_| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(crate::paths::lock_for(&path)).ok());
     // SAFETY: the descriptor belongs to `lock`, which outlives the call; flock takes only it and a flag.
     let locked = lock.as_ref().is_some_and(|f| unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(f), libc::LOCK_EX) } == 0);
     let seen: u64 = std::fs::read_to_string(&path).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);

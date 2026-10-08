@@ -620,7 +620,8 @@ mod tests {
     #[test]
     fn a_job_that_writes_more_than_a_pipe_buffer_finishes() {
         // review finding 12: stdout and stderr were read only after exit, so a job writing over 64 KiB never exited
-        let argv: Vec<String> = ["/bin/sh", "-c", "head -c 300000 /dev/zero | tr '\\0' a; head -c 200000 /dev/zero >&2"].iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> =
+            ["/bin/sh", "-c", "head -c 300000 /dev/zero | tr '\\0' a; head -c 200000 /dev/zero >&2"].iter().map(|s| s.to_string()).collect();
         match super::subprocess(&argv, std::time::Duration::from_secs(10)) {
             super::Outcome::Ok(out) => assert_eq!(out.len(), 300_000),
             other => panic!("{other:?}"),

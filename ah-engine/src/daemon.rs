@@ -967,7 +967,11 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, 
             // the lock is held but nothing answers on the socket: a daemon that is draining, wedged, or gone without
             // releasing it; this start gives up (the client falls back to Node), and the line says why
             let holder = std::fs::read_to_string(lock_path).unwrap_or_default();
-            health::log_event("lock_wait", "no_daemon", &defaults::render("msg.log_lock_no_daemon", &[("path", &lock_path.display()), ("pid", &holder.trim())]));
+            health::log_event(
+                "lock_wait",
+                "no_daemon",
+                &defaults::render("msg.log_lock_no_daemon", &[("path", &lock_path.display()), ("pid", &holder.trim())]),
+            );
             return Ok(None);
         }
         std::thread::sleep(defaults::millis("daemon.lock_poll_ms"));
