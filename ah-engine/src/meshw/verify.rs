@@ -35,22 +35,26 @@ pub enum Kind {
     Heartbeat,
     /// `inbox tick`.
     Tick,
+    /// `inbox read-primary`.
+    ReadPrimary,
 }
 
 /// The kind of a verb argv (`inbox tick <id> ...` or `heartbeat <id> ...`).
 pub fn kind_of(argv: &[String]) -> Kind {
-    if argv.first().map(String::as_str) == Some(defaults::text("mesh_write.verb_inbox"))
-        && argv.get(1).map(String::as_str) == Some(defaults::text("mesh_write.verb_tick"))
-    {
-        Kind::Tick
-    } else {
-        Kind::Heartbeat
+    if argv.first().map(String::as_str) == Some(defaults::text("mesh_write.verb_inbox")) {
+        if argv.get(1).map(String::as_str) == Some(defaults::text("mesh_write.verb_tick")) {
+            return Kind::Tick;
+        }
+        if argv.get(1).map(String::as_str) == Some(defaults::text("mesh_write.verb_read_primary")) {
+            return Kind::ReadPrimary;
+        }
     }
+    Kind::Heartbeat
 }
 
 /// The workspace id of a verb argv.
 pub fn id_of(argv: &[String]) -> String {
-    argv.get(if kind_of(argv) == Kind::Tick { 2 } else { 1 }).cloned().unwrap_or_default()
+    argv.get(if kind_of(argv) == Kind::Heartbeat { 1 } else { 2 }).cloned().unwrap_or_default()
 }
 
 /// Copy what a heartbeat touches into a scratch home; `None` when that fails (the call is then not verified). A call that
@@ -65,12 +69,22 @@ pub fn prepare_tick(inv: &Inv) -> Option<PathBuf> {
     prepare_for(inv, Kind::Tick, false)
 }
 
+/// Copy what a read-primary touches into a scratch home (the store as a consistent copy, the stable launcher its
+/// `ackCommand` names); `None` when that fails (the call is then not verified).
+pub fn prepare_read_primary(inv: &Inv) -> Option<PathBuf> {
+    prepare_for(inv, Kind::ReadPrimary, true)
+}
+
 fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
     let scratch = crate::paths::dir().join(defaults::text("mesh_write.verify_dir")).join(format!("{}-{}", std::process::id(), now_ms()));
     let root = devswarm_root(&inv.home);
     let sroot = devswarm_root(&scratch.join(defaults::text("mesh_write.shadow_home")));
     std::fs::create_dir_all(&sroot).ok()?;
-    let dirs = if kind == Kind::Tick { "mesh_write.verify_tick_copy_dirs" } else { "mesh_write.verify_copy_dirs" };
+    let dirs = match kind {
+        Kind::Tick => "mesh_write.verify_tick_copy_dirs",
+        Kind::ReadPrimary => "mesh_write.verify_read_primary_copy_dirs",
+        Kind::Heartbeat => "mesh_write.verify_copy_dirs",
+    };
     for d in defaults::list(dirs) {
         if root.join(d).is_dir() {
             copy_tree(&root.join(d), &sroot.join(d)).ok()?;
@@ -81,6 +95,17 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
             if root.join(f).is_file() {
                 std::fs::copy(root.join(f), sroot.join(f)).ok()?;
             }
+        }
+    }
+    if kind == Kind::ReadPrimary {
+        // the `ackCommand` names the stable launcher under the home: the scratch home needs one, at the same relative place
+        let rel = PathBuf::from(defaults::text("mesh_write.dir_anti_hall"))
+            .join(defaults::text("mesh_write.launcher_dir"))
+            .join(defaults::text("mesh_write.launcher_devswarm"));
+        let (src, dst) = (inv.home.join(&rel), scratch.join(defaults::text("mesh_write.shadow_home")).join(&rel));
+        if src.is_file() {
+            std::fs::create_dir_all(dst.parent()?).ok()?;
+            std::fs::copy(&src, &dst).ok()?;
         }
     }
     // a descriptor that names a file of the copied `cursors` directory must name the copy (Node compares that path with the
@@ -97,6 +122,9 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
                 std::fs::write(e.path(), text.replace(&from, &to)).ok()?;
             }
         }
+    }
+    if kind == Kind::ReadPrimary {
+        snapshot_descriptor_files(&inv.home, &scratch.join(defaults::text("mesh_write.shadow_home")), &sroot)?;
     }
     // the sender-alias map the summary refresh attributes rows with
     let alias = defaults::text("mesh_write.alias_file");
@@ -146,24 +174,55 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
     Some(scratch)
 }
 
+/// A descriptor's NDJSON inbox and cursor file are named by absolute path: a witness that read them in place would race
+/// with whoever moves the real cursor next. Each that sits under the real home is copied to the same place under the scratch
+/// home and the copied descriptor names the copy (so a path printed by the witness maps back by swapping the two homes).
+fn snapshot_descriptor_files(real_home: &Path, scratch_home: &Path, sroot: &Path) -> Option<()> {
+    let dir = sroot.join(defaults::text("mesh_write.dir_workspaces"));
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Some(()) };
+    for e in rd.flatten() {
+        let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
+        let Ok(mut d) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let mut changed = false;
+        for field in [defaults::text("mesh_write.field_inbox_path"), defaults::text("mesh_write.field_cursor_path")] {
+            let Some(p) = d[field].as_str().map(PathBuf::from) else { continue };
+            let Ok(rel) = p.strip_prefix(real_home) else { continue };
+            if !p.is_file() {
+                continue;
+            }
+            let dst = scratch_home.join(rel);
+            std::fs::create_dir_all(dst.parent()?).ok()?;
+            std::fs::copy(&p, &dst).ok()?;
+            d[field] = serde_json::Value::String(dst.to_string_lossy().into_owned());
+            changed = true;
+        }
+        if changed {
+            std::fs::write(e.path(), d.to_string()).ok()?;
+        }
+    }
+    Some(())
+}
+
 /// The files a verb writes: for a heartbeat its record, the liveness verdict and the app-state cache; for a tick the
-/// refreshed heartbeat record, the wake-tick marker and the cron-found-mail file.
-fn id_files(root: &Path, argv: &[String]) -> [PathBuf; 3] {
+/// refreshed heartbeat record, the wake-tick marker and the cron-found-mail file; a read-primary writes one receipt, named
+/// by a random id, which the verifier finds through the written-file manifest instead.
+fn id_files(root: &Path, argv: &[String]) -> Vec<PathBuf> {
     let id = id_of(argv);
     let j = defaults::text("mesh_write.json_suffix");
     let heartbeat = root.join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{j}"));
-    if kind_of(argv) == Kind::Tick {
-        return [
+    match kind_of(argv) {
+        Kind::ReadPrimary => Vec::new(),
+        Kind::Tick => vec![
             heartbeat,
             root.join(defaults::text("mesh_write.dir_wake_tick")).join(format!("{id}{j}")),
             root.join(defaults::text("mesh_write.file_cron_found_mail")),
-        ];
+        ],
+        Kind::Heartbeat => vec![
+            heartbeat,
+            root.join(defaults::text("mesh_write.dir_liveness")).join(format!("{id}{j}")),
+            root.join(defaults::text("mesh_write.app_cache_dir")).join(defaults::text("mesh_write.app_cache_file")),
+        ],
     }
-    [
-        heartbeat,
-        root.join(defaults::text("mesh_write.dir_liveness")).join(format!("{id}{j}")),
-        root.join(defaults::text("mesh_write.app_cache_dir")).join(defaults::text("mesh_write.app_cache_file")),
-    ]
 }
 
 /// After the engine answered: save what it printed and wrote, and start the detached verifier.
@@ -208,7 +267,7 @@ pub fn launch(scratch: &Path, inv: &Inv, argv: &[String], stdout: &str) {
     let Ok(exe) = std::env::current_exe() else { return };
     let mut c = Command::new(exe);
     c.arg(defaults::text("mesh_write.verb_mesh")).arg(defaults::text("mesh_write.verify_flag")).arg(scratch).arg(inv.now.to_string()).args(argv);
-    if kind_of(argv) == Kind::Tick
+    if kind_of(argv) != Kind::Heartbeat
         && let Some(nonce) = crate::meshw::tick::reader_nonce_cached(&inv.home)
     {
         c.env(defaults::text("mesh_write.env_verify_nonce"), nonce);
@@ -239,6 +298,41 @@ pub fn row_text(db: &Path, hash: &str) -> Option<String> {
     .ok()
 }
 
+/// What Node printed and wrote for a read-primary, as the engine's output is spelled: Node's receipt id replaced by the
+/// engine's, Node's scratch home by the real one. Returns the stdout and `(engine's relative path, Node's receipt)` pairs.
+fn read_primary_view(node_home: &Path, real_home: &Path, manifest: &[(String, String)], stdout: &[u8]) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+    let suffix = defaults::text("mesh_write.json_suffix");
+    let (node_home_text, real_home_text) = (node_home.to_string_lossy().into_owned(), real_home.to_string_lossy().into_owned());
+    let mut files = Vec::new();
+    let mut out = String::from_utf8_lossy(stdout).replace(&node_home_text, &real_home_text);
+    for (rel, _) in manifest {
+        let rel_path = Path::new(rel);
+        let (Some(dir), Some(engine_rid)) = (rel_path.parent(), rel_path.file_stem().and_then(|x| x.to_str())) else { continue };
+        let real_names: std::collections::HashSet<String> =
+            std::fs::read_dir(real_home.join(dir)).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        // Node's receipt is the file its scratch directory holds that the real directory did not hold before the engine wrote
+        let mut fresh: Vec<(String, std::time::SystemTime)> = std::fs::read_dir(node_home.join(dir))
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        (name.ends_with(suffix) && !real_names.contains(&name))
+                            .then(|| (name, e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        fresh.sort_by_key(|(_, t)| *t);
+        let Some((name, _)) = fresh.pop() else { continue };
+        let node_rid = name.trim_end_matches(suffix).to_string();
+        let bytes = std::fs::read(node_home.join(dir).join(&name)).unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes).replace(&node_home_text, &real_home_text).replace(&node_rid, engine_rid);
+        out = out.replace(&node_rid, engine_rid);
+        files.push((rel.clone(), text.into_bytes()));
+    }
+    (out.into_bytes(), files)
+}
+
 /// Both outputs equal.
 pub fn same(expected: &[Vec<u8>], got: &[Vec<u8>]) -> bool {
     expected == got
@@ -253,7 +347,7 @@ pub fn run_verifier(args: &[String]) -> i32 {
     let t0 = now_ms();
     let (Some(scratch), Some(now)) = (args.first().map(PathBuf::from), args.get(1)) else { return 1 };
     let argv = &args[2..];
-    let tick = kind_of(argv) == Kind::Tick;
+    let kind = kind_of(argv);
     let verb = argv.first().cloned().unwrap_or_default();
     let log = |result: &str, extra: serde_json::Value| {
         let mut rec = serde_json::json!({"ts": t0, "verb": verb, "result": result, "ms": now_ms() - t0});
@@ -277,7 +371,11 @@ pub fn run_verifier(args: &[String]) -> i32 {
     }
     let out = node
         .arg("-e")
-        .arg(defaults::text(if tick { "mesh_write.verify_tick_node_snippet" } else { "mesh_write.verify_node_snippet" }))
+        .arg(defaults::text(match kind {
+            Kind::Tick => "mesh_write.verify_tick_node_snippet",
+            Kind::ReadPrimary => "mesh_write.verify_read_primary_node_snippet",
+            Kind::Heartbeat => "mesh_write.verify_node_snippet",
+        }))
         .arg(root.join(defaults::text("mesh_write.node_cli")))
         .arg(now)
         .args(argv)
@@ -289,15 +387,30 @@ pub fn run_verifier(args: &[String]) -> i32 {
         Ok(o) if o.status.success() => {
             let read = |p: &Path| std::fs::read(p).unwrap_or_default();
             let files = id_files(&devswarm_root(&home), argv);
-            let got = [o.stdout.clone(), read(&files[0]), read(&files[1]), read(&files[2])];
-            let expected =
-                [read(&scratch.join("expect-stdout")), read(&scratch.join("expect-0")), read(&scratch.join("expect-1")), read(&scratch.join("expect-2"))];
+            let manifest: Vec<(String, String)> = serde_json::from_slice::<Vec<(String, String)>>(&read(&scratch.join("expect-manifest"))).unwrap_or_default();
+            // a read-primary's receipt is named by a random id: Node's copy of it is found in its scratch directory and both
+            // outputs are compared with the two ids, and the two homes, made equal
+            let mut node_stdout = o.stdout.clone();
+            let mut node_files: Vec<(String, Vec<u8>)> = Vec::new();
+            if kind == Kind::ReadPrimary {
+                let (out, found) = read_primary_view(&home, &real_home, &manifest, &o.stdout);
+                node_stdout = out;
+                node_files = found;
+            }
+            let mut got = vec![node_stdout];
+            got.extend(files.iter().map(|f| read(f)));
+            let mut expected = vec![read(&scratch.join("expect-stdout"))];
+            expected.extend((0..files.len()).map(|i| read(&scratch.join(format!("expect-{i}")))));
             // what a --summary or a plan step wrote besides: each file the engine wrote, and the mesh row it appended
             let mut diff: Vec<String> = Vec::new();
             let mut detail = serde_json::Map::new();
-            let manifest: Vec<(String, String)> = serde_json::from_slice::<Vec<(String, String)>>(&read(&scratch.join("expect-manifest"))).unwrap_or_default();
             for (rel, file) in &manifest {
-                let (want, node_has) = (read(&scratch.join(file)), read(&home.join(rel)));
+                let want = read(&scratch.join(file));
+                let node_has = if kind == Kind::ReadPrimary {
+                    node_files.iter().find(|(r, _)| r == rel).map(|(_, b)| b.clone()).unwrap_or_default()
+                } else {
+                    read(&home.join(rel))
+                };
                 if want != node_has {
                     diff.push(rel.clone());
                     let at = want.iter().zip(node_has.iter()).position(|(x, y)| x != y).unwrap_or(want.len().min(node_has.len()));
@@ -320,10 +433,14 @@ pub fn run_verifier(args: &[String]) -> i32 {
                 log(defaults::text("mesh_write.verify_match"), serde_json::json!({}));
             } else {
                 let result = if concurrent { defaults::text("mesh_write.shadow_concurrent") } else { defaults::text("mesh_write.verify_mismatch") };
-                let names = defaults::list(if tick { "mesh_write.verify_names_tick" } else { "mesh_write.verify_names_heartbeat" });
+                let names = defaults::list(match kind {
+                    Kind::Tick => "mesh_write.verify_names_tick",
+                    Kind::ReadPrimary => "mesh_write.verify_names_read_primary",
+                    Kind::Heartbeat => "mesh_write.verify_names_heartbeat",
+                });
                 let mut rec = serde_json::json!({"engine": cap(&expected[0]), "node": cap(&got[0]), "diff": diff, "detail": detail});
                 for (i, name) in names.iter().enumerate() {
-                    rec[*name] = serde_json::json!(expected[i + 1] == got[i + 1]);
+                    rec[*name] = serde_json::json!(if kind == Kind::ReadPrimary { diff.is_empty() } else { expected.get(i + 1) == got.get(i + 1) });
                 }
                 log(result, rec);
             }
