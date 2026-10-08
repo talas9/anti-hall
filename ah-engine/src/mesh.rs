@@ -200,6 +200,16 @@ impl MeshReader {
         Ok(MeshReader { conn })
     }
 
+    /// Wrap a connection the caller opened (the writer's read-write one, `meshw::store`), so the read methods run on it.
+    pub(crate) fn from_conn(conn: Connection) -> MeshReader {
+        MeshReader { conn }
+    }
+
+    /// The underlying connection.
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Every workspace id found anywhere in the store, sorted. A table that cannot be read contributes nothing, as in
     /// Node's `listWorkspaceIds`.
     pub fn workspace_ids(&self) -> Vec<String> {
@@ -391,6 +401,30 @@ impl MeshReader {
         Ok((values, set_by))
     }
 
+    /// A workspace's gate rows in insertion order: `String(gate_name)`, `value === 1` and `set_by` as text or null.
+    pub fn gate_rows(&self, id: &str) -> Res<Vec<(String, bool, Option<String>)>> {
+        let mut st = self.conn.prepare_cached(sql::MESH_GATE_ROWS)?;
+        let mut rows = st.query(params![id])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            // a JavaScript property key: null becomes the text "null"
+            let name = js_string(r.get_ref(0)?)?.unwrap_or_else(|| defaults::text("mesh_write.js_null").to_string());
+            out.push((name, is_one(r.get_ref(1)?), js_string(r.get_ref(2)?)?));
+        }
+        Ok(out)
+    }
+
+    /// Each registry row's `String(id)` and its raw `nudge_command` text (NULL as `None`), in id order.
+    pub fn registry_nudges(&self) -> Res<Vec<(String, Option<String>)>> {
+        let mut st = self.conn.prepare_cached(sql::MESH_REGISTRY_NUDGES)?;
+        let mut rows = st.query([])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push((js_string(r.get_ref(0)?)?.unwrap_or_default(), js_string(r.get_ref(1)?)?));
+        }
+        Ok(out)
+    }
+
     /// The `reader_cursors` rows of one partition; a store that predates the table has none (Node's
     /// `readerCursorRows`).
     pub fn reader_cursors(&self, partition: &str) -> Res<Vec<Value>> {
@@ -544,6 +578,14 @@ fn fail(p: &Parsed, e: &MeshError) -> i32 {
 
 /// `ah-engine mesh <verb>`: see `cmd.mesh` in the command registry.
 pub fn run_cmd(p: &Parsed) -> i32 {
+    // Without `--db` the words after `mesh` are a `devswarm.js` argv (D45 stage 2, `crate::meshw`).
+    // argv[0] is the binary and argv[1] the command word (`mesh`); what follows is the devswarm.js argv.
+    let mut argv = std::env::args_os();
+    argv.nth(1);
+    let raw: Vec<std::ffi::OsString> = argv.collect();
+    if !raw.iter().any(|a| a.to_str() == Some(defaults::text("mesh.db_flag"))) && !p.rest.is_empty() {
+        return crate::meshw::run_front(&raw);
+    }
     let verb = p.rest.first().map(String::as_str).unwrap_or("");
     let Some(db) = flag(p, "db") else { return usage(p) };
     let reader = match MeshReader::open(Path::new(&db)) {

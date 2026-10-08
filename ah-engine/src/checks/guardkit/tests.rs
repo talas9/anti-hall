@@ -265,7 +265,7 @@ mod nodelock_tests {
     }
 
     fn quick() -> Params {
-        Params { stale_ms: 300, wait_ms: 40, step_ms: 5, reclaim_stale_ms: 300, release_tries: 3, release_step_ms: 5, boot_slop_s: 5 }
+        Params { stale_ms: 300, wait_ms: 40, step_ms: 5, reclaim_stale_ms: 300, release_tries: 3, release_step_ms: 5, boot_slop_s: 5, steal_dead: false }
     }
 
     fn now() -> u64 {

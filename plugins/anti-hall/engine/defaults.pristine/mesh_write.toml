@@ -1,0 +1,936 @@
+# ah-engine shipped mesh-writer defaults (D45, stage 2): the mesh CLI verbs that WRITE the per-repo DevSwarm store
+# (`ah-engine mesh <devswarm.js argv>`), with Node's schema, statements, locking and output. Format: see the header of
+# engine.toml. Every name, path, text and limit the port of scripts/devswarm.js and companion/lib/devswarm-store.js
+# uses lives here; the values are Node's own (cited per key).
+
+# ---- store and statements (companion/lib/devswarm-store.js) -------------------------------------------------------
+
+[mesh_write.store_file]
+doc = "File name of a per-repo store (`devswarm.db`)."
+value = "devswarm.db"
+
+[mesh_write.broadcast_partition]
+doc = "The shared partition every broadcast and heartbeat row lands in (Node's BROADCAST_PARTITION_ID)."
+value = "*mesh-broadcast*"
+
+[mesh_write.mtype_direct]
+doc = "The `mtype` of a direct message."
+value = "direct"
+
+[mesh_write.mtype_broadcast]
+doc = "The `mtype` of a broadcast (also `send --type broadcast`)."
+value = "broadcast"
+
+[mesh_write.mesh_hash_prefix]
+doc = "Prefix of a store-direct mesh message's dedupe hash (Node's meshMessageHash namespace)."
+value = "mesh:"
+
+[mesh_write.messages_added_columns]
+doc = "The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`."
+value = ["sender TEXT", "recipient TEXT", "mtype TEXT", "urgency TEXT", "is_heartbeat INTEGER", "seq INTEGER", "needs_reply INTEGER", "orig_hash TEXT", "instance_nonce TEXT"]
+
+[mesh_write.write_seq_column]
+doc = "The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn)."
+value = "write_seq"
+
+[mesh_write.busy_retries]
+doc = "Attempts of a write that meets SQLITE_BUSY after the busy timeout (Node's SQLITE_BUSY_MAX_RETRIES)."
+value = 5
+min = 1
+max = 100
+
+[mesh_write.busy_retry_base_ms]
+doc = "Fixed part of the sleep between those attempts, in milliseconds (Node: 20)."
+value = 20
+min = 0
+max = 10000
+
+[mesh_write.busy_retry_jitter_ms]
+doc = "Random part of that sleep, in milliseconds (Node: up to 40)."
+value = 40
+min = 0
+max = 10000
+
+[mesh_write.busy_text]
+doc = "Lower-cased text of a SQLite busy error (Node's isSqliteBusyError also matches it)."
+value = "database is locked"
+
+[mesh_write.backend_journal]
+doc = "The marker text of Node's journal backend; a store pinned to it is Node's alone."
+value = "journal"
+
+[mesh_write.env_store_backend]
+doc = "The variable that forces Node's store backend (ANTIHALL_DEVSWARM_STORE_BACKEND)."
+value = "ANTIHALL_DEVSWARM_STORE_BACKEND"
+
+# ---- the per-workspace lock (scripts/devswarm-lib/core.js acquireIdLock, companion/lib/recovery.js acquireLock) ----
+
+[mesh_write.id_lock_budget_ms]
+doc = "How long one acquire keeps retrying a lock held by a live, fresh holder before the verb reports lockBusy (Node: 2000)."
+value = 2000
+min = 0
+max = 60000
+
+[mesh_write.id_lock_step_ms]
+doc = "Pause between those retries, in milliseconds (Node: 25)."
+value = 25
+min = 1
+max = 10000
+
+[mesh_write.id_lock_stale_ms]
+doc = "A lock older than this is taken over whoever holds it (Node's LOCK_STALE_MS, 15 minutes)."
+value = 900000
+min = 1000
+max = 86400000
+
+[mesh_write.id_lock_reclaim_stale_ms]
+doc = "A takeover marker (`<lock>.reclaim`) older than this is abandoned (lock.js RECLAIM_STALE_MS)."
+value = 5000
+min = 100
+max = 600000
+
+[mesh_write.id_lock_release_tries]
+doc = "Attempts a release makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES)."
+value = 5
+min = 1
+max = 100
+
+[mesh_write.id_lock_release_step_ms]
+doc = "Pause between those attempts (lock.js RELEASE_SIDECAR_STEP_MS)."
+value = 10
+min = 1
+max = 10000
+
+[mesh_write.id_lock_boot_slop_s]
+doc = "Two boot times this close are one boot (lock.js BOOT_SLOP_S)."
+value = 5
+min = 0
+max = 3600
+
+[mesh_write.send_lock_attempts]
+doc = "Whole lock acquisitions a direct send tries before reporting lockBusy (Node's SEND_LOCK_RETRY_ATTEMPTS)."
+value = 3
+min = 1
+max = 20
+
+[mesh_write.send_lock_retry_base_ms]
+doc = "Backoff base between those attempts: base * 2^attempt plus up to base of jitter (Node's SEND_LOCK_RETRY_BASE_MS)."
+value = 150
+min = 0
+max = 60000
+
+[mesh_write.send_lock_max_shift]
+doc = "Cap on the backoff exponent (a guard; Node's 3 attempts never reach it)."
+value = 8
+min = 0
+max = 30
+
+[mesh_write.lock_suffix]
+doc = "File-name suffix of a lock file."
+value = ".lock"
+
+# ---- paths and names ----------------------------------------------------------------------------------------------
+
+[mesh_write.dir_anti_hall]
+doc = "anti-hall's directory under the home directory."
+value = ".anti-hall"
+
+[mesh_write.dir_devswarm]
+doc = "The DevSwarm state directory under it."
+value = "devswarm"
+
+[mesh_write.dir_store]
+doc = "The per-repo stores directory under the DevSwarm state directory."
+value = "store"
+
+[mesh_write.dir_locks]
+doc = "The locks directory under the DevSwarm state directory."
+value = "locks"
+
+[mesh_write.dir_workspaces]
+doc = "The workspace descriptors directory under the DevSwarm state directory."
+value = "workspaces"
+
+[mesh_write.dir_heartbeats]
+doc = "The heartbeats directory under the DevSwarm state directory."
+value = "heartbeats"
+
+[mesh_write.dir_plans]
+doc = "The plans directory under the DevSwarm state directory (devswarm-plan.js)."
+value = "plans"
+
+[mesh_write.dir_send_receipts]
+doc = "The send receipts directory under the DevSwarm state directory (one JSON file per send, by UTC day)."
+value = "send-receipts"
+
+[mesh_write.dir_state]
+doc = "anti-hall's state directory under its home directory."
+value = "state"
+
+[mesh_write.alias_file]
+doc = "The sender alias map under the DevSwarm state directory (devswarm-sender-alias.js)."
+value = "sender-aliases.json"
+
+[mesh_write.alias_key]
+doc = "The object of that file holding the aliases."
+value = "aliases"
+
+[mesh_write.json_suffix]
+doc = "File-name suffix of a JSON record."
+value = ".json"
+
+[mesh_write.tmp_suffix]
+doc = "Suffix of a staged file before its rename."
+value = ".tmp"
+
+[mesh_write.ingest_beat_prefix]
+doc = "File-name prefix of a project's ingest-daemon heartbeat (ingest-health.js ingestHeartbeatPath)."
+value = "ingest-"
+
+[mesh_write.ingest_lock_prefix]
+doc = "File-name prefix of a project's ingest-daemon lock (ingest-health.js ingestProjectLockPath)."
+value = "ingest-project-"
+
+[mesh_write.ingest_beat_stale_ms]
+doc = "An ingest heartbeat older than this is not fresh (ingest-health.js HEARTBEAT_STALE_MS, 3 minutes)."
+value = 180000
+min = 1000
+max = 86400000
+
+[mesh_write.monitor_failure_threshold]
+doc = "Consecutive monitor failures that make a live ingest daemon FAILING (doctor-repair.js MONITOR_FAILURE_FAIL_THRESHOLD)."
+value = 3
+min = 1
+max = 1000
+
+[mesh_write.setting_monitor_no_ok_fail_min]
+doc = "Where devswarm.monitorNoOkFailMin is read from (minutes without a successful monitor poll before the daemon reads FAILING)."
+value = { section = "devswarm", key = "monitorNoOkFailMin", env = "ANTIHALL_DEVSWARM_MONITOR_NO_OK_FAIL_MIN", default = 10 }
+
+[mesh_write.ms_per_minute]
+doc = "Milliseconds in a minute (the unit conversion of that setting)."
+value = 60000
+
+[mesh_write.claude_dir]
+doc = "The harness's directory under the home directory."
+value = ".claude"
+
+[mesh_write.sessions_dir]
+doc = "The harness's per-process session records under it (`<pid>.json`)."
+value = "sessions"
+
+[mesh_write.max_ppid_hops]
+doc = "Parent hops the reader-nonce walk takes looking for a harness session record (reader-identity.js MAX_PPID_HOPS)."
+value = 6
+min = 0
+max = 64
+
+[mesh_write.nonce_prefix]
+doc = "Prefix of a reader nonce (`h:<pid>:<startMs>`)."
+value = "h:"
+
+[mesh_write.ps_bin]
+doc = "The process-table tool the nonce walk runs, as Node does."
+value = "ps"
+
+[mesh_write.ps_ppid_args]
+doc = "Its arguments for the pid/parent table (reader-identity.js defaultPpidTable)."
+value = ["-A", "-o", "pid=,ppid="]
+
+[mesh_write.ps_lstart_args]
+doc = "Its arguments for one process's start time, followed by the pid (liveness.js processStartMs)."
+value = ["-o", "lstart=", "-p"]
+
+[mesh_write.month_names]
+doc = "Month abbreviations of that start time, January first (what Date.parse reads)."
+value = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+[mesh_write.jev_file]
+doc = "Jev's own config file under anti-hall's directory (jev-triage.js jevConfigPath)."
+value = "jev.json"
+
+[mesh_write.settings_file]
+doc = "anti-hall's settings file under its directory."
+value = "settings.json"
+
+[mesh_write.settings_jev_section]
+doc = "The settings section Jev reads."
+value = "jev"
+
+[mesh_write.field_enabled]
+doc = "Jev's on/off field."
+value = "enabled"
+
+[mesh_write.jev_pending_file]
+doc = "Jev triage's pending labeled messages under anti-hall's state directory (jev-triage.js pendingPath)."
+value = "jev-triage-pending.json"
+
+[mesh_write.env_jev]
+doc = "The variable that forces Jev on (1) or off (0)."
+value = "ANTIHALL_JEV"
+
+[mesh_write.env_on_value]
+doc = "Its on value."
+value = "1"
+
+[mesh_write.env_off_value]
+doc = "Its off value."
+value = "0"
+
+# ---- identity (companion/lib/identity.js, scripts/devswarm-lib/identity.js) -----------------------------------------
+
+[mesh_write.dot_git]
+doc = "A checkout's git entry."
+value = ".git"
+
+[mesh_write.gitdir_key]
+doc = "The key of a `.git` file pointing at its git directory."
+value = "gitdir:"
+
+[mesh_write.commondir_file]
+doc = "The file of a linked worktree's git directory naming the common directory."
+value = "commondir"
+
+[mesh_write.git_config_file]
+doc = "A git directory's config file."
+value = "config"
+
+[mesh_write.git_core_section]
+doc = "The config section holding `worktree`."
+value = "[core]"
+
+[mesh_write.git_worktree_key]
+doc = "The `core.worktree` key (an absorbed submodule's git directory carries it; the engine then defers to Node)."
+value = "worktree"
+
+[mesh_write.git_modules_dir]
+doc = "Where a superproject keeps absorbed submodule git directories."
+value = "modules"
+
+[mesh_write.max_submodule_hops]
+doc = "Superproject hops a resolution takes (identity.js MAX_SUBMODULE_HOPS)."
+value = 32
+min = 1
+max = 1024
+
+[mesh_write.repo_name_max]
+doc = "Length cap of a repo name in a repoKey (identity.js MAX_NAME_LEN)."
+value = 40
+min = 1
+max = 255
+
+[mesh_write.repo_name_fallback]
+doc = "A repo name that sanitizes to nothing."
+value = "repo"
+
+[mesh_write.repo_key_hex]
+doc = "Hex characters of the common-dir hash in a repoKey."
+value = 6
+min = 1
+max = 64
+
+[mesh_write.mesh_id_hex]
+doc = "Hex characters of the worktree hash in a meshId (and of hashFromWorkspaceId)."
+value = 8
+min = 1
+max = 64
+
+[mesh_write.primary_prefix]
+doc = "Prefix of a worktree meshId (`primary-<hash>`)."
+value = "primary-"
+
+[mesh_write.kind_deleted]
+doc = "Context kind of a path that does not exist."
+value = "deleted"
+
+[mesh_write.kind_non_git]
+doc = "Context kind of a path outside any checkout."
+value = "non-git"
+
+[mesh_write.kind_main]
+doc = "Context kind of a main checkout."
+value = "main"
+
+[mesh_write.kind_linked]
+doc = "Context kind of a linked worktree."
+value = "linked-worktree"
+
+[mesh_write.kind_submodule_prefix]
+doc = "Prefix of a submodule context kind."
+value = "submodule-in-"
+
+[mesh_write.kind_resolved]
+doc = "Caller identity kind: the cwd is a checkout."
+value = "resolved"
+
+[mesh_write.kind_declared]
+doc = "Caller identity kind: DEVSWARM_BUILDER_ID was trusted."
+value = "declared"
+
+[mesh_write.kind_unresolvable]
+doc = "Caller identity kind: neither (a hash of the raw cwd)."
+value = "unresolvable"
+
+[mesh_write.kind_child]
+doc = "Sender identity kind: a child workspace's registered id."
+value = "child"
+
+[mesh_write.env_builder_id]
+doc = "The variable DevSwarm sets to a workspace's builder id."
+value = "DEVSWARM_BUILDER_ID"
+
+[mesh_write.env_project_dir]
+doc = "The harness's project directory variable (projectCwdFor's last fallback)."
+value = "CLAUDE_PROJECT_DIR"
+
+[mesh_write.env_session_id]
+doc = "The variable naming the caller's session (the Primary seat guard reads it)."
+value = "CLAUDE_CODE_SESSION_ID"
+
+[mesh_write.env_home]
+doc = "The home directory variable (os.homedir() on POSIX)."
+value = "HOME"
+
+[mesh_write.field_worktree_path]
+doc = "A descriptor's worktree field."
+value = "worktreePath"
+
+[mesh_write.field_session_id]
+doc = "A descriptor's session field."
+value = "sessionId"
+
+[mesh_write.field_owner_key]
+doc = "A descriptor's owner store key (a re-home candidate when it is the legacy hash bucket)."
+value = "ownerKey"
+
+[mesh_write.unclaimed_prefix]
+doc = "Prefix of a session id that no real session claimed yet (the seat ignores it)."
+value = "unclaimed:"
+
+[mesh_write.synthetic_session_prefix]
+doc = "The same prefix as the routing code names it (SYNTHETIC_SESSION_PREFIX)."
+value = "unclaimed:"
+
+[mesh_write.env_app_db]
+doc = "The variable that points at (or, with `off`, disables) the DevSwarm app database."
+value = "ANTIHALL_DEVSWARM_APP_DB"
+
+[mesh_write.app_db_off]
+doc = "Its disabling value."
+value = "off"
+
+[mesh_write.app_db_macos]
+doc = "The DevSwarm app database under the home directory on macOS."
+value = "Library/Application Support/DevSwarm/devswarm.db"
+
+[mesh_write.env_xdg_config]
+doc = "The XDG config directory variable (Linux)."
+value = "XDG_CONFIG_HOME"
+
+[mesh_write.xdg_default]
+doc = "Its default under the home directory."
+value = ".config"
+
+[mesh_write.app_db_linux]
+doc = "The DevSwarm app database under the config directory on Linux."
+value = "DevSwarm/devswarm.db"
+
+[mesh_write.app_core_columns]
+doc = "The `builders` columns without which Node's app snapshot is null."
+value = ["id", "isActive"]
+
+[mesh_write.app_col_worktree]
+doc = "The `builders` worktree column."
+value = "worktreePath"
+
+[mesh_write.app_col_builder_type]
+doc = "The `builders` type column."
+value = "builderType"
+
+[mesh_write.builder_type_primary]
+doc = "The builder type of a Primary checkout."
+value = "primary"
+
+# ---- argv (scripts/devswarm-lib/core.js parseArgs) and verbs -------------------------------------------------------
+
+[mesh_write.value_required_flags]
+doc = "Flags that always take the next word as their value (Node's VALUE_REQUIRED_FLAGS)."
+value = ["message", "message-file"]
+
+[mesh_write.boolean_only_flags]
+doc = "Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS)."
+value = ["force", "peek", "answers", "help", "ack-after-print", "quiet", "cc-primary", "short", "with-broadcasts"]
+
+[mesh_write.verb_send]
+doc = "The send verb."
+value = "send"
+
+[mesh_write.verb_mesh]
+doc = "The mesh verb."
+value = "mesh"
+
+[mesh_write.verb_read]
+doc = "Its read subcommand."
+value = "read"
+
+[mesh_write.verb_history]
+doc = "Its history subcommand."
+value = "history"
+
+[mesh_write.verb_roster]
+doc = "The roster verb (`roster --ack` is `mesh read`)."
+value = "roster"
+
+[mesh_write.verb_help]
+doc = "The help verb."
+value = "help"
+
+[mesh_write.flag_help]
+doc = "Help flag name."
+value = "help"
+
+[mesh_write.flag_h]
+doc = "Short help flag name (`--h`)."
+value = "h"
+
+[mesh_write.flag_dash_h]
+doc = "The `-h` word."
+value = "-h"
+
+[mesh_write.flag_json]
+doc = "Raw JSON output flag."
+value = "json"
+
+[mesh_write.flag_quiet]
+doc = "send's one-line output flag."
+value = "quiet"
+
+[mesh_write.flag_to]
+doc = "send's recipient flag."
+value = "to"
+
+[mesh_write.flag_to_primary]
+doc = "send's Primary flag."
+value = "to-primary"
+
+[mesh_write.flag_broadcast]
+doc = "send's broadcast flag."
+value = "broadcast"
+
+[mesh_write.flag_type]
+doc = "send's type flag (`--type broadcast`)."
+value = "type"
+
+[mesh_write.flag_from]
+doc = "send's redundant sender declaration."
+value = "from"
+
+[mesh_write.flag_cc_primary]
+doc = "send's copy-the-Primary flag (Node only)."
+value = "cc-primary"
+
+[mesh_write.flag_question]
+doc = "send's needs-reply flag."
+value = "question"
+
+[mesh_write.flag_answers]
+doc = "send's reply-correlation flag."
+value = "answers"
+
+[mesh_write.flag_message]
+doc = "send's body flag."
+value = "message"
+
+[mesh_write.flag_message_file]
+doc = "send's body-from-file flag."
+value = "message-file"
+
+[mesh_write.flag_message_stdin]
+doc = "send's body-from-stdin flag."
+value = "message-stdin"
+
+[mesh_write.flag_urgency]
+doc = "send's urgency flag."
+value = "urgency"
+
+[mesh_write.flag_seq]
+doc = "mesh read's explicit baseline flag."
+value = "seq"
+
+[mesh_write.flag_peek]
+doc = "mesh read's non-consuming flag."
+value = "peek"
+
+[mesh_write.flag_last]
+doc = "mesh read's newest-N flag."
+value = "last"
+
+[mesh_write.flag_since]
+doc = "mesh read's time filter (Node only)."
+value = "since"
+
+[mesh_write.flag_ack]
+doc = "roster's consume flag."
+value = "ack"
+
+[mesh_write.history_seq]
+doc = "The baseline `mesh history` reads from."
+value = "0"
+
+[mesh_write.allowed_urgency]
+doc = "send's urgency words (Node's ALLOWED_URGENCY)."
+value = ["low", "normal", "high", "urgent"]
+
+[mesh_write.urgency_default]
+doc = "send's urgency when none is given."
+value = "normal"
+
+# ---- output (texts are Node's, byte for byte) ----------------------------------------------------------------------
+
+[mesh_write.action_send]
+doc = "`action` of a send result."
+value = "send"
+
+[mesh_write.action_mesh_read]
+doc = "`action` of a mesh read result."
+value = "mesh-read"
+
+[mesh_write.action_mesh_history]
+doc = "`action` of a mesh history result."
+value = "mesh-history"
+
+[mesh_write.reason_not_verified]
+doc = "`reason` of a send whose readback did not find the row."
+value = "send-not-verified"
+
+[mesh_write.msg_not_verified]
+doc = "`error` of that send. Placeholders: {hash}, {partition} (JSON-quoted)."
+value = "send appended a row (hash {hash}) but the readback against partition {partition} did not find it — the message is NOT confirmed delivered"
+
+[mesh_write.msg_mesh_read_hint]
+doc = "`hint` of a consuming mesh read."
+value = "consumed broadcasts stay re-readable without moving any cursor: `mesh history [--last N]`, or `inbox messages <id> --with-broadcasts`"
+
+[mesh_write.msg_registry_collision]
+doc = "stderr line of a registry upsert refused by the id-collision guard. Placeholders: {id}, {existing}, {incoming} (JSON-quoted)."
+value = "[devswarm-store] upsertRegistry: id {id} already maps to worktree_path {existing} — refusing to overwrite with a DIFFERENT path {incoming} (possible id hash collision); existing mapping preserved."
+
+[mesh_write.quiet_ok]
+doc = "`send --quiet` line of a delivered send. Placeholders: {seq}, {to}, {bytes}."
+value = "sent seq {seq} -> {to}, {bytes} bytes, ok"
+
+[mesh_write.quiet_fail]
+doc = "`send --quiet` line of a failed send. Placeholder: {why}."
+value = "ok:false {why}"
+
+[mesh_write.quiet_failed]
+doc = "The {why} of a failed send with neither error nor reason."
+value = "send failed"
+
+[mesh_write.quiet_broadcast]
+doc = "The {to} of a broadcast in the quiet line."
+value = "(broadcast)"
+
+[mesh_write.quiet_unknown]
+doc = "The {to} of a send with no recipient in the quiet line."
+value = "(unknown)"
+
+[mesh_write.js_undefined]
+doc = "`String(undefined)`."
+value = "undefined"
+
+[mesh_write.js_null]
+doc = "`String(null)`."
+value = "null"
+
+[mesh_write.heal_warning]
+doc = "The self-heal field naming a daemon problem."
+value = "daemonWarning"
+
+[mesh_write.heal_healthy]
+doc = "The self-heal field of a healthy daemon."
+value = "daemonHealthy"
+
+[mesh_write.heal_no_worktree]
+doc = "daemonWarning when the cwd is not in a checkout."
+value = "no-worktree"
+
+[mesh_write.heal_stale]
+doc = "daemonWarning when the ingest daemon looks stale or missing."
+value = "stale"
+
+# ---- the front door and the shadow ---------------------------------------------------------------------------------
+
+[mesh_write.node_bin]
+doc = "The Node binary the engine hands a verb to."
+value = "node"
+
+[mesh_write.node_cli]
+doc = "Node's mesh CLI, relative to the plugin root."
+value = "scripts/devswarm.js"
+
+[mesh_write.exit_no_node]
+doc = "Exit code when Node's CLI cannot be found or started."
+value = 127
+min = 1
+max = 255
+
+[mesh_write.exit_signal_base]
+doc = "A Node child killed by signal N exits as this plus N (the shell convention)."
+value = 128
+min = 0
+max = 255
+
+[mesh_write.msg_no_node_cli]
+doc = "stderr line when the plugin root (and so Node's CLI) is unknown."
+value = "ah-engine mesh: cannot find scripts/devswarm.js (no plugin root); run the verb with node directly"
+
+[mesh_write.msg_node_exec_failed]
+doc = "stderr line when starting Node failed. Placeholder: {err}."
+value = "ah-engine mesh: could not start node: {err}"
+
+[mesh_write.shadow_dir]
+doc = "Scratch directory (under the engine state directory) of one shadow replay; removed when it ends."
+value = "mesh-shadow"
+
+[mesh_write.shadow_home]
+doc = "The scratch home the replay writes its side files into (receipts), under that directory."
+value = "home"
+
+[mesh_write.shadow_log]
+doc = "The shadow log, one JSON line per replayed call, under the engine state directory."
+value = "mesh-shadow.jsonl"
+
+[mesh_write.shadow_log_cap]
+doc = "Most characters of each side's stdout a mismatch record keeps."
+value = 2000
+min = 0
+max = 1048576
+
+[mesh_write.shadow_backup_pages]
+doc = "Pages per step of the store snapshot (SQLite online backup); large means one step."
+value = 1000000
+min = 1
+max = 2147483647
+
+[mesh_write.shadow_backup_pause_ms]
+doc = "Pause between snapshot steps, in milliseconds."
+value = 0
+min = 0
+max = 10000
+
+[mesh_write.shadow_match]
+doc = "Shadow result: stdout, exit code and the written row all equal Node's."
+value = "match"
+
+[mesh_write.shadow_mismatch]
+doc = "Shadow result: something differs and no other writer touched the store meanwhile."
+value = "mismatch"
+
+[mesh_write.shadow_concurrent]
+doc = "Shadow result: something differs, but another writer added rows between the snapshot and Node's write (the seq can differ)."
+value = "concurrent"
+
+[mesh_write.shadow_defer]
+doc = "Shadow result: the engine would have handed this call to Node (the reason says why)."
+value = "defer"
+
+[mesh_write.shadow_panic]
+doc = "Shadow result: the engine path panicked (caught; Node's result was unaffected)."
+value = "panic"
+
+[mesh_write.shadow_no_store]
+doc = "Defer reason when the project has no store file yet."
+value = "no-store"
+
+[env.mesh_now]
+doc = "Pins `Date.now()` of an `ah-engine mesh` verb, in epoch milliseconds (the parity tests pin Node's `ctx.now` the same way). Never set in production."
+value = "AH_ENGINE_MESH_NOW_MS"
+
+[mesh_write.mode_on]
+doc = "The `mode` of an on-mode record in the shadow log."
+value = "on"
+
+[mesh_write.mode_shadow]
+doc = "The `mode` of a shadow record in the shadow log."
+value = "shadow"
+
+[mesh_write.on_native]
+doc = "On-mode result: the engine answered the call itself."
+value = "native"
+
+# ---- summary refresh (companion/lib/devswarm-store.js computeSummary / deriveSummary) ------------------------------
+
+[mesh_write.dir_summaries]
+doc = "The per-project summary projections directory under the DevSwarm state directory (summaries/<repoKey>.json)."
+value = "summaries"
+
+[mesh_write.dir_archived]
+doc = "The archived workspace descriptors directory under the DevSwarm state directory (row-state.js archiveCompleteIds)."
+value = "archived"
+
+[mesh_write.dir_cursors]
+doc = "The legacy cursor files directory under the DevSwarm state directory (reader-cursors.js cursorsDir)."
+value = "cursors"
+
+[mesh_write.dir_cache]
+doc = "anti-hall's cache directory under its home directory (Jev's triage label cache lives there)."
+value = "cache"
+
+[mesh_write.cursor_line_field]
+doc = "Field of a JSON cursor file that holds its position (devswarm-inbox-cursor.js readCursor)."
+value = "line"
+
+[mesh_write.cursor_floor_reader]
+doc = "The reader key of a partition's floor row in reader_cursors (reader-cursors.js FLOOR)."
+value = "#floor"
+
+[mesh_write.cursor_ns_store]
+doc = "The reader_cursors namespace of the store side."
+value = "store"
+
+[mesh_write.cursor_ns_nd]
+doc = "The reader_cursors namespace of the durable NDJSON inbox side."
+value = "nd"
+
+[mesh_write.cursor_base_suffix]
+doc = "Suffix of a partition's legacy baseline cursor file name (cursors/<id>#base.json)."
+value = "#base"
+
+[mesh_write.cursor_inst_sep]
+doc = "Separator of a legacy per-instance store cursor file name (cursors/<id>#inst-<short>.json)."
+value = "#inst-"
+
+[mesh_write.legacy_cursor_short_len]
+doc = "Length of the hex instance tag in a legacy cursor file name (reader-cursors.js listLegacy)."
+value = 6
+min = 1
+max = 64
+
+[mesh_write.legacy_cursor_forbidden]
+doc = "Texts a partition id must not contain to have legacy cursor files (reader-cursors.js legacySafeId)."
+value = ["#", ".seen-"]
+
+[mesh_write.field_cursor_path]
+doc = "Descriptor field naming the durable inbox's cursor file."
+value = "cursorPath"
+
+[mesh_write.urgency_rank]
+doc = "Urgency words from lowest to highest (devswarm-store.js URGENCY_RANK); any other word is ignored."
+value = ["low", "normal", "high", "urgent"]
+
+[mesh_write.summary_recent_cap]
+doc = "Most broadcast runs a summary keeps in recent[] (devswarm-store.js DEFAULT_RECENT_CAP)."
+value = 50
+min = 1
+max = 100000
+
+[mesh_write.summary_pending_questions_cap]
+doc = "Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP)."
+value = 200
+min = 1
+max = 100000
+
+[mesh_write.archive_request_marker]
+doc = "Body marker of an archive-request send (devswarm-store.js ARCHIVE_REQUEST_MARKER)."
+value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
+
+[mesh_write.gate_done]
+doc = "The gate a child's `done` verb sets."
+value = "done"
+
+[mesh_write.done_setby_prefix]
+doc = "Setter prefix of a done gate that carries the HEAD sha (devswarm-store.js DONE_GATE_SETBY_PREFIX)."
+value = "devswarm-done@"
+
+[mesh_write.gate_merged_verified]
+doc = "The report-only gate recording the merged ancestry check."
+value = "merged_verified"
+
+[mesh_write.merged_setby_prefix]
+doc = "Setter prefix of a merged_verified gate that carries the HEAD sha (devswarm-store.js MERGED_VERIFIED_SETBY_PREFIX)."
+value = "devswarm-merged@"
+
+[mesh_write.settings_devswarm_section]
+doc = "The settings.json section of the DevSwarm settings."
+value = "devswarm"
+
+[mesh_write.csv_separator]
+doc = "Separator of a comma-separated setting."
+value = ","
+
+[mesh_write.required_gates_env]
+doc = "Environment variable of devswarm.requiredGates (settings-schema.js)."
+value = "ANTIHALL_DEVSWARM_REQUIRED_GATES"
+
+[mesh_write.required_gates_key]
+doc = "settings.json key of the gates a workspace needs before it is archive-ready."
+value = "requiredGates"
+
+[mesh_write.required_gates_option]
+doc = "Plugin option (/config) of devswarm.requiredGates."
+value = "devswarm_required_gates"
+
+[mesh_write.required_gates_option_default]
+doc = "The plugin option's manifest default; a plugin option equal to it does not override (settings.js readPluginOption)."
+value = "done,merged,tests_passed"
+
+[mesh_write.required_gates_default]
+doc = "Schema default of devswarm.requiredGates."
+value = "done,merged,tests_passed"
+
+[mesh_write.required_gates_fallback]
+doc = "The gates used when the setting lists none (devswarm-store.js DEFAULT_REQUIRED_GATES)."
+value = ["done", "merged", "tests_passed"]
+
+[mesh_write.held_partitions_env]
+doc = "Environment variable of devswarm.heldPartitions."
+value = "ANTIHALL_DEVSWARM_HELD_PARTITIONS"
+
+[mesh_write.held_partitions_key]
+doc = "settings.json key of the owner-held partition ids."
+value = "heldPartitions"
+
+[mesh_write.held_partitions_option]
+doc = "Plugin option of devswarm.heldPartitions (it has none: empty)."
+value = ""
+
+[mesh_write.held_partitions_option_default]
+doc = "Manifest default of that plugin option (unused while it has none)."
+value = ""
+
+[mesh_write.held_partitions_default]
+doc = "Schema default of devswarm.heldPartitions (none held)."
+value = ""
+
+[mesh_write.jev_cache_file]
+doc = "Jev triage's label cache file under anti-hall's cache directory (jev-triage.js cachePath)."
+value = "jev-triage.json"
+
+[mesh_write.jev_question_kind]
+doc = "The triage label kind of a message that asks a question (jev-triage.js)."
+value = "question-needs-answer"
+
+[mesh_write.field_kind]
+doc = "Field of a triage label that holds its kind."
+value = "kind"
+
+[mesh_write.jev_hash_hex]
+doc = "Hex characters of a triage cache key (jev-triage.js hashMessage: sha256, first 32)."
+value = 32
+min = 1
+max = 64
+
+[mesh_write.exit_committed_failure]
+doc = "Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (EX_TEMPFAIL)."
+value = 75
+min = 1
+max = 255
+
+[mesh_write.msg_committed_failure]
+doc = "Stderr line for that case."
+value = "ah-engine mesh: the write was committed but the engine failed before printing its result; not retried in Node (that would write twice). Check the store before resending."
+
+[mesh_write.summary_failed]
+doc = "Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file)."
+value = "summary-failed"

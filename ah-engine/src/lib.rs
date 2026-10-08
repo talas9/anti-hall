@@ -33,6 +33,7 @@ pub mod load;
 pub mod maintain;
 pub mod memstat;
 pub mod mesh;
+pub mod meshw;
 pub mod metrics;
 pub mod migrate;
 pub mod paths;

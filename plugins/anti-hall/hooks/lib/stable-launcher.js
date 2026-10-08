@@ -65,6 +65,47 @@ function launcherPath(kind, home) {
   return path.join(binDir(home), t.name);
 }
 
+// meshRoute(argv, segments) -> a thin routing shim EMBEDDED in the devswarm
+// launcher (via Function#toString, so it must stay self-contained). For exactly
+// the ported verbs (`send`, `mesh read`), when settings.json `mesh.engine_writes`
+// is "on" and the engine binary exists, it runs `ah-engine mesh <argv>` with a time
+// limit and returns {done: exitCode}; otherwise {input} (stdin already consumed
+// for --message-stdin, to be replayed) and the caller runs the Node script.
+// Falls back to Node on: engine missing, spawn error, timeout, killed by signal,
+// exit 127 (engine cannot find Node's CLI; nothing written). Exit 75 means the
+// engine ALREADY WROTE and then failed: it is passed through, never rerun in Node.
+// Every other exit code is the verb's own result (Node parity) and passes through.
+function meshRoute(argv, segments) {
+  var out = { input: undefined };
+  try {
+    if (!segments || segments[1] !== 'devswarm.js') return out;
+    if (!(argv[0] === 'send' || (argv[0] === 'mesh' && argv[1] === 'read'))) return out;
+    var fs = require('fs'), path = require('path'), os = require('os');
+    var dir = path.join(os.homedir(), '.anti-hall');
+    var m = null;
+    try { m = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).mesh; } catch (_) {}
+    if (!m || String(m.engine_writes).trim().toLowerCase() !== 'on') return out;
+    var bin = path.join(dir, 'ah-engine', 'bin', 'ah-engine');
+    try { fs.accessSync(bin, fs.constants.X_OK); } catch (_) { return out; }
+    var ms = Number(m.engine_timeout_ms);
+    if (!(ms > 0)) ms = 15000;
+    var piped = argv.indexOf('--message-stdin') >= 0;
+    var input;
+    if (piped) { try { input = fs.readFileSync(0); } catch (_) { input = Buffer.alloc(0); } out.input = input; }
+    var r = require('child_process').spawnSync(bin, ['mesh'].concat(argv), {
+      stdio: [piped ? 'pipe' : 'inherit', 'inherit', 'inherit'], input: input, timeout: ms, killSignal: 'SIGKILL',
+    });
+    var why = r.error ? String(r.error.code || r.error.message) : r.signal ? 'signal ' + r.signal : r.status === 127 ? 'exit 127' : '';
+    if (!why) return { done: r.status === null ? 1 : r.status };
+    try {
+      fs.mkdirSync(path.join(dir, 'ah-engine'), { recursive: true });
+      fs.appendFileSync(path.join(dir, 'ah-engine', 'mesh-route.log'),
+        JSON.stringify({ ts: Date.now(), verb: argv.slice(0, 2).join(' '), fallback: 'node', why: why }) + '\n');
+    } catch (_) {}
+  } catch (_) {}
+  return out;
+}
+
 // buildLauncherSource(segments, fallbackAbsPath) -> the generated launcher's
 // full source text. Pure Node built-ins only; no external requires; safe to
 // run from ANY cwd on macOS or Linux. `segments`/`fallbackAbsPath` are baked
@@ -148,10 +189,14 @@ function buildLauncherSource(segments, fallbackAbsPath) {
       '(checked installed_plugins.json, the marketplace clone, and the baked fallback)\\n");',
     '    process.exit(1);',
     '  }',
+    meshRoute.toString(),
+    '  const routed = meshRoute(process.argv.slice(2), SEGMENTS);',
+    '  if (routed.done !== undefined) { process.exit(routed.done); return; }',
     '  const { spawn } = require("child_process");',
     '  let child;',
     '  try {',
-    '    child = spawn(process.execPath, [target].concat(process.argv.slice(2)), { stdio: "inherit" });',
+    '    child = spawn(process.execPath, [target].concat(process.argv.slice(2)), { stdio: [routed.input === undefined ? "inherit" : "pipe", "inherit", "inherit"] });',
+    '    if (routed.input !== undefined) child.stdin.end(routed.input);',
     '  } catch (e) {',
     '    process.stderr.write("anti-hall stable launcher: failed to run " + target + ": " + (e && e.message) + "\\n");',
     '    process.exit(1);',
