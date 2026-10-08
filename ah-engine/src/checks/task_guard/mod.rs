@@ -25,7 +25,7 @@ use crate::checks::spawnctx::Home;
 use crate::checks::taskkit::jsval::{R, Unsure, get, truthy};
 use crate::checks::taskstate::parse::{Facts, reconstruct};
 use crate::checks::taskstate::tail::{lines_of, read_tail};
-use crate::checks::taskstate::unknown::{js_sort, plan_note, safe_key, sha1_hex, unknown_note};
+use crate::checks::taskstate::unknown::{js_sort, safe_key, sha1_hex, unknown_note, unknown_note_plan};
 use crate::checks::taskstate::{Task, TaskMap, Variant, backfill::backfill};
 use crate::checks::{Check, Exact, Verdict};
 use crate::defaults;
@@ -245,7 +245,7 @@ fn open_tasks(
         (Some(h), true) => Some(demand::idle_neglect_metrics(h)?),
         _ => None,
     };
-    let note = plan_note(tasks, &st.home, session_id, defaults::text("task_guard.unknown_tag"))?;
+    let note = unknown_note_plan(tasks, &st.home, session_id, defaults::text("task_guard.unknown_tag"))?;
     match budget {
         budget::Budget::Spent => return Ok(Some(exact(std::mem::take(out)))),
         budget::Budget::Block(Some((file, body))) if !budget::write(&file, &body) => return Ok(Some(exact(std::mem::take(out)))),
@@ -263,7 +263,7 @@ fn open_tasks(
         demand::write_metrics(&file, &body);
     }
     let mut reason = reason;
-    let note = note.commit();
+    let note = note.apply();
     if !note.is_empty() {
         reason.push('\n');
         reason.push_str(&note);

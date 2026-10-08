@@ -290,6 +290,6 @@ pub fn write_metrics(p: &Path, body: &str) {
     if let Some(d) = p.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports nothing either way (Node catch)
     }
-    let style = crate::atomic::Style { keep_json_ext: false, leave_temp_on_rename_failure: true };
+    let style = crate::atomic::Style { keep_json_ext: false, leave_temp_on_rename_failure: true, ..Default::default() };
     crate::discard::harmless(crate::atomic::write_styled(p, body, style)); // keep: Node's writeMetrics swallows every error
 }
