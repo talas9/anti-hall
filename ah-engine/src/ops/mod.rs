@@ -14,8 +14,10 @@
 //! Where the Node tool's behaviour cannot be reproduced exactly (a lock held by a live writer, a repository layout the
 //! resolver cannot classify) the command writes nothing, says so on stderr and exits with the deferral code, so the Node
 //! command can be run instead.
-pub mod allow;
-pub mod settings;
+pub(crate) mod allow;
+pub(crate) mod defect;
+pub(crate) mod js;
+pub(crate) mod settings;
 
 use crate::cli::Parsed;
 use crate::defaults;
@@ -62,4 +64,9 @@ pub(crate) fn defer_code() -> i32 {
 /// `settings <verb> ...`
 pub fn cmd_settings(p: &Parsed) -> i32 {
     settings::run(p)
+}
+
+/// `defect <verb> ...`
+pub fn cmd_defect(p: &Parsed) -> i32 {
+    defect::run(p)
 }

@@ -69,6 +69,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("briefing", crate::setup::cmd_briefing),
         ("mesh", crate::mesh::run_cmd),
         ("settings", crate::ops::cmd_settings),
+        ("defect", crate::ops::cmd_defect),
     ]
 }
 
