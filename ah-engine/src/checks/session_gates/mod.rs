@@ -2,15 +2,18 @@
 //! that run at session start (and, for the repair, on every prompt) and are silent almost every time.
 //!
 //! Each check answers "nothing to say" itself when it can prove the Node hook would print nothing and write nothing, and
-//! defers to the Node hook in every other case. The proof reads only what the Node hook reads first (switches, the
-//! payload, a small state file); the work behind the gates (the Jev report, the review log, the migration engine and
-//! the detached repair) stays in Node, so a deferral is the exact Node behavior and nothing is decided twice. A check
-//! that cannot read its inputs defers; none of them ever writes a file.
+//! answers natively the fire paths it can reproduce byte for byte: the recommend-Jev notice with its latch
+//! (`jev-review-reminder`) and the weekly latch of a check that finds no Jev decision rows (`jev-weekly-scorecard`). It
+//! defers to the Node hook in every other case: the work behind the other gates (the Jev report, the review log, the
+//! legacy-key notice, the migration engine and the detached repair) stays in Node, so a deferral is the exact Node
+//! behavior and nothing is decided twice. A check that cannot read its inputs defers, and a deferring check writes
+//! nothing.
 //!
 //! Mirrors the early exits of `hooks/jev-weekly-scorecard.js`, `hooks/jev-review-reminder.js` (with
 //! `hooks/lib/credentials.js` `sessionNotice` and `hooks/lib/jev-recommend.js` `sessionNotice`) and
 //! `hooks/repair-on-reload.js`.
 use crate::checks::git::util::Settings;
+use crate::checks::guardkit::msg::advisory_json;
 use crate::checks::guardkit::paths;
 use crate::checks::guardkit::settings::{Undecidable, get_setting, plugin_root, read_object};
 use crate::checks::guardkit::text::js_trim;
@@ -31,8 +34,8 @@ pub use jev_review::JevReviewReminder;
 pub use jev_weekly::JevWeeklyScorecard;
 pub use repair_reload::RepairOnReload;
 
-/// What a gate decided: nothing to say, or the Node hook must run.
-pub(crate) type Gate = Result<(), Undecidable>;
+/// What a gate decided: the engine's own answer, or the Node hook must run.
+pub(crate) type Gate = Result<Verdict, Undecidable>;
 
 /// True when a judge child runs this hook (every one of these hooks then does nothing).
 fn judge_child(st: &Settings) -> bool {
@@ -86,15 +89,28 @@ macro_rules! gate_check {
                 if !home_known(&st) {
                     return Some(Verdict::Defer);
                 }
-                match $decide(payload, &st, &plugin_root(opts, env)) {
-                    Ok(()) => Some(Verdict::Allow),
-                    Err(Undecidable) => Some(Verdict::Defer),
-                }
+                Some($decide(payload, &st, &plugin_root(opts, env)).unwrap_or(Verdict::Defer))
             }
         }
     };
 }
 pub(crate) use gate_check;
+
+/// `fs.mkdirSync(dirname, {recursive: true})`, `fs.writeFileSync(tmp, body)`, `fs.renameSync(tmp, file)`: the Node hooks'
+/// own atomic write, with their own temporary name (not `crate::atomic`), so the trees the two leave behind match. An
+/// error is returned to the caller; a temporary file left by a failed rename stays, as in Node.
+fn write_like_node(file: &str, tmp: &str, body: &str) -> std::io::Result<()> {
+    if let Some(dir) = std::path::Path::new(file).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(tmp, body)?;
+    std::fs::rename(tmp, file)
+}
+
+/// `payload.hook_event_name` when it is a non-empty string, else the default event.
+fn event_name(payload: &Value) -> &str {
+    payload.get("hook_event_name").and_then(Value::as_str).filter(|e| !e.is_empty()).unwrap_or(defaults::text("session_gates.default_event"))
+}
 
 /// `js_trim` re-exported for the three gate files.
 pub(crate) fn trimmed(s: &str) -> &str {
