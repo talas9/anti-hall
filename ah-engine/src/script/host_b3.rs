@@ -100,8 +100,11 @@ fn jev_mode(id: &str) -> rquickjs::Result<String> {
 /// `jevAskSpec(spec)`. `spec` is JSON: `id`, `question` (`{type: "noul"|"choice", instructions, criteria: [[key, text], ...]}`),
 /// `state`, `trust` (`add_block`, `advisory`, `relax_block`), `baseline`, and optionally `cacheKey`, `budgetMs`,
 /// `recordDisagreement`, `sessionId`, `turnRefFrom` (a transcript path), `projectFrom` (a working directory), `judgeLabel`
-/// (a choice answer equal to it counts as true) and `sync`. A detached ask returns `null`; a synchronous one returns the
-/// outcome as JSON text.
+/// (a choice answer equal to it counts as true), `compare` (an independent verdict for the report's agreement metric), `sync`,
+/// `relax` (Node's `consultRelax`: asked here within `jev.relax_sync_cap_ms` only while the integration is `on`; in `shadow` and
+/// `off` it goes out detached and nothing is returned) and `full` (return the whole decision instead of its outcome). A
+/// detached ask returns `null`; a synchronous one returns the outcome as JSON text, or with `full` the decision as a JSON object
+/// `{outcome, jev, baseline, confidence, confident, ms, backend, reason, hash, changed}`.
 fn jev_ask(spec: &str) -> rquickjs::Result<Option<String>> {
     use crate::jev::{AskRequest, Question, Trust};
     let v: serde_json::Value = serde_json::from_str(spec).map_err(|e| super::host::err("jevAsk", e.to_string()))?;
@@ -136,17 +139,43 @@ fn jev_ask(spec: &str) -> rquickjs::Result<Option<String>> {
         let label = label.to_string();
         req.judge = Some(std::sync::Arc::new(move |answer| answer.to_json() == serde_json::Value::String(label.clone())));
     }
+    req.compare = v.get("compare").and_then(serde_json::Value::as_bool);
     let (home, env) = jev_env()?;
     let home = std::path::Path::new(&home);
-    if v.get("sync").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+    let flag = |k: &str| v.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let shape = |d: &crate::jev::Decision| if flag("full") { decision_json(d) } else { d.outcome.to_string() };
+    if flag("relax") {
+        let started = std::time::Instant::now();
+        let d = crate::jev::shared::consult_relax(home, &env, req);
+        super::host::credit_blocking(started);
+        return Ok(d.as_ref().map(shape));
+    }
+    if flag("sync") {
         req.env = Some(env.clone());
         let started = std::time::Instant::now();
         let d = crate::jev::shared::lane(home, &env).ask(&req);
         super::host::credit_blocking(started);
-        return Ok(Some(d.outcome.to_string()));
+        return Ok(Some(shape(&d)));
     }
     crate::jev::shared::ask_detached(home, &env, req);
     Ok(None)
+}
+
+/// A Jev decision as JSON text: `{outcome, jev, baseline, confidence, confident, ms, backend, reason, hash, changed}`.
+fn decision_json(d: &crate::jev::Decision) -> String {
+    serde_json::json!({
+        "outcome": d.outcome,
+        "jev": d.jev,
+        "baseline": d.baseline,
+        "confidence": d.confidence,
+        "confident": d.confident,
+        "ms": d.ms,
+        "backend": d.backend.as_str(),
+        "reason": d.reason.as_ref().map(ToString::to_string),
+        "hash": d.hash,
+        "changed": d.changed,
+    })
+    .to_string()
 }
 
 /// `localTime(ms)`: the local calendar fields of an instant as JSON `{year, month, day, hour, minute, second, weekday, offsetMinutes}`

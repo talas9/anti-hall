@@ -103,7 +103,19 @@ pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
         Some(Verdict::Block(m)) => json!({"v": "block", "text": u(m)}),
         Some(Verdict::Advisory(m)) => json!({"v": "advisory", "text": u(m)}),
         Some(Verdict::Exact(x)) => json!({"v": "exact", "code": x.code, "out": u(&x.out), "err": u(&x.err)}),
-        Some(other) => json!({"v": format!("{other:?}")}),
+        Some(Verdict::Routed(inner, meta)) => {
+            let m: Vec<Value> = meta
+                .iter()
+                .map(|r| {
+                    json!({
+                        "requested_model": r.requested_model, "parent_model": r.parent_model, "task_class": r.task_class,
+                        "recommended_tier": r.recommended_tier, "selected_model": r.selected_model, "outcome": r.outcome,
+                        "spawn_key": r.spawn_key, "delegate": r.delegate, "blocked": r.blocked,
+                    })
+                })
+                .collect();
+            json!({"v": "routed", "verdict": verdict_json(&Some((**inner).clone()), l), "meta": m})
+        }
     }
 }
 

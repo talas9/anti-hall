@@ -12,6 +12,7 @@
 //! record in the window was understood.
 pub mod backfill;
 pub mod parse;
+pub mod scanview;
 pub mod tail;
 pub mod unknown;
 
