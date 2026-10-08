@@ -151,3 +151,7 @@ value = { args = "[--check] [--post-pull-only]", read_only = false, status = "im
 [cmd.install-codex]
 doc = "Install the anti-hall hooks for Codex (D81, lane L9b, the port of codex/install-codex.js): merge the generated hook registration into .codex/hooks.json (project, or --global for the home directory), replacing only anti-hall's own groups, and enable the hooks feature in config.toml. A changed file is copied to <file>.bak-<time> first; --dry-run writes nothing."
 value = { args = "[--global] [--dry-run] [--root <plugin dir>]", read_only = false, status = "implemented" }
+
+[cmd.handovers]
+doc = "The handover brief tree: `index` rebuilds the root brief and the per-day briefs (BRIEF.md plus a typed BRIEF.json) of the changed days under .anti-hall/handovers (`--registered` walks every project the SessionStart check has seen, `--force` rebuilds all days), `check` reports unindexed or stale handovers, missing briefs, malformed handovers and broken references without writing (exit 3 when there are any), `search <words> [date:..] [session:..] [decision:..] [file:..]` ranks entries from the sidecars. Never edits a handover file and never deletes. The logic is the plugin script handover-hygiene.js; the scheduled job `handovers` runs `index --registered`."
+value = { args = "<index|check|search> [query] [--project <dir>] [--registered] [--force] [--limit <n>]", read_only = false, status = "implemented" }

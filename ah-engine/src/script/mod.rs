@@ -215,6 +215,16 @@ pub fn missing(name: &str, event: &str) -> Option<Verdict> {
     Some(failed(name, event, defaults::text("script.msg_no_script")))
 }
 
+/// The wall-clock limit of one call: the check's own entry in `script.time_limit_by_check` (`<check>:<event>` first, then
+/// `<check>`), else `script.time_limit_ms`.
+fn limit_ms(name: &str, event: &str) -> u64 {
+    let by = defaults::raw("script.time_limit_by_check");
+    [format!("{name}:{event}"), name.to_string()]
+        .iter()
+        .find_map(|k| by.get(k).and_then(defaults::V::as_integer))
+        .map_or_else(|| defaults::num("script.time_limit_ms"), |ms| ms.max(1) as u64)
+}
+
 fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
@@ -236,7 +246,7 @@ fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str
         let ctx = pool.loaded.get(name).map(|l| l.ctx.clone()).ok_or("context")?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
         let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
-        let limit = defaults::num("script.time_limit_ms").saturating_mul(1_000_000);
+        let limit = limit_ms(name, event).saturating_mul(1_000_000);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
             pool.deadline.store((pool.epoch.elapsed().as_nanos() as u64).saturating_add(limit).max(1), Ordering::Relaxed);

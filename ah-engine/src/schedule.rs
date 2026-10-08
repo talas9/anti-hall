@@ -522,7 +522,13 @@ impl Scheduler {
         }
         if defaults::list("schedule.subprocess_actions").contains(&spec.action.as_str()) {
             let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).or_default_logged("current_exe");
-            return subprocess(&[exe, spec.action.clone(), "--json".into()], timeout);
+            let mut argv = vec![exe];
+            match defaults::raw("schedule.action_args").get(&spec.action) {
+                Some(v) => argv.extend(v.strings().into_iter().map(str::to_string)),
+                None => argv.push(spec.action.clone()),
+            }
+            argv.push("--json".into());
+            return subprocess(&argv, timeout);
         }
         // in-process: a helper thread does the work; if it overruns, the run is a timeout, and this thread still waits
         // for the helper so the job never overlaps itself

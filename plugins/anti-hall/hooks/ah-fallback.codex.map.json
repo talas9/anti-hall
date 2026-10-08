@@ -26,6 +26,7 @@
     "devswarm-child-role": "node \"${PLUGIN_ROOT}/hooks/devswarm-child-role.js\"",
     "devswarm-version": "node \"${PLUGIN_ROOT}/hooks/devswarm-version.js\"",
     "emit-dedupe-reset": "node \"${PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"",
+    "handover-hygiene": "sh \"${PLUGIN_ROOT}/hooks/handover-hygiene\"",
     "handover-resume": "node \"${PLUGIN_ROOT}/hooks/handover-resume.js\"",
     "jev-review-reminder": "node \"${PLUGIN_ROOT}/hooks/jev-review-reminder.js\"",
     "jev-weekly-scorecard": "node \"${PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"",

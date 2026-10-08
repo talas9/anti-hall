@@ -49,6 +49,7 @@
     "devswarm-version": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-version.js\"",
     "emit-dedupe-reset": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"",
     "fable-availability": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/fable-availability.js\"",
+    "handover-hygiene": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-hygiene\"",
     "handover-resume": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js\"",
     "jev-review-reminder": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js\"",
     "jev-weekly-scorecard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"",

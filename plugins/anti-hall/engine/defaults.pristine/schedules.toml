@@ -35,6 +35,10 @@ value = { kind = "engine", action = "spool_drain", every_key = "spool.drain_ms",
 doc = "Roll complete days of telemetry counters up into archive.db and apply the telemetry retention (D78); idempotent, so a repeat or a catch-up changes nothing."
 value = { kind = "engine", action = "telemetry_rollup", every_key = "schedule.telemetry_rollup_ms", jitter_ms = 600000, timeout_ms = 300000, retries = 2, backoff_ms = 60000, backoff_max_ms = 600000, cooldown_ms = 3600000, catch_up = "once", persist = true }
 
+[job.handovers]
+doc = "Keep the handover brief trees (BRIEF.md and BRIEF.json per day, plus the root brief) of every registered project current: rebuilds only the days whose handover files changed, writes only files whose bytes change, never edits a handover and never deletes. Runs `ah-engine handovers index --registered` as a subprocess; off when schedule.handovers_ms is 0."
+value = { kind = "engine", action = "handovers", every_key = "schedule.handovers_ms", jitter_ms = 60000, timeout_ms = 120000, retries = 1, backoff_ms = 30000, backoff_max_ms = 300000, cooldown_ms = 900000, catch_up = "skip", persist = false }
+
 # ---- scheduler ------------------------------------------------------------------------------------------
 
 [schedule.tick_ms]
@@ -56,6 +60,12 @@ value = 86400000
 env = "AH_ENGINE_MAINTAIN_MS"
 unit = "ms"
 
+[schedule.handovers_ms]
+doc = "Interval of the handovers job; 0 turns it off."
+value = 600000
+env = "AH_ENGINE_HANDOVERS_MS"
+unit = "ms"
+
 [schedule.backup_ms]
 doc = "Interval of the backup job (D27); 0 (the default) turns it off."
 value = 0
@@ -70,11 +80,15 @@ unit = "ms"
 
 [schedule.actions]
 doc = "Actions a job may name; anything else in a user override is refused and logged."
-value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "noop"]
+value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "noop"]
 
 [schedule.subprocess_actions]
 doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."
-value = ["maintain", "backup", "jev_sweep"]
+value = ["maintain", "backup", "jev_sweep", "handovers"]
+
+[schedule.action_args]
+doc = "The command line (after the program name, before --json) of a subprocess action whose command is not just its name."
+value = { handovers = ["handovers", "index", "--registered"] }
 
 [schedule.test_sleep_argv]
 doc = "Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts."

@@ -35,6 +35,7 @@ mod flip_parity;
 mod gitcache_parity;
 mod gitcheck;
 mod handover_codex_e2e;
+mod handover_hygiene;
 mod hooks_files;
 mod inject_gate_parity;
 mod jev_cache_parity;
