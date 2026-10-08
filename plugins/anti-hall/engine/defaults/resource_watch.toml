@@ -1,0 +1,127 @@
+# ah-engine shipped defaults for the resource watch: a soft warning when processes of a LIVE Claude session use too much CPU or
+# memory (docs/AH-ENGINE.md, "Process watch"). Format: see the header of engine.toml. It shares the process scan with the orphan
+# sweep (procwatch.toml) and nothing else. It never kills or throttles; renicing an offender is an opt-in setting.
+#
+# Platform notes. CPU is sysinfo's per-core percent: 100 is one core fully busy, a multi-threaded process can read several
+# hundred. The first reading of a process is always 0 (a rate needs two samples) and is ignored. On Apple Silicon the percent is of
+# one core's time whatever its kind (performance or efficiency core), so the same percent is less work on an efficiency core.
+# Memory is the resident set on Linux and the physical footprint (which counts compressed pages) on macOS, where it matches Activity
+# Monitor; the resident set alone under-reports a process the system has compressed. System pressure is /proc/pressure/memory on
+# Linux (some avg10, percent of time stalled) and kern.memorystatus_vm_pressure_level on macOS (1 normal, 2 warn, 4 critical).
+
+[resource_watch.sw_enabled]
+doc = "Where the resource watch's on/off switch is read from (resourceWatch.enabled, default on)."
+value = { section = "resourceWatch", key = "enabled", env = "ANTIHALL_RESOURCE_WATCH", aliases = [], option = "", default = true }
+
+[resource_watch.cpu_pct]
+doc = "Warn when a process of a live session averages at least this much CPU (per-core percent, 100 = one core) over the whole window (resourceWatch.cpuPercent)."
+value = { section = "resourceWatch", key = "cpuPercent", env = "ANTIHALL_RESOURCE_WATCH_CPU", aliases = [], option = "", default = 90, min = 1 }
+
+[resource_watch.cpu_window_s]
+doc = "The window a CPU reading must hold for, in seconds (resourceWatch.cpuWindowSeconds); the sampling interval is schedule.procwatch_ms."
+value = { section = "resourceWatch", key = "cpuWindowSeconds", env = "ANTIHALL_RESOURCE_WATCH_CPU_WINDOW", aliases = [], option = "", default = 120, min = 10 }
+
+[resource_watch.mem_mb]
+doc = "Warn when a process of a live session holds at least this much memory, in MB (resourceWatch.memoryMb)."
+value = { section = "resourceWatch", key = "memoryMb", env = "ANTIHALL_RESOURCE_WATCH_MEM", aliases = [], option = "", default = 4096, min = 16 }
+
+[resource_watch.swap_mb]
+doc = "Warn when the system has this much swap in use, in MB (resourceWatch.swapMb; 0 turns the swap warning off)."
+value = { section = "resourceWatch", key = "swapMb", env = "ANTIHALL_RESOURCE_WATCH_SWAP", aliases = [], option = "", default = 8192, min = 0 }
+
+[resource_watch.psi_pct]
+doc = "Warn when Linux memory pressure (PSI some avg10) is at least this percent (resourceWatch.pressurePercent; 0 turns it off)."
+value = { section = "resourceWatch", key = "pressurePercent", env = "ANTIHALL_RESOURCE_WATCH_PSI", aliases = [], option = "", default = 25, min = 0 }
+
+[resource_watch.mac_pressure_level]
+doc = "Warn when the macOS memory pressure level is at least this (2 warn, 4 critical; resourceWatch.macPressureLevel; 0 turns it off)."
+value = { section = "resourceWatch", key = "macPressureLevel", env = "ANTIHALL_RESOURCE_WATCH_MAC_PRESSURE", aliases = [], option = "", default = 2, min = 0 }
+
+[resource_watch.cooldown_s]
+doc = "Least time before the same process (or the same system warning) is named again (resourceWatch.cooldownSeconds)."
+value = { section = "resourceWatch", key = "cooldownSeconds", env = "ANTIHALL_RESOURCE_WATCH_COOLDOWN", aliases = [], option = "", default = 900, min = 0 }
+
+[resource_watch.renice]
+doc = "Opt-in (default off): lower the priority of a process the watch warned about, once (resourceWatch.renice). Never kills."
+value = { section = "resourceWatch", key = "renice", env = "ANTIHALL_RESOURCE_WATCH_RENICE", aliases = [], option = "", default = false }
+
+[resource_watch.renice_value]
+doc = "The nice value a renice sets (1 to 19; higher is lower priority)."
+value = 10
+min = 1
+max = 19
+
+[resource_watch.max_tracked]
+doc = "The most processes whose CPU history is kept (the busiest first); the rest are not tracked."
+value = 256
+
+[resource_watch.psi_path]
+doc = "The Linux memory pressure file."
+value = "/proc/pressure/memory"
+
+[resource_watch.mac_pressure_sysctl]
+doc = "The macOS sysctl name of the memory pressure level."
+value = "kern.memorystatus_vm_pressure_level"
+
+[resource_watch.msg_proc_what]
+doc = "Process warning line; {name} the command, {pid}, {session} the session pid, {usage} what it uses, {limit} the threshold."
+value = "pid {pid} ({name}, session {session}) is using {usage}; threshold {limit}"
+
+[resource_watch.msg_cpu_usage]
+doc = "CPU usage text; {pct} percent, {window} seconds."
+value = "{pct}% CPU for {window}s"
+
+[resource_watch.msg_cpu_limit]
+doc = "CPU threshold text; {pct}."
+value = "{pct}% over {window}s"
+
+[resource_watch.msg_mem_usage]
+doc = "Memory usage text; {mb} MB."
+value = "{mb} MB memory"
+
+[resource_watch.msg_mem_limit]
+doc = "Memory threshold text; {mb} MB."
+value = "{mb} MB"
+
+[resource_watch.msg_swap]
+doc = "System swap line; {used} MB in use, {limit} MB threshold."
+value = "system swap in use is {used} MB (threshold {limit} MB)"
+
+[resource_watch.msg_pressure]
+doc = "System memory pressure line; {value} the reading, {limit} the threshold."
+value = "system memory pressure is {value} (threshold {limit})"
+
+[resource_watch.msg_what]
+doc = "Advisory first line; {list} the findings joined."
+value = "Resource use is high: {list}."
+
+[resource_watch.msg_why]
+doc = "Why it matters."
+value = "A runaway process slows every session on this machine and can push it into swap."
+
+[resource_watch.msg_instead]
+doc = "What to do."
+value = "Nothing was stopped or slowed. Check whether the work is expected; if not, ask the agent that started it to end it."
+
+[resource_watch.impact_kind]
+doc = "Impact kind recorded for every resource warning."
+value = "resource_warning"
+
+[resource_watch.window_cover_pct]
+doc = "How much of the CPU window the samples must span before a reading counts as sustained (percent); a sweep that ran late or a process that is new does not trip it early."
+value = 75
+min = 10
+max = 100
+
+[resource_watch.keep_s]
+doc = "A warning stays in the report this long, so a session that starts or prompts later still sees it once."
+value = 3600
+unit = "s"
+
+[resource_watch.bytes_per_mb]
+doc = "Bytes in a megabyte (binary), for the memory figures."
+value = 1048576
+
+[resource_watch.percent_base]
+doc = "The whole in a percentage."
+value = 100

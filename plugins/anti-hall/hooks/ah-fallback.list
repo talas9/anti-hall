@@ -34,6 +34,7 @@ Agent|Task|Workflow	10	node --no-concurrent-recompilation --no-concurrent-sparkp
 SendMessage	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js"
 AskUserQuestion	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js"
 TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js"
+Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
 @SessionEnd	5
 *	5	node "${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js"
 @SessionStart	10
@@ -54,6 +55,7 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
 @Stop	30
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js"
@@ -84,6 +86,7 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
 @Setup	10	empty
 @UserPromptExpansion	10	empty
 @PermissionRequest	10	empty

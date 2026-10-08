@@ -387,6 +387,10 @@ value = { kind = "counter", unit = "bytes", labels = ["h", "e"] }
 doc = "Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed)."
 value = { kind = "counter", unit = "samples", labels = ["reason"] }
 
+[metric.procwatch_events]
+doc = "Process-watch findings, by kind (orphan_candidate, orphan_kill, resource_warning, disk_warning) and class or reason."
+value = { kind = "counter", unit = "events", labels = ["kind", "class"] }
+
 # ---- impact kinds ---------------------------------------------------------------------------------------
 
 [impact.block]
@@ -411,6 +415,22 @@ value = { counted = "exact" }
 
 [impact.fallback]
 doc = "The engine could not or would not answer (a check deferred, or the request failed) and the client ran the Node hook instead."
+value = { counted = "exact" }
+
+[impact.orphan_candidate]
+doc = "The process watch found a process left behind by an ended Claude session. The reason is its class."
+value = { counted = "exact" }
+
+[impact.orphan_kill]
+doc = "The process watch stopped an orphan whose class is in kill mode. The reason is its class."
+value = { counted = "exact" }
+
+[impact.resource_warning]
+doc = "The resource watch warned about a process or the system. The reason is cpu, memory, swap or pressure."
+value = { counted = "exact" }
+
+[impact.disk_warning]
+doc = "The disk watch warned about low free space. The reason is warn or critical."
 value = { counted = "exact" }
 
 # ---- savings estimates ----------------------------------------------------------------------------------

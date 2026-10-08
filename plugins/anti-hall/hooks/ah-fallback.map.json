@@ -32,6 +32,7 @@
     "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/orch-on-spawn.js\"",
     "phase-tracker": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
     "phase-tracker#2": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
+    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "scan-throttle": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scan-throttle.js\"",
     "ship-it-guard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ship-it-guard.js\"",
     "stale-agent-stop-note": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"",
@@ -53,6 +54,7 @@
     "handover-resume": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js\"",
     "jev-review-reminder": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js\"",
     "jev-weekly-scorecard": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"",
+    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "progress-prune": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/progress-prune.js\"",
     "repair-on-reload": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
     "repo-self-drift": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repo-self-drift.js\"",
@@ -92,6 +94,7 @@
     "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",
     "idle-agent-sweep": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"",
     "limit-conserve-inject": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"",
+    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "repair-on-reload": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
     "task-tracker": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"",
     "verify-first": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\""

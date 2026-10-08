@@ -39,6 +39,10 @@ value = { kind = "engine", action = "telemetry_rollup", every_key = "schedule.te
 doc = "Keep the handover brief trees (BRIEF.md and BRIEF.json per day, plus the root brief) of every registered project current: rebuilds only the days whose handover files changed, writes only files whose bytes change, never edits a handover and never deletes. Runs `ah-engine handovers index --registered` as a subprocess; off when schedule.handovers_ms is 0."
 value = { kind = "engine", action = "handovers", every_key = "schedule.handovers_ms", jitter_ms = 60000, timeout_ms = 120000, retries = 1, backoff_ms = 30000, backoff_max_ms = 300000, cooldown_ms = 900000, catch_up = "skip", persist = false }
 
+[job.procwatch]
+doc = "Process watch: sample the processes of live Claude sessions (CPU, memory), look for processes left by ended sessions every procwatch.scan_every_s, stop the ones whose class is in kill mode, and write the report the advisory reads. Reporting is the default; it never stops an agent."
+value = { kind = "engine", action = "procwatch", every_key = "schedule.procwatch_ms", jitter_ms = 2000, timeout_ms = 120000, retries = 1, backoff_ms = 10000, backoff_max_ms = 120000, cooldown_ms = 300000, catch_up = "skip", persist = false }
+
 # ---- scheduler ------------------------------------------------------------------------------------------
 
 [schedule.tick_ms]
@@ -78,9 +82,15 @@ value = 86400000
 env = "AH_ENGINE_TELEMETRY_ROLLUP_MS"
 unit = "ms"
 
+[schedule.procwatch_ms]
+doc = "Interval of the process watch job (resource sampling; orphan scans run every procwatch.scan_every_s); 0 turns it off."
+value = 30000
+env = "AH_ENGINE_PROCWATCH_MS"
+unit = "ms"
+
 [schedule.actions]
 doc = "Actions a job may name; anything else in a user override is refused and logged."
-value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "noop"]
+value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "procwatch", "noop"]
 
 [schedule.subprocess_actions]
 doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."

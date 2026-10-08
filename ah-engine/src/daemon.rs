@@ -1214,6 +1214,14 @@ fn start_scheduler(sh: &Arc<Shared>) {
                 Ok(serde_json::json!({"applied": r.applied, "quarantined": r.quarantined, "left": r.left}).to_string())
             }
             "telemetry_rollup" => sh.telemetry.rollup(sh.cfg().effective.num("telemetry.retention_days")).map(|v| v.to_string()),
+            "procwatch" => {
+                let home = defaults::env_var("home").unwrap_or_default();
+                let rec = |kind: &str, class: &str, reason: &str| {
+                    sh.telemetry.impact(kind, class, reason, "");
+                    sh.telemetry.with_metrics(|m| m.inc("procwatch_events", &[("kind", kind), ("class", class)]));
+                };
+                crate::procwatch::run_job(&crate::paths::dir(), &home, &rec)
+            }
             "noop" => Ok(String::new()),
             other => Err(defaults::render("msg.schedule_unknown_action", &[("job", &"-"), ("action", &other)])),
         }

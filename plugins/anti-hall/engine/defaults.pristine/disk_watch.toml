@@ -1,0 +1,117 @@
+# ah-engine shipped defaults for the disk watch: a soft warning when the volumes Claude sessions write to run low on free space
+# (docs/AH-ENGINE.md, "Process watch"). Format: see the header of engine.toml. It never deletes anything. At the critical floor a
+# PreToolUse advisory warns before heavy commands; blocking them is an opt-in setting.
+#
+# Free space is the space available to this user (statvfs f_bavail). On macOS several APFS volumes share one container's free
+# space, so two paths on different volumes can show the same number; volumes are told apart by device id, not by path. tmpfs
+# mounts report their own limit. The volumes watched are the session's project directory, HOME and the temp directory.
+
+[disk_watch.sw_enabled]
+doc = "Where the disk watch's on/off switch is read from (diskWatch.enabled, default on)."
+value = { section = "diskWatch", key = "enabled", env = "ANTIHALL_DISK_WATCH", aliases = [], option = "", default = true }
+
+[disk_watch.warn_gb]
+doc = "Warn when a watched volume has less than this free, in GB (diskWatch.warnGb; 0 = not used)."
+value = { section = "diskWatch", key = "warnGb", env = "ANTIHALL_DISK_WATCH_WARN_GB", aliases = [], option = "", default = 20, min = 0 }
+
+[disk_watch.warn_pct]
+doc = "Warn when a watched volume has less than this percent free (diskWatch.warnPercent; 0 = not used)."
+value = { section = "diskWatch", key = "warnPercent", env = "ANTIHALL_DISK_WATCH_WARN_PCT", aliases = [], option = "", default = 10, min = 0 }
+
+[disk_watch.critical_gb]
+doc = "Critical when a watched volume has less than this free, in GB (diskWatch.criticalGb; 0 = not used)."
+value = { section = "diskWatch", key = "criticalGb", env = "ANTIHALL_DISK_WATCH_CRITICAL_GB", aliases = [], option = "", default = 5, min = 0 }
+
+[disk_watch.critical_pct]
+doc = "Critical when a watched volume has less than this percent free (diskWatch.criticalPercent; 0 = not used)."
+value = { section = "diskWatch", key = "criticalPercent", env = "ANTIHALL_DISK_WATCH_CRITICAL_PCT", aliases = [], option = "", default = 3, min = 0 }
+
+[disk_watch.cooldown_s]
+doc = "Least time before the same volume is warned about again at the same level (diskWatch.cooldownSeconds); a worse level is never held back."
+value = { section = "diskWatch", key = "cooldownSeconds", env = "ANTIHALL_DISK_WATCH_COOLDOWN", aliases = [], option = "", default = 1800, min = 0 }
+
+[disk_watch.block_at_critical]
+doc = "Opt-in (default off): at the critical level, block heavy commands instead of only warning (diskWatch.blockAtCritical)."
+value = { section = "diskWatch", key = "blockAtCritical", env = "ANTIHALL_DISK_WATCH_BLOCK", aliases = [], option = "", default = false }
+
+[disk_watch.heavy_command_re]
+doc = "Regular expression (JavaScript source, matched case-insensitively) of the shell commands that write a lot of data: the ones warned about at the critical level."
+value = '(^|[;&|\s])(cargo +(build|test|check|bench|install)|npm +(ci|install|i)\b|yarn +(install|add)|pnpm +(install|i|add)|pip3? +install|git +(clone|worktree +add)|flutter +build|gradlew? |xcodebuild|docker +(build|pull)|make\b|cmake +--build|go +(build|test)|bundle +install|pod +install)'
+
+[disk_watch.growth_names]
+doc = "Directory names counted as build or cache growth in the suggestion."
+value = ["target", "node_modules", "build", "dist", ".gradle", "DerivedData", ".next", ".dart_tool", "Pods", ".venv", "venv", ".worktrees"]
+
+[disk_watch.growth_depth]
+doc = "How deep under a watched root the growth scan looks for those directory names."
+value = 3
+
+[disk_watch.growth_max_entries]
+doc = "The growth scan stops after visiting this many directory entries (a size is then 'at least')."
+value = 30000
+
+[disk_watch.growth_budget_ms]
+doc = "The growth scan stops after this long."
+value = 400
+unit = "ms"
+
+[disk_watch.growth_top]
+doc = "The most growth directories an advisory names."
+value = 3
+
+[disk_watch.growth_min_mb]
+doc = "A directory smaller than this is not named."
+value = 500
+
+[disk_watch.temp_default]
+doc = "The temp directory when the TMPDIR variable of the process is unset."
+value = "/tmp"
+
+[disk_watch.msg_vol]
+doc = "One volume line; {path} a path on it, {free} free, {pct} percent free, {level} warn or critical."
+value = "{path}: {free} free ({pct}%), {level}"
+
+[disk_watch.msg_what]
+doc = "Advisory first line; {list} the volume lines."
+value = "Low disk space: {list}."
+
+[disk_watch.msg_why]
+doc = "Why it matters."
+value = "A full disk fails builds and writes, and a machine with almost no space left can panic or lose unsaved work."
+
+[disk_watch.msg_instead]
+doc = "What to do; {growth} names the biggest growth or is empty."
+value = "Free space before starting more builds, clones or worktrees; nothing was deleted.{growth}"
+
+[disk_watch.msg_growth]
+doc = "Growth suggestion; {list} the directories with sizes."
+value = " Biggest build or cache directories under the watched paths: {list} (suggestion only)."
+
+[disk_watch.msg_heavy]
+doc = "Line added at the critical level before a heavy command."
+value = "This command writes a lot of data."
+
+[disk_watch.msg_blocked]
+doc = "Block reason when diskWatch.blockAtCritical is on; {list} the volume lines."
+value = "Blocked: disk space is critical ({list}). Free space, or set diskWatch.blockAtCritical=false."
+
+[disk_watch.impact_kind]
+doc = "Impact kind recorded for every disk warning."
+value = "disk_warning"
+
+[disk_watch.growth_every_s]
+doc = "Least time between two growth scans (a scan runs only while a volume is low, and its result is reused in between)."
+value = 600
+unit = "s"
+
+[disk_watch.bytes_per_gb]
+doc = "Bytes in a gigabyte (binary), for the floors and the sizes shown."
+value = 1073741824
+
+[disk_watch.bytes_per_mb]
+doc = "Bytes in a megabyte (binary)."
+value = 1048576
+
+[disk_watch.percent_base]
+doc = "The whole in a percentage."
+value = 100

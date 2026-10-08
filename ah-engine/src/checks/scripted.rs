@@ -184,3 +184,6 @@ pub static COMMAND_GUARD: Scripted = Scripted::new("command", "command.check_sum
 
 /// `coordinator-work-guard` (PreToolUse and PostToolUse on Bash): the main-thread work window; it classifies with the command script.
 pub static COORDINATOR_WORK_GUARD: Scripted = Scripted::new("coordinator-work-guard", "coordinator_work.summary");
+/// `procwatch-advisory` (SessionStart, UserPromptSubmit, PreToolUse; engine-only, advisory unless the owner opts into blocking at
+/// critical disk space). A script failure defers to its no-op fallback, so a broken script is silence, never a block.
+pub static PROCWATCH_ADVISORY: Scripted = Scripted::new("procwatch-advisory", "procwatch.summary");

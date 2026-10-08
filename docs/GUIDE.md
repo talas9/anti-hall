@@ -1597,6 +1597,30 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
 | `engine.bootstrap` | `true` | `AH_ENGINE_BOOTSTRAP` | Download and install the sha256-pinned ah-engine binary from the GitHub Release on SessionStart (once per pinned release). Off: nothing is downloaded and the Node hooks answer everything. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
 | `defects.defaultProj` | — | `ANTIHALL_DEFECT_PROJ` | Default project tag used when filing an anti-hall defect (max 64 chars). |
+| `procwatch.enabled` | `true` | `ANTIHALL_PROCWATCH` | procwatch (scheduled sweep + SessionStart/UserPromptSubmit/PreToolUse advisory): look for processes a Claude session left behind (marked by the environment Claude Code sets, owner session gone, class pattern, minimum age) and for agents with no output. Never touches a live session, an unmarked process or a system process. |
+| `procwatch.devServerMode` | `report` | `ANTIHALL_PROCWATCH_DEV_SERVER` | dev_server class of the process watch: dev servers and watchers an agent started. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.testRunnerMode` | `report` | `ANTIHALL_PROCWATCH_TEST_RUNNER` | test_runner class of the process watch: test runners and their children. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.buildDaemonMode` adv | `report` | `ANTIHALL_PROCWATCH_BUILD_DAEMON` | build_daemon class of the process watch: build tool daemons. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.mcpServerMode` adv | `report` | `ANTIHALL_PROCWATCH_MCP_SERVER` | mcp_server class of the process watch: MCP servers of ended sessions (the SessionEnd reaper, maintenance.sessionEndReaper, is separate). off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.shellTaskMode` adv | `report` | `ANTIHALL_PROCWATCH_SHELL_TASK` | shell_task class of the process watch: background shell commands of ended sessions. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.otherMode` adv | `report` | `ANTIHALL_PROCWATCH_OTHER` | other (catch-all) class of the process watch: any other process a Claude session started and left behind, oldest first. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |
+| `procwatch.stuckMinutes` | `20` | `ANTIHALL_PROCWATCH_STUCK_MINUTES` | Minutes without output after which a background agent of this session is named in a stuck-agent advisory (UserPromptSubmit; warn only, once per cooldown). Reuses the silent-agent-nudge detection. |
+| `resourceWatch.enabled` | `true` | `ANTIHALL_RESOURCE_WATCH` | resource-watch: sample the processes under live Claude sessions each sweep and warn the session (advisory only). |
+| `resourceWatch.cpuPercent` | `90` | `ANTIHALL_RESOURCE_WATCH_CPU` | Per-core CPU percent (100 = one core busy; a multi-threaded process can exceed it) every sample of the window must reach. |
+| `resourceWatch.cpuWindowSeconds` adv | `120` | `ANTIHALL_RESOURCE_WATCH_CPU_WINDOW` | Seconds the CPU reading must hold. |
+| `resourceWatch.memoryMb` | `4096` | `ANTIHALL_RESOURCE_WATCH_MEM` | Memory in MB (resident set on Linux, physical footprint on macOS) at which a process of a live session is named. |
+| `resourceWatch.swapMb` adv | `8192` | `ANTIHALL_RESOURCE_WATCH_SWAP` | System swap in use, MB, that triggers a warning; 0 = off. |
+| `resourceWatch.pressurePercent` adv | `25` | `ANTIHALL_RESOURCE_WATCH_PSI` | Linux memory pressure (PSI some avg10, percent) that triggers a warning; 0 = off. |
+| `resourceWatch.macPressureLevel` adv | `2` | `ANTIHALL_RESOURCE_WATCH_MAC_PRESSURE` | macOS memory pressure level (2 warn, 4 critical) that triggers a warning; 0 = off. |
+| `resourceWatch.cooldownSeconds` adv | `900` | `ANTIHALL_RESOURCE_WATCH_COOLDOWN` | Least seconds before the same process (or system warning) is named again. |
+| `resourceWatch.renice` | `false` | `ANTIHALL_RESOURCE_WATCH_RENICE` | Opt-in: lower the priority (nice 10) of a process the watch warned about, once. Off by default; the watch never kills. |
+| `diskWatch.enabled` | `true` | `ANTIHALL_DISK_WATCH` | disk-watch: warn (SessionStart/UserPromptSubmit) when the project, HOME or temp volume is below the warn floor, and before heavy commands (PreToolUse) at the critical floor; names the biggest build/cache directories as a suggestion. |
+| `diskWatch.warnGb` | `20` | `ANTIHALL_DISK_WATCH_WARN_GB` | Warn below this many GB free (0 = not used). |
+| `diskWatch.warnPercent` adv | `10` | `ANTIHALL_DISK_WATCH_WARN_PCT` | Warn below this percent free (0 = not used). |
+| `diskWatch.criticalGb` | `5` | `ANTIHALL_DISK_WATCH_CRITICAL_GB` | Critical below this many GB free (0 = not used). |
+| `diskWatch.criticalPercent` adv | `3` | `ANTIHALL_DISK_WATCH_CRITICAL_PCT` | Critical below this percent free (0 = not used). |
+| `diskWatch.cooldownSeconds` adv | `1800` | `ANTIHALL_DISK_WATCH_COOLDOWN` | Least seconds before the same level is warned about again (a worse level always is). |
+| `diskWatch.blockAtCritical` | `false` | `ANTIHALL_DISK_WATCH_BLOCK` | Opt-in: at the critical level, block heavy commands (builds, clones, worktree add) instead of only warning. Off by default. |
 
 ## Configuration / tuning
 

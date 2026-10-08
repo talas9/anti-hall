@@ -1,4 +1,5 @@
-// check = "silent-agent-nudge" (Stop; mirrors hooks/silent-agent-nudge.js). Nudges once when a background agent has gone quiet: reads
+// check = "silent-agent-nudge" (Stop; mirrors hooks/silent-agent-nudge.js; on UserPromptSubmit it gives the engine-only stuck-agent
+// advisory of the process watch, procwatch.toml). Nudges once when a background agent has gone quiet: reads
 // the transcript tail, finds the agents launched and not finished (ah.transcript.agentScan), judges each by the newest of its output
 // file, its sidechain transcript and its resume, adds the heartbeat files of this session's own subagents, then compares with the
 // state file. A silent agent not yet nudged for this snapshot and not covered by the once-per-agent cap is nudged: the state is
@@ -116,8 +117,49 @@ function snAckPath(home, session) {
   return home + '/' + ah.cfg('silent_nudge.ack_dir') + '/' + ah.cfg('silent_nudge.ack_file_prefix') + safe + ah.cfg('silent_nudge.ack_file_ext');
 }
 
+// ---- UserPromptSubmit: the stuck-agent warning of the process watch (engine-only; warn only, nothing here stops an agent) ----
+// The same candidates the Stop nudge finds, named in a coordinator advisory with a per-agent cooldown (procwatch.stuck_*).
+function snStuckLabel(src, id) {
+  var l = Array.from(String(src).split(/\s+/).filter(Boolean).join(' ')).slice(0, ah.cfgNum('procwatch.stuck_label_chars')).join('');
+  return l === '' ? id : l + ' [' + id + ']';
+}
+
+function snStuckAdvisory(p) {
+  if (!ah.settings.bool('procwatch.sw_enabled') || ah.settings.skipped(ah.cfg('procwatch.guard_name'))) return 'allow';
+  var home = ah.env.get(ah.cfg('env.home'));
+  if (!home || home.charAt(0) !== '/') return 'allow';
+  var session = typeof p.session_id === 'string' ? p.session_id : '';
+  var minutes = Math.max(1, ah.settings.num('procwatch.stuck_minutes'));
+  var now = ah.clock.now();
+  // a transcript or heartbeat this scan cannot read exactly is no warning (the Stop nudge defers for it; an advisory stays quiet)
+  var cands = snCandidates(p, home, now, minutes * 60000, session);
+  if (cands === null || cands.length === 0) return 'allow';
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + ah.cfg('procwatch.stuck_state_file');
+  var nowS = Math.floor(now / 1000), last = {};
+  var raw = ah.fs.readText(home + '/' + rel);
+  if (raw !== null) { try { var o = JSON.parse(raw); if (o !== null && typeof o === 'object' && !Array.isArray(o)) last = o; } catch (e) { last = {}; } }
+  var cooldown = ah.cfgNum('procwatch.stuck_cooldown_s');
+  cands = cands.filter(function (c) {
+    var key = session + ':' + c.key + ':' + c.snapshot;
+    if (typeof last[key] === 'number' && nowS - last[key] < cooldown) return false;
+    last[key] = nowS;
+    return true;
+  });
+  if (cands.length === 0) return 'allow';
+  var keep = ah.cfgNum('procwatch.state_keep_s');
+  Object.keys(last).forEach(function (k) { if (nowS - last[k] > keep) delete last[k]; });
+  try { ah.state.writeAtomic(rel, JSON.stringify(last)); } catch (e) { /* a lost cooldown record repeats one warning */ }
+  var max = ah.cfgNum('procwatch.stuck_max_named');
+  var list = cands.slice(0, max).map(function (c) { return snStuckLabel(c.label, c.id) + ' (' + Math.floor(c.age / 60000) + ' min)'; }).join(', ');
+  var more = cands.length > max ? text.render(ah.cfg('procwatch.msg_more'), { m: cands.length - max }) : '';
+  var what = text.render(ah.cfg('procwatch.msg_stuck_what'), { n: cands.length, minutes: String(Math.round(minutes)), list: list, more: more });
+  var msg = text.message('warn', ah.cfg('procwatch.guard_name'), { what: what, why: ah.cfg('procwatch.msg_stuck_why'), instead: ah.cfg('procwatch.msg_stuck_instead') });
+  return { advisory: text.advisoryJson(ah.cfg('procwatch.stuck_event'), msg) };
+}
+
 function decide(p, opts) {
   if (ah.env.get(ah.cfg('silent_nudge.judge_child_env')) === ah.cfg('silent_nudge.judge_child_value')) return 'allow';
+  if (p !== null && typeof p === 'object' && p[ah.cfg('procwatch.f_event')] === ah.cfg('procwatch.stuck_event')) return snStuckAdvisory(p);
   var home = ah.env.get(ah.cfg('env.home'));
   if (!home || home.charAt(0) !== '/') return 'defer';
   if (!ah.settings.bool('silent_nudge.setting')) return 'allow';

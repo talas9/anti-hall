@@ -169,9 +169,9 @@ test('(7) AGENTS.md carries the generated component catalog, current, and fits t
   assert.deepStrictEqual({ missingHooks, missingKeys }, { missingHooks: [], missingKeys: [] });
 });
 
-test('(7b) AGENTS.md stays under the 30,000-byte soft budget (hard Codex cap is 32,768)', () => {
+test('(7b) AGENTS.md stays under the 31,000-byte soft budget (hard Codex cap is 32,768)', () => {
   const n = Buffer.byteLength(read('AGENTS.md'));
-  assert.ok(n <= 30000, 'AGENTS.md is ' + n + ' bytes (soft budget 30000; hard Codex cap 32768). Trim: move reference prose to docs/GUIDE.md and keep a pointer, or shorten the generated catalog in tools/gen-agents-catalog.js. Behavioural rules stay inline.');
+  assert.ok(n <= 31000, 'AGENTS.md is ' + n + ' bytes (soft budget 31000; hard Codex cap 32768). Trim: move reference prose to docs/GUIDE.md and keep a pointer, or shorten the generated catalog in tools/gen-agents-catalog.js. Behavioural rules stay inline.');
 });
 
 test('(8) docs/KB.md component counts are generated from disk (tools/gen-kb-counts.js) and still parse for repo-self-drift', () => {

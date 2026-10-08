@@ -1,0 +1,239 @@
+# ah-engine shipped defaults for the process watch: orphan reaper and stuck-agent warning (docs/AH-ENGINE.md, "Process watch").
+# Format: see the header of engine.toml. The resource watch and the disk watch have their own files (resource_watch.toml,
+# disk_watch.toml) and share only the process-scan code.
+#
+# What a Claude orphan is. Claude Code puts CLAUDECODE, CLAUDE_CODE_SESSION_ID and CLAUDE_PID (the session process) into the
+# environment of everything it starts. A process is a candidate only when ALL hold: it carries the marker variable; its owner is
+# gone (CLAUDE_PID is not a live Claude session command, a recycled pid counts as gone) and no ancestor of it is a live session;
+# it matches a class below and is older than that class's minimum; and it is not protected. A process whose environment cannot be
+# read (a system binary on macOS, another user's process) is not marked and is never touched. Every class ships in `report` mode;
+# `kill` is a per-class opt-in setting. Kill = polite signal, a grace period, a fresh re-check of that one pid (same command, same
+# start time), then the forced signal; one pid at a time, never by pattern. Classes are regular expressions (Rust syntax, tested
+# against the full command line). An owner's own project-specific classes go in the example file engine/examples/procwatch-dev.toml.
+
+[procwatch.summary]
+doc = "One-line description of the procwatch-advisory check in the generated reference."
+value = "SessionStart, UserPromptSubmit and PreToolUse advisory: leftover processes of ended Claude sessions, agents silent past a threshold, processes of this session using too much CPU or memory, and low free disk; warns only (a kill is a per-class opt-in of the scheduled sweep, a block at critical disk an opt-in setting)."
+
+[procwatch.sw_enabled]
+doc = "Where the master switch of the process watch is read from (procwatch.enabled, default on): the scheduled sweep and the advisory."
+value = { section = "procwatch", key = "enabled", env = "ANTIHALL_PROCWATCH", aliases = [], option = "", default = true }
+
+[procwatch.marker_var]
+doc = "The environment variable Claude Code sets in every child process; a process without it is never an orphan candidate."
+value = "CLAUDECODE"
+
+[procwatch.owner_var]
+doc = "The environment variable that holds the pid of the Claude session process that started the process."
+value = "CLAUDE_PID"
+
+[procwatch.session_var]
+doc = "The environment variable that holds the id of the session that started the process."
+value = "CLAUDE_CODE_SESSION_ID"
+
+[procwatch.session_cmd_re]
+doc = "Regular expression (case-insensitive) of the command line of a Claude Code session process: how a live owner is told from a recycled pid, and how the resource watch finds a process's session."
+value = '(?i)(^|[/\s])claude(\s|$)|@anthropic-ai/claude-code|claude-code/(cli|dist)'
+
+[procwatch.protect_res]
+doc = "Regular expressions (case-insensitive) of command lines that are never signalled: the plugin's installed engine (live install and state directories under ~/.anti-hall/ah-engine*), its hooks and companions, and any Claude Code plugin cache."
+value = ['(?i)/\.anti-hall/ah-engine[^/]*/', '(?i)/plugins/(marketplaces/)?anti-hall/', '(?i)/\.claude/plugins/']
+
+[procwatch.protect_pids_below]
+doc = "Pids below this are never signalled (init and the kernel's own)."
+value = 2
+
+[procwatch.scan_every_s]
+doc = "Least time between two orphan scans (the resource sampling runs on every sweep)."
+value = 300
+unit = "s"
+
+[procwatch.grace_ms]
+doc = "How long a kill waits between the polite and the forced signal."
+value = 2000
+unit = "ms"
+
+[procwatch.max_kills_per_run]
+doc = "The most processes one sweep signals, in any class."
+value = 8
+
+[procwatch.max_listed]
+doc = "The most orphan candidates one report lists (the count is kept exactly)."
+value = 50
+
+[procwatch.cmd_chars]
+doc = "A command line in a report or advisory is cut to this many characters."
+value = 160
+
+[procwatch.report_file]
+doc = "The sweep's latest findings, relative to the engine state directory."
+value = "procwatch-report.json"
+
+[procwatch.classes]
+doc = "Orphan classes, first match wins. name: report name; mode_key: the defaults key of its mode setting (off | report | kill); cmd_re: matches the command line; exclude_re: a match is skipped ('' = none); min_age_s: how old a process must be; children: also list its descendants (they die with it)."
+value = [
+  { name = "dev_server", mode_key = "procwatch.mode_dev_server", cmd_re = '(?i)(vite|webpack(-dev-server)?|next (dev|start)|nodemon|ts-node-dev|tsc +(-w|--watch)|--watch\b|storybook|http-server|live-server|flutter +(run|attach)|uvicorn|gunicorn|flask +run|rails +s(erver)?|(npm|yarn|pnpm|bun)( run)? +(dev|start|watch|serve)|php +-S|http\.server|dev-server)', exclude_re = '', min_age_s = 900, children = true },
+  { name = "test_runner", mode_key = "procwatch.mode_test_runner", cmd_re = '(?i)(cargo(-nextest)? +(test|nextest)|nextest|pytest|jest|vitest|mocha|go +test|rspec|phpunit|flutter +test|node +--test|ctest|/target/(debug|release)/deps/)', exclude_re = '', min_age_s = 900, children = true },
+  { name = "build_daemon", mode_key = "procwatch.mode_build_daemon", cmd_re = '(?i)(GradleDaemon|KotlinCompileDaemon|bazel.*server|sbt-launch|esbuild +--service|turbo +daemon|nx +daemon)', exclude_re = '', min_age_s = 1800, children = false },
+  { name = "mcp_server", mode_key = "procwatch.mode_mcp_server", cmd_re = '(?i)(@?modelcontextprotocol\b|(^|[\s/])(mcp[-_]server|server-sequential-thinking)|(^|[\s/])[a-z0-9][a-z0-9._-]*-mcp([\s/]|$)|(^|\s)@[a-z0-9][a-z0-9._-]*/mcp([\s/]|$)|(^|\s)mcp\s+start(\s|$))', exclude_re = '', min_age_s = 300, children = false },
+  { name = "shell_task", mode_key = "procwatch.mode_shell_task", cmd_re = '(?i)^(\S*/)?(ba|z|da|k)?sh( +-\S+)* +-c +', exclude_re = '', min_age_s = 1800, children = true },
+  { name = "other", mode_key = "procwatch.mode_other", cmd_re = '.', exclude_re = '', min_age_s = 3600, children = false },
+]
+
+[procwatch.mode_dev_server]
+doc = "Mode of the dev_server class (dev servers and watchers an agent started): off | report | kill. Report lists them; kill terminates one at a time."
+value = { section = "procwatch", key = "devServerMode", env = "ANTIHALL_PROCWATCH_DEV_SERVER", aliases = [], option = "", default = "report", values = ["off", "report", "kill"] }
+
+[procwatch.mode_test_runner]
+doc = "Mode of the test_runner class (test runners and their children): off | report | kill."
+value = { section = "procwatch", key = "testRunnerMode", env = "ANTIHALL_PROCWATCH_TEST_RUNNER", aliases = [], option = "", default = "report", values = ["off", "report", "kill"] }
+
+[procwatch.mode_build_daemon]
+doc = "Mode of the build_daemon class (build tool daemons): off | report | kill."
+value = { section = "procwatch", key = "buildDaemonMode", env = "ANTIHALL_PROCWATCH_BUILD_DAEMON", aliases = [], option = "", default = "report", values = ["off", "report", "kill"] }
+
+[procwatch.mode_mcp_server]
+doc = "Mode of the mcp_server class (MCP servers of ended sessions): off | report | kill. The SessionEnd MCP reaper (maintenance.sessionEndReaper) is a separate switch."
+value = { section = "procwatch", key = "mcpServerMode", env = "ANTIHALL_PROCWATCH_MCP_SERVER", aliases = [], option = "", default = "report", values = ["off", "report", "kill"] }
+
+[procwatch.mode_shell_task]
+doc = "Mode of the shell_task class (background shell commands of ended sessions): off | report | kill."
+value = { section = "procwatch", key = "shellTaskMode", env = "ANTIHALL_PROCWATCH_SHELL_TASK", aliases = [], option = "", default = "report", values = ["off", "report", "kill"] }
+
+[procwatch.mode_other]
+doc = "Mode of the catch-all class (any other process a Claude session started and left behind, oldest first): off | report | kill."
+value = { section = "procwatch", key = "otherMode", env = "ANTIHALL_PROCWATCH_OTHER", aliases = [], option = "", default = "report", values = ["off", "report", "kill"] }
+
+# ---- stuck agents -----------------------------------------------------------------------------------------
+
+[procwatch.stuck_minutes]
+doc = "Minutes without output after which a background agent of this session is reported as stuck (procwatch.stuckMinutes)."
+value = { section = "procwatch", key = "stuckMinutes", env = "ANTIHALL_PROCWATCH_STUCK_MINUTES", aliases = [], option = "", default = 20, min = 1 }
+
+[procwatch.stuck_cooldown_s]
+doc = "Least time before the same agent is named as stuck again."
+value = 900
+unit = "s"
+
+[procwatch.stuck_max_named]
+doc = "The most stuck agents one advisory names (the rest are counted)."
+value = 5
+
+# ---- advisory text ------------------------------------------------------------------------------------------
+
+[procwatch.orphan_cooldown_s]
+doc = "Least time between two orphan summaries to the same session."
+value = 3600
+unit = "s"
+
+[procwatch.orphan_max_named]
+doc = "The most orphan candidates one advisory names (the rest are counted)."
+value = 5
+
+[procwatch.guard_name]
+doc = "The name the process-watch messages carry."
+value = "procwatch"
+
+[procwatch.msg_orphans_what]
+doc = "Orphan summary line; {n} candidates, {list} the named ones, {more} the remainder note."
+value = "{n} process(es) left behind by ended Claude sessions: {list}{more}."
+
+[procwatch.msg_orphans_why]
+doc = "Why the orphan summary matters."
+value = "They keep running (ports, CPU, memory) after the session that started them is gone. Modes: {modes}."
+
+[procwatch.msg_orphans_instead]
+doc = "What to do about orphans."
+value = "Nothing was stopped. Opt in per class with procwatch.<class>Mode=kill (/anti-hall:settings), or end a pid yourself after checking it."
+
+[procwatch.msg_killed]
+doc = "Line added when a sweep stopped orphans; {n} count, {list} the stopped ones."
+value = "Stopped {n} orphan(s) (class in kill mode): {list}."
+
+[procwatch.msg_stuck_what]
+doc = "Stuck-agent line; {n} agents, {list} the named ones, {more} the remainder note."
+value = "{n} background agent(s) have shown no output for {minutes}+ minutes: {list}{more}."
+
+[procwatch.msg_stuck_why]
+doc = "Why a stuck agent matters."
+value = "It may be hung, waiting on input, or finished without reporting; it keeps its slot and its context until it is dealt with."
+
+[procwatch.msg_stuck_instead]
+doc = "What to do about a stuck agent."
+value = "Check its output file or SendMessage it, then TaskStop it if it is dead. Nothing was stopped."
+
+[procwatch.msg_more]
+doc = "Remainder note; {m} more."
+value = " and {m} more"
+
+[procwatch.impact_orphan]
+doc = "Impact kind recorded when an orphan candidate is first reported."
+value = "orphan_candidate"
+
+[procwatch.impact_kill]
+doc = "Impact kind recorded when an orphan is signalled."
+value = "orphan_kill"
+
+
+[procwatch.msg_bad_config]
+doc = "The sweep's error when its configuration does not compile."
+value = "process watch configuration is invalid (a pattern does not compile)"
+
+[procwatch.report_max_age_s]
+doc = "A report older than this is not shown (the sweep is not running)."
+value = 3600
+unit = "s"
+
+[procwatch.state_keep_s]
+doc = "Advisory cooldown records older than this are dropped."
+value = 86400
+unit = "s"
+
+[procwatch.extra_classes_file]
+doc = "The owner's own orphan classes: a TOML file with `[[classes]]` tables (name, mode = off | report | kill, cmd_re, exclude_re, min_age_s, children) in the engine state directory. Its classes are tried before the shipped ones. Example: engine/examples/procwatch-dev.toml."
+value = "procwatch-classes.toml"
+
+[procwatch.stuck_event]
+doc = "The hook event on which the stuck-agent advisory is given (the silent-agent-nudge check answers it; on Stop it nudges)."
+value = "UserPromptSubmit"
+
+[procwatch.stuck_state_file]
+doc = "Cooldown records of the stuck-agent advisory, relative to the engine state directory."
+value = "procwatch-stuck.json"
+
+[procwatch.stuck_label_chars]
+doc = "An agent's description is cut to this many characters in the stuck-agent advisory."
+value = 60
+
+[procwatch.f_event]
+doc = "The hook payload field that names the event."
+value = "hook_event_name"
+
+[procwatch.f_session]
+doc = "The hook payload field that holds the session id."
+value = "session_id"
+
+[procwatch.f_tool_input]
+doc = "The hook payload field that holds the tool input."
+value = "tool_input"
+
+[procwatch.f_command]
+doc = "The tool input field that holds a shell command."
+value = "command"
+
+[procwatch.advisory_events]
+doc = "The hook events the procwatch-advisory script answers."
+value = ["SessionStart", "UserPromptSubmit", "PreToolUse"]
+
+[procwatch.pre_tool_event]
+doc = "The event on which only the critical-disk warning about heavy commands is given."
+value = "PreToolUse"
+
+[procwatch.state_rel]
+doc = "The advisory's cooldown records, relative to the engine state directory."
+value = "procwatch-state.json"
+
+[procwatch.resource_shown_key]
+doc = "Prefix of the cooldown record that remembers the newest resource warning a session was shown."
+value = "res-shown"
+

@@ -41,6 +41,8 @@ pub mod migrate;
 pub mod operator;
 pub mod paths;
 pub mod proc;
+/// Process watch: orphan sweep, resource and disk warnings.
+pub mod procwatch;
 pub mod reqenv;
 pub mod rules;
 pub mod schedule;
