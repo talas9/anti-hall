@@ -135,3 +135,34 @@ fn a_cold_start_with_a_broken_file_uses_the_last_known_good_copy_and_all_three_b
     assert!(err.contains("defaults unavailable") && err.contains("parse"), "{err}");
     ah_engine::discard::harmless(std::fs::remove_dir_all(&e.dir));
 }
+
+/// `ah-engine config heal` writes the settings an edited file lacks, even in a version-controlled checkout where the
+/// automatic heal only warns; the hook client's automatic heal leaves the checkout's files alone and logs the command.
+#[test]
+fn config_heal_writes_missing_settings_into_a_checkout_the_automatic_heal_leaves_alone() {
+    let e = Env::new("heal");
+    std::fs::create_dir_all(e.plugin().join(".git")).unwrap();
+    let p = e.plugin().join("engine/defaults/engine.toml");
+    let text = std::fs::read_to_string(&p).unwrap();
+    let head = "[daemon.queue]\n";
+    let at = text.find(head).unwrap();
+    let end = at + head.len() + text[at + head.len()..].find("\n[").unwrap() + 1;
+    let cut = format!("{}{}", &text[..at], &text[end..]);
+    std::fs::write(&p, &cut).unwrap();
+    let (code, err) = e.hook();
+    assert_eq!(code, 0, "the pristine copy answers the missing setting: {err}");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), cut, "an automatic heal never writes into a checkout");
+    assert!(e.events().contains("ah-engine config heal"), "the warning names the command: {}", e.events());
+    let o = Command::new(BIN)
+        .args(["config", "heal"])
+        .env("HOME", e.dir.join("home"))
+        .env("AH_ENGINE_DIR", e.state())
+        .env("AH_ENGINE_PLUGIN_ROOT", e.plugin())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let healed = std::fs::read_to_string(&p).unwrap();
+    assert!(healed.starts_with(&cut) && healed.contains("\n[daemon.queue]\n"), "the setting is appended, the rest kept");
+    assert!(String::from_utf8_lossy(&o.stdout).contains("daemon.queue"));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&e.dir));
+}

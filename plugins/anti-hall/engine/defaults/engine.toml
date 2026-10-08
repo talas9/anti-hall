@@ -666,3 +666,28 @@ max = 100
 [msg.advisory_defaults]
 doc = "Appended to the degraded notice when defaults fell back to another layer. Placeholders: {count} fallbacks in the window, {last} the last one's detail."
 value = " Defaults: {count} setting(s) or file(s) fell back to a safe copy (last: {last}); fix the file or run `ah-engine config heal`."
+
+[defaults_load.vcs_markers]
+doc = "Entries (a directory or a file) that mark a version-controlled checkout: when the plugin root or a directory above it holds one, missing settings are never written into its files automatically (only `ah-engine config heal` writes there)."
+value = [".git"]
+
+[defaults_load.backup_infix]
+doc = "What separates a defaults file's name from the time stamp of its one-time backup, taken before the first heal writes the file."
+value = ".bak-"
+
+[defaults_load.msg_heal]
+doc = "Event-log detail (and `config heal` output) when missing settings were added to an edited defaults file from the pristine copy. Placeholders: {file}, {keys}, {backup} (the backup file, or empty when one already existed)."
+value = "defaults {file}: added missing {keys} from the pristine copy (backup {backup})"
+
+[defaults_load.msg_heal_skipped]
+doc = "Event-log detail when missing settings were not written because the plugin root is a version-controlled checkout. Placeholders: {file}, {keys}."
+value = "defaults {file}: missing keys {keys}: run `ah-engine config heal` to add them"
+
+[defaults_load.msg_heal_failed]
+doc = "Event-log detail (and `config heal` output) when missing settings could not be added. Placeholders: {file}, {keys}, {err}."
+value = "defaults {file}: could not add missing {keys}: {err}"
+
+[defaults_load.msg_heal_none]
+doc = "Printed by `config heal` when no edited defaults file lacks a setting of the pristine copy."
+value = "nothing to heal: the edited defaults have every setting of the pristine copy"
+

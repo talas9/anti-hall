@@ -467,6 +467,34 @@ fn cmd_config(p: &Parsed) -> i32 {
                 }
             },
         },
+        Some("heal") => {
+            // explicit: writes the missing settings even into a version-controlled checkout (the automatic heal never does)
+            let Some(root) = defaults::root() else { return 70 };
+            let report = match defaults::load_from(&root, crate::bootstrap::lkg_dir().as_deref(), None) {
+                Ok(d) => d.report().clone(),
+                Err(e) => {
+                    let msg = e.to_string();
+                    emit(p, msg.clone(), json!({"error": msg}));
+                    return 1;
+                }
+            };
+            let done = defaults::heal(&root, &report, true);
+            if done.is_empty() {
+                let msg = defaults::text("defaults_load.msg_heal_none");
+                emit(p, msg.to_string(), json!({"healed": []}));
+                return 0;
+            }
+            let mut lines = Vec::new();
+            let mut failed = false;
+            for h in &done {
+                let (kind, code, detail) = defaults::heal_line(h);
+                crate::health::log_event(kind, code, &detail);
+                failed |= matches!(h, defaults::Healed::Failed { .. });
+                lines.push(detail);
+            }
+            emit(p, lines.join("\n"), json!({"healed": lines, "failed": failed}));
+            i32::from(failed)
+        }
         Some(other) => {
             // versions, rollback, export: planned with the config database
             let decision = defaults::raw("cmd.config").str_field("planned_decision");

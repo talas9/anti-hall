@@ -69,6 +69,11 @@ impl Data {
         &self.root
     }
 
+    /// What the load fell back on and what it found missing.
+    pub fn report(&self) -> &Report {
+        &self.report
+    }
+
     pub(super) fn find(&self, key: &str) -> Option<&'static Entry> {
         let i = self.index.binary_search_by(|(k, _)| (*k).cmp(key)).ok()?;
         Some(self.index[i].1)
@@ -572,9 +577,169 @@ pub fn write_lkg(report: &Report, base: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+// ---- healing missing settings ------------------------------------------------------------------------------------------
+
+/// The outcome of healing one file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Healed {
+    /// The settings were added.
+    Added {
+        /// The file, relative to the defaults directory.
+        file: String,
+        /// The settings added.
+        keys: Vec<String>,
+        /// The backup taken first, if this was the file's first heal.
+        backup: Option<PathBuf>,
+    },
+    /// Not written: the plugin root is a version-controlled checkout and the heal was automatic.
+    Skipped {
+        /// The file, relative to the defaults directory.
+        file: String,
+        /// The settings it lacks.
+        keys: Vec<String>,
+    },
+    /// Not written.
+    Failed {
+        /// The file, relative to the defaults directory.
+        file: String,
+        /// The settings it lacks.
+        keys: Vec<String>,
+        /// Why.
+        err: String,
+    },
+}
+
+/// True when `root` or a directory above it holds one of `defaults_load.vcs_markers` (a `.git` directory or file).
+pub fn in_checkout(root: &Path) -> bool {
+    let markers = super::list("defaults_load.vcs_markers");
+    root.ancestors().any(|d| markers.iter().any(|m| d.join(m).exists()))
+}
+
+/// The source text of the setting `[key]` in a defaults file's `text`: its header line through its last non-blank,
+/// non-comment line before the next table header.
+fn block_of(text: &str, key: &str) -> Option<String> {
+    let head = format!("[{key}]");
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.iter().position(|l| l.trim_end() == head)?;
+    let is_header = |l: &str| l.starts_with('[') && l.trim_end().ends_with(']') && !l.starts_with("[[");
+    let mut end = lines[start + 1..].iter().position(|l| is_header(l)).map_or(lines.len(), |n| start + 1 + n);
+    while end > start + 1 && (lines[end - 1].trim().is_empty() || lines[end - 1].trim_start().starts_with('#')) {
+        end -= 1;
+    }
+    Some(lines[start..end].join("\n"))
+}
+
+/// Add the settings `keys` of `file`, as the pristine copy has them, to the end of the edited file: existing text (entries,
+/// comments, order) is kept byte for byte, a setting already present is never touched, and a value the owner typed is
+/// never overwritten. The new text must parse and give each added setting exactly its pristine value, or nothing is
+/// written. Before a file's first heal its text is backed up beside it. Idempotent: a second run finds nothing to add.
+pub fn heal_file(root: &Path, file: &str, keys: &[String]) -> Result<Option<Added>, String> {
+    let path = root.join(bootstrap::DEFAULTS_DIR).join(file);
+    let pristine_text = std::fs::read_to_string(root.join(bootstrap::PRISTINE_DIR).join(file)).map_err(|e| e.to_string())?;
+    let pristine: toml::Table = pristine_text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+    let (old, existed) = match std::fs::read_to_string(&path) {
+        Ok(t) => (t, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
+        Err(e) => return Err(e.to_string()),
+    };
+    let current: toml::Table = old.parse().map_err(|e: toml::de::Error| e.to_string())?;
+    let lookup = |t: &toml::Table, k: &str| -> Option<toml::Value> {
+        let (s, n) = k.split_once('.')?;
+        t.get(s)?.as_table()?.get(n).cloned()
+    };
+    let todo: Vec<&String> = keys.iter().filter(|k| lookup(&current, k).is_none() && lookup(&pristine, k).is_some()).collect();
+    if todo.is_empty() {
+        return Ok(None);
+    }
+    let mut blocks = Vec::new();
+    for k in &todo {
+        blocks.push(block_of(&pristine_text, k).ok_or_else(|| format!("{k}: no `[{k}]` table in the pristine copy"))?);
+    }
+    let mut new = old.clone();
+    if !new.is_empty() && !new.ends_with('\n') {
+        new.push('\n');
+    }
+    if !new.is_empty() {
+        new.push('\n');
+    }
+    new.push_str(&blocks.join("\n\n"));
+    new.push('\n');
+    let parsed: toml::Table = new.parse().map_err(|e: toml::de::Error| e.to_string())?;
+    for k in &todo {
+        if lookup(&parsed, k) != lookup(&pristine, k) {
+            return Err(format!("{k}: the added text does not read back as the pristine value"));
+        }
+    }
+    let backup = if existed && !has_backup(&path) {
+        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let b = path.with_file_name(format!("{}{}{now}", file.rsplit('/').next().unwrap_or(file), super::text("defaults_load.backup_infix")));
+        std::fs::write(&b, &old).map_err(|e| e.to_string())?;
+        Some(b)
+    } else {
+        None
+    };
+    crate::atomic::write(&path, &new).map_err(|e| e.to_string())?;
+    Ok(Some((todo.into_iter().cloned().collect(), backup)))
+}
+
+/// What [`heal_file`] added: the settings and the backup taken first (on a file's first heal).
+pub type Added = (Vec<String>, Option<PathBuf>);
+
+fn has_backup(path: &Path) -> bool {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return false };
+    let prefix = format!("{name}{}", super::text("defaults_load.backup_infix"));
+    std::fs::read_dir(dir).is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix))))
+}
+
+/// Heal every file of `report.missing` under `root`. An automatic heal (`force` false) never writes into a
+/// version-controlled checkout ([`in_checkout`]); `ah-engine config heal` passes `force`.
+pub fn heal(root: &Path, report: &Report, force: bool) -> Vec<Healed> {
+    let skip = !force && in_checkout(root);
+    report
+        .missing
+        .iter()
+        .map(|(file, keys)| {
+            if skip {
+                return Healed::Skipped { file: file.clone(), keys: keys.clone() };
+            }
+            match heal_file(root, file, keys) {
+                Ok(Some((keys, backup))) => Healed::Added { file: file.clone(), keys, backup },
+                Ok(None) => Healed::Added { file: file.clone(), keys: Vec::new(), backup: None },
+                Err(err) => Healed::Failed { file: file.clone(), keys: keys.clone(), err },
+            }
+        })
+        .filter(|h| !matches!(h, Healed::Added { keys, .. } if keys.is_empty()))
+        .collect()
+}
+
+/// The event-log kind, reason code and detail of a heal outcome.
+pub fn heal_line(h: &Healed) -> (&'static str, &'static str, String) {
+    match h {
+        Healed::Added { file, keys, backup } => (
+            "defaults_heal",
+            "missing_key",
+            super::render(
+                "defaults_load.msg_heal",
+                &[("file", file), ("keys", &keys.join(", ")), ("backup", &backup.as_ref().map(|b| b.display().to_string()).unwrap_or_default())],
+            ),
+        ),
+        Healed::Skipped { file, keys } => {
+            ("defaults_heal_skipped", "missing_key", super::render("defaults_load.msg_heal_skipped", &[("file", file), ("keys", &keys.join(", "))]))
+        }
+        Healed::Failed { file, keys, err } => {
+            ("defaults_heal_failed", "io", super::render("defaults_load.msg_heal_failed", &[("file", file), ("keys", &keys.join(", ")), ("err", err)]))
+        }
+    }
+}
+
 /// What follows a successful load once its snapshot is active: each fallback goes to the event log (which marks the
-/// engine degraded, `health.degraded_kinds`), and the last-known-good copy is kept.
-pub fn after(report: &Report) {
+/// engine degraded, `health.degraded_kinds`), missing settings are healed (or, in a version-controlled checkout, reported
+/// with the command that adds them), and the last-known-good copy is kept.
+pub fn after(report: &Report, root: &Path) {
+    for h in heal(root, report, false) {
+        let (kind, code, detail) = heal_line(&h);
+        crate::health::log_event(kind, code, &detail);
+    }
     for n in &report.notes {
         let detail = super::render(
             "defaults_load.msg_fallback",
@@ -982,6 +1147,68 @@ mod tests {
         let d = load_from(&root, None, None).unwrap();
         assert_eq!((d.report.notes[0].code, d.report.notes[0].layer), ("type", Layer::Pristine));
         assert_eq!(int(&d, "daemon.workers"), 4);
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
+    }
+
+    // ---- healing missing settings ----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_missing_setting_is_healed_into_the_edited_file_keeping_its_text_and_idempotently() {
+        let root = plugin_with_pristine("heal");
+        assert!(!in_checkout(&root), "the temporary root is not a checkout");
+        let p = root.join(bootstrap::DEFAULTS_DIR).join("engine.toml");
+        replace_table(&root, "engine.toml", "daemon.queue", "");
+        let edited = format!("# my own note, kept\n{}", std::fs::read_to_string(&p).unwrap());
+        std::fs::write(&p, &edited).unwrap();
+        let d = load_from(&root, None, None).unwrap();
+        assert_eq!(int(&d, "daemon.queue"), 16, "the missing setting is read from the pristine copy");
+        assert_eq!(d.report.missing.get("engine.toml"), Some(&vec!["daemon.queue".to_string()]));
+        let done = heal(&root, &d.report, false);
+        let Healed::Added { keys, backup: Some(backup), .. } = &done[0] else { panic!("{done:?}") };
+        assert_eq!(keys, &["daemon.queue".to_string()]);
+        let healed = std::fs::read_to_string(&p).unwrap();
+        assert!(healed.starts_with(&edited), "the existing text (comments, entries, order) is kept byte for byte");
+        assert!(
+            healed.trim_end().ends_with("max = 1024") && healed.contains("\n[daemon.queue]\n"),
+            "the pristine block is appended:\n{}",
+            &healed[edited.len()..]
+        );
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), edited, "a backup of the text before the first heal");
+        let d = load_from(&root, None, None).unwrap();
+        assert!(d.report.missing.is_empty() && d.report.notes.is_empty(), "{:?}", d.report.notes);
+        // idempotent: nothing more to add, nothing written, no second backup
+        assert!(heal(&root, &d.report, false).is_empty());
+        assert_eq!(heal_file(&root, "engine.toml", &["daemon.queue".to_string()]), Ok(None));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), healed);
+        let backups =
+            std::fs::read_dir(p.parent().unwrap()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("engine.toml.bak-")).count();
+        assert_eq!(backups, 1);
+        crate::discard::harmless(std::fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn a_checkout_is_never_written_automatically_and_a_wrong_value_is_never_overwritten() {
+        let root = plugin_with_pristine("healgit");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let p = root.join(bootstrap::DEFAULTS_DIR).join("engine.toml");
+        replace_table(&root, "engine.toml", "daemon.queue", "");
+        // a value the owner typed wrong, in the same file
+        replace_table(&root, "engine.toml", "daemon.workers", "[daemon.workers]\ndoc = \"Workers.\"\nvalue = \"many\"\nenv = \"AH_ENGINE_WORKERS\"\n");
+        let before = std::fs::read_to_string(&p).unwrap();
+        let d = load_from(&root, None, None).unwrap();
+        assert_eq!((int(&d, "daemon.queue"), int(&d, "daemon.workers")), (16, 4), "both fall back to the pristine copy");
+        assert_eq!(d.report.missing.get("engine.toml"), Some(&vec!["daemon.queue".to_string()]), "only the missing key is a heal candidate");
+        let done = heal(&root, &d.report, false);
+        assert!(matches!(&done[..], [Healed::Skipped { .. }]), "{done:?}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before, "a checkout is not written by an automatic heal");
+        assert!(heal_line(&done[0]).2.contains("ah-engine config heal"), "the warning names the command");
+        // the explicit command writes the missing key, and leaves the wrong value alone
+        let done = heal(&root, &d.report, true);
+        assert!(matches!(&done[..], [Healed::Added { .. }]), "{done:?}");
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.starts_with(&before) && after.contains("value = \"many\""), "the wrong value stays as typed");
+        let d = load_from(&root, None, None).unwrap();
+        assert_eq!((d.report.notes.len(), d.report.notes[0].key.as_str(), d.report.notes[0].code), (1, "daemon.workers", "type"), "still falls back, named");
         crate::discard::harmless(std::fs::remove_dir_all(&root));
     }
 }

@@ -23,7 +23,7 @@
 //!
 //! Where the plugin root is found is documented in [`crate::bootstrap`].
 mod load;
-pub use load::{DefaultsError, Fingerprint, Layer, Note, Report, fingerprint, load_from, write_lkg};
+pub use load::{DefaultsError, Fingerprint, Healed, Layer, Note, Report, fingerprint, heal, heal_file, heal_line, in_checkout, load_from, write_lkg};
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an absent field is the empty value
 // - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
@@ -199,9 +199,9 @@ fn cache_best_effort(d: &load::Data) {
 
 /// What follows a load that may write (the daemon, a client that parsed the files): log its fallbacks, keep the
 /// last-known-good copy. In-process tests and one-off commands write nothing.
-fn after_load(report: &load::Report) {
+fn after_load(report: &load::Report, root: &Path) {
     if CACHE_WRITES.load(Ordering::SeqCst) {
-        load::after(report);
+        load::after(report, root);
     }
 }
 
@@ -229,13 +229,13 @@ pub fn init() -> Result<(), DefaultsError> {
     })?;
     let data = load::load(&root, None)?;
     cache_best_effort(&data);
-    let report = data.report.clone();
+    let (report, root) = (data.report.clone(), data.root().to_path_buf());
     {
         let mut w = CUR.write().unwrap_or_else(|e| e.into_inner());
         w.get_or_insert_with(|| Arc::new(Backend::Full(data)));
     }
     GENERATION.fetch_add(1, Ordering::SeqCst);
-    after_load(&report);
+    after_load(&report, &root);
     Ok(())
 }
 
@@ -308,14 +308,14 @@ pub fn reload(root: Option<&Path>) -> Result<Reloaded, DefaultsError> {
         && p.entries.iter().zip(data.entries).all(|(a, b)| std::ptr::eq(*a, *b))
     {
         // the same values, but possibly from another layer (a broken edit answered by its last-known-good copy): say so
-        after_load(&data.report);
+        after_load(&data.report, data.root());
         return Ok(Reloaded::Unchanged);
     }
     cache_best_effort(&data);
-    let report = data.report.clone();
+    let (report, root) = (data.report.clone(), data.root().to_path_buf());
     *CUR.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Backend::Full(data)));
     GENERATION.fetch_add(1, Ordering::SeqCst);
-    after_load(&report);
+    after_load(&report, &root);
     Ok(Reloaded::Applied)
 }
 

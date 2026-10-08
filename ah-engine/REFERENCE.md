@@ -12,7 +12,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `briefing` | `[--root <plugin dir>]` | yes | implemented | A derived inventory of a plugin tree (D81, the port of scripts/briefing.js): every registered hook by event with the purpose from its own header comment, the skills, the DevSwarm substrate and the docs map. |
 | `capability-scan` | `[--root <plugin dir>]` | yes | implemented | A read-only gap report (D81, the port of scripts/capability-scan.js): for each opt-in capability of a plugin tree, whether it is shipped and whether it is active on this machine, and how to enable it; prints the JSON report, then one line per capability. |
 | `check` | `<name>` | yes | implemented | Run one built-in check in-process on a hook payload from stdin (used by the parity harness). |
-| `config` | `[validate <file>]` | yes | implemented | Show the effective config and where each value comes from, or validate a config file; versions, rollback and export are planned (D18, they need the config database). |
+| `config` | `[validate <file>\|heal]` | no | implemented | Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); versions, rollback and export are planned (D18, they need the config database). |
 | `ctl` | `<ping\|reload\|stop\|status>` | no | implemented | Send a control verb to the daemon: ping, reload, stop or status. |
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON. |
@@ -196,9 +196,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `defaults_load.backup_infix` | `.bak-` |  |  | What separates a defaults file's name from the time stamp of its one-time backup, taken before the first heal writes the file. |
 | `defaults_load.lkg_keep` | `3` |  |  | How many last-known-good copies of the defaults (one per engine version, plugin root and shipped content) the state directory keeps; older ones are removed. |
 | `defaults_load.msg_fallback` | `defaults {file} {key} rejected ({why}): using the {layer} copy` |  |  | Event-log detail when a defaults file or setting was rejected and another layer answered. Placeholders: {file}, {key} (empty for a whole file), {layer} (lkg or pristine), {why}. |
+| `defaults_load.msg_heal` | `defaults {file}: added missing {keys} from the pristine copy (backup {backup})` |  |  | Event-log detail (and `config heal` output) when missing settings were added to an edited defaults file from the pristine copy. Placeholders: {file}, {keys}, {backup} (the backup file, or empty when one already existed). |
+| `defaults_load.msg_heal_failed` | `defaults {file}: could not add missing {keys}: {err}` |  |  | Event-log detail (and `config heal` output) when missing settings could not be added. Placeholders: {file}, {keys}, {err}. |
+| `defaults_load.msg_heal_none` | `nothing to heal: the edited defaults have every setting of the pristine copy` |  |  | Printed by `config heal` when no edited defaults file lacks a setting of the pristine copy. |
+| `defaults_load.msg_heal_skipped` | `defaults {file}: missing keys {keys}: run `ah-engine config heal` to add them` |  |  | Event-log detail when missing settings were not written because the plugin root is a version-controlled checkout. Placeholders: {file}, {keys}. |
 | `defaults_load.msg_lkg_failed` | `could not write the last-known-good defaults: {err}` |  |  | Event-log detail when the last-known-good copy of the defaults could not be written. Placeholder: {err}. |
+| `defaults_load.vcs_markers` | `.git` |  |  | Entries (a directory or a file) that mark a version-controlled checkout: when the plugin root or a directory above it holds one, missing settings are never written into its files automatically (only `ah-engine config heal` writes there). |
 
 ### engine.toml / discard
 
