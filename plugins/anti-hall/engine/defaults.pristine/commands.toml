@@ -108,6 +108,18 @@ value = { args = "<report|list|show|rule|archive|backfill|recurring|similar> [fl
 doc = "The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open."
 value = { args = "(session JSON on stdin)", read_only = false, status = "implemented" }
 
+[cmd.phase]
+doc = "Write or update the phase state the status line's phase bar shows (L9a, the port of statusline/phase.js): `set <code> <desc> <done> <total>`, `advance [n]`, `step <text>`, `agents <n>`, `update key=value ...`, `clear`; the state is ~/.anti-hall/phase-state.json. Fails open."
+value = { args = "<set|advance|step|agents|update|clear> [args]", read_only = false, status = "implemented" }
+
+[cmd.install-statusline]
+doc = "Put the anti-hall status line into the host's statusLine setting (L9a, the port of statusline/install-statusline.js): `--user` (default, ~/.claude/settings.json) or `--project` (./.claude/settings.local.json), `--consolidate` to merge an existing status line into one line. Wraps an existing statusLine as line 1, backs the settings up once, never clobbers other keys, a re-run changes nothing."
+value = { args = "[--user|--project] [--consolidate]", read_only = false, status = "implemented" }
+
+[cmd.uninstall-statusline]
+doc = "Take the anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration."
+value = { args = "[--user|--project] [--purge-base]", read_only = false, status = "implemented" }
+
 [cmd.shadow-compare]
 doc = "Internal: the detached half of a Node shadow (L9a). Runs the Node version of a sampled operator command on a scratch home and logs a mismatch to telemetry; started by the engine, not by people."
 value = { args = "<scratch dir>", read_only = false, status = "implemented" }

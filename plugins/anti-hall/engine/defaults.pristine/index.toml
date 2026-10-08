@@ -50,5 +50,6 @@ files = [
     "task_tracker.toml",
     "settings_cli.toml",
     "operator.toml",
+    "slcfg.toml",
 ]
 extra_dir = "hooks.d"

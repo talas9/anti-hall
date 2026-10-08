@@ -71,6 +71,9 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("settings", crate::ops::cmd_settings),
         ("defect", crate::ops::cmd_defect),
         ("statusline", crate::ops::cmd_statusline),
+        ("phase", crate::ops::cmd_phase),
+        ("install-statusline", crate::ops::cmd_install_statusline),
+        ("uninstall-statusline", crate::ops::cmd_uninstall_statusline),
         ("shadow-compare", crate::ops::cmd_shadow_compare),
     ]
 }

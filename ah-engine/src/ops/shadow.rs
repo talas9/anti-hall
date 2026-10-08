@@ -23,13 +23,24 @@ pub struct Plan {
     home: String,
     has_stdin: bool,
     started: std::time::Instant,
+    /// The installers' shadow: the Node script runs in `cwd` (a scratch copy) and the compared state is the settings files.
+    real_cwd: Option<String>,
 }
 
 fn rate(verb: &str) -> u64 {
-    match verb {
-        "statusline" => defaults::num("ops.shadow_rate_statusline"),
-        "settings" => defaults::num("ops.shadow_rate_settings"),
-        _ => defaults::num("ops.shadow_rate_defect"),
+    let is = |key: &str| verb == defaults::text(key);
+    if is("ops.verb_statusline") {
+        defaults::num("ops.shadow_rate_statusline")
+    } else if is("ops.verb_settings") {
+        defaults::num("ops.shadow_rate_settings")
+    } else if is("ops.verb_phase") {
+        defaults::num("ops.shadow_rate_phase")
+    } else if is("ops.verb_install") {
+        defaults::num("ops.shadow_rate_install")
+    } else if is("ops.verb_uninstall") {
+        defaults::num("ops.shadow_rate_uninstall")
+    } else {
+        defaults::num("ops.shadow_rate_defect")
     }
 }
 
@@ -105,18 +116,37 @@ pub fn begin(verb: &str, script_rel: &str, args: &[String], stdin: Option<&[u8]>
         crate::discard::harmless(std::fs::write(dir.join(defaults::text("ops.shadow_stdin_file")), b)); // keep: a missing input file makes the child skip
     }
     start_capture();
-    Some(Plan { dir, verb: verb.to_string(), script, args: args.to_vec(), cwd: std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), home, has_stdin, started: std::time::Instant::now() })
+    Some(Plan { dir, verb: verb.to_string(), script, args: args.to_vec(), cwd: std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), home, has_stdin, started: std::time::Instant::now(), real_cwd: None })
 }
 
-fn masks(real_home: &str, scratch_home: &str, bytes: &[u8]) -> Vec<u8> {
+/// The paths replaced by a word before two outputs are compared: the real and the scratch home, and for the installers the
+/// real and the scratch working directory (replaced first: a project usually sits inside the home).
+struct Mk<'a> {
+    home: &'a str,
+    scratch_home: &'a str,
+    cwd: &'a str,
+    scratch_cwd: &'a str,
+}
+
+fn masks(m: &Mk, bytes: &[u8]) -> Vec<u8> {
     let mut s = String::from_utf8_lossy(bytes).into_owned();
-    s = s.replace(scratch_home, defaults::text("ops.shadow_home_word")).replace(real_home, defaults::text("ops.shadow_home_word"));
+    for cwd in [m.cwd, m.scratch_cwd] {
+        if !cwd.is_empty() {
+            s = s.replace(cwd, defaults::text("ops.shadow_cwd_word"));
+        }
+    }
+    s = s.replace(m.scratch_home, defaults::text("ops.shadow_home_word")).replace(m.home, defaults::text("ops.shadow_home_word"));
     for rule in defaults::list("ops.shadow_masks") {
         if let Some((re, with)) = rule.split_once(defaults::text("defect.step_sep")) {
             s = regex::Regex::new(re).map_or(s.clone(), |r| r.replace_all(&s, with).into_owned());
         }
     }
     s.into_bytes()
+}
+
+fn short_hash(bytes: &[u8]) -> String {
+    let h = digest::digest(&digest::SHA256, bytes);
+    h.as_ref().iter().take(defaults::num("ops.shadow_digest_bytes") as usize).map(|b| format!("{b:02x}")).collect::<String>()
 }
 
 /// A digest of the state a command may change: every file under the copied entries, masked.
@@ -138,9 +168,9 @@ fn digest_state(home: &str, scratch_home: &str, base: &Path) -> String {
                 return;
             }
             let body = std::fs::read(p).unwrap_or_default();
-            let h = digest::digest(&digest::SHA256, &masks(home, shome, &body));
+            let hash = short_hash(&masks(&Mk { home, scratch_home: shome, cwd: "", scratch_cwd: "" }, &body));
             let rel = p.strip_prefix(root).map(|r| r.to_string_lossy().into_owned()).unwrap_or_default();
-            out.push(format!("{rel} {}", h.as_ref().iter().take(defaults::num("ops.shadow_digest_bytes") as usize).map(|b| format!("{b:02x}")).collect::<String>()));
+            out.push(format!("{rel} {hash}"));
         }
     }
     for name in defaults::list("ops.shadow_copy") {
@@ -149,17 +179,99 @@ fn digest_state(home: &str, scratch_home: &str, base: &Path) -> String {
     lines.join("\n")
 }
 
+/// The installers' state: the settings files they may change, under the home and the working directory, masked.
+fn digest_inst(home_root: &Path, cwd_root: &Path, m: &Mk) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for (root, key, tag) in [(home_root, "ops.shadow_inst_home", "ops.shadow_inst_home_tag"), (cwd_root, "ops.shadow_inst_cwd", "ops.shadow_inst_cwd_tag")] {
+        for rel in defaults::list(key) {
+            if let Ok(body) = std::fs::read(root.join(rel)) {
+                lines.push(format!("{}{rel} {}", defaults::text(tag), short_hash(&masks(m, &body))));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+/// Start a shadow for an installer: the Node script runs later on a scratch copy of the settings files it may change (in a
+/// scratch home and a scratch working directory), so it never writes twice for real. Not sampled when the scratch
+/// copy cannot stand for the real run: the project's local settings file is tracked by git, or the working directory holds
+/// the home.
+pub fn begin_install(verb: &str, script_rel: &str, args: &[String]) -> Option<Plan> {
+    if std::env::var_os(defaults::text("ops.shadow_child_env")).is_some() || !sampled(verb) {
+        return None;
+    }
+    let env = env_snapshot();
+    let home = super::home(&env);
+    let root = plugin_root(&env)?;
+    let script = Path::new(&root).join(script_rel);
+    if !script.exists() {
+        return None;
+    }
+    let cwd = std::env::current_dir().ok()?.to_string_lossy().into_owned();
+    if Path::new(&home).starts_with(&cwd) || super::slcfg::tracked_by_git(&cwd) {
+        return None;
+    }
+    let id = format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+    let dir = crate::paths::dir().join(defaults::text("ops.shadow_dir")).join(id);
+    let (scratch_home, scratch_cwd) = (dir.join("home"), dir.join(defaults::text("ops.shadow_cwd_dir")));
+    std::fs::create_dir_all(&scratch_home).ok()?;
+    std::fs::create_dir_all(&scratch_cwd).ok()?;
+    let copy = |from_root: &Path, to_root: &Path, key: &str| {
+        for rel in defaults::list(key) {
+            let (from, to) = (from_root.join(rel), to_root.join(rel));
+            if from.is_file() {
+                if let Some(parent) = to.parent() {
+                    crate::discard::harmless(std::fs::create_dir_all(parent)); // keep: a failed copy only narrows the comparison
+                }
+                crate::discard::harmless(std::fs::copy(&from, &to)); // keep: as above
+            }
+        }
+    };
+    copy(Path::new(&home), &scratch_home, "ops.shadow_inst_home");
+    copy(Path::new(&cwd), &scratch_cwd, "ops.shadow_inst_cwd");
+    for rel in defaults::list("ops.shadow_inst_link") {
+        let (src, dst) = (Path::new(&home).join(rel), scratch_home.join(rel));
+        if src.exists() {
+            if let Some(parent) = dst.parent() {
+                crate::discard::harmless(std::fs::create_dir_all(parent)); // keep: a missing link only narrows the comparison
+            }
+            crate::discard::harmless(std::os::unix::fs::symlink(&src, &dst)); // keep: as above
+        }
+    }
+    start_capture();
+    Some(Plan {
+        dir,
+        verb: verb.to_string(),
+        script,
+        args: args.to_vec(),
+        cwd: scratch_cwd.to_string_lossy().into_owned(),
+        home,
+        has_stdin: false,
+        started: std::time::Instant::now(),
+        real_cwd: Some(cwd),
+    })
+}
+
 /// The engine has finished with exit `code`: hand the comparison to a detached child and return at once.
 pub fn end(plan: Option<Plan>, code: i32) {
     let Some(p) = plan else { return };
     let out = out_capture_take();
     let err = err_capture_take();
+    if code == super::defer_code() {
+        // the engine left the work to Node: there is nothing to compare
+        crate::discard::harmless(std::fs::remove_dir_all(&p.dir)); // keep: our own scratch directory
+        return;
+    }
     let base = Path::new(&p.home).join(defaults::text("paths.base_dir"));
     let scratch_home = p.dir.join("home");
-    let post = digest_state(&p.home, &scratch_home.to_string_lossy(), &base);
+    let scratch_home_s = scratch_home.to_string_lossy().into_owned();
+    let post = match &p.real_cwd {
+        Some(real_cwd) => digest_inst(Path::new(&p.home), Path::new(real_cwd), &Mk { home: &p.home, scratch_home: &scratch_home_s, cwd: real_cwd, scratch_cwd: &p.cwd }),
+        None => digest_state(&p.home, &scratch_home_s, &base),
+    };
     let job = serde_json::json!({
         "verb": p.verb, "script": p.script, "args": p.args, "cwd": p.cwd, "home": p.home, "code": code,
-        "stdin": p.has_stdin, "micros": p.started.elapsed().as_micros() as u64, "post": post,
+        "stdin": p.has_stdin, "micros": p.started.elapsed().as_micros() as u64, "post": post, "real_cwd": p.real_cwd,
     });
     let ok = std::fs::write(p.dir.join(defaults::text("ops.shadow_job_file")), job.to_string()).is_ok()
         && std::fs::write(p.dir.join(defaults::text("ops.shadow_engine_out")), &out).is_ok()
@@ -198,10 +310,15 @@ pub fn compare(dir: &Path) -> i32 {
     let Ok(o) = crate::proc::run(cmd, defaults::text("ops.shadow_node"), defaults::millis("ops.shadow_timeout_ms"), defaults::millis("statusline.poll_ms")) else { return 1 };
     let node_code = o.status.code().unwrap_or(-1);
     let want_code = job.get("code").and_then(serde_json::Value::as_i64).unwrap_or(-1) as i32;
-    let m = |b: &[u8]| masks(&home, &scratch_s, b);
+    let real_cwd = job.get("real_cwd").and_then(|v| v.as_str()).map(str::to_string);
+    let (rc_s, sc_s) = (real_cwd.clone().unwrap_or_default(), if real_cwd.is_some() { s("cwd") } else { String::new() });
+    let m = |b: &[u8]| masks(&Mk { home: &home, scratch_home: &scratch_s, cwd: &rc_s, scratch_cwd: &sc_s }, b);
     let (e_out, e_err) = (m(&rd("ops.shadow_engine_out")), m(&rd("ops.shadow_engine_err")));
     let (n_out, n_err) = (m(&o.stdout), m(&o.stderr));
-    let post_node = digest_state(&home, &scratch_s, &scratch.join(defaults::text("paths.base_dir")));
+    let post_node = match &real_cwd {
+        Some(rc) => digest_inst(&scratch, Path::new(&s("cwd")), &Mk { home: &home, scratch_home: &scratch_s, cwd: rc, scratch_cwd: &s("cwd") }),
+        None => digest_state(&home, &scratch_s, &scratch.join(defaults::text("paths.base_dir"))),
+    };
     let post_engine = job.get("post").and_then(|v| v.as_str()).unwrap_or("").to_string();
     // the Node tree lives under the scratch home, the engine's under the real one: compare relative names and digests only
     let norm = |t: &str| t.lines().collect::<Vec<_>>().join("\n");
