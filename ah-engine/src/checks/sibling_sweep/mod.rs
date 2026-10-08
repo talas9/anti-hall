@@ -14,8 +14,11 @@
 //!    explicit "no other occurrences" statement gets one reminder, at most once per cause per turn and
 //!    `sibling_sweep.max_per_scope` per scope, never on a Stop that is already a continuation of a Stop block.
 //!
-//! The reminder is an advisory, never a block of the stop: a Stop event has no context channel, so it travels in the
-//! one-shot continuation JSON the codex review nudge also uses; it is bounded as above and fails open on every error.
+//! The reminder IS a Stop block (`{"decision":"block","reason":...}`): a Stop event has no context channel, so the only way
+//! to put text in front of the agent is the block that continues the turn once, the same one-shot continuation the codex
+//! review nudge uses. It is an advisory in intent and bounded so it cannot hold a stop: once per cause per turn,
+//! `sibling_sweep.max_per_scope` per scope, never on a Stop that is already a continuation (`stop_hook_active`), and it fails
+//! open (no block) on every error.
 //! A state file that cannot be written means no reminder (an unrecorded reminder would repeat on every Stop).
 //!
 //! Telemetry (`logs/sibling-sweep.ndjson`, hashes and counts only): one row per detected cause statement with its result

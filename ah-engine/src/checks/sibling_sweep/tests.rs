@@ -490,3 +490,13 @@ fn the_state_write_does_not_depend_on_a_fixed_temporary_name() {
     save(&path, &State::default()).unwrap();
     assert!(path.is_file());
 }
+
+#[test]
+fn the_reminder_is_a_stop_block_and_the_module_doc_says_so() {
+    // review P2 #11: the module doc said "never a block" while the reminder is the Stop continuation block
+    let v: Value = serde_json::from_str(&reminder(&tn(), "x")).unwrap();
+    assert_eq!(v["decision"], "block");
+    let doc = include_str!("mod.rs");
+    assert!(!doc.contains("never a block"), "the module doc must not deny the block it emits");
+    assert!(doc.contains("The reminder IS a Stop block"));
+}
