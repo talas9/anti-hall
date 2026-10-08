@@ -12,5 +12,6 @@ const { code, result } = cli.run(argv, Number.isFinite(now) ? { now } : {});
 const isSendQuiet = argv[0] === 'send' && argv.includes('--quiet');
 const isTickQuiet = argv[0] === 'inbox' && argv[1] === 'tick' && argv.includes('--quiet');
 const human = !argv.includes('--json');
-const out = isSendQuiet && human ? cli.sendQuietLine(result) : (isTickQuiet && human ? cli.inboxTickQuietLine(result) : JSON.stringify(result));
+const isReadPrimaryText = argv[0] === 'inbox' && argv[1] === 'read-primary' && (argv.includes('--format=text') || (argv.includes('--format') && argv[argv.indexOf('--format') + 1] === 'text'));
+const out = isSendQuiet && human ? cli.sendQuietLine(result) : (isTickQuiet && human ? cli.inboxTickQuietLine(result) : (isReadPrimaryText && human ? cli.inboxReadPrimaryTextLines(result) : JSON.stringify(result)));
 process.stdout.write(JSON.stringify({ code, stdout: out + '\n' }) + '\n');
