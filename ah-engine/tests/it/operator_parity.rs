@@ -69,6 +69,9 @@ fn run(mut cmd: Command, home: &Path, cwd: &Path, extra: &[(&str, &str)], stdin:
         .env("AH_ENGINE_SHADOW_RATE_STATUSLINE", "0")
         .env("AH_ENGINE_SHADOW_RATE_SETTINGS", "0")
         .env("AH_ENGINE_SHADOW_RATE_DEFECT", "0")
+        .env("AH_ENGINE_SHADOW_RATE_PHASE", "0")
+        .env("AH_ENGINE_SHADOW_RATE_INSTALL", "0")
+        .env("AH_ENGINE_SHADOW_RATE_UNINSTALL", "0")
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -98,6 +101,7 @@ fn mask(s: &str, homes: &[&Path]) -> String {
         (r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", "TS"),
         (r"corrupt-\d+", "corrupt-N"),
         (r#""ts":\d+"#, r#""ts":N"#),
+        (r#""started":\d+"#, r#""started":N"#),
         (r"[\u{25d0}\u{25d3}\u{25d1}\u{25d2}]", "S"),
         (r"\.\d+\.[0-9a-f]{8}\.tmp", ".tmp"),
         // the activity sweep moves every 400 ms: the lit cell is a clock value
@@ -530,6 +534,402 @@ fn statusline_agrees_with_node() -> R {
     Ok(())
 }
 
+// ---- phase ------------------------------------------------------------------------------------------------------------
+
+const PHASE_CASES: &[&[&str]] = &[
+    &["set", "P1", "build the api", "2", "5"], &["set"], &["set", "P", "x y", "abc", "3"], &["set", "P", "d", "-3", "+4"], &["set", "", "", "0", "0"], &["set", "P", "d", "1e3", "99999999999999999999"],
+    &["advance"], &["advance", "3"], &["advance", "abc"], &["advance", "0"], &["advance", "-2"], &["advance", "2.9"],
+    &["step", "a", "b", "c"], &["step"], &["step", "--json"], &["agents", "3"], &["agents", "abc"], &["agents"], &["agents", "-0"], &["agents", "007"],
+    &["update", "a=1", "b=x", "c=", "=5", "d=-7", "e=007", "f=1.5", "g", "h=a=b", "i=-0", "j=+4"], &["update"], &["update", "done=9", "step=hello"], &["update", "5=x"], &["update", "__proto__=1"],
+    &["clear"], &["bogus"], &[], &[""], &["SET", "P"],
+];
+
+fn phase_seed(root: &Path, state: &str) -> R {
+    write(root, ".anti-hall/phase-state.json", state)
+}
+
+#[test]
+fn phase_agrees_with_node() -> R {
+    let states: Vec<Option<&str>> = vec![
+        None,
+        Some(r#"{"code":"P","desc":"d","done":"7","total":5,"started":1,"agents":2,"step":"s","extra":{"a":[1,2]}}"#),
+        Some(r#"{"done":2.5,"agents":"x"}"#), Some(r#"{"done":[3]}"#), Some(r#"{"done":{}}"#), Some(r#"{"done":true}"#), Some(r#"{"done":null,"z":1,"a":2}"#), Some(r#"{"done":1e21}"#),
+        Some("{bad"), Some(""), Some("\u{feff}{}"), Some(r#"{"a":1,"a":2,"b":"\u00e9\ud83d\ude00"}"#),
+    ];
+    for state in states {
+        let seed = Scratch::new("seed")?;
+        if let Some(st) = state {
+            phase_seed(seed.path(), st)?;
+        }
+        for args in PHASE_CASES {
+            if state.is_some_and(|s| s.is_empty() || s == "{bad") && args.first() == Some(&"update") && args.contains(&"5=x") {
+                continue;
+            }
+            let c = Same { script: "statusline/phase.js", verb: "phase", seed: state.map(|_| seed.path()), cwd: None, env: &[], stdin: "" };
+            // `update 5=x` and `update __proto__=1` are left to Node by design: compare only that nothing is written
+            if args.contains(&"5=x") || args.contains(&"__proto__=1") {
+                let eh = Scratch::new("e")?;
+                let before = snapshot(eh.path())?;
+                let mut cmd = Command::new(BIN);
+                cmd.arg("phase").args(*args);
+                let o = run(cmd, eh.path(), eh.path(), &[], "")?;
+                assert_eq!(o.code, 75, "deferred");
+                assert_eq!(before, snapshot(eh.path())?, "a deferral writes nothing");
+                CASES.fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
+            same(&c, args)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn phase_defers_on_a_state_javascript_would_mishandle() -> R {
+    for state in ["[1,2]", "null", "5", "\"str\"", "true"] {
+        for args in [vec!["advance"], vec!["step", "x"], vec!["agents", "2"], vec!["update", "a=1"]] {
+            let h = Scratch::new("defer")?;
+            phase_seed(h.path(), state)?;
+            let mut cmd = Command::new(BIN);
+            cmd.arg("phase").args(&args);
+            let o = run(cmd, h.path(), h.path(), &[], "")?;
+            assert_eq!(o.code, 75, "{state} {args:?}");
+            assert_eq!(fs::read_to_string(h.path().join(".anti-hall/phase-state.json"))?, state, "nothing written");
+        }
+    }
+    // set and clear never read the old state
+    for (state, args) in [("[1,2]", vec!["set", "P", "d", "1", "2"]), ("null", vec!["clear"])] {
+        let h = Scratch::new("defer-ok")?;
+        phase_seed(h.path(), state)?;
+        let mut cmd = Command::new(BIN);
+        cmd.arg("phase").args(&args);
+        assert_eq!(run(cmd, h.path(), h.path(), &[], "")?.code, 0);
+    }
+    Ok(())
+}
+
+// ---- install-statusline and uninstall-statusline ------------------------------------------------------------------------
+
+type Case<'a> = (Option<String>, Vec<(&'a str, &'a str)>);
+
+struct Inst<'a> {
+    home: Option<&'a Path>,
+    cwd: Option<&'a Path>,
+    env: &'a [(&'a str, &'a str)],
+}
+
+/// Run the steps (`(script, verb, args)`) with Node on one pair of (home, project) scratch copies and with the engine on
+/// another, comparing output, exit code and both trees after each step. Returns the engine's last output.
+fn inst(c: &Inst, steps: &[(&str, &str, &[&str])]) -> R<Out> {
+    let (nh, eh, nc, ec) = (Scratch::new("nh")?, Scratch::new("eh")?, Scratch::new("nc")?, Scratch::new("ec")?);
+    for h in [nh.path(), eh.path()] {
+        fs::create_dir_all(h.join("tmp"))?;
+        if let Some(s) = c.home {
+            copy_dir(s, h)?;
+        }
+    }
+    for d in [nc.path(), ec.path()] {
+        if let Some(s) = c.cwd {
+            copy_dir(s, d)?;
+        }
+    }
+    let mut last = None;
+    for (script, verb, args) in steps {
+        let name = format!("{verb} {}", args.join(" "));
+        let mut n = Command::new("node");
+        n.arg(plugin_src().join(script)).args(*args);
+        let mut e = Command::new(BIN);
+        e.arg(verb).args(*args);
+        let no = run(n, nh.path(), nc.path(), c.env, "")?;
+        let eo = run(e, eh.path(), ec.path(), c.env, "")?;
+        let m = |o: &Out, h: &Path, d: &Path| {
+            let cw = |t: &str| t.replace(&d.to_string_lossy().into_owned(), "CWD");
+            Out { stdout: mask(&cw(&o.stdout), &[h]), stderr: mask(&cw(&o.stderr), &[h]), code: o.code }
+        };
+        let (nm, em) = (m(&no, nh.path(), nc.path()), m(&eo, eh.path(), ec.path()));
+        assert_text(&name, "stdout", &nm.stdout, &em.stdout);
+        assert_text(&name, "stderr", &nm.stderr, &em.stderr);
+        assert_eq!(nm.code, em.code, "{name}: exit code");
+        assert_eq!(snapshot(nh.path())?, snapshot(eh.path())?, "{name}: home tree");
+        assert_eq!(snapshot(nc.path())?, snapshot(ec.path())?, "{name}: project tree");
+        CASES.fetch_add(1, Ordering::SeqCst);
+        last = Some(eo);
+    }
+    last.ok_or_else(|| "no steps".into())
+}
+
+const INSTALL: &str = "statusline/install-statusline.js";
+const UNINSTALL: &str = "statusline/uninstall-statusline.js";
+
+fn one(c: &Inst, install: bool, args: &[&str]) -> R<Out> {
+    let (script, verb) = if install { (INSTALL, "install-statusline") } else { (UNINSTALL, "uninstall-statusline") };
+    inst(c, &[(script, verb, args)])
+}
+
+fn home_with(settings: Option<&str>, extra: &[(&str, &str)]) -> R<Scratch> {
+    let h = Scratch::new("hseed")?;
+    if let Some(s) = settings {
+        write(h.path(), ".claude/settings.json", s)?;
+    }
+    for (p, c) in extra {
+        write(h.path(), p, c)?;
+    }
+    Ok(h)
+}
+
+#[test]
+fn install_agrees_with_node_in_the_user_scope() -> R {
+    let ours = format!("node \"{}/statusline/statusline.js\"", plugin_src().display());
+    let installed = format!(r#"{{"model":"x","statusLine":{{"type":"command","command":{}}}}}"#, serde_json::to_string(&ours)?);
+    let cases: Vec<Case> = vec![
+        (None, vec![]),
+        (Some("{}".into()), vec![]),
+        (Some("{}\n".into()), vec![(".anti-hall/base-statusline.json", r#"{"command":"printf shared"}"#)]),
+        (Some(r#"{"a":{"b":[1,2,{"c":null}]},"statusLine":{"type":"command","command":"echo hi","padding":2},"z":1e21,"u":"\u00e9"}"#.into()), vec![]),
+        (Some(r#"{"statusLine":{"type":"command","command":"echo hi"}}"#.into()), vec![(".anti-hall/base-statusline.json", r#"{"command":"printf shared"}"#)]),
+        (Some(r#"{"statusLine":{"type":"command","command":"echo hi"}}"#.into()), vec![(".claude/settings.json.bak-antihall", "{\"old\":true}")]),
+        (Some(r#"{"statusLine":"plain"}"#.into()), vec![]),
+        (Some(r#"{"statusLine":12.50}"#.into()), vec![]),
+        (Some(r#"{"statusLine":null}"#.into()), vec![]),
+        (Some(r#"{"statusLine":{"type":"static"}}"#.into()), vec![]),
+        (Some(r#"{"statusLine":{"command":""}}"#.into()), vec![]),
+        (Some(r#"{"statusLine":["a",null]}"#.into()), vec![]),
+        (Some(r#"{"statusLine":{"command":5}}"#.into()), vec![]),
+        (Some(installed.clone()), vec![]),
+        (Some(r#"{"statusLine":{"type":"command","command":"node /x/anti-hall/statusline/statusline.js"}}"#.into()), vec![]),
+        (Some(r#"{"statusLine":{"type":"command","command":"node /x/other/statusline.js"}}"#.into()), vec![]),
+        (Some("{}".into()), vec![(".claude/plugins/marketplaces/anti-hall/plugins/anti-hall/statusline/statusline.js", "")]),
+    ];
+    for (settings, extra) in &cases {
+        let seed = home_with(settings.as_deref(), extra)?;
+        let c = Inst { home: Some(seed.path()), cwd: None, env: &[] };
+        for args in [&[][..], &["--user"], &["--consolidate"]] {
+            one(&c, true, args)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn install_agrees_with_node_on_the_consolidate_and_overrides() -> R {
+    let seed = home_with(Some(r#"{"statusLine":{"type":"command","command":"echo hi"}}"#), &[])?;
+    let seed_c = home_with(Some(r#"{"statusLine":{"type":"command","command":"echo hi"}}"#), &[(".anti-hall/consolidated-base.json", "{}")])?;
+    for s in [&seed, &seed_c] {
+        let c = Inst { home: Some(s.path()), cwd: None, env: &[] };
+        one(&c, true, &["--consolidate"])?;
+    }
+    for ov in ["/x/y/statusline.js", "/x y/statusline.js", "a;b", "/x/$(id)/s.js", "", "relative/s.js", "/tmp/with'quote", "/x/\u{e9}/s.js"] {
+        let c = Inst { home: Some(seed.path()), cwd: None, env: &[("ANTIHALL_DISPATCHER_OVERRIDE", ov)] };
+        one(&c, true, &[])?;
+    }
+    // an installer chained after an installer: idempotent
+    let c = Inst { home: Some(seed.path()), cwd: None, env: &[] };
+    inst(&c, &[(INSTALL, "install-statusline", &[]), (INSTALL, "install-statusline", &[]), (INSTALL, "install-statusline", &["--consolidate"])])?;
+    Ok(())
+}
+
+#[test]
+fn install_agrees_with_node_on_unwritable_and_unreadable_files() -> R {
+    let seed = home_with(Some(r#"{"statusLine":{"type":"command","command":"echo hi"}}"#), &[])?;
+    fs::set_permissions(seed.path().join(".claude/settings.json"), fs::Permissions::from_mode(0o444))?;
+    let c = Inst { home: Some(seed.path()), cwd: None, env: &[] };
+    let o = one(&c, true, &[])?;
+    assert_eq!(o.code, 1);
+    fs::set_permissions(seed.path().join(".claude/settings.json"), fs::Permissions::from_mode(0o600))?;
+    // a read-only base directory: the base file cannot be written, the install goes on
+    let seed2 = home_with(Some(r#"{"statusLine":{"type":"command","command":"echo hi"}}"#), &[(".anti-hall/keep", "")])?;
+    fs::set_permissions(seed2.path().join(".anti-hall"), fs::Permissions::from_mode(0o555))?;
+    let c2 = Inst { home: Some(seed2.path()), cwd: None, env: &[] };
+    let r = one(&c2, true, &[]);
+    let r2 = one(&c2, true, &["--consolidate"]);
+    fs::set_permissions(seed2.path().join(".anti-hall"), fs::Permissions::from_mode(0o755))?;
+    r?;
+    r2?;
+    Ok(())
+}
+
+#[test]
+fn install_defers_on_a_settings_file_it_cannot_parse_like_javascript() -> R {
+    for body in ["{bad", "", "null", "[1]", "5", "\u{feff}{}", "{\"a\":\"\\ud800\"}"] {
+        let seed = home_with(Some(body), &[])?;
+        let before = snapshot(seed.path())?;
+        let mut cmd = Command::new(BIN);
+        cmd.arg("install-statusline");
+        let o = run(cmd, seed.path(), seed.path(), &[], "")?;
+        // `[1]` and `5` have no statusLine and Node would add one; the engine leaves every non-object file to Node
+        assert_eq!(o.code, 75, "{body:?}: {}", o.stderr);
+        assert!(o.stdout.is_empty(), "{body:?}: a deferral prints nothing on stdout, got {:?}", o.stdout);
+        assert_eq!(before, snapshot(seed.path())?, "{body:?}: a deferral writes nothing");
+        let mut cmd = Command::new(BIN);
+        cmd.arg("uninstall-statusline");
+        let o = run(cmd, seed.path(), seed.path(), &[], "")?;
+        assert_eq!(o.code, 75, "{body:?} uninstall: {}", o.stderr);
+        assert_eq!(before, snapshot(seed.path())?, "{body:?}: a deferral writes nothing");
+    }
+    Ok(())
+}
+
+fn project_cwd(files: &[(&str, &str)], git_tracked: Option<&str>) -> R<Scratch> {
+    let d = Scratch::new("cwdseed")?;
+    for (p, c) in files {
+        write(d.path(), p, c)?;
+    }
+    if let Some(tracked) = git_tracked {
+        repo(d.path())?;
+        git(d.path(), &["add", "-f", tracked])?;
+    }
+    Ok(d)
+}
+
+#[test]
+fn install_agrees_with_node_in_the_project_scope() -> R {
+    let ours = format!("node \"{}/statusline/statusline.js\"", plugin_src().display());
+    let ours_json = serde_json::to_string(&ours)?;
+    let sl = |cmd: &str| format!(r#"{{"statusLine":{{"type":"command","command":{}}}}}"#, serde_json::to_string(cmd).unwrap());
+    let cwds: Vec<Scratch> = vec![
+        project_cwd(&[], None)?,
+        project_cwd(&[(".claude/settings.json", &sl("echo committed"))], None)?,
+        project_cwd(&[(".claude/settings.local.json", &sl("echo local"))], None)?,
+        project_cwd(&[(".claude/settings.local.json", "{\"model\":\"x\"}"), (".gitignore", "node_modules\n")], None)?,
+        project_cwd(&[(".gitignore", "a\n.claude/settings.local.json\nb")], None)?,
+        project_cwd(&[(".gitignore", "a\n  .claude/settings.local.json  \r\n")], None)?,
+        project_cwd(&[(".gitignore", "no newline at end")], None)?,
+        project_cwd(&[(".gitignore", "")], None)?,
+        project_cwd(&[(".claude/settings.local.json", "{}")], Some(".claude/settings.local.json"))?,
+        project_cwd(&[(".claude/settings.json", &sl(&ours)), (".claude/settings.local.json", "{}")], None)?,
+        project_cwd(&[(".claude/settings.local.json", &format!(r#"{{"statusLine":{{"type":"command","command":{ours_json}}}}}"#))], None)?,
+        project_cwd(&[(".claude/settings.local.json", "{\"statusLine\":\"s\"}"), (".claude/settings.json", "{\"statusLine\":42}")], None)?,
+        project_cwd(&[(".claude/settings.json", "{\"statusLine\":null}")], None)?,
+        project_cwd(&[(".claude/settings.json", "{\"statusLine\":[1,{}]}")], None)?,
+        project_cwd(&[(".claude/settings.json", "{\"statusLine\":{\"command\":[\"a\",null,\"b\"]}}")], None)?,
+        project_cwd(&[(".claude/settings.json", "{\"statusLine\":{\"command\":0}}")], None)?,
+        project_cwd(&[(".claude/settings.json", "{not json")], None)?,
+    ];
+    let homes: Vec<Scratch> = vec![home_with(None, &[])?, home_with(Some(&sl("echo user")), &[])?, home_with(Some(&sl(&ours)), &[])?];
+    for cwd in &cwds {
+        for home in &homes {
+            let c = Inst { home: Some(home.path()), cwd: Some(cwd.path()), env: &[] };
+            one(&c, true, &["--project"])?;
+            one(&c, true, &["--project", "--consolidate"])?;
+        }
+    }
+    // a .gitignore that is a directory: Node crashes with a stack trace, the engine leaves it to Node
+    let d = project_cwd(&[(".claude/settings.local.json", "{}"), (".gitignore/x", "")], None)?;
+    let h = home_with(None, &[])?;
+    let mut cmd = Command::new(BIN);
+    cmd.args(["install-statusline", "--project"]);
+    let o = run(cmd, h.path(), d.path(), &[], "")?;
+    assert_eq!(o.code, 75);
+    Ok(())
+}
+
+#[test]
+fn uninstall_agrees_with_node() -> R {
+    let ours = format!("node \"{}/statusline/statusline.js\"", plugin_src().display());
+    let sl = |cmd: &str| format!(r#"{{"keep":1,"statusLine":{{"type":"command","command":{},"padding":0,"refreshInterval":1}},"tail":[1,2]}}"#, serde_json::to_string(cmd).unwrap());
+    let base = (".anti-hall/base-statusline.json", r#"{"command":"  echo original  "}"#);
+    let bak = (".claude/settings.json.bak-antihall", r#"{"keep":2,"statusLine":{"type":"command","command":"echo from-backup"}}"#);
+    let cases: Vec<Case> = vec![
+        (None, vec![]),
+        (Some(sl(&ours)), vec![]),
+        (Some(sl(&ours)), vec![base]),
+        (Some(sl(&ours)), vec![base, bak]),
+        (Some(sl("echo foreign")), vec![base]),
+        (Some(sl("echo foreign")), vec![base, bak]),
+        (Some("{}".into()), vec![base]),
+        (Some("{\"statusLine\":\"str\"}".into()), vec![base]),
+        (Some(sl(&ours)), vec![(".anti-hall/base-statusline.json", "{}")]),
+        (Some(sl(&ours)), vec![(".anti-hall/base-statusline.json", r#"{"command":"   "}"#)]),
+        (Some(sl(&ours)), vec![(".anti-hall/base-statusline.json", r#"{"command":5}"#)]),
+        (Some(sl(&ours)), vec![(".anti-hall/base-statusline.json", "null")]),
+        (Some(sl(&ours)), vec![(".anti-hall/base-statusline.json", "[]")]),
+        (Some(sl(&ours)), vec![bak]),
+        (Some(sl(&ours)), vec![(".claude/settings.json.bak-antihall", "{\"keep\":3}")]),
+        (Some(sl(&ours)), vec![(".claude/settings.json.bak-antihall", "null")]),
+        (Some(sl(&ours)), vec![(".claude/settings.json.bak-antihall", "[1,2]")]),
+        (Some(sl(&ours)), vec![(".claude/settings.json.bak-antihall", "7")]),
+        (Some(sl(&ours)), vec![(".claude/settings.json.bak-antihall", "{\"statusLine\":null}")]),
+        (Some("{\"a\":1}".into()), vec![]),
+        (Some("{\"statusLine\":{\"x\":[1,2,{\"y\":null}]}}".into()), vec![]),
+    ];
+    for (settings, extra) in &cases {
+        let seed = home_with(settings.as_deref(), extra)?;
+        let c = Inst { home: Some(seed.path()), cwd: None, env: &[] };
+        for args in [&[][..], &["--purge-base"], &["--user"]] {
+            one(&c, false, args)?;
+        }
+    }
+    // base and backup present only for the project scope, local file preferred and the fallback to the committed one
+    let local = (".claude/settings.local.json", sl(&ours));
+    let committed = (".claude/settings.json", sl(&ours));
+    for files in [vec![local.clone()], vec![committed.clone()], vec![local.clone(), committed.clone()], vec![]] {
+        let files: Vec<(&str, &str)> = files.iter().map(|(a, b)| (*a, b.as_str())).collect();
+        let cwd = project_cwd(&files, None)?;
+        for h in [home_with(None, &[])?, home_with(None, &[base])?] {
+            let c = Inst { home: Some(h.path()), cwd: Some(cwd.path()), env: &[] };
+            one(&c, false, &["--project"])?;
+            one(&c, false, &["--project", "--purge-base"])?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn install_then_uninstall_round_trips_like_node() -> R {
+    let seed = home_with(Some(r#"{"keep":1,"statusLine":{"type":"command","command":"echo mine"}}"#), &[])?;
+    let c = Inst { home: Some(seed.path()), cwd: None, env: &[] };
+    inst(&c, &[(INSTALL, "install-statusline", &[]), (UNINSTALL, "uninstall-statusline", &[]), (UNINSTALL, "uninstall-statusline", &[]), (INSTALL, "install-statusline", &["--consolidate"]), (UNINSTALL, "uninstall-statusline", &["--purge-base"])])?;
+    let cwd = project_cwd(&[(".gitignore", "x\n")], None)?;
+    let h = home_with(Some(r#"{"statusLine":{"type":"command","command":"echo user"}}"#), &[])?;
+    let c = Inst { home: Some(h.path()), cwd: Some(cwd.path()), env: &[] };
+    inst(&c, &[(INSTALL, "install-statusline", &["--project"]), (INSTALL, "install-statusline", &["--project"]), (UNINSTALL, "uninstall-statusline", &["--project"]), (UNINSTALL, "uninstall-statusline", &["--project", "--purge-base"])])?;
+    Ok(())
+}
+
+#[test]
+fn the_installers_keep_the_mode_and_the_link_of_the_settings_file() -> R {
+    let h = home_with(Some("{}"), &[])?;
+    let real = h.path().join("dotfiles/settings.json");
+    fs::create_dir_all(real.parent().ok_or("no parent")?)?;
+    fs::write(&real, "{\"keep\":1}\n")?;
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o640))?;
+    let link = h.path().join(".claude/settings.json");
+    fs::remove_file(&link)?;
+    std::os::unix::fs::symlink(&real, &link)?;
+    let mut cmd = Command::new(BIN);
+    cmd.arg("install-statusline");
+    let o = run(cmd, h.path(), h.path(), &[], "")?;
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(fs::symlink_metadata(&link)?.file_type().is_symlink(), "the link survives");
+    assert!(fs::read_to_string(&real)?.contains("\"statusLine\""), "the target is updated");
+    assert_eq!(fs::metadata(&real)?.permissions().mode() & 0o777, 0o640, "the mode is kept");
+    let bak = h.path().join(".claude/settings.json.bak-antihall");
+    assert_eq!(fs::read_to_string(bak)?, "{\"keep\":1}\n", "the backup holds the original");
+    let leftovers: Vec<_> = fs::read_dir(real.parent().ok_or("no parent")?)?.flatten().filter(|e| e.file_name().to_string_lossy().contains(".tmp")).collect();
+    assert!(leftovers.is_empty(), "no temporary file is left behind");
+    Ok(())
+}
+
+#[test]
+fn the_installers_refuse_user_config_outside_a_temp_dir_under_a_test() -> R {
+    // a home outside every temporary directory (it does not exist: the refusal comes before any file is touched)
+    let h = home_with(Some("{}"), &[])?;
+    for marker in ["NODE_TEST_CONTEXT", "ANTIHALL_TEST_ISOLATION"] {
+        for (home_env, refused) in [(Some("/ah-nonexistent-home"), true), (None, false)] {
+            let env: Vec<(&str, &str)> = [Some((marker, "1")), home_env.map(|h| ("HOME", h))].into_iter().flatten().collect();
+            let c = Inst { home: Some(h.path()), cwd: None, env: &env };
+            for install_it in [true, false] {
+                let o = one(&c, install_it, &[])?;
+                assert_eq!(o.stderr.contains("refused under a test"), refused, "{marker} {home_env:?}: {}", o.stderr);
+            }
+        }
+    }
+    // without a marker the same home is not refused (it is simply missing)
+    let c = Inst { home: None, cwd: None, env: &[("HOME", "/ah-nonexistent-home")] };
+    assert_eq!(one(&c, true, &[])?.code, 1);
+    Ok(())
+}
+
 // ---- the Node shadow --------------------------------------------------------------------------------------------------
 
 fn engine_with_shadow(home: &Path, rate: &str, node: Option<&Path>, args: &[&str]) -> R {
@@ -585,6 +985,94 @@ fn a_sampled_run_leaves_no_trace_when_node_agrees_and_a_report_when_it_does_not(
     // the shadow never changed the real state: settings.json is as seeded
     assert_eq!(fs::read_to_string(home.path().join(".anti-hall/settings.json"))?, fs::read_to_string(seed.path().join(".anti-hall/settings.json"))?);
     eprintln!("operator parity cases: {}", CASES.load(Ordering::SeqCst));
+    Ok(())
+}
+
+fn engine_shadowed(home: &Path, cwd: &Path, node: Option<&Path>, extra: &[(&str, &Path)], args: &[&str]) -> R<Out> {
+    let mut c = Command::new(BIN);
+    c.args(args)
+        .env_clear()
+        .env("PATH", std::env::var("PATH")?)
+        .env("HOME", home)
+        .env("CLAUDE_PLUGIN_ROOT", plugin_src())
+        .env("AH_ENGINE_SHADOW_RATE_PHASE", "1000")
+        .env("AH_ENGINE_SHADOW_RATE_INSTALL", "1000")
+        .env("AH_ENGINE_SHADOW_RATE_UNINSTALL", "1000")
+        .env("AH_ENGINE_DIR", home.join("state"))
+        .current_dir(cwd);
+    if let Some(n) = node {
+        c.env("AH_ENGINE_NODE", n);
+    }
+    for (k, v) in extra {
+        c.env(k, v);
+    }
+    let o = c.output()?;
+    Ok(Out { stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned(), code: o.status.code().unwrap_or(-1) })
+}
+
+fn shadow_dirs(state: &Path) -> Vec<PathBuf> {
+    fs::read_dir(state.join("shadow")).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default()
+}
+
+#[test]
+fn a_sampled_phase_run_is_replayed_by_node_and_agrees() -> R {
+    let home = Scratch::new("shadow-phase")?;
+    let state = home.path().join("state");
+    for args in [vec!["phase", "set", "P1", "build", "1", "4"], vec!["phase", "advance", "2"], vec!["phase", "update", "a=1", "b=x"], vec!["phase", "clear"], vec!["phase", "bogus"]] {
+        let o = engine_shadowed(home.path(), home.path(), None, &[], &args)?;
+        assert_eq!(o.code, 0, "{args:?}");
+        assert!(wait_shadow_done(&state), "the comparison finished: {args:?}");
+        let left = shadow_dirs(&state);
+        assert!(left.is_empty(), "{args:?}: Node agreed, so nothing is kept: {left:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_sampled_installer_run_is_replayed_on_a_scratch_copy_and_never_writes_twice() -> R {
+    let home = home_with(Some(r#"{"keep":1,"statusLine":{"type":"command","command":"echo mine"}}"#), &[])?;
+    let cwd = project_cwd(&[(".claude/settings.json", r#"{"statusLine":{"type":"command","command":"echo committed"}}"#), (".gitignore", "x\n")], None)?;
+    let state = home.path().join("state");
+    let log = home.path().join("fake-node.log");
+    // Node agrees (the real script, on the scratch copy), for the user and the project scope and for the uninstaller
+    for args in [vec!["install-statusline"], vec!["install-statusline", "--project"], vec!["install-statusline", "--consolidate"], vec!["uninstall-statusline"], vec!["uninstall-statusline", "--project", "--purge-base"], vec!["install-statusline"], vec!["install-statusline"]] {
+        let o = engine_shadowed(home.path(), cwd.path(), None, &[], &args)?;
+        assert!(o.code == 0, "{args:?}: {} {}", o.stdout, o.stderr);
+        assert!(wait_shadow_done(&state), "the comparison finished: {args:?}");
+        let left = shadow_dirs(&state);
+        assert!(left.is_empty(), "{args:?}: Node agreed, so nothing is kept: {left:?}");
+    }
+    // a Node that answers differently leaves a report; it ran in the scratch home and the scratch working directory
+    let fake = home.path().join("fake-node.sh");
+    fs::write(&fake, "#!/bin/sh\necho \"$HOME|$(pwd)\" >> \"$AH_FAKE_LOG\"\necho different\n")?;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))?;
+    let before_cwd = snapshot(cwd.path())?;
+    let o = engine_shadowed(home.path(), cwd.path(), Some(&fake), &[("AH_FAKE_LOG", &log)], &["install-statusline", "--project"])?;
+    assert_eq!(o.code, 0);
+    assert!(wait_shadow_done(&state), "the second comparison finished");
+    let reports: Vec<_> = shadow_dirs(&state).into_iter().filter(|d| d.join("mismatch.txt").exists()).collect();
+    assert_eq!(reports.len(), 1, "one mismatch report");
+    assert!(fs::read_to_string(reports[0].join("mismatch.txt"))?.contains("different"), "the report holds Node's output");
+    let seen = fs::read_to_string(&log)?;
+    let (h, d) = seen.trim().split_once('|').ok_or("no log line")?;
+    assert!(h.contains("/shadow/") && d.contains("/shadow/"), "Node ran in scratch directories: {seen}");
+    assert_ne!(Path::new(h), home.path());
+    assert_ne!(Path::new(d), cwd.path());
+    // the real files hold exactly the engine's write: the settings and the ignore file changed once, the engine's way
+    let after_cwd = snapshot(cwd.path())?;
+    assert_ne!(before_cwd, after_cwd, "the engine wrote the project's local settings");
+    assert_eq!(fs::read_to_string(cwd.path().join(".gitignore"))?.matches(".claude/settings.local.json").count(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_deferred_installer_run_leaves_no_shadow_behind() -> R {
+    let home = home_with(Some("{bad"), &[])?;
+    let state = home.path().join("state");
+    let o = engine_shadowed(home.path(), home.path(), None, &[], &["install-statusline"])?;
+    assert_eq!(o.code, 75);
+    assert!(wait_shadow_done(&state));
+    assert!(shadow_dirs(&state).is_empty(), "nothing to compare after a deferral");
     Ok(())
 }
 

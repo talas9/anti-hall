@@ -5,6 +5,8 @@
 //! | `settings` | `scripts/settings.js` | show, get, set and reset any anti-hall setting; the opt-in judge switch; the project allowlist trust records |
 //! | `defect` | `scripts/defect.js` | file, list, show, rule and archive defect reports; the bug-history import and queries |
 //! | `statusline` | `statusline/statusline*.js` | the status line the host renders after each turn |
+//! | `phase` | `statusline/phase.js` | the coordinator's phase state the status line's phase bar shows (set, advance, step, agents, update, clear) |
+//! | `install-statusline`, `uninstall-statusline` | `statusline/install-statusline.js`, `uninstall-statusline.js` | put the anti-hall status line into the host's `statusLine` setting, and take it out again |
 //!
 //! Each command reproduces the script's text and `--json` output byte for byte and leaves the same files behind. The
 //! parity tests (`tests/it/operator_parity.rs`) run the real Node script and the command on the same seeded scratch home and
@@ -17,8 +19,11 @@
 pub(crate) mod allow;
 pub(crate) mod defect;
 pub(crate) mod js;
+pub(crate) mod jsio;
+pub(crate) mod phase;
 pub(crate) mod settings;
 pub(crate) mod shadow;
+pub(crate) mod slcfg;
 pub(crate) mod statusline;
 
 use crate::cli::Parsed;
@@ -103,6 +108,21 @@ pub fn cmd_defect(p: &Parsed) -> i32 {
 /// `statusline`
 pub fn cmd_statusline(p: &Parsed) -> i32 {
     statusline::run(p)
+}
+
+/// `phase <set|advance|step|agents|update|clear> ...`
+pub fn cmd_phase(p: &Parsed) -> i32 {
+    phase::run(p)
+}
+
+/// `install-statusline [--user|--project] [--consolidate]`
+pub fn cmd_install_statusline(p: &Parsed) -> i32 {
+    slcfg::run_install(p)
+}
+
+/// `uninstall-statusline [--user|--project] [--purge-base]`
+pub fn cmd_uninstall_statusline(p: &Parsed) -> i32 {
+    slcfg::run_uninstall(p)
 }
 
 /// `shadow-compare <dir>` (internal): the detached half of a Node shadow.

@@ -21,6 +21,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `harvest` | `[--dir <path>] [--stale-days <n>]` | yes | implemented | Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of scripts/harvest-debt.js), and flag the ones with no payback trigger or in files untouched for the stale window. |
 | `hook` | `[--fallback <hook.js>] \| --event <Event> [--tool <Tool>] [--host claude\|codex] [--fallback-map <file>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would. |
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
+| `install-statusline` | `[--user\|--project] [--consolidate]` | no | implemented | Put the anti-hall status line into the host's statusLine setting (L9a, the port of statusline/install-statusline.js): `--user` (default, ~/.claude/settings.json) or `--project` (./.claude/settings.local.json), `--consolidate` to merge an existing status line into one line. Wraps an existing statusLine as line 1, backs the settings up once, never clobbers other keys, a re-run changes nothing. |
 | `jev` | `<ask\|status\|scrub\|evidence>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
 | `jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|mode> [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` | no | implemented | Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, and `mode <integration> on\|shadow\|off`; `test` and the review verbs stay in the Node script. |
 | `jev_sweep` | `` | no | implemented | The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment. |
@@ -28,6 +29,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `mesh` | `<roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | implemented | Read a repo's DevSwarm store (D45 stage S0), read-only: `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node. The store is opened read-only and never created; a journal-backed store is refused (Node owns it). |
 | `metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds. |
 | `migrate` | `[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present. |
+| `phase` | `<set\|advance\|step\|agents\|update\|clear> [args]` | no | implemented | Write or update the phase state the status line's phase bar shows (L9a, the port of statusline/phase.js): `set <code> <desc> <done> <total>`, `advance [n]`, `step <text>`, `agents <n>`, `update key=value ...`, `clear`; the state is ~/.anti-hall/phase-state.json. Fails open. |
 | `proj` | `<cwd> <put\|take\|len\|set\|setex\|get> [args]` | no | implemented | Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a TTL in seconds, get); the partition is derived from the cwd. |
 | `reset` | `` | no | implemented | Clear the client breaker, the crash-loop stop and the failure record. |
 | `restore` | `<snapshot-dir>` | no | implemented | Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then swap the databases. |
@@ -39,6 +41,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `statusline` | `(session JSON on stdin)` | no | implemented | The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open. |
 | `stop` | `` | no | implemented | Ask the daemon to drain and exit. |
 | `telemetry` | `[summary\|events\|rollup] [--window <7d>] [--kind <k>] [--limit <n>]` | no | implemented | Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention). Local only. |
+| `uninstall-statusline` | `[--user\|--project] [--purge-base]` | no | implemented | Take the anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
 
 ## Socket protocol
@@ -2483,7 +2486,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.line_terminators` | `\n
+  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
@@ -4676,7 +4680,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.shadow_keep` | `20` |  |  | How many mismatching comparisons keep their files for review. |
 | `ops.shadow_link_home` | `.claude, .claude.json` |  |  | The home entries the Node shadow reads through links. |
 | `ops.shadow_lock_ext` | `.lock` |  |  | Lock files are never linked into the shadow home. |
-| `ops.shadow_masks` | `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z => TS, corru...` |  |  | Patterns replaced before comparing (`regex => replacement`): clock values and animation frames. |
+| `ops.shadow_masks` | `7 items` |  |  | Patterns replaced before comparing (`regex => replacement`): clock values and animation frames. |
 | `ops.shadow_node` | `node` |  |  | The Node program the shadow runs when AH_ENGINE_NODE is not set. |
 | `ops.shadow_per` | `1000` |  |  | The sampling denominator of the shadow rates. |
 | `ops.shadow_rate_defect` | `1000` | `AH_ENGINE_SHADOW_RATE_DEFECT` |  | How many runs in a thousand of the defect command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one. |
@@ -4828,6 +4832,189 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.version_check` | `version-check.json` |  |  | The version check cache, in the base directory. |
 | `statusline.worktree_re` | `[/\\]\.git[/\\]worktrees[/\\]` |  |  | A git directory of a linked worktree. |
 | `statusline.xy_offset` | `2` |  |  | Where the staged and unstaged letters start in a git status line. |
+
+### slcfg.toml / env
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `env.dispatcher_override` | `ANTIHALL_DISPATCHER_OVERRIDE` |  |  | Test-only switch of the installer: names the dispatcher path to embed without checking that it exists (Node: ANTIHALL_DISPATCHER_OVERRIDE). |
+
+### slcfg.toml / ops
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `ops.script_install` | `statusline/install-statusline.js` |  |  | The Node installer, relative to the plugin root. |
+| `ops.script_phase` | `statusline/phase.js` |  |  | The Node phase script, relative to the plugin root. |
+| `ops.script_uninstall` | `statusline/uninstall-statusline.js` |  |  | The Node uninstaller, relative to the plugin root. |
+| `ops.shadow_cwd_dir` | `cwd` |  |  | The scratch working directory of an installer shadow, inside its scratch directory. |
+| `ops.shadow_cwd_word` | `CWD` |  |  | Replaces the real and the scratch working directory in compared text. |
+| `ops.shadow_inst_cwd` | `.claude/settings.json, .claude/settings.local.json, .claude/settings.json.bak...` |  |  | The files under the working directory the installer shadow copies into its scratch working directory and compares afterwards. |
+| `ops.shadow_inst_cwd_tag` | `c:` |  |  | Prefix of a working-directory-relative file in the installer shadow's state digest. |
+| `ops.shadow_inst_home` | `.claude/settings.json, .claude/settings.json.bak-antihall, .anti-hall/base-st...` |  |  | The files under the home directory the installer shadow copies into its scratch home and compares afterwards. |
+| `ops.shadow_inst_home_tag` | `h:` |  |  | Prefix of a home-relative file in the installer shadow's state digest. |
+| `ops.shadow_inst_link` | `.claude/plugins` |  |  | The home entries the installer shadow reads through links (the Node installer only checks that the marketplace dispatcher exists). |
+| `ops.shadow_rate_install` | `1000` | `AH_ENGINE_SHADOW_RATE_INSTALL` |  | How many runs in a thousand of install-statusline are also run by the Node installer in the background, on a scratch copy of the settings (never a second real write), and compared (0 turns the shadow off). |
+| `ops.shadow_rate_phase` | `1000` | `AH_ENGINE_SHADOW_RATE_PHASE` |  | How many runs in a thousand of the phase command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one. |
+| `ops.shadow_rate_uninstall` | `1000` | `AH_ENGINE_SHADOW_RATE_UNINSTALL` |  | How many runs in a thousand of uninstall-statusline are also run by the Node uninstaller in the background, on a scratch copy of the settings, and compared (0 turns the shadow off). |
+| `ops.verb_install` | `install-statusline` |  |  | The shadow name of the status line installer. |
+| `ops.verb_phase` | `phase` |  |  | The shadow name of the phase command. |
+| `ops.verb_uninstall` | `uninstall-statusline` |  |  | The shadow name of the status line uninstaller. |
+
+### slcfg.toml / slcfg
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `slcfg.advisory_1` | `ADVISORY: --consolidate was requested but this install is not yet in consolid...` |  |  | --consolidate on an existing plain install. |
+| `slcfg.advisory_2` | `  To switch modes, uninstall first, then re-run with --consolidate:` |  |  | How to switch modes. |
+| `slcfg.advisory_3` | `    node statusline/install-statusline.js --uninstall   # or remove statusLin...` |  |  | The uninstall hint. |
+| `slcfg.advisory_4` | `    node statusline/install-statusline.js --consolidate` |  |  | The reinstall hint. |
+| `slcfg.already_1` | `Already installed — the effective statusLine already points at anti-hall stat...` |  |  | The effective statusLine already is the dispatcher. |
+| `slcfg.backed_up_1` | `Backed up: {path}` |  |  | A backup was made. Placeholders: path. |
+| `slcfg.backed_up_2` | `       to: {path}` |  |  | A backup was made. Placeholders: path. |
+| `slcfg.backup_exists` | `Backup already exists: {path} (not overwritten)` |  |  | A backup exists already. Placeholders: path. |
+| `slcfg.backup_failed_1` | `⚠️ anti-hall · install-statusline: Could not create backup: {msg}` |  |  | stderr: the installer's backup failed. Placeholders: msg. |
+| `slcfg.backup_failed_2` | `Proceeding without backup.` |  |  | stderr: it goes on. |
+| `slcfg.backup_suffix` | `.bak-antihall` |  |  | Appended to a settings file's name for its one-time backup. |
+| `slcfg.base_kept_1` | `Existing base-statusline.json kept (global, shared) — not overwritten:` |  |  | The shared base configuration already exists. |
+| `slcfg.base_kept_3` | `  Line 1 for repos without their own helper falls back to the rich renderer.` |  |  | What line 1 does then. |
+| `slcfg.base_saved` | `Saved existing statusLine as base (line 1 wrapper):` |  |  | The existing statusLine was saved as the line-1 base. |
+| `slcfg.base_write_failed_1` | `⚠️ anti-hall · install-statusline: Could not write {path}: {msg}` |  |  | stderr: the base could not be written. Placeholders: path msg. |
+| `slcfg.base_write_failed_2` | `Why: the statusline will still work but your previous statusline will not be ...` |  |  | stderr: what that means. |
+| `slcfg.claude_dir` | `.claude` |  |  | The host's configuration directory (in the home directory and in a project). |
+| `slcfg.command_line` | `  command: {cmd}` |  |  | A command shown after its file. Placeholders: cmd. |
+| `slcfg.command_prefix` | `node "` |  |  | Before the dispatcher path in the statusLine command. |
+| `slcfg.command_suffix` | `"` |  |  | After the dispatcher path in the statusLine command. |
+| `slcfg.consolidate_nothing_1` | `NOTE: --consolidate requested but no existing statusLine found to wrap.` |  |  | --consolidate without an existing statusLine. |
+| `slcfg.consolidate_nothing_2` | `  Installing anti-hall statusline directly (no consolidated base).` |  |  | What happens instead. |
+| `slcfg.consolidate_nothing_3` | `  You can set ANTIHALL_STATUSLINE_BASE="<cmd>" env var in the statusLine comm...` |  |  | How to set a base later. |
+| `slcfg.consolidate_nothing_4` | `  or write ~/.anti-hall/consolidated-base.json manually later.` |  |  | How to set a base later, continued. |
+| `slcfg.consolidated_2` | `  The anti-hall statusline will run this base command, capture its output,` |  |  | What the consolidated mode does. |
+| `slcfg.consolidated_3` | `  and APPEND the AH version chip (AH: Vx.x.x / ★) as a single merged line.` |  |  | What the consolidated mode does, continued. |
+| `slcfg.consolidated_4` | `  Fail-open: if the base command errors, the full rich anti-hall line is shown.` |  |  | What happens when the base fails. |
+| `slcfg.consolidated_do_instead` | `Do instead: run without --consolidate to install normally (consolidated mode ...` |  |  | stderr: what to do about it. |
+| `slcfg.consolidated_saved` | `CONSOLIDATED MODE: saved existing statusLine as passthrough base:` |  |  | The existing statusLine was kept as the consolidated base. |
+| `slcfg.consolidated_write_failed` | `⚠️ anti-hall · install-statusline: Could not write {path}: {msg}` |  |  | stderr: the consolidated base could not be written. Placeholders: path msg. |
+| `slcfg.create_failed` | `❌ anti-hall · install-statusline: Could not create {path}: {msg}` |  |  | stderr: it could not be created. Placeholders: path msg. |
+| `slcfg.created` | `Created: {path}` |  |  | A local settings file was created. Placeholders: path. |
+| `slcfg.deferred` | `this input needs the Node script to answer exactly; nothing was written` |  |  | Said when the input needs the Node script to answer exactly (for example a settings file the engine cannot parse the way JavaScript does); nothing was written. |
+| `slcfg.dispatcher_dev` | `  (dev/__dirname fallback)` |  |  | After the dispatcher path when it is the one next to the installer. |
+| `slcfg.dispatcher_file` | `statusline.js` |  |  | The status line dispatcher script. |
+| `slcfg.dispatcher_line` | `Dispatcher: {path}{note}` |  |  | The first line of the installer. Placeholders: path note. |
+| `slcfg.dispatcher_stable` | `  (stable marketplace path)` |  |  | After the dispatcher path when it is the marketplace one. |
+| `slcfg.done` | `Done. {path} updated.` |  |  | The settings file was updated. Placeholders: path. |
+| `slcfg.empty_settings` | `{}\n` |  |  | What a missing project-local settings file is created with. |
+| `slcfg.err_copyfile` | `{err}, copyfile '{from}' -> '{to}'` |  |  | Node's wording of a failed file copy. Placeholders: err from to. |
+| `slcfg.err_mkdir` | `{err}, mkdir '{path}'` |  |  | Node's wording of a failed directory creation. Placeholders: err path. |
+| `slcfg.err_open` | `{err}, open '{path}'` |  |  | Node's wording of a failed file open. Placeholders: err path. |
+| `slcfg.errno_table` | `8 items` |  |  | Operating-system errors as Node words them (`number CODE description`); the same numbers on Linux and macOS. |
+| `slcfg.errno_unknown` | `UNKNOWN: unknown error` |  |  | The words for an error the table does not know. |
+| `slcfg.flag_consolidate` | `--consolidate` |  |  | The install option that merges the existing status line and the anti-hall chip into one line. |
+| `slcfg.flag_project` | `--project` |  |  | The option that selects the project scope. |
+| `slcfg.flag_purge` | `--purge-base` |  |  | The uninstall option that also removes the shared base configuration. |
+| `slcfg.git_program` | `git` |  |  | The program that tells whether the local settings file is tracked. |
+| `slcfg.git_timeout_ms` | `2000` |  |  | Longest the tracked-file question may take, in milliseconds. |
+| `slcfg.git_tracked_args` | `ls-files, --error-unmatch, .claude/settings.local.json` |  |  | Its arguments. |
+| `slcfg.gitignore_failed` | `⚠️ anti-hall · install-statusline: Could not update .gitignore: {msg}` |  |  | stderr: the ignore file could not be extended. Placeholders: msg. |
+| `slcfg.gitignore_file` | `.gitignore` |  |  | The project's ignore file. |
+| `slcfg.gitignore_has` | `.gitignore already ignores {entry}` |  |  | The ignore file already has the entry. Placeholders: entry. |
+| `slcfg.gitignore_updated` | `Updated .gitignore: added {entry}` |  |  | The ignore file was extended. Placeholders: entry. |
+| `slcfg.indent_line` | `  {text}` |  |  | A value shown under a note. Placeholders: text. |
+| `slcfg.inst_not_found_1` | `❌ anti-hall · install-statusline: statusline.js not found at: {path}` |  |  | stderr: the dispatcher is missing. Placeholders: path. |
+| `slcfg.inst_not_found_2` | `Do instead: keep the installer in the same directory as statusline.js.` |  |  | stderr: what to do about it. |
+| `slcfg.inst_refused` | `⛔ anti-hall · install-statusline: refused under a test: {path} is outside a t...` |  |  | stderr: the installer refuses to write user configuration under a test. Placeholders: path. |
+| `slcfg.installed_dir_install` | `/anti-hall/` |  |  | The installer treats a command that also contains this directory part as the anti-hall dispatcher. |
+| `slcfg.installed_dir_uninstall` | `anti-hall/` |  |  | The uninstaller treats a command (backslashes turned into slashes) that also contains this directory part as the anti-hall dispatcher. |
+| `slcfg.installed_marker` | `statusline.js` |  |  | A statusLine command that contains this names the dispatcher. |
+| `slcfg.local_entry` | `.claude/settings.local.json` |  |  | The ignore-file line that keeps the local settings out of version control. |
+| `slcfg.local_file` | `settings.local.json` |  |  | The host's project-local settings file (highest precedence, not committed). |
+| `slcfg.new_statusline` | `New statusLine:` |  |  | Heading of the new value. |
+| `slcfg.no_changes` | `No changes made.` |  |  | Nothing was changed. |
+| `slcfg.no_command_1` | `Existing statusLine has no command string (type: {kind})` |  |  | The existing statusLine has no command string. Placeholders: kind. |
+| `slcfg.no_command_2` | `Nothing to wrap — line 1 will use own dispatch.` |  |  | What happens then. |
+| `slcfg.no_existing` | `No existing statusLine — line 1 will use own dispatch.` |  |  | There is no statusLine yet. |
+| `slcfg.no_old_statusline` | `No existing statusLine.` |  |  | There was no old value. |
+| `slcfg.note_project_1` | `NOTE: .claude/settings.json (committed) defines a statusLine:` |  |  | A committed project statusLine exists. |
+| `slcfg.note_project_2` | `  Installing into settings.local.json so anti-hall takes precedence (local > ...` |  |  | Why the installer writes the local file. |
+| `slcfg.note_user_1` | `NOTE: ~/.claude/settings.json (user/global) defines a statusLine:` |  |  | A user-level statusLine exists. |
+| `slcfg.note_user_2` | `  Installing into settings.local.json will take precedence over it.` |  |  | What the local file will do to it. |
+| `slcfg.old_statusline` | `Old statusLine:` |  |  | Heading of the old value. |
+| `slcfg.phase_advance` | `advance` |  |  | The `phase` subcommand that advances the count. |
+| `slcfg.phase_agents` | `agents` |  |  | The `phase` subcommand that sets the agent count. |
+| `slcfg.phase_clear` | `clear` |  |  | The `phase` subcommand that removes the state. |
+| `slcfg.phase_key_agents` | `agents` |  |  | The phase field that holds the agent count. |
+| `slcfg.phase_key_done` | `done` |  |  | The phase field that holds the finished count. |
+| `slcfg.phase_key_step` | `step` |  |  | The phase field that holds the step text. |
+| `slcfg.phase_proto_key` | `__proto__` |  |  | A field name the engine does not merge (JavaScript treats it as the object's prototype); `update` with it is left to the Node script. |
+| `slcfg.phase_set` | `set` |  |  | The `phase` subcommand that starts a phase. |
+| `slcfg.phase_set_keys` | `code, desc, done, total, started` |  |  | The fields `set` writes, in order. |
+| `slcfg.phase_step` | `step` |  |  | The `phase` subcommand that sets the step text. |
+| `slcfg.phase_undefined` | `undefined` |  |  | How a missing subcommand reads in that message. |
+| `slcfg.phase_unknown` | `❌ anti-hall · phase: unknown command "{cmd}"` |  |  | stderr of `phase` for an unknown subcommand. Placeholders: cmd. |
+| `slcfg.phase_update` | `update` |  |  | The `phase` subcommand that merges fields. |
+| `slcfg.refresh_interval` | `1` |  |  | The statusLine refreshInterval written by the installer, in seconds. |
+| `slcfg.refused_2` | `Do instead: isolate HOME/cwd.` |  |  | stderr: what to do about it. |
+| `slcfg.restart_1` | `IMPORTANT: Restart Claude Code (close and reopen) for the change to take effect.` |  |  | The installer's restart reminder. |
+| `slcfg.restart_2` | `  statusLine is read only at startup — there is no hot-reload.` |  |  | Why a restart is needed. |
+| `slcfg.scope_line` | `Scope:    {scope}` |  |  | The scope line. Placeholders: scope. |
+| `slcfg.scope_phase_1` | `  The phase bar (line 2) appears once an orchestration phase writes` |  |  | Closing note about the phase bar. |
+| `slcfg.scope_phase_2` | `  ~/.anti-hall/phase-state.json.` |  |  | Closing note about the phase bar, continued. |
+| `slcfg.scope_project` | `project` |  |  | The name of the project scope in messages. |
+| `slcfg.scope_project_1` | `Scope: project-local only (.claude/settings.local.json).` |  |  | Closing note for the project scope. |
+| `slcfg.scope_project_2` | `  This setting is gitignored and applies to this machine only.` |  |  | Closing note for the project scope. |
+| `slcfg.scope_user` | `user` |  |  | The name of the user scope in messages. |
+| `slcfg.scope_user_1` | `Scope: user/global (~/.claude/settings.json).` |  |  | Closing note for the user scope. |
+| `slcfg.scope_user_2` | `  The bar appears in every repo on this machine.` |  |  | Closing note for the user scope. |
+| `slcfg.settings_file` | `settings.json` |  |  | The host's settings file. |
+| `slcfg.settings_line` | `Settings: {path}` |  |  | The settings file line. Placeholders: path. |
+| `slcfg.shell_safe_extra` | ` _.-:/\~` |  |  | Characters besides ASCII letters and digits allowed in a path embedded into the statusLine command. |
+| `slcfg.source_local` | `  Source: settings.local.json (project-local, highest precedence)` |  |  | Where an installed statusLine came from. |
+| `slcfg.source_project` | `  Source: settings.json (project)` |  |  | Where an installed statusLine came from. |
+| `slcfg.source_user` | `  Source: ~/.claude/settings.json (user/global)` |  |  | Where an installed statusLine came from. |
+| `slcfg.stable_dir` | `.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/statusline` |  |  | The status line directory of the marketplace installation, relative to the home directory (stable across plugin updates). |
+| `slcfg.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables whose presence means the installer runs under a test: it then refuses to write user configuration outside a temporary directory. |
+| `slcfg.tmp_default` | `/tmp` |  |  | The temporary directory when none of those variables is set. |
+| `slcfg.tmp_env` | `TMPDIR, TMP, TEMP` |  |  | The environment variables the operating system's temporary directory is read from, in order. |
+| `slcfg.tmp_roots` | `/tmp, /private/tmp` |  |  | Directories that count as temporary for the test guard, besides the operating system's own. |
+| `slcfg.tmp_roots_macos` | `/var/folders, /private/var/folders` |  |  | More temporary directories on macOS (a child started with a stripped environment has no TMPDIR). |
+| `slcfg.to_uninstall` | `To uninstall:` |  |  | Heading of the uninstall hint. |
+| `slcfg.tracked_1` | `⚠️ anti-hall · install-statusline: .claude/settings.local.json is currently t...` |  |  | The local settings file is tracked by git. |
+| `slcfg.tracked_2` | `  It contains a machine-absolute path and should NOT be committed.` |  |  | Why that is a problem. |
+| `slcfg.tracked_3` | `  To untrack it:` |  |  | How to fix it. |
+| `slcfg.tracked_4` | `    git rm --cached .claude/settings.local.json` |  |  | The command that fixes it. |
+| `slcfg.type_command` | `command` |  |  | The statusLine type value. |
+| `slcfg.u_backup_line` | `  {path}` |  |  | The backup path. Placeholders: path. |
+| `slcfg.u_backup_no_sl` | `Backup had no statusLine key — statusLine removed.` |  |  | The backup had no statusLine. |
+| `slcfg.u_current` | `  current statusLine: {cmd}` |  |  | The statusLine that is there. Placeholders: cmd. |
+| `slcfg.u_kept_base` | `Kept shared base config (global, used by other projects): {path}` |  |  | The shared base was kept. Placeholders: path. |
+| `slcfg.u_kept_base2` | `  Pass --purge-base to remove it once anti-hall is uninstalled everywhere.` |  |  | How to remove it. |
+| `slcfg.u_no_backup` | `(No backup or base config was available; key deleted directly.)` |  |  | No backup or base was available. |
+| `slcfg.u_none` | `(none)` |  |  | Shown for a missing command. |
+| `slcfg.u_not_antihall_1` | `NOTE: the statusLine in {path} does not point at the` |  |  | The statusLine is not the dispatcher. Placeholders: path. |
+| `slcfg.u_not_antihall_2` | `anti-hall dispatcher — leaving it untouched, skipping the base-config restore.` |  |  | The statusLine is not the dispatcher, continued. |
+| `slcfg.u_not_found` | `❌ anti-hall · uninstall-statusline: {path} not found.` |  |  | stderr: the settings file does not exist. Placeholders: path. |
+| `slcfg.u_nothing` | `Nothing to uninstall — statusLine key is already absent from {path}` |  |  | There is no statusLine to remove. Placeholders: path. |
+| `slcfg.u_purged_a` | `Purged shared base config (--purge-base): {path}` |  |  | The shared base was removed. Placeholders: path. |
+| `slcfg.u_purged_a2` | `  NOTE: any OTHER project still pointing at the anti-hall dispatcher` |  |  | A warning about other projects. |
+| `slcfg.u_purged_a3` | `  will lose its line-1 wrapper and fall back to the rich renderer.` |  |  | A warning about other projects, continued. |
+| `slcfg.u_removed` | `Removed statusLine from {path}:` |  |  | The statusLine was removed. Placeholders: path. |
+| `slcfg.u_restart` | `Restart Claude Code (close and reopen) for the change to take effect.` |  |  | The uninstaller's restart reminder. |
+| `slcfg.u_restore_failed` | `❌ anti-hall · uninstall-statusline: Could not restore {path}: {msg}` |  |  | stderr: the restore failed. Placeholders: path msg. |
+| `slcfg.u_restored_backup` | `Restored {path} from backup:` |  |  | The whole file was restored from the backup. Placeholders: path. |
+| `slcfg.u_restored_base` | `Restored original statusLine from: {path}` |  |  | The original command was restored. Placeholders: path. |
+| `slcfg.u_restored_sl` | `Restored statusLine: {json}` |  |  | The statusLine of the backup. Placeholders: json. |
+| `slcfg.u_write_failed` | `❌ anti-hall · uninstall-statusline: Could not write {path}: {msg}` |  |  | stderr: the write failed. Placeholders: path msg. |
+| `slcfg.uninst_backup_failed` | `⚠️ anti-hall · uninstall-statusline: Could not create backup: {msg}` |  |  | stderr: the uninstaller's backup failed. Placeholders: msg. |
+| `slcfg.uninst_refused` | `⛔ anti-hall · uninstall-statusline: refused under a test: {path} is outside a...` |  |  | stderr: the same for the uninstaller. Placeholders: path. |
+| `slcfg.uninstall_file` | `uninstall-statusline.js` |  |  | The uninstaller script named in the installer's closing hint. |
+| `slcfg.uninstall_hint` | `  node "{path}"` |  |  | The uninstall command. Placeholders: path. |
+| `slcfg.unsafe_1` | `⛔ anti-hall · install-statusline: dispatcher path contains shell metacharacte...` |  |  | stderr: the dispatcher path has shell metacharacters. |
+| `slcfg.unsafe_2` | `  Path: {path}` |  |  | stderr: the path. Placeholders: path. |
+| `slcfg.unsafe_3` | `  To install manually, add to {path}:` |  |  | stderr: manual installation. Placeholders: path. |
+| `slcfg.unsafe_4` | `    "statusLine": { "type": "command", "command": "node \"/path/to/statusline...` |  |  | stderr: the manual entry. |
+| `slcfg.user_missing` | `❌ anti-hall · install-statusline: {path} not found. Is Claude Code installed?` |  |  | stderr: the user settings file does not exist. Placeholders: path. |
+| `slcfg.write_failed_1` | `❌ anti-hall · install-statusline: Could not write {path}: {msg}` |  |  | stderr: the settings file could not be written. Placeholders: path msg. |
+| `slcfg.write_failed_2` | `Do instead: restore from backup:` |  |  | stderr: how to get back. |
+| `slcfg.write_failed_3` | `  node "{path}"` |  |  | stderr: the restore command. Placeholders: path. |
 
 ## Messages
 
