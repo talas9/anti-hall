@@ -1092,3 +1092,147 @@ doc = "Hex characters of the short form of a reader key in the cursor journal (s
 value = 6
 min = 1
 max = 40
+
+# ---- heartbeat and the NDJSON + store unread union (scripts/devswarm-lib/heartbeat-plan.js cmdHeartbeat, companion/lib/liveness.js, devswarm-unread.js, reader-cursors.js) ----
+
+[mesh_write.verb_heartbeat]
+doc = "The heartbeat verb."
+value = "heartbeat"
+
+[mesh_write.action_heartbeat]
+doc = "The `action` of a heartbeat result."
+value = "heartbeat"
+
+[mesh_write.heartbeat_source]
+doc = "The `source` a CLI heartbeat stamps on its record (cmdHeartbeat)."
+value = "cli-heartbeat"
+
+[mesh_write.flag_session]
+doc = "The heartbeat flag naming the session; without it Node logs the caller (heartbeat-callers.log), which the engine cannot reproduce, so the call goes to Node."
+value = "session"
+
+[mesh_write.flag_summary]
+doc = "The heartbeat flag that also broadcasts a mesh heartbeat row; with it the call goes to Node."
+value = "summary"
+
+[mesh_write.flag_step]
+doc = "The heartbeat flag that records plan progress; with it the call goes to Node."
+value = "step"
+
+[mesh_write.flag_progress]
+doc = "The heartbeat flag for the progress percentage."
+value = "progress"
+
+[mesh_write.flag_phase]
+doc = "The heartbeat flag for the phase text."
+value = "phase"
+
+[mesh_write.flag_wip]
+doc = "The repeatable heartbeat flag for work in progress."
+value = "wip"
+
+[mesh_write.flag_blockers]
+doc = "The repeatable heartbeat flag for blockers."
+value = "blockers"
+
+[mesh_write.dir_liveness]
+doc = "Directory of the persisted liveness verdicts under the DevSwarm root (liveness.js livenessPathFor)."
+value = "liveness"
+
+[mesh_write.liveness_alive]
+doc = "The `status` a heartbeat writes into the liveness verdict (a heartbeat is proof of life)."
+value = "alive"
+
+[mesh_write.not_draining_age_ms]
+doc = "Age of the oldest unread row past which a backlog is also flagged notDraining (liveness.js NOT_DRAINING_AGE_MS, 20 minutes)."
+value = 1200000
+min = 1
+max = 31536000000
+
+[mesh_write.env_source_branch]
+doc = "The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace)."
+value = "DEVSWARM_SOURCE_BRANCH"
+
+
+
+[mesh_write.plugin_manifest_dir]
+doc = "Directory of the plugin manifest under the plugin root."
+value = ".claude-plugin"
+
+[mesh_write.plugin_manifest_file]
+doc = "The plugin manifest whose `version` a heartbeat stamps (runningAntiHallVersion)."
+value = "plugin.json"
+
+[mesh_write.field_inbox_path]
+doc = "The descriptor field holding the NDJSON inbox path."
+value = "inboxPath"
+
+[mesh_write.field_id]
+doc = "The descriptor field holding the workspace id."
+value = "id"
+
+[mesh_write.legacy_hash_prefix]
+doc = "Prefix of the dedupe hash of one physical legacy inbox line (devswarm-unread.js legacyLineHash)."
+value = "legacy:"
+
+[mesh_write.ndjson_hash_field]
+doc = "The field of an NDJSON inbox line that carries the content hash of a natively drained message."
+value = "_h"
+
+[mesh_write.ndjson_ts_field]
+doc = "The field of an NDJSON line that carries its timestamp (first choice)."
+value = "ts"
+
+[mesh_write.ndjson_created_field]
+doc = "The field of an NDJSON line that carries its creation time (second choice, the native pull shape)."
+value = "createdAt"
+
+# ---- the Node shadow of an answered writing verb (owner rule: Node stays as a background check until the port is proven) ----
+
+[mesh_write.verify_flag]
+doc = "The word after `mesh` that makes the engine run as the background verifier of an answered heartbeat (never a devswarm.js verb)."
+value = "--shadow-verify"
+
+[mesh_write.verify_log]
+doc = "File in the state directory that receives one JSON line per background verification (`verb`, `result` match or mismatch, `ms`; on a mismatch both outputs, capped)."
+value = "mesh-verify.jsonl"
+
+[mesh_write.verify_dir]
+doc = "Directory in the state directory that holds the scratch homes of pending verifications."
+value = "mesh-verify"
+
+[mesh_write.verify_copy_dirs]
+doc = "Directories of the DevSwarm root copied into the scratch home before the engine writes (what Node reads or writes for a heartbeat)."
+value = ["workspaces", "heartbeats", "liveness", "cursors", "archived"]
+
+[mesh_write.verify_link_dirs]
+doc = "Directories of the DevSwarm root linked, not copied, into the scratch home (read only for a heartbeat)."
+value = ["store"]
+
+[mesh_write.verify_node_snippet]
+doc = "The Node program of the verifier: runs the real devswarm.js `run()` with the engine's clock, prints the result object the CLI would print. Arguments: the CLI path, the clock, then the verb's argv."
+value = "const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Number(process.argv[2])});process.stdout.write(JSON.stringify(r.result)+'\\n');"
+
+[mesh_write.verify_match]
+doc = "Log result of a verification whose Node output and written files equal the engine's."
+value = "match"
+
+[mesh_write.verify_mismatch]
+doc = "Log result of a verification that found a difference."
+value = "mismatch"
+
+[mesh_write.verify_error]
+doc = "Log result of a verification that could not run Node."
+value = "error"
+
+[mesh_write.verify_cap]
+doc = "Characters of each output kept in a mismatch record."
+value = 600
+min = 50
+max = 100000
+
+[mesh_write.cursor_max_digits]
+doc = "Longest all-digit NDJSON cursor file the engine reads (parseInt of a longer digit string is only approximated by the specification, so such a file goes to Node)."
+value = 15
+min = 1
+max = 308

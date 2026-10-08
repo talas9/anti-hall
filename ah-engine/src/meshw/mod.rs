@@ -31,6 +31,7 @@
 pub mod args;
 pub mod common;
 pub mod cursors;
+pub mod heartbeat;
 pub mod ident;
 pub mod idlock;
 pub mod inbox;
@@ -38,6 +39,8 @@ pub mod read;
 pub mod send;
 pub mod store;
 pub mod summary;
+pub mod union;
+pub mod verify;
 
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
@@ -65,6 +68,14 @@ fn committed() -> bool {
 /// Log a summary refresh the engine could not do after its write (Node's next derive refreshes it).
 pub fn log_summary_failure(verb: &str, reason: &str) {
     shadow_log(&serde_json::json!({"ts": common::now_ms(), "verb": verb, "result": defaults::text("mesh_write.summary_failed"), "reason": reason}));
+}
+
+/// Append one record to the background-verification log.
+pub fn verify_log(rec: &serde_json::Value) {
+    let p = crate::paths::dir().join(defaults::text("mesh_write.verify_log"));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        crate::discard::harmless(f.write_all(format!("{rec}\n").as_bytes())); // keep: advisory log
+    }
 }
 
 /// The three positions of `mesh.engine_writes`.
@@ -102,6 +113,8 @@ pub enum Verb {
     MeshHistory,
     /// `inbox ack-primary`.
     InboxAckPrimary,
+    /// `heartbeat` (the plain form).
+    Heartbeat,
 }
 
 /// The verb's name as the telemetry log spells it (`Send`, `MeshRead`, `MeshHistory`, `InboxAckPrimary`).
@@ -128,6 +141,9 @@ pub fn verb_of(a: &args::Args) -> Option<Verb> {
     if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_ack_primary")) {
         return Some(Verb::InboxAckPrimary);
     }
+    if p0 == defaults::text("mesh_write.verb_heartbeat") {
+        return Some(Verb::Heartbeat);
+    }
     None
 }
 
@@ -138,6 +154,7 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::MeshRead) => read::run(inv, a, false),
         Some(Verb::MeshHistory) => read::run(inv, a, true),
         Some(Verb::InboxAckPrimary) => inbox::run(inv, a),
+        Some(Verb::Heartbeat) => heartbeat::run(inv, a),
         None => ident::defer("not-ported"),
     }
 }
@@ -213,6 +230,9 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
         let lossy: Vec<String> = raw.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         return exec_node(&lossy);
     };
+    if argv.first().map(String::as_str) == Some(defaults::text("mesh_write.verify_flag")) {
+        return verify::run_verifier(&argv[1..]);
+    }
     let a = args::parse(&argv);
     let m = mode();
     if m == Mode::Off || verb_of(&a).is_none() {
@@ -231,6 +251,8 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
                 );
                 return node_with(&argv, stdin.as_deref());
             };
+            // a writing verb keeps Node as a background check on a scratch copy (never a second write on the real home)
+            let scratch = (verb_of(&a) == Some(Verb::Heartbeat)).then(|| verify::prepare(&inv)).flatten();
             let r = std::panic::catch_unwind(|| run_native(&inv, &a));
             let (step, result, reason) = next_step(r, committed());
             shadow_log(
@@ -238,19 +260,30 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
             );
             match step {
                 Next::Print(ans) => {
+                    if let Some(sc) = &scratch {
+                        verify::launch(sc, &inv, a.positionals.get(1).map_or("", String::as_str), &argv, &ans.stdout);
+                    }
                     emit(ans.stdout.as_bytes());
                     ans.code
                 }
                 Next::CommittedFailure => {
+                    if let Some(sc) = &scratch {
+                        crate::discard::harmless(std::fs::remove_dir_all(sc)); // keep: nothing to verify
+                    }
                     eprintln!("{}", defaults::text("mesh_write.msg_committed_failure"));
                     defaults::num("mesh_write.exit_committed_failure") as i32
                 }
-                Next::RunNode => node_with(&argv, stdin.as_deref()),
+                Next::RunNode => {
+                    if let Some(sc) = &scratch {
+                        crate::discard::harmless(std::fs::remove_dir_all(sc)); // keep: Node ran it, nothing to verify
+                    }
+                    node_with(&argv, stdin.as_deref())
+                }
             }
         }
         // the write verbs replay on a copy of the store; a verb whose inputs are files outside it (a read receipt that
         // Node consumes while it runs) cannot be replayed, so it only runs in Node and is counted
-        _ if verb_of(&a) == Some(Verb::InboxAckPrimary) => {
+        _ if matches!(verb_of(&a), Some(Verb::InboxAckPrimary | Verb::Heartbeat)) => {
             // logged BEFORE Node runs: with no stdin to forward the engine replaces itself with Node and never returns
             shadow_log(
                 &serde_json::json!({"ts": common::now_ms(), "verb": verb_label(&a), "mode": defaults::text("mesh_write.mode_shadow"), "result": defaults::text("mesh_write.shadow_skipped"), "reason": "", "ms": 0}),

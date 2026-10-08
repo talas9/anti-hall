@@ -1,5 +1,6 @@
 'use strict';
-// The devswarm stable launcher routes the ported mesh verbs (send, mesh read, inbox ack-primary) to
+// The devswarm stable launcher routes the ported mesh verbs (send, mesh read, mesh history, roster --ack, inbox ack-primary,
+// heartbeat) to
 // `ah-engine mesh` when settings mesh.engine_writes = "on" and the engine exists.
 // Scratch HOME, fake engine and fake Node target: never the real ~/.anti-hall.
 
@@ -62,7 +63,7 @@ test('on: send and mesh read go to ah-engine mesh with the same argv and its exi
 
 test('on: other verbs stay in Node; an engine native nonzero result is passed through', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 2' });
-  const h = run(['heartbeat']);
+  const h = run(['inbox', 'tick', 'w1']);
   assert.strictEqual(h.code, 3);
   assert.doesNotMatch(h.trace, /engine/);
   assert.strictEqual(run(['send', '--to', 'w']).code, 2);
@@ -104,6 +105,32 @@ test('on: inbox ack-primary is routed; the other inbox verbs stay in Node', () =
   const r = run(['inbox', 'read-primary', 'p1']);
   assert.strictEqual(r.code, 3);
   assert.match(r.trace, /engine mesh inbox ack-primary p1 --receipt r1\nnode inbox read-primary p1/);
+});
+
+test('on: mesh history, roster --ack and heartbeat are routed; plain roster and the other verbs stay in Node', () => {
+  const { run } = setup({ mode: 'on', engine: 'exit 0' });
+  assert.strictEqual(run(['mesh', 'history']).code, 0);
+  assert.strictEqual(run(['roster', '--ack']).code, 0);
+  assert.strictEqual(run(['roster', '--json', '--ack=1']).code, 0);
+  assert.strictEqual(run(['heartbeat', 'w1', '--session', 's']).code, 0);
+  const plain = run(['roster']);
+  assert.strictEqual(plain.code, 3);
+  assert.strictEqual(run(['mesh', 'peek']).code, 3);
+  const last = run(['inbox', 'tick', 'w1']);
+  assert.strictEqual(last.code, 3);
+  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nnode roster stdin=\nnode mesh peek stdin=\nnode inbox tick w1 stdin=\n$/);
+});
+
+test('on, heartbeat deferred (exit 75): Node runs it; a committed failure (exit 70) is never rerun', () => {
+  const d = setup({ mode: 'on', engine: 'exit 75' });
+  const r = d.run(['heartbeat', 'w1', '--session', 's']);
+  assert.strictEqual(r.code, 3);
+  assert.match(r.trace, /engine mesh heartbeat w1 --session s\nnode heartbeat w1 --session s/);
+  assert.match(r.log, /exit 75/);
+  const f = setup({ mode: 'on', engine: 'exit 70' });
+  const r2 = f.run(['heartbeat', 'w1', '--session', 's']);
+  assert.strictEqual(r2.code, 70);
+  assert.doesNotMatch(r2.trace, /^node /m);
 });
 
 test('on, engine hangs: killed at the time limit, then Node runs', () => {
