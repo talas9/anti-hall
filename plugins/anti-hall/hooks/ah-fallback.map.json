@@ -98,6 +98,7 @@
     "devswarm-child-turn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"",
     "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",
     "gh-rt-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory\"",
+    "devswarm-rt-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"",
     "idle-agent-sweep": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"",
     "limit-conserve-inject": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"",
     "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",

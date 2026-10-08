@@ -102,6 +102,11 @@ impl Rt {
         Some(found)
     }
 
+    /// What detection found at start.
+    pub fn detection(&self) -> &Detection {
+        &self.det
+    }
+
     /// The settings in use.
     pub fn cfg(&self) -> &Cfg {
         &self.cfg

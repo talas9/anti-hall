@@ -60,6 +60,8 @@ files = [
     "resource_watch.toml",
     "disk_watch.toml",
     "agent_tracker.toml",
+    "devswarm_act.toml",
+    "devswarm_wire.toml",
     "realtime.toml",
     "github_rt.toml",
     "devswarm_act.toml",

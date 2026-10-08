@@ -464,6 +464,12 @@ fn load_state(path: &Path) -> Map<String, Value> {
 
 /// One sweep at time `now`: returns `{children, decided: [{child, integration, phase, source, label, reason}]}`.
 pub fn sweep(home: &Path, env: &Env, now: i64) -> Value {
+    sweep_only(home, env, now, None)
+}
+
+/// [`sweep`] restricted to the children `only` names: an entry matches a plan's id, its file name or its worktree. `None` is
+/// every child. The realtime DevSwarm layer calls this for the children whose plan, activity or PR just changed.
+pub fn sweep_only(home: &Path, env: &Env, now: i64, only: Option<&[String]>) -> Value {
     let ids: Vec<&str> = defaults::list("sweep.integrations");
     let live: Vec<&str> = ids.iter().copied().filter(|id| super::shared::mode_of(home, env, id) != Mode::Off).collect();
     if live.is_empty() {
@@ -483,6 +489,12 @@ pub fn sweep(home: &Path, env: &Env, now: i64) -> Value {
         let Some(plan) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
         let key = file.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
         let id = plan["id"].as_str().unwrap_or(&key).to_string();
+        if let Some(o) = only {
+            let wt = plan[defaults::text("devswarm_rt.plan_key_worktree")].as_str().unwrap_or_default();
+            if !o.iter().any(|x| *x == id || *x == key || (!wt.is_empty() && x == wt)) {
+                continue;
+            }
+        }
         if key.is_empty() || plan["steps"].as_array().is_none_or(Vec::is_empty) || looked >= lim("max_children") {
             continue;
         }
