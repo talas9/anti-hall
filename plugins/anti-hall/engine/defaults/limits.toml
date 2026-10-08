@@ -113,10 +113,6 @@ min = 1
 doc = "The text in a task tool result that says the list is empty."
 value = "No tasks found"
 
-[model_routing.fail_closed_marker]
-doc = "The reason carried by the last-resort block when even the fail-closed message could not be built."
-value = "model-routing fail-closed"
-
 [msg.client_what_timeout]
 doc = "What the client was doing when a socket option could not be set (the {what} of msg.client_io)."
 value = "set timeout"

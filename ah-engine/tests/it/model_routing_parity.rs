@@ -658,9 +658,8 @@ fn jev_rows(home: &Path) -> Vec<Value> {
 }
 
 fn assert_route_metadata(case: &Case, home: &Path, node: &(i32, Vec<u8>, Vec<u8>)) -> bool {
-    use ah_engine::checks::{Check, Verdict, model_routing::ModelRouting};
+    use ah_engine::checks::Verdict;
     use ah_engine::reqenv::RequestEnv;
-    use ah_engine::rules::Subject;
     let expected = match case.name.as_str() {
         "row1-opus-block" => ("mechanical", "haiku", "haiku", "down", true, "opus"),
         "tool-name-missing-row1-opus-block" => ("mechanical", "haiku", "haiku", "down", true, "opus"),
@@ -678,8 +677,7 @@ fn assert_route_metadata(case: &Case, home: &Path, node: &(i32, Vec<u8>, Vec<u8>
     let mut pairs = vec![("HOME".to_string(), home.to_string_lossy().into_owned())];
     pairs.extend(case.env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let env = RequestEnv::from_pairs(pairs);
-    let subject = Subject { event: "PreToolUse", tool: Some("Agent"), cwd: None, tool_input: &case.payload["tool_input"], prompt: None };
-    let verdict = ModelRouting.run_env(&subject, &case.payload, &Value::Null, &env).unwrap();
+    let verdict = ah_engine::script::run_forced("model-routing", &case.payload, &Value::Null, "PreToolUse", &env).unwrap().unwrap();
     let Verdict::Routed(inner, meta) = verdict else { panic!("{}: route telemetry missing", case.name) };
     assert_eq!(meta.len(), 1, "{}: exactly one route", case.name);
     let route = &meta[0];

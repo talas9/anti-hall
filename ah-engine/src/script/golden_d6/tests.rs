@@ -42,3 +42,8 @@ fn golden_report(check: &str, limit: usize) {
 fn dispatch_tier_script_matches_the_compiled_port() {
     golden_report("dispatch-tier", 12);
 }
+
+#[test]
+fn model_routing_script_matches_the_compiled_port() {
+    golden_report("model-routing", 12);
+}
