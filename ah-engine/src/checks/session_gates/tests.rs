@@ -32,29 +32,45 @@ fn the_weekly_gate_is_silent_until_the_latch_is_a_week_old() {
     let h = home("weekly");
     let s = st(&h, &[]);
     let r = root(&h);
-    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Ok(()), "Jev off is silent");
+    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Ok(Verdict::Allow), "Jev off is silent");
     assert_eq!(jev_weekly::decide(&json!({}), &s, ""), Err(Undecidable), "the legacy file tier needs the plugin root");
     write(&h, ".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#);
-    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Err(Undecidable), "no latch: the Node hook must run");
+    let latch = format!("{h}/.anti-hall/state/jev-weekly-notice.json");
+    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Ok(Verdict::Allow), "no latch and no decision log: the check runs and finds nothing");
+    let stamped: Value = serde_json::from_str(&std::fs::read_to_string(&latch).unwrap()).unwrap();
+    assert!(stamped["lastCheckedTs"].as_f64().unwrap() > now_ms() - 60_000.0, "the weekly check is consumed: {stamped}");
     write(&h, ".anti-hall/state/jev-weekly-notice.json", &format!("{{\"lastCheckedTs\":{}}}", now_ms() as u64 - 86_400_000));
-    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Ok(()));
-    write(&h, ".anti-hall/state/jev-weekly-notice.json", &format!("{{\"lastCheckedTs\":{}}}", now_ms() as u64 - 8 * 86_400_000));
-    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Err(Undecidable));
-    assert_eq!(jev_weekly::decide(&json!({}), &st(&h, &[("DEVSWARM_SOURCE_BRANCH", "x")]), &r), Ok(()), "a child workspace is never nagged");
+    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Ok(Verdict::Allow));
+    let aged = format!("{{\"lastCheckedTs\":{}}}", now_ms() as u64 - 8 * 86_400_000);
+    write(&h, ".anti-hall/state/jev-weekly-notice.json", &aged);
+    std::fs::create_dir_all(format!("{h}/.anti-hall/logs")).unwrap();
+    write(&h, ".anti-hall/logs/jev-assist.ndjson.3", " \n\t\n");
+    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Ok(Verdict::Allow), "blank generations hold no row");
+    write(&h, ".anti-hall/state/jev-weekly-notice.json", &aged);
+    write(&h, ".anti-hall/logs/jev-assist.ndjson", "{\"id\":\"speculation\"}\n");
+    assert_eq!(jev_weekly::decide(&json!({}), &s, &r), Err(Undecidable), "a decision row: the report is Node's");
+    assert_eq!(std::fs::read_to_string(&latch).unwrap(), aged, "a deferral leaves the latch to Node");
+    assert_eq!(jev_weekly::decide(&json!({}), &st(&h, &[("DEVSWARM_SOURCE_BRANCH", "x")]), &r), Ok(Verdict::Allow), "a child workspace is never nagged");
 }
 
 #[test]
-fn a_subagent_turn_and_a_recent_recommend_notice_are_silent_a_headless_run_is_not_decided() {
+fn a_subagent_turn_a_recent_notice_and_a_headless_run_are_silent_a_due_notice_is_shown() {
     let h = home("review");
     let s = st(&h, &[]);
     let r = root(&h);
-    assert_eq!(jev_review::decide(&json!({"agent_id": "a1"}), &s, &r), Ok(()));
-    assert_eq!(jev_review::decide(&json!({"isSidechain": true}), &s, &r), Ok(()));
-    assert_eq!(jev_review::decide(&json!({}), &s, &r), Err(Undecidable), "first run: the notice is due");
+    assert_eq!(jev_review::decide(&json!({"agent_id": "a1"}), &s, &r), Ok(Verdict::Allow));
+    assert_eq!(jev_review::decide(&json!({"isSidechain": true}), &s, &r), Ok(Verdict::Allow));
+    let headless = st(&h, &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")]);
+    assert_eq!(jev_review::decide(&json!({}), &headless, &r), Ok(Verdict::Allow), "a headless run never burns the slot");
+    let Ok(Verdict::Advisory(out)) = jev_review::decide(&json!({"hook_event_name": "SessionStart"}), &s, &r) else { panic!("first run: the notice is due") };
+    let out: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(out["hookSpecificOutput"]["additionalContext"], defaults::text("jev_review.recommend_notice"));
+    let latch = std::fs::read_to_string(format!("{h}/.anti-hall/state/jev-recommend-notice.json")).unwrap();
+    assert!(latch.ends_with("}\n") && latch.starts_with("{\"lastShownTs\":"), "{latch}");
     write(&h, ".anti-hall/state/jev-recommend-notice.json", &format!("{{\"lastShownTs\":{}}}", now_ms() as u64 - 1000));
-    assert_eq!(jev_review::decide(&json!({}), &s, &r), Ok(()));
-    assert_eq!(jev_review::decide(&json!({}), &st(&h, &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")]), &r), Err(Undecidable));
-    assert_eq!(jev_review::decide(&json!({"turn_id": "t", "model": "m"}), &st(&h, &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")]), &r), Ok(()));
+    assert_eq!(jev_review::decide(&json!({}), &s, &r), Ok(Verdict::Allow));
+    assert_eq!(jev_review::decide(&json!({}), &headless, &r), Ok(Verdict::Allow));
+    assert_eq!(jev_review::decide(&json!({"turn_id": "t", "model": "m"}), &st(&h, &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")]), &r), Ok(Verdict::Allow));
     write(&h, ".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#);
     assert_eq!(jev_review::decide(&json!({}), &s, &r), Err(Undecidable), "Jev on: the review line is Node's");
 }
