@@ -132,3 +132,6 @@ pub static JEV_REVIEW_REMINDER: Scripted = Scripted::new("jev-review-reminder", 
 
 /// `repair-on-reload` (SessionStart and UserPromptSubmit).
 pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repair_reload.summary");
+/// `ask-guard` (PreToolUse on AskUserQuestion).
+
+pub static ASK_GUARD: Scripted = Scripted::new("ask-guard", "ask_guard.summary");

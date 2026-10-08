@@ -691,6 +691,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("agents", Function::new(c.clone(), |p: String| agents(&p))?)?;
     h.set("repoContext", Function::new(c.clone(), |d: String| -> rquickjs::Result<String> { repo_context(&d) })?)?;
     h.set("cfgLive", Function::new(c.clone(), |k: String| -> rquickjs::Result<String> { cfg_live(&k) })?)?;
+    h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
     h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| tail_lines(&p, w, l))?)?;
     h.set(

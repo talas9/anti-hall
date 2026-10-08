@@ -709,8 +709,7 @@ fn ask_corpus() -> Vec<Sc> {
         .transcript(&[
             agent_use("tu_a", &format!("{}{}", "d".repeat(59), "\u{1F600}more"), &ago(30.0)),
             launch("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0)),
-        ])
-        .defers());
+        ])); // the script cuts at 60 UTF-16 units like Node and escapes the lone surrogate like JSON.stringify
     add(sc("note-launch-via-structured-agent-id", h, ask_payload(q("h", "Which one?")))
         .transcript(&[agent_use("tu_a", "w", &ago(30.0)), launch_sid("tu_a", "a1b2c3d4e5f60718", "$HOME/o", &ago(30.0))]));
     add(sc("note-teammate-pending", h, ask_payload(q("h", "Which one?")))
