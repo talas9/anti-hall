@@ -6,8 +6,8 @@
 //! the Guard variant parses every line. Both keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
 //! found", a TodoWrite) and drop a single id the harness reports as not found.
 use super::{
-    Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, norm_blocked_by, norm_owner, number_of_digits,
-    truthy_status,
+    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, norm_blocked_by, norm_owner,
+    norm_priority, number_of_digits, priority_field, truthy_status,
 };
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
@@ -32,6 +32,7 @@ struct Res {
     created: Regex,
     list_empty: Regex,
     not_found: Regex,
+    since_status: Regex,
 }
 
 fn res() -> &'static Res {
@@ -40,6 +41,7 @@ fn res() -> &'static Res {
         created: jsre::compile(defaults::text("taskstate.re_created"), true),
         list_empty: jsre::compile(defaults::text("taskstate.re_list_empty"), true),
         not_found: jsre::compile(defaults::text("taskstate.re_not_found"), true),
+        since_status: jsre::compile(defaults::text("taskstate.since_status_re"), true),
     })
 }
 
@@ -91,6 +93,10 @@ struct Prov {
     owner: String,
     blocked_by: Vec<String>,
     blocked_on: Option<Value>,
+    /// The priority label (the guard variant only).
+    priority: Option<String>,
+    /// The time of the record (the guard variant only).
+    since: Since,
 }
 
 fn assign_fill(ex: &Task, rec: &Prov) -> Task {
@@ -229,6 +235,8 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                 }
             }
         }
+        let guard = variant == Variant::Guard;
+        let since = if guard { Since::of_entry(&entry) } else { Since::Unknown };
         let mut uses = Vec::new();
         collect_tool_uses(&entry, &mut uses);
         for tu in uses {
@@ -276,11 +284,12 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                                     status: Some(truthy_status(get(todo, "status"))?.unwrap_or_else(|| "pending".to_string())),
                                     owner: norm_owner(get(todo, "owner")),
                                     blocked_by: norm_blocked_by(get(todo, "blockedBy"))?,
-                                    blocked_on: if variant == Variant::Guard { todo_blocked_on(todo) } else { None },
-                                    priority: None,
+                                    blocked_on: if guard { todo_blocked_on(todo) } else { None },
+                                    priority: if guard { norm_priority(priority_field(todo))? } else { None },
                                     subject_updated: false,
                                     unknown: None,
                                     block_unknown: false,
+                                    since,
                                 },
                             );
                         }
@@ -305,6 +314,8 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                         owner: norm_owner(get(inp, "owner")),
                         blocked_by: norm_blocked_by(get(inp, "blockedBy"))?,
                         blocked_on: create_blocked_on(inp),
+                        priority: if guard { norm_priority(priority_field(inp))? } else { None },
+                        since,
                     };
                     match prov.iter_mut().find(|(k, _)| k == tid) {
                         Some((_, slot)) => *slot = rec,
@@ -335,10 +346,19 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                         owner: if get(inp, "owner").is_some() { norm_owner(get(inp, "owner")) } else { ex.owner.clone() },
                         blocked_by: blocked_by_after_update(&ex.blocked_by, inp)?,
                         blocked_on: if has_blocked_on_update(inp) { create_blocked_on(inp) } else { ex.blocked_on.clone() },
-                        priority: None,
+                        priority: match guard {
+                            true if has_priority_update(inp) => norm_priority(priority_field(inp))?,
+                            true => ex.priority.clone(),
+                            false => None,
+                        },
                         subject_updated: if variant == Variant::State && subject.is_some() { true } else { variant == Variant::State && ex.subject_updated },
                         unknown: gaps_after_update(ex.unknown, inp),
                         block_unknown: false,
+                        // `String(inp.status || '')` against the pending / in-progress pattern; a truthy non-string status was refused above
+                        since: match get(inp, "status").and_then(Value::as_str) {
+                            Some(s) if guard && res().since_status.is_match(s) => since,
+                            _ => ex.since,
+                        },
                     };
                     tasks.set(&id, upd);
                 }
@@ -368,6 +388,15 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
             tasks.set(&key, filled.clone());
             ex = Some(filled);
         }
+        if variant == Variant::Guard
+            && let Some(e) = ex.as_mut()
+        {
+            // `if (!(existing.sinceMs >= rec.sinceMs)) existing.sinceMs = rec.sinceMs`: the object in the map is the one changed
+            e.since = e.since.merge_create(rec.since);
+            if let Some(t) = tasks.get_mut(&key) {
+                t.since = e.since;
+            }
+        }
         match (variant, ex) {
             (_, None) => tasks.set(
                 &key,
@@ -379,10 +408,11 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                     owner: rec.owner.clone(),
                     blocked_by: rec.blocked_by.clone(),
                     blocked_on: rec.blocked_on.clone(),
-                    priority: None,
+                    priority: rec.priority.clone(),
                     subject_updated: false,
                     unknown: None,
                     block_unknown: false,
+                    since: rec.since,
                 },
             ),
             (Variant::Guard, Some(e)) => {
@@ -397,10 +427,11 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                             owner: if e.owner.is_empty() { rec.owner.clone() } else { e.owner.clone() },
                             blocked_by: if e.blocked_by.is_empty() { rec.blocked_by.clone() } else { e.blocked_by.clone() },
                             blocked_on: if e.blocked_on.is_some() { e.blocked_on.clone() } else { rec.blocked_on.clone() },
-                            priority: None,
+                            priority: e.priority.clone().or_else(|| rec.priority.clone()),
                             subject_updated: false,
                             unknown: None,
                             block_unknown: false,
+                            since: e.since,
                         },
                     );
                 }
@@ -421,6 +452,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                             subject_updated: false,
                             unknown: None,
                             block_unknown: false,
+                            since: Since::Unknown,
                         },
                     );
                 }
