@@ -226,6 +226,8 @@ echo "$PAYLOAD" | "$E" check git || test $? -eq 2
 # engine defers runs the hook's Node command from the fallback map, found through the plugin root
 export CLAUDE_PLUGIN_ROOT="$PWD/plugins/anti-hall" AH_ENGINE_PLUGIN_ROOT="$PWD/plugins/anti-hall"
 echo "$PAYLOAD" | "$E" hook --event PreToolUse --tool Bash --host claude --fallback-map "$CLAUDE_PLUGIN_ROOT/hooks/ah-fallback.map.json" || test $? -eq 2
+# the daemon starts in the background while the first call is answered, so give it a few seconds to bind its socket
+for _ in 1 2 3 4 5 6 7 8 9 10; do "$E" ctl ping >/dev/null 2>&1 && break; sleep 1; done
 "$E" ctl ping
 "$E" stop
 ```
