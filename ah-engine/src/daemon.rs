@@ -117,6 +117,10 @@ pub struct Shared {
     pub draining: AtomicBool,
     /// The exit timer of a clean drain (`daemon.drain_max_ms`) is armed.
     drain_timer: AtomicBool,
+    /// The drain reached the database close (everything queued is being committed): the exit timers wait for it.
+    db_closing: AtomicBool,
+    /// The database close finished.
+    db_closed: AtomicBool,
     /// The exit timer of a forced drain (`daemon.drain_grace_ms`) is armed.
     forced_timer: AtomicBool,
     /// ms since `started` at the last accept-loop iteration
@@ -173,6 +177,8 @@ impl Shared {
             rlimit: "off".into(),
             draining: AtomicBool::new(false),
             drain_timer: AtomicBool::new(false),
+            db_closing: AtomicBool::new(false),
+            db_closed: AtomicBool::new(false),
             forced_timer: AtomicBool::new(false),
             loop_beat: AtomicU64::new(0),
             busy_since: (0..workers).map(|_| AtomicU64::new(0)).collect(),
@@ -909,13 +915,25 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
     let why = why.to_string();
     let grace = defaults::millis(if forced_exit { "daemon.drain_grace_ms" } else { "daemon.drain_max_ms" });
     let code = if forced_exit { "forced" } else { "drain_timeout" };
+    let sh = sh.clone();
     std::thread::spawn(move || {
         std::thread::sleep(grace);
+        // a close that started in time is not cut: its commits are the one thing a drain must not lose (bounded, so a wedged close still ends)
+        await_close(&sh.db_closing, &sh.db_closed, defaults::millis("daemon.close_max_ms"), defaults::millis("daemon.drain_poll_ms"));
         crate::proc::kill_all();
         health::clear_marker();
         health::log_event("exit", code, &why);
         std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
     });
+}
+
+/// The exit timer fired: when the database close is under way, wait for it to finish (at most `max`). True when it finished.
+fn await_close(closing: &AtomicBool, closed: &AtomicBool, max: Duration, poll: Duration) -> bool {
+    let start = Instant::now();
+    while closing.load(SeqCst) && !closed.load(SeqCst) && start.elapsed() < max {
+        std::thread::sleep(poll);
+    }
+    closed.load(SeqCst)
 }
 
 fn watchdog(sh: Arc<Shared>) {
@@ -1169,7 +1187,9 @@ pub fn serve() {
     if let Some(db) = &sh.db {
         sh.telemetry.flush(); // telemetry recorded since the last flush (D78)
         sh.telemetry.snapshot_metrics(); // the counters as they are at exit
+        sh.db_closing.store(true, SeqCst);
         db.close(); // everything queued commits before the process exits
+        sh.db_closed.store(true, SeqCst);
     }
     crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
@@ -1375,6 +1395,31 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_exit_timer_waits_for_a_close_in_progress_and_gives_up_on_a_wedged_one() {
+        // P2-6: the drain timer used to process::exit mid db.close, losing queued commits
+        let (closing, closed) = (AtomicBool::new(true), AtomicBool::new(false));
+        let t = Instant::now();
+        let done = std::thread::scope(|sc| {
+            sc.spawn(|| {
+                std::thread::sleep(Duration::from_millis(150));
+                closed.store(true, SeqCst);
+            });
+            await_close(&closing, &closed, Duration::from_secs(20), Duration::from_millis(5))
+        });
+        assert!(done && t.elapsed() >= Duration::from_millis(150), "waited for the close: {:?}", t.elapsed());
+        // no close under way: the timer fires at once
+        let (idle, never) = (AtomicBool::new(false), AtomicBool::new(false));
+        let t = Instant::now();
+        assert!(!await_close(&idle, &never, Duration::from_secs(20), Duration::from_millis(5)));
+        assert!(t.elapsed() < Duration::from_secs(1));
+        // a close that never finishes is cut at the bound
+        let (stuck_closing, stuck) = (AtomicBool::new(true), AtomicBool::new(false));
+        let t = Instant::now();
+        assert!(!await_close(&stuck_closing, &stuck, Duration::from_millis(200), Duration::from_millis(5)));
+        assert!(t.elapsed() >= Duration::from_millis(200));
+    }
     fn shared() -> Shared {
         let rs = RuleSet::parse(r#"{"version":1,"rules":[{"pattern":"BAD","action":"deny","message":"no"}]}"#).unwrap();
         Shared::new(Config::from_env(), "0.1.0", rs, "/nonexistent/rules.json".into())

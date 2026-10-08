@@ -58,8 +58,21 @@ fn prune() {
     let Ok(rd) = std::fs::read_dir(dir()) else { return };
     for e in rd.flatten() {
         let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > max);
-        if old && e.file_type().is_ok_and(|t| t.is_file()) {
+        // a `.lock` file is the mutex of its counter: unlinking it while a judge holds it lets a second judge lock a fresh inode and count unserialized
+        let is_lock = e.file_name().to_string_lossy().ends_with(defaults::text("paths.lock_suffix"));
+        if old && !is_lock && e.file_type().is_ok_and(|t| t.is_file()) {
             crate::discard::harmless(std::fs::remove_file(e.path())); // keep: cleanup that raced; an absent file is the goal state
+        }
+    }
+}
+
+/// Take an exclusive lock through `try_lock`, retrying an interrupted call (EINTR); any other error is a lock that is not held.
+fn lock_ex(mut try_lock: impl FnMut() -> std::io::Result<()>) -> bool {
+    loop {
+        match try_lock() {
+            Ok(()) => return true,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return false,
         }
     }
 }
@@ -80,12 +93,14 @@ pub fn judge(event: &str, payload: Option<&Value>, why: &str) -> Verdict {
         .filter(|d| crate::limits::ensure_private_dir(d).is_ok())
         .and_then(|_| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(crate::paths::lock_for(&path)).ok());
     // SAFETY: the descriptor belongs to `lock`, which outlives the call; flock takes only it and a flag.
-    let locked = lock.as_ref().is_some_and(|f| unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(f), libc::LOCK_EX) } == 0);
+    let _held = lock.as_ref().is_some_and(|f| lock_ex(|| if unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(f), libc::LOCK_EX) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }));
     let seen: u64 = std::fs::read_to_string(&path).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
     if seen >= cap {
         return Verdict::Open(defaults::render("dispatch.msg_stop_capped", &[("event", &event), ("cap", &cap), ("why", &why)]));
     }
-    let recorded = locked && crate::atomic::write(&path, (seen + 1).to_string()).is_ok();
+    // a lock that could not be taken does not allow the Stop: the count is still kept (unserialized, so a race may undercount
+    // by one, which only errs toward the cap); only a count that cannot be written opens
+    let recorded = crate::atomic::write(&path, (seen + 1).to_string()).is_ok();
     if recorded { Verdict::Block } else { Verdict::Open(defaults::render("dispatch.msg_stop_uncounted", &[("event", &event), ("why", &why)])) }
 }
 
@@ -116,6 +131,36 @@ mod tests {
         let seen: usize = std::fs::read_to_string(counter(Some(&p), "Stop")).unwrap().trim().parse().unwrap();
         assert_eq!(seen, blocks, "the counter holds exactly the blocks given");
         reset("Stop", Some(&p));
+    }
+
+    #[test]
+    fn an_interrupted_lock_is_retried_and_a_failed_one_still_counts() {
+        // P2-4: EINTR read as "uncounted" and allowed the Stop
+        let mut n = 0;
+        assert!(lock_ex(|| {
+            n += 1;
+            if n < 4 { Err(std::io::Error::from_raw_os_error(libc::EINTR)) } else { Ok(()) }
+        }));
+        assert_eq!(n, 4);
+        assert!(!lock_ex(|| Err(std::io::Error::from_raw_os_error(libc::EBADF))));
+    }
+
+    #[test]
+    fn prune_keeps_lock_files_and_removes_old_counters() {
+        let p = json!({"session_id": format!("prune{}", std::process::id())});
+        let c = counter(Some(&p), "Stop");
+        std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+        let l = crate::paths::lock_for(&c);
+        std::fs::write(&c, "1").unwrap();
+        std::fs::write(&l, "").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs((defaults::num("dispatch.stop_state_max_age_days") + 1) * 86_400);
+        for f in [&c, &l] {
+            std::fs::File::options().write(true).open(f).unwrap().set_modified(old).unwrap();
+        }
+        prune();
+        assert!(l.exists(), "an old lock file is a live mutex, not a stale counter");
+        assert!(!c.exists());
+        crate::discard::harmless(std::fs::remove_file(&l));
     }
 
     #[test]

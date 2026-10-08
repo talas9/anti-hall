@@ -282,6 +282,11 @@ doc = "Poll interval while waiting for the singleton lock."
 value = 10
 unit = "ms"
 
+[daemon.close_max_ms]
+doc = "Longest a drain's exit timer waits for the database close (the commit of everything queued) once it has started, so a timer that fires during the close cannot lose queued commits. A close wedged longer than this is cut off."
+value = 30000
+unit = "ms"
+
 [daemon.drain_grace_ms]
 doc = "After a drain starts, a worker or loop that has not finished in this long is cut off."
 value = 1000
