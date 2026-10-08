@@ -1,5 +1,5 @@
 'use strict';
-// The devswarm stable launcher routes the ported mesh verbs (send, mesh read) to
+// The devswarm stable launcher routes the ported mesh verbs (send, mesh read, inbox ack-primary) to
 // `ah-engine mesh` when settings mesh.engine_writes = "on" and the engine exists.
 // Scratch HOME, fake engine and fake Node target: never the real ~/.anti-hall.
 
@@ -83,11 +83,27 @@ test('on, engine exit 127 (cannot reach Node CLI, nothing written): Node runs an
   assert.match(r.log, /exit 127/);
 });
 
-test('on, engine exit 75 (already wrote): passed through, Node is NEVER rerun', () => {
+test('on, engine exit 75 (deferred, nothing written): Node runs and the fallback is logged', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 75' });
   const r = run(['send', '--to', 'w']);
-  assert.strictEqual(r.code, 75);
+  assert.strictEqual(r.code, 3);
+  assert.match(r.trace, /engine mesh send[\s\S]*node send/);
+  assert.match(r.log, /exit 75/);
+});
+
+test('on, engine exit 70 (committed failure, it already wrote): passed through, Node is NEVER rerun', () => {
+  const { run } = setup({ mode: 'on', engine: 'exit 70' });
+  const r = run(['send', '--to', 'w']);
+  assert.strictEqual(r.code, 70);
   assert.doesNotMatch(r.trace, /^node /m);
+});
+
+test('on: inbox ack-primary is routed; the other inbox verbs stay in Node', () => {
+  const { run } = setup({ mode: 'on', engine: 'exit 0' });
+  assert.strictEqual(run(['inbox', 'ack-primary', 'p1', '--receipt', 'r1']).code, 0);
+  const r = run(['inbox', 'read-primary', 'p1']);
+  assert.strictEqual(r.code, 3);
+  assert.match(r.trace, /engine mesh inbox ack-primary p1 --receipt r1\nnode inbox read-primary p1/);
 });
 
 test('on, engine hangs: killed at the time limit, then Node runs', () => {
