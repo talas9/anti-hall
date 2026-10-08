@@ -76,6 +76,28 @@ fn drain(mut r: impl Read + Send + 'static) -> mpsc::Receiver<(Vec<u8>, bool)> {
     rx
 }
 
+/// True once the child has exited, without reaping it (it stays a zombie until `wait`, so its pid cannot be reused yet).
+fn exited(pid: u32) -> Result<bool, std::io::Error> {
+    // SAFETY: an all-zero siginfo_t is a valid out-parameter for waitid; WNOHANG|WNOWAIT only inspect the child's state.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    loop {
+        // SAFETY: `info` is a live, writable siginfo_t; P_PID names a child of this process.
+        let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+        if r == 0 {
+            // SAFETY: waitid filled `info`; si_pid is zero when no child had changed state (WNOHANG).
+            #[cfg(target_os = "linux")]
+            let who = unsafe { info.si_pid() };
+            #[cfg(not(target_os = "linux"))]
+            let who = info.si_pid;
+            return Ok(who != 0);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
 fn kill_group(child: &mut std::process::Child) {
     // SAFETY: killpg only sends a signal; the group id is the child we spawned as its own group leader.
     unsafe {
@@ -121,11 +143,13 @@ fn wait_out(
     poll: Duration,
 ) -> Result<Output, Error> {
     let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(poll),
-            Ok(None) => {
+    // The exit is observed WITHOUT reaping (waitid + WNOWAIT): until the child is reaped its pid, and so its group id, stays
+    // reserved, so every killpg below hits our group or nothing, never an unrelated group that reused the number (P2-5).
+    loop {
+        match exited(child.id()) {
+            Ok(true) => break,
+            Ok(false) if start.elapsed() < timeout => std::thread::sleep(poll),
+            Ok(false) => {
                 kill_group(child);
                 crate::discard::note("proc_timeout", &defaults::render("msg.log_proc_timeout", &[("what", &what), ("ms", &timeout.as_millis())]));
                 return Err(Error::Timeout);
@@ -135,14 +159,17 @@ fn wait_out(
                 return Err(Error::Wait(e));
             }
         }
-    };
+    }
     // the output is collected until the pipe closes within what is left of the timeout (never less than the grace), as Node's
     // spawnSync bounds the whole run by its timeout: a pipe a helper of the command closes late must not turn a finished
     // command's output into an unread one (live2 684f526, ported onto this runner)
     let until = Instant::now() + timeout.saturating_sub(start.elapsed()).max(defaults::millis("proc.read_grace_ms"));
     let collect = |rx: &mpsc::Receiver<(Vec<u8>, bool)>| rx.recv_timeout(until.saturating_duration_since(Instant::now())).ok().filter(|(_, clean)| *clean);
     match (collect(&out), collect(&err)) {
-        (Some((stdout, _)), Some((stderr, _))) => Ok(Output { status, stdout, stderr }),
+        (Some((stdout, _)), Some((stderr, _))) => match child.wait() {
+            Ok(status) => Ok(Output { status, stdout, stderr }),
+            Err(e) => Err(Error::Wait(e)),
+        },
         _ => {
             // a process the child left behind holds a pipe: take the group down so it cannot outlive the call
             kill_group(child);
@@ -191,6 +218,33 @@ mod tests {
         let r = run(sh("(exec sleep 30) & echo partial"), "test", Duration::from_secs(1), Duration::from_millis(5));
         assert!(matches!(r, Err(Error::Unread)), "{r:?}");
         assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn an_exit_is_observed_without_reaping_so_the_group_id_stays_reserved() {
+        // P2-5: try_wait reaped the child before the leftover-group kill, freeing the pid for reuse
+        let mut c = sh("exit 3");
+        c.process_group(0);
+        let mut child = c.spawn().unwrap();
+        let pid = child.id();
+        let t = Instant::now();
+        while !exited(pid).unwrap() {
+            assert!(t.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // SAFETY: signal 0 only checks the pid exists.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0, "still a zombie: not reaped, pid reserved");
+        assert_eq!(child.wait().unwrap().code(), Some(3), "the status survives to the reap");
+    }
+
+    #[test]
+    fn a_leftover_is_killed_while_the_group_is_still_ours() {
+        let marker = std::env::temp_dir().join(format!("ah-proc-left-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_file(&marker));
+        let r = run(sh(&format!("(sleep 1; touch '{}') & echo x", marker.display())), "test", Duration::from_millis(300), Duration::from_millis(5));
+        assert!(matches!(r, Err(Error::Unread)), "{r:?}");
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "the leftover outlived the kill");
     }
 
     #[test]
