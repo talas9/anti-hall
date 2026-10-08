@@ -18,6 +18,17 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+fn js_in(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            js_in(&p, out);
+        } else if p.extension().is_some_and(|x| x == "js") {
+            out.push(p);
+        }
+    }
+}
+
 #[path = "../../build_support/keyscan.rs"]
 #[allow(dead_code)] // `HELPERS` and `Kind::name` serve build.rs
 mod keyscan;
@@ -63,6 +74,22 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         if let Some(k) = e.value.get("every_key").and_then(ah_engine::defaults::V::as_str) {
             assert!(shipped.contains(k), "{} names every_key {k}, which is not shipped", e.key);
             literals.insert(k.to_string());
+        }
+    }
+    // D88: a check whose logic is a plugin script reads its settings from the script (`engine/logic/**/*.js`). Every dotted
+    // string literal of a script whose section is a shipped section must be a shipped key, and counts as a read.
+    let sections: BTreeSet<&str> = shipped.iter().filter_map(|k| k.split_once('.').map(|(s, _)| s)).collect();
+    let js_re = regex::Regex::new(r#"['"]([a-z][a-z0-9_]*\.[a-z0-9_.]+)['"]"#).unwrap();
+    let mut js_files = Vec::new();
+    js_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/logic"), &mut js_files);
+    assert!(!js_files.is_empty(), "no scripts found under engine/logic");
+    for f in &js_files {
+        for c in js_re.captures_iter(&fs::read_to_string(f).unwrap()) {
+            let key = c[1].to_string();
+            if sections.contains(key.split('.').next().unwrap_or("")) {
+                assert!(shipped.contains(&key), "{}: reads defaults key {key}, which is not shipped", f.display());
+                literals.insert(key);
+            }
         }
     }
     let indirect = |k: &str| {

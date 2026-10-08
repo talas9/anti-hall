@@ -41,3 +41,6 @@ impl Check for Scripted {
         true
     }
 }
+
+/// `api-guard` (PreToolUse on Write, Edit, MultiEdit, Bash; apply_patch for Codex).
+pub static API_GUARD: Scripted = Scripted::new("api-guard", "api_guard.summary");

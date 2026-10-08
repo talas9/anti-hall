@@ -32,13 +32,13 @@
 use crate::checks::compact_decl::{contains_ci, read_tail, turn_texts};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::{jsre, paths, settings};
-use std::path::{Path, PathBuf};
 use crate::defaults;
 use regex::Regex;
 use rquickjs::{Ctx, Error, Function, Object};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 
 thread_local! {
     static CALL: RefCell<Option<Settings>> = const { RefCell::new(None) };

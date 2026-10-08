@@ -263,3 +263,143 @@ fn a_worker_thread_tears_its_runtime_down_cleanly() {
     }
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
+
+// ---- the scoped write API (D88 condition a) ----
+
+fn write_home(tag: &str) -> String {
+    let h = home(tag);
+    std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+    h
+}
+
+#[test]
+fn a_scripted_write_lands_atomically_under_the_state_directory() {
+    let h = write_home("w-ok");
+    assert!(host::write_atomic(&h, "orch-full/m-1.json", "{\"a\":1}").unwrap());
+    assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/orch-full/m-1.json")).unwrap(), "{\"a\":1}");
+    assert!(host::write_atomic(&h, "orch-full/m-1.json", "second").unwrap(), "replacing a file is allowed");
+    assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/orch-full/m-1.json")).unwrap(), "second");
+    let stray: Vec<_> = std::fs::read_dir(format!("{h}/.anti-hall/orch-full")).unwrap().flatten().collect();
+    assert_eq!(stray.len(), 1, "the atomic helper leaves no temporary file");
+}
+
+#[test]
+fn a_scripted_write_refuses_every_path_outside_the_state_directory() {
+    let h = write_home("w-path");
+    let long = "a".repeat(defaults::num("script.write_path_max") as usize + 1);
+    for bad in ["/etc/x", "../x", "a/../../b", "a/..", "./a", "a/./b", "a//b", "a/", "", "..", ".", "a\0b", long.as_str(), "/"] {
+        assert!(host::write_atomic(&h, bad, "t").is_err(), "{bad:?} must be refused");
+    }
+    assert!(!std::path::Path::new(&format!("{h}/x")).exists(), "nothing escaped the root");
+    assert!(host::write_atomic("relative/home", "a", "t").is_err(), "no absolute home");
+    let big = "x".repeat(defaults::num("script.write_max_bytes") as usize + 1);
+    assert!(host::write_atomic(&h, "big", &big).is_err(), "over the size cap");
+    assert!(host::write_atomic(&h, "ok", &big[..big.len() - 1]).unwrap(), "exactly at the cap is allowed");
+}
+
+#[test]
+fn a_scripted_write_refuses_to_follow_a_link_out_of_the_state_directory() {
+    let h = write_home("w-link");
+    let outside = std::path::Path::new(&h).join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret"), "keep").unwrap();
+    // a directory link below the root, a file link below the root, and a dangling link
+    std::os::unix::fs::symlink(&outside, format!("{h}/.anti-hall/dirlink")).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret"), format!("{h}/.anti-hall/filelink")).unwrap();
+    std::os::unix::fs::symlink(outside.join("new"), format!("{h}/.anti-hall/dangling")).unwrap();
+    for rel in ["dirlink/f", "dirlink/secret", "filelink", "dangling", "dirlink/deep/er"] {
+        assert!(host::write_atomic(&h, rel, "pwned").is_err(), "{rel} must be refused");
+    }
+    assert_eq!(std::fs::read_to_string(outside.join("secret")).unwrap(), "keep");
+    assert!(!outside.join("new").exists() && !outside.join("f").exists() && !outside.join("deep").exists());
+    // a file where a directory is needed, and a directory where a file is
+    std::fs::write(format!("{h}/.anti-hall/plain"), "x").unwrap();
+    std::fs::create_dir_all(format!("{h}/.anti-hall/adir")).unwrap();
+    assert!(host::write_atomic(&h, "plain/f", "t").is_err());
+    assert!(host::write_atomic(&h, "adir", "t").is_err());
+    // the state directory itself may be a link the owner set up: what is refused is a link BELOW it
+    let h2 = home("w-rootlink");
+    let real = format!("{h2}/elsewhere");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::remove_dir_all(format!("{h2}/.anti-hall")).unwrap();
+    std::os::unix::fs::symlink(&real, format!("{h2}/.anti-hall")).unwrap();
+    assert!(host::write_atomic(&h2, "f", "t").unwrap());
+    assert_eq!(std::fs::read_to_string(format!("{real}/f")).unwrap(), "t");
+}
+
+#[test]
+fn a_script_that_tries_to_escape_the_state_directory_fails_and_defers() {
+    let h = write_home("w-script");
+    put_override(&h, "zz-escape", "function decide(p){ ah.state.writeAtomic('../escaped', 'x'); return 'allow'; }");
+    put_override(&h, "zz-write", "function decide(p){ return ah.state.writeAtomic('zz/ok.txt', 'hello') ? 'allow' : 'defer'; }");
+    let e = env(&h);
+    assert_eq!(run_forced("zz-escape", &json!({}), &e), Some(Some(Verdict::Defer)), "the refusal is a script failure, so Node decides");
+    assert!(!std::path::Path::new(&format!("{h}/escaped")).exists());
+    assert_eq!(run_forced("zz-write", &json!({}), &e), Some(Some(Verdict::Allow)));
+    assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/zz/ok.txt")).unwrap(), "hello");
+}
+
+// ---- the script-failure policy (D88 condition b) ----
+
+#[test]
+fn a_check_with_a_node_twin_defers_when_its_script_fails_on_any_event() {
+    for event in ["PreToolUse", "Stop", "SessionStart", "UserPromptSubmit", "PostToolUse"] {
+        assert_eq!(failed("ship-it-guard", event, "boom"), Verdict::Defer, "{event}");
+    }
+}
+
+#[test]
+fn an_engine_only_check_blocks_on_a_guard_event_and_allows_quietly_elsewhere() {
+    let engine_only = defaults::list("script.engine_only_checks");
+    assert!(engine_only.contains(&"sibling-sweep"));
+    for name in &engine_only {
+        assert!(crate::checks::get(name).is_some(), "{name} is not a registered check");
+        for event in defaults::list("dispatch.guard_events") {
+            assert!(matches!(failed(name, event, "boom"), Verdict::Block(m) if m.contains("boom") && m.contains(name)), "{name} on {event}");
+        }
+        for event in ["SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart", "PreCompact"] {
+            assert_eq!(failed(name, event, "boom"), Verdict::Allow, "{name} on {event}: never block a non-guard event");
+        }
+    }
+}
+
+#[test]
+fn the_policy_applies_to_every_kind_of_script_failure() {
+    let h = home("policy");
+    put_override(&h, "sibling-sweep", "function decide(p){ throw new Error('bad'); }");
+    let e = env(&h);
+    let go = |event: &str| super::run_forced("sibling-sweep", &json!({}), &Value::Null, event, &e).expect("a script").expect("an answer");
+    assert!(matches!(go("Stop"), Verdict::Block(_)), "an exception on a guard event");
+    assert_eq!(go("SessionStart"), Verdict::Allow, "an exception on a non-guard event");
+    put_override(&h, "sibling-sweep", "function decide(p){ for(;;){} }");
+    assert!(matches!(go("SubagentStop"), Verdict::Block(_)), "an interrupted loop on a guard event");
+    assert_eq!(go("PostToolUse"), Verdict::Allow);
+    put_override(&h, "sibling-sweep", "function decide(p){ return 42; }");
+    assert!(matches!(go("PreToolUse"), Verdict::Block(_)), "a verdict of the wrong shape");
+    put_override(&h, "sibling-sweep", "this is not javascript (");
+    assert!(matches!(go("Stop"), Verdict::Block(_)), "a script that does not load");
+    // a registered scripted check with no script file at all follows the same policy
+    assert_eq!(crate::script::missing("ship-it-guard", "PreToolUse"), Some(Verdict::Defer));
+    assert!(matches!(crate::script::missing("sibling-sweep", "Stop"), Some(Verdict::Block(_))));
+    assert_eq!(crate::script::missing("sibling-sweep", "SessionStart"), Some(Verdict::Allow));
+}
+
+#[test]
+fn the_compiled_logic_counter_counts_the_checks_without_a_script_entry() {
+    let total = crate::checks::registry().len();
+    let scripted = crate::checks::registry().iter().filter(|c| c.scripted()).count();
+    assert_eq!(crate::checks::compiled_logic_checks_remaining(), total - scripted);
+    let (logic_dir, ext) = (defaults::text("script.logic_dir"), defaults::text("script.ext"));
+    for c in crate::checks::registry().iter().filter(|c| c.scripted()) {
+        let shipped = defaults::root().expect("plugin root").join(logic_dir).join(format!("{}{ext}", c.name()));
+        assert!(shipped.is_file(), "scripted check {} has no shipped script {}", c.name(), shipped.display());
+    }
+}
+
+// ---- golden parity of the migrated checks ----
+
+#[test]
+fn api_guard_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("api-guard");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 50, "a corpus that exercises both answers: {kinds:?}");
+}

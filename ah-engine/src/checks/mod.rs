@@ -11,7 +11,6 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod agent_scan;
-pub mod api_guard;
 pub mod ask_guard;
 pub mod claim_ledger;
 pub mod codex;
@@ -233,7 +232,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &silent_agent_nudge::SilentAgentNudge,
         &stale_agent_stop_note::StaleAgentStopNote,
         &merge_gate::MergeGate,
-        &api_guard::ApiGuard,
+        &scripted::API_GUARD,
         &edit_guard::EditGuard,
         &devswarm_comms::DevswarmCommsGuard,
         &swarm_guard::SwarmGuard,

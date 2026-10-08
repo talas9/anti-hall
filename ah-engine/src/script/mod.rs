@@ -249,9 +249,7 @@ fn call(name: &str, fp: &Fingerprint, payload: &Value, opts: &Value, event: &str
     });
     match r {
         Ok(v) => v,
-        Err(e) => {
-            Some(failed(name, event, &e))
-        }
+        Err(e) => Some(failed(name, event, &e)),
     }
 }
 
@@ -261,6 +259,6 @@ pub fn p95_budget_us() -> u64 {
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod golden;
+#[cfg(test)]
+mod tests;

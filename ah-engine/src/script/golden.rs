@@ -9,10 +9,6 @@ use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
 
-pub struct Case {
-    pub raw: Value,
-}
-
 fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
 }
