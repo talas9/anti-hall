@@ -505,7 +505,9 @@ fn twenty_parallel_cold_clients_yield_exactly_one_daemon() {
         })
         .collect();
     for mut h in hs {
-        assert!(h.wait().unwrap().success());
+        // a cold start with no fallback hands the guard event over (dispatch.defer_exit), never a silent allow
+        let code = h.wait().unwrap().code();
+        assert!(code == Some(0) || code == Some(ah_engine::defaults::num("dispatch.defer_exit") as i32), "{code:?}");
     }
     assert!(wait_for(|| e.pid().is_some()));
     std::thread::sleep(Duration::from_millis(400)); // losers of the lock race exit
