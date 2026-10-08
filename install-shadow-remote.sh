@@ -211,6 +211,7 @@ cat > "$TMPD/shadow2.sh" <<'SHEOF'
 RH="$HOME"
 D="$HOME/.anti-hall/ah-engine-shadow2"
 [ -x "$D/bin/ah-engine" ] || exit 0
+[ -f "$D/live.conf" ] && exit 0   # live: this trigger belongs to the retired shadow; sessions started before go-live still fire it, and it must do nothing
 EV="$1"; [ -n "$EV" ] || exit 0
 exec 2>/dev/null
 IN=$(cat)

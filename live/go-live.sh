@@ -100,6 +100,16 @@ DIE_CODE=E_STATE_UNWRITABLE
 mkdir -p "$STATE" "$ENGINE_DIR" 2>/dev/null && [ -w "$STATE" ] && [ -w "$ENGINE_DIR" ] || die "cannot write $STATE or $ENGINE_DIR (disk full or read-only?); nothing was changed"
 DIE_CODE=
 if [ -f "$LIVE_JSON" ]; then
+  # the ledger is a record of what go-live did, not the state of the machine: the owner may have unblocked by hand-editing settings.json
+  # (original back on, live off) or uninstalled the live plugin. Check the host's own view (the CLI) and reconcile before re-applying.
+  _ls=$(plugin_state "$LIVE_KEY" | cut -f1); _ol=$(orig_list)
+  if [ "$_ls" = absent ]; then die "the ledger says live but $LIVE_KEY is not installed (removed by hand?). Run: sh $KIT/rollback.sh, then go-live again"; fi
+  if [ "$_ls" != enabled ] || [ -n "$_ol" ]; then
+    note "DRIFT: the ledger says live, but the host has $LIVE_KEY ${_ls}$([ -n "$_ol" ] && echo " and enabled: $(printf '%s' "$_ol" | cut -f1 | tr '\n' ' ')") (edited by hand?). Reconciling to live."
+    klog W_DRIFT_RECONCILED "live=$_ls origs_enabled=$(printf '%s' "$_ol" | cut -f1 | tr '\n' ' ')"
+    [ "$_ls" = enabled ] || cc plugin enable "$LIVE_KEY" --scope user >/dev/null || die "cannot re-enable $LIVE_KEY (see $STATE/kit.log); nothing else was changed"
+    for _k in $(printf '%s\n' "$_ol" | cut -f1); do cc plugin disable "$_k" --scope user >/dev/null || die "cannot disable $_k (see $STATE/kit.log)"; done
+  fi
   note "already live: re-applying only the per-check config (settings/plugin/binary were switched on first go-live)"
   node -e '
     const fs=require("fs"),j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
@@ -126,6 +136,18 @@ ORIGS="$ORIGS" node -e '
   require("fs").writeFileSync(live,JSON.stringify(j,null,2)+"\n");' "$LIVE_JSON" "$SETTINGS" "$CONFIG_TOML" "$LIVE_ENGINE_BIN" "$CFG_EXISTED" "$BIN_EXISTED" \
   "$(sha "$SETTINGS")" "$(sha "$CONFIG_TOML")" "$(sha "$LIVE_ENGINE_BIN")" "$arg" "$(sha "$ENG")" "$PVER" || die "cannot write $LIVE_JSON"
 
+# The Mac log-only shadow trigger (machine-local shadow-all.sh) is still wired into sessions that started before go-live and runs the OLD engine
+# binary against the default state dir, which is the live engine's: it would write into the live telemetry/state. Neutralise it (backup first;
+# rollback puts it back byte-identical). Removing the settings.json triggers alone does not reach those running sessions.
+OLDSH=$HOME/.anti-hall/ah-engine-shadow/shadow-all.sh
+if [ -f "$OLDSH" ]; then
+  cp -p "$OLDSH" "$BK/shadow-all.sh" || die "backup of $OLDSH failed; nothing was changed"
+  node -e '
+    const fs=require("fs"),j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+    j.files.shadowall={path:process.argv[2],existed:true,sha_before:process.argv[3],sha_after:null,backup:"backup/shadow-all.sh"};
+    fs.writeFileSync(process.argv[1],JSON.stringify(j,null,2)+"\n");' "$LIVE_JSON" "$OLDSH" "$(sha "$OLDSH")" || die "cannot write $LIVE_JSON"
+fi
+
 apply() {
   # 1 engine binary where ah-hook.sh looks for it
   mkdir -p "$(dirname "$LIVE_ENGINE_BIN")" && cp "$ENG" "$LIVE_ENGINE_BIN.new" && chmod 755 "$LIVE_ENGINE_BIN.new" && mv "$LIVE_ENGINE_BIN.new" "$LIVE_ENGINE_BIN" || return 1
@@ -149,6 +171,10 @@ apply() {
     const fs=require("fs"),f=process.argv[1],marks=process.argv[2].split(" "),s=JSON.parse(fs.readFileSync(f,"utf8")); let removed=0;
     for (const ev of Object.keys(s.hooks||{})) { s.hooks[ev]=s.hooks[ev].map(g=>({...g,hooks:g.hooks.filter(h=>{const r=marks.some(k=>String(h.command||"").includes(k)); if(r) removed++; return !r;})})).filter(g=>g.hooks.length); if(!s.hooks[ev].length) delete s.hooks[ev]; }
     fs.writeFileSync(f+".tmp",JSON.stringify(s,null,2)+"\n"); fs.renameSync(f+".tmp",f); console.log("shadow triggers removed from settings.json: "+removed);' "$SETTINGS" "$SHADOW_MARKS" || return 1
+  # 7a the old Mac shadow trigger becomes a no-op (see above)
+  if [ -f "$OLDSH" ]; then
+    printf '#!/bin/sh\n# neutralised by ah-engine-live go-live (the engine is live; this old log-only trigger would write into its state). rollback.sh restores the original.\nexit 0\n' >"$OLDSH.new" && chmod 755 "$OLDSH.new" && mv "$OLDSH.new" "$OLDSH" || { rm -f "$OLDSH.new"; return 1; }
+  fi
   # 7b the reverse witness: Node runs silently beside the engine (hook returns at once, worker logs; see node-shadow.sh)
   lim 60 sh "$NODE_SHADOW" --install --root "$(live_root)" || return 1
   # 7b2 one-time notice for sessions already running ("run /reload-plugins"); removed after 24 h or by rollback. Never worth failing go-live over.
@@ -169,8 +195,8 @@ if ! apply; then
 fi
 node -e '
   const fs=require("fs"),j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")),rows=f=>fs.readFileSync(f,"utf8").split("\n").filter(Boolean);
-  j.files.settings.sha_after=process.argv[4]; j.files.config.sha_after=process.argv[5]; j.files.bin.sha_after=process.argv[6];
+  j.files.settings.sha_after=process.argv[4]; j.files.config.sha_after=process.argv[5]; j.files.bin.sha_after=process.argv[6]; if(j.files.shadowall) j.files.shadowall.sha_after=process.argv[8];
   j.on=rows(process.argv[2]); j.off=rows(process.argv[3]).map(x=>x.replace("\t","/")); j.plugin_version=process.argv[7]; j.complete=true; j.finished=new Date().toISOString();
-  fs.writeFileSync(process.argv[1],JSON.stringify(j,null,2)+"\n");' "$LIVE_JSON" "$ON" "$OFF" "$(sha "$SETTINGS")" "$(sha "$CONFIG_TOML")" "$(sha "$LIVE_ENGINE_BIN")" "$PVER"
+  fs.writeFileSync(process.argv[1],JSON.stringify(j,null,2)+"\n");' "$LIVE_JSON" "$ON" "$OFF" "$(sha "$SETTINGS")" "$(sha "$CONFIG_TOML")" "$(sha "$LIVE_ENGINE_BIN")" "$PVER" "$(sha "$OLDSH")"
 note "LIVE: $LIVE_KEY $PVER installed via the claude CLI; other anti-hall installs disabled (${ORIGS:-none}). Takes effect in new sessions (or /reload-plugins); running sessions keep the hooks they started with."
 note "check: sh $KIT/status.sh    compare Node vs engine: sh $NODE_SHADOW --compare    undo: sh $KIT/rollback.sh"

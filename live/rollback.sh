@@ -89,6 +89,7 @@ if [ "$rc_cli" -ne 0 ]; then
 fi
 restore settings          # byte-identical user settings (undoes the CLI's enabledPlugins/extraKnownMarketplaces edits and puts the shadow triggers back)
 restore config; restore bin
+node -e 'process.exit(require(process.argv[1]).files.shadowall?0:1)' "$LIVE_JSON" && restore shadowall   # the old Mac shadow trigger go-live neutralised
 [ -d "$MKT_DIR" ] && { mkdir -p "$RB" && mv "$MKT_DIR" "$RB/marketplace"; }
 [ "${fb:-0}" = 1 ] || while IFS='	' read -r _k _v; do [ -n "$_k" ] || continue; [ "$(plugin_state "$_k")" = "enabled	$_v" ] || { echo "WARNING: $_k is not enabled at $_v after rollback (check: claude plugin list)" >&2; rc_cli=1; }; done <<EOF2
 $ORIG_LIST

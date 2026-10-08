@@ -4,7 +4,15 @@
 need_node
 if [ "${1:-}" = "--table" ]; then entry_table "$BUNDLE/ah-engine" | awk -F'\t' 'BEGIN{print "event\tentry\tcheck\tguard"} {print}' | { column -t -s '	' 2>/dev/null || cat; }; exit 0; fi
 bad=0
-echo "MODE: $([ -f "$LIVE_JSON" ] && echo LIVE || echo SHADOW)"
+# The ledger is a record, not the truth: if it says live but the host's own view (the CLI) disagrees, say so instead of "LIVE".
+drift=
+if [ -f "$LIVE_JSON" ]; then
+  _ls=$(plugin_state "$LIVE_KEY" | cut -f1); _ol=$(orig_list | cut -f1 | tr '\n' ' ')
+  { [ "$_ls" = enabled ] && [ -z "$_ol" ]; } || drift="$LIVE_KEY is ${_ls:-unknown}${_ol:+, enabled anti-hall installs: $_ol}"
+fi
+if [ -n "$drift" ]; then echo "MODE: LIVE (DRIFT: $drift)"; echo "DRIFT: the ledger ($LIVE_JSON) says live, the host disagrees (settings.json edited by hand?). Fix: sh $KIT/go-live.sh (reconciles to live) or sh $KIT/rollback.sh"
+else echo "MODE: $([ -f "$LIVE_JSON" ] && echo LIVE || echo SHADOW)"; fi
+[ -z "$drift" ] || bad=1
 echo "== state"
 if [ -f "$LIVE_JSON" ]; then
   node -e '
