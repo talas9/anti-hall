@@ -3192,7 +3192,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `setup.stdin_max_bytes` | `65536` |  | bytes | Most bytes `jev-setup set-key` reads from stdin; a key is a short single line. |
 | `setup.tier_keys` | `3 entries` |  |  | How each key that a status warning compares is read: what it must be (boolean, or the list of allowed words), its default, and the plugin-option suffix. |
 | `setup.tmp_fmt` | `{file}.tmp.{pid}` |  |  | The temporary file a write goes through. Placeholders: file, pid. |
-| `setup.tmp_settings_fmt` | `{file}.{pid}.{ms}.tmp` |  |  | The temporary file a settings write goes through. Placeholders: file, pid, ms. |
 | `setup.valid_fallbacks` | `none, vercel, typesafe` |  |  | The values a fallback transport may take. |
 | `setup.valid_modes` | `on, shadow, off` |  |  | The modes an integration may be set to. |
 | `setup.valid_transports` | `vercel, typesafe` |  |  | The vendors a primary transport or a key may name. |

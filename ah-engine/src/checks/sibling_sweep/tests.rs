@@ -479,3 +479,14 @@ fn an_invalid_pattern_in_the_file_falls_back_to_the_shipped_one() {
     assert!(t.problems.iter().any(|x| x.contains("hedge_any_re")), "{:?}", t.problems);
     assert!(matches!(decide(&stop(&h, &p, CAUSE), &settings(&h), 1, None), Verdict::Advisory(_)), "the shipped patterns keep the check working");
 }
+
+#[test]
+fn the_state_write_does_not_depend_on_a_fixed_temporary_name() {
+    // review P2 #8: the state went through `<state>.tmp-<pid>` without a flush; two writers of one process (the daemon's
+    // workers) shared the name, and anything already at it broke the write
+    let h = home("tmpname");
+    let path = std::path::Path::new(&h).join("state.json");
+    std::fs::create_dir_all(path.with_extension(format!("tmp-{}", std::process::id()))).unwrap();
+    save(&path, &State::default()).unwrap();
+    assert!(path.is_file());
+}

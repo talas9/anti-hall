@@ -156,11 +156,6 @@ pub(crate) fn json_ext() -> &'static str {
     defaults::text("migrate.json_ext")
 }
 
-/// The suffix of the scratch file of an atomic write: `.<pid>.<ms>.tmp`.
-pub(crate) fn tmp_suffix() -> String {
-    format!(".{}{}", scratch_suffix(), defaults::text("migrate.tmp_ext"))
-}
-
 /// `fs.readFileSync(p, 'utf8')`: invalid UTF-8 becomes U+FFFD. Bounded: a file larger than `migrate.max_file_bytes` is not read
 /// (the error says so), because no state file of this kind is that large and reading one whole would cost its size in memory.
 pub(crate) fn read_text(p: &Path) -> io::Result<String> {
@@ -373,18 +368,11 @@ pub(crate) fn rand36() -> String {
     out
 }
 
-/// Write `text` to `path` through a scratch file and a rename, as every Node writer here does. A scratch file left behind by a
-/// failed rename is removed, and a failure to remove it is noted.
-pub(crate) fn write_atomic(ctx: &Ctx, path: &Path, text: &str, tmp_suffix: &str) -> io::Result<()> {
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(tmp_suffix);
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        if let Err(e) = std::fs::remove_file(&tmp) {
-            ctx.io_note("unlink", &tmp, &e);
-        }
-    })
+/// Write `text` to `path` atomically ([`crate::atomic::write`]: a uniquely named temporary file beside it, flushed to disk,
+/// then renamed), as every Node writer here writes through a scratch file and a rename. The temporary file does not outlive
+/// a failure.
+pub(crate) fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
+    crate::atomic::write(path, text)
 }
 
 // ---- the completion markers -----------------------------------------------------------------------------------------
@@ -433,7 +421,7 @@ pub(crate) fn mark_applied(ctx: &Ctx, key: &str, version: Option<&str>) -> bool 
         ctx.io_note("mkdir", dir, &e);
         return false;
     }
-    match write_atomic(ctx, &file, &json::stringify(&state), &tmp_suffix()) {
+    match write_atomic(&file, &json::stringify(&state)) {
         Ok(()) => true,
         Err(e) => {
             ctx.io_note("open", &file, &e);

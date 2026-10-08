@@ -3,7 +3,7 @@
 //! rewrites atomically, leaves what it cannot parse exactly as it is, and deletes nothing.
 use super::{
     Ctx, Detect, Error, Row, StepResult, for_each_line, has_own, is_enoent, is_object, j_finite, j_strict_eq, j_string, j_truthy, json_ext, migration_fix,
-    parse_json, read_dir_sorted, read_text, read_text_note, scratch_suffix, step, tmp_suffix, write_atomic,
+    parse_json, read_dir_sorted, read_text, read_text_note, scratch_suffix, step, write_atomic,
 };
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::json::{self, J};
@@ -403,7 +403,7 @@ fn migrate_gate_intents(ctx: &Ctx, dry_run: bool) -> Report {
         if !has_acks {
             next.set(k_acks, J::Num(defaults::num("migrate.gate_acks_default") as f64));
         }
-        match write_atomic(ctx, &p, &json::stringify(&next), &tmp_suffix()) {
+        match write_atomic(&p, &json::stringify(&next)) {
             Ok(()) => rep.migrated += 1,
             Err(e) => {
                 ctx.io_note("open", &p, &e);
@@ -470,7 +470,7 @@ fn auto_archived_append(ctx: &Ctx, id: &str, done_head: &J, at: f64) {
         ctx.io_note("mkdir", dir, &e);
         return;
     }
-    if let Err(e) = write_atomic(ctx, &p, &json::stringify(&state), &format!("{}-{}", defaults::text("migrate.tmp_ext"), scratch_suffix().replace('.', "-"))) {
+    if let Err(e) = write_atomic(&p, &json::stringify(&state)) {
         ctx.io_note("open", &p, &e);
     }
 }

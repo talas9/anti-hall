@@ -91,14 +91,13 @@ fn load(path: &Path) -> State {
     std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).map(|v| State::from_json(&v)).unwrap_or_default()
 }
 
-/// Write the state through a temp file and a rename, so a reader never sees half a file.
+/// Write the state atomically ([`crate::atomic::write`]: a uniquely named temporary file, flushed to disk, then a rename),
+/// so a reader never sees half a file and two writers never share a temporary file.
 fn save(path: &Path, s: &State) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&tmp, s.to_json().to_string())?;
-    std::fs::rename(&tmp, path)
+    crate::atomic::write(path, s.to_json().to_string())
 }
 
 /// Say once per process, in the daemon log, that something could not be written or read.

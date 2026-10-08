@@ -207,25 +207,15 @@ fn write_settings_locked(file: &Path, section: &str, name: &str, value: J) -> Re
         Some(slot) => slot.1 = J::Obj(sec),
         None => next.push((section.to_string(), J::Obj(sec))),
     }
-    let tmp = defaults::render("setup.tmp_settings_fmt", &[("file", &file.display()), ("pid", &std::process::id()), ("ms", &(date::now_ms() as u64))]);
-    write_json_atomic(file, &tmp, J::Obj(next))
+    write_json_atomic(file, J::Obj(next))
 }
 
-/// Write `value` pretty-printed with a final newline to `tmp`, then rename it over `file`; the temp file does not outlive a
-/// failure.
-fn write_json_atomic(file: &Path, tmp: &str, value: J) -> Result<(), SetupError> {
+/// Write `value` pretty-printed with a final newline over `file` atomically ([`crate::atomic::write`]: a uniquely named
+/// temporary file beside it, flushed to disk, then renamed); the temporary file does not outlive a failure.
+fn write_json_atomic(file: &Path, value: J) -> Result<(), SetupError> {
     let mut body = pretty(&normalised(value));
     body.push('\n');
-    let result = std::fs::write(tmp, body).and_then(|()| std::fs::rename(tmp, file));
-    if let Err(e) = result {
-        if let Err(cleanup) = std::fs::remove_file(tmp)
-            && cleanup.kind() != std::io::ErrorKind::NotFound
-        {
-            warn(&defaults::render("setup.msg_treated_absent", &[("error", &SetupError::Io { what: what("setup.what_remove", &tmp), source: cleanup })]));
-        }
-        return Err(SetupError::Io { what: what("setup.what_write", &file.display()), source: e });
-    }
-    Ok(())
+    crate::atomic::write(file, body).map_err(|e| SetupError::Io { what: what("setup.what_write", &file.display()), source: e })
 }
 
 /// `writeJevJsonMerged`: read-modify-write of the legacy `jev.json`, atomic, keeping every field the mutator leaves.
@@ -236,8 +226,7 @@ fn write_jev_json(home: &Path, mutate: impl FnOnce(&mut Vec<(String, J)>)) -> Re
     }
     let mut cfg = load_for_write(&path)?;
     mutate(&mut cfg);
-    let tmp = defaults::render("setup.tmp_fmt", &[("file", &path.display()), ("pid", &std::process::id())]);
-    write_json_atomic(&path, &tmp, J::Obj(cfg))
+    write_json_atomic(&path, J::Obj(cfg))
 }
 
 // ---- resolution -------------------------------------------------------------------------------------------------------
@@ -1005,6 +994,18 @@ mod tests {
         }
         std::fs::create_dir_all(&d).map_err(io_err("make the scratch home"))?;
         Ok(d)
+    }
+
+    #[test]
+    fn a_json_write_does_not_depend_on_a_fixed_temporary_name() -> Result<(), SetupError> {
+        // review P2 #8: the write went through `<file>.tmp.<pid>` (and `<file>.<pid>.<ms>.tmp`) without a flush; two writers
+        // of one process shared the name, and anything already at it broke the write
+        let d = home()?;
+        let file = d.join("jev.json");
+        std::fs::create_dir_all(defaults::render("setup.tmp_fmt", &[("file", &file.display()), ("pid", &std::process::id())])).map_err(io_err("block"))?;
+        write_json_atomic(&file, J::Obj(vec![("a".into(), J::Bool(true))]))?;
+        assert!(std::fs::read_to_string(&file).map_err(io_err("read"))?.contains("\"a\": true"));
+        Ok(())
     }
 
     #[test]

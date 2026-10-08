@@ -1140,10 +1140,6 @@ value = ".1"
 doc = "What is added to the settings file's name to name its lock file."
 value = ".lock"
 
-[setup.tmp_settings_fmt]
-doc = "The temporary file a settings write goes through. Placeholders: file, pid, ms."
-value = "{file}.{pid}.{ms}.tmp"
-
 [setup.tmp_fmt]
 doc = "The temporary file a write goes through. Placeholders: file, pid."
 value = "{file}.tmp.{pid}"
