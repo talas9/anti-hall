@@ -67,7 +67,7 @@ function launcherPath(kind, home) {
 
 // meshRoute(argv, segments) -> a thin routing shim EMBEDDED in the devswarm
 // launcher (via Function#toString, so it must stay self-contained). For exactly
-// the ported verbs (the ROUTES table below: `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary`,
+// the ported verbs (the ROUTES table below: `send`, `mesh read`, `mesh history`, `roster` (with or without `--ack`), `inbox ack-primary`,
 // `heartbeat`, `inbox tick`, `inbox read-primary`), when settings.json `mesh.engine_writes`
 // is "on" and the engine binary exists, it runs `ah-engine mesh <argv>` with a time
 // limit and returns {done: exitCode}; otherwise {input} (stdin already consumed
@@ -83,10 +83,10 @@ function meshRoute(argv, segments) {
   try {
     if (!segments || segments[1] !== 'devswarm.js') return out;
     // ROUTES: the verbs `ah-engine mesh` can answer. Each row is the leading words of the argv, plus an optional flag that
-    // must also be present (`roster` is routed only with --ack: the plain roster stays in Node). A verb the engine decides
-    // it cannot answer is handed to Node by the engine itself, so a row here only says "ask the engine first".
+    // must also be present. A verb the engine decides it cannot answer is handed to Node by the engine itself, so a row
+    // here only says "ask the engine first".
     var ROUTES = [
-      { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'], flag: '--ack' },
+      { words: ['send'] }, { words: ['mesh', 'read'] }, { words: ['mesh', 'history'] }, { words: ['roster'] },
       { words: ['inbox', 'ack-primary'] }, { words: ['heartbeat'] }, { words: ['inbox', 'tick'] }, { words: ['inbox', 'read-primary'] },
     ];
     var routed = ROUTES.some(function (r) {

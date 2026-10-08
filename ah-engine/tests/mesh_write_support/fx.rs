@@ -232,7 +232,8 @@ pub fn node_dump(home: &Path, key: &str) -> String {
 /// Every file under `home` with its bytes, except the store files and the engine state dir (summaries ARE compared).
 pub fn home_files(home: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(base: &Path, d: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
-        for e in fs::read_dir(d).unwrap().flatten() {
+        // an injected permission fault leaves unreadable files and directories: they read as a marker, not a panic
+        for e in fs::read_dir(d).into_iter().flatten().flatten() {
             let p = e.path();
             let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
             if rel.contains("/store/") || rel.starts_with("state") {
@@ -242,7 +243,7 @@ pub fn home_files(home: &Path) -> BTreeMap<String, Vec<u8>> {
                 out.insert(format!("{rel}/"), Vec::new());
                 walk(base, &p, out);
             } else {
-                out.insert(rel, fs::read(&p).unwrap());
+                out.insert(rel, fs::read(&p).unwrap_or_else(|_| b"<unreadable>".to_vec()));
             }
         }
     }

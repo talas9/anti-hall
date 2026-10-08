@@ -107,18 +107,17 @@ test('on: inbox ack-primary is routed; the other inbox verbs stay in Node', () =
   assert.match(r.trace, /engine mesh inbox ack-primary p1 --receipt r1\nnode inbox peek-primary p1/);
 });
 
-test('on: mesh history, roster --ack and heartbeat are routed; plain roster and the other verbs stay in Node', () => {
+test('on: mesh history, roster (plain and --ack) and heartbeat are routed; the other verbs stay in Node', () => {
   const { run } = setup({ mode: 'on', engine: 'exit 0' });
   assert.strictEqual(run(['mesh', 'history']).code, 0);
   assert.strictEqual(run(['roster', '--ack']).code, 0);
   assert.strictEqual(run(['roster', '--json', '--ack=1']).code, 0);
   assert.strictEqual(run(['heartbeat', 'w1', '--session', 's']).code, 0);
-  const plain = run(['roster']);
-  assert.strictEqual(plain.code, 3);
+  assert.strictEqual(run(['roster']).code, 0);
   assert.strictEqual(run(['mesh', 'peek']).code, 3);
   const last = run(['inbox', 'peek-primary', 'w1']);
   assert.strictEqual(last.code, 3);
-  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nnode roster stdin=\nnode mesh peek stdin=\nnode inbox peek-primary w1 stdin=\n$/);
+  assert.match(last.trace, /engine mesh mesh history\nengine mesh roster --ack\nengine mesh roster --json --ack=1\nengine mesh heartbeat w1 --session s\nengine mesh roster\nnode mesh peek stdin=\nnode inbox peek-primary w1 stdin=\n$/);
 });
 
 test('on: inbox read-primary is routed (the engine decides; a deferral runs Node)', () => {
