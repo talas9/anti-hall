@@ -21,7 +21,8 @@ fn golden_report(check: &str, limit: usize) {
                 shown += 1;
                 let mut p = c["payload"].to_string();
                 p.truncate(300);
-                let wrote = if c.get("watch").is_some() { format!("\n  wrote ={}\n  files ={}", golden::watched_all_pub(c, &l), c["writes"]) } else { String::new() };
+                let wrote =
+                    if c.get("watch").is_some() { format!("\n  wrote ={}\n  files ={}", golden::watched_all_pub(c, &l), c["writes"]) } else { String::new() };
                 eprintln!(
                     "MISMATCH {check} n={} {}\n  payload={p}\n  expect={}\n  got   ={}\n  errors={:?}{wrote}",
                     c["n"],

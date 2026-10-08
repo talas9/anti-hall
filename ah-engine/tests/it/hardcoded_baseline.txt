@@ -45,7 +45,6 @@
 [number] src/checks/session/time.rs: let era = if y >= 0 { y } else { y - 399 } / 400;
 [number] src/checks/session/time.rs: let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
 [number] src/checks/session/time.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
-[number] src/checks/silent_agent_nudge/mod.rs: !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()) && (k == "0" || !k.starts_with('0')) && k.parse::<u64>().is_ok_and(|n| n < 4_294_967_295)
 [number] src/checks/taskkit/time.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
 [number] src/checks/taskstate/tail.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 59 {
 [number] src/checks/taskstate/tail.rs: let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;

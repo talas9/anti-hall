@@ -127,9 +127,10 @@ function decide(p) {
 
   var payloadText = typeof p.last_assistant_message === 'string' && p.last_assistant_message.trim() ? p.last_assistant_message : null;
   var mask = ah.text.maskQuoted;
+  var tailLines;
   function fromTranscript(map) {
-    var lines = rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'));
-    return lines === null ? { text: null } : rp.lastAssistant(lines, map);
+    if (tailLines === undefined) tailLines = rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'));
+    return tailLines === null ? { text: null } : rp.lastAssistant(tailLines, map);
   }
   var lastText;
   if (payloadText !== null) lastText = payloadText;
