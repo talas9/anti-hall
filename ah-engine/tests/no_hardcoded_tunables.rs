@@ -417,18 +417,7 @@ fn allowlist_entries_are_justified_and_still_needed() {
 #[test]
 fn no_versioned_model_ids_in_source_or_plugin_config() {
     let re = regex::Regex::new(r"claude-(haiku|sonnet|opus|fable)-\d|claude-\d|gpt-\d+(\.\d+)?(-\w+)?").unwrap();
-    // (file, why): text that mirrors a Node hook byte for byte (parity-tested) and still names a Codex slug there; each goes when the Node
-    // side switches to tier words. Price tables key on exact model names without the vendor prefix, so they are not matched at all.
-    let mirrors_node: &[(&str, &str)] = &[
-        (
-            "defaults/spawn_context.toml",
-            "the Codex routing hints (rules B, F, N and the M/N line) mirror hooks/lib/host-text.js, which still names the slug; tests/spawn_ctx_parity.rs compares them",
-        ),
-        (
-            "defaults/verify_first.toml",
-            "the M/N line mirrors hooks/verify-first-core.js, which still names the slug; the verify-first parity test compares them",
-        ),
-    ];
+    // Price tables key on exact model names without the vendor prefix, so they are not matched at all.
     let mut hits = Vec::new();
     let mut files = Vec::new();
     rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
@@ -448,8 +437,7 @@ fn no_versioned_model_ids_in_source_or_plugin_config() {
                 stack.push(p);
             } else if p.extension().is_some_and(|x| x == "toml" || x == "json") {
                 for (i, l) in fs::read_to_string(&p).unwrap().lines().enumerate() {
-                    let allowed = mirrors_node.iter().any(|(f, why)| p.ends_with(f) && !why.is_empty());
-                    if re.is_match(l) && !l.trim_start().starts_with("doc") && !l.trim_start().starts_with('#') && !allowed {
+                    if re.is_match(l) && !l.trim_start().starts_with("doc") && !l.trim_start().starts_with('#') {
                         hits.push(format!("{}:{}: {}", p.display(), i + 1, l.trim().chars().take(120).collect::<String>()));
                     }
                 }
