@@ -129,11 +129,6 @@ min = 1
 doc = "The state file (requested markers and per-session tracking), inside the anti-hall directory of the home."
 value = "dispatch-tier-state.json"
 
-[dispatch_tier.json_max_depth]
-doc = "Deepest JSON nesting the state file parser reads; deeper input is left to the Node hook."
-value = 128
-min = 8
-
 [dispatch_tier.question_instructions]
 doc = "The question put to Jev (a choice question over the three tiers)."
 value = "Classify how an orchestrating agent should dispatch this task."

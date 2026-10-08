@@ -22,7 +22,8 @@ fn plugin() -> String {
 }
 
 fn fill(s: &str, home: &str, real: &str) -> String {
-    s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home)
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
+    ah_engine::script::expand_now(&s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home), now)
 }
 
 fn sub(v: &Value, home: &str, real: &str) -> Value {

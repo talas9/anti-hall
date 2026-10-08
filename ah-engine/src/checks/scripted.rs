@@ -72,5 +72,8 @@ pub static GIT_GUARD: Scripted = Scripted::new("git", "git.check_summary");
 /// `git-audit` (PostToolUse on Bash): the audit pass of the git guard.
 pub static GIT_AUDIT: Scripted = Scripted::new("git-audit", "git_audit.summary");
 
+/// `dispatch-tier`.
+pub static DISPATCH_TIER: Scripted = Scripted::new("dispatch-tier", "dispatch_tier.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");

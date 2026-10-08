@@ -296,6 +296,42 @@ pub fn p95_budget_us() -> u64 {
     defaults::num("script.p95_budget_us")
 }
 
+/// `{NOW}`, `{NOW-<ms>}` and `{NOW+<ms>}` become the current time in milliseconds since the epoch, `{ISO}`, `{ISO-<ms>}` and
+/// `{ISO+<ms>}` the same instant as an ISO-8601 UTC text: a case can place an event a fixed distance from the moment it is
+/// replayed, so a check that compares times against the clock answers the same today and in a year.
+pub fn expand_now(s: &str, now_ms: f64) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find('{') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let placeholder = tail.find('}').and_then(|close| {
+            let body = &tail[1..close];
+            let (kind, delta) = match body.find(['-', '+']) {
+                Some(i) => (&body[..i], body[i..].parse::<f64>().ok()),
+                None => (body, Some(0.0)),
+            };
+            match (kind, delta) {
+                ("NOW", Some(d)) => Some((close, format!("{}", (now_ms + d) as i64))),
+                ("ISO", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d))),
+                _ => None,
+            }
+        });
+        match placeholder {
+            Some((close, text)) => {
+                out.push_str(&text);
+                rest = &tail[close + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod golden;
 #[cfg(test)]
@@ -306,3 +342,6 @@ mod tests_host;
 #[cfg(test)]
 #[path = "host_tests_d/tests.rs"]
 mod tests_host_d;
+#[cfg(test)]
+#[path = "golden_d6/tests.rs"]
+mod tests_golden_d6;

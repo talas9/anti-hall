@@ -9,6 +9,8 @@
 //! | `jevRecordOutcome(id, hash, outcome, source, projectFrom)` | report a later observed result against a Jev decision by hash: see [`jev_record_outcome`] |
 //! | `jevCacheHas(hash)` | whether the shared Jev answer cache holds an answer under `hash` (`null` when the file is one only JavaScript reads) |
 //! | `pluginVersions(root)` | the version of the plugin at `root` and the one the host registered: see [`plugin_versions`] |
+//! | `homeGuard()` | the home directory state files may live under: `{status: "ok" \| "guarded" \| "unknown", home}`: see [`home_guard`] |
+//! | `projectRoot(cwd)` | the project root of a working directory as the handover finder resolves it, or `null`: see [`project_root`] |
 //! | `cores()` | the CPU count as Node's `os.availableParallelism()` reads it, or `null` when the engine cannot read it the same way |
 use super::host::with_settings;
 use crate::checks::agent_scan::{self, Opts};
@@ -209,6 +211,29 @@ fn cores() -> Option<f64> {
     None
 }
 
+/// `homeGuard()`: JSON `{status, home}` for the request's home directory, as `companion/lib/test-home-guard.js` `resolveHome` decides
+/// it. `ok` (an absolute home): state files live under `home`; `guarded` (a test run whose home is the real user home): Node's
+/// `resolveHome` throws and its callers catch it, so no state is read or written; `unknown` (no usable `HOME`): Node would ask the
+/// system or resolve against its own working directory, which the engine cannot see.
+fn home_guard() -> rquickjs::Result<String> {
+    use crate::checks::spawnctx::{Home, state_home};
+    let env = with_settings(|st| st.env.clone())?;
+    Ok(match state_home(&env) {
+        Home::Ok(h) => json!({"status": "ok", "home": h}),
+        Home::Guarded => json!({"status": "guarded"}),
+        Home::Unknown => json!({"status": "unknown"}),
+    }
+    .to_string())
+}
+
+/// `projectRoot(cwd)`: the outermost superproject's work tree around an absolute `cwd` (`sessionProjectRoot` of
+/// `hooks/lib/handover-find.js`), `cwd` itself when no checkout encloses it or it is gone; `null` when the answer would depend on
+/// the Node process's own working directory, on git, or on a `core.worktree` setting.
+fn project_root(cwd: &str) -> rquickjs::Result<Option<String>> {
+    let home = with_settings(|st| st.home.clone())?;
+    Ok(crate::checks::taskkit::root::session_project_root(cwd, &home))
+}
+
 /// Add the batch-6 functions to `ahHost`.
 pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("transcriptTasks", Function::new(c.clone(), |p: String, v: String, w: f64, wide: f64| transcript_tasks(&p, &v, w, wide))?)?;
@@ -222,5 +247,9 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("jevCacheHas", Function::new(c.clone(), |hash: String| jev_cache_has(&hash))?)?;
     h.set("pluginVersions", Function::new(c.clone(), |root: String| plugin_versions(&root))?)?;
     h.set("cores", Function::new(c.clone(), cores)?)?;
+    // the engine's one clock (`ah.clock.now()`): documented with the batch-5 host API, which shaped it but never installed it
+    h.set("now", Function::new(c.clone(), super::host::now_ms)?)?;
+    h.set("homeGuard", Function::new(c.clone(), home_guard)?)?;
+    h.set("projectRoot", Function::new(c.clone(), |cwd: String| project_root(&cwd))?)?;
     Ok(())
 }

@@ -91,6 +91,9 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             }
         }
     }
+    // a latency gate in a test binary of its own reads the per-check allowances (`script.p95_budget_by_check`)
+    let latency = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/script_latency.rs")).unwrap();
+    literals.extend(re.captures_iter(&latency).map(|c| c[1].to_string()));
     // the git script reads its `git.*` tables through the one-argument helper `c('short_name')`
     let c_re = regex::Regex::new(r#"\bc\('([a-z][a-z0-9_]*)'\)"#).unwrap();
     for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == "git.js")) {
