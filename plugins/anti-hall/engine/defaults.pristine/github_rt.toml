@@ -87,6 +87,21 @@ value = 10
 min = 1
 max = 90
 
+[github_rt.pct_base]
+doc = "What budget_pct is a share of (100 for a percentage)."
+value = 100
+min = 1
+
+[github_rt.backoff_max_doublings]
+doc = "The backoff doubles at most this many times before backoff_max_ms, so the shift cannot overflow."
+value = 20
+min = 0
+max = 40
+
+[github_rt.http]
+doc = "HTTP status codes that mean a rate limit or a server fault: rate_limited (always backs off) and server_error_from (this and above back off like a rate limit)."
+value = { rate_limited = 429, server_error_from = 500 }
+
 [github_rt.count_304]
 doc = "1 counts a 304 answer against the budget (the cautious reading), 0 does not (what was measured: see `ah-engine gh status`, section measure)."
 value = 0
@@ -96,7 +111,7 @@ max = 1
 [github_rt.assumed_limit]
 doc = "The hourly limit assumed until a response has reported the real one."
 value = 5000
-min = 60
+min = 100
 
 [github_rt.min_remaining]
 doc = "Polling stops while the remaining requests the API reports are below this, until the limit resets."
@@ -225,6 +240,21 @@ doc = "An edge older than this is no longer told to a session."
 value = 1800000
 min = 1000
 unit = "ms"
+
+[github_rt.status_edges]
+doc = "The newest edges `gh status` lists."
+value = 10
+min = 1
+
+[github_rt.error_chars]
+doc = "The most characters of gh's error text kept as the last error."
+value = 200
+min = 20
+
+[github_rt.jobs_shown]
+doc = "The most failing job names written into an edge line."
+value = 5
+min = 1
 
 [github_rt.advisory_max_per_prompt]
 doc = "The most edges told in one prompt."

@@ -36,7 +36,7 @@ pub fn note(state: &Path, cwds_name: &str, cwd: &str, now: u64, every: u64, ttl:
             return false;
         }
         map.insert(key, now);
-        if map.len() > cap.saturating_mul(4).max(64) {
+        if map.len() > cap {
             map.retain(|_, t| now.saturating_sub(*t) < ttl);
         }
     }

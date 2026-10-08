@@ -173,6 +173,12 @@ fn save(cfg: &Cfg, st: &State) {
     }
 }
 
+/// The calls one window may hold: `budget_pct` of the hourly limit (the assumed one until a response reported the real one).
+pub fn budget_cap(cfg: &Cfg, reported_limit: u64) -> u64 {
+    let limit = if reported_limit > 0 { reported_limit } else { cfg.int("github_rt.assumed_limit") };
+    limit.saturating_mul(cfg.int("github_rt.budget_pct")).checked_div(cfg.int("github_rt.pct_base")).unwrap_or(0)
+}
+
 struct Ctx<'a> {
     cfg: &'a Cfg,
     run: &'a dyn Runner,
@@ -209,9 +215,7 @@ impl Ctx<'_> {
             st.window_start_ms = now;
             st.window_calls = 0;
         }
-        let limit = if st.rate.limit > 0 { st.rate.limit } else { cfg.int("github_rt.assumed_limit") };
-        let cap = (limit * cfg.int("github_rt.budget_pct") / 100).max(1);
-        if st.window_calls >= cap {
+        if st.window_calls >= budget_cap(cfg, st.rate.limit) {
             self.hold(st, st.window_start_ms + window, "budget");
             return false;
         }
@@ -267,8 +271,8 @@ impl Ctx<'_> {
         let secondary = cfg.list_field("github_rt.patterns", "secondary").iter().any(|p| body.contains(&p.to_ascii_lowercase()));
         let retry = r.num_header(cfg, "retry_after");
         let max = cfg.int("github_rt.backoff_max_ms");
-        let backoff = |st: &State| (cfg.int("github_rt.backoff_ms") << st.backoff_n.min(20)).min(max);
-        if r.status == 429 || r.status >= 500 || secondary || retry.is_some() {
+        let backoff = |st: &State| (cfg.int("github_rt.backoff_ms") << u64::from(st.backoff_n).min(cfg.int("github_rt.backoff_max_doublings"))).min(max);
+        if u64::from(r.status) == cfg.num_field("github_rt.http", "rate_limited") || u64::from(r.status) >= cfg.num_field("github_rt.http", "server_error_from") || secondary || retry.is_some() {
             let wait = retry.map_or_else(|| backoff(st), |s| (s * 1000).min(max));
             st.backoff_n = st.backoff_n.saturating_add(1);
             self.hold(st, self.now + wait, "backoff");
@@ -299,7 +303,7 @@ impl Ctx<'_> {
         };
         st.gh = kind.to_string();
         st.last_error = match f {
-            Fail::NoResponse(t) => t.lines().next().unwrap_or("").chars().take(200).collect(),
+            Fail::NoResponse(t) => t.lines().next().unwrap_or("").chars().take(cfg.int("github_rt.error_chars") as usize).collect(),
             _ => kind.to_string(),
         };
         self.hold(st, self.now + wait, kind);
@@ -433,7 +437,7 @@ impl Ctx<'_> {
 
 fn edge_text(cfg: &Cfg, kind: &str, repo: &Repo, status: &Value) -> (String, Vec<String>) {
     let jobs: Vec<String> = status["jobs"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-    let list = if jobs.is_empty() { cfg.word("no_jobs", &[]) } else { jobs.iter().take(5).cloned().collect::<Vec<_>>().join(&cfg.txt("github_rt.words", "job_sep")) };
+    let list = if jobs.is_empty() { cfg.word("no_jobs", &[]) } else { jobs.iter().take(cfg.int("github_rt.jobs_shown") as usize).cloned().collect::<Vec<_>>().join(&cfg.txt("github_rt.words", "job_sep")) };
     let number = status["number"].as_u64().unwrap_or(0).to_string();
     let text = cfg.word(kind, &[("slug", &repo.slug), ("branch", &repo.branch), ("number", &number), ("sha", short(&repo.sha)), ("jobs", &list)]);
     (text, jobs)

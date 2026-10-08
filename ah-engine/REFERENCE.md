@@ -4097,6 +4097,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `github_rt.advisory_summary` | `Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges ...` |  |  | One-line description of the gh-rt-advisory check in the generated reference. |
 | `github_rt.assumed_limit` | `5000` |  |  | The hourly limit assumed until a response has reported the real one. |
 | `github_rt.auth_retry_ms` | `1800000` |  | ms | After gh said it is not logged in, how long before it is tried again. |
+| `github_rt.backoff_max_doublings` | `20` |  |  | The backoff doubles at most this many times before backoff_max_ms, so the shift cannot overflow. |
 | `github_rt.backoff_max_ms` | `3600000` |  | ms | The longest backoff wait, and the longest Retry-After honoured. |
 | `github_rt.backoff_ms` | `60000` |  | ms | The first wait after a 403/429 that is a secondary limit or that carries Retry-After without one longer; it doubles with every repeat. |
 | `github_rt.budget_pct` | `10` |  |  | The share, in percent, of the hourly rate limit the polling may use in total. A 304 answered from an ETag costs nothing (measured: the `used` counter does not move) and is not counted unless count_304 is 1. |
@@ -4107,11 +4108,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `github_rt.edges_read_bytes` | `262144` |  |  | The most bytes of the edge file the advisory script reads. |
 | `github_rt.enabled` | `true` |  |  | Follow the pull request and CI state of the repos of the user's live sessions. Off stops the polling and records no directories; what was recorded stays. |
 | `github_rt.endpoints` | `6 entries` |  |  | The API paths, per call ({owner} {repo} {branch} {sha} {number} {base}). pulls: the pull requests whose head is the branch; pull: one pull request (mergeability); reviews: its reviews; checks: the check runs of the head commit; runs: the workflow runs of the head commit; rules: the branch rules of the base branch (the required checks). |
+| `github_rt.error_chars` | `200` |  |  | The most characters of gh's error text kept as the last error. |
 | `github_rt.etag_cap` | `400` |  |  | ETags kept (the oldest used are dropped past this). |
 | `github_rt.files` | `5 entries` |  |  | Where GitHub realtime keeps its files, relative to the engine state directory: the recent directories, the state, the edge log. |
 | `github_rt.gh` | `3 entries` |  |  | The GitHub CLI call: argv is the command and its fixed arguments (the endpoint is appended after the api -i arguments), etag_header is the request header that carries the ETag ({etag}), accept the Accept header. Replace argv[0] to point at another gh. |
 | `github_rt.git` | `7 entries` |  |  | The read-only git commands used ({root} is the directory; {gitdir} is added where named). toplevel: the repo root of a directory; branch: the current branch (the word HEAD when detached); sha: the head commit; remote: the origin URL; dirs: the git dir and the common git dir, one per line. timeout_ms bounds each. |
 | `github_rt.headers` | `7 entries` |  |  | The response headers read (lower case): the rate limit (limit, remaining, used, reset in epoch seconds), retry_after (seconds), poll_interval (seconds, a floor on the cadence), etag. |
+| `github_rt.http` | `2 entries` |  |  | HTTP status codes that mean a rate limit or a server fault: rate_limited (always backs off) and server_error_from (this and above back off like a rate limit). |
+| `github_rt.jobs_shown` | `5` |  |  | The most failing job names written into an edge line. |
 | `github_rt.max_cwds` | `200` |  |  | The most directories kept in the record of recent working directories. |
 | `github_rt.max_edges` | `100` |  |  | The most edges kept in the edge file. |
 | `github_rt.max_repos` | `12` |  |  | The most repos followed at once (the most recently active first). |
@@ -4121,6 +4125,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `github_rt.notify_kinds` | `` |  |  | The edges that also notify the owner (opt-in; empty, the default, notifies nothing) by running notify_argv. |
 | `github_rt.offline_retry_ms` | `120000` |  | ms | After a gh call failed for lack of a network, how long before it is tried again. |
 | `github_rt.patterns` | `4 entries` |  |  | Case-insensitive substrings that classify a failed call. secondary: a 403/429 body that means a secondary (abuse) limit; unauth: gh's text when it is not logged in; offline: gh's text when it could not reach GitHub; missing_repo: a 404 body for a repo that is gone or private to this login. |
+| `github_rt.pct_base` | `100` |  |  | What budget_pct is a share of (100 for a percentage). |
 | `github_rt.poll_done_ms` | `1800000` |  | ms | How often a repo whose pull request is merged or closed, with its checks finished, is polled. |
 | `github_rt.poll_error_ms` | `1800000` |  | ms | How long a repo that answered 403/404 (no access, no such repo) is left alone. |
 | `github_rt.poll_idle_ms` | `180000` |  | ms | How often a repo with an open pull request and no check running is polled. |
@@ -4131,6 +4136,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `github_rt.remote` | `2 entries` |  |  | How an origin URL is read: host_patterns are the hosts that are GitHub (a remote on any other host is not followed); slug_re captures the owner and the repository from the part after the host (group 1 and 2), the .git suffix being dropped. |
 | `github_rt.rules_ms` | `900000` |  | ms | How often the branch rules that name the required checks of the pull request's base branch are read (an ETag-conditional call). |
 | `github_rt.stale_ms` | `1800000` |  | ms | A repo state older than this is shown as stale (the segment is left empty). |
+| `github_rt.status_edges` | `10` |  |  | The newest edges `gh status` lists. |
 | `github_rt.statuses` | `9 entries` |  |  | How check and run fields are read. running_statuses: a check or run in one of these is not finished; failing: conclusions that count as failed; passing: conclusions that count as passed (the rest, such as skipped, neither); review_changes, review_approved: review states; merged_conflict_states: mergeable_state values that mean the branch conflicts. |
 | `github_rt.statusline_kinds` | `checks, pr, review` |  |  | What the statusline segment shows for the repo of the current directory, in this order of importance: any of checks, pr, review. |
 | `github_rt.window_ms` | `3600000` |  | ms | The length of the budget window (the rate limit's own window is one hour). |
