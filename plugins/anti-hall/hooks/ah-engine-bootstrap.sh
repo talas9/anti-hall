@@ -42,11 +42,29 @@ here=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
 repo=talas9/anti-hall
 base=https://github.com/$repo/releases/download
 retry_s=21600
+run_s=20
 if [ "$test_mode" -eq 1 ]; then
+  run_s=${AH_BOOTSTRAP_RUN_S:-$run_s}
   base=${AH_ENGINE_RELEASE_BASE:-$base}
   retry_s=${AH_BOOTSTRAP_RETRY_S:-$retry_s}
 fi
 case "$retry_s" in ""|*[!0-9]*) retry_s=21600 ;; esac
+case "$run_s" in ""|*[!0-9]*|0) run_s=20 ;; esac
+
+# blim OUTFILE CMD...: run CMD (stdin /dev/null, stdout to OUTFILE) with a hard limit of $run_s seconds; a child that ignores TERM is
+# KILLed 2 s later. Returns 124 on timeout. Nothing downloaded is trusted to terminate.
+blim() {
+  bl_out=$1; shift
+  "$@" </dev/null >"$bl_out" 2>/dev/null &
+  bl_p=$!
+  ( n=0; while [ "$n" -lt "$run_s" ]; do sleep 1; kill -0 "$bl_p" 2>/dev/null || exit 0; n=$((n + 1)); done
+    : >"$bl_out.timedout"; kill -TERM "$bl_p" 2>/dev/null; sleep 2; kill -KILL "$bl_p" 2>/dev/null ) >/dev/null 2>&1 &
+  bl_w=$!
+  wait "$bl_p" 2>/dev/null; bl_r=$?
+  kill "$bl_w" 2>/dev/null; wait "$bl_w" 2>/dev/null
+  if [ -f "$bl_out.timedout" ]; then rm -f "$bl_out.timedout"; return 124; fi
+  return "$bl_r"
+}
 
 # ---- target detection -------------------------------------------------------
 detect_target() {
@@ -221,7 +239,10 @@ chmod 755 "$tmp/ah-engine" 2>/dev/null
 # The engine reads its settings from the plugin at run time, so the check names this plugin (the one whose lock pinned the
 # binary) and a scratch state directory: it must not depend on a host variable or touch the real state.
 plugin_root=$(CDPATH= cd -- "$here/.." 2>/dev/null && pwd)
-reported=$(AH_ENGINE_PLUGIN_ROOT=$plugin_root AH_ENGINE_DIR=$tmp/state "$tmp/ah-engine" version 2>/dev/null </dev/null | head -1)
+AH_ENGINE_PLUGIN_ROOT=$plugin_root AH_ENGINE_DIR=$tmp/state blim "$tmp/version.out" "$tmp/ah-engine" version
+vrc=$?
+[ "$vrc" -ne 124 ] || fail "downloaded binary did not answer 'version' within ${run_s}s"
+reported=$(head -1 "$tmp/version.out" 2>/dev/null)
 case "$reported" in *"$version"*) ;; *) fail "downloaded binary does not run or reports '$reported', not $version" ;; esac
 
 if [ -f "$bin" ]; then

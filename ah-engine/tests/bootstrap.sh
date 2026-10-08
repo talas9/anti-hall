@@ -188,7 +188,21 @@ t_version_check_gets_the_plugin_root() {
   [ -x "$(engine)" ] && logf | grep -q 'ok: installed ah-engine 9.8.6'
 }
 
+# A downloaded binary that hangs and ignores TERM must not hang the bootstrap or hold its lock: it exits 0, logs the failure, installs nothing.
+t_hanging_binary_is_bounded() {
+  newhome hang; v=9.8.5; n=ah-engine-v$v-$triple
+  mkdir -p "$tmp/pkg5/$n" "$tmp/www/ah-engine-v$v"
+  printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 1; done\n' >"$tmp/pkg5/$n/ah-engine"; chmod 755 "$tmp/pkg5/$n/ah-engine"
+  tar -czf "$tmp/www/ah-engine-v$v/$n.tar.gz" -C "$tmp/pkg5" "$n"
+  write_lock "$tmp/lock" "$v" "$triple" "$(sha_of "$tmp/www/ah-engine-v$v/$n.tar.gz")"
+  t0=$(date +%s)
+  AH_BOOTSTRAP_RUN_S=2 run || return 1
+  t1=$(date +%s)
+  [ $((t1 - t0)) -le 15 ] && [ ! -e "$(engine)" ] && logf | grep -q "did not answer 'version'" && [ ! -d "$HOME/.anti-hall/ah-engine/bootstrap.lock" ]
+}
+
 check t_good
+check t_hanging_binary_is_bounded
 check t_keeps_previous
 check t_marker_records_the_binary
 check t_hand_built_untouched
