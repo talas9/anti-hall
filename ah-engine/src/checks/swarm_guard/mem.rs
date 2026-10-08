@@ -11,7 +11,6 @@
 
 use crate::checks::guardkit::jsre;
 use crate::defaults;
-use std::time::Duration;
 
 /// Where the memory figures come from; a test supplies its own.
 pub trait MemSource {
@@ -26,7 +25,7 @@ pub struct HostMem;
 
 /// Run `path` and return its standard output, or `None` when it fails, times out or prints non-UTF-8-lossy nothing.
 #[cfg(target_os = "macos")]
-fn run_capture(path: &str, timeout: Duration) -> Option<String> {
+fn run_capture(path: &str, timeout: std::time::Duration) -> Option<String> {
     // bounded end to end, its group killed on timeout, spawn errors logged (review findings 7 and 8)
     let o = crate::proc::run(std::process::Command::new(path), path, timeout, defaults::millis("swarm_guard.vm_stat_poll_ms")).ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).to_string())
