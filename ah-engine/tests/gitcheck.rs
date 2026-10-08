@@ -46,7 +46,8 @@ impl Env {
             let o = ch.wait_with_output().unwrap();
             last =
                 (String::from_utf8_lossy(&o.stdout).trim().to_string(), String::from_utf8_lossy(&o.stderr).trim().to_string(), o.status.code().unwrap_or(-1));
-            if last.2 == 2 || self.up() {
+            // a cold start with no fallback hands a guard event over (dispatch.defer_exit), it is not the engine's answer
+            if last.2 == 2 || (self.up() && last.2 != ah_engine::defaults::num("dispatch.defer_exit") as i32) {
                 break;
             }
             let t = Instant::now();

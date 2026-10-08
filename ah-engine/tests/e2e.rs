@@ -35,8 +35,11 @@ impl Env {
         let mut ch = self.cmd(version).arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         ch.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
-        assert!(o.stderr.is_empty(), "client wrote to stderr: {}", String::from_utf8_lossy(&o.stderr));
-        (String::from_utf8_lossy(&o.stdout).trim().to_string(), o.status.code().unwrap_or(-1))
+        // the one note allowed: a guard event the engine could not answer yet (a cold start) with no fallback given is
+        // handed over with dispatch.defer_exit, never a silent allow (review finding 21)
+        let code = o.status.code().unwrap_or(-1);
+        assert!(o.stderr.is_empty() || code == defer(), "client wrote to stderr: {}", String::from_utf8_lossy(&o.stderr));
+        (String::from_utf8_lossy(&o.stdout).trim().to_string(), code)
     }
     fn ctl(&self, verb: &str) -> Option<String> {
         let o = self.cmd("0").args(["ctl", verb]).output().unwrap();
@@ -54,6 +57,10 @@ impl Drop for Env {
         });
         ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
     }
+}
+
+fn defer() -> i32 {
+    ah_engine::defaults::num("dispatch.defer_exit") as i32
 }
 
 fn wait_for(mut f: impl FnMut() -> bool) -> bool {
@@ -76,11 +83,12 @@ fn cold_start_denies_and_stays_resident() {
     let e = Env::new("cold");
     let (out, code) = e.hook("0.1.0", DENY_IN);
     // first call may race the cold start; a retry must be served by the daemon
-    let out = if out.is_empty() {
+    let (out, code) = if out.is_empty() {
+        assert_eq!(code, defer(), "a cold start without a fallback hands the guard event over");
         assert!(wait_for(|| e.pid().is_some()));
-        e.hook("0.1.0", DENY_IN).0
+        e.hook("0.1.0", DENY_IN)
     } else {
-        out
+        (out, code)
     };
     assert_eq!(code, 0);
     assert!(out.contains(r#""permissionDecision":"deny""#), "{out}");
@@ -100,7 +108,8 @@ fn concurrent_cold_starts_spawn_one_daemon() {
         })
         .collect();
     for mut h in hs {
-        assert!(h.wait().unwrap().success());
+        let code = h.wait().unwrap().code();
+        assert!(code == Some(0) || code == Some(defer()), "{code:?}");
     }
     assert!(wait_for(|| e.pid().is_some()));
     std::thread::sleep(Duration::from_millis(300)); // let losers of the lock race exit
@@ -178,22 +187,23 @@ fn rules_reload_on_file_change_and_bad_edit_keeps_old_rules() {
 #[test]
 fn fail_open_everywhere() {
     let e = Env::new("failopen");
-    // garbage in, no daemon spawn possible, unwritable dir: always empty stdout + exit 0
+    // garbage in, no daemon spawn possible, unwritable dir: always empty stdout; exit 0, except a guard event the engine
+    // cannot answer with no fallback given, which is handed over (dispatch.defer_exit), never allowed (review finding 21)
     for input in ["", "not json", "{}", "\u{0}\u{1}", r#"{"hook_event_name":"PreToolUse"}"#] {
         let (out, code) = e.hook("0.1.0", input);
-        assert_eq!((out.as_str(), code), ("", 0), "{input:?}");
+        assert!(out.is_empty() && (code == 0 || (code == defer() && input.contains("PreToolUse"))), "{input:?}: {code}");
     }
     let mut c = e.cmd("0.1.0");
     c.env("AH_ENGINE_NOSPAWN", "1").env("AH_ENGINE_DIR", "/nonexistent/x");
     let mut ch = c.arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();
-    assert!(o.status.success() && o.stdout.is_empty() && o.stderr.is_empty());
+    assert!(o.status.code() == Some(defer()) && o.stdout.is_empty(), "{o:?}");
     // unwritable engine dir WITH spawning enabled: the daemon cannot start, the client must still fail open
     let mut c = e.cmd("0.1.0");
     c.env("AH_ENGINE_DIR", "/proc/none/x").env("TMPDIR", "/nonexistent");
     let mut ch = c.arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();
-    assert!(o.status.success() && o.stderr.is_empty());
+    assert!(o.status.code() == Some(defer()) && o.stdout.is_empty(), "{o:?}");
 }
