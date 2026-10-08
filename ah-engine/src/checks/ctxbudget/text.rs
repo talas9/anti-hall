@@ -75,6 +75,7 @@ fn tip(what: &str, why: &str, instead: &str) -> String {
 
 /// `sanitizeSessionId(raw)`: `String(raw || '')` without the characters outside letters, digits, `_` and `-`, else the
 /// unknown-session name. `Err` for an id `String()` would spell from an object or array (not reproduced here).
+#[allow(clippy::result_unit_err)] // Err(()) is the one fail-closed signal (a JS throw in the Node hook); it carries no detail
 pub fn sanitize_session_id(raw: Option<&Value>) -> Result<String, ()> {
     let s = match raw {
         None | Some(Value::Null) | Some(Value::Bool(false)) => String::new(),
@@ -98,6 +99,7 @@ fn cwd_of(p: &Value) -> Result<Option<&str>, ()> {
 
 /// `expectedHandoverPath(payload)`: `.anti-hall/handovers/<local date>/<session>/<next HANDOVER name>`, or none without a
 /// working directory. `Err` where the repository root, the local date or the session id cannot be settled exactly.
+#[allow(clippy::result_unit_err)] // Err(()) is the one fail-closed signal (a JS throw in the Node hook); it carries no detail
 pub fn expected_handover_path(p: &Value, st: &Settings, env: &RequestEnv) -> Result<Option<String>, ()> {
     let Some(cwd) = cwd_of(p)? else { return Ok(None) };
     let date = find::local_date().map_err(|_| ())?;
@@ -114,6 +116,7 @@ pub fn expected_handover_path(p: &Value, st: &Settings, env: &RequestEnv) -> Res
 }
 
 /// The session's newest handover file and its mtime (`sessionHandover(payload)`), or none.
+#[allow(clippy::result_unit_err)] // Err(()) is the one fail-closed signal (a JS throw in the Node hook); it carries no detail
 pub fn session_handover(p: &Value, st: &Settings, env: &RequestEnv) -> Result<Option<(String, f64)>, ()> {
     let Some(cwd) = cwd_of(p)? else { return Ok(None) };
     let sid = sanitize_session_id(p.get("session_id"))?;

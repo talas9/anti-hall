@@ -132,7 +132,7 @@ fn last_activity(r: &Row) -> R<f64> {
     let rec = &r.rec;
     let mut act = f64::NAN;
     for v in [rec.launched_at_ms, rec.resumed_at_ms.unwrap_or(f64::NAN), rec.last_seen_ms] {
-        if v.is_finite() && !(v <= act) {
+        if v.is_finite() && (act.is_nan() || v > act) {
             act = v;
         }
     }
@@ -142,7 +142,7 @@ fn last_activity(r: &Row) -> R<f64> {
         }
         if let Some(m) = agent_scan::mtime_ms(Path::new(&rec.output_file))
             && m.is_finite()
-            && !(m <= act)
+            && (act.is_nan() || m > act)
         {
             act = m;
         }
