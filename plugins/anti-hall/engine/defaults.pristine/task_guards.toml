@@ -185,6 +185,10 @@ value = ["pending", "in_progress", "in-progress"]
 doc = "Statuses (lowercase) that count as completed for the completed-task advisory."
 value = ["completed", "done", "cancelled", "canceled"]
 
+[taskstate.since_status_re]
+doc = "JavaScript regex source (case-insensitive) of the TaskUpdate statuses that restart a task's clock (`sinceMs`, read by the idle-neglect proof)."
+value = '^(pending|in[-_]?progress)$'
+
 [taskstate.terminal_status_re]
 doc = "JavaScript regex source (case-insensitive) of the statuses that close a task for the backfill (`TERMINAL`)."
 value = '^(completed|done|cancelled|canceled|deleted)$'
@@ -245,7 +249,7 @@ value = ".prune-stamp-"
 
 [task_guard.summary]
 doc = "One-line description of the task-guard check in the generated reference."
-value = "Stop gate: answers the Stops where the task list has nothing open (the loop state cleared, the advisories printed) and hands every Stop with an open task to the Node hook (port of task-guard.js)."
+value = "Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic block), with the loop state, the per-prompt budget and the OMC and live-agent steps aside of the Node hook; hands a Stop whose answer needs the DevSwarm app database to Node (port of task-guard.js)."
 
 [task_guard.guard_name]
 doc = "The guard id of task-guard (the skip key and the message prefix)."
@@ -283,6 +287,410 @@ value = "guard"
 [task_guard.judge_child_env]
 doc = "The environment variable that marks a judge child process; every task hook is a no-op there."
 value = "ANTIHALL_JUDGE_CHILD"
+
+# -- task-guard: the open-task decision (sharp idle-neglect block, generic block, loop state)
+
+[task_guard.max_blocks]
+doc = "Most Stop blocks task-guard makes in one session (both kinds counted); after that every Stop is let through."
+value = 5
+min = 1
+
+[task_guard.hash_sep]
+doc = "The separator between the task ids hashed into the loop state (a NUL character)."
+value = "\u0000"
+
+[task_guard.idle_hash_tags]
+doc = "The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's."
+value = ["idle", "no-agents"]
+
+[task_guard.state_hash_key]
+doc = "The loop state file's field for the hash of the last blocked set."
+value = "hash"
+
+[task_guard.state_blocks_key]
+doc = "The loop state file's field for the number of blocks made this session."
+value = "blocks"
+
+[task_guard.pending_status]
+doc = "The status (lowercase) of a task that can be dispatched now."
+value = "pending"
+
+[task_guard.coordinator_owner_re]
+doc = "JavaScript regex source (case-insensitive) of an owner that is the orchestrator itself; such a task still counts as unowned."
+value = '^(main|orchestrator|coordinator)$'
+
+[task_guard.workspace_prefix_re]
+doc = "JavaScript regex source (case-insensitive) of the prefix removed from an owner before it is looked up as a DevSwarm workspace."
+value = '^(workspace|ws|devswarm)\s*[:#]\s*'
+
+[task_guard.priority_rank_re]
+doc = "JavaScript regex source of a priority label with a rank (`p0`, `p1`, ...), matched on the trimmed lowercase label."
+value = '^p([0-9]+)$'
+
+[task_guard.priority_default_rank]
+doc = "The rank of a task with no priority or an unrecognised one (fail-open: it counts as P1)."
+value = 1
+min = 0
+
+[task_guard.priority_low]
+doc = "Priority words (lowercase) that rank below the default."
+value = ["low", "deferred"]
+
+[task_guard.priority_low_rank]
+doc = "The rank of a low or deferred task."
+value = 2
+min = 0
+
+[task_guard.min_priority_setting]
+doc = "The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
+value = { section = "guards", key = "idleNeglectMinPriority", type = "enum", values = ["p0", "p1", "p2", "p3"], env = "ANTIHALL_IDLE_NEGLECT_MIN_PRIORITY", aliases = [], default = "p1" }
+
+[task_guard.dispatch_demand_setting]
+doc = "Whether running agents are counted per task from this session's transcript (guards.dispatchDemand, default on); off restores the legacy rule (any fresh agent heartbeat silences the idle-neglect block)."
+value = { section = "guards", key = "dispatchDemand", env = "ANTIHALL_DISPATCH_DEMAND", aliases = [], default = true }
+
+[task_guard.proven_only_setting]
+doc = "Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
+value = { section = "guards", key = "idleNeglectProvenOnly", env = "ANTIHALL_IDLE_NEGLECT_PROVEN_ONLY", aliases = [], default = true }
+
+[task_guard.agent_max_age_setting]
+doc = "Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
+value = { section = "guards", key = "idleNeglectAgentMaxAgeMin", env = "ANTIHALL_IDLE_NEGLECT_AGENT_MAX_AGE_MIN", aliases = [], min = 0, default = 30 }
+
+[task_guard.agent_max_age_default_min]
+doc = "The agent age limit used when the setting does not resolve to a number, in minutes."
+value = 30
+min = 0
+
+[task_guard.ms_per_minute]
+doc = "Milliseconds in a minute (the unit conversion of the agent age limit)."
+value = 60000
+min = 1
+
+[task_guard.max_parallel_setting]
+doc = "A fixed cap on running background agents (guards.maxParallelDispatch); 0 uses the CPU-based cap."
+value = { section = "guards", key = "maxParallelDispatch", env = "ANTIHALL_MAX_PARALLEL_DISPATCH", aliases = [], min = 0, default = 0 }
+
+[task_guard.cap_ceiling]
+doc = "The highest CPU-based parallel cap."
+value = 16
+min = 1
+
+[task_guard.cap_reserve]
+doc = "CPUs kept free when the parallel cap is derived from the CPU count."
+value = 2
+min = 0
+
+[task_guard.cap_floor]
+doc = "The lowest CPU-based parallel cap."
+value = 1
+min = 1
+
+[task_guard.cap_fallback_cores]
+doc = "The CPU count assumed when none is reported."
+value = 4
+min = 1
+
+[task_guard.task_ref_re]
+doc = "JavaScript regex source of a task number named in an agent's description (`#12`); such an agent covers that task."
+value = '#(\d+)\b'
+
+[task_guard.in_progress_re]
+doc = "JavaScript regex source (case-insensitive) of an in-progress status (tested unanchored, as Node does)."
+value = 'in[-_]?progress'
+
+[task_guard.agents_dir]
+doc = "The directory of agent heartbeat files inside the anti-hall directory (the legacy liveness signal)."
+value = "agents"
+
+[task_guard.agents_ext]
+doc = "The file ending of an agent heartbeat file."
+value = ".json"
+
+[task_guard.agents_ts_key]
+doc = "The heartbeat file's time field (milliseconds); without it the file time is used."
+value = "ts"
+
+[task_guard.agents_fresh_ms]
+doc = "How long an agent heartbeat counts as a running agent."
+value = 1200000
+min = 1
+unit = "ms"
+
+[task_guard.label_max]
+doc = "Longest task subject in the idle-neglect block's list, in UTF-16 units."
+value = 40
+min = 1
+
+[task_guard.label_priority_prefix_re]
+doc = "JavaScript regex source (case-insensitive) of a priority prefix (`P1: `, `P0 - `) removed from a subject in the idle-neglect list."
+value = '^\s*P\d\s*[:\-—]\s*'
+
+[task_guard.label_sep]
+doc = "The separator between the tasks of the idle-neglect list."
+value = ", "
+
+[task_guard.dispatch_list_max]
+doc = "Most tasks the idle-neglect block names."
+value = 12
+min = 1
+
+[task_guard.list_max]
+doc = "Most tasks the generic block names."
+value = 5
+min = 1
+
+[task_guard.list_sep]
+doc = "The separator between the tasks of the generic block's list."
+value = "; "
+
+[task_guard.subject_max]
+doc = "Longest task subject in the generic block's list, in UTF-16 units."
+value = 60
+min = 1
+
+[task_guard.status_max]
+doc = "Longest task status in the generic block's list, in UTF-16 units."
+value = 24
+min = 1
+
+[task_guard.subject_unknown]
+doc = "What the generic block shows for a task whose subject was never seen."
+value = "(subject unknown)"
+
+[task_guard.status_open]
+doc = "What the generic block shows for a task without a status."
+value = "open"
+
+[task_guard.more]
+doc = "The tail of a block's list when tasks were left out; `{n}` is how many."
+value = " (and {n} more)"
+
+[task_guard.cap_formula]
+doc = "The parallel cap as the idle-neglect block names it when no number was computed (the legacy rule)."
+value = "~min(16, cores-2)"
+
+[task_guard.update_claude]
+doc = "How the block messages name the task update tool on Claude Code."
+value = "TaskUpdate"
+
+[task_guard.update_codex]
+doc = "How the block messages name the task update on Codex, which has no task tools."
+value = "update your task list"
+
+[task_guard.codex_patch_tool]
+doc = "The Codex tool name that marks a Codex payload on its own."
+value = "apply_patch"
+
+[task_guard.idle_what]
+doc = "The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail."
+value = "stop blocked: {n} non-blocked, unassigned task(s) have no in-flight agent: {list}{more}."
+
+[task_guard.idle_why]
+doc = "The why line of the idle-neglect block."
+value = "Dispatchable work is sitting idle."
+
+[task_guard.idle_instead]
+doc = "The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing)."
+value = "dispatch them now in parallel (one background agent each, cap {cap}), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy ({upd} addBlockedBy). A running agent already covers a task: set the task owner to it ({upd} owner) and it counts as attended.{devswarm}"
+
+[task_guard.idle_devswarm]
+doc = "The sentence the idle-neglect block adds while a DevSwarm workspace is live; `{upd}` is the task update tool."
+value = " Delegated to a DevSwarm workspace: set the task owner ({upd} owner) to the workspace id, branch or title."
+
+[task_guard.idle_allowed]
+doc = "The allowed-here line of the idle-neglect block."
+value = "a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:'owner' (or 'user'/'human'/'external'), or give it an \"OWNER:\" / \"OWNER DECISION\" subject prefix. Never a fake blockedBy dependency."
+
+[task_guard.generic_what]
+doc = "The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail."
+value = "stop blocked: open tasks remain: {list}{more}."
+
+[task_guard.generic_why]
+doc = "The why line of the generic block."
+value = "Tasks should not sit neglected when the session stops."
+
+[task_guard.generic_instead]
+doc = "The do-instead line of the generic block; `{upd}` is the task update tool."
+value = "pick up pending tasks and dispatch subagents to finish them in parallel (up to the cap, ~min(16, cores-2)); or mark them completed/deferred ({upd}), or tell the user what is pending and why you are stopping."
+
+[task_guard.generic_allowed]
+doc = "The allowed-here line of the generic block; `{upd}` is the task update tool."
+value = "a genuinely blocked task: mark it via {upd} with blockedBy:[<open task id>] or metadata.blockedOn:'owner'/'user'/'human'/'external'; it is then no longer listed."
+
+[task_guard.block_json]
+doc = "The stdout line of a block; `{reason}` is the reason as a JSON string."
+value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
+
+[task_guard.omc_line]
+doc = "The advisory printed instead of a block while an OMC autonomous loop is active."
+value = "[task-guard] OMC autonomous loop active — deferring Stop block to avoid deadlock.\n"
+
+[task_guard.agents_line]
+doc = "The advisory printed instead of the generic block while agents are live."
+value = "[task-guard] open tasks remain but live agents are active — deferring Stop block.\n"
+
+[task_guard.metrics_file]
+doc = "The dispatch-demand metrics file inside the anti-hall directory (the idle-neglect block counts itself there)."
+value = "dispatch-demand-metrics.json"
+
+[task_guard.metrics_counters]
+doc = "The counters of the metrics file, each reset to 0 when it is not a finite number of at least 0, in this order."
+value = ["demandsShown", "demandsFollowed", "demandsIgnored", "idleNeglectBlocks"]
+
+[task_guard.metrics_idle_key]
+doc = "The counter an idle-neglect block increments."
+value = "idleNeglectBlocks"
+
+[task_guard.metrics_pending_key]
+doc = "The metrics file's per-session pending-demand object (kept as is, made an empty object when it is not one)."
+value = "pending"
+
+# -- task-guard: the DevSwarm app database (companion/lib/devswarm-app-db.js appDbPath); its presence defers the answers that need it
+
+[task_guard.app_db_env]
+doc = "The environment variable that names the DevSwarm app database (or `off`)."
+value = "ANTIHALL_DEVSWARM_APP_DB"
+
+[task_guard.app_db_off]
+doc = "The override value (lowercase) that turns the DevSwarm app database off."
+value = "off"
+
+[task_guard.app_db_darwin_dir]
+doc = "The application data directory under the home directory on macOS, as path segments."
+value = ["Library", "Application Support"]
+
+[task_guard.app_db_xdg_env]
+doc = "The environment variable that moves the configuration directory on Linux."
+value = "XDG_CONFIG_HOME"
+
+[task_guard.app_db_linux_config]
+doc = "The configuration directory under the home directory on Linux."
+value = ".config"
+
+[task_guard.app_db_file]
+doc = "The DevSwarm app database under the application data directory, as path segments."
+value = ["DevSwarm", "devswarm.db"]
+
+# -- task-guard: OMC loop detection (hooks/omc-detect.js)
+
+[task_guard.omc_disable_env]
+doc = "The environment variable that turns OMC off."
+value = "DISABLE_OMC"
+
+[task_guard.omc_disable_value]
+doc = "The value of the OMC kill switch that turns it off."
+value = "1"
+
+[task_guard.omc_skip_env]
+doc = "The environment variable that lists OMC hooks to skip (comma separated)."
+value = "OMC_SKIP_HOOKS"
+
+[task_guard.omc_skip_token]
+doc = "The skip-list entry that turns OMC's persistent mode off."
+value = "persistent-mode"
+
+[task_guard.omc_claude_dir]
+doc = "The Claude Code settings directory (under the home directory and the project)."
+value = ".claude"
+
+[task_guard.omc_settings_file]
+doc = "The user's Claude Code settings file inside the settings directory."
+value = "settings.json"
+
+[task_guard.omc_project_settings]
+doc = "The project's Claude Code settings files, in the order read."
+value = ["settings.json", "settings.local.json"]
+
+[task_guard.omc_settings_max_bytes]
+doc = "Largest settings file read for the OMC plugin switch; a larger one counts as not enabling it."
+value = 262144
+min = 1
+
+[task_guard.omc_plugins_key]
+doc = "The settings field that lists enabled plugins."
+value = "enabledPlugins"
+
+[task_guard.omc_plugin_id]
+doc = "The OMC plugin's id in the enabled-plugins list."
+value = "oh-my-claudecode@omc"
+
+[task_guard.omc_state_dir]
+doc = "OMC's state directory (under the project, else under the home directory), as path segments."
+value = [".omc", "state"]
+
+[task_guard.omc_state_files]
+doc = "The OMC loop state files, in the order checked."
+value = ["ralph-state.json", "ultrawork-state.json", "autopilot-state.json", "ultraqa-state.json", "team-state.json", "ultrapilot-state.json", "pipeline-state.json", "omc-teams-state.json"]
+
+[task_guard.omc_state_max_bytes]
+doc = "Largest OMC state file read; a larger one counts as malformed."
+value = 65536
+min = 1
+
+[task_guard.omc_active_key]
+doc = "The state field that must be exactly true."
+value = "active"
+
+[task_guard.omc_ts_keys]
+doc = "The state fields that may carry a fresh time, in the order tried."
+value = ["last_checked_at", "updated_at", "started_at"]
+
+[task_guard.omc_fresh_ms]
+doc = "How old an OMC loop's newest time may be for the loop to count as active."
+value = 7200000
+min = 1
+unit = "ms"
+
+[task_guard.omc_session_key]
+doc = "The state field that ties a loop to one session."
+value = "session_id"
+
+[task_guard.js_object_text]
+doc = "JavaScript's `String()` of a plain object."
+value = "[object Object]"
+
+# -- task-guard: the per-prompt budget (hooks/lib/stop-policy.js budgetSpent)
+
+[task_guard.budget_setting]
+doc = "Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget)."
+value = { section = "guards", key = "stopNagBudgetPerPrompt", env = "ANTIHALL_STOP_NAG_BUDGET", aliases = [], min = 0, default = 0 }
+
+[task_guard.stop_policy_dir]
+doc = "The budget files' directory inside the anti-hall directory, as path segments."
+value = ["devswarm", "stop-policy"]
+
+[task_guard.stop_policy_ext]
+doc = "The ending of a session's budget file."
+value = ".json"
+
+[task_guard.budget_bucket]
+doc = "The last part of the budget bucket key (`<session>|task-guard|<this>`)."
+value = "prompt"
+
+[task_guard.budget_key_field]
+doc = "The bucket field holding the prompt the count belongs to."
+value = "promptKey"
+
+[task_guard.budget_count_field]
+doc = "The bucket field holding the blocks made for that prompt."
+value = "count"
+
+[task_guard.budget_at_field]
+doc = "The bucket field holding the time of the last block."
+value = "lastAt"
+
+[task_guard.prompt_id_key]
+doc = "The Stop payload field that names the prompt."
+value = "prompt_id"
+
+[task_guard.user_type]
+doc = "The transcript entry type of a user turn."
+value = "user"
+
+[task_guard.tool_result_type]
+doc = "The content block type of a tool result (not a real user prompt)."
+value = "tool_result"
 
 # ---- work detection (checks::taskkit::workdetect: lib/work-detect.js) ---------------------------------------------------
 

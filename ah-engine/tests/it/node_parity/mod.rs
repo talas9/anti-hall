@@ -24,6 +24,7 @@ mod fx;
 mod fx_dispatch_tier;
 mod fx_lifecycle;
 mod fx_task_guard;
+mod fx_task_guard_fire;
 mod fx_tasklines;
 mod fx_tasklist_guard;
 mod git_audit;
@@ -153,6 +154,14 @@ fn task_guard_matches_node() {
     let Some(hooks) = hooks_dir() else { return };
     let (scenarios, _shared, must) = fx_task_guard::corpus();
     fx::require(&fx_task_guard::opts(must), &hooks, scenarios, 250);
+}
+
+#[test]
+fn task_guard_fire_paths_match_node() {
+    let _s = serial();
+    let Some(hooks) = hooks_dir() else { return };
+    let (scenarios, _shared, must) = fx_task_guard_fire::corpus();
+    fx::require(&fx_task_guard_fire::opts(must), &hooks, scenarios, 90);
 }
 
 #[test]
@@ -305,6 +314,13 @@ fn the_task_guard_comparison_notices_a_changed_node_answer() {
     let _s = serial();
     let (scenarios, _shared, must) = fx_task_guard::corpus();
     fx_notices(fx_task_guard::opts(must), scenarios, 40);
+}
+
+#[test]
+fn the_task_guard_fire_comparison_notices_a_changed_node_answer() {
+    let _s = serial();
+    let (scenarios, _shared, must) = fx_task_guard_fire::corpus();
+    fx_notices(fx_task_guard_fire::opts(must), scenarios, 20);
 }
 
 #[test]
