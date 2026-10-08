@@ -18,6 +18,7 @@ mod ctxbudget_e2e;
 mod defaults_failover;
 mod defaults_keys;
 mod dep_budget;
+mod devswarm_act_witness;
 mod devswarm_gates_parity;
 mod devswarm_prompt_parity;
 mod devswarm_readside_parity;
