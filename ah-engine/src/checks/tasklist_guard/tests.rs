@@ -43,3 +43,30 @@ fn a_task_line_only_javascript_can_parse_is_unsure_not_skipped() {
     assert!(scan::has_task_activity_in_text(line).is_err());
     assert_eq!(scan::has_task_activity_in_text("TaskCreate {oops").ok(), Some(false));
 }
+
+#[test]
+fn the_resume_nudge_stamp_lands_only_when_its_reply_is_delivered() {
+    // P2 follow-up of P1-2: the once-only stamp was written before the reply, so a nudge the client never received was lost for good
+    let home = std::env::temp_dir().join(format!("ah-tl-stamp-{}", std::process::id()));
+    let base = home.join(defaults::text("paths.base_dir"));
+    std::fs::create_dir_all(&base).unwrap();
+    let handover = home.join("handover.md");
+    std::fs::write(&handover, "not verified").unwrap();
+    let marker = base.join(format!("{}s1.json", defaults::text("tasklist_guard.resume_marker_prefix")));
+    std::fs::write(&marker, json!({"handoverFile": handover.to_str().unwrap()}).to_string()).unwrap();
+    let fired = base.join(format!("{}s1.json", defaults::text("tasklist_guard.resume_nudged_prefix")));
+    let h = home.to_str().unwrap();
+    crate::deadline::begin(std::time::Instant::now());
+    assert!(check_resume_verification(h, "s1", 100, 0.0).unwrap().is_some());
+    assert!(!fired.exists(), "staged, not stamped, before the reply");
+    crate::deadline::settle_staged(false); // the reply could not be written
+    crate::deadline::end();
+    assert!(!fired.exists(), "an undelivered nudge stays unsent: the next Stop sends it");
+    crate::deadline::begin(std::time::Instant::now());
+    assert!(check_resume_verification(h, "s1", 100, 0.0).unwrap().is_some());
+    crate::deadline::settle_staged(true);
+    crate::deadline::end();
+    assert!(fired.exists(), "a delivered nudge is stamped once");
+    assert!(check_resume_verification(h, "s1", 100, 0.0).unwrap().is_none());
+    crate::discard::harmless(std::fs::remove_dir_all(&home));
+}
