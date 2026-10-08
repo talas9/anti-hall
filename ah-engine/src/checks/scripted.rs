@@ -44,3 +44,21 @@ impl Check for Scripted {
 
 /// `api-guard` (PreToolUse on Write, Edit, MultiEdit, Bash; apply_patch for Codex).
 pub static API_GUARD: Scripted = Scripted::new("api-guard", "api_guard.summary");
+
+/// `inbox-read-guard` (PreToolUse on Read).
+pub static INBOX_READ_GUARD: Scripted = Scripted::new("inbox-read-guard", "inbox_read.summary");
+
+/// `orch-on-spawn` (PreToolUse on Agent, Task, Workflow; Codex's spawn tool).
+pub static ORCH_ON_SPAWN: Scripted = Scripted::new("orch-on-spawn", "orch_on_spawn.summary");
+
+/// `verify-first-subagent` (SubagentStart).
+pub static VERIFY_FIRST_SUBAGENT: Scripted = Scripted::new("verify-first-subagent", "verify_first.summary_subagent");
+
+/// `verify-first-full` (SessionStart).
+pub static VERIFY_FIRST_FULL: Scripted = Scripted::new("verify-first-full", "verify_first.summary_full");
+
+/// `fable-availability` (SessionStart).
+pub static FABLE_AVAILABILITY: Scripted = Scripted::new("fable-availability", "fable_availability.summary");
+
+/// `edit-guard` (PreToolUse on Edit, Write, MultiEdit, NotebookEdit; apply_patch for Codex).
+pub static EDIT_GUARD: Scripted = Scripted::new("edit-guard", "edit_guard.summary");

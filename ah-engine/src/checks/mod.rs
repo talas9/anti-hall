@@ -23,20 +23,16 @@ pub mod devswarm_gates;
 pub mod devswarm_prompt;
 pub mod devswarm_role;
 pub mod dispatch_tier;
-pub mod edit_guard;
 pub mod emit_dedupe;
-pub mod fable_availability;
 pub mod failure_nudge;
 pub mod git;
 pub mod guardkit;
 pub mod handover;
 pub mod idle_agent_sweep;
-pub mod inbox_read_guard;
 pub mod jsport;
 pub mod merge_gate;
 pub mod merge_side_pick;
 pub mod model_routing;
-pub mod orch_on_spawn;
 pub mod output_verify;
 pub mod phase_tracker;
 pub mod replykit;
@@ -57,7 +53,6 @@ pub mod task_lifecycle_log;
 pub mod taskkit;
 pub mod tasklist_guard;
 pub mod taskstate;
-pub mod verify_first;
 pub mod verify_first_orch;
 pub mod verify_first_prompt;
 
@@ -204,12 +199,12 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &model_routing::ModelRouting,
         &failure_nudge::FailureRootCauseNudge,
         &git::audit::GitAudit,
-        &verify_first::VerifyFirstSubagent,
-        &verify_first::VerifyFirstFull,
-        &fable_availability::FableAvailability,
-        &inbox_read_guard::InboxReadGuard,
+        &scripted::VERIFY_FIRST_SUBAGENT,
+        &scripted::VERIFY_FIRST_FULL,
+        &scripted::FABLE_AVAILABILITY,
+        &scripted::INBOX_READ_GUARD,
         &phase_tracker::PhaseTracker,
-        &orch_on_spawn::OrchOnSpawn,
+        &scripted::ORCH_ON_SPAWN,
         &verify_first_orch::VerifyFirstOrch,
         &verify_first_prompt::VerifyFirst,
         &idle_agent_sweep::IdleAgentSweep,
@@ -233,7 +228,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &stale_agent_stop_note::StaleAgentStopNote,
         &merge_gate::MergeGate,
         &scripted::API_GUARD,
-        &edit_guard::EditGuard,
+        &scripted::EDIT_GUARD,
         &devswarm_comms::DevswarmCommsGuard,
         &swarm_guard::SwarmGuard,
         &session_gates::JevWeeklyScorecard,

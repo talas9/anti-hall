@@ -1,0 +1,3 @@
+# D88 v1.0 gate: the most checks that may still decide in compiled Rust (see tests/compiled_logic_gate.rs).
+# Batch 1 (lane d88) took it from 62 to 55.
+55
