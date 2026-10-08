@@ -74,7 +74,7 @@ fn main() {
         let check: &dyn Check = get(name).unwrap();
         let s = subject(payload);
         let t = Instant::now();
-        let first = ah_engine::script::run_forced(name, payload, &env).unwrap();
+        let first = ah_engine::script::run_forced(name, payload, &serde_json::Value::Null, "PreToolUse", &env).unwrap();
         let cold_us = t.elapsed().as_secs_f64() * 1e6;
         let (mut c, mut sc) = (Vec::with_capacity(n), Vec::with_capacity(n));
         for _ in 0..n {
@@ -82,7 +82,7 @@ fn main() {
             let a = check.run_env(&s, payload, &Value::Null, &env);
             c.push(t.elapsed().as_secs_f64() * 1e6);
             let t = Instant::now();
-            let b = ah_engine::script::run_forced(name, payload, &env).unwrap();
+            let b = ah_engine::script::run_forced(name, payload, &serde_json::Value::Null, "PreToolUse", &env).unwrap();
             sc.push(t.elapsed().as_secs_f64() * 1e6);
             assert_eq!(a, b, "{name} {label}");
         }

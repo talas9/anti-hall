@@ -43,5 +43,6 @@ files = [
     "mesh.toml",
     "sibling_sweep.toml",
     "limits.toml",
+    "script.toml",
 ]
 extra_dir = "hooks.d"

@@ -1,6 +1,8 @@
 // anti-hall check logic: the `ah` API every check script uses (D88). The engine installs only the raw, generic,
 // read-only primitives as `ahHost`; this file shapes them. Editable like every other script here.
 'use strict';
+// The engine returns `undefined` for an absent optional value; the API gives `null`.
+function ahNull(v) { return v === undefined ? null : v; }
 var ahCfgMemo = { gen: -1, map: new Map() };
 var ah = {
   // Defaults entries, memoized until the engine loads a new defaults snapshot (a file edit or a plugin update).
@@ -14,10 +16,11 @@ var ah = {
   cfgNum: function (key) { return ahHost.cfgNum(key); },
   // The hook's own environment (the request's, never the daemon's); null when a variable is unset.
   env: {
-    get: function (name) { return ahHost.env(name); },
-    passwdHome: function () { return ahHost.passwdHome(); },
+    get: function (name) { return ahNull(ahHost.env(name)); },
+    passwdHome: function () { return ahNull(ahHost.passwdHome()); },
   },
-  // The SCOPED write: an atomic write of `text` to `rel`, a relative path under the state directory (~/.anti-hall). Throws
+  // The SCOPED write: an atomic write of `text` to `rel`, a path relative to the home directory that lies under the state
+  // directory (~/.anti-hall). Throws
   // for a path outside it, a link below it or a text over the cap (the check then takes its failure policy); returns false
   // when the disk refuses.
   state: {
@@ -31,8 +34,9 @@ var ah = {
   },
   fs: {
     isFile: function (p) { return ahHost.isFile(p); },
-    realpath: function (p) { return ahHost.realpath(p); },
-    readText: function (p, max) { return ahHost.readText(p, max === undefined ? 0 : max); },
+    size: function (p) { return ahNull(ahHost.fileSize(p)); },
+    realpath: function (p) { return ahNull(ahHost.realpath(p)); },
+    readText: function (p, max) { return ahNull(ahHost.readText(p, max === undefined ? 0 : max)); },
   },
   path: {
     isAbsolute: function (p) { return ahHost.pathIsAbsolute(p); },

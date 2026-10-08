@@ -18,10 +18,11 @@
 //! | `reFind(src, flags, text)` / `reFindAll` | match positions in UTF-16 units: `[start, end]` / `[s0, e0, s1, e1, ...]` |
 //! | `env(name)` | a variable of the hook's own environment (the request's, never the daemon's), or `null` |
 //! | `settingEnum(key)` / `settingNum(key)` | the effective value of the enum / numeric setting described by defaults entry `key` |
+//! | `fileSize(path)` | the size in bytes of a regular file, or `null` |
 //! | `passwdHome()` | the user's home as the passwd database has it, or `null` |
 //! | `realpath(path)` | the canonical path (links resolved), or `null` when it does not exist |
 //! | `pathResolve(base, p)` | Node `path.resolve(base, p)` (posix) |
-//! | `writeAtomic(rel, text)` | the SCOPED write: see [`write_atomic`] |
+//! | `writeAtomic(rel, text)` | the SCOPED write (`rel` is relative to the home directory, under the state directory): see [`write_atomic`] |
 //! | `turnText(path, maxBytes, hint)` | the current turn's assistant text of a transcript, as JSON text (see [`turn_text`]) |
 //!
 //! Request state (the settings of the hook's own environment) is set for the duration of one call by [`with_call`].
@@ -108,13 +109,13 @@ fn refused(why: &str) -> Error {
     err("writeAtomic", defaults::render("script.msg_write_refused", &[("why", &why)]))
 }
 
-/// The scoped write API (D88 condition a): write `text` atomically to `rel`, a path RELATIVE to the script write root
-/// (`<home>/<script.write_root>`, the anti-hall state directory), through the engine's atomic helper.
+/// The scoped write API (D88 condition a): write `text` atomically to `rel`, a path RELATIVE to the home directory that must
+/// lie under the script write root (`script.write_root`, the anti-hall state directory), through the engine's atomic helper.
 ///
-/// Refused (the call throws, so the check takes its failure policy): an absolute path, a `..` / `.` / empty / NUL-bearing
-/// component, a text over `script.write_max_bytes`, a relative path longer than `script.write_path_max`, a symlink at ANY
-/// existing component under the root (an escape through a link), a target that is not a regular file, and a root that is
-/// not an absolute directory. An I/O failure (disk full, permission) returns `false`. Directories under the root are
+/// Refused (the call throws, so the check takes its failure policy): an absolute path, a path whose first part is not the
+/// write root, a `..` / `.` / empty / NUL-bearing part, a text over `script.write_max_bytes`, a path longer than
+/// `script.write_path_max`, a symlink at ANY existing part below the root (an escape through a link) and a home that is not an absolute
+/// path. A file where a directory is needed, or a directory where the file goes, is an I/O failure: the call returns `false`. An I/O failure (disk full, permission) returns `false`. Directories under the root are
 /// created as needed. The check and the write are separate steps, so a process that races a link into the tree between
 /// them is not excluded; the root is the owner's own state directory, so that is the owner racing themselves.
 pub fn write_atomic(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool> {
@@ -128,18 +129,18 @@ pub fn write_atomic(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool>
         return Err(refused(defaults::text("script.write_why_path")));
     }
     let parts: Vec<&str> = rel.split('/').collect();
-    if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
+    if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") || parts.len() < 2 || parts[0] != defaults::text("script.write_root") {
         return Err(refused(defaults::text("script.write_why_path")));
     }
-    let root: PathBuf = Path::new(home).join(defaults::text("script.write_root"));
+    let root: PathBuf = Path::new(home).join(parts[0]);
     let mut cur = root.clone();
     let last = parts.len() - 1;
-    for (i, part) in parts.iter().enumerate() {
+    for (i, part) in parts.iter().enumerate().skip(1) {
         cur.push(part);
         match std::fs::symlink_metadata(&cur) {
             Ok(m) if m.file_type().is_symlink() => return Err(refused(defaults::text("script.write_why_link"))),
-            Ok(m) if i < last && !m.is_dir() => return Err(refused(defaults::text("script.write_why_path"))),
-            Ok(m) if i == last && !m.is_file() => return Err(refused(defaults::text("script.write_why_path"))),
+            // a file where a directory is needed, or a directory where the file goes: the disk cannot take the write
+            Ok(m) if (i < last && !m.is_dir()) || (i == last && !m.is_file()) => return Ok(false),
             _ => {}
         }
     }
@@ -152,7 +153,8 @@ pub fn write_atomic(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool>
     if !real_parent.starts_with(&real_root) {
         return Err(refused(defaults::text("script.write_why_link")));
     }
-    Ok(crate::atomic::write(&cur, text).is_ok())
+    let style = crate::atomic::Style { skip_sync: defaults::num("script.write_sync") == 0, ..crate::atomic::Style::default() };
+    Ok(crate::atomic::write_styled(&cur, text, style).is_ok())
 }
 
 /// The user's home as the passwd database has it.
@@ -207,6 +209,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
             with_settings(|st| settings::get_number(st, &e.value))
         })?,
     )?;
+    h.set("fileSize", Function::new(c.clone(), |p: String| std::fs::metadata(p).ok().filter(std::fs::Metadata::is_file).map(|m| m.len() as f64))?)?;
     h.set("passwdHome", Function::new(c.clone(), passwd_home)?)?;
     h.set("realpath", Function::new(c.clone(), |p: String| std::fs::canonicalize(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
     h.set("pathResolve", Function::new(c.clone(), |a: String, b: String| paths::resolve(&a, &b))?)?;

@@ -19,6 +19,10 @@ pub struct Style {
     pub keep_json_ext: bool,
     /// Leave the temporary file in place when the final rename fails, as Node's `writeFileSync` + `renameSync` do.
     pub leave_temp_on_rename_failure: bool,
+    /// Do not `sync_all` the temporary file before the rename. A reader still never sees a half-written file; only a power cut
+    /// right after the rename can then leave the new name with empty contents. For advisory state that is rebuilt at the next
+    /// run (a scripted write sets this from `script.write_sync`).
+    pub skip_sync: bool,
 }
 
 /// The temporary sibling of `path`. Unique per process and per call (pid + counter), so two threads, or two daemons, never
@@ -56,7 +60,7 @@ pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Styl
     let staged = (|| {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes.as_ref())?;
-        f.sync_all()
+        if style.skip_sync { Ok(()) } else { f.sync_all() }
     })();
     if let Err(e) = staged {
         // Best effort: the original error is the one worth returning; a leftover temp file is swept later.
@@ -94,6 +98,18 @@ mod tests {
         write(&f, "one").unwrap();
         write(&f, b"two".as_slice()).unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "two");
+        assert_eq!(entries(&d), vec!["state.json"]);
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
+    }
+
+    #[test]
+    fn an_unsynced_write_still_replaces_atomically_without_leftovers() {
+        let d = dir("nosync");
+        let f = d.join("state.json");
+        for text in ["one", "two"] {
+            write_styled(&f, text, Style { skip_sync: true, ..Style::default() }).unwrap();
+            assert_eq!(std::fs::read_to_string(&f).unwrap(), text);
+        }
         assert_eq!(entries(&d), vec!["state.json"]);
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }

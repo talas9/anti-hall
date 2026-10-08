@@ -16,5 +16,7 @@ var text = {
     (p.extra || []).forEach(function (l) { if (l) lines.push(text.clean(l)); });
     return lines.join('\n');
   },
+  // `io.blockDecision(reason)`: the JSON decision and a newline on stdout.
+  blockJson: function (reason) { return JSON.stringify({ decision: 'block', reason: reason }) + '\n'; },
   advisoryJson: function (event, t) { return JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: t } }); },
 };

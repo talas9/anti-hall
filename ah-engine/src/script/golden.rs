@@ -3,7 +3,8 @@
 //! compiled port gave before it was removed. The script must give the byte-identical answer; `parity/run-golden.js` replays
 //! the same corpus against the Node hook, which is the oracle.
 //!
-//! Placeholders in every string of a case: `{HOME}` is the case's fresh home directory, `{HOMEREAL}` its canonical path.
+//! Placeholders in every string of a case: `{HOME}` is the case's fresh home directory, `{HOMEREAL}` its canonical path,
+//! `{PLUGIN}` the canonical plugin root (for a check whose answer names it).
 //! `files` maps a path under the home to its text, or to `{"link": target}` (a symbolic link) or `{"dir": true}`.
 use super::*;
 use serde_json::json;
@@ -18,18 +19,29 @@ pub fn load(check: &str) -> Vec<Value> {
     text.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("golden {check}: {e}"))).collect()
 }
 
+/// The canonical plugin root.
+fn plugin() -> String {
+    let _ = defaults::text("script.ext"); // the root is known once the defaults are loaded
+    let root = defaults::root().expect("plugin root");
+    std::fs::canonicalize(root).unwrap().to_string_lossy().into_owned()
+}
+
+fn fill(s: &str, home: &str, real: &str) -> String {
+    s.replace("{PLUGIN}", &plugin()).replace("{HOMEREAL}", real).replace("{HOME}", home)
+}
+
 fn sub(v: &Value, home: &str, real: &str) -> Value {
     match v {
-        Value::String(s) => Value::String(s.replace("{HOMEREAL}", real).replace("{HOME}", home)),
+        Value::String(s) => Value::String(fill(s, home, real)),
         Value::Array(a) => Value::Array(a.iter().map(|x| sub(x, home, real)).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.replace("{HOMEREAL}", real).replace("{HOME}", home), sub(x, home, real))).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (fill(k, home, real), sub(x, home, real))).collect()),
         other => other.clone(),
     }
 }
 
 /// The inverse of [`sub`] for an answer (canonical path first: it contains the plain one).
 fn unsub(s: &str, home: &str, real: &str) -> String {
-    s.replace(real, "{HOMEREAL}").replace(home, "{HOME}")
+    s.replace(&plugin(), "{PLUGIN}").replace(real, "{HOMEREAL}").replace(home, "{HOME}")
 }
 
 /// A case laid out on disk: `(payload, opts, event, env, home, real home)`.
@@ -57,9 +69,9 @@ pub fn lay(case: &Value) -> Laid {
                 std::fs::create_dir_all(parent).unwrap();
             }
             match spec {
-                Value::String(t) => std::fs::write(&path, t.replace("{HOMEREAL}", &real).replace("{HOME}", &home)).unwrap(),
+                Value::String(t) => std::fs::write(&path, fill(t, &home, &real)).unwrap(),
                 Value::Object(o) if o.contains_key("link") => {
-                    let target = o["link"].as_str().unwrap().replace("{HOMEREAL}", &real).replace("{HOME}", &home);
+                    let target = fill(o["link"].as_str().unwrap(), &home, &real);
                     std::os::unix::fs::symlink(target, &path).unwrap();
                 }
                 _ => std::fs::create_dir_all(&path).unwrap(),
@@ -69,7 +81,7 @@ pub fn lay(case: &Value) -> Laid {
     let env: Vec<(String, String)> = case
         .get("env")
         .and_then(Value::as_object)
-        .map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().replace("{HOMEREAL}", &real).replace("{HOME}", &home))).collect())
+        .map(|o| o.iter().map(|(k, v)| (k.clone(), fill(v.as_str().unwrap_or_default(), &home, &real))).collect())
         .unwrap_or_default();
     Laid {
         payload: sub(case.get("payload").unwrap_or(&Value::Null), &home, &real),
@@ -95,6 +107,32 @@ pub fn verdict_json(v: &Option<Verdict>, l: &Laid) -> Value {
     }
 }
 
+/// The text of a watched file with its timestamps (runs of 12 or more digits) replaced by `{TS}`, or `null` when absent.
+fn watched(home: &str, real: &str, rel: &str) -> Value {
+    let Ok(text) = std::fs::read_to_string(Path::new(home).join(rel)) else { return Value::Null };
+    let text = unsub(&text, home, real);
+    let mut out = String::new();
+    let mut run = String::new();
+    for ch in text.chars().chain(std::iter::once('\0')) {
+        if ch.is_ascii_digit() {
+            run.push(ch);
+            continue;
+        }
+        out.push_str(if run.len() >= 12 { "{TS}" } else { &run });
+        run.clear();
+        if ch != '\0' {
+            out.push(ch);
+        }
+    }
+    Value::String(out)
+}
+
+/// What a case's `watch` files hold after a run: `{rel: text-with-{TS}-or-null}`.
+fn watched_all(case: &Value, l: &Laid) -> Value {
+    let rels: Vec<&str> = case.get("watch").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    Value::Object(rels.iter().map(|r| (r.to_string(), watched(&l.home, &l.real, r))).collect())
+}
+
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
 pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
     let mut kinds = BTreeMap::new();
@@ -104,7 +142,17 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
         let l = lay(c);
         let got = run_forced(check, &l.payload, &l.opts, &l.event, &l.env).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = verdict_json(&got, &l);
-        assert_eq!(got, c["expect"], "{check}: script differs from the compiled port on case {}: {}", c["n"], c["payload"]);
+        assert_eq!(
+            got,
+            c["expect"],
+            "{check}: script differs from the compiled port on case {}: {} (script errors: {:?})",
+            c["n"],
+            c["payload"],
+            crate::discard::captured()
+        );
+        if c.get("watch").is_some() {
+            assert_eq!(watched_all(c, &l), c["writes"], "{check}: the files the script wrote differ from the compiled port's on case {}", c["n"]);
+        }
         *kinds.entry(got["v"].as_str().unwrap_or("").to_string()).or_insert(0) += 1;
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
     }
@@ -119,6 +167,9 @@ pub fn regenerate(check: &str, compiled: &dyn Fn(&Laid) -> Option<Verdict>) {
         let l = lay(&c);
         let mut c = c;
         c["expect"] = verdict_json(&compiled(&l), &l);
+        if c.get("watch").is_some() {
+            c["writes"] = watched_all(&c, &l);
+        }
         out.push_str(&serde_json::to_string(&c).unwrap());
         out.push('\n');
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory

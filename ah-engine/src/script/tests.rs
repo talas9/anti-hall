@@ -275,9 +275,9 @@ fn write_home(tag: &str) -> String {
 #[test]
 fn a_scripted_write_lands_atomically_under_the_state_directory() {
     let h = write_home("w-ok");
-    assert!(host::write_atomic(&h, "orch-full/m-1.json", "{\"a\":1}").unwrap());
+    assert!(host::write_atomic(&h, ".anti-hall/orch-full/m-1.json", "{\"a\":1}").unwrap());
     assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/orch-full/m-1.json")).unwrap(), "{\"a\":1}");
-    assert!(host::write_atomic(&h, "orch-full/m-1.json", "second").unwrap(), "replacing a file is allowed");
+    assert!(host::write_atomic(&h, ".anti-hall/orch-full/m-1.json", "second").unwrap(), "replacing a file is allowed");
     assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/orch-full/m-1.json")).unwrap(), "second");
     let stray: Vec<_> = std::fs::read_dir(format!("{h}/.anti-hall/orch-full")).unwrap().flatten().collect();
     assert_eq!(stray.len(), 1, "the atomic helper leaves no temporary file");
@@ -287,14 +287,35 @@ fn a_scripted_write_lands_atomically_under_the_state_directory() {
 fn a_scripted_write_refuses_every_path_outside_the_state_directory() {
     let h = write_home("w-path");
     let long = "a".repeat(defaults::num("script.write_path_max") as usize + 1);
-    for bad in ["/etc/x", "../x", "a/../../b", "a/..", "./a", "a/./b", "a//b", "a/", "", "..", ".", "a\0b", long.as_str(), "/"] {
+    for bad in [
+        "/etc/x",
+        "../x",
+        ".anti-hall/../x",
+        ".anti-hall/a/../../b",
+        ".anti-hall/..",
+        "./.anti-hall/a",
+        ".anti-hall/./b",
+        ".anti-hall//b",
+        ".anti-hall/",
+        ".anti-hall",
+        "",
+        "..",
+        ".",
+        ".anti-hall/a\0b",
+        "x/y",
+        "elsewhere/f",
+        ".anti-hallx/f",
+        "/.anti-hall/f",
+        long.as_str(),
+        "/",
+    ] {
         assert!(host::write_atomic(&h, bad, "t").is_err(), "{bad:?} must be refused");
     }
     assert!(!std::path::Path::new(&format!("{h}/x")).exists(), "nothing escaped the root");
-    assert!(host::write_atomic("relative/home", "a", "t").is_err(), "no absolute home");
+    assert!(host::write_atomic("relative/home", ".anti-hall/a", "t").is_err(), "no absolute home");
     let big = "x".repeat(defaults::num("script.write_max_bytes") as usize + 1);
-    assert!(host::write_atomic(&h, "big", &big).is_err(), "over the size cap");
-    assert!(host::write_atomic(&h, "ok", &big[..big.len() - 1]).unwrap(), "exactly at the cap is allowed");
+    assert!(host::write_atomic(&h, ".anti-hall/big", &big).is_err(), "over the size cap");
+    assert!(host::write_atomic(&h, ".anti-hall/ok", &big[..big.len() - 1]).unwrap(), "exactly at the cap is allowed");
 }
 
 #[test]
@@ -307,7 +328,7 @@ fn a_scripted_write_refuses_to_follow_a_link_out_of_the_state_directory() {
     std::os::unix::fs::symlink(&outside, format!("{h}/.anti-hall/dirlink")).unwrap();
     std::os::unix::fs::symlink(outside.join("secret"), format!("{h}/.anti-hall/filelink")).unwrap();
     std::os::unix::fs::symlink(outside.join("new"), format!("{h}/.anti-hall/dangling")).unwrap();
-    for rel in ["dirlink/f", "dirlink/secret", "filelink", "dangling", "dirlink/deep/er"] {
+    for rel in [".anti-hall/dirlink/f", ".anti-hall/dirlink/secret", ".anti-hall/filelink", ".anti-hall/dangling", ".anti-hall/dirlink/deep/er"] {
         assert!(host::write_atomic(&h, rel, "pwned").is_err(), "{rel} must be refused");
     }
     assert_eq!(std::fs::read_to_string(outside.join("secret")).unwrap(), "keep");
@@ -315,23 +336,23 @@ fn a_scripted_write_refuses_to_follow_a_link_out_of_the_state_directory() {
     // a file where a directory is needed, and a directory where a file is
     std::fs::write(format!("{h}/.anti-hall/plain"), "x").unwrap();
     std::fs::create_dir_all(format!("{h}/.anti-hall/adir")).unwrap();
-    assert!(host::write_atomic(&h, "plain/f", "t").is_err());
-    assert!(host::write_atomic(&h, "adir", "t").is_err());
+    assert!(!host::write_atomic(&h, ".anti-hall/plain/f", "t").unwrap(), "an I/O failure, not a policy violation");
+    assert!(!host::write_atomic(&h, ".anti-hall/adir", "t").unwrap());
     // the state directory itself may be a link the owner set up: what is refused is a link BELOW it
     let h2 = home("w-rootlink");
     let real = format!("{h2}/elsewhere");
     std::fs::create_dir_all(&real).unwrap();
     std::fs::remove_dir_all(format!("{h2}/.anti-hall")).unwrap();
     std::os::unix::fs::symlink(&real, format!("{h2}/.anti-hall")).unwrap();
-    assert!(host::write_atomic(&h2, "f", "t").unwrap());
+    assert!(host::write_atomic(&h2, ".anti-hall/f", "t").unwrap());
     assert_eq!(std::fs::read_to_string(format!("{real}/f")).unwrap(), "t");
 }
 
 #[test]
 fn a_script_that_tries_to_escape_the_state_directory_fails_and_defers() {
     let h = write_home("w-script");
-    put_override(&h, "zz-escape", "function decide(p){ ah.state.writeAtomic('../escaped', 'x'); return 'allow'; }");
-    put_override(&h, "zz-write", "function decide(p){ return ah.state.writeAtomic('zz/ok.txt', 'hello') ? 'allow' : 'defer'; }");
+    put_override(&h, "zz-escape", "function decide(p){ ah.state.writeAtomic('.anti-hall/../escaped', 'x'); return 'allow'; }");
+    put_override(&h, "zz-write", "function decide(p){ return ah.state.writeAtomic('.anti-hall/zz/ok.txt', 'hello') ? 'allow' : 'defer'; }");
     let e = env(&h);
     assert_eq!(run_forced("zz-escape", &json!({}), &e), Some(Some(Verdict::Defer)), "the refusal is a script failure, so Node decides");
     assert!(!std::path::Path::new(&format!("{h}/escaped")).exists());
@@ -402,4 +423,57 @@ fn the_compiled_logic_counter_counts_the_checks_without_a_script_entry() {
 fn api_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("api-guard");
     assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 50, "a corpus that exercises both answers: {kinds:?}");
+}
+
+#[test]
+fn orch_on_spawn_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("orch-on-spawn");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 20 && kinds.get("defer").copied().unwrap_or(0) > 5, "both answers: {kinds:?}");
+}
+
+#[test]
+fn verify_first_subagent_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("verify-first-subagent");
+    assert!(kinds.get("advisory").copied().unwrap_or(0) > 20 && kinds.get("allow").copied().unwrap_or(0) > 5, "advisory and allow: {kinds:?}");
+}
+
+#[test]
+fn verify_first_full_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("verify-first-full");
+    assert!(kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("allow").copied().unwrap_or(0) > 5, "advisory and allow: {kinds:?}");
+}
+
+#[test]
+fn fable_availability_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("fable-availability");
+    assert!(kinds.get("advisory").copied().unwrap_or(0) > 5 && kinds.get("allow").copied().unwrap_or(0) > 20, "advisory and allow: {kinds:?}");
+}
+
+#[test]
+fn edit_guard_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("edit-guard");
+    for k in ["allow", "defer", "exact"] {
+        assert!(kinds.get(k).copied().unwrap_or(0) > 20, "a corpus that exercises {k}: {kinds:?}");
+    }
+}
+
+#[test]
+fn a_config_nested_past_the_compiled_readers_limit_is_decided_as_node_decides_it() {
+    // The compiled port could not parse JSON nested past 128 and deferred; JSON.parse (Node's reader) can, so the script
+    // decides: nothing about Fable in it, so the state is written with `available: null` and the check stays silent.
+    let h = write_home("fa-deep");
+    std::fs::write(format!("{h}/.claude.json"), format!("{}{}", "[".repeat(200), "]".repeat(200))).unwrap();
+    let e = env(&h);
+    assert_eq!(run_forced("fable-availability", &json!({}), &e), Some(Some(Verdict::Allow)));
+    let state = std::fs::read_to_string(format!("{h}/.anti-hall/fable-availability.json")).unwrap();
+    assert!(state.starts_with("{\"available\":null,\"checkedAt\":") && state.ends_with(",\"source\":\"unknown\"}"), "{state}");
+}
+
+#[test]
+fn a_config_over_the_read_cap_defers_instead_of_being_read_truncated() {
+    let h = write_home("fa-big");
+    let cap = defaults::num("script.read_max_bytes") as usize;
+    std::fs::write(format!("{h}/.claude.json"), format!("{{\"pad\":\"{}\"}}", "x".repeat(cap))).unwrap();
+    assert_eq!(run_forced("fable-availability", &json!({}), &env(&h)), Some(Some(Verdict::Defer)));
+    assert!(!std::path::Path::new(&format!("{h}/.anti-hall/fable-availability.json")).exists(), "nothing written before the deferral");
 }

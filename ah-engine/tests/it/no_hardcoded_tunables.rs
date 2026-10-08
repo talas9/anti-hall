@@ -66,6 +66,12 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/main.rs", "static ALLOC", "the global allocator item: a language construct, not a value"),
     ("src/load.rs", "static SCAN_BYTES", "a thread-local counter initialised to zero: state, not a tunable"),
     ("src/load.rs", "static REQUEST", "a thread-local slot initialised empty: state, not a tunable"),
+    (
+        "src/checks/scripted.rs",
+        "Scripted::new(",
+        "the registry identity of a scripted check: its name and the defaults key of its summary, which is how the registry is addressed, not a tunable",
+    ),
+    ("src/checks/scripted.rs", "const fn new(", "the constructor signature of the registry identity above"),
     ("src/script/mod.rs", "static POOL", "a thread-local slot for the worker's interpreter, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static CALL", "a thread-local slot for the request state of one script call, initialised empty: state, not a tunable"),
     ("src/script/host.rs", "static RES", "a thread-local regex cache, initialised empty (its size bound is script.regex_cache_max): state, not a tunable"),
@@ -234,7 +240,7 @@ fn file_name_literal(s: &str) -> bool {
 }
 
 /// Files that are not engine code paths (test helpers).
-const SKIP_FILES: &[&str] = &["tests.rs"];
+const SKIP_FILES: &[&str] = &["tests.rs", "golden.rs"]; // golden.rs: the cfg(test) corpus harness of the scripted checks
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in fs::read_dir(dir).unwrap().flatten() {
