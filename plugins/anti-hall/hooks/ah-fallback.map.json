@@ -1,5 +1,6 @@
 {
   "PostToolUse": {
+    "agent-reminders": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"",
     "codex-quota-detect": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js\"",
     "coordinator-work-guard:post": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post",
     "devswarm-child-drain": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"",
@@ -89,6 +90,7 @@
     "task-lifecycle-log": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\""
   },
   "UserPromptSubmit": {
+    "agent-reminders": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"",
     "auto-handover": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"",
     "devswarm-child-turn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"",
     "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",

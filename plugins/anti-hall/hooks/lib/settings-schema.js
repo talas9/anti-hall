@@ -232,6 +232,16 @@ const SECTIONS = [
     ],
   },
   {
+    key: 'agents',
+    label: 'Agent tracker',
+    description: 'The engine-side agent tracker: follows every agent, raises hung / looping / token-waste / drift / stale-heartbeat / no-wake-path signals, and reminds. It never stops an agent.',
+    settings: [
+      { key: 'tracker', type: 'boolean', default: true, env: 'ANTIHALL_AGENT_TRACKER', description: 'agent tracker (engine job agent_tick): track agents and raise signals; off, a tick does nothing.' },
+      { key: 'reminders', type: 'boolean', default: true, env: 'ANTIHALL_AGENT_REMINDERS', description: 'agent-reminders (UserPromptSubmit, PostToolUse): deliver the tracker\'s queued reminders to the agent that owns them; off, signals are recorded but nothing is queued.' },
+      { key: 'ownerNotify', type: 'boolean', default: false, env: 'ANTIHALL_AGENT_OWNER_NOTIFY', description: 'agent tracker owner notices: also append hung / looping / token-waste advisories to the owner notices file.' },
+    ],
+  },
+  {
     key: 'versionAlerts',
     label: 'Version Alerts',
     description: 'Update-available nudges for anti-hall, Claude CLI, and DevSwarm.',

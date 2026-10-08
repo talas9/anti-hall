@@ -378,6 +378,7 @@ arguments, is in the generated reference.
 | `ah-engine config validate <file>` | yes | Check an engine TOML file against the schema: exit 0 when valid, 1 with the reason when not. |
 | `ah-engine config heal` | no | Add the settings the edited engine files lack, taken from the pristine copy (existing text kept, the file backed up first, idempotent). The automatic heal skips a version-controlled checkout; this command does not. |
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
+| `ah-engine agents status\|tick [--json]` | no | The agent tracker: `status` lists every tracked agent (tokens, cache, tool calls, progress, last output, state, flags) with today's reminder and recovery totals and never changes anything; `tick` runs one tracker tick now. See The agent tracker. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
 | `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history`, `roster --ack`, `inbox ack-primary`, the plain `heartbeat` and `inbox tick <id> --quiet` itself (store write, lock and summary refresh) where it reproduces Node exactly and hands the rest to Node before writing anything; a failure after its own write exits 70 without rerunning Node (exit-code contract and per-verb telemetry: see Mesh verbs below). Off again: `{"mesh":{"engine_writes":"off"}}` in `~/.anti-hall/settings.json`. |
@@ -767,6 +768,7 @@ so setting it in `config.toml`, `settings.json` or the environment takes effect 
 | `metrics_snapshot` | metrics snapshot and rollups (D51) | a minute (`telemetry.snapshot_ms`) | in the daemon |
 | `spool_drain` | applies spooled writes (D24) | a second (`spool.drain_ms`) | in the daemon |
 | `procwatch` | process watch: orphans, resource use, report (see Process watch) | 30 s (`schedule.procwatch_ms`) | in the daemon |
+| `agent_tick` | one agent-tracker tick (see The agent tracker) | a minute (`schedule.agent_tick_ms`) | a subprocess |
 
 - **Timing.** The ticker sleeps until the next job is due (at most `schedule.tick_ms`). Each next run is one interval
   after the current one starts, plus up to `jitter_ms`, so jobs do not run in step.
@@ -781,6 +783,56 @@ so setting it in `config.toml`, `settings.json` or the environment takes effect 
   (`ah-engine schedule history`); `maintain` forgets runs older than `retention.schedule_runs_s`.
 - **Agent jobs.** A job of kind `agent` is meant for a session's mailbox; until that lands (planned, D45) each of its
   runs is recorded with the status `planned` (D45), never as a failure.
+
+## The agent tracker
+
+The engine follows every agent it can find and measures it, so a hung, looping or token-wasting agent is noticed and a quiet one is
+reminded. It never kills, stops or edits an agent: it warns and reminds. Everything below is in `agent_tracker.toml`; the three
+switches are `agents.tracker` (the whole feature), `agents.reminders` (queue nothing, only record) and `agents.ownerNotify` (default
+off: the owner channel).
+
+**What it follows.** Main Claude Code sessions, their subagents and background tasks (the transcripts under `~/.claude/projects`),
+agents known only by a heartbeat file (`~/.anti-hall/agents/<id>.json`, the file the Node watchdog reads), and DevSwarm workspaces
+(descriptor, plan and wake-watch lock under `~/.anti-hall/devswarm`; inert when that directory does not exist). Where the Claude Code
+CLI's `claude agents --json` works it adds the host's own busy / waiting / blocked state and whether the process is gone. That source
+is a bounded subprocess, probed once per Claude Code version (the result is cached; the version it was verified on, 2.1.295, is in
+the config and shown by `agents status`), and any failure falls back to the transcripts. Human-formatted CLI output is never parsed.
+
+**What it measures.** Per agent, read incrementally from a byte offset: input, output, cache-read and cache-write tokens (a message
+repeated on several transcript lines is counted once), tool calls, errors, file edits, commits, passing test runs, plan or task steps
+done, the last activity, the declared step, background shell commands and the wake paths armed. Progress units weigh a commit,
+a finished step, a passing test run and a file edited for the first time (`agent_tracker.weights`).
+
+**Signals** (thresholds in `agent_tracker.limits`): `hung` (a running turn with no activity: 20 min, 45 min while a tool call is
+unanswered), `looping` (the same call 5 times in the last 30, the same file edited 9 times, the same error 4 times), `token_waste`
+(600k tokens in 30 minutes with no progress unit; cache reads count 10%), `drift` (under 8% of the declared step's words appear in
+the recent edits and commands), `heartbeat_stale` (a running heartbeat older than 20 min), `monitor_unarmed` (background tasks running
+and no Monitor, cron or scheduled wake alive; for a DevSwarm workspace the wake-watch lock is missing, older than 2 minutes or its
+process gone, which is the same rule `inbox tick` applies to `watcherArmed`).
+
+**Reminders.** A flag must hold two ticks before a reminder. Each signal has a cooldown and a daily cap per agent, a tick has a cap,
+and an agent with 3 undelivered reminders gets no more; a held-back reminder is recorded once per cooldown with its reason.
+`agent_tracker.routes` says where each goes: to the agent itself, to its coordinator (a subagent's parent session, a workspace's
+parent over the mesh, the newest main session for a heartbeat), or to the owner notices file.
+
+**The honest limit.** The engine cannot wake an idle session. A queued reminder reaches a session at its next UserPromptSubmit or
+PostToolUse, through the engine-only scripted check `agent-reminders` (plugin JavaScript, `engine/logic/agent-reminders.js`, which
+advances a line cursor beside the queue and records the delivery). A DevSwarm workspace is reached through
+`agent-tracker/mesh-outbox.ndjson`, the seam the mesh action layer takes nudge rows from. What lets an idle session wake at all is an
+armed Monitor, cron or scheduled wake, which is why a missing one is a signal and its reminder carries the exact command.
+
+**Telemetry.** Kind `agent` (schema in `telemetry.fields`; identifiers and numbers only): `series` (a sample per agent every 5 minutes:
+tokens, tool calls, progress, flagged), `signal` (raised, with the number it tripped on), `reminder` (queued per channel, or held
+back with the reason), `delivery` (a hook put it in front of the agent), `outcome` (`recovered` with the seconds since the reminder,
+`false_positive` for a flag that cleared on its own while the agent made progress, `unrecovered` after `outcome_timeout_ms`,
+`cleared`). `ah-engine telemetry summary` carries `detail.agent`: signals by name, reminders by channel, held back, recoveries and
+the mean recovery time, false positives, and the tokens flagged agents burned. `agents status` prints today's totals from the
+tracker's state file. The series is also kept in `agent-tracker/series.ndjson` (cut by age and size). The Node heartbeat watchdog is
+the non-acting witness: a unit test runs it on the same heartbeat fixtures and requires the same stale set.
+
+**Limits.** A session closed mid-turn looks hung until the CLI listing reports its process gone. Drift is a word-overlap heuristic
+against the declared step (a TodoWrite or TaskUpdate item, or the DevSwarm plan step); it is off for an agent that declares no step. The
+Jev Loop / WaitKind / StepMap verdicts of the evidence sweep are not an input yet.
 
 ## The Jev lane
 
@@ -902,6 +954,7 @@ Files:
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `mcp_reaper.toml` | the session-end MCP sweep: its patterns, init names, age floor, cap, grace period, commands and audit log texts |
+| `agent_tracker.toml` | the agent tracker: every threshold, window, weight, route, cooldown, pattern, word, path and text, the Claude Code CLI source and the `agent-reminders` check |
 | `task_tracker.toml` | the task-tracker directive and reminder texts, window and growth thresholds, the open-tasks line, the Jev label question and the demand-metrics file |
 | `judge.toml` | the judge calls the engine makes itself: the local Claude CLI client, the speculation-judge prompts and evidence limits, the mesh-triage worker's prompts and budgets, and the Jev-first cascade (thresholds, prompts, telemetry words) |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |

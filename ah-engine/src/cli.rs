@@ -63,6 +63,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("restore", cmd_restore),
         ("config", cmd_config),
         ("schedule", cmd_schedule),
+        ("agents", crate::agents::run_cmd),
+        ("agent_tick", cmd_agent_tick),
         ("jev", crate::jev::cli::run_cmd),
         ("jev_sweep", cmd_jev_sweep),
         ("migrate", crate::migrate::cli::run_migrate),
@@ -602,6 +604,11 @@ fn cmd_jev_sweep(_p: &Parsed) -> i32 {
         Some(h) => crate::jev::sweep::run(std::path::Path::new(&h)),
         None => 64,
     }
+}
+
+/// The `agent_tick` scheduled job (`ah-engine agent_tick --json`): one tracker tick.
+fn cmd_agent_tick(p: &Parsed) -> i32 {
+    crate::agents::run_cmd(&Parsed { command: p.command.clone(), json: p.json, rest: vec![defaults::text("agent_tracker.tick_verb").to_string()] })
 }
 
 #[cfg(test)]

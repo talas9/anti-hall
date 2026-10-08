@@ -4,6 +4,7 @@ Bash	10	node "${PLUGIN_ROOT}/hooks/merge-side-pick.js" --post
 Bash	10	node "${PLUGIN_ROOT}/hooks/git-guard.js" --audit
 Bash	10	node "${PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js"
 Bash	10	node "${PLUGIN_ROOT}/hooks/devswarm-child-drain.js"
+*	10	sh "${PLUGIN_ROOT}/hooks/agent-reminders"
 @PreCompact	10
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/precompact-snapshot.js"
 @PreToolUse	45
@@ -59,6 +60,7 @@ Bash	10	sh "${PLUGIN_ROOT}/hooks/procwatch-advisory"
 *	10	node "${PLUGIN_ROOT}/hooks/repair-on-reload.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/hooks/auto-handover.js"
 *	10	sh "${PLUGIN_ROOT}/hooks/procwatch-advisory"
+*	10	sh "${PLUGIN_ROOT}/hooks/agent-reminders"
 @PermissionRequest	10	empty
 @PostCompact	10	empty
 @SubagentStart	10	empty

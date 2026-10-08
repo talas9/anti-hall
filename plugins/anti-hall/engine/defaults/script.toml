@@ -86,7 +86,7 @@ value = "unexpected verdict {value}"
 
 [script.engine_only_checks]
 doc = "Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision."
-value = ["sibling-sweep", "handover-hygiene"]
+value = ["sibling-sweep", "handover-hygiene", "agent-reminders"]
 
 [script.msg_fail_closed]
 doc = "Block reason of an engine-only check on a guard event whose script could not answer. Placeholders: {check}, {why}."

@@ -129,6 +129,16 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
     "timeout": 1
   },
   "detail": {
+    "agent": {
+      "false_positives": 0,
+      "mean_recovery_s": 0,
+      "recoveries": 0,
+      "reminders_sent": {},
+      "reminders_suppressed": {},
+      "series_samples": 0,
+      "signals": {},
+      "tokens_burned_flagged": 0
+    },
     "cmd": {
       "config": {
         "errors": 1,

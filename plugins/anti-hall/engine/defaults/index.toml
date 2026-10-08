@@ -57,5 +57,6 @@ files = [
     "procwatch.toml",
     "resource_watch.toml",
     "disk_watch.toml",
+    "agent_tracker.toml",
 ]
 extra_dir = "hooks.d"
