@@ -93,6 +93,12 @@ pub static MODEL_ROUTING: Scripted = Scripted::new("model-routing", "model_routi
 /// `speculation-judge`.
 pub static SPECULATION_JUDGE: Scripted = Scripted::new("speculation-judge", "speculation_judge.summary");
 
+/// `speculation-guard`.
+pub static SPECULATION_GUARD: Scripted = Scripted::new("speculation-guard", "speculation_guard.summary");
+
+/// `silent-agent-nudge`.
+pub static SILENT_AGENT_NUDGE: Scripted = Scripted::new("silent-agent-nudge", "silent_nudge.summary");
+
 /// `sibling-sweep` (Stop, SubagentStop; engine-only).
 pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_sweep.summary");
 

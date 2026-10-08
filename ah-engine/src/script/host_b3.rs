@@ -202,7 +202,7 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("stateProbe", Function::new(c.clone(), |ns: String, key: String| state_probe(&ns, &key))?)?;
     h.set("shellHeredocAt", Function::new(c.clone(), |cmd: String, i: f64| heredoc_at(&cmd, i.max(0.0) as usize))?)?;
     h.set("readTail", Function::new(c.clone(), |p: String, w: f64| read_tail(&p, w.max(0.0) as u64))?)?;
-    h.set("maskQuoted", Function::new(c.clone(), |t: String| crate::checks::speculation_guard::mask::mask_quoted_text(&t))?)?;
+    h.set("maskQuoted", Function::new(c.clone(), |t: String| crate::checks::guardkit::mask::mask_quoted_text(&t))?)?;
     h.set("jevMode", Function::new(c.clone(), |id: String| jev_mode(&id))?)?;
     h.set("jevAskSpec", Function::new(c.clone(), |spec: String| jev_ask(&spec))?)?;
     h.set("fnv", Function::new(c.clone(), |t: String| format!("{:016x}", crate::health::fnv(&t)))?)?;

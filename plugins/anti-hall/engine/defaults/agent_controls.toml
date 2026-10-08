@@ -487,10 +487,6 @@ value = "nudged"
 doc = "Field of the state file that holds the once-per-agent records."
 value = "everNudged"
 
-[silent_nudge.expecting]
-doc = "Parser error text for a state file member that is not a JSON object."
-value = "a JSON object"
-
 [silent_nudge.sidechain_file_prefix]
 doc = "Prefix of an agent's own sidechain transcript file name."
 value = "agent-"

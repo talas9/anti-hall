@@ -34,9 +34,7 @@ pub mod phase_tracker;
 pub mod replykit;
 pub mod scripted;
 pub mod session;
-pub mod silent_agent_nudge;
 pub mod spawnctx;
-pub mod speculation_guard;
 pub mod stale_agent_stop_note;
 pub mod task_guard;
 pub mod task_tracker;
@@ -210,12 +208,12 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &session::repo_self_drift::RepoSelfDrift,
         &session::defect_nudge::DefectNudge,
         &session::progress_prune::ProgressPrune,
-        &speculation_guard::SpeculationGuard,
+        &scripted::SPECULATION_GUARD,
         &scripted::SPECULATION_JUDGE,
         &claim_ledger::ClaimLedger,
         &output_verify::OutputVerifyGuard,
         &ask_guard::AskGuard,
-        &silent_agent_nudge::SilentAgentNudge,
+        &scripted::SILENT_AGENT_NUDGE,
         &stale_agent_stop_note::StaleAgentStopNote,
         &scripted::MERGE_GATE,
         &scripted::API_GUARD,

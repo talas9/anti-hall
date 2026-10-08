@@ -25,6 +25,26 @@ var jx = {
   asciiLower: function (t) { return t.replace(/[A-Z]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 32); }); },
   // The UTF-8 length of a string in bytes.
   utf8Len: function (t) { var n = 0; for (var i = 0; i < t.length; i++) { var c = t.charCodeAt(i); if (c < 0x80) n += 1; else if (c < 0x800) n += 2; else if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; } else n += 3; } return n; },
+  // `text` with every match of the pattern `src` (the engine's linear-time matcher, flags as ah.re's) replaced by `repl`.
+  replaceAll: function (src, flags, t, repl) {
+    var hits = ah.re.findAll(src, flags, t), out = '', at = 0;
+    for (var i = 0; i < hits.length; i++) { out += t.slice(at, hits[i][0]) + repl; at = hits[i][1]; }
+    return out + t.slice(at);
+  },
+  // update.js `isSemver`: N.N.N with an optional - or + suffix, after trimming and dropping one leading v.
+  isSemver: function (v) {
+    var t = String(v).trim().replace(/^[vV]/, ''), i = t.search(/[-+]/);
+    var core = i < 0 ? t : t.slice(0, i), suffix = i < 0 ? null : t.slice(i + 1);
+    var nums = core.split('.');
+    return nums.length === 3 && nums.every(function (n) { return /^[0-9]+$/.test(n); }) && (suffix === null || /^[A-Za-z0-9.-]+$/.test(suffix));
+  },
+  // update.js `compareVersions`: -1, 0 or 1 over the leading dotted numbers (a missing part counts as 0, unparsable as [0]).
+  cmpVersions: function (a, b) {
+    function parts(v) { var m = /^([0-9]+(?:\.[0-9]+)*)/.exec(String(v).trim().replace(/^[vV]/, '')); return m ? m[1].split('.').map(Number) : [0]; }
+    var pa = parts(a), pb = parts(b), n = Math.max(pa.length, pb.length);
+    for (var i = 0; i < n; i++) { var x = i < pa.length ? pa[i] : 0, y = i < pb.length ? pb[i] : 0; if (x < y) return -1; if (x > y) return 1; }
+    return 0;
+  },
   // True when `s` holds a lone UTF-16 surrogate. Such a string cannot cross into the engine (a Rust string cannot hold one), so a
   // script that would hash it or send it to Jev defers instead.
   loneSurrogate: function (s) { return /[\ud800-\udbff](?![\udc00-\udfff])|(?:^|[^\ud800-\udbff])[\udc00-\udfff]/.test(s); },
