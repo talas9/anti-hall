@@ -2933,13 +2933,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.guard_name` | `task-guard` |  |  | The guard id of task-guard (the skip key and the message prefix). |
 | `task_guard.hash_sep` | ` ` |  |  | The separator between the task ids hashed into the loop state (a NUL character). |
 | `task_guard.idle_allowed` | `a task blocked on the OWNER (hardware, a human decision): mark it metadata.bl...` |  |  | The allowed-here line of the idle-neglect block. |
-| `task_guard.idle_devswarm` | ` Delegated to a DevSwarm workspace: set the task owner ({upd} owner) to the w...` |  |  | The sentence the idle-neglect block adds while a DevSwarm workspace is live; `{upd}` is the task update tool. |
 | `task_guard.idle_hash_tags` | `idle, no-agents` |  |  | The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's. |
 | `task_guard.idle_instead` | `dispatch them now in parallel (one background agent each, cap {cap}), or stop...` |  |  | The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing). |
 | `task_guard.idle_what` | `stop blocked: {n} non-blocked, unassigned task(s) have no in-flight agent: {l...` |  |  | The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail. |
 | `task_guard.idle_why` | `Dispatchable work is sitting idle.` |  |  | The why line of the idle-neglect block. |
 | `task_guard.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of an in-progress status (tested unanchored, as Node does). |
-| `task_guard.js_object_text` | `[object Object]` |  |  | JavaScript's `String()` of a plain object. |
 | `task_guard.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable that marks a judge child process; every task hook is a no-op there. |
 | `task_guard.label_max` | `40` |  |  | Longest task subject in the idle-neglect block's list, in UTF-16 units. |
 | `task_guard.label_priority_prefix_re` | `^\s*P\d\s*[:\-—]\s*` |  |  | JavaScript regex source (case-insensitive) of a priority prefix (`P1: `, `P0 - `) removed from a subject in the idle-neglect list. |
