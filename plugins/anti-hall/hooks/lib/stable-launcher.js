@@ -67,19 +67,21 @@ function launcherPath(kind, home) {
 
 // meshRoute(argv, segments) -> a thin routing shim EMBEDDED in the devswarm
 // launcher (via Function#toString, so it must stay self-contained). For exactly
-// the ported verbs (`send`, `mesh read`), when settings.json `mesh.engine_writes`
+// the ported verbs (`send`, `mesh read`, `inbox ack-primary`), when settings.json `mesh.engine_writes`
 // is "on" and the engine binary exists, it runs `ah-engine mesh <argv>` with a time
 // limit and returns {done: exitCode}; otherwise {input} (stdin already consumed
 // for --message-stdin, to be replayed) and the caller runs the Node script.
 // Falls back to Node on: engine missing, spawn error, timeout, killed by signal,
-// exit 127 (engine cannot find Node's CLI; nothing written). Exit 75 means the
-// engine ALREADY WROTE and then failed: it is passed through, never rerun in Node.
+// exit 127 or 75 (the engine deferred and could not run Node itself: 75 means
+// "deferred, NOTHING written" everywhere in the engine). A failure AFTER the engine
+// wrote exits 70 (mesh_write.exit_committed_failure): passed through, never rerun
+// in Node, as is every other code (the verb's own result).
 // Every other exit code is the verb's own result (Node parity) and passes through.
 function meshRoute(argv, segments) {
   var out = { input: undefined };
   try {
     if (!segments || segments[1] !== 'devswarm.js') return out;
-    if (!(argv[0] === 'send' || (argv[0] === 'mesh' && argv[1] === 'read'))) return out;
+    if (!(argv[0] === 'send' || (argv[0] === 'mesh' && argv[1] === 'read') || (argv[0] === 'inbox' && argv[1] === 'ack-primary'))) return out;
     var fs = require('fs'), path = require('path'), os = require('os');
     var dir = path.join(os.homedir(), '.anti-hall');
     var m = null;
@@ -95,7 +97,7 @@ function meshRoute(argv, segments) {
     var r = require('child_process').spawnSync(bin, ['mesh'].concat(argv), {
       stdio: [piped ? 'pipe' : 'inherit', 'inherit', 'inherit'], input: input, timeout: ms, killSignal: 'SIGKILL',
     });
-    var why = r.error ? String(r.error.code || r.error.message) : r.signal ? 'signal ' + r.signal : r.status === 127 ? 'exit 127' : '';
+    var why = r.error ? String(r.error.code || r.error.message) : r.signal ? 'signal ' + r.signal : r.status === 127 ? 'exit 127' : r.status === 75 ? 'exit 75' : '';
     if (!why) return { done: r.status === null ? 1 : r.status };
     try {
       fs.mkdirSync(path.join(dir, 'ah-engine'), { recursive: true });
