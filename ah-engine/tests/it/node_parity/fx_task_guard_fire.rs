@@ -26,7 +26,8 @@ fn stop(tp: &str, extra: &[(&str, J)]) -> J {
 
 /// A running background agent as compaction re-injects it (a `task_status` attachment), launched at `ms`.
 fn agent(id: &str, desc: &str, ms: i64) -> String {
-    jo! {"type": "attachment", "timestamp": iso_from_ms(ms), "attachment": jo! {"type": "task_status", "taskId": id, "status": "running", "description": desc}}.text()
+    jo! {"type": "attachment", "timestamp": iso_from_ms(ms), "attachment": jo! {"type": "task_status", "taskId": id, "status": "running", "description": desc}}
+        .text()
 }
 
 /// A real user prompt with a uuid (the budget's prompt key).
@@ -110,7 +111,8 @@ pub(crate) fn corpus() -> (Vec<Scenario>, Scratch, BTreeSet<String>) {
     // the DevSwarm app database exists: the answer needs node:sqlite, the engine defers
     let db = shared.path().join("devswarm.db");
     write_file(&db, b"not a database");
-    let mut sc = Scenario::new("owner-workspace-app-db", w.clone(), vec![Step::payload(stop(&g_ws, &[])).env("ANTIHALL_DEVSWARM_APP_DB", &db.to_string_lossy())]);
+    let mut sc =
+        Scenario::new("owner-workspace-app-db", w.clone(), vec![Step::payload(stop(&g_ws, &[])).env("ANTIHALL_DEVSWARM_APP_DB", &db.to_string_lossy())]);
     sc.expect_defer = true;
     out.borrow_mut().push(sc);
     one("owner-workspace-app-db-off", &g_ws, &w, &[("ANTIHALL_DEVSWARM_APP_DB", "off")], false);
@@ -191,9 +193,16 @@ pub(crate) fn corpus() -> (Vec<Scenario>, Scratch, BTreeSet<String>) {
     // ---- the unknown-state note rides on a block; the pruning advisory comes first
     let unk = put("unk", &cat(vec![u(20, vec![("description", J::from("x"))]), wip(1, "known")]));
     seq("block-with-unknown-note", &w, vec![Step::payload(stop(&unk, &[])), Step::payload(stop(&unk, &[]))], false);
-    let pr = put("prune-open", &cat(vec![(1..=11).flat_map(|i| cat(vec![c(i, &format!("d{i}")), u(i, status("completed"))])).collect(), wip(12, "still open")]));
+    let pr =
+        put("prune-open", &cat(vec![(1..=11).flat_map(|i| cat(vec![c(i, &format!("d{i}")), u(i, status("completed"))])).collect(), wip(12, "still open")]));
     one("prune-advisory-and-block", &pr, &w, &[], false);
-    one("prune-advisory-and-idle", &put("prune-idle", &cat(vec![(1..=11).flat_map(|i| cat(vec![c(i, &format!("d{i}")), u(i, status("done"))])).collect(), c(12, "go")])), &w, &[], true);
+    one(
+        "prune-advisory-and-idle",
+        &put("prune-idle", &cat(vec![(1..=11).flat_map(|i| cat(vec![c(i, &format!("d{i}")), u(i, status("done"))])).collect(), c(12, "go")])),
+        &w,
+        &[],
+        true,
+    );
 
     // ---- metrics of the idle-neglect block
     let mf = "home/.anti-hall/dispatch-demand-metrics.json";
@@ -220,20 +229,38 @@ pub(crate) fn corpus() -> (Vec<Scenario>, Scratch, BTreeSet<String>) {
     one("omc-skip-persistent", &g1, &omc("home/.omc/state/ralph-state.json", &fresh, hs), &[("OMC_SKIP_HOOKS", "a, persistent-mode")], false);
     one("omc-not-enabled", &g1, &World::new().git("proj").file("home/.omc/state/ralph-state.json", &fresh), &[], false);
     one("omc-project-settings", &g1, &omc("proj/.omc/state/autopilot-state.json", &fresh, "proj/.claude/settings.local.json"), &[], false);
+    one("omc-project-state-wins", &g1, &omc("home/.omc/state/ralph-state.json", &fresh, hs).dir("proj/.omc/state"), &[], false);
+    one("omc-stale", &g1, &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":true,\"updated_at\":{}}}", now - 3 * 3_600_000), hs), &[], false);
     one(
-        "omc-project-state-wins",
+        "omc-iso-time",
         &g1,
-        &omc("home/.omc/state/ralph-state.json", &fresh, hs).dir("proj/.omc/state"),
+        &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":true,\"started_at\":\"{}\"}}", iso_from_ms(now - 60_000)), hs),
         &[],
         false,
     );
-    one("omc-stale", &g1, &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":true,\"updated_at\":{}}}", now - 3 * 3_600_000), hs), &[], false);
-    one("omc-iso-time", &g1, &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":true,\"started_at\":\"{}\"}}", iso_from_ms(now - 60_000)), hs), &[], false);
     one("omc-active-string", &g1, &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":\"true\",\"updated_at\":{now}}}"), hs), &[], false);
-    one("omc-same-session", &g1, &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":true,\"updated_at\":{now},\"session_id\":\"sess-1\"}}"), hs), &[], false);
-    one("omc-other-session", &g1, &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":true,\"updated_at\":{now},\"session_id\":\"other\"}}"), hs), &[], false);
+    one(
+        "omc-same-session",
+        &g1,
+        &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":true,\"updated_at\":{now},\"session_id\":\"sess-1\"}}"), hs),
+        &[],
+        false,
+    );
+    one(
+        "omc-other-session",
+        &g1,
+        &omc("home/.omc/state/ralph-state.json", &format!("{{\"active\":true,\"updated_at\":{now},\"session_id\":\"other\"}}"), hs),
+        &[],
+        false,
+    );
     one("omc-broken-state", &g1, &omc("home/.omc/state/ralph-state.json", "{\"active\":", hs), &[], false);
-    one("omc-plugin-false", &g1, &World::new().git("proj").file(hs, "{\"enabledPlugins\":{\"oh-my-claudecode@omc\":\"true\"}}").file("home/.omc/state/ralph-state.json", &fresh), &[], false);
+    one(
+        "omc-plugin-false",
+        &g1,
+        &World::new().git("proj").file(hs, "{\"enabledPlugins\":{\"oh-my-claudecode@omc\":\"true\"}}").file("home/.omc/state/ralph-state.json", &fresh),
+        &[],
+        false,
+    );
 
     // ---- the per-prompt budget (lastAt is a clock value: compared with clock numbers masked)
     let b_lines = |k: i64| cat(vec![vec![prompt("u-1", "do things", now - 1000)], (1..=k).flat_map(|i| wip(i, &format!("b{i}"))).collect()]);
@@ -241,15 +268,26 @@ pub(crate) fn corpus() -> (Vec<Scenario>, Scratch, BTreeSet<String>) {
     let bud = |id: &str, steps: Vec<Step>, world: &World| add(Scenario::new(id, world.clone(), steps).async_effects(), false);
     let be = |tp: &str, extra: &[(&str, J)], budget: &str| Step::payload(stop(tp, extra)).env("ANTIHALL_STOP_NAG_BUDGET", budget);
     bud("budget-uuid-key", vec![be(&b1, &[], "1"), be(&b2, &[], "1"), be(&b3, &[], "2")], &w);
-    bud("budget-prompt-id", vec![be(&b1, &[("prompt_id", J::from("p-9"))], "2"), be(&b2, &[("prompt_id", J::from("p-9"))], "2"), be(&b3, &[("prompt_id", J::from("p-9"))], "2")], &w);
+    bud(
+        "budget-prompt-id",
+        vec![be(&b1, &[("prompt_id", J::from("p-9"))], "2"), be(&b2, &[("prompt_id", J::from("p-9"))], "2"), be(&b3, &[("prompt_id", J::from("p-9"))], "2")],
+        &w,
+    );
     bud("budget-new-prompt", vec![be(&b1, &[("prompt_id", J::from("p-1"))], "1"), be(&b2, &[("prompt_id", J::from("p-2"))], "1")], &w);
     bud("budget-no-key", vec![be(&g1, &[], "1"), be(&g_many, &[], "1")], &w);
     bud(
         "budget-existing-file",
         vec![be(&b1, &[("prompt_id", J::from("p-9"))], "3")],
-        &World::new().git("proj").file("home/.anti-hall/devswarm/stop-policy/sess-1.json", "{\"other|x|prompt\":{\"count\":1},\"sess-1|task-guard|prompt\":{\"promptKey\":\"p-9\",\"count\":2,\"lastAt\":1}}"),
+        &World::new().git("proj").file(
+            "home/.anti-hall/devswarm/stop-policy/sess-1.json",
+            "{\"other|x|prompt\":{\"count\":1},\"sess-1|task-guard|prompt\":{\"promptKey\":\"p-9\",\"count\":2,\"lastAt\":1}}",
+        ),
     );
-    bud("budget-file-garbage", vec![be(&b1, &[("prompt_id", J::from("p-9"))], "1")], &World::new().git("proj").file("home/.anti-hall/devswarm/stop-policy/sess-1.json", "[1]"));
+    bud(
+        "budget-file-garbage",
+        vec![be(&b1, &[("prompt_id", J::from("p-9"))], "1")],
+        &World::new().git("proj").file("home/.anti-hall/devswarm/stop-policy/sess-1.json", "[1]"),
+    );
     bud("budget-zero", vec![be(&b1, &[], "0")], &w);
 
     // ---- payload shapes on a block

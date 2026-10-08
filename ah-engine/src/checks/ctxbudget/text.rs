@@ -38,9 +38,8 @@ pub fn platform(p: &Value) -> Platform {
     let last = tp.rsplit(is_sep).next().unwrap_or(tp);
     let rollout = last.starts_with(t("ctxbudget.ah_rollout_prefix")) && last.ends_with(t("ctxbudget.ah_rollout_suffix"));
     let dir = t("ctxbudget.ah_codex_dir");
-    let dotcodex = tp.match_indices(dir).any(|(i, _)| {
-        tp[..i].chars().next_back().is_some_and(is_sep) && tp[i + dir.len()..].chars().next().is_some_and(is_sep)
-    });
+    let dotcodex =
+        tp.match_indices(dir).any(|(i, _)| tp[..i].chars().next_back().is_some_and(is_sep) && tp[i + dir.len()..].chars().next().is_some_and(is_sep));
     if rollout || dotcodex { Platform::Codex } else { Platform::Claude }
 }
 
@@ -106,7 +105,11 @@ pub fn expected_handover_path(p: &Value, st: &Settings, env: &RequestEnv) -> Res
     let root = find::handovers_root(cwd, &st.home, env).map_err(|_| ())?;
     let dir = path_join(&root, &format!("{date}/{sid}"));
     let count = fsx::read_dir_names(&dir).unwrap_or_default().iter().filter(|(n, _)| find::match_name(n, FileKind::Handover).is_some()).count();
-    let name = if count + 1 > 1 { msg::render("ctxbudget.ah_handover_name_n", &[("n", &(count + 1).to_string())]) } else { t("ctxbudget.ah_handover_name").to_string() };
+    let name = if count + 1 > 1 {
+        msg::render("ctxbudget.ah_handover_name_n", &[("n", &(count + 1).to_string())])
+    } else {
+        t("ctxbudget.ah_handover_name").to_string()
+    };
     Ok(Some(format!("{}/{date}/{sid}/{name}", t("ctxbudget.ah_handover_dir_rel"))))
 }
 
@@ -229,10 +232,7 @@ fn budget_label(budget: f64, max: Option<f64>) -> String {
 pub fn gate(r: &Reading, handover_pct: f64, budget: f64, p: &Value) -> String {
     let pl = platform(p);
     let ask = t(if pl == Platform::Codex { "ctxbudget.ah_gate_ask_codex" } else { "ctxbudget.ah_gate_ask_claude" });
-    let what = msg::render(
-        "ctxbudget.ah_gate_what",
-        &[("pct", &round_str(r.pct)), ("hp", &round_str(handover_pct)), ("budget", &budget_label(budget, r.max))],
-    );
+    let what = msg::render("ctxbudget.ah_gate_what", &[("pct", &round_str(r.pct)), ("hp", &round_str(handover_pct)), ("budget", &budget_label(budget, r.max))]);
     let instead = msg::render("ctxbudget.ah_gate_instead", &[("ask", ask), ("reset", reset(pl))]);
     msg::message(
         Kind::Warn,

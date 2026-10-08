@@ -150,7 +150,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/cli.rs", "schedule list", "control-verb grammar of the daemon socket (like CTL ping): a protocol word, not a message"),
     // ---- JavaScript parity: formats and error names that mirror V8, compared with Node ------------------------------
     ("src/checks/agent_scan/mod.rs", ".take(3)", "the three-letter zone abbreviation of a JavaScript Date string (a format)"),
-    ("src/checks/ctxbudget/phrase.rs", "const STAND_IN: u32", "a Unicode plane (private use B) holding the stand-ins of UTF-16 surrogate units: an encoding fact, not a tunable"),
+    (
+        "src/checks/ctxbudget/phrase.rs",
+        "const STAND_IN: u32",
+        "a Unicode plane (private use B) holding the stand-ins of UTF-16 surrogate units: an encoding fact, not a tunable",
+    ),
     ("src/checks/ctxbudget/phrase.rs", "const SURROGATE: u32", "the first UTF-16 high-surrogate code unit: an encoding fact, not a tunable"),
     ("src/checks/ctxbudget/limit.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),
     ("src/transcript/record.rs", ".take(3)", "milliseconds are three digits of an ISO timestamp (a format)"),

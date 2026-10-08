@@ -103,7 +103,8 @@ fn configured_cap(st: &Settings) -> R<f64> {
     }
     let c = cores()?;
     let c = if c == 0.0 { defaults::num("task_guard.cap_fallback_cores") as f64 } else { c };
-    Ok((defaults::num("task_guard.cap_floor") as f64).max((defaults::num("task_guard.cap_ceiling") as f64).min(c - defaults::num("task_guard.cap_reserve") as f64)))
+    Ok((defaults::num("task_guard.cap_floor") as f64)
+        .max((defaults::num("task_guard.cap_ceiling") as f64).min(c - defaults::num("task_guard.cap_reserve") as f64)))
 }
 
 /// `agentMaxAgeMs()`: `guards.idleNeglectAgentMaxAgeMin` in milliseconds.

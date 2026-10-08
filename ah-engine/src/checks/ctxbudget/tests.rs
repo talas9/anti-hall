@@ -396,7 +396,11 @@ fn auto_handover_answers_quiet_fire_nag_and_rearm_cases() {
     assert!(loud(&case(vec![tr(90)], &[], &plain)), "against a guessed window one soft advisory is due, and it is Node's");
     assert_eq!(case(vec![tr(90), latch(json!({"softFired": true}))], &[], &plain), empty(), "but it is not repeated");
     assert_eq!(case(vec![tr(90), ("x", "".into())], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain), empty(), "the variable set to 0 disables it");
-    assert_eq!(case(vec![tr(90), latch(json!({"fired": true}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain), empty(), "disabled with a latch set: cleared by a write");
+    assert_eq!(
+        case(vec![tr(90), latch(json!({"fired": true}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain),
+        empty(),
+        "disabled with a latch set: cleared by a write"
+    );
     assert_eq!(case(vec![tr(90)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0x32")], &plain), empty(), "parseInt reads 0x32 as 0, which disables it");
     assert_eq!(
         case(vec![tr(90), (".anti-hall/settings.json", r#"{"autoHandover":{"enabled":false}}"#.into())], &env200, &plain),
@@ -404,7 +408,10 @@ fn auto_handover_answers_quiet_fire_nag_and_rearm_cases() {
         "disabled in settings"
     );
     assert!(loud(&case(vec![tr(30)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "25"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain)), "a lower threshold");
-    assert!(loud(&case(vec![tr(10)], &[("ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", "15000"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain)), "the token ceiling");
+    assert!(
+        loud(&case(vec![tr(10)], &[("ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", "15000"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain)),
+        "the token ceiling"
+    );
     assert_eq!(case(vec![tr(90), (".anti-hall/skip.json", format!("{{\"auto-handover\":{}}}", now_ms() + 60_000))], &env200, &plain), empty(), "skipped");
     assert_eq!(case(vec![tr(90)], &[("ANTIHALL_JUDGE_CHILD", "1")], &plain), Verdict::Allow);
     assert_eq!(
@@ -421,11 +428,14 @@ fn auto_handover_answers_quiet_fire_nag_and_rearm_cases() {
     );
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!([1])), empty(), "an array payload");
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!(5)), empty(), "a scalar payload");
-    assert!(loud(&case(vec![tr(90)], &env200, &|h| {
+    assert!(
+        loud(&case(vec![tr(90)], &env200, &|h| {
             let mut p = ups(h, true);
             p.as_object_mut().unwrap().remove("session_id");
             p
-        })), "the tag is a hash of the path");
+        })),
+        "the tag is a hash of the path"
+    );
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!({"prompt": "x"})), empty(), "no session and no transcript: nothing to key on");
     assert_eq!(
         case(vec![tr(20), (".anti-hall/auto-handover/sess1.json", "{\"fired\":true,\"x\":\"\\ud83d\"}".into())], &env200, &plain),
@@ -479,12 +489,15 @@ fn the_pause_nag_answers_quiet_fire_nag_and_rearm_cases() {
         Verdict::Allow,
         "nag off"
     );
-    assert!(loud(&case(
+    assert!(
+        loud(&case(
             184_000,
             vec![fired(json!({"lastNagAt": now_ms() - 120_000})), (".anti-hall/settings.json", r#"{"autoHandover":{"nagQuietMin":1}}"#.into())],
             &env200,
             &keep
-        )), "a one minute quiet period");
+        )),
+        "a one minute quiet period"
+    );
     assert_eq!(
         case(192_000, vec![fired(json!({})), (".anti-hall/settings.json", r#"{"autoHandover":{"nagStepPct":10}}"#.into())], &env200, &keep),
         Verdict::Allow,
