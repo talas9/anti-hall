@@ -28,6 +28,7 @@
 // - the shadow is advisory: a failure to copy, compare or log never changes what Node did (it is logged when it can be)
 // - text that does not parse or decode is the absent value (Node JSON.parse catch parity)
 // A failure that must be seen goes through `crate::discard` instead.
+pub mod appdb;
 pub mod args;
 pub mod common;
 pub mod cursors;

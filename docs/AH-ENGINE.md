@@ -462,16 +462,31 @@ Group `defer` lines by `reason` to see which unported case to port next.
 writes `heartbeats/<id>.json` and refreshes `liveness/<id>.json` to `alive` with `pending`, `notDraining` and `oldestUnreadAgeMs` from the
 NDJSON-inbox + store-partition union (`src/meshw/union.rs`: Node's `unionUnread`, deduplicated by `_h`, the legacy line hash and, last, by
 body; read bases from the partition's `reader_cursors` floor rows). It reads the store and the inbox, never writes either. It defers (before
-writing anything; nothing is lost) when the call has `--summary` or `--step`, has no `--session` (Node would log the caller process), is
+writing anything; nothing is lost) when the call has `--summary` (a mesh broadcast row and the identity families), has `--step` and the
+workspace has a plan file (`plan-present`: Node updates the plan under its lock and records supervision metrics), has no `--session` (Node would log the caller process), is
 a `primary-<hash>` label, is a child addressing another id (Node warns on stderr), is a Primary checkout whose anchor session Node would
-refresh, finds the DevSwarm app database (Node reads and caches its archive state), meets a partition without `#floor` rows (`cursor-import`),
+refresh, meets a partition without `#floor` rows (`cursor-import`),
 a journal or unmarked store (`journal-backend`, `store-backend`), a store file it cannot open, a cursor file whose `line` is not a scalar,
-or an inbox line whose `_h` is not a string, number or boolean. Telemetry: `Heartbeat` lines; the `reason` of a `defer` line is one of those
-names. **Node stays as a background check.** In `on` mode every answered `heartbeat` is verified: before the engine writes, the parts of the DevSwarm
-root a heartbeat touches are copied into a scratch home (the store is linked, read only); after it answers, a detached copy of the engine
-(`ah-engine mesh --shadow-verify ...`) runs the real `devswarm.js` there with the engine's clock and compares Node's stdout and the heartbeat
-and verdict files it wrote with the engine's. Node's write never runs twice on the real home. One line per call goes to `mesh-verify.jsonl` in
-the state directory: `{"ts","verb","result","ms"}` with `result` `match`, `mismatch` (plus both outputs, capped) or `error` (Node could not run);
+or an inbox line whose `_h` is not a string, number or boolean, or an app database value it cannot convert like JavaScript (see below).
+`--step` for a workspace WITHOUT a plan is answered natively (`"plan":{"ok":false,"reason":"no-plan","hint":...}`, exactly Node's text). Telemetry: `Heartbeat` lines; the `reason` of a `defer` line is one of those
+names.
+
+**The DevSwarm app database reader (`src/meshw/appdb.rs`, Node: `companion/lib/devswarm-app-db.js`).** A heartbeat for a workspace with a
+descriptor asks whether the app reports the workspace archived (`builders.isActive = 0 AND isHidden = 1`; without an `isHidden` column, `isActive = 0`;
+by id first, else by worktree: an active builder there means not archived, only archived twins mean archived). Archived: the verdict is NOT cleared to `alive`
+and the answer carries `"appArchived":true`; the heartbeat record is still written. The reader opens the file read only and never waits for a lock
+(`mesh_write.app_busy_timeout_ms`, Node's `node:sqlite` does not either), so a missing, empty, non-SQLite, truncated, exclusively locked or
+schema-less database is "no opinion" exactly as in Node, and any read that fails in `builder_terminals`, `pull_requests` or `repositories` makes the whole
+snapshot null, as in Node. It keeps Node's cross-invocation cache `<devswarm root>/cache/app-archived.json` (30 s, keyed by the database's mtime, size and `-wal` file's,
+integer-like ids come first in the file, as `OVal` serialises them like JavaScript); the cache write happens after the heartbeat record. Defers (before any write): a relative `worktreePath` (resolved against the cwd by
+Node), a text or blob value in `id`/`isActive`/`isHidden`/`builderType`/`worktreePath` (JavaScript converts them in ways the engine does not copy), an integer beyond 2^53, a cache
+file whose `states` or an entry has the wrong shape. Keys: `mesh_write.app_*`.
+
+**Node stays as a background check.** In `on` mode every answered `heartbeat` is verified: before the engine writes, the parts of the DevSwarm
+root a heartbeat touches are copied into a scratch home (the store is linked, read only; the plan and app-cache directories are copied); after it answers, a detached copy of the engine
+(`ah-engine mesh --shadow-verify ...`) runs the real `devswarm.js` there with the engine's clock (and the real app database, read only) and compares Node's stdout and the heartbeat,
+verdict and app-cache files it wrote with the engine's. Node's write never runs twice on the real home. One line per call goes to `mesh-verify.jsonl` in
+the state directory: `{"ts","verb","result","ms"}` with `result` `match`, `mismatch` (plus both outputs, capped, and `sameHeartbeat`/`sameVerdict`/`sameCache`) or `error` (Node could not run);
 count mismatches per verb before trusting a port. Keys: `mesh_write.verify_*`.
 
 **Still in Node, on purpose:** `inbox read-primary` (receipt write, sibling-partition merge, gap withholding and the caps are one

@@ -390,3 +390,20 @@ pub const MESHW_COUNT_AFTER_ID: &str = "SELECT COUNT(*) FROM messages WHERE id >
 pub const MESHW_ROW_BY_HASH: &str = "SELECT workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE hash = ?1";
 /// A row's timestamp by hash (the shadow replays Node's clock).
 pub const MESHW_TS_BY_HASH: &str = "SELECT ts FROM messages WHERE hash = ?1";
+
+/// Start of `PRAGMA table_info(<table>)` on the DevSwarm app database (`devswarm-app-db.js` `tableColumns`).
+pub const MESHW_APP_TABLE_INFO_OPEN: &str = "PRAGMA table_info(";
+/// End of it.
+pub const MESHW_APP_TABLE_INFO_CLOSE: &str = ")";
+/// Start of a snapshot read (`selectPresent`).
+pub const MESHW_APP_SELECT: &str = "SELECT ";
+/// Between the column list and the table.
+pub const MESHW_APP_FROM: &str = " FROM ";
+/// A terminal's prompt is read as its length only.
+pub const MESHW_APP_LENGTH_OPEN: &str = "length(";
+/// End of that expression.
+pub const MESHW_APP_LENGTH_CLOSE: &str = ")";
+/// Separator of the select list.
+pub const MESHW_APP_LIST_SEP: &str = ", ";
+/// Identifier quote of the select list.
+pub const MESHW_APP_QUOTE: &str = "\"";

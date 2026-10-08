@@ -6,12 +6,13 @@
 //! `oldestUnreadAgeMs` taken from the NDJSON + store unread union ([`crate::meshw::union`]).
 //!
 //! The engine answers the plain form only. A call goes to Node, before anything is written, when it
-//! * carries `--summary` (a mesh broadcast row and the identity families) or `--step` (the plan file);
+//! * carries `--summary` (a mesh broadcast row and the identity families), or `--step` for a workspace that has a plan file
+//!   (Node updates the plan under its lock and records supervision metrics); `--step` for a workspace WITHOUT a plan is
+//!   answered here: Node reports `no-plan` and writes nothing beyond the heartbeat;
 //! * carries no `--session` (Node then appends the caller's process line to `heartbeat-callers.log`, which names the Node
 //!   process and cannot be reproduced);
 //! * could make Node act in a way the engine does not: a child workspace addressing another id (a stderr warning), a
-//!   Primary checkout whose anchor session would be refreshed, a `primary-<hash>` label id, the DevSwarm app database
-//!   being present (Node reads and caches the app's archive state), a partition whose `reader_cursors` floor rows are
+//!   Primary checkout whose anchor session would be refreshed, a `primary-<hash>` label id, a partition whose `reader_cursors` floor rows are
 //!   missing (Node imports the legacy cursors first), a store the engine will not read exactly like Node.
 //!
 //! Every read happens before the first write; after the heartbeat record is written, the verdict write is best effort,
@@ -20,6 +21,7 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::js_number_of_str;
 use crate::defaults;
 use crate::mesh::MeshReader;
+use crate::meshw::appdb;
 use crate::meshw::args::Args;
 use crate::meshw::common::{Inv, Obj, n, s};
 use crate::meshw::ident::{self, R, defer};
@@ -165,8 +167,13 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if is_primary_label(id) {
         return defer("primary-label");
     }
-    if a.one(defaults::text("mesh_write.flag_summary")).is_some() || a.one(defaults::text("mesh_write.flag_step")).is_some() {
-        return defer("summary-or-step");
+    if a.one(defaults::text("mesh_write.flag_summary")).is_some() {
+        return defer("summary");
+    }
+    // `--step`: with no plan file Node answers `no-plan`; with one it updates the plan under a lock (not ported)
+    let step = a.one(defaults::text("mesh_write.flag_step")).is_some();
+    if step && crate::meshw::common::sender_has_plan(inv, id)? {
+        return defer("plan-present");
     }
     let Some(session) = a.one(defaults::text("mesh_write.flag_session")) else { return defer("no-session") };
     if id_mismatch_possible(inv, id) {
@@ -178,13 +185,15 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     // ---- reads: everything that can defer happens before the first write ----
     let desc = ident::read_descriptor(&inv.home, id);
     let mut pending = Pending { pending: false, not_draining: false, oldest: None };
+    // APP-DB ARCHIVE GUARD: a workspace the DevSwarm app reports archived must not have its verdict cleared to alive
+    let mut app_archived = false;
+    let mut cache: Option<appdb::CacheWrite> = None;
     if let Some(d) = &desc {
-        if let Some(file) = ident::app_db_path(&inv.home, &inv.env)
-            && std::fs::metadata(&file).map(|m| m.is_file()).unwrap_or(false)
-        {
-            return defer("app-db-present");
-        }
         pending = pending_for(inv, id, d)?;
+        let wt = union::path_field(d, defaults::text("mesh_write.field_worktree_path"))?;
+        let (verdict, owed) = appdb::archived_verdict(&inv.home, &inv.env, inv.now, id, wt.as_deref(), true)?;
+        app_archived = verdict == Some(true);
+        cache = owed;
     }
     let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
     let progress = a.one(defaults::text("mesh_write.flag_progress")).map(js_number_of_str).filter(|x| x.is_finite()).map(clamp_percent);
@@ -212,6 +221,9 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     tmp.push(format!(".{}.{}{}", std::process::id(), crate::meshw::common::now_ms(), defaults::text("mesh_write.tmp_suffix")));
     write_atomic(&file, &beat.stringify(), PathBuf::from(tmp)).map_err(|e| ident::Defer(format!("heartbeat-write:{e}")))?;
     crate::meshw::mark_committed();
+    if let Some(c) = &cache {
+        c.perform(); // the app-state cache Node refreshes while it works out the archive guard
+    }
     // writeVerdict: best effort (Node swallows a failure)
     let mut verdict = Obj::default();
     verdict
@@ -232,7 +244,9 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         std::fs::create_dir_all(&vdir)?;
         write_atomic(&vfile, &verdict.done().stringify(), PathBuf::from(vtmp.clone()))
     };
-    crate::discard::harmless(write_verdict()); // keep: the verdict refresh is best-effort and never breaks a heartbeat (Node's catch)
+    if !app_archived {
+        crate::discard::harmless(write_verdict()); // keep: the verdict refresh is best-effort and never breaks a heartbeat (Node's catch)
+    }
     let mut ident_obj = Obj::default();
     ident_obj.put("id", s(&caller.identity)).put("kind", s(&caller.kind));
     let mut out = Obj::default();
@@ -243,5 +257,15 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         .put("meshBroadcast", OVal::Null)
         .put("identity", ident_obj.done())
         .put("idMismatch", OVal::Bool(false));
+    if app_archived {
+        out.put("appArchived", OVal::Bool(true));
+    }
+    if step {
+        let mut plan = Obj::default();
+        plan.put("ok", OVal::Bool(false))
+            .put("reason", s(defaults::text("mesh_write.hb_plan_no_plan")))
+            .put("hint", s(&defaults::render("mesh_write.hb_plan_hint", &[("id", &id)])));
+        out.put("plan", plan.done());
+    }
     Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::None })
 }

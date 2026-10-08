@@ -62,11 +62,13 @@ pub fn prepare(inv: &Inv) -> Option<PathBuf> {
     Some(scratch)
 }
 
-fn id_files(root: &Path, id: &str) -> [PathBuf; 2] {
+/// The files a heartbeat writes: its record, the liveness verdict and the app-state cache.
+fn id_files(root: &Path, id: &str) -> [PathBuf; 3] {
     let j = defaults::text("mesh_write.json_suffix");
     [
         root.join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{j}")),
         root.join(defaults::text("mesh_write.dir_liveness")).join(format!("{id}{j}")),
+        root.join(defaults::text("mesh_write.app_cache_dir")).join(defaults::text("mesh_write.app_cache_file")),
     ]
 }
 
@@ -119,7 +121,15 @@ pub fn run_verifier(args: &[String]) -> i32 {
         log(defaults::text("mesh_write.verify_error"), serde_json::json!({"reason": "no-plugin-root"}));
         return 0;
     };
-    let out = Command::new(defaults::text("mesh_write.node_bin"))
+    // the scratch home has no app database of its own: Node reads the real one (read only), as the engine did
+    let real_home = std::env::var_os(defaults::text("mesh_write.env_home")).map(PathBuf::from).unwrap_or_default();
+    let env_now: crate::meshw::ident::Env = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    let app_db = crate::meshw::ident::app_db_path(&real_home, &env_now);
+    let mut node = Command::new(defaults::text("mesh_write.node_bin"));
+    if let Some(db) = &app_db {
+        node.env(defaults::text("mesh_write.env_app_db"), db);
+    }
+    let out = node
         .args(["-e", defaults::text("mesh_write.verify_node_snippet")])
         .arg(root.join(defaults::text("mesh_write.node_cli")))
         .arg(now)
@@ -132,14 +142,15 @@ pub fn run_verifier(args: &[String]) -> i32 {
         Ok(o) if o.status.success() => {
             let read = |p: &Path| std::fs::read(p).unwrap_or_default();
             let files = id_files(&devswarm_root(&home), &id);
-            let got = [o.stdout.clone(), read(&files[0]), read(&files[1])];
-            let expected = [read(&scratch.join("expect-stdout")), read(&scratch.join("expect-0")), read(&scratch.join("expect-1"))];
+            let got = [o.stdout.clone(), read(&files[0]), read(&files[1]), read(&files[2])];
+            let expected =
+                [read(&scratch.join("expect-stdout")), read(&scratch.join("expect-0")), read(&scratch.join("expect-1")), read(&scratch.join("expect-2"))];
             if same(&expected, &got) {
                 log(defaults::text("mesh_write.verify_match"), serde_json::json!({}));
             } else {
                 log(
                     defaults::text("mesh_write.verify_mismatch"),
-                    serde_json::json!({"engine": cap(&expected[0]), "node": cap(&got[0]), "sameHeartbeat": expected[1] == got[1], "sameVerdict": expected[2] == got[2]}),
+                    serde_json::json!({"engine": cap(&expected[0]), "node": cap(&got[0]), "sameHeartbeat": expected[1] == got[1], "sameVerdict": expected[2] == got[2], "sameCache": expected[3] == got[3]}),
                 );
             }
         }
@@ -155,9 +166,9 @@ mod tests {
 
     #[test]
     fn any_difference_in_stdout_or_a_written_file_is_a_mismatch() {
-        let a = vec![b"x".to_vec(), b"h".to_vec(), b"v".to_vec()];
+        let a = vec![b"x".to_vec(), b"h".to_vec(), b"v".to_vec(), b"c".to_vec()];
         assert!(same(&a, &a.clone()));
-        for i in 0..3 {
+        for i in 0..4 {
             let mut b = a.clone();
             b[i].push(b'!');
             assert!(!same(&a, &b), "difference in part {i} must be seen");

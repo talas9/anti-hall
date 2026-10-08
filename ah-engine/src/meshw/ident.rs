@@ -530,9 +530,8 @@ pub fn builder_for_worktree(home: &Path, env: &Env, worktree: &str) -> R<Option<
     if !std::fs::metadata(&file).map(|m| m.is_file()).unwrap_or(false) {
         return Ok(None);
     }
-    let Ok(conn) = rusqlite::Connection::open_with_flags(&file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) else {
-        return Ok(None);
-    };
+    // read only and never waiting for a lock, like Node's node:sqlite: a locked database reads as unavailable
+    let Some(conn) = crate::meshw::appdb::open(&file) else { return Ok(None) };
     let cols: Vec<String> = match conn.prepare(crate::sql::MESHW_APP_BUILDER_COLUMNS) {
         Ok(mut st) => st.query_map([], |r| r.get::<_, String>(1)).map(|it| it.flatten().collect()).unwrap_or_default(),
         Err(_) => return Ok(None),
