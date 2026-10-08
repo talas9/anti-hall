@@ -74,6 +74,7 @@ impl Params {
             release_tries: num("lock_release_tries")?,
             release_step_ms: num("lock_release_step_ms")?,
             boot_slop_s: num("lock_boot_slop_s")?,
+            steal_dead: false,
         })
     }
 }

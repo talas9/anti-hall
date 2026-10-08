@@ -18,6 +18,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
 | `doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON. |
 | `gen-hooks` | `--host claude\|codex [--kind hooks\|registry\|list\|map]` | yes | implemented | Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host. |
+| `handovers` | `<index\|check\|search> [query] [--project <dir>] [--registered] [--force] [--limit <n>]` | no | implemented | The handover brief tree: `index` rebuilds the root brief and the per-day briefs (BRIEF.md plus a typed BRIEF.json) of the changed days under .anti-hall/handovers (`--registered` walks every project the SessionStart check has seen, `--force` rebuilds all days), `check` reports unindexed or stale handovers, missing briefs, malformed handovers and broken references without writing (exit 3 when there are any), `search <words> [date:..] [session:..] [decision:..] [file:..]` ranks entries from the sidecars. Never edits a handover file and never deletes. The logic is the plugin script handover-hygiene.js; the scheduled job `handovers` runs `index --registered`. |
 | `harvest` | `[--dir <path>] [--stale-days <n>]` | yes | implemented | Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of scripts/harvest-debt.js), and flag the ones with no payback trigger or in files untouched for the stale window. |
 | `hook` | `[--fallback <hook.js>] \| --event <Event> [--tool <Tool>] [--host claude\|codex] [--fallback-map <file>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would. |
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
@@ -133,6 +134,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `devswarm-parent-reply-tracker` | DevSwarm Primary reply tracker: allows every Bash call that is not a devswarm send (switch off, child workspace, other tool, command without the devswarm and send words); a plausible send defers to the Node hook, which records the reply state (port of devswarm-parent-reply-tracker.js). |
 | `devswarm-child-drain` | DevSwarm child mailbox drain nudge: allows the call when the hook cannot act (switch off, not a DevSwarm child) and when it would stay silent before counting any mail (not a Bash call, a subagent's call, an `inbox read-primary` command, no usable workspace id, no descriptor naming an inbox); anything that needs the unread count defers to the Node hook, which reads the mailbox store and keeps the throttle state (port of devswarm-child-drain.js). |
 | `sibling-sweep` | Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and the turn shows no search for other occurrences of the same pattern, asks once per cause to search, fix or list every occurrence and state the search run; counts reminders and follow-through (engine-only, no Node twin). |
+| `handover-hygiene` | SessionStart advisory (engine-only, no Node twin): reports handovers that are unindexed, stale, missing a brief or malformed (no front matter, no Situation or Next action, a broken reference) once per distinct problem set; the same script builds the handover brief tree (`ah-engine handovers index\|check\|search`) and runs as the `handovers` scheduled job. |
 | `session-end-mcp-reaper` | SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js). |
 | `task-tracker` | UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the newRequest Jev label of each prompt and the previous turn's demand score; a session that could be a DevSwarm Primary, or has a task the per-turn DISPATCH NOW line would name or a dispatch-tier outcome still to record, defers to Node (port of task-tracker.js). |
 
@@ -373,7 +375,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.cd_max_segments` | `64` |  |  | A tracked cd directory with more path segments than this is dropped. |
 | `git.chain_joiner` | `` -> `` |  |  | Separator between the aliases of a chain in a note. |
 | `git.check_summary` | `Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self...` |  |  | One-line description of the check for the generated reference. |
-| `git.child_poll_ms` | `1` |  | ms | Poll interval while a git child process runs. |
 | `git.commit_cluster_value_flags` | `mFCct` |  |  | Short commit flags that take a value inside a cluster (-m, -F, -C, -c, -t). |
 | `git.commit_creating` | `9 items` |  |  | Subcommands that create a commit, where self-credit and handover checks apply. |
 | `git.commit_hash_len` | `40` |  |  | Length of a full commit hash, used to shorten it in messages. |
@@ -443,7 +444,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.launcher_dir_pattern` | `(?i)\.anti-hall[\\/]+bin(?:[\\/]\|$)` |  |  | Pattern (case-insensitive) that recognises a path inside the plugin launcher directory. |
 | `git.launcher_hops` | `10` |  |  | Most symlink hops followed when resolving a dangling launcher link. |
 | `git.max_chain` | `10` |  |  | Longest git alias chain followed before giving up. |
-| `git.max_nest` | `1500` |  |  | Nesting limit for the substitution scanners (JS overflows its stack far deeper and its caller then scans the raw text, which is what a bail-out means here). |
 | `git.more_marker` | `, ...` |  |  | Appended to a list that was cut short. |
 | `git.noop_editors` | `true, :, cat` |  |  | Commit editors that leave the message untouched, so a reused message is used verbatim. |
 | `git.note_env_alias_def` | `defining a git alias via `{name}` to run a blocked command:` |  |  | Note on a block found inside an alias defined through GIT_CONFIG_VALUE_<n>. Placeholder: {name}. |
@@ -456,25 +456,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.origin_commit` | `commit `{ref}`` |  |  | Where a reused message came from: a named commit. Placeholder: {ref}. |
 | `git.origin_template` | `the commit template` |  |  | Where a reused message came from: the commit template. |
 | `git.parallel_separators` | `:::, ::::, :::+, ::::+` |  |  | GNU parallel argument-source separators. |
-| `git.plugin_option_prefix` | `CLAUDE_PLUGIN_OPTION_` |  |  | Prefix of the environment variables the host sets from plugin options. |
 | `git.push_cmdsubst_heredoc_note` | ` Heredoc bodies are scanned as shell even when a script only reads them as te...` |  |  | Appended to the remedy of the push_cmdsubst block when the command contains a heredoc. |
 | `git.push_long_opts` | `27 items` |  |  | Long options of the push subcommand, for expanding unambiguous abbreviations such as --force-w. |
 | `git.re_file_write_echo` | `\b(?:echo\|printf)\b` |  |  | JavaScript regex source: echo or printf, which with a redirect counts as a file write without a heredoc. |
 | `git.re_file_write_heredoc` | `<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?` |  |  | JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip. |
 | `git.re_file_write_redirect` | `(?:^\|[\s;&\|(])>{1,2}\s*[^\s&;\|<>()0-9][^\s&;\|<>()]*` |  |  | JavaScript regex source: a > or >> redirect whose target is a file name (not a descriptor), the other half of the file-write shape. |
 | `git.re_file_write_tee` | `\btee\b\s+(?:-a\s+)?[^\s&;\|<>()-][^\s&;\|<>()]*` |  |  | JavaScript regex source: a tee into a file, which counts as a redirect for the file-write shape. |
-| `git.redirect_words` | `11 items` |  |  | Shell redirection operators, which are not command words. |
-| `git.setting_alias_resolve` | `4 entries` |  |  | Switch for git alias and shell definition resolution. |
-| `git.setting_git_guard` | `4 entries` |  |  | Master switch of the check: settings.json section and key, environment variable and plugin-option name. |
-| `git.setting_handover_guard` | `4 entries` |  |  | Switch for the handover-commit guard. |
-| `git.setting_heredoc_data` | `4 entries` |  |  | Switch for data-heredoc masking. |
-| `git.setting_reused_message` | `4 entries` |  |  | Switch for the reused-commit-message check. |
-| `git.settings_file` | `.anti-hall/settings.json` |  |  | Settings file, relative to the home directory. |
+| `git.setting_alias_resolve` | `6 entries` |  |  | Switch for git alias and shell definition resolution. |
+| `git.setting_git_guard` | `6 entries` |  |  | Master switch of the check: settings.json section and key, environment variable and plugin-option name. |
+| `git.setting_handover_guard` | `6 entries` |  |  | Switch for the handover-commit guard. |
+| `git.setting_heredoc_data` | `6 entries` |  |  | Switch for data-heredoc masking. |
+| `git.setting_reused_message` | `6 entries` |  |  | Switch for the reused-commit-message check. |
 | `git.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument is itself a script to scan. |
 | `git.skip_command` | `node '{script}' skip {key}` |  |  | Command that records a skip for a guard; {script} is the quoted script path and {key} the guard id. |
-| `git.skip_file` | `.anti-hall/skip.json` |  |  | Skip file, relative to the home directory (a skipped guard is allowed until its expiry time). |
 | `git.skip_script` | `scripts/devswarm.js` |  |  | Script, relative to the plugin directory, that records a skip for a guard. |
-| `git.stack_mb` | `64` |  | MB | Stack size of the thread the check runs on: the parsers recurse on nested input, so a pathological command must not overflow a daemon worker. |
 | `git.word_alias` | `alias` |  |  | The word for a shell alias in notes. |
 | `git.word_function` | `function` |  |  | The word for a shell function in notes. |
 | `git.wrapper_value_opts` | `3 entries` |  |  | Options of the sudo, timeout and nice wrappers that take a value, so the word after them is not the wrapped command (git-guard.js SUDO_VAL and the timeout and nice branches). |
@@ -915,6 +910,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `job.backup` | `11 entries` |  |  | A scrubbed backup of both databases (D27); off until schedule.backup_ms is set. Runs as a subprocess. |
+| `job.handovers` | `11 entries` |  |  | Keep the handover brief trees (BRIEF.md and BRIEF.json per day, plus the root brief) of every registered project current: rebuilds only the days whose handover files changed, writes only files whose bytes change, never edits a handover and never deletes. Runs `ah-engine handovers index --registered` as a subprocess; off when schedule.handovers_ms is 0. |
 | `job.maintain` | `11 entries` |  |  | Size control (D26): move inactive rows to archive.db, prune derived data, checkpoint and VACUUM; runs as a subprocess so a timeout can kill it. |
 | `job.metrics_snapshot` | `11 entries` |  |  | Keep a snapshot of the metrics counters and histograms in hot.db and its rollups in archive.db (D51). |
 | `job.spool_drain` | `11 entries` |  |  | Apply writes clients spooled while the engine was down or busy (D24); the daemon also drains on start and before each project write. |
@@ -924,14 +920,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `schedule.actions` | `7 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.action_args` | `1 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
+| `schedule.actions` | `8 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.detail_max` | `2000` |  | chars | Longest result detail kept with a run in the history (longer text is cut). |
+| `schedule.handovers_ms` | `600000` | `AH_ENGINE_HANDOVERS_MS` | ms | Interval of the handovers job; 0 turns it off. |
 | `schedule.history_default` | `50` |  |  | Runs `schedule history` lists unless asked for more. |
 | `schedule.maintain_ms` | `86400000` | `AH_ENGINE_MAINTAIN_MS` | ms | Interval of the maintain job (D26); 0 turns it off. |
 | `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
-| `schedule.subprocess_actions` | `maintain, backup, jev_sweep` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.subprocess_actions` | `maintain, backup, jev_sweep, handovers` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
 | `schedule.telemetry_rollup_ms` | `86400000` | `AH_ENGINE_TELEMETRY_ROLLUP_MS` | ms | Interval of the telemetry rollup job (D78); 0 turns it off. |
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
@@ -1775,7 +1773,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PreCompact` | `5 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreToolUse` | `21 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `5 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
-| `dispatch.hooks_claude_SessionStart` | `16 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_claude_SessionStart` | `17 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `12 items` |  |  | The claude Stop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStart` | `5 entries` |  |  | The claude SubagentStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SubagentStop` | `5 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
@@ -1785,7 +1783,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreToolUse` | `9 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
-| `dispatch.hooks_codex_SessionStart` | `15 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
+| `dispatch.hooks_codex_SessionStart` | `16 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `5 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_UserPromptSubmit` | `8 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
@@ -4123,6 +4121,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.dir_heartbeats` | `heartbeats` |  |  | The heartbeats directory under the DevSwarm state directory. |
 | `mesh_write.dir_liveness` | `liveness` |  |  | Directory of the persisted liveness verdicts under the DevSwarm root (liveness.js livenessPathFor). |
 | `mesh_write.dir_locks` | `locks` |  |  | The locks directory under the DevSwarm state directory. |
+| `mesh_write.dir_logs` | `logs` |  |  | Directory under the home's `.anti-hall` that holds the supervision event log. |
 | `mesh_write.dir_plans` | `plans` |  |  | The plans directory under the DevSwarm state directory (devswarm-plan.js). |
 | `mesh_write.dir_read_receipts` | `read-receipts` |  |  | Directory of read receipts under the DevSwarm root (readReceiptDir). |
 | `mesh_write.dir_send_receipts` | `send-receipts` |  |  | The send receipts directory under the DevSwarm state directory (one JSON file per send, by UTC day). |
@@ -4135,6 +4134,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.dir_workspaces` | `workspaces` |  |  | The workspace descriptors directory under the DevSwarm state directory. |
 | `mesh_write.done_setby_prefix` | `devswarm-done@` |  |  | Setter prefix of a done gate that carries the HEAD sha (devswarm-store.js DONE_GATE_SETBY_PREFIX). |
 | `mesh_write.dot_git` | `.git` |  |  | A checkout's git entry. |
+| `mesh_write.dur_fmt_day` | `{v}d` |  |  | `dur()` in days; `{v}` is the count. |
+| `mesh_write.dur_fmt_hour` | `{v}h` |  |  | `dur()` in hours; `{v}` is the count. |
+| `mesh_write.dur_fmt_min` | `{v}m` |  |  | `dur()` in minutes; `{v}` is the count. |
+| `mesh_write.dur_hours_before_days` | `48` |  |  | `dur()` shows hours below this many hours and days from it. |
+| `mesh_write.dur_hours_per_day` | `24` |  |  | Hours in a day, for `dur()`. |
+| `mesh_write.dur_min_per_hour` | `60` |  |  | Minutes in an hour, for `dur()`. |
+| `mesh_write.dur_ms_per_min` | `60000` |  |  | Milliseconds in the minute `dur()` counts in. |
 | `mesh_write.env_app_db` | `ANTIHALL_DEVSWARM_APP_DB` |  |  | The variable that points at (or, with `off`, disables) the DevSwarm app database. |
 | `mesh_write.env_builder_id` | `DEVSWARM_BUILDER_ID` |  |  | The variable DevSwarm sets to a workspace's builder id. |
 | `mesh_write.env_home` | `HOME` |  |  | The home directory variable (os.homedir() on POSIX). |
@@ -4149,6 +4155,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.env_verify_nonce` | `AH_ENGINE_VERIFY_NONCE` |  |  | The environment variable that hands the engine's reader nonce to the tick verifier (the detached verifier does not share the caller's process ancestry, which Node derives the reader from); it is the name the verify_tick_node_snippet reads. |
 | `mesh_write.env_xdg_config` | `XDG_CONFIG_HOME` |  |  | The XDG config directory variable (Linux). |
 | `mesh_write.err_cursor_import_needed` | `reader_cursors floor row missing (legacy import needed)` |  |  | Failure text when a partition has no floor row and the engine will not import the legacy cursors itself (Node's reader-cursors import). |
+| `mesh_write.ev_correction_followed` | `correction-followed` |  |  | Supervision event type: step progress arrived within the stall window of a correction. |
+| `mesh_write.ev_respawn_progress` | `respawn-progress` |  |  | Supervision event type: first step progress in a respawned workspace. |
+| `mesh_write.ev_step` | `step` |  |  | Supervision event type: a child reported a step status change. |
 | `mesh_write.exit_committed_failure` | `70` |  |  | Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (sysexits EX_SOFTWARE, 70). Deliberately NOT 75: exit 75 (EX_TEMPFAIL) means 'deferred, nothing written' everywhere in the engine (dispatch.defer_exit), and a caller that sees 75 may run Node. |
 | `mesh_write.exit_defer` | `75` |  |  | Exit code meaning: the engine did not act and wrote nothing, so the caller should run the verb in Node (sysexits EX_TEMPFAIL, 75). `ah-engine mesh` runs a deferred verb in Node itself, so it exits with this only when it cannot start Node (it replaces the former 127 for that case). Never used after a write: see exit_committed_failure. |
 | `mesh_write.exit_signal_base` | `128` |  |  | A Node child killed by signal N exits as this plus N (the shell convention). |
@@ -4186,6 +4195,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_seq` | `seq` |  |  | mesh read's explicit baseline flag. |
 | `mesh_write.flag_session` | `session` |  |  | The heartbeat flag naming the session; without it Node logs the caller (heartbeat-callers.log), which the engine cannot reproduce, so the call goes to Node. |
 | `mesh_write.flag_since` | `since` |  |  | mesh read's time filter (Node only). |
+| `mesh_write.flag_status` | `status` |  |  | The heartbeat flag that names a step's status. |
 | `mesh_write.flag_step` | `step` |  |  | The heartbeat flag that records plan progress; with it the call goes to Node. |
 | `mesh_write.flag_summary` | `summary` |  |  | The heartbeat flag that also broadcasts a mesh heartbeat row; with it the call goes to Node. |
 | `mesh_write.flag_tail` | `tail` |  |  | A window flag the acking inbox verbs refuse (INBOX_WINDOW_FLAGS); with --since it sends the call to Node. |
@@ -4205,6 +4215,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.gitdir_key` | `gitdir:` |  |  | The key of a `.git` file pointing at its git directory. |
 | `mesh_write.hb_plan_hint` | `no step plan for {id} — run `devswarm.js plan set {id} --steps "1. …\n2. …"` ...` |  |  | The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id. |
 | `mesh_write.hb_plan_no_plan` | `no-plan` |  |  | The `plan.reason` of a heartbeat --step for a workspace that has no plan. |
+| `mesh_write.hb_urgency_default` | `low` |  |  | The urgency of a heartbeat --summary broadcast when --urgency is not given. |
 | `mesh_write.heal_healthy` | `daemonHealthy` |  |  | The self-heal field of a healthy daemon. |
 | `mesh_write.heal_no_worktree` | `no-worktree` |  |  | daemonWarning when the cwd is not in a checkout. |
 | `mesh_write.heal_stale` | `stale` |  |  | daemonWarning when the ingest daemon looks stale or missing. |
@@ -4246,6 +4257,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.kind_resolved` | `resolved` |  |  | Caller identity kind: the cwd is a checkout. |
 | `mesh_write.kind_submodule_prefix` | `submodule-in-` |  |  | Prefix of a submodule context kind. |
 | `mesh_write.kind_unresolvable` | `unresolvable` |  |  | Caller identity kind: neither (a hash of the raw cwd). |
+| `mesh_write.lbl_all_done` | `steps {total}/{total} done · {tail}` |  |  | The finish label head when every step is done; `{total}` is the step count, `{tail}` the progress part. |
+| `mesh_write.lbl_blocked_many` | `{k} blocked` |  |  | A finish label part for several blocked steps. |
+| `mesh_write.lbl_blocked_one` | `#{n} blocked` |  |  | A finish label part for exactly one blocked step. |
+| `mesh_write.lbl_doing_many` | `{k} doing` |  |  | A finish label part for several steps in progress. |
+| `mesh_write.lbl_doing_one` | `doing #{n}` |  |  | A finish label part for exactly one step in progress; `{n}` is its number. |
+| `mesh_write.lbl_done_of` | `{done}/{total} done` |  |  | The done count of a finish label. |
+| `mesh_write.lbl_done_reported_part` | `done-reported {dur} ago, awaiting Primary` |  |  | A finish label part once the child reported done; `{dur}` is the time since. |
+| `mesh_write.lbl_done_reported_tail` | `done-reported, awaiting Primary` |  |  | The tail of the all-done label once the child reported done. |
+| `mesh_write.lbl_inferred` | `~#{n}` |  |  | A finish label part for an inferred step. |
+| `mesh_write.lbl_no_progress` | `no progress yet` |  |  | The progress part of a finish label before any progress. |
+| `mesh_write.lbl_plan_changed` | ` (plan changed)` |  |  | Appended to the done count after the plan was replaced or a done step re-opened. |
+| `mesh_write.lbl_progress_ago` | `progress {dur} ago` |  |  | The progress part of a finish label; `{dur}` is the time since the last progress. |
+| `mesh_write.lbl_sep` | ` · ` |  |  | Separator of the parts of a plan's finish label. |
 | `mesh_write.legacy_cursor_forbidden` | `#, .seen-` |  |  | Texts a partition id must not contain to have legacy cursor files (reader-cursors.js legacySafeId). |
 | `mesh_write.legacy_cursor_short_len` | `6` |  |  | Length of the hex instance tag in a legacy cursor file name (reader-cursors.js listLegacy). |
 | `mesh_write.legacy_hash_prefix` | `legacy:` |  |  | Prefix of the dedupe hash of one physical legacy inbox line (devswarm-unread.js legacyLineHash). |
@@ -4286,6 +4310,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.op_own` | `own` |  |  | The `k` of a read-receipt op that moves the caller's own partition cursor. |
 | `mesh_write.op_sibling` | `sibling` |  |  | The `k` of a read-receipt op that moves a sibling partition's cursor (Node's). |
 | `mesh_write.pid_reuse_margin_ms` | `1000` |  |  | A process whose start time is later than the recorded one by more than this is a reused pid (PID_REUSE_MARGIN_MS). |
+| `mesh_write.plan_activity_keep` | `5` |  |  | How many recent activity signatures a plan keeps (ACTIVITY_KEEP). |
+| `mesh_write.plan_bad_status_text` | `--status must be one of {list}` |  |  | The error of `heartbeat --status S` when S is not an allowed status; `{list}` is the allowed statuses. |
+| `mesh_write.plan_bad_step_text` | `--step must be an integer from 1 to {n}` |  |  | The error of `heartbeat --step N` when N is not an integer within the plan; `{n}` is the number of steps. |
+| `mesh_write.plan_lock_busy_hint` | `the plan file is locked by another writer — the heartbeat itself was recorded...` |  |  | The `plan.hint` of a heartbeat whose plan file stayed locked. |
+| `mesh_write.plan_lock_stale_ms` | `30000` |  |  | A plan lock older than this is taken over (PLAN_LOCK_STALE_MS). |
+| `mesh_write.plan_lock_step_ms` | `15` |  |  | The pause between attempts at the plan's lock (Node: 10 ms plus up to 10 ms of jitter). |
+| `mesh_write.plan_lock_wait_ms` | `5000` |  |  | How long a plan write waits for the plan's lock (PLAN_LOCK_WAIT_MS). |
+| `mesh_write.plan_reason_bad_step` | `bad-step` |  |  | The `plan.reason` of a heartbeat whose --step or --status is invalid. |
+| `mesh_write.plan_reason_lock_busy` | `lock-busy` |  |  | The `plan.reason` of a heartbeat whose plan file stayed locked by another writer. |
+| `mesh_write.plan_sig_hex` | `12` |  |  | Hex characters of an activity signature (the sha1 prefix). |
+| `mesh_write.plan_status_blocked` | `blocked` |  |  | The step status word for a blocked step. |
+| `mesh_write.plan_status_default` | `doing` |  |  | The step status of `heartbeat --step` when --status is not given. |
+| `mesh_write.plan_status_doing` | `doing` |  |  | The step status word for a step in progress. |
+| `mesh_write.plan_status_done` | `done` |  |  | The step status word for a finished step. |
+| `mesh_write.plan_status_sep` | `\|` |  |  | Joins the allowed statuses in the --status error text. |
+| `mesh_write.plan_statuses` | `doing, done, blocked` |  |  | The step statuses `heartbeat --status` accepts (STEP_STATUSES). |
+| `mesh_write.plan_summary_keep` | `3` |  |  | How many recent heartbeat summaries a plan keeps (SUMMARY_KEEP). |
+| `mesh_write.plan_summary_text_max` | `200` |  |  | Characters of a heartbeat summary kept in the plan (recordSummary). |
 | `mesh_write.plugin_manifest_dir` | `.claude-plugin` |  |  | Directory of the plugin manifest under the plugin root. |
 | `mesh_write.plugin_manifest_file` | `plugin.json` |  |  | The plugin manifest whose `version` a heartbeat stamps (runningAntiHallVersion). |
 | `mesh_write.primary_prefix` | `primary-` |  |  | Prefix of a worktree meshId (`primary-<hash>`). |
@@ -4336,10 +4378,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.shadow_panic` | `panic` |  |  | Shadow result: the engine path panicked (caught; Node's result was unaffected). |
 | `mesh_write.shadow_skipped` | `skipped` |  |  | Log result of a shadow-mode call for a verb that cannot be replayed on a store copy: Node ran it, the engine only counted it. |
 | `mesh_write.short_nonce_len` | `6` |  |  | Hex characters of the short form of a reader key in the cursor journal (shortInstanceNonce: sha1, first 6). |
+| `mesh_write.step_stall_default_min` | `30` |  |  | Minutes of the step stall window when no setting is given (devswarm.stepStallMin). |
+| `mesh_write.step_stall_env` | `ANTIHALL_DEVSWARM_STEP_STALL_MIN` |  |  | The environment variable of the devswarm.stepStallMin setting. |
+| `mesh_write.step_stall_key` | `stepStallMin` |  |  | The settings.json key (in the devswarm section) of the step stall window. |
+| `mesh_write.step_stall_option` | `devswarm_step_stall_min` |  |  | The plugin option name of the step stall window. |
 | `mesh_write.store_file` | `devswarm.db` |  |  | File name of a per-repo store (`devswarm.db`). |
 | `mesh_write.summary_failed` | `summary-failed` |  |  | Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file). |
 | `mesh_write.summary_pending_questions_cap` | `200` |  |  | Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP). |
 | `mesh_write.summary_recent_cap` | `50` |  |  | Most broadcast runs a summary keeps in recent[] (devswarm-store.js DEFAULT_RECENT_CAP). |
+| `mesh_write.supervision_log` | `devswarm-supervision.ndjson` |  |  | The supervision event log (one JSON line per plan step event), under the logs directory. |
+| `mesh_write.supervision_max_bytes` | `1048576` |  |  | Size above which Node rotates the supervision log before appending; the engine defers a plan write while the log is above it (rotation stays Node's). |
 | `mesh_write.synthetic_session_prefix` | `unclaimed:` |  |  | The same prefix as the routing code names it (SYNTHETIC_SESSION_PREFIX). |
 | `mesh_write.tick_line` | `tick {id}: unread {unread}, known {known}, meshGap {gap}, watcherArmed {armed}` |  |  | The one line `inbox tick --quiet` prints (inboxTickQuietLine); `{id}`, `{unread}`, `{known}`, `{gap}` and `{armed}` are filled in. |
 | `mesh_write.tick_roster_env` | `ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY` |  |  | The environment variable of that setting. |
@@ -4373,9 +4421,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verify_names_heartbeat` | `sameHeartbeat, sameVerdict, sameCache` |  |  | The names under which a heartbeat verification mismatch reports whether the heartbeat record, the liveness verdict and the app-state cache are equal. |
 | `mesh_write.verify_names_tick` | `sameHeartbeat, sameMarker, sameCronFound` |  |  | The names under which a tick verification mismatch reports whether the heartbeat record, the wake-tick marker and the cron-found-mail file are equal. |
 | `mesh_write.verify_node_snippet` | `const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Num...` |  |  | The Node program of the verifier: runs the real devswarm.js `run()` with the engine's clock, prints the result object the CLI would print. Arguments: the CLI path, the clock, then the verb's argv. |
+| `mesh_write.verify_nonce_col` | `11` |  |  | Index of the instance_nonce column in the row query of the background check (left out of the comparison). |
+| `mesh_write.verify_row_name` | `row` |  |  | The name the background check gives the appended mesh row when it differs. |
 | `mesh_write.verify_tick_copy_dirs` | `11 items` |  |  | Directories of the DevSwarm root copied into the scratch home before the engine writes for a tick (what Node reads or writes for it). |
 | `mesh_write.verify_tick_copy_files` | `cron-found-mail.jsonl` |  |  | Files of the DevSwarm root copied into the scratch home before the engine writes for a tick. |
 | `mesh_write.verify_tick_node_snippet` | `const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Num...` |  |  | The Node program of the tick verifier: runs the real devswarm.js `run()` with the engine's clock and prints the line `inbox tick --quiet` would print. Arguments: the CLI path, the clock, then the verb's argv. |
+| `mesh_write.verify_window_after` | `100` |  |  | Bytes from the first difference on that the background check logs from a differing file. |
+| `mesh_write.verify_window_before` | `60` |  |  | Bytes before the first difference that the background check logs from a differing file. |
 | `mesh_write.wake_lock_prefix` | `wake-watch-` |  |  | File-name prefix of the wake-watch lock of a workspace in the locks directory (devswarm-wake-watch.js lockPathFor). |
 | `mesh_write.wake_lock_stale_ms` | `120000` |  |  | A wake-watch lock older than this is not a live watcher (devswarm-wake-watch.js WATCH_LOCK_STALE_MS). |
 | `mesh_write.wake_lock_suffix` | `.lock` |  |  | File-name suffix of the wake-watch lock. |
@@ -4438,7 +4490,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `sibling_sweep.msg_why` | `a bug cause is rarely unique: fixing one site and calling it done leaves its ...` |  |  | Why it matters, in the reminder. |
 | `sibling_sweep.question_terminator` | `?` |  |  | The terminator that makes a sentence a question; a question is never a cause statement. |
 | `sibling_sweep.quote_line_re` | `(?m)^[ \t]*>.*$` |  |  | Regex source of a quoted line (a Markdown quote), removed before matching. |
-| `sibling_sweep.read_buf_bytes` | `65536` |  | bytes | The size of the buffer the transcript window is read through. |
 | `sibling_sweep.search_agent_types` | `Explore, explore, oh-my-claudecode:explore` |  |  | Subagent types that are search agents. |
 | `sibling_sweep.search_tool_re` | `(?:^\|__)(?:ast_grep_search\|lsp_find_references\|rip_grep_packages\|grep\|find_re...` |  |  | Regex source of tool names that are searches by their name (MCP structural search, find-references, ripgrep servers). |
 | `sibling_sweep.search_tools` | `Grep, Glob` |  |  | Tool names whose use is a codebase search (matched exactly). |
@@ -4494,7 +4545,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.handover_adds_max` | `50` |  |  | Most `git add` commands the git check remembers in one command line when it looks for a staged handover file. |
 | `git.max_recursion` | `1500` |  |  | Deepest nesting of wrapper commands (`xargs xargs ...`) the git check follows before it defers to Node, whose own stack overflows at about this depth. |
 | `git.path_arg_max_chars` | `4096` |  |  | Longest directory argument (in characters) the git check tracks through a `cd`; a longer one is left to Node. |
-| `git.path_arg_max_segments` | `64` |  |  | Most path segments in a directory argument the git check tracks through a `cd`; a deeper one is left to Node. |
 | `git.self_credit_coauthor_key` | `co-authored-by` |  |  | The trailer key (lowercase) that credits a co-author; an AI tool named after it is a self-credit. |
 | `git.self_credit_generated_prefix` | `generated with ` |  |  | The footer prefix (lowercase, with its trailing space) after which an AI tool name is a self-credit. |
 | `git.self_credit_trailer_keys` | `co-authored-by, generated-with, generated with` |  |  | The trailer keys (lowercase) that a `-c trailer.<key>.key=` remap must not write a credit under. |
@@ -4552,9 +4602,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `script.call_memory_bytes` | `16777216` |  | bytes | Heap a single script call may allocate above the runtime's size after its scripts were loaded; past it the call fails and defers. |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `sibling-sweep` |  |  | Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision. |
+| `script.engine_only_checks` | `sibling-sweep, handover-hygiene` |  |  | Checks with NO Node twin (their fallback command is a no-op). When one of these scripts cannot answer, the safe outcome is the engine's own: BLOCK on a guard event (dispatch.guard_events), ALLOW quietly on any other event. Every other check defers to its Node hook on a script failure, so a broken script never changes a decision. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
+| `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
+| `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
+| `script.exec_poll_ms` | `2` |  | ms | How often the bounded runner checks whether an `ah.exec` child has finished. |
+| `script.exec_programs` | `git` |  |  | Program names `ah.exec` may run (bare names, resolved through the request's PATH). Anything else answers null. |
+| `script.exec_timeout_max_ms` | `5000` |  | ms | Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit. |
 | `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
+| `script.includes` | `1 entries` |  |  | Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable. |
 | `script.lib_dir` | `lib` |  |  | Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script. |
 | `script.logic_dir` | `engine/logic` |  |  | Directory of the shipped check scripts, relative to the plugin root. |
 | `script.msg_bad_verdict` | `unexpected verdict {value}` |  |  | Logged reason (then the call defers) when a script returns a value that is not a verdict. |
@@ -4566,12 +4622,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_not_number` | `{key} is not a number` |  |  | Error a script sees when it asks `ah.cfgNum` for a key whose value is not a number. |
 | `script.msg_settings_unreadable` | `settings file readable only by JavaScript` |  |  | Reason logged (then the failure policy applies) when the settings file holds something only JavaScript can parse. |
 | `script.msg_unknown_key` | `unknown defaults key {key}` |  |  | Error a script sees when it asks `ah.cfg` for a key that is not shipped. |
+| `script.msg_unknown_op` | `unknown file operation {op}` |  |  | Error a script sees when it asks a file operation the host does not have. Placeholder: {op}. |
 | `script.msg_write_refused` | `write refused: {why}` |  |  | Error a script sees when its write was refused. Placeholder: {why}. |
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
+| `script.p95_budget_by_check` | `4 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
 | `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
+| `script.readdir_max` | `10000` |  |  | Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole). |
 | `script.regex_cache_max` | `256` |  |  | Compiled regular expressions kept per worker thread for `ah.re.*`; the cache is cleared when it is full. |
 | `script.stack_bytes` | `262144` |  | bytes | Largest interpreter stack one script call may use. |
+| `script.sweep_max_remove` | `200` |  |  | Most files one `ah.state.sweep` call may delete, whatever the script asks for. |
+| `script.tail_buf_bytes` | `65536` |  | bytes | Size of the buffer `ah.transcript.tailLines` reads a file through. |
+| `script.tail_max_bytes` | `16777216` |  | bytes | Largest window `ah.transcript.tailLines` reads from the end of a file, whatever the script asks for. |
+| `script.time_limit_by_check` | `2 entries` |  |  | Per-check wall-clock limit of one script call (ms), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; its SessionStart advisory only lists and stats files. |
 | `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
 | `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
 | `script.write_path_max` | `240` |  |  | Longest relative path one `ah.state.writeAtomic` call may name. |
@@ -5538,6 +5601,130 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `update_msg.unknown_installed` | `unknown-installed-version — could not determine the installed anti-hall versi...` |  |  | Action when no source yields an installed version: never reported as up to date. |
 | `update_msg.up_to_date` | `already up to date` |  |  | Action when nothing is newer. |
 
+### handovers.toml / handovers
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `handovers.advisory_max_files` | `2000` |  |  | A SessionStart check looks at no more than this many files; a larger tree is checked by the scheduled job and the CLI only. |
+| `handovers.advisory_max_lines` | `6` |  |  | Most problem lines the SessionStart advisory lists. |
+| `handovers.bullet_re` | `^\s*(?:[-*+]\|\d+[.)])\s+(.*\S)\s*$` |  |  | A bullet or numbered list line; group 1 = its text. |
+| `handovers.child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable the judge and Jev children carry; a hook that runs inside one does nothing. |
+| `handovers.child_value` | `1` |  |  | The value of the child variable that means this process is a judge or Jev child. |
+| `handovers.cli_event` | `Cli` |  |  | The event name the CLI verbs and the scheduled job pass to the script (it selects the larger time limit of script.time_limit_by_check). |
+| `handovers.cmd_index` | `ah-engine handovers index` |  |  | The command the advisory tells the owner to run. |
+| `handovers.commit_re` | `(?:`\|\(\|@\|\bcommit\s)((?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40})(?![\w-])` |  |  | A commit-like hash (7 to 40 hex characters with a letter and a digit) written in backticks, in parentheses, after @ or after the word commit. Matched globally; group 1 = the hash. |
+| `handovers.commits_max` | `40` |  |  | Most commit-like hashes kept per handover. |
+| `handovers.companion_kinds` | `4 entries` |  |  | Session companion files and what they are (file name to kind). Any other .md file in a session directory is kind `other`. |
+| `handovers.date_re` | `^\d{4}-\d{2}-\d{2}$` |  |  | A day directory name. |
+| `handovers.day_brief` | `BRIEF.md` |  |  | File name of a day brief, inside the day directory. |
+| `handovers.day_sidecar` | `BRIEF.json` |  |  | File name of a day brief's machine-readable sidecar, inside the day directory. |
+| `handovers.day_title` | `Handover brief {date}` |  |  | Title of a day brief. Placeholder: {date}. |
+| `handovers.decisions_heading_re` | `\b(?:decisions?\|decided\|rulings?)\b` |  |  | A heading whose bullets are decisions taken. |
+| `handovers.decisions_max` | `24` |  |  | Most decisions (and, separately, open decisions) kept per handover. |
+| `handovers.dir` | `.anti-hall/handovers` |  |  | The handovers directory, relative to the project root. It must start with the state directory (script.write_root) because the briefs are written there. |
+| `handovers.ellipsis` | `…` |  |  | Appended where a text was cut. |
+| `handovers.emphasis_re` | `\*\*\|^(?:Situation\|Next action)\s*:\s*` |  |  | Markdown emphasis markers and a leading `Situation:` / `Next action:` label that are removed from a summary text. Matched globally. |
+| `handovers.events` | `SessionStart` |  |  | The hook events the check answers. |
+| `handovers.exempt_kinds` | `legacy` |  |  | Entry kinds not held to the front-matter, Situation and Next-action rules. |
+| `handovers.external_re` | `^(?:[a-z][a-z0-9+.-]*:\|#)` |  |  | A link target that is not a file (scheme, anchor, mail). |
+| `handovers.file_ref_re` | ``((?:[A-Za-z0-9_.~@-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})`` |  |  | A backtick-quoted file path in the text: group 1 = the path (it has a directory part and an extension). Recorded in the typed `files` field. |
+| `handovers.files_max` | `60` |  |  | Most file paths kept per handover. |
+| `handovers.first_paragraph_fallback` | `1` |  |  | 1: a handover with neither front-matter Situation nor a situation heading takes the first paragraph after its title as the situation (source `first_paragraph`); 0: it is left empty and reported. |
+| `handovers.fm_next_key` | `Next action` |  |  | Front-matter key of the next action. |
+| `handovers.fm_predecessor_key` | `Predecessor` |  |  | Front-matter key of the predecessor handover (a path). |
+| `handovers.fm_situation_key` | `Situation` |  |  | Front-matter key of the situation summary. |
+| `handovers.fm_title_key` | `handover` |  |  | Front-matter key of the handover's own one-line title. |
+| `handovers.force_flag` | `--force` |  |  | The flag that makes `index` rebuild every day, not only the changed ones. |
+| `handovers.front_matter_max_lines` | `60` |  |  | Most lines a front-matter block may span before it is taken as not closed. |
+| `handovers.generated_note` | `Generated by `ah-engine handovers index` from the handover files; do not edit...` |  |  | The line every generated brief carries under its title. |
+| `handovers.guard_name` | `handover-hygiene` |  |  | The guard id this check answers to in skip.json and in messages. |
+| `handovers.handover_re` | `^HANDOVER(?:-(\d+))?\.md$` |  |  | A numbered handover file (group 1 = its sequence number, absent = 1). The same pattern as the Node handover finder (hooks/lib/handover-find.js). |
+| `handovers.heading_re` | `^(#{1,6})\s+(.*?)\s*#*\s*$` |  |  | A Markdown heading: group 1 = the hashes, group 2 = its text. |
+| `handovers.headline_chars` | `140` |  |  | Longest day or session headline in the root brief (characters). |
+| `handovers.hidden_prefix` | `.` |  |  | Directories and files whose name starts with this are skipped (tool state such as .omc). |
+| `handovers.item_chars` | `300` |  |  | Longest single decision, preference or title kept (characters). |
+| `handovers.job_max_projects` | `16` |  |  | Most registered projects one scheduled run walks. |
+| `handovers.labels` | `28 entries` |  |  | Labels of the rendered briefs. |
+| `handovers.legacy_dir_re` | `^legacy` |  |  | A session directory of a handover written before the session layout existed (it has no session id): its entries are kind `legacy` and are not held to the front-matter rules. |
+| `handovers.legacy_index` | `INDEX.md` |  |  | File name of the append-only row index the handover skill writes. The engine only links to it and never edits it. |
+| `handovers.limit_flag` | `--limit` |  |  | The flag that caps the number of search hits. |
+| `handovers.list_show_max` | `8` |  |  | Most items of a list field shown in a rendered brief before `+N more` (the sidecar holds all that were kept). |
+| `handovers.lock_boot_slop_s` | `5` |  |  | Slack (seconds) when a lock's recorded boot time is compared with this machine's. |
+| `handovers.lock_file_prefix` | `.anti-hall/handover-index-` |  |  | Prefix of the per-project index lock file in the state directory (relative to the home directory); the project root's hash follows. |
+| `handovers.lock_file_suffix` | `.lock` |  |  | Suffix of the per-project index lock file. |
+| `handovers.lock_reclaim_stale_ms` | `5000` |  | ms | A lock-takeover marker older than this belongs to a reclaimer that died and may be taken over. |
+| `handovers.lock_release_step_ms` | `10` |  | ms | The pause between those tries. |
+| `handovers.lock_release_tries` | `5` |  |  | How many times releasing the lock tries to take the takeover marker before it removes its own lock unguarded. |
+| `handovers.lock_stale_ms` | `60000` |  | ms | An index lock older than this is taken over, whatever its holder. |
+| `handovers.lock_step_ms` | `20` |  | ms | The pause between attempts to take the index lock. |
+| `handovers.lock_wait_ms` | `2000` |  | ms | How long an index run waits for another run on the same project before it reports `busy`. |
+| `handovers.md_ext` | `.md` |  |  | The extension of the files the index looks at. |
+| `handovers.md_link_re` | `\]\(([^)\s]+)\)` |  |  | A Markdown link whose target is checked when it is relative (group 1 = the target). |
+| `handovers.meta_line_re` | `^\s*(?:\*\*)?(?:Trigger\|Date\|Repository\|Repo\|Predecessor\|Current release\|Curr...` |  |  | A metadata line at the top of an older handover (`Trigger: ...`, `Date: ...`): when a handover has no Situation, the first paragraph after such lines is taken instead. |
+| `handovers.msg_advisory_instead` | `run `{cmd}` (the scheduled job also repairs the briefs); handover files are n...` |  |  | What to do. Placeholder: {cmd}. |
+| `handovers.msg_advisory_what` | `{count} handover problem(s), {days} day brief(s) out of date in {project}` |  |  | The advisory's first line. Placeholders: {count} (problems), {days} (days needing a rebuild), {project}. |
+| `handovers.msg_advisory_why` | `later searches for changes, work and decisions read the handover briefs; an u...` |  |  | Why it matters. |
+| `handovers.msg_busy` | `another handover index run is in progress for this project; try again shortly` |  |  | Printed when another index run holds the project's lock. |
+| `handovers.msg_check_clean` | `{project}: {handovers} handover(s) in {days} day(s): indexed, no problems` |  |  | Printed by `check` when everything is indexed and valid. Placeholders: {project}, {handovers}, {days}. |
+| `handovers.msg_check_summary` | `{project}: {problems} problem(s), {stale} day brief(s) out of date` |  |  | Summary line of `check` with problems. Placeholders: {project}, {problems}, {stale}. |
+| `handovers.msg_index_done` | `{project}: {handovers} handover(s) in {days} day(s); rebuilt {rebuilt} day(s)...` |  |  | Summary of an index run. Placeholders: {project}, {handovers}, {days}, {rebuilt}, {written}, {problems}. |
+| `handovers.msg_loose_title` | `Without a handover` |  |  | Heading of the day-brief section that lists session directories with snapshots or companion files but no handover. |
+| `handovers.msg_more` | `... and {n} more (run `ah-engine handovers check`)` |  |  | The last advisory line when more problems exist. Placeholder: {n}. |
+| `handovers.msg_more_items` | `+{n} more` |  |  | Shown after a cut list. Placeholder: {n}. |
+| `handovers.msg_no_project` | `no .anti-hall/handovers directory found from here upward` |  |  | Printed when no handovers directory is found from the working directory upward. |
+| `handovers.msg_not_indexed` | `no handover index yet; run `{cmd}` first` |  |  | Printed by `search` when the project has handovers but no sidecars yet. Placeholder: {cmd}. |
+| `handovers.msg_problem_line` | `[{severity}] {code} {where} {detail}` |  |  | One problem line of the advisory and of `check`. Placeholders: {severity}, {code}, {where}, {detail}. |
+| `handovers.msg_recorded` | `{n} problem(s) recorded in the index` |  |  | Detail of the advisory line that stands for problems recorded in the index by the last run. Placeholder: {n}. |
+| `handovers.msg_script_failed` | `the handover-hygiene script could not run ({why}); the plugin's engine/logic/...` |  |  | Printed by the CLI when the handover script could not answer. Placeholder: {why}. |
+| `handovers.msg_search_hit` | `{score}  {id}  {title}\n    {path}\n    {snippet}` |  |  | One search hit. Placeholders: {score}, {id}, {title}, {path}, {snippet}. |
+| `handovers.msg_search_howto` | ``ah-engine handovers search <words> [date:2026-09] [session:ID] [decision:WOR...` |  |  | The search hint in the root brief. |
+| `handovers.msg_search_none` | `no handover matches: {query}` |  |  | Printed when a search finds nothing. Placeholder: {query}. |
+| `handovers.msg_search_total` | `{shown} of {total} match(es)` |  |  | Heading of the hit list. Placeholders: {shown}, {total}. |
+| `handovers.msg_usage` | `usage: ah-engine handovers index [--project DIR] [--registered] [--force] \| c...` |  |  | Printed for `ah-engine handovers` without a known verb. |
+| `handovers.named_re` | `^HANDOVER-([A-Za-z][A-Za-z0-9_.-]*)\.md$` |  |  | A named handover file (group 1 = its name), e.g. HANDOVER-ENGINE-LANES.md. |
+| `handovers.next_heading_re` | `^(?:next action\|next actions\|next step\|next steps\|what to do next\|resume)\b` |  |  | A heading that opens the next-action section when the front matter has no Next action. |
+| `handovers.none_text` | `(none)` |  |  | Shown for an empty field. |
+| `handovers.open_decisions_heading_re` | `^(?:open\|pending\|undecided)\b.*\b(?:decisions?\|questions?)\b` |  |  | A heading whose bullets are decisions still open (checked before the decisions pattern). |
+| `handovers.other_kind` | `other` |  |  | The kind of a .md file in a session directory that is neither a handover, a snapshot nor a known companion. |
+| `handovers.path_ref_re` | `\.anti-hall/handovers/[^\s`)\]'"<>*…]+\.md` |  |  | A handover path mentioned in the text (checked: it must resolve). Matched globally. |
+| `handovers.predecessor_re` | `^\s*(?:Predecessor\|Previous handover\|Continues\|Resumes)\s*:\s*`?([^\s`)]+)` |  |  | A body line that names the predecessor handover (group 1 = the path). |
+| `handovers.preferences_heading_re` | `\b(?:owner rules\|owner preferences\|preferences\|standing rules\|rules in force)\b` |  |  | A heading whose bullets are the owner's standing rules and preferences. |
+| `handovers.preferences_max` | `24` |  |  | Most preferences kept per handover. |
+| `handovers.problems_max` | `12` |  |  | Most problems kept per handover entry. |
+| `handovers.project_flag` | `--project` |  |  | The flag that names the project root (default: the working directory, then its parents). |
+| `handovers.read_max_bytes` | `262144` |  | bytes | Most bytes read from one handover; a larger file is indexed from this head and flagged `too_large`. |
+| `handovers.refs_max` | `60` |  |  | Most references (handover paths and relative links) kept and checked per handover. |
+| `handovers.registered_flag` | `--registered` |  |  | The flag that makes `index` walk every registered project instead of one. |
+| `handovers.registry_file` | `.anti-hall/handover-projects.json` |  |  | The registry of project roots whose handovers the scheduled job keeps indexed, relative to the home directory. A SessionStart in a project with handovers registers it. |
+| `handovers.registry_max` | `64` |  |  | Most projects the registry keeps; the least recently seen is dropped past this. |
+| `handovers.registry_refresh_ms` | `3600000` |  | ms | A project already in the registry is re-recorded at most this often (the registry is a file in the home directory; a session start must not rewrite it every time). |
+| `handovers.required_by_kind` | `2 entries` |  |  | Which problem codes apply to which entry kind: a handover must carry front matter, a Situation and a Next action; a named handover (an addendum) needs only a Situation. |
+| `handovers.root_brief` | `BRIEF.md` |  |  | File name of the root brief (a tree root: it references one brief per day). |
+| `handovers.root_days_max` | `400` |  |  | Most days the root brief's table lists (newest first); the sidecar lists them all. |
+| `handovers.root_sidecar` | `BRIEF.json` |  |  | File name of the root brief's machine-readable sidecar. |
+| `handovers.root_title` | `Handover brief (root)` |  |  | Title of the root brief. |
+| `handovers.run_budget_ms` | `20000` |  | ms | How long one index run keeps rebuilding days before it stops and reports `partial` (the rest is picked up by the next run). It must stay under the script's time limit (script.time_limit_by_check). |
+| `handovers.schema` | `1` |  |  | Version of the sidecar layout. A sidecar of another version is rebuilt (never read as current). |
+| `handovers.search_filters` | `9 entries` |  |  | Filter prefixes a query may use (`date:2026-09`, `from:`, `to:`, `session:`, `kind:`, `file:`, `commit:`, `decision:`, `pref:`): the prefix to the entry field it narrows. |
+| `handovers.search_limit` | `20` |  |  | Default number of search hits. |
+| `handovers.search_limit_max` | `200` |  |  | Most search hits whatever the flag asks. |
+| `handovers.search_snippet_chars` | `160` |  |  | Characters of context a hit's snippet shows around the first match. |
+| `handovers.search_weights` | `10 entries` |  |  | How much a query word is worth in each field of an entry (a word must match somewhere; the score ranks the hits). |
+| `handovers.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.handoverHygiene, default on). Off silences the SessionStart advisory and the scheduled job; the CLI verbs still work. |
+| `handovers.severities` | `16 entries` |  |  | Severity of each problem code: error, warn or info. The SessionStart advisory counts error and warn; info problems (a missing front matter or Situation, a legacy layout) show in `check` and in the briefs only. |
+| `handovers.sig_keys` | `64 items` |  |  | The settings that decide what a brief contains. A change to any of them (or to handovers.schema) rebuilds every day brief on the next index run, so a tuned rule never leaves stale briefs behind. |
+| `handovers.situation_heading_re` | `^(?:situation\|executive summary\|summary\|current state\|where we are\|state of p...` |  |  | A heading that opens the situation section when the front matter has no Situation. |
+| `handovers.snapshot_handover_re` | `^(\S+\.md)(?:\s\|$)` |  |  | The line of a snapshot that names the newest handover it was taken beside (group 1 = the path). |
+| `handovers.snapshot_head_bytes` | `4096` |  | bytes | Bytes read from the top of a PreCompact snapshot (it only needs its title line and the handover it names). |
+| `handovers.snapshot_heading_re` | `^newest handover\b` |  |  | The heading of a snapshot section that holds the handover path. |
+| `handovers.snapshot_re` | `^PRECOMPACT-(\d+)\.md$` |  |  | A PreCompact snapshot file (group 1 = its number). A snapshot is attached to the handover it names, never indexed as a handover. |
+| `handovers.snapshot_stamp_re` | `(\d{4}-\d{2}-\d{2}T[\d:.]+Z)` |  |  | The timestamp in a snapshot's title line (group 1). |
+| `handovers.summary` | `SessionStart advisory (engine-only, no Node twin): reports handovers that are...` |  |  | One-line description of the handover-hygiene check in the generated reference. |
+| `handovers.summary_chars` | `600` |  |  | Longest situation or next-action text kept in an entry (characters; longer is cut with an ellipsis). |
+| `handovers.title_prefix_re` | `^Handover\s*[:—–-]\s*(?=\S)` |  |  | A leading `Handover` word that is dropped from a title when something follows it. |
+| `handovers.verbs` | `index, check, search` |  |  | The sub-commands of `ah-engine handovers`. |
+| `handovers.walk_up_max` | `8` |  |  | How many parent directories are tried when the working directory has no handovers directory (a session started in a sub-directory). |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -5614,7 +5801,6 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_accept_recovered` | Event-log detail when the daemon accepts a connection again after accept failures (logged then, because a full descriptor table can keep the failure's own log line from being written). Placeholders: {n}, {code} (os<n> of the last failure). |
 | `msg.log_bind_fail` | Start-failure detail when binding the socket fails. Placeholders: {path}, {err}. |
 | `msg.log_budget` | Log detail when a rule evaluation exceeded its CPU budget. |
-| `msg.log_check_spawn` | Log detail when a built-in check's thread cannot start, so every command is deferred to Node. Placeholder: {err}. |
 | `msg.log_crash` | Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}. |
 | `msg.log_daemon_killed` | Log detail when the daemon was killed by a signal while starting. |
 | `msg.log_daemon_spawn_failed` | Event-log detail (kind spawn_fail, code os<n>) when the client could not start the daemon (fork or exec failed: EAGAIN, ENOMEM, a missing executable). Placeholder: {err}. |
