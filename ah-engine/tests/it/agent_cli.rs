@@ -166,6 +166,8 @@ fn without_a_daemon_reports_say_so_in_json() {
 
 #[test]
 fn the_daemon_stays_resident_when_idle_by_default() {
+    // D7 (owner design): always resident; only a daemon whose files are gone exits on its own (lane errfix review P2-11)
+    assert_eq!(ah_engine::defaults::num("daemon.idle_exit_s"), 0, "the shipped default keeps the daemon resident");
     let e = Env::new("res", &[]);
     e.warm();
     std::thread::sleep(Duration::from_millis(1600));
