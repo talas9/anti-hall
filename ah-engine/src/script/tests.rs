@@ -854,3 +854,70 @@ fn devswarm_child_turn_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("devswarm-child-turn");
     assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("defer").copied().unwrap_or(0) > 50, "both answers: {kinds:?}");
 }
+
+// ---- task-lifecycle-log, the session gates, merge-side-pick, scan-throttle and merge-gate (D88 batch 6) ----
+
+#[test]
+fn task_lifecycle_log_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("task-lifecycle-log");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && kinds.get("defer").copied().unwrap_or(0) >= 1, "both answers: {kinds:?}");
+}
+
+#[test]
+fn jev_weekly_scorecard_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("jev-weekly-scorecard");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && kinds.get("defer").copied().unwrap_or(0) >= 3, "both answers: {kinds:?}");
+}
+
+#[test]
+fn jev_review_reminder_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("jev-review-reminder");
+    for k in ["advisory", "allow", "defer"] {
+        assert!(kinds.get(k).copied().unwrap_or(0) >= 10, "a corpus that exercises {k}: {kinds:?}");
+    }
+}
+
+#[test]
+fn repair_on_reload_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("repair-on-reload");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 10 && kinds.get("defer").copied().unwrap_or(0) > 10, "both answers: {kinds:?}");
+}
+
+#[test]
+fn merge_side_pick_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("merge-side-pick");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 20, "every answer: {kinds:?}");
+}
+
+/// The platform's throttle prefix (macOS `taskpolicy ...`, Linux `nice ...`) stands as `{PREFIX}` in the corpus, so one corpus
+/// serves both CI systems.
+fn prefix_neutral(v: &mut Value) {
+    if let Some(t) = v.get("text").and_then(Value::as_str) {
+        let t = t.replace("taskpolicy -c utility nice -n 19", "{PREFIX}").replace("ionice -c 3 nice -n 19", "{PREFIX}").replace("nice -n 19", "{PREFIX}");
+        v["text"] = json!(t);
+    }
+}
+
+#[test]
+fn scan_throttle_script_matches_the_compiled_port() {
+    if !(cfg!(target_os = "macos") || cfg!(target_os = "linux")) {
+        return;
+    }
+    let mut kinds = std::collections::BTreeMap::new();
+    for c in golden::load("scan-throttle") {
+        let l = golden::lay(&c);
+        let got = super::run_forced("scan-throttle", &l.payload, &l.opts, &l.event, &l.env).expect("a shipped script");
+        let mut got = golden::verdict_json(&got, &l);
+        prefix_neutral(&mut got);
+        assert_eq!(got, c["expect"], "scan-throttle: script differs from the compiled port on case {}: {} ({:?})", c["n"], c["payload"], crate::discard::captured());
+        *kinds.entry(got["v"].as_str().unwrap_or("").to_string()).or_insert(0usize) += 1;
+        crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
+    }
+    assert!(kinds["advisory"] > 50 && kinds["allow"] > 100 && kinds["defer"] > 100, "every answer: {kinds:?}");
+}
+
+#[test]
+fn merge_gate_script_matches_the_compiled_port() {
+    let kinds = golden::assert_script_matches("merge-gate");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 10, "every answer: {kinds:?}");
+}

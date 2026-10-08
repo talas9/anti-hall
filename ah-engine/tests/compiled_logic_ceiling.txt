@@ -3,4 +3,5 @@
 # session-end-mcp-reaper, verify-first-orch-codex): 58. Batch 2 (lane d88b2) moved ship-it-guard, compact-declaration-guard,
 # devswarm-parent-inbox and devswarm-child-turn to scripts and batch 5 (lane d88b5) git, git-audit, swarm-guard and
 # sibling-sweep: 50.
-50
+# Lane d88fa moved task-lifecycle-log, the three session gates, merge-side-pick, scan-throttle and merge-gate to scripts: 43.
+43

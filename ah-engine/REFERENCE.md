@@ -2486,7 +2486,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.line_terminators` | `\n
+  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
@@ -2860,7 +2861,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `jev_review.headless_setting` | `6 entries` |  |  | The setting jev.recommendNoticeHeadless (off by default): show the recommend notice in a non-interactive run too. |
 | `jev_review.latch_key` | `lastShownTs` |  |  | The key of the recommend notice latch that holds the time it was last shown. |
-| `jev_review.latch_tmp_suffix` | `.tmp` |  |  | What the Node notice appends after the latch path, a dot and its process id to name the temporary file of an atomic write. |
 | `jev_review.protocol_full` | `full` |  |  | The protocol level that turns the headless recommend notice on by default. |
 | `jev_review.protocol_level_setting` | `7 entries` |  |  | The setting context.protocolLevel; while jev.recommendNoticeHeadless is not set anywhere, the full level turns the headless notice on. |
 | `jev_review.recommend_latch_file` | `state/jev-recommend-notice.json` |  |  | The recommend notice latch, relative to the anti-hall directory: the time it was last shown. |
@@ -2876,7 +2876,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev_weekly.decision_log` | `logs/jev-assist.ndjson` |  |  | The Jev decision log the weekly report reads, relative to the anti-hall directory; its rotated generations are this name plus a dot and a number. |
 | `jev_weekly.latch_file` | `state/jev-weekly-notice.json` |  |  | The weekly latch, relative to the anti-hall directory: the time of the last check. |
 | `jev_weekly.latch_key` | `lastCheckedTs` |  |  | The key of the weekly latch that holds the time of the last check. |
-| `jev_weekly.latch_tmp_infix` | `.tmp.` |  |  | What the Node hook puts between the latch path and its process id to name the temporary file of an atomic write. |
 | `jev_weekly.notice_setting` | `8 entries` |  |  | The setting jev.weeklyNotice (on by default; a legacy jev.json value is honoured). |
 | `jev_weekly.period_ms` | `604800000` |  | ms | How often the scorecard check may run. |
 | `jev_weekly.summary` | `Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, not...` |  |  | One-line description of the jev-weekly-scorecard check in the generated reference. |
@@ -3270,6 +3269,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_lifecycle_log.history_dir` | `.anti-hall, history` |  |  | The ledger directory under the project root, as path segments. |
 | `task_lifecycle_log.index_name` | `INDEX.md` |  |  | The index file name inside the history directory. |
 | `task_lifecycle_log.ledger_ext` | `.md` |  |  | The ledger file extension. |
+| `task_lifecycle_log.name_max` | `255` |  |  | Longest file name (in bytes) the file system takes; a ledger name past it cannot be created, so the event is not recorded (Node: the append fails and the hook stops quietly). |
 | `task_lifecycle_log.separator` | ` · ` |  |  | The separator between the fields of a ledger line (a middle dot with a space on each side). |
 | `task_lifecycle_log.setting` | `6 entries` |  |  | Where the on/off switch is read from (maintenance.taskLifecycleLog, default on). |
 | `task_lifecycle_log.subject_max` | `200` |  |  | Longest task subject kept in a ledger line, in UTF-16 units. |
@@ -4625,7 +4625,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_unknown_op` | `unknown file operation {op}` |  |  | Error a script sees when it asks a file operation the host does not have. Placeholder: {op}. |
 | `script.msg_write_refused` | `write refused: {why}` |  |  | Error a script sees when its write was refused. Placeholder: {why}. |
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
-| `script.p95_budget_by_check` | `4 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us. |
+| `script.p95_budget_by_check` | `5 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced); merge-side-pick p50 38 then 106 us, p95 7,199 then 6,104 us (both are the per-session state file's locked read-modify-write; measured 2026-10-09 on a machine at load 25-30). A check not listed here is held to script.p95_budget_us. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
 | `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
 | `script.readdir_max` | `10000` |  |  | Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole). |
@@ -4637,7 +4637,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.time_limit_by_check` | `2 entries` |  |  | Per-check wall-clock limit of one script call (ms), replacing script.time_limit_ms. A key is the check name, or `<check>:<event>` for one event, which wins. handover-hygiene reads and writes a whole directory tree, so its command-line and scheduled-job runs (event Cli) get seconds; its SessionStart advisory only lists and stats files. |
 | `script.time_limit_ms` | `50` | `AH_ENGINE_SCRIPT_TIME_MS` | ms | Wall-clock limit of one script call; past it the interpreter is interrupted and the call defers to Node (never a silent allow). |
 | `script.write_max_bytes` | `1048576` |  | bytes | Largest text one `ah.state.writeAtomic` call may write; a larger text is refused. |
-| `script.write_path_max` | `240` |  |  | Longest relative path one `ah.state.writeAtomic` call may name. |
+| `script.write_path_max` | `600` |  |  | Longest relative path one `ah.state.writeAtomic` call may name. |
 | `script.write_root` | `.anti-hall` |  |  | The one directory under the home directory that a script may write to through `ah.state.writeAtomic` (a path must start with it; nothing outside it, no link below it). |
 | `script.write_sync` | `0` |  |  | 1: a scripted write fsyncs the file before the atomic rename (survives a power cut, costs several milliseconds per write); 0: it does not (a reader still never sees a half-written file, and the state a script keeps is advisory and rebuilt at the next run). |
 | `script.write_why_home` | `no absolute home directory` |  |  | Refusal reason of a scripted write when the request has no absolute home directory. |

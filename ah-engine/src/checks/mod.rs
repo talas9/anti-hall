@@ -30,23 +30,18 @@ pub mod handover;
 pub mod idle_agent_sweep;
 pub mod jsport;
 pub mod mcp_reaper;
-pub mod merge_gate;
-pub mod merge_side_pick;
 pub mod model_routing;
 pub mod output_verify;
 pub mod phase_tracker;
 pub mod replykit;
-pub mod scan_throttle;
 pub mod scripted;
 pub mod session;
-pub mod session_gates;
 pub mod silent_agent_nudge;
 pub mod spawnctx;
 pub mod speculation_guard;
 pub mod speculation_judge;
 pub mod stale_agent_stop_note;
 pub mod task_guard;
-pub mod task_lifecycle_log;
 pub mod task_tracker;
 pub mod taskkit;
 pub mod tasklist_guard;
@@ -188,9 +183,9 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 pub fn registry() -> &'static [&'static dyn Check] {
     static ALL: [&dyn Check; 66] = [
         &scripted::GIT_GUARD,
-        &merge_side_pick::MergeSidePick,
+        &scripted::MERGE_SIDE_PICK,
         &scripted::SHIP_IT_GUARD,
-        &scan_throttle::ScanThrottle,
+        &scripted::SCAN_THROTTLE,
         &coordinator_work::CoordinatorWorkGuard,
         &scripted::COMPACT_DECLARATION_GUARD,
         &command::CommandGuard,
@@ -225,20 +220,20 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &ask_guard::AskGuard,
         &silent_agent_nudge::SilentAgentNudge,
         &stale_agent_stop_note::StaleAgentStopNote,
-        &merge_gate::MergeGate,
+        &scripted::MERGE_GATE,
         &scripted::API_GUARD,
         &scripted::EDIT_GUARD,
         &devswarm_comms::DevswarmCommsGuard,
         &scripted::SWARM_GUARD,
-        &session_gates::JevWeeklyScorecard,
-        &session_gates::JevReviewReminder,
-        &session_gates::RepairOnReload,
+        &scripted::JEV_WEEKLY_SCORECARD,
+        &scripted::JEV_REVIEW_REMINDER,
+        &scripted::REPAIR_ON_RELOAD,
         &codex::availability::CodexAvailability,
         &codex::detect::CodexQuotaDetect,
         &codex::nudge::CodexNudge,
         &handover::precompact::PrecompactSnapshot,
         &handover::resume::HandoverResume,
-        &task_lifecycle_log::TaskLifecycleLog,
+        &scripted::TASK_LIFECYCLE_LOG,
         &dispatch_tier::DispatchTier,
         &task_guard::TaskGuard,
         &tasklist_guard::TasklistGuard,

@@ -90,3 +90,24 @@ pub static SIBLING_SWEEP: Scripted = Scripted::new("sibling-sweep", "sibling_swe
 /// `handover-hygiene` (SessionStart; engine-only): the handover brief tree's advisory. The same script serves the
 /// `handovers` command and the `handovers` scheduled job.
 pub static HANDOVER_HYGIENE: Scripted = Scripted::new("handover-hygiene", "handovers.summary");
+
+/// `merge-side-pick` (PreToolUse and PostToolUse on Bash; advisory only).
+pub static MERGE_SIDE_PICK: Scripted = Scripted::new("merge-side-pick", "merge_side_pick.summary");
+
+/// `scan-throttle` (PreToolUse on Bash; advisory only).
+pub static SCAN_THROTTLE: Scripted = Scripted::new("scan-throttle", "scan_throttle.summary");
+
+/// `merge-gate` (PreToolUse on Bash; opt-in).
+pub static MERGE_GATE: Scripted = Scripted::new("merge-gate", "merge_gate.summary");
+
+/// `task-lifecycle-log` (TaskCreated, TaskCompleted).
+pub static TASK_LIFECYCLE_LOG: Scripted = Scripted::new("task-lifecycle-log", "task_lifecycle_log.summary");
+
+/// `jev-weekly-scorecard` (SessionStart).
+pub static JEV_WEEKLY_SCORECARD: Scripted = Scripted::new("jev-weekly-scorecard", "jev_weekly.summary");
+
+/// `jev-review-reminder` (SessionStart).
+pub static JEV_REVIEW_REMINDER: Scripted = Scripted::new("jev-review-reminder", "jev_review.summary");
+
+/// `repair-on-reload` (SessionStart and UserPromptSubmit).
+pub static REPAIR_ON_RELOAD: Scripted = Scripted::new("repair-on-reload", "repair_reload.summary");

@@ -108,7 +108,7 @@ unit = "bytes"
 
 [script.write_path_max]
 doc = "Longest relative path one `ah.state.writeAtomic` call may name."
-value = 240
+value = 600
 min = 16
 
 [script.write_why_home]
@@ -208,5 +208,5 @@ doc = "Per-check wall-clock limit of one script call (ms), replacing script.time
 value = { "handover-hygiene:Cli" = 30000, "handover-hygiene" = 1000 }
 
 [script.p95_budget_by_check]
-doc = "Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). A check not listed here is held to script.p95_budget_us."
-value = { git = 30000, sibling-sweep = 5000, fable-availability = 2000, handover-hygiene = 200000 }
+doc = "Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced); merge-side-pick p50 38 then 106 us, p95 7,199 then 6,104 us (both are the per-session state file's locked read-modify-write; measured 2026-10-09 on a machine at load 25-30). A check not listed here is held to script.p95_budget_us."
+value = { git = 30000, sibling-sweep = 5000, fable-availability = 2000, handover-hygiene = 200000, merge-side-pick = 12000 }
