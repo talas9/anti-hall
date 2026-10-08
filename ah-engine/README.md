@@ -37,7 +37,7 @@ never a submodule (D69).
 | `src/defaults.rs`, `src/defaults/load.rs`, `src/bootstrap.rs`, `build.rs` | the run-time loader of the plugin's `engine/defaults/*.toml` (validation, atomic snapshot, cache for the thin client, change watching) and the few names needed to find them; `build.rs` only collects the keys the source reads. The defaults themselves live in `plugins/anti-hall/engine/`, never in this crate |
 | `src/docs.rs` | the reference generator |
 | `tests/` | end-to-end and reliability tests against a real daemon, the no-hardcoding test, the defaults-keys test, the reference drift test, the agent CLI and residency tests |
-| `tests/node_parity/` | one test binary of Node-vs-engine parity lanes (the ported hook checks: each runs the real Node hook as the reference); corpora are Rust, or JSON data under `session_corpus/` and `ctxbudget_corpus/` |
+| `tests/it/node_parity/` | one test binary of Node-vs-engine parity lanes (the ported hook checks: each runs the real Node hook as the reference); corpora are Rust, or JSON data under `session_corpus/` and `ctxbudget_corpus/` |
 | `parity/` | the parity harnesses of the older lanes (git, command, Jev, dispatcher, merge-side-pick, scan-throttle, ship-it, compact declaration), and `transcript-facts.js` / `run-transcript.js` for the transcript index |
 | `examples/transcript_facts.rs` | prints the facts the index derives from a transcript (the parity harness runs it) |
 | `DECISIONS.md`, `REFERENCE.md` | the decision record and the generated reference |
@@ -86,26 +86,26 @@ gh attestation verify <asset> --repo talas9/anti-hall
 
 | Item | Where it is tested |
 |---|---|
-| Framing and fallback: only a complete, checksummed reply is an answer; everything else runs the Node hook | `frame::tests`, `tests/reliability.rs` (`bad_replies_run_the_node_fallback_never_allow` and friends) |
+| Framing and fallback: only a complete, checksummed reply is an answer; everything else runs the Node hook | `frame::tests`, `tests/it/reliability.rs` (`bad_replies_run_the_node_fallback_never_allow` and friends) |
 | No hangs: hard client deadline, read deadline, oversize rejection, CPU budget | `hung_engine_times_out_then_falls_back`, `oversize_input_skips_engine_and_daemon_rejects_oversize_requests`, `slow_sender_cannot_wedge_the_daemon`, `cpu_budget_trips_to_fallback` |
 | Watchdog, breaker, crash-loop stop | `stalled_loop_triggers_clean_exit_and_next_client_respawns`, `stuck_worker_triggers_exit`, `breaker_opens_after_repeated_failures_and_skips_engine`, `crash_loop_stops_respawning_records_reason_and_advises_once` |
 | Single instance, stale lock and socket recovery | `twenty_parallel_cold_clients_yield_exactly_one_daemon`, `stale_lock_from_dead_pid_is_recovered_but_live_engine_pid_is_not_stolen`, `non_socket_at_socket_path_is_never_deleted` |
 | Resource caps | `queue_overflow_answers_busy_and_clients_fall_back`, `rate_limited_session_gets_busy_so_it_falls_back`, `memory_limit_and_nice_are_applied_and_reported`, `rss_over_cap_restarts_cleanly_and_next_client_respawns` |
 | Safety: socket mode, private directory, symlinks, peer uid, payload never executed, project isolation | `socket_is_0600_and_state_dir_0700`, `long_path_socket_dir_is_private_and_owner_checked`, `symlinked_state_dir_is_refused`, `payload_text_is_never_executed`, `projects_are_isolated_through_the_daemon` |
-| Residency: stays up when idle by default; idle exit is a config key | `tests/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
-| Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/agent_cli.rs` |
+| Residency: stays up when idle by default; idle exit is a config key | `tests/it/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
+| Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/it/agent_cli.rs` |
 | Tiered lifecycle: write-through after commit, LRU budget loses nothing, TTL ends the lifecycle but keeps the row, a restart rebuilds only active items, idempotent write ids, pub/sub never blocks | `tier::tests`, `store::tests` |
-| Scheduler: on time, a restart never runs a job twice, a missed window catches up once (or is skipped), a hung job is killed at its timeout and the next run happens, list/run/history with and without a daemon | `tests/schedule.rs`, `schedule::tests` |
-| Persisted telemetry: metric snapshots and rollups and the impact ledger survive a clean restart and a SIGKILL; counting continues from the snapshot | `tests/agent_cli.rs` (`metrics_impact_and_rollups_survive_a_restart_and_a_kill`), `metrics::tests`, `storage::tests` |
-| Telemetry (D78, D77): counters exact under concurrent hook calls, `record()` median under 1 microsecond, a flush survives restart and kill -9 with the loss window exactly what was not flushed, rollups idempotent, route events join spawn results, NET math on fixtures, no text can be stored | `tests/telemetry.rs`, `telemetry::{recorder,event,persist,rollup,route}::tests`, `daemon::tests` |
-| Backup and restore: consistent and scrubbed (no unscrubbed page left), never overwrites a snapshot, restore keeps the current state and swaps, a damaged or newer snapshot changes nothing, CLI round trip with a live daemon | `backup::tests`, `tests/agent_cli.rs` (`backup_then_restore_through_the_cli_with_a_live_daemon`) |
-| Size control: inactive rows move to the archive and active ones stay, totals stay exact, a crash between copy and remove loses and duplicates nothing, the impact cap moves the oldest, no hard delete unless configured, maintain beside a live daemon | `maintain::tests`, `tests/agent_cli.rs` (`maintain_runs_beside_a_live_daemon_and_is_reported_in_metrics`) |
-| Spool: 100 writes with the engine down are applied exactly once and in order per session, a replay changes nothing, a busy engine makes the client spool, damage is quarantined, a take is never spooled | `tests/spool.rs`, `spool::tests` |
-| Durability: SIGKILL mid-burst, 50 loops: every acknowledged write present, nothing torn, invented or duplicated, write ids match rows; group commit shares syncs within its window | `tests/durability.rs`, `db::tests::concurrent_writes_share_commits_within_the_window` |
-| Transcript index: appended bytes only, truncation, rotation and in-place rewrite rebuild, a final unterminated line counted once, caps, registry bounds; facts equal the Node readers' on fixtures and on real transcripts | `tests/transcript_index.rs`, `tests/transcript_parity.rs`, `parity/run-transcript.js` |
-| Git cache: every fact equals a fresh `git` before and after each mutation on a plain repository, a linked worktree and a submodule; each signed file invalidates on its own; the dirty bit is time-bounded and `dirty_exact` is not; a bypass environment and a timeout are errors, never cached | `tests/gitcache_parity.rs` |
-| Dispatcher (D58): the table is the table of record and both `hooks.json` files are generated from it (D87); Node hooks run at once and a hook past its timeout is killed with its group; a block wins byte for byte; contexts merge in order; a guard event (PreToolUse, PermissionRequest, Stop, SubagentStop) whose Node hook cannot run, cannot start, dies, leaves incomplete output, or whose payload is cut off or unreadable fails closed (exit 2); the fail-closed invariant matrix crosses every guard event with every injected failure; a conflict is delivered as one merged answer; a join over the host cap is handed back (exit 75) on a non-guard event and delivered merged on a guard event; the table equals the generator's output | `tests/dispatch_table.rs`, `tests/dispatch_e2e.rs`, `tests/fail_closed_matrix.rs`, `dispatch::*::tests` |
-| The daemon never answers from its own environment (git cache, config); a damaged exact reply, a signal-killed fallback and a timed-out fallback's helpers are handled | `tests/process_env_reads.rs`, `tests/gitcache_parity.rs`, `tests/fallback_read.rs`, `client::tests` |
+| Scheduler: on time, a restart never runs a job twice, a missed window catches up once (or is skipped), a hung job is killed at its timeout and the next run happens, list/run/history with and without a daemon | `tests/it/schedule.rs`, `schedule::tests` |
+| Persisted telemetry: metric snapshots and rollups and the impact ledger survive a clean restart and a SIGKILL; counting continues from the snapshot | `tests/it/agent_cli.rs` (`metrics_impact_and_rollups_survive_a_restart_and_a_kill`), `metrics::tests`, `storage::tests` |
+| Telemetry (D78, D77): counters exact under concurrent hook calls, `record()` median under 1 microsecond, a flush survives restart and kill -9 with the loss window exactly what was not flushed, rollups idempotent, route events join spawn results, NET math on fixtures, no text can be stored | `tests/it/telemetry.rs`, `telemetry::{recorder,event,persist,rollup,route}::tests`, `daemon::tests` |
+| Backup and restore: consistent and scrubbed (no unscrubbed page left), never overwrites a snapshot, restore keeps the current state and swaps, a damaged or newer snapshot changes nothing, CLI round trip with a live daemon | `backup::tests`, `tests/it/agent_cli.rs` (`backup_then_restore_through_the_cli_with_a_live_daemon`) |
+| Size control: inactive rows move to the archive and active ones stay, totals stay exact, a crash between copy and remove loses and duplicates nothing, the impact cap moves the oldest, no hard delete unless configured, maintain beside a live daemon | `maintain::tests`, `tests/it/agent_cli.rs` (`maintain_runs_beside_a_live_daemon_and_is_reported_in_metrics`) |
+| Spool: 100 writes with the engine down are applied exactly once and in order per session, a replay changes nothing, a busy engine makes the client spool, damage is quarantined, a take is never spooled | `tests/it/spool.rs`, `spool::tests` |
+| Durability: SIGKILL mid-burst, 50 loops: every acknowledged write present, nothing torn, invented or duplicated, write ids match rows; group commit shares syncs within its window | `tests/it/durability.rs`, `db::tests::concurrent_writes_share_commits_within_the_window` |
+| Transcript index: appended bytes only, truncation, rotation and in-place rewrite rebuild, a final unterminated line counted once, caps, registry bounds; facts equal the Node readers' on fixtures and on real transcripts | `tests/it/transcript_index.rs`, `tests/it/transcript_parity.rs`, `parity/run-transcript.js` |
+| Git cache: every fact equals a fresh `git` before and after each mutation on a plain repository, a linked worktree and a submodule; each signed file invalidates on its own; the dirty bit is time-bounded and `dirty_exact` is not; a bypass environment and a timeout are errors, never cached | `tests/it/gitcache_parity.rs` |
+| Dispatcher (D58): the table is the table of record and both `hooks.json` files are generated from it (D87); Node hooks run at once and a hook past its timeout is killed with its group; a block wins byte for byte; contexts merge in order; a guard event (PreToolUse, PermissionRequest, Stop, SubagentStop) whose Node hook cannot run, cannot start, dies, leaves incomplete output, or whose payload is cut off or unreadable fails closed (exit 2); the fail-closed invariant matrix crosses every guard event with every injected failure; a conflict is delivered as one merged answer; a join over the host cap is handed back (exit 75) on a non-guard event and delivered merged on a guard event; the table equals the generator's output | `tests/it/dispatch_table.rs`, `tests/it/dispatch_e2e.rs`, `tests/it/fail_closed_matrix.rs`, `dispatch::*::tests` |
+| The daemon never answers from its own environment (git cache, config); a damaged exact reply, a signal-killed fallback and a timed-out fallback's helpers are handled | `tests/it/process_env_reads.rs`, `tests/it/gitcache_parity.rs`, `tests/it/fallback_read.rs`, `client::tests` |
 | Storage: WAL and configured durability, versioned idempotent migrations, a newer schema refused, acknowledged only after commit, queued writes committed on close; both `Store` backends behave the same | `db::tests`, `storage::tests` |
 
 Known limits: CI runs the whole suite on ubuntu and macOS (`.github/workflows/ah-engine.yml`); the Linux CI run found a real
@@ -179,7 +179,7 @@ Deliberate differences from the Node guard:
   The Node turn gate passes `tg-` as the family name of its pruning sweep, which looks for `tg--*.json` and so never
   removes a file; that is kept so the files on disk stay the same (a finding for the Node side).
 - `verify-first-subagent`, `verify-first-full` and `fable-availability` (context checks, never block; `checks/verify_first`,
-  `checks/fable_availability`; parity test `tests/node_parity/verify_first.rs`): the protocol texts live in
+  `checks/fable_availability`; parity test `tests/it/node_parity/verify_first.rs`): the protocol texts live in
   `defaults/verify_first.toml`, copied from `hooks/verify-first-core.js`, and the harness fails when either side drifts. The
   compact text names `<plugin root>/PROTOCOL.md`; the root is derived like Node does (the real location of
   `hooks/verify-first-core.js`), and a root the engine cannot prove defers. A payload the engine's JSON reader rejects
@@ -190,7 +190,7 @@ Deliberate differences from the Node guard:
   joins the forwarded request environment for the child-workspace note.
 - Session maintenance (`version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge`,
   `progress-prune`; SessionStart, never blocking): output bytes and state-file writes equal the Node hooks'
-  (`tests/node_parity/session.rs`). The engine never starts a background process, so a stale or absent version cache (Node starts a
+  (`tests/it/node_parity/session.rs`). The engine never starts a background process, so a stale or absent version cache (Node starts a
   detached probe) answers a deferral, and so does anything it cannot read exactly like JavaScript (a payload with no absolute
   `cwd`, a date that depends on the time zone, a `.git` file in an unusual shape, JSON with a lone surrogate escape, a git
   probe slower than `session.gitignore_probe_ms`). A deferral always comes before the first write, so Node then sees the
@@ -234,7 +234,7 @@ Deliberate differences from the Node guard:
   JavaScript's number and string coercions. The home directory is `HOME` (Node's `os.homedir()`); a request without an
   absolute one defers. A reading that needs a state write (the inferred one-million-token window), a tag that is a hash of
   the transcript path, and a relative `transcript_path` defer to Node. Parity: `cargo test --release --test
-  node_parity ctxbudget` (`tests/node_parity/ctxbudget.rs`).
+  it -- node_parity::ctxbudget` (`tests/it/node_parity/ctxbudget.rs`).
 - `swarm-guard` (PreToolUse on Agent and Task): the memory gate (macOS `vm_stat`, Linux `MemAvailable`, never the OS "free"
   figure) and the spawn-rate gate are exact, including the spawn log, the trip log and the lock file, whose format and
   takeover protocol are the Node ones (`checks/guardkit/nodelock.rs`), so the Node hook and the engine can run against the
@@ -257,7 +257,7 @@ Deliberate differences from the Node guard:
   `codex-nudge`): see DECISIONS 1.75. They answer exactly as Node does or defer; they read the request's environment
   (`HOME`, `PATH`, `TZ`, `TMPDIR`) and write the same files (`~/.anti-hall/codex-availability.json`,
   `codex-nudge-state-<session>.json`, `handover-resume-state-<session>.json`, `<repo>/.anti-hall/handovers/.../PRECOMPACT-<n>.md`).
-  Parity: `cargo test --release --test node_parity -- codex_ handover_resume precompact` (`tests/node_parity/b78*.rs`).
+  Parity: `cargo test --release --test it -- node_parity::b78 codex_ handover_resume precompact` (`tests/it/node_parity/b78*.rs`).
 - A check that needs more than the `Subject` (session id, transcript path, agent markers) implements
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 ## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)
@@ -302,11 +302,11 @@ Deliberate differences from the Node hooks:
 `task-lifecycle-log`, `dispatch-tier`, `task-guard` and `tasklist-guard` port the task hooks of batches 9 and 10. Their
 tables, patterns, limits and texts are in `defaults/task_guards.toml`. Every check either answers exactly what the Node
 hook would (exit code, stdout and the files it writes) or defers, so the engine is never a weaker guard than Node (D74).
-`tests/node_parity/fx.rs` is the harness: it runs the real Node hook with an isolated `HOME` and the engine check on identical
+`tests/it/node_parity/fx.rs` is the harness: it runs the real Node hook with an isolated `HOME` and the engine check on identical
 worlds and compares exit code, stdout, stderr and the whole file tree; `fx_lifecycle.rs`, `fx_dispatch_tier.rs`,
 `fx_task_guard.rs` and `fx_tasklist_guard.rs` hold the corpora (hand-written shapes, fuzz, and, with
 `AH_PARITY_REAL_TRANSCRIPTS=1`, real transcripts for the two Stop gates). Run them with
-`cargo test --release --test node_parity -- dispatch_tier task_lifecycle task_guard tasklist_guard`.
+`cargo test --release --test it -- node_parity::dispatch_tier task_lifecycle task_guard tasklist_guard`.
 
 - `task-lifecycle-log` (TaskCreated, TaskCompleted): the ledger line and the index entry, exactly. The project root is the
   nearest `.git` ancestor of the real path (`taskkit/root.rs`, from the file system alone, no git process). A relative

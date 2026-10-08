@@ -142,7 +142,7 @@ labelled with how it was measured in the README of `ah-engine/`.
   `checks/spawnctx`: the home directory the state files live under (with the test-run refusal of the real home), the
   DevSwarm detector, session-id sanitizing and the orchestration marker with its prune sweep. Each was compared against
   the real Node hook on a corpus of 70 to 103 payloads, on exit code, stdout bytes, stderr bytes and the state files left
-  behind, with an isolated home per side (`tests/spawn_ctx_parity.rs`). What stays with Node, by design: a Read inside the
+  behind, with an isolated home per side (`tests/it/spawn_ctx_parity.rs`). What stays with Node, by design: a Read inside the
   raw DevSwarm store (the block depends on a module probe), a pending orchestration marker (the claim race and the
   transcript scan), a session where DevSwarm is active for `verify-first-orch` (whether it is a Primary changes the text),
   a working directory that is not a string, and a relative path or config directory that Node resolves against its own
@@ -329,12 +329,12 @@ refuses prose, and a line with an unknown field or text where an identifier belo
 or file text can be stored.
 
 **Cost on the hook path.** Recording is a hash of the labels and a few relaxed atomic additions into a sharded table, plus
-a bounded in-memory ring for rich events: no I/O and no shared lock. Measured by `tests/telemetry.rs` (release build): the
+a bounded in-memory ring for rich events: no I/O and no shared lock. Measured by `tests/it/telemetry.rs` (release build): the
 `record()` median is under 1 microsecond (the test asserts it, alone and with four threads hammering the same labels).
 
 **Persistence and the loss window.** The recorder flushes to `hot.db` every `telemetry.flush_ms` (default 10 s) and at a
 clean shutdown, through the Store's writer. A `kill -9` (or power loss) loses exactly what was recorded after the last
-flush: at most `telemetry.flush_ms` of data. Everything flushed survives (`tests/telemetry.rs` kills a daemon and reads the
+flush: at most `telemetry.flush_ms` of data. Everything flushed survives (`tests/it/telemetry.rs` kills a daemon and reads the
 database). Samples that could not be kept (a full table, an event overwritten in the ring before a flush) are counted in
 `tel_dropped`, never silently lost. Counters also feed the metrics registry (`tel_events`, `tel_injected_bytes`), so
 `ah-engine metrics` shows the same numbers.
@@ -372,7 +372,7 @@ the binary, so there is nothing to install; it was chosen over redb by measureme
   in its own savepoint, so a refused write never undoes its neighbours. Reads use a second connection.
 - **Acknowledged means committed.** A project write is answered only after its transaction is on disk; a write that does
   not commit within `storage.ack_timeout_ms` is answered with an error, and its write id makes a retry harmless. The test
-  `tests/durability.rs` kills the daemon with SIGKILL in the middle of a burst of writes from four threads, fifty times
+  `tests/it/durability.rs` kills the daemon with SIGKILL in the middle of a burst of writes from four threads, fifty times
   in a row, and checks after each restart that every acknowledged write is present, nothing present was invented or
   torn, and every write id matches exactly one row.
 - **Hooks never wait on storage.** Impact events from the hook path are queued without waiting; a later read first waits
@@ -453,7 +453,7 @@ always be recreated from the transcript alone. A last line without a newline is 
 never counted twice. More than `transcript.max_update_bytes` appended between two refreshes skips ahead to the newest
 bytes and counts a gap. An `Indexes` registry holds one index per path, at most `transcript.max_indexes`, and drops an
 idle one after `transcript.idle_ttl_ms` (D22: memory holds only active items). Parity with the Node readers is checked by
-`tests/transcript_parity.rs` and, over real transcripts, by `parity/run-transcript.js`.
+`tests/it/transcript_parity.rs` and, over real transcripts, by `parity/run-transcript.js`.
 
 **Git cache (`ah_engine::gitcache`).** Guards spawn `git` for the branch, the remotes, the aliases, the work tree root
 and the dirty state. `GitCache::repo(dir, env)` finds the repository the way git does from a directory (a `.git`
@@ -477,7 +477,7 @@ Limits that the signature cannot see are handled in the open: a working-tree edi
 dirty bit has its own short TTL (`gitcache.dirty_ttl_ms`) and `dirty_exact` always asks git (a destructive decision must
 use it); `include.path` and `GIT_*` overrides are not signed, so a call whose environment sets one of
 `gitcache.bypass_env` is refused (`Bypassed`) and the caller runs git itself. A run that times out or fails to start is an
-error and is never remembered; an exit status other than 0 is remembered as "git said no". `tests/gitcache_parity.rs`
+error and is never remembered; an exit status other than 0 is remembered as "git said no". `tests/it/gitcache_parity.rs`
 compares every fact with a fresh `git` invocation on a plain repository, a linked worktree and a submodule, before and
 after commits, amends, resets, branch switches, detached HEAD, `pack-refs`, config changes, fetches and stashes.
 
@@ -664,7 +664,7 @@ the plugin used to register for that event (D58). Its table, `dispatch.toml` (ha
 record), lists each host's entries per event in combine order with the exact command, timeout and matcher, which built-in
 check (today: `git` and the other ported guards, on PreToolUse) answers an entry, and optionally a `when` predicate. The
 plugin's `hooks.json` files are generated from it (`ah-engine gen-hooks`, or `ah-gen-fallback-list --repo ..` for all of
-them) and `tests/hooks_files.rs` fails on a byte of difference.
+them) and `tests/it/hooks_files.rs` fails on a byte of difference.
 
 **One thin trigger per event (D87).** `hooks/hooks.json` has exactly one entry per event and no matcher:
 `sh "${CLAUDE_PLUGIN_ROOT}/hooks/ah-hook.sh" <Event>` (Codex: `${PLUGIN_ROOT}`, plus `--host codex`), with the longest timeout
@@ -777,7 +777,7 @@ bytes to the matching Node hooks from the raw stdin spool; the engine fails clos
 no guard decision. A hook that exits 2 (or prints a JSON block) keeps its block even if a leftover process holds its pipes
 open. A payload the dispatcher cannot parse, or that names no tool, selects every entry of the event instead of none. A
 hook that runs past its timeout stays the host's own discard (no decision), and is logged (`dispatch_hook_timeout`).
-`tests/fail_closed_matrix.rs` crosses every guard event with every injected failure and asserts one invariant: exit 2 with
+`tests/it/fail_closed_matrix.rs` crosses every guard event with every injected failure and asserts one invariant: exit 2 with
 a message, or the result Node's hooks would give, never exit 0 with nothing printed unless a hook that ran allowed. Any
 other event runs the hooks it can and logs `dispatch_defer` for the ones it cannot. The plugin is wired to the dispatcher on the
 `engine-proto` branch through the thin triggers above (D75, D87).

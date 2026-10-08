@@ -6,7 +6,7 @@
 //! fact is then left out of the comparison (the others are still compared).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-mod transcript_support;
+use crate::transcript_support;
 use ah_engine::transcript::{Index, Limits};
 use serde_json::{Value, json};
 use std::process::Command;

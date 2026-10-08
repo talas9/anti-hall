@@ -4,7 +4,7 @@
 // usage: node readside_seed.js <home> <worktree> <id> <ndjsonLines> <storeRows>
 const path = require('path');
 const fs = require('fs');
-const root = path.join(__dirname, '..', '..', '..', 'plugins', 'anti-hall', 'companion', 'lib');
+const root = path.join(__dirname, '..', '..', '..', '..', 'plugins', 'anti-hall', 'companion', 'lib');
 const store = require(path.join(root, 'devswarm-store.js'));
 const repokey = require(path.join(root, 'devswarm-repokey.js'));
 const [home, worktree, id, nd, rows] = process.argv.slice(2);

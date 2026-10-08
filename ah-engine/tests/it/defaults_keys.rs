@@ -18,7 +18,7 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-#[path = "../build_support/keyscan.rs"]
+#[path = "../../build_support/keyscan.rs"]
 #[allow(dead_code)] // `HELPERS` and `Kind::name` serve build.rs
 mod keyscan;
 

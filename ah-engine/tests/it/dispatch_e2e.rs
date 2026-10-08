@@ -3,7 +3,7 @@
 //! directory and reaps any daemon it starts.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-mod common;
+use crate::common;
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;

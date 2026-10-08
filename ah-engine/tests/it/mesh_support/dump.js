@@ -3,7 +3,7 @@
 // backend) and prints the canonical dump: the same one-JSON-line-per-record, sorted-keys form `ah-engine mesh dump` prints.
 // usage: node dump.js <home> <storeKey>      (store at <home>/.anti-hall/devswarm/store/<storeKey>/devswarm.db)
 const path = require('path');
-const store = require(path.join(__dirname, '..', '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js'));
+const store = require(path.join(__dirname, '..', '..', '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js'));
 
 function canon(v) {
   if (v === undefined) return 'null';

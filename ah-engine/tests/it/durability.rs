@@ -11,7 +11,7 @@
 //! starts is its own child process and is reaped (waited for) before the test ends.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-mod common;
+use crate::common;
 
 use ah_engine::client::{Exch, exchange};
 use ah_engine::frame::Kind;

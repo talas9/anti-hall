@@ -26,7 +26,7 @@ fn node_sqlite_available() -> bool {
 }
 
 fn support(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("mesh_support").join(name)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("it").join("mesh_support").join(name)
 }
 
 fn tmp(tag: &str) -> PathBuf {

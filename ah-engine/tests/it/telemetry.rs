@@ -5,7 +5,7 @@
 //! and engine directory, never the real ones.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-mod common;
+use crate::common;
 
 use ah_engine::telemetry::event::{Kind, Outcome};
 use ah_engine::telemetry::recorder::Recorder;

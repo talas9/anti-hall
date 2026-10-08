@@ -5,7 +5,7 @@
 // field. usage: node fixture.js <home>
 const path = require('path');
 const fs = require('fs');
-const store = require(path.join(__dirname, '..', '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js'));
+const store = require(path.join(__dirname, '..', '..', '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js'));
 const home = process.argv[2];
 
 const rich = store.openStore({ home, hash: 'rich-aaaaaa' });

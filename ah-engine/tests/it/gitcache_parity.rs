@@ -3,7 +3,7 @@
 //! own HOME (an empty global config) and never touches the real one.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-mod transcript_support;
+use crate::transcript_support;
 use ah_engine::gitcache::{GitCache, GitCacheError, GitLimits};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

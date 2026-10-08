@@ -10,8 +10,7 @@
 //! `IDENTITY`) with the Authorization value masked, the body byte for byte, and every log row with its clock fields
 //! (`ts`, `ms`) removed. Requests are sorted by body, since several detached asks race to the server.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
-#[path = "common/replies.rs"]
-mod replies;
+use crate::replies;
 
 use replies::{asst, user};
 use serde_json::{Value, json};

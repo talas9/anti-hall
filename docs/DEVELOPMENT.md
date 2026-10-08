@@ -74,10 +74,16 @@ ah-engine/scripts/build.sh --checks
 | Suite | Command | Where |
 |---|---|---|
 | Engine, everything | `./test.sh` | `ah-engine/` |
-| Engine, one file | `cargo test --locked --test <name>` | `ah-engine/tests/` |
+| Engine, one former file (now a module of the single `it` test binary) | `cargo test --locked --test it -- <name>::` or `cargo nextest run -E 'test(/^<name>::/)'` | `ah-engine/tests/it/<name>.rs` |
 | Engine, lint and docs | `cargo fmt --check`, clippy, `cargo doc` | `ah-engine/` |
 | Plugin | `node --test` | repo root |
 | Generated files | `node tools/gen-*.js --check` | repo root |
+
+All engine integration tests are ONE binary (`ah-engine/tests/it/main.rs`, one `mod` per former `tests/<name>.rs`), so the
+crate compiles and links once instead of once per file. Three tests keep their own binary under `ah-engine/tests/` because they
+`set_var` process-global variables (`HOME`, the proxy variables) and need a process to themselves under plain `cargo test`:
+`config_hotswap`, `runtime_config` and `jev_http` (select them with `--test <name>`). Under nextest every test is its own
+process anyway. Add a new test as a module of `tests/it/` (declare it in `main.rs`), not as a new file in `tests/`.
 | Parity harnesses | `node parity/run-*.js` | `ah-engine/parity/` |
 | Evals | `node evals/anti-hall/run.js` | repo root, spends money |
 
@@ -91,7 +97,7 @@ cd ah-engine
 
 ```sh
 cd ah-engine
-cargo test --locked --test no_hardcoded_tunables
+cargo test --locked --test it -- no_hardcoded_tunables::
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
@@ -128,7 +134,7 @@ git diff --stat -- REFERENCE.md
 
 | Layer | What it checks | Where | Cost |
 |---|---|---|---|
-| Property tests | no panic, bounded time per input, structural invariants (segments are never blank, a heredoc body is a substring of the command, JSON round-trips, `glob_match` equals a regex-compiled oracle) | `ah-engine/tests/prop_parsers.rs`, part of `./test.sh` | about 1,000 cases per property by default; `PROPTEST_CASES=100000` for a soak run |
+| Property tests | no panic, bounded time per input, structural invariants (segments are never blank, a heredoc body is a substring of the command, JSON round-trips, `glob_match` equals a regex-compiled oracle) | `ah-engine/tests/it/prop_parsers.rs`, part of `./test.sh` | about 1,000 cases per property by default; `PROPTEST_CASES=100000` for a soak run |
 | Fuzzing | no panic, no hang (`-timeout`), no OOM (`-rss_limit_mb`) on arbitrary bytes | `ah-engine/fuzz/` (five targets: `tokenize`, `heredoc`, `shell`, `json`, `glob`), nightly CI in `.github/workflows/ah-engine-fuzz.yml` | needs the nightly toolchain and `cargo install cargo-fuzz` |
 | Benchmarks | `glob_match` (including the `*a` and `**a` worst cases for a backtracking matcher) and the tokenizers | `ah-engine/benches/parsers.rs` | a few minutes |
 
@@ -136,7 +142,7 @@ git diff --stat -- REFERENCE.md
 
 ```sh
 cd ah-engine
-PROPTEST_CASES=20000 cargo test --locked --test prop_parsers
+PROPTEST_CASES=20000 cargo test --locked --test it -- prop_parsers::
 ```
 
 <!-- doc-check: skip (needs the nightly toolchain and cargo-fuzz, and runs for a bounded time) -->
@@ -193,12 +199,12 @@ cd ah-engine/parity
 node run-merge-side-pick.js --engine ../target/release/ah-engine --hooks ../../plugins/anti-hall/hooks --cmds <recorded-commands.jsonl>
 ```
 
-The ported hook checks (the six session-maintenance hooks, the context-budget, handover and Codex, task, guard and verify-first checks) are compared with their Node hooks by one Rust test binary, `ah-engine/tests/node_parity/`. Every scenario runs the real Node hook (the reference) and the engine on the same inputs, in isolated homes, and compares exit code, stdout, stderr and the files each side leaves behind; nothing but Node as the reference is needed, and a lane is skipped where Node or the plugin hooks are missing. The session-maintenance lane spawns the Node hook with a spy that records and suppresses any process it would start. It takes some minutes and needs `git`, `node` and, for the API guard, `python3` on the `PATH`.
+The ported hook checks (the six session-maintenance hooks, the context-budget, handover and Codex, task, guard and verify-first checks) are compared with their Node hooks by the `node_parity` module of the `it` Rust test binary, `ah-engine/tests/it/node_parity/`. Every scenario runs the real Node hook (the reference) and the engine on the same inputs, in isolated homes, and compares exit code, stdout, stderr and the files each side leaves behind; nothing but Node as the reference is needed, and a lane is skipped where Node or the plugin hooks are missing. The session-maintenance lane spawns the Node hook with a spy that records and suppresses any process it would start. It takes some minutes and needs `git`, `node` and, for the API guard, `python3` on the `PATH`.
 
 <!-- doc-check: skip (several thousand scenarios; run on demand) -->
 ```sh
 cd ah-engine
-cargo test --release --test node_parity -- --nocapture
+cargo test --release --test it -- node_parity:: --nocapture
 ```
 
 Set `AH_PARITY_DUMP=<dir>` to write each lane's corpus and summary there, `AH_PARITY_ONLY=<text>` to run only the scenarios whose id contains it (the sandbox lanes), and `AH_PARITY_REAL_CMDS`, `AH_PARITY_REAL_EDITS` or `AH_PARITY_REAL_TRANSCRIPTS=1` to add real commands, edits or transcripts from local data to the lanes that took them (never committed).

@@ -201,7 +201,7 @@ fn exec(case: &Case) -> &'static str {
         let wt = tmp.join("wt");
         let init = Command::new("git").args(["init", "-q"]).arg(&wt).status().unwrap();
         assert!(init.success());
-        let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mesh_support/readside_seed.js");
+        let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/mesh_support/readside_seed.js");
         let out = Command::new("node")
             .arg(seed)
             .args([&home, wt.to_str().unwrap(), "abc-123", &nd.to_string(), &rows.to_string()])

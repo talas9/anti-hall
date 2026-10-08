@@ -19,9 +19,9 @@
 //!  9. a file or directory name (`.anti-hall`, `x.json`, ...).
 //!
 //! The ratchet (`no_new_hardcoded_literals`, owner rule: no hardcoding): three broader shapes that the checks above let
-//! through, held against `tests/hardcoded_baseline.txt`. A line in the baseline is known debt waiting to move to
+//! through, held against `tests/it/hardcoded_baseline.txt`. A line in the baseline is known debt waiting to move to
 //! the plugin's `engine/defaults/*.toml`; a NEW line is a failure, and a baseline line that no longer occurs is a failure too, so the list only
-//! shrinks. Regenerate it with `AH_BLESS_BASELINE=1 cargo test --test no_hardcoded_tunables` (review the diff).
+//! shrinks. Regenerate it with `AH_BLESS_BASELINE=1 cargo test --test it -- no_hardcoded_tunables::` (review the diff).
 //! 10. a number of 10 or more in a limit or comparison context (`.take(N)`, `[..N]`, `.min(N)`, `> N`, `with_capacity(N)`...);
 //! 11. a short message: a string literal of 3+ words and 15+ characters that is not a developer diagnostic;
 //! 12. a duration built from arithmetic on literals (`Duration::from_secs(5 * 60)`, `sleep(Duration::...)`).
@@ -524,7 +524,7 @@ fn ratchet_violations(file: &Path, text: &str) -> Vec<String> {
 }
 
 fn baseline_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/hardcoded_baseline.txt")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/hardcoded_baseline.txt")
 }
 
 #[test]
@@ -554,7 +554,7 @@ fn no_new_hardcoded_literals() {
     );
     assert!(
         gone.is_empty(),
-        "{} baseline lines no longer occur (good: delete them from tests/hardcoded_baseline.txt, or re-bless):\n{}",
+        "{} baseline lines no longer occur (good: delete them from tests/it/hardcoded_baseline.txt, or re-bless):\n{}",
         gone.len(),
         gone.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
     );

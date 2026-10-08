@@ -41,7 +41,7 @@ const THIN_PATH = path.join(REPO, 'plugins', 'anti-hall', 'codex', 'hooks', 'hoo
 
 // The installer no longer hand-lists hooks: it consumes the generated thin file (one wrapper call per event, produced by
 // the Rust generator from dispatch.toml). The per-hook behaviour parity (old registry vs thin trigger) is gated in
-// ah-engine/tests/flip_parity.rs; this test pins that the installer writes exactly the generated file.
+// ah-engine/tests/it/flip_parity.rs; this test pins that the installer writes exactly the generated file.
 test('codex hook parity: install-codex.js registers exactly the generated codex/hooks/hooks.json, per event', () => {
   delete require.cache[require.resolve(INSTALLER_PATH)];
   const { ANTI_HALL_HOOKS } = require(INSTALLER_PATH);

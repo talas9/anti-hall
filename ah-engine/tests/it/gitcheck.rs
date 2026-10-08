@@ -1,7 +1,7 @@
 //! End-to-end for the built-in `check = "git"`: real binary, real daemon, isolated HOME + engine dir.
 //! A block must reach the host the way the Node guard does it: exit code 2 with the reason on stderr.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
-mod common;
+use crate::common;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

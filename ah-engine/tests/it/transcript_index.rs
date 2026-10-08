@@ -2,7 +2,7 @@
 //! the Node readers compute (`tests/transcript_parity.rs` checks the same facts against the Node code itself).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-mod transcript_support;
+use crate::transcript_support;
 use ah_engine::transcript::record::{js_trim, parse_ts_ms};
 use ah_engine::transcript::{Index, Indexes, Limits, Rebuild, Refresh, Shape, TaskEvent};
 use serde_json::json;

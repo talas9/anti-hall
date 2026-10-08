@@ -16,8 +16,6 @@
 //! a short one and the dispatcher logs it), and a panicking check (the panic is caught per check and defers to Node).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-mod common;
-
 use ah_engine::dispatch::table;
 use serde_json::Value;
 use std::io::Write;

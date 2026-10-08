@@ -7,7 +7,7 @@
 //! contract (a deferred hook runs as Node and the files are exactly as they were).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-mod common;
+use crate::common;
 
 use std::io::Write;
 use std::path::PathBuf;

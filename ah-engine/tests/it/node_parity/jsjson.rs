@@ -397,11 +397,11 @@ impl From<Vec<J>> for J {
 
 /// An object literal in source order: `jo! { "a": 1, "b": "x" }` (each value goes through `J::from`).
 macro_rules! jo {
-    ($($k:literal : $v:expr),* $(,)?) => { $crate::jsjson::J::Obj(vec![$(($k.to_string(), $crate::jsjson::J::from($v))),*]) };
+    ($($k:literal : $v:expr),* $(,)?) => { $crate::node_parity::jsjson::J::Obj(vec![$(($k.to_string(), $crate::node_parity::jsjson::J::from($v))),*]) };
 }
 /// An array literal: `ja![1, "x", jo! {}]`.
 macro_rules! ja {
-    ($($v:expr),* $(,)?) => { $crate::jsjson::J::Arr(vec![$($crate::jsjson::J::from($v)),*]) };
+    ($($v:expr),* $(,)?) => { $crate::node_parity::jsjson::J::Arr(vec![$($crate::node_parity::jsjson::J::from($v)),*]) };
 }
 
 /// Map every string (and key) of a value.

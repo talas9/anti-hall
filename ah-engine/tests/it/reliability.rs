@@ -1,7 +1,7 @@
 //! Reliability e2e: real binary, real daemon, isolated HOME + engine dir under /tmp (short socket paths).
 //! The Node fallback is simulated with `/bin/sh <script>` via AH_ENGINE_NODE.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
-mod common;
+use crate::common;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
