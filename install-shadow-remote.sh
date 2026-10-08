@@ -106,7 +106,25 @@ trap cleanup_tmp 0
 trap 'cleanup_tmp; exit 130' INT
 trap 'cleanup_tmp; exit 143' TERM HUP
 
-sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1; else openssl dgst -sha256 "$1" | sed 's/^.*= *//'; fi; }
+
+# ilim SECS CMD...: hard time limit for the installer's own foreground calls (git, cargo). timeout -k where it exists (a child that ignores
+# TERM is KILLed 5 s later), else a POSIX watchdog. stdin is /dev/null so nothing can wait on a TTY. Returns 124 on timeout.
+ilim() {
+  _t=$1; shift
+  _tb=; command -v timeout >/dev/null 2>&1 && _tb=timeout
+  [ -z "$_tb" ] && command -v gtimeout >/dev/null 2>&1 && _tb=gtimeout
+  if [ -n "$_tb" ] && "$_tb" -k 1 5 true >/dev/null 2>&1; then "$_tb" -k 5 "$_t" "$@" </dev/null; return $?; fi
+  "$@" </dev/null & _p=$!
+  ( _n=0; while [ "$_n" -lt "$_t" ]; do sleep 1; kill -0 "$_p" 2>/dev/null || exit 0; _n=$((_n+1)); done
+    : >"$TMPD/.ilim.$_p"; kill -TERM "$_p" 2>/dev/null; sleep 5; kill -KILL "$_p" 2>/dev/null ) >/dev/null 2>&1 & _w=$!
+  wait "$_p" 2>/dev/null; _r=$?
+  [ -f "$TMPD/.ilim.$_p" ] && _r=124
+  kill "$_w" 2>/dev/null; wait "$_w" 2>/dev/null
+  return $_r
+}
+
+export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new"
 
 # ---------------------------------------------------------------- embedded helpers (written to $TMPD, installed to $D)
 emit_helpers() {
@@ -670,12 +688,12 @@ cmd_live() {
   SRC_KIT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)/live
   for t in git node; do command -v "$t" >/dev/null 2>&1 || die "$t not found (--live needs git and node)"; done
   command -v "${AH_LIVE_CLAUDE:-claude}" >/dev/null 2>&1 || die "claude CLI not found on PATH (the plugin is installed through it); set AH_LIVE_CLAUDE if it lives elsewhere"
-  [ -f "$SRC_KIT/go-live.sh" ] && [ -f "$SRC_KIT/node-shadow.sh" ] && [ -f "$SRC_KIT/node-shadow.skip" ] || die "$SRC_KIT is missing: git pull the $BRANCH branch next to this script"
+  [ -f "$SRC_KIT/go-live.sh" ] && [ -f "$SRC_KIT/node-shadow.sh" ] && [ -f "$SRC_KIT/node-shadow.skip" ] && [ -f "$SRC_KIT/reload-notice.sh" ] || die "$SRC_KIT is missing: git pull the $BRANCH branch next to this script"
   [ ! -f "$LIVEKIT/state/live.json" ] || die "already live ($LIVEKIT/state/live.json). To update: sh $0 --rollback-live, git pull, sh $0 --live"
   [ -d "$D/update.lock" ] && { updater --stop || die "could not stop the running shadow update"; }   # a running/stuck updater is stopped (it keeps the installed version), never a reason to refuse
   if [ -f "$MARK" ]; then emit_helpers; install_scripts || die "could not refresh the shadow helper scripts"; init_config; fi   # sync.sh learns live.conf
   mkdir -p "$LIVEKIT/state" || die "cannot create $LIVEKIT"
-  for f in lib.sh go-live.sh rollback.sh status.sh node-shadow.sh node-shadow.skip agreed-checks.txt; do cp "$SRC_KIT/$f" "$LIVEKIT/$f.new" && mv -f "$LIVEKIT/$f.new" "$LIVEKIT/$f" || die "cannot install $f"; done
+  for f in lib.sh go-live.sh rollback.sh status.sh node-shadow.sh node-shadow.skip agreed-checks.txt reload-notice.sh; do cp "$SRC_KIT/$f" "$LIVEKIT/$f.new" && mv -f "$LIVEKIT/$f.new" "$LIVEKIT/$f" || die "cannot install $f"; done
   chmod +x "$LIVEKIT"/*.sh
   # 1 the source: engine-proto (newer or equal to 8c9a332), cloned over SSH then HTTPS like the shadow
   LS="$LIVEKIT/src"; urls=$REPO_SSH; https=$REPO_HTTPS; [ -n "$LIVE_REPO" ] && { urls=$LIVE_REPO; https=; }
@@ -683,13 +701,13 @@ cmd_live() {
   if [ -d "$LS/.git" ]; then
     for u in $urls $https; do
       say "fetching $u ($LIVE_BRANCH)"
-      if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" git -C "$LS" fetch -q --depth 1 "$u" "$LIVE_BRANCH" 2>"$TMPD/clone.err" && git -C "$LS" reset -q --hard FETCH_HEAD; then ok=1; break; fi
+      if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" ilim 180 git -C "$LS" fetch -q --depth 1 "$u" "$LIVE_BRANCH" 2>"$TMPD/clone.err" && ilim 60 git -C "$LS" reset -q --hard FETCH_HEAD; then ok=1; break; fi
     done
   else
     rm -rf "$LS"
     for u in $urls $https; do
       say "cloning $u ($LIVE_BRANCH)"
-      if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" git clone -q --depth 1 --branch "$LIVE_BRANCH" "$u" "$LS" 2>"$TMPD/clone.err"; then ok=1; break; fi
+      if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" ilim 300 git clone -q --depth 1 --branch "$LIVE_BRANCH" "$u" "$LS" 2>"$TMPD/clone.err"; then ok=1; break; fi
       say "  failed: $(head -c 200 "$TMPD/clone.err" | tr '\n' ' ')"; rm -rf "$LS"
     done
   fi
@@ -709,7 +727,7 @@ cmd_live() {
     command -v cargo >/dev/null 2>&1 || die "cargo not found. Install rustup (https://rustup.rs) or pass --bin PATH"
     TD="$LIVEKIT/target"; [ -d "$D/target" ] && TD="$D/target"
     say "building ah-engine at $lc (nice, 2 jobs; minutes on a cold cache; log $LIVEKIT/build.log)"
-    ( cd "$LS/ah-engine" && CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$TD" nice -n 19 cargo build --release --locked ) >"$LIVEKIT/build.log" 2>&1 || { tail -5 "$LIVEKIT/build.log" >&2; die "cargo build failed"; }
+    ( cd "$LS/ah-engine" && CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$TD" ilim 3600 nice -n 19 cargo build --release --locked ) >"$LIVEKIT/build.log" 2>&1 || { tail -5 "$LIVEKIT/build.log" >&2; die "cargo build failed"; }
     cp "$TD/release/ah-engine" "$STB" || die "built binary missing"
   fi
   chmod +x "$STB"
@@ -749,7 +767,9 @@ esac
 if [ "$MODE" = rollbacklive ]; then
   [ -f "$LIVEKIT/state/live.json" ] || die "not live (no $LIVEKIT/state/live.json)"
   [ -d "$D/update.lock" ] && updater --stop
-  sh "$LIVEKIT/rollback.sh" "$@" || exit 1
+  # forward --force (and nothing else this mode does not own) to the kit; stdin from /dev/null so nothing can wait on a TTY
+  rb_args=; [ "$FORCE" = 1 ] && rb_args=--force
+  sh "$LIVEKIT/rollback.sh" $rb_args </dev/null || { say "rollback did not finish cleanly. It is resumable: re-run '$0 --rollback-live' (add --force if it refused over your own edits). Log: $LIVEKIT/state/kit.log"; exit 1; }
   say "back to MODE: SHADOW (settings.json restored byte-identical). Restart Claude Code sessions."; exit 0
 fi
 if [ "$MODE" = live ]; then cmd_live; exit $?; fi
@@ -834,7 +854,7 @@ if [ -n "$REPO" ]; then urls=$REPO; https=; fi
 ok=0
 for u in $urls $https; do
   say "cloning $u ($BRANCH)"
-  if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" git clone -q --depth 1 --branch "$BRANCH" "$u" "$src" 2>"$TMPD/clone.err"; then ok=1; break; fi
+  if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" ilim 300 git clone -q --depth 1 --branch "$BRANCH" "$u" "$src" 2>"$TMPD/clone.err"; then ok=1; break; fi
   say "  failed: $(head -c 200 "$TMPD/clone.err" | tr '\n' ' ')"
   rm -rf "$src"
 done
@@ -849,7 +869,7 @@ if [ -n "$BIN" ]; then
 else
   say "building ah-engine at $commit (nice, 2 jobs; several minutes on a cold cache)"
   t0=$(date +%s)
-  ( cd "$src/ah-engine" && CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$D/target" nice -n 19 cargo build --release --locked ) >"$D/build.log" 2>&1 \
+  ( cd "$src/ah-engine" && CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$D/target" ilim 3600 nice -n 19 cargo build --release --locked ) >"$D/build.log" 2>&1 \
     || { tail -5 "$D/build.log" >&2; die "cargo build failed"; }
   cp "$D/target/release/ah-engine" "$STG/ah-engine" || die "built binary missing"
   say "built in $(( $(date +%s) - t0 )) s"

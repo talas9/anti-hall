@@ -71,13 +71,13 @@ const BASEF = path.join(D, 'engine-baseline.json');
 const ENV_DEPENDENT = new Set(['task-guard']);
 // engine counters {check: {n, block, defer}} for the engine's whole retained window (engine telemetry is bucketed per UTC day, so it cannot be windowed finer)
 const engCounts = tel => { const o = {}; for (const h of (tel && tel.by_hook) || []) if (h.k === 'check') o[h.h] = { n: h.n, block: (h.outcomes || {}).block || 0, defer: (h.outcomes || {}).defer || 0 }; return o; };
-const engCall = (a, root) => { const bin = process.env.AH_ENGINE_BIN || path.join(HOME, '.anti-hall', 'ah-engine', 'bin', 'ah-engine'); const r = cp.spawnSync(bin, a, { encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, { AH_ENGINE_DIR: path.join(HOME, '.anti-hall', 'ah-engine'), AH_ENGINE_PLUGIN_ROOT: root || '' }) }); try { return JSON.parse(r.stdout); } catch (e) { return null; } };
+const engCall = (a, root) => { const bin = process.env.AH_ENGINE_BIN || path.join(HOME, '.anti-hall', 'ah-engine', 'bin', 'ah-engine'); const r = cp.spawnSync(bin, a, { encoding: 'utf8', input: '', timeout: 60000, killSignal: 'SIGKILL', env: Object.assign({}, process.env, { AH_ENGINE_DIR: path.join(HOME, '.anti-hall', 'ah-engine'), AH_ENGINE_PLUGIN_ROOT: root || '' }) }); try { return JSON.parse(r.stdout); } catch (e) { return null; } };
 const saveBaseline = root => { const tel = engCall(['telemetry', 'summary', '--json', '--window', '7d'], root); if (!tel) return false; try { fs.writeFileSync(BASEF + '.new', JSON.stringify({ ts: Date.now(), counts: engCounts(tel) }) + '\n'); fs.renameSync(BASEF + '.new', BASEF); return true; } catch (e) { return false; } };
 
 if (mode === '--install') {
   let root = opt('--root', '');
   if (!root) {
-    const r = cp.spawnSync(process.env.AH_LIVE_CLAUDE || 'claude', ['plugin', 'list', '--json'], { encoding: 'utf8' });
+    const r = cp.spawnSync(process.env.AH_LIVE_CLAUDE || 'claude', ['plugin', 'list', '--json'], { encoding: 'utf8', input: '', timeout: 45000, killSignal: 'SIGKILL' });
     let p = []; try { p = JSON.parse(r.stdout); } catch (e) { }
     const e = p.find(x => x.id === 'anti-hall@anti-hall-engine-live' && x.installPath);
     if (!e) { console.error('node-shadow: no --root given and anti-hall@anti-hall-engine-live is not installed'); process.exit(1); }
@@ -161,7 +161,7 @@ if (mode === '--install') {
       const sid0 = idOf[r.cmd] || (r.cmd.match(/([\w.-]+\.js)/) || [, r.cmd.slice(0, 40)])[1];
       const base = (r.cmd.match(/([\w.-]+\.js)/) || [])[1];
       if (skip.has(sid0) || (base && skip.has(base))) { fs.appendFileSync(LOGF, JSON.stringify({ ts: t0, ev, sid, tool, id: sid0, rc: null, dec: 'skipped', ms: 0, out_bytes: 0 }) + '\n'); continue; }
-      const x = cp.spawnSync('/bin/sh', ['-c', r.cmd], { input: payload, env, cwd, encoding: 'utf8', timeout: r.tmo * 1000, maxBuffer: 4 << 20 });
+      const x = cp.spawnSync('/bin/sh', ['-c', r.cmd], { input: payload, env, cwd, encoding: 'utf8', timeout: r.tmo * 1000, killSignal: 'SIGKILL', maxBuffer: 4 << 20 });
       const ms = Date.now() - t0, out = x.stdout || '';
       let dec = 'allow';
       if (x.error || x.signal) dec = 'timeout';

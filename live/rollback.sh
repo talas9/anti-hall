@@ -14,6 +14,9 @@ while [ $# -gt 0 ]; do
   esac; shift
 done
 say() { [ "$quiet" = 1 ] || note "$@"; }
+# Ctrl-C / TERM mid-rollback: every step is idempotent and the ledger (state/live.json) is only moved away at the very end, so a re-run resumes.
+trap 'klog E_INTERRUPTED "rollback interrupted"; printf "ah-engine-live: rollback interrupted; nothing is lost. Re-run: sh %s/rollback.sh%s\n" "$KIT" "$([ "$force" = 1 ] && echo " --force")" >&2; rm -f "$_CLI_DEAD"; exit 130' INT TERM HUP
+trap 'rm -f "$_CLI_DEAD"' 0
 [ -f "$LIVE_JSON" ] || die "not live (no $LIVE_JSON): nothing to roll back"
 
 if [ -n "$checks" ]; then
@@ -30,14 +33,27 @@ if [ -n "$checks" ]; then
   exec sh "$KIT/go-live.sh" "$left"
 fi
 
+# --- our own settings.json edits first: the Node witness hook and the reload notice were added by this kit's installer, so they are removed
+# (bounded, failures logged) before the changed-after-go-live check and can never make a plain rollback refuse.
+lim 30 sh "$NODE_SHADOW" --uninstall >/dev/null 2>&1 || klog E_WITNESS_UNINSTALL "node-shadow.sh --uninstall failed (rc=$?)"
+lim 30 sh "$KIT/reload-notice.sh" --uninstall >/dev/null 2>&1 || klog E_NOTICE_UNINSTALL "reload-notice.sh --uninstall failed (rc=$?)"
+
 # --- pre-check: refuse before touching anything if a kit-written file changed after go-live (unless --force) ---------------
 conf=$(node -e '
   const fs=require("fs"),crypto=require("crypto"),j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
   const sha=f=>fs.existsSync(f)?crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex"):"absent";
+  // settings.json: the CLI edits enabledPlugins/extraKnownMarketplaces and this kit edits its own hook entries; none of that is a user edit.
+  const strip=f=>{ try { const s=JSON.parse(fs.readFileSync(f,"utf8")); delete s.enabledPlugins; delete s.extraKnownMarketplaces;
+    const marks=process.argv[2].split(" ").concat(["ah-node-shadow/node-shadow.sh","ah-live-notice/notice.sh"]);
+    for (const ev of Object.keys(s.hooks||{})) { s.hooks[ev]=s.hooks[ev].map(g=>({...g,hooks:(g.hooks||[]).filter(h=>!marks.some(m=>String(h.command||"").includes(m)))})).filter(g=>g.hooks.length); if(!s.hooks[ev].length) delete s.hooks[ev]; }
+    if (s.hooks && !Object.keys(s.hooks).length) delete s.hooks; return JSON.stringify(s); } catch(e) { return null; } };
   for (const [k,v] of Object.entries(j.files)) { const cur=sha(v.path);
-    if (cur!==v.sha_before && v.sha_after!==null && cur!==v.sha_after) console.log(k+": "+v.path+" changed after go-live"); }' "$LIVE_JSON")
+    if (cur!==v.sha_before && v.sha_after!==null && cur!==v.sha_after) {
+      if (k==="settings" && v.backup) { const a=strip(v.path), b=strip(require("path").join(process.argv[3],v.backup)); if (a!==null && a===b) continue; }
+      console.log(k+": "+v.path+" changed after go-live"); } }' "$LIVE_JSON" "$SHADOW_MARKS" "$STATE")
 if [ -n "$conf" ] && [ "$force" != 1 ]; then printf '%s\n' "$conf" >&2; die "refusing: restoring would overwrite later edits. Re-run with --force to restore anyway (your edits are kept in the backup dir listed below)"; fi
-TS=$(date +%Y%m%d-%H%M%S); RB=$STATE/rolled-back-$TS; mkdir -p "$RB"
+TS=$(date +%Y%m%d-%H%M%S); RB=$STATE/rolled-back-$TS
+DIE_CODE=E_STATE_UNWRITABLE mkdir -p "$RB" 2>/dev/null && [ -w "$RB" ] || { DIE_CODE=E_STATE_UNWRITABLE; die "cannot write under $STATE (disk full or read-only?); nothing was changed. Free space / fix permissions, then re-run"; }
 restore() { # key  (files the kit wrote itself: byte-identical from backup, or moved aside if go-live created them)
   node -e '
     const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")),v=j.files[process.argv[2]];
@@ -58,10 +74,23 @@ rc_cli=0
 [ "$(plugin_state "$LIVE_K" | cut -f1)" = absent ] || cc plugin uninstall "$LIVE_K" --scope user --keep-data >/dev/null || rc_cli=1
 mkt_present "$LIVE_MKT" && { cc plugin marketplace remove "$LIVE_MKT" >/dev/null || rc_cli=1; }
 printf '%s\n' "$ORIG_LIST" | while IFS='	' read -r _k _v; do [ -n "$_k" ] || continue; [ "$(plugin_state "$_k" | cut -f1)" = enabled ] || cc plugin enable "$_k" --scope user >/dev/null || exit 1; done || rc_cli=1
+if [ "$rc_cli" -ne 0 ]; then
+  # The claude CLI failed or timed out (see $STATE/kit.log). Same effect without it: edit enabledPlugins in settings.json directly (the CLI only
+  # writes the file Claude Code reads): live plugin gone, the previously enabled anti-hall installs enabled again. A copy is kept first.
+  note "claude CLI unavailable or timed out: switching the plugins back by editing $SETTINGS directly (copy: $RB/settings.pre-fallback.json)"
+  cp -p "$SETTINGS" "$RB/settings.pre-fallback.json" 2>/dev/null
+  node -e '
+    const fs=require("fs"),[f,live,mkt,origs]=process.argv.slice(1); const s=JSON.parse(fs.readFileSync(f,"utf8"));
+    if (s.enabledPlugins) delete s.enabledPlugins[live];
+    if (s.extraKnownMarketplaces) delete s.extraKnownMarketplaces[mkt];
+    for (const l of origs.split("\n").filter(Boolean)) { s.enabledPlugins=s.enabledPlugins||{}; s.enabledPlugins[l.split("\t")[0]]=true; }
+    fs.writeFileSync(f+".ah-tmp",JSON.stringify(s,null,2)+"\n"); fs.renameSync(f+".ah-tmp",f);' "$SETTINGS" "$LIVE_K" "$LIVE_MKT" "$ORIG_LIST" \
+    && { klog W_SETTINGS_FALLBACK "enabledPlugins edited directly"; rc_cli=0; fb=1; } || klog E_SETTINGS_FALLBACK "direct enabledPlugins edit failed"
+fi
 restore settings          # byte-identical user settings (undoes the CLI's enabledPlugins/extraKnownMarketplaces edits and puts the shadow triggers back)
 restore config; restore bin
 [ -d "$MKT_DIR" ] && { mkdir -p "$RB" && mv "$MKT_DIR" "$RB/marketplace"; }
-while IFS='	' read -r _k _v; do [ -n "$_k" ] || continue; [ "$(plugin_state "$_k")" = "enabled	$_v" ] || { echo "WARNING: $_k is not enabled at $_v after rollback (check: claude plugin list)" >&2; rc_cli=1; }; done <<EOF2
+[ "${fb:-0}" = 1 ] || while IFS='	' read -r _k _v; do [ -n "$_k" ] || continue; [ "$(plugin_state "$_k")" = "enabled	$_v" ] || { echo "WARNING: $_k is not enabled at $_v after rollback (check: claude plugin list)" >&2; rc_cli=1; }; done <<EOF2
 $ORIG_LIST
 EOF2
 rm -f "$SHADOW2/live.conf"

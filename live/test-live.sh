@@ -44,6 +44,7 @@ tail -3 "$F/live.out" | cut -c1-200 | sed 's/^/   | /'
 sh "$IS" --status >"$F/status.out" 2>&1; chk $? "--status exit 0"; grep -q '^MODE: LIVE' "$F/status.out"; chk $? "--status says MODE: LIVE"
 ! grep -q 'shadow2.sh' "$F/.claude/settings.json"; chk $? "shadow triggers removed from settings.json"
 grep -q 'ah-node-shadow/node-shadow.sh' "$F/.claude/settings.json"; chk $? "node-shadow hook registered in settings.json"
+grep -q 'ah-live-notice/notice.sh' "$F/.claude/settings.json"; chk $? "one-time reload notice registered (UserPromptSubmit)"
 grep -q 'unrelated-user-hook' "$F/.claude/settings.json"; chk $? "unrelated user hook kept"
 $REAL_CLAUDE plugin list --json | node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));const l=j.find(p=>p.id==="anti-hall@anti-hall-engine-live");process.exit(l&&l.enabled&&!j.some(p=>p.id!=="anti-hall@anti-hall-engine-live"&&/^anti-hall@/.test(p.id)&&p.enabled)?0:1)'; chk $? "CLI: live plugin enabled, no other anti-hall install enabled"
 [ -f "$F/.anti-hall/ah-engine-shadow2/live.conf" ]; chk $? "shadow2 live.conf written (sync reads the live engine)"
@@ -79,7 +80,8 @@ git -C "$F/telemetry.git" ls-tree -r --name-only HEAD 2>/dev/null | sed 's/^/   
 git -C "$F/telemetry.git" ls-tree -r --name-only HEAD 2>/dev/null | grep -q 'node-shadow.ndjson'; chk $? "pushed folder holds node-shadow.ndjson"
 git -C "$F/telemetry.git" ls-tree -r --name-only HEAD 2>/dev/null | grep -q 'telemetry-summary.json'; chk $? "pushed folder holds the engine telemetry export"
 echo "== 3. --rollback-live"
-sh "$IS" --rollback-live >"$F/rb.out" 2>&1; chk $? "--rollback-live exit 0"; [ -s "$F/rb.out" ] && tail -2 "$F/rb.out" | cut -c1-160 | sed 's/^/   | /'
+sh "$IS" --rollback-live --force >"$F/rb.out" 2>&1; chk $? "--rollback-live --force exit 0 (force forwarded, harmless when nothing changed)"
+! grep -q 'notice.sh' "$F/.claude/settings.json" && [ ! -d "$F/.anti-hall/ah-live-notice" ]; chk $? "reload notice removed by rollback"; [ -s "$F/rb.out" ] && tail -2 "$F/rb.out" | cut -c1-160 | sed 's/^/   | /'
 SNAP1=$(snap); [ "$SNAP1" = "$SNAP0" ]; chk $? "settings.json byte-identical; config.toml and bin/ah-engine absent as before; CLI shows the original state; live marketplace gone"
 [ "$SNAP1" = "$SNAP0" ] || { echo "--- before"; echo "$SNAP0"; echo "--- after"; echo "$SNAP1"; }
 sh "$IS" --status 2>&1 | grep -q '^MODE: SHADOW'; chk $? "--status says MODE: SHADOW again"

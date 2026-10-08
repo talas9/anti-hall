@@ -96,7 +96,9 @@ if [ "$dry" = 1 ]; then
 fi
 
 # --- apply -------------------------------------------------------------------------------------------------------------------
-mkdir -p "$STATE" "$ENGINE_DIR"
+DIE_CODE=E_STATE_UNWRITABLE
+mkdir -p "$STATE" "$ENGINE_DIR" 2>/dev/null && [ -w "$STATE" ] && [ -w "$ENGINE_DIR" ] || die "cannot write $STATE or $ENGINE_DIR (disk full or read-only?); nothing was changed"
+DIE_CODE=
 if [ -f "$LIVE_JSON" ]; then
   note "already live: re-applying only the per-check config (settings/plugin/binary were switched on first go-live)"
   node -e '
@@ -110,7 +112,7 @@ if [ -f "$LIVE_JSON" ]; then
   note "done (re-applied)"; exit 0
 fi
 
-BK=$STATE/backup; mkdir -p "$BK"
+BK=$STATE/backup; mkdir -p "$BK" 2>/dev/null || { DIE_CODE=E_STATE_UNWRITABLE; die "cannot create $BK; nothing was changed"; }
 # record "before" for every file the kit touches itself, and back up the ones that exist
 cp -p "$SETTINGS" "$BK/settings.json" || die "backup failed"
 CFG_EXISTED=0; [ -f "$CONFIG_TOML" ] && { CFG_EXISTED=1; cp -p "$CONFIG_TOML" "$BK/config.toml"; }
@@ -148,7 +150,9 @@ apply() {
     for (const ev of Object.keys(s.hooks||{})) { s.hooks[ev]=s.hooks[ev].map(g=>({...g,hooks:g.hooks.filter(h=>{const r=marks.some(k=>String(h.command||"").includes(k)); if(r) removed++; return !r;})})).filter(g=>g.hooks.length); if(!s.hooks[ev].length) delete s.hooks[ev]; }
     fs.writeFileSync(f+".tmp",JSON.stringify(s,null,2)+"\n"); fs.renameSync(f+".tmp",f); console.log("shadow triggers removed from settings.json: "+removed);' "$SETTINGS" "$SHADOW_MARKS" || return 1
   # 7b the reverse witness: Node runs silently beside the engine (hook returns at once, worker logs; see node-shadow.sh)
-  sh "$NODE_SHADOW" --install --root "$(live_root)" || return 1
+  lim 60 sh "$NODE_SHADOW" --install --root "$(live_root)" || return 1
+  # 7b2 one-time notice for sessions already running ("run /reload-plugins"); removed after 24 h or by rollback. Never worth failing go-live over.
+  lim 30 sh "$KIT/reload-notice.sh" --install || { klog W_NOTICE_INSTALL "reload notice not installed"; note "warning: reload notice not installed (sessions already running will not be told to /reload-plugins)"; }
   # 7c the shadow2 install (WSL2/remote): its daemon is stopped; it keeps only the telemetry sync, which reads the live engine from live.conf
   if [ -f "$SHADOW2/.shadow2-installed" ]; then
     [ -x "$SHADOW2/bin/ah-engine" ] && HOME=$SHADOW2/home AH_ENGINE_DIR=$SHADOW2/state AH_ENGINE_PLUGIN_ROOT=$SHADOW2/plugin "$SHADOW2/bin/ah-engine" stop >/dev/null 2>&1
