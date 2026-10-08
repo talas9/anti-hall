@@ -255,6 +255,8 @@ pub fn get(name: &str) -> Option<&'static dyn Check> {
 /// parity harness drives this to compare a Rust check with its Node original without a daemon.
 pub fn cli_main(name: &str) -> i32 {
     use std::io::{Read, Write};
+    // a one-shot process: the speculation judge may wait for its model call here, never in the daemon
+    crate::judge::allow_blocking_calls();
     let Some(check) = get(name) else {
         crate::discard::harmless(writeln!(std::io::stderr(), "{}", crate::defaults::render("msg.err_unknown_check", &[("name", &format!("{name:?}"))]))); // keep: a closed pipe leaves nobody to tell
         return 64;

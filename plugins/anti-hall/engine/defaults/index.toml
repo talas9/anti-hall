@@ -20,6 +20,7 @@ files = [
     "small_guards.toml",
     "spawn_context.toml",
     "jev.toml",
+    "judge.toml",
     "dispatch.toml",
     "hooks.toml",
     "verify_first.toml",

@@ -26,6 +26,10 @@ const ALLOW: &[(&str, &str)] = &[
         "src/jev/settings.rs",
         "`Env::process`, the Jev lane's snapshot constructor, called by `ah-engine jev ask|status|scrub` (the CLI process: its own environment is right). Wiring Jev into the dispatcher (D58) must snapshot the REQUEST's environment (`Env::from_pairs`) instead",
     ),
+    (
+        "src/judge/cli.rs",
+        "`process_env`, the environment a `claude -p` judge child is spawned with (Node: spawn with process.env). Only a one-shot process (`ah-engine check`, `ah-engine jev triage`) makes a judge call, never the daemon (`judge::blocking_calls_allowed`), so this process's environment is the hook's own",
+    ),
 ];
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {

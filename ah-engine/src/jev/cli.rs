@@ -66,6 +66,7 @@ fn parse(text: &str) -> Result<AskRequest, JevError> {
     r.session_id = w.session_id;
     r.turn_ref = w.turn_ref;
     r.record_disagreement = w.record_disagreement;
+    r.wait_for_escalation = true; // `jev ask` is a batch command or a detached ask: nobody blocks on it
     Ok(r)
 }
 
@@ -140,6 +141,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
         "ask" => ask(p),
         "status" => status(p),
         "scrub" => scrub(),
+        "triage" => Ok(crate::judge::triage::run_cmd()),
         _ => Err(JevError::Request(defaults::text("msg.jev_usage").to_string())),
     };
     match result {

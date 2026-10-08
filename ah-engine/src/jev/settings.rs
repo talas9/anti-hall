@@ -324,6 +324,10 @@ pub struct JevSettings {
     pub price_in: f64,
     /// USD per million output tokens when no price entry applies.
     pub price_out: f64,
+    /// The cascade's global kill switch (`jev.cascade`, `ANTIHALL_JEV_CASCADE`): false turns it off for every integration.
+    pub cascade_enabled: bool,
+    /// Whether the cascade shows the model Jev's answer (`jev.cascadeShowJevAnswer`).
+    pub cascade_show_jev: bool,
     sources: Sources,
     home: PathBuf,
 }
@@ -392,6 +396,18 @@ impl JevSettings {
             |key: &str, dflt: &str| file_value(key, None).as_ref().and_then(coerce_num).filter(|n| *n >= 0.0).unwrap_or_else(|| dflt.parse().unwrap_or(0.0));
         let price_in = price("priceUsdPerMInput", defaults::text("jev.price_usd_per_m_input"));
         let price_out = price("priceUsdPerMOutput", defaults::text("jev.price_usd_per_m_output"));
+        let flag = |entry: &'static defaults::V| -> bool {
+            let (key, env) = (entry.str_field("key"), entry.str_field("env"));
+            sources
+                .env
+                .get(env)
+                .map(str::trim)
+                .and_then(bool_token)
+                .or_else(|| file_value(key, None).as_ref().and_then(coerce_bool))
+                .unwrap_or_else(|| entry.get("default").and_then(defaults::V::as_bool).unwrap_or(false))
+        };
+        let cascade_enabled = flag(defaults::raw("cascade.enabled_setting"));
+        let cascade_show_jev = flag(defaults::raw("cascade.show_setting"));
         JevSettings {
             enabled,
             transport,
@@ -412,6 +428,8 @@ impl JevSettings {
             prices,
             price_in,
             price_out,
+            cascade_enabled,
+            cascade_show_jev,
             sources,
             home: home.to_path_buf(),
         }
@@ -475,6 +493,46 @@ impl JevSettings {
             Some(m) => (Some(m), false),
             None => (known, true),
         }
+    }
+
+    /// Whether the cascade runs for integration `id`: not killed globally, and the integration's switch is on. The switch is, in
+    /// order, the per-integration environment variable (a boolean word), the owner's `jevCascade.<id>` setting, the plugin
+    /// default in `cascade.modes`, then `cascade.default_mode`.
+    pub fn cascade_on(&self, id: &str) -> bool {
+        if !self.cascade_enabled {
+            return false;
+        }
+        let on = defaults::text("cascade.on");
+        // `jev.<integration>Backend = cascade` is the other way to switch it on for that integration
+        if let Some(entry) = defaults::raw("cascade.backend_settings").get(id).and_then(defaults::V::as_str) {
+            let e = defaults::raw(entry);
+            let chosen = self.sources.env.get(e.str_field("env")).map(|v| v.trim().to_ascii_lowercase()).or_else(|| {
+                let jev = self.sources.settings.get(e.str_field("section"))?;
+                lookup(jev, e.str_field("key")).and_then(coerce_str).map(|v| v.to_ascii_lowercase())
+            });
+            if chosen.as_deref() == Some(defaults::text("cascade.backend")) {
+                return true;
+            }
+        }
+        let env = format!("{}{}", defaults::text("cascade.env_prefix"), snake(id).to_ascii_uppercase());
+        if let Some(b) = self.sources.env.get(&env).map(str::trim).and_then(bool_token) {
+            return b;
+        }
+        let word = |v: &Value| coerce_str(v).map(|s| s.to_ascii_lowercase());
+        let from_settings = self.sources.settings.get(defaults::text("cascade.settings_section")).and_then(|s| lookup(s, id)).and_then(word);
+        let from_defaults = defaults::raw("cascade.modes").get(id).and_then(defaults::V::as_str).map(str::to_string);
+        from_settings.or(from_defaults).unwrap_or_else(|| defaults::text("cascade.default_mode").to_string()) == on
+    }
+
+    /// The confidence under which integration `id`'s Jev answer is escalated: the plugin default in `cascade.escalate_below`,
+    /// else the integration's own act threshold.
+    pub fn cascade_below(&self, id: &str) -> f64 {
+        defaults::raw("cascade.escalate_below")
+            .get(id)
+            .and_then(defaults::V::as_str)
+            .and_then(|t| t.trim().parse::<f64>().ok())
+            .filter(|n| (0.0..=1.0).contains(n))
+            .unwrap_or(self.assist_threshold)
     }
 
     /// Check that the shipped table only holds modes this module understands (used by tests and `jev status`).

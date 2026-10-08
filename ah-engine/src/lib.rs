@@ -27,6 +27,7 @@ pub mod hookio;
 pub mod hooksgen;
 pub mod impact;
 pub mod jev;
+pub mod judge;
 pub mod limits;
 pub mod load;
 pub mod maintain;

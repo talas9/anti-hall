@@ -696,13 +696,13 @@ fn judge_cases() -> Vec<Case> {
     v.push(c("settings-string-off").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":"no"}}"#).same(msg("x")));
     v.push(c("settings-corrupt").file(".anti-hall/settings.json", "{{").same(msg("x")));
     v.push(c("option-false").env("CLAUDE_PLUGIN_OPTION_JEV_SEMANTIC_JUDGE", "false").same(msg("x")));
-    v.push(c("option-true-defers").env("CLAUDE_PLUGIN_OPTION_JEV_SEMANTIC_JUDGE", "true").step(msg("x"), Expect::DeferNoNode));
-    // opted in: Node decides (it would call a model)
+    v.push(c("option-true-no-key").env("CLAUDE_PLUGIN_OPTION_JEV_SEMANTIC_JUDGE", "true").same(msg("x")));
+    // opted in, default jev.judgeBackend api with no Anthropic key: no model call on either side (tests/judge_parity.rs covers the calls)
     for (n, val) in [("1", "1"), ("true", "true"), ("on", "on"), ("yes", "YES"), ("spaced", " 1 ")] {
-        v.push(c(&format!("env-on-{n}-defers")).env("ANTIHALL_SEMANTIC_JUDGE", val).step(msg("The cause is x."), Expect::DeferNoNode));
+        v.push(c(&format!("env-on-{n}-no-key")).env("ANTIHALL_SEMANTIC_JUDGE", val).same(msg("The cause is x.")));
     }
-    v.push(c("settings-true-defers").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#).step(msg("x"), Expect::DeferNoNode));
-    v.push(c("settings-string-true-defers").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":"on"}}"#).step(msg("x"), Expect::DeferNoNode));
+    v.push(c("settings-true-no-key").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":true}}"#).same(msg("x")));
+    v.push(c("settings-string-true-no-key").file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":"on"}}"#).same(msg("x")));
     v.push(
         c("env-zero-beats-settings-true")
             .env("ANTIHALL_SEMANTIC_JUDGE", "0")
@@ -713,20 +713,15 @@ fn judge_cases() -> Vec<Case> {
         c("env-on-beats-settings-false")
             .env("ANTIHALL_SEMANTIC_JUDGE", "1")
             .file(".anti-hall/settings.json", r#"{"jev":{"semanticJudge":false}}"#)
-            .step(msg("x"), Expect::DeferNoNode),
+            .same(msg("x")),
     );
     // the judge's own child never recurses
     v.push(c("child-exits").env("ANTIHALL_JUDGE_CHILD", "1").env("ANTIHALL_SEMANTIC_JUDGE", "1").same(msg("The cause is x.")));
-    v.push(c("child-other-value-defers").env("ANTIHALL_JUDGE_CHILD", "0").env("ANTIHALL_SEMANTIC_JUDGE", "1").step(msg("x"), Expect::DeferNoNode));
+    v.push(c("child-other-value-no-key").env("ANTIHALL_JUDGE_CHILD", "0").env("ANTIHALL_SEMANTIC_JUDGE", "1").same(msg("x")));
     // skip
     v.push(c("skip-when-on").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", &format!(r#"{{"speculation-judge": {future}}}"#)).same(msg("x")));
     v.push(c("skip-all-when-on").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", &format!(r#"{{"all": {future}}}"#)).same(msg("x")));
-    v.push(
-        c("skip-expired-when-on-defers")
-            .env("ANTIHALL_SEMANTIC_JUDGE", "1")
-            .file(".anti-hall/skip.json", r#"{"speculation-judge": 3}"#)
-            .step(msg("x"), Expect::DeferNoNode),
-    );
+    v.push(c("skip-expired-when-on-no-key").env("ANTIHALL_SEMANTIC_JUDGE", "1").file(".anti-hall/skip.json", r#"{"speculation-judge": 3}"#).same(msg("x")));
     v
 }
 
@@ -734,5 +729,5 @@ fn judge_cases() -> Vec<Case> {
 fn speculation_judge_matches_node() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let t = run_all("speculation-judge.js", "speculation-judge", &judge_cases());
-    assert!(t.steps >= 30 && t.same >= 25 && t.deferred >= 8);
+    assert!(t.steps >= 30 && t.same >= 30);
 }

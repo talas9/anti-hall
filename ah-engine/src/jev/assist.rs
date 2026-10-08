@@ -84,6 +84,10 @@ pub struct AskRequest {
     /// The calling session's environment (D76): the switches, keys and kill switches this decision obeys. `None` uses the
     /// engine's own environment, which is only right for a single-user process such as the one-shot CLI.
     pub env: Option<Env>,
+    /// Whether this caller may wait for the cascade's second opinion (a decision nobody blocks on: the detached ask, the
+    /// queue worker, a batch command). False (the default) is a hook-blocking caller: it gets Jev's answer now and the model's
+    /// re-judged answer from the next ask of the same decision.
+    pub wait_for_escalation: bool,
 }
 
 impl AskRequest {
@@ -104,6 +108,7 @@ impl AskRequest {
             record_disagreement: false,
             judge: None,
             env: None,
+            wait_for_escalation: false,
         }
     }
 }
@@ -441,6 +446,13 @@ fn default_project() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// A decision client over the real network transport whose breakers are the shared breaker file under `home`: what a
+/// one-shot command uses to ask Jev directly, outside a lane (`ah-engine jev triage`).
+pub fn production_client(home: &Path) -> JevClient {
+    let breakers = Breakers::shared(home.join(defaults::text("paths.base_dir")).join(defaults::text("jev.breaker_file")), Arc::new(WallClock));
+    JevClient::with_breakers(Arc::new(HttpTransport::new()), Arc::new(SystemClock), breakers)
+}
+
 impl Jev {
     /// A Jev lane for `home` using the real network transport and a file log under it. `env` is the environment snapshot
     /// the settings are resolved against.
@@ -542,14 +554,77 @@ impl Jev {
         if let Some((ck, chain)) = cache_key.as_ref().filter(|_| resolve_key(&s, s.transport).key.is_some())
             && let Some(c) = self.cache.get(ck).filter(|c| c.chain.as_ref().is_none_or(|x| x == chain))
         {
-            let r = CallResult::answered(c.answer, c.confidence, 0);
+            let r = self.cascade(&s, req, CallResult::answered(c.answer, c.confidence, 0), cache_key.as_ref());
             return self.finish(&s, req, mode, Some(r), true, true);
         }
         let r = self.client.decide(&s, &req.question, &req.state, req.budget_ms);
         if let (Some(a), Some((ck, chain))) = (&r.answer, &cache_key) {
             self.cache.put(ck, Cached { answer: a.clone(), confidence: r.confidence, chain: Some(chain.clone()) });
         }
+        let r = self.cascade(&s, req, r, cache_key.as_ref());
         self.finish(&s, req, mode, Some(r), false, true)
+    }
+
+    /// The Jev-first cascade (see [`super::cascade`]): a Jev answer under the integration's escalation threshold is judged
+    /// again by the model. The model's answer from an earlier escalation of this decision replaces Jev's at once; a caller
+    /// that may wait gets a fresh one; any other caller keeps Jev's answer and the escalation runs in the background for the
+    /// next ask. Anything that goes wrong leaves Jev's answer as it was.
+    fn cascade(&self, s: &JevSettings, req: &AskRequest, r: CallResult, key: Option<&(String, String)>) -> CallResult {
+        use super::cascade as c;
+        let Some(jev_answer) = r.answer.clone().filter(|_| s.cascade_on(&req.id)) else { return r };
+        let stored = key.map(|(k, chain)| (format!("{k}{}", defaults::text("cascade.cache_suffix")), chain.clone()));
+        let replace = |mut r: CallResult, v: c::Verdict, add_ms: u64, model: Option<String>| {
+            r.answer = Some(v.answer);
+            r.confidence = v.confidence;
+            r.ms += add_ms;
+            r.model = model.or(r.model);
+            r
+        };
+        if let Some((k, chain)) = &stored
+            && let Some(hit) = self.cache.get(k).filter(|h| h.chain.as_ref().is_none_or(|x| x == chain))
+        {
+            return replace(r, c::Verdict { answer: hit.answer, confidence: hit.confidence }, 0, None);
+        }
+        if r.confidence >= s.cascade_below(&req.id) {
+            return r;
+        }
+        let home = self.home.clone();
+        let (id, show) = (req.id.clone(), s.cascade_show_jev);
+        let store = |cache: &dyn JevCache, v: &c::Verdict| {
+            if let Some((k, chain)) = &stored {
+                cache.put(k, Cached { answer: v.answer.clone(), confidence: v.confidence, chain: Some(chain.clone()) });
+            }
+        };
+        if req.wait_for_escalation {
+            let case = c::Case { home: &home, id: &id, jev: (&jev_answer, r.confidence), show };
+            let rj = c::escalate(&req.question, &req.state, &case);
+            return match rj.verdict {
+                Ok(v) => {
+                    store(self.cache.as_ref(), &v);
+                    replace(r, v, rj.ms, Some(rj.model))
+                }
+                Err(_) => r,
+            };
+        }
+        if !super::shared::is_resident() && !cfg!(test) {
+            let mut again = req.clone();
+            again.wait_for_escalation = true;
+            self.ask_detached_process(again); // a one-shot hook ends with the check: a detached process does the second opinion
+            return r;
+        }
+        let Some((k, chain)) = stored else { return r }; // nowhere to keep the answer for the next ask
+        let (cache, q, state, conf) = (self.cache.clone(), req.question.clone(), req.state.clone(), r.confidence);
+        let (busy_home, busy_id, busy_answer) = (home.clone(), id.clone(), jev_answer.clone());
+        c::spawn_limited(
+            move || {
+                let case = c::Case { home: &home, id: &id, jev: (&jev_answer, conf), show };
+                if let Ok(v) = c::escalate(&q, &state, &case).verdict {
+                    cache.put(&k, Cached { answer: v.answer, confidence: v.confidence, chain: Some(chain) });
+                }
+            },
+            move || c::record_busy(&busy_home, &busy_id, &busy_answer, conf, show),
+        );
+        r
     }
 
     /// The budget of a call nobody waits for: the request's own, else the configured timeout when the owner changed it, else
@@ -628,6 +703,7 @@ impl Jev {
             return;
         }
         let mut req = req;
+        req.wait_for_escalation = true; // nobody blocks on a queued ask
         req.budget_ms = Some(Jev::detached_budget(&s, &req));
         let tx = self.queue.get_or_init(|| self.start_worker());
         self.pending.fetch_add(1, Ordering::SeqCst);
@@ -1235,5 +1311,152 @@ mod tests {
         assert_eq!(m.counter("jev_changed", &[]), 1);
         assert_eq!(m.counter("jev_verdicts", &[("id", "speculation"), ("verdict", "added")]), 1);
         assert_eq!(m.counter("jev_cost_micro_usd", &[]), 0, "no cost was reported and no tokens were priced");
+    }
+
+    // ---- the cascade ---------------------------------------------------------------------------------------------
+
+    use crate::jev::cascade::{TEST_MODEL, inflight};
+    use crate::judge::cli::CliOutcome;
+
+    /// Serializes the tests that install a model double.
+    static MODEL_LOCK: Mutex<()> = Mutex::new(());
+
+    fn home(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ah-cascade-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&d));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A lane over `home`; `inputs` receives each user turn the model double is given.
+    fn cascade_lane(home: &Path, env: &[(&str, &str)], script: Vec<Result<crate::jev::transport::RawResponse, crate::jev::transport::NetError>>) -> Arc<Jev> {
+        let f = Arc::new(Fake::new(script));
+        let log = Arc::new(MemLog(Mutex::new(Vec::new())));
+        Jev::with_parts(home, Env::from_pairs(env.iter().copied()), f, Arc::new(ManualClock::default()), None, Some(log))
+    }
+
+    fn model_says(reply: &'static str, inputs: Arc<Mutex<Vec<String>>>) {
+        *TEST_MODEL.lock().unwrap() = Some(Box::new(move |c| {
+            inputs.lock().unwrap().push(c.input.to_string());
+            CliOutcome { result: Ok(reply.to_string()), ms: 7 }
+        }));
+    }
+
+    fn rows(home: &Path) -> Vec<Value> {
+        std::fs::read_to_string(home.join(".anti-hall/logs/judge-calls.ndjson")).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    const CASCADE_ON: [(&str, &str); 3] =
+        [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk"), ("ANTIHALL_JEV_CASCADE_CLAIM_LEDGER", "1")];
+
+    fn wait(jev: &Jev) {
+        for _ in 0..400 {
+            if inflight() == 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = jev;
+    }
+
+    #[test]
+    fn a_hook_blocking_ask_gets_jev_now_and_the_models_answer_from_the_next_ask() {
+        let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let h = home("defer");
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        model_says(r#"{"answer":false,"confidence":0.95}"#, inputs.clone());
+        let jev = cascade_lane(&h, &CASCADE_ON, vec![ok(200, &answer(0.8))]); // noul 0.8 -> true, confidence 0.6
+        let r = req("claimLedger", Trust::AddBlock, json!(false));
+        let first = jev.ask(&r);
+        assert_eq!((first.jev.clone(), first.confidence.map(|c| (c * 10.0).round())), (json!(true), Some(6.0)), "Jev's own answer now");
+        wait(&jev);
+        let second = jev.ask(&r);
+        assert_eq!((second.jev, second.confidence, second.backend), (json!(false), Some(0.95), Backend::Cache), "the model's answer from the next ask");
+        let rows = rows(&h);
+        assert_eq!(rows.len(), 1, "one escalation, one row: {rows:?}");
+        assert_eq!(
+            (
+                rows[0]["backend"].as_str(),
+                rows[0]["jevAnswer"].as_str(),
+                rows[0]["haikuAnswer"].as_str(),
+                rows[0]["agree"].as_bool(),
+                rows[0]["showJevAnswer"].as_bool()
+            ),
+            (Some("cascade"), Some("true"), Some("false"), Some(false), Some(true))
+        );
+        assert_eq!((rows[0]["addedMs"].as_u64(), rows[0]["haikuConfidence"].as_f64(), rows[0]["error"].is_null()), (Some(7), Some(0.95), true));
+        assert!(inputs.lock().unwrap()[0].contains("FIRST CLASSIFIER ANSWERED: true (confidence 0.6"), "{:?}", inputs.lock().unwrap());
+        *TEST_MODEL.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn a_waiting_caller_gets_the_models_answer_at_once_and_the_switch_can_hide_jevs_answer() {
+        let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let h = home("wait");
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        model_says(r#"{"answer":true,"confidence":0.9}"#, inputs.clone());
+        let mut env = CASCADE_ON.to_vec();
+        env.push(("ANTIHALL_JEV_CASCADE_SHOW_JEV_ANSWER", "0"));
+        let jev = cascade_lane(&h, &env, vec![ok(200, &answer(0.8))]);
+        let mut r = req("claimLedger", Trust::AddBlock, json!(false));
+        r.wait_for_escalation = true;
+        let d = jev.ask(&r);
+        assert_eq!((d.jev, d.confidence, d.confident), (json!(true), Some(0.9), Some(true)));
+        assert!(!inputs.lock().unwrap()[0].contains("FIRST CLASSIFIER"), "the model judged the evidence alone");
+        assert_eq!(rows(&h)[0]["showJevAnswer"], json!(false));
+        assert_eq!(rows(&h)[0]["agree"], json!(true));
+        *TEST_MODEL.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn a_confident_jev_answer_an_off_integration_and_the_kill_switch_never_reach_the_model() {
+        let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        model_says(r#"{"answer":false,"confidence":0.95}"#, inputs.clone());
+        for (tag, env, p) in
+            [("sure", CASCADE_ON.to_vec(), 0.99), ("off", ON.to_vec(), 0.8), ("kill", [CASCADE_ON.to_vec(), vec![("ANTIHALL_JEV_CASCADE", "0")]].concat(), 0.8)]
+        {
+            let h = home(tag);
+            let jev = cascade_lane(&h, &env, vec![ok(200, &answer(p))]);
+            let mut r = req("claimLedger", Trust::AddBlock, json!(false));
+            r.wait_for_escalation = true;
+            jev.ask(&r);
+            assert!(inputs.lock().unwrap().is_empty() && rows(&h).is_empty(), "{tag}");
+        }
+        *TEST_MODEL.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn a_model_that_fails_or_answers_badly_leaves_jevs_answer_and_leaves_a_row_with_the_error() {
+        let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (tag, outcome, want) in [
+            ("timeout", Err(crate::judge::cli::CliError::Timeout), "timeout"),
+            ("garbage", Ok("not json".to_string()), "answer"),
+            ("range", Ok(r#"{"answer":true,"confidence":7}"#.to_string()), "answer"),
+        ] {
+            let h = home(tag);
+            *TEST_MODEL.lock().unwrap() = Some(Box::new(move |_| CliOutcome { result: outcome.clone(), ms: 3 }));
+            let jev = cascade_lane(&h, &CASCADE_ON, vec![ok(200, &answer(0.8))]);
+            let mut r = req("claimLedger", Trust::AddBlock, json!(false));
+            r.wait_for_escalation = true;
+            let d = jev.ask(&r);
+            assert_eq!((d.jev, d.confidence.map(|c| (c * 10.0).round())), (json!(true), Some(6.0)), "{tag}");
+            assert_eq!(rows(&h)[0]["error"], json!(want), "{tag}");
+        }
+        *TEST_MODEL.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn the_escalation_threshold_is_per_integration_and_a_choice_answer_must_be_an_offered_label() {
+        let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let c = Question::choice("pick", vec![("a".into(), "A".into()), ("b".into(), "B".into())]);
+        let ok_reply = crate::jev::cascade::parse_reply(&c, "```json\n{\"answer\":\"b\",\"confidence\":0.5}\n```").unwrap();
+        assert_eq!((ok_reply.answer, ok_reply.confidence), (Answer::Label("b".into()), 0.5));
+        assert!(crate::jev::cascade::parse_reply(&c, r#"{"answer":"z","confidence":0.5}"#).is_none());
+        assert!(crate::jev::cascade::parse_reply(&q(), r#"{"answer":"maybe","confidence":0.5}"#).is_none());
+        assert_eq!(crate::jev::cascade::parse_reply(&q(), r#"{"answer":"false","confidence":1}"#).unwrap().answer, Answer::Bool(false));
+        let s = JevSettings::resolve(Path::new("/nohome"), Sources::with_files(Files::default(), Env::from_pairs(CASCADE_ON)));
+        assert!(s.cascade_on("claimLedger") && !s.cascade_on("speculation"));
+        assert_eq!(s.cascade_below("claimLedger"), s.assist_threshold, "the default is the integration's own act threshold");
     }
 }

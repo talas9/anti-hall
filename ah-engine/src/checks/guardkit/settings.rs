@@ -134,6 +134,7 @@ enum Ty {
     Bool,
     Num,
     Enum,
+    Str,
 }
 
 /// A coerced setting value.
@@ -186,6 +187,7 @@ fn coerce_str(ty: Ty, entry: &V, raw: &str) -> Option<Val> {
             let lower = t.to_lowercase();
             entry.get("values").map(V::strings).unwrap_or_default().contains(&lower.as_str()).then_some(Val::S(lower))
         }
+        Ty::Str => Some(Val::S(t.to_string())),
     }
 }
 
@@ -195,7 +197,7 @@ fn coerce_value(ty: Ty, entry: &V, v: &Value) -> Option<Val> {
         (Ty::Bool, Value::Bool(b)) => Some(Val::B(*b)),
         (Ty::Bool, Value::Number(_)) => coerce_json(v).map(Val::B),
         (Ty::Num, Value::Number(n)) => bounded(n.as_f64().filter(|f| f.is_finite())?, entry).map(Val::N),
-        (Ty::Enum, Value::Number(_) | Value::Bool(_)) => js_string_of(v).and_then(|s| coerce_str(ty, entry, &s)),
+        (Ty::Enum | Ty::Str, Value::Number(_) | Value::Bool(_)) => js_string_of(v).and_then(|s| coerce_str(ty, entry, &s)),
         _ => None,
     }
 }
@@ -255,6 +257,15 @@ fn resolve(st: &Settings, entry: &V) -> Option<bool> {
 /// else its `default`.
 pub fn get_enum(st: &Settings, entry: &V) -> String {
     match resolve_typed(st, entry, Ty::Enum) {
+        Some(Val::S(s)) => s,
+        _ => entry.str_field("default").to_string(),
+    }
+}
+
+/// A string setting (`settings.get` of a `type: 'string'` entry): the first tier that holds a non-empty value (a string is
+/// trimmed, a number or boolean is written the way `String()` does), else its `default`.
+pub fn get_string(st: &Settings, entry: &V) -> String {
+    match resolve_typed(st, entry, Ty::Str) {
         Some(Val::S(s)) => s,
         _ => entry.str_field("default").to_string(),
     }

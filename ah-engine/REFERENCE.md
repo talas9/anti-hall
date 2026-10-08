@@ -91,7 +91,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `defect-nudge` | SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported (port of defect-nudge.js); counts and ages only. |
 | `progress-prune` | SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to git-ignore .anti-hall/ (port of progress-prune.js). |
 | `speculation-guard` | Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair (port of speculation-guard.js). |
-| `speculation-judge` | Stop: answers the off path of the opt-in semantic judge (switch off, judge child, skip) and leaves every opted-in call, a model call, to Node (port of speculation-judge.js). |
+| `speculation-judge` | Stop: the opt-in semantic judge; answers every path without a model call, and in a one-shot process asks the Claude CLI judge itself (jev.judgeBackend cli); an Anthropic API call, and a model call inside the daemon, stay with Node (port of speculation-judge.js). |
 | `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js). |
 | `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js). |
 | `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
@@ -1366,6 +1366,145 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.turn_ref_window_bytes` | `65536` |  | bytes | How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript). |
 | `jev.unlisted_mode` | `shadow` |  |  | Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones). |
 
+### judge.toml / cascade
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `cascade.answer_key` | `answer` |  |  | The field of the model's JSON reply that holds its answer: true or false for a yes/no question, an option label for a pick-one question. |
+| `cascade.backend` | `cascade` |  |  | The backend name a telemetry row gives an escalation (Jev first, the model second). |
+| `cascade.backend_settings` | `2 entries` |  |  | Integrations whose own backend setting can name the cascade (value `cascade`), switching it on for that integration: the Jev integration id to the defaults entry of its backend setting. |
+| `cascade.cache_suffix` | `cascade` |  |  | Appended to a decision's cache key to store the model's re-judged answer beside Jev's; the next ask of the same decision reads it. |
+| `cascade.confidence_key` | `confidence` |  |  | The field of the model's JSON reply that holds its confidence, a number in [0,1]. |
+| `cascade.default_mode` | `off` |  |  | The cascade switch of an integration that names none in cascade.modes or in the jevCascade settings section: on or off. off keeps today's behaviour. |
+| `cascade.enabled_setting` | `6 entries` |  |  | Global kill switch of the cascade. false turns it off for every integration whatever their own switch says. Setting jev.cascade, env ANTIHALL_JEV_CASCADE. |
+| `cascade.env_prefix` | `ANTIHALL_JEV_CASCADE_` |  |  | Prefix of the per-integration cascade environment switch; the snake-cased upper-case id is appended (ANTIHALL_JEV_CASCADE_MODEL_ROUTING). A boolean word wins over every other source. |
+| `cascade.err_busy` | `busy` |  |  | Telemetry error word: too many escalations were running, so this one was skipped. |
+| `cascade.escalate_below` | `0 entries` |  |  | Per-integration confidence under which Jev's answer is escalated to the model, keyed by the Jev integration id, as a decimal in [0,1] in text. An integration not listed escalates below its own act threshold (jev.confidenceThreshold). |
+| `cascade.inflight_cap` | `4` |  |  | Escalations that may run in the background at once; an escalation past it is skipped (its Jev answer stands) and recorded as busy. |
+| `cascade.input_evidence` | `\nEVIDENCE:\n` |  |  | Heading of the evidence in the model's input. |
+| `cascade.input_jev` | `\nFIRST CLASSIFIER ANSWERED: {answer} (confidence {confidence})\n` |  |  | The line that shows the first classifier's answer and confidence ({answer}, {confidence}); written only when cascade.show_setting is true. |
+| `cascade.input_options` | `\nALLOWED ANSWERS:\n` |  |  | Heading of the allowed answers in the model's input; each option follows as `label: meaning`. |
+| `cascade.input_question` | `QUESTION:\n` |  |  | Heading of the question in the model's input. |
+| `cascade.max_evidence` | `6000` |  |  | UTF-16 units of the evidence text the model sees. |
+| `cascade.modes` | `0 entries` |  |  | Per-integration cascade switch (on or off), keyed by the Jev integration id, ahead of cascade.default_mode. The owner's jevCascade.<id> setting wins over it. |
+| `cascade.on` | `on` |  |  | The word that turns a per-integration cascade switch on. |
+| `cascade.settings_section` | `jevCascade` |  |  | The settings.json section that holds the owner's per-integration cascade switch (jevCascade.<id> = on\|off). |
+| `cascade.show_setting` | `6 entries` |  |  | Whether the model sees Jev's answer and confidence next to the evidence (true) or judges the evidence alone (false), so anchoring can be A/B tested. Setting jev.cascadeShowJevAnswer, env ANTIHALL_JEV_CASCADE_SHOW_JEV_ANSWER. |
+| `cascade.system_prompt` | `You are the second opinion on a classification decision. You are given a QUES...` |  |  | The system prompt of the model that re-judges an answer Jev was unsure about. |
+| `cascade.timeout_ms` | `25000` |  | ms | How long the model may take to re-judge one escalated answer. |
+
+### judge.toml / judge
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `judge.anthropic_env_optin` | `6 entries` |  |  | The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no env, no plugin option). |
+| `judge.anthropic_key_env` | `CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY` |  |  | The plugin option that holds the Anthropic API key (Node credentials.js: CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY). Only its presence is read here. |
+| `judge.anthropic_legacy_env` | `ANTHROPIC_API_KEY` |  |  | The legacy key variable, which counts only when guards.allowAnthropicEnvKey is on in the home settings file. Only its presence is read here. |
+| `judge.arg_model` | `{model}` |  |  | The argv element replaced by the model alias. |
+| `judge.arg_system` | `{system}` |  |  | The argv element replaced by the system prompt of the call. |
+| `judge.backend_auto` | `auto` |  |  | The judgeBackend value that picks api when an Anthropic key is visible, else cli. |
+| `judge.backend_cli` | `cli` |  |  | The judgeBackend value for the local Claude CLI, which the engine runs itself. |
+| `judge.backend_haiku_cli` | `haiku-cli` |  |  | The backend name a telemetry row gives a call through the Claude CLI. |
+| `judge.backend_jev` | `jev` |  |  | The backend name a telemetry row gives a Jev call. |
+| `judge.backend_setting` | `7 entries` |  |  | How the judge reaches the model: jev.judgeBackend (env ANTIHALL_JUDGE_BACKEND), api (default), cli or auto (api when an Anthropic key is visible, else cli). |
+| `judge.cli_args` | `15 items` |  |  | The judge's argv after the program name: no tools, no MCP servers, no settings files, every hook disabled, JSON output (Node: cliArgs). An element that is exactly the model or system placeholder is replaced by that value. |
+| `judge.cli_bin` | `claude` |  |  | The program the judge runs, looked up on the PATH of the hook's own environment (Node: spawn('claude')). |
+| `judge.err_answer` | `answer` |  |  | Telemetry error word: the model's answer did not parse into the expected decision. |
+| `judge.err_exit` | `exit` |  |  | Telemetry error word: the CLI exited non-zero or by a signal. |
+| `judge.err_output` | `output` |  |  | Telemetry error word: the CLI's output was not the JSON it promises, or reported is_error. |
+| `judge.err_spawn` | `spawn` |  |  | Telemetry error word: the CLI could not be started. |
+| `judge.err_timeout` | `timeout` |  |  | Telemetry error word: the call ran past its timeout and was killed. |
+| `judge.error_field` | `is_error` |  |  | The field of the CLI's JSON output that is truthy when the call failed. |
+| `judge.fence_close_re` | `\s*```$` |  |  | Trailing code fence removed before parsing (Node: /\s*```$/). |
+| `judge.fence_open_re` | `^```(?:json)?\s*` |  |  | Leading code fence a model may wrap its JSON in, removed before parsing (Node: /^```(?:json)?\s*/i). |
+| `judge.model_setting` | `6 entries` |  |  | Where the model alias is read from: jev.judgeModel (env ANTIHALL_JUDGE_MODEL, plugin option jev_judge_model), default the alias haiku. Always an alias: the CLI resolves it to the latest model, nothing pins a version. |
+| `judge.poll_ms` | `5` |  |  | How often the call checks whether the child has exited. |
+| `judge.read_chunk` | `65536` |  |  | Bytes read from the child's stdout at a time. |
+| `judge.result_field` | `result` |  |  | The field of the CLI's JSON output that holds the model's answer text (claude -p --output-format json). |
+| `judge.stdout_cap` | `1000000` |  |  | Stdout is collected while it is shorter than this many bytes (Node: if (out.length < 1e6) out += d); the rest is discarded. |
+| `judge.telemetry_log` | `logs/judge-calls.ndjson` |  |  | One row per model call the engine makes (integration, backend, model, latency, confidence, error; never the prompt, the reply or a key), relative to the anti-hall home directory. Empty turns the rows off. |
+| `judge.telemetry_max_bytes` | `1048576` |  |  | The telemetry log is emptied before a row that would take it past this size. |
+| `judge.tmp_attempts` | `16` |  |  | How many random names are tried for the private working directory before the call gives up (a name that exists is skipped). |
+| `judge.tmp_env` | `TMPDIR, TMP, TEMP` |  |  | The variables that name the temporary directory, in the order os.tmpdir() reads them. |
+| `judge.tmp_fallback` | `/tmp` |  |  | The temporary directory when none of judge.tmp_env is set (os.tmpdir() on POSIX). |
+| `judge.tmp_prefix` | `antihall-judge-` |  |  | Name prefix of the private empty working directory each call gets (Node: fs.mkdtempSync(os.tmpdir()/antihall-judge-)); it is removed when the call ends, so a planted CLAUDE.md cannot steer the judge. |
+| `judge.tmp_suffix_len` | `6` |  |  | Random characters appended to the prefix (mkdtemp's XXXXXX). |
+
+### judge.toml / judge_evidence
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `judge_evidence.default_tool` | `shell` |  |  | The tool name of a Codex call that names none. |
+| `judge_evidence.fences` | ````, ~~~` |  |  | The code fences whose bodies count as pasted evidence (Node: fencedBlocks /(```\|~~~)[^\n]*\n([\s\S]*?)\1/g). |
+| `judge_evidence.max_chunk` | `20000` |  |  | UTF-16 units kept of one evidence chunk (Node: MAX_CHUNK). |
+| `judge_evidence.observe_tools_re` | `^(?:bash\|read\|grep\|glob\|ls\|notebookread\|webfetch\|websearch\|exec_command\|shell...` |  |  | Tool names whose input counts as evidence (Node: OBSERVE_INPUT_TOOLS, case-insensitive). |
+| `judge_evidence.output_suffix` | `_output` |  |  | A Codex payload type ending in this is a tool output. |
+| `judge_evidence.prompt_skip_re` | `^\s*<(?:task-notification\|command-\|local-command\|system-reminder)` |  |  | A user text that starts with one of these tags is not the user's request (Node: lastUserPrompt). |
+| `judge_evidence.task_notification` | `<task-notification>` |  |  | A user text holding this tag counts as evidence whole. |
+| `judge_evidence.words` | `11 entries` |  |  | Transcript type and role values the collectors match (Claude and Codex transcript shapes). |
+
+### judge.toml / speculation_judge
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `speculation_judge.backend_jev` | `jev` |  |  | The speculationBackend value that leaves the speculation question to Jev alone. |
+| `speculation_judge.backend_setting` | `7 entries` |  |  | Which backend answers the speculation question when the semantic judge is on: haiku (default, today's behaviour: the judge asks the model, except while Jev's own speculation integration is on) jev (the judge never asks the model; speculation-guard's Jev path is the only semantic check) or cascade (as jev, with the Jev-first cascade switched on for the speculation integration: a Jev answer under the escalation threshold is re-judged by the model in the background and applies from the next turn). Setting jev.speculationBackend, env ANTIHALL_JEV_SPECULATION_BACKEND. |
+| `speculation_judge.claim_bidi_re` | `[‪-‮⁦-⁩]` |  |  | Bidi overrides and isolates removed from the judge's claim (U+202A-U+202E, U+2066-U+2069). |
+| `speculation_judge.claim_controls_re` | `[\x00-\x1F\x7F-\x9F]` |  |  | Control characters replaced by a space in the judge's claim (Node: /[\x00-\x1F\x7F-\x9F]/g). |
+| `speculation_judge.claim_default` | `an unverified factual claim` |  |  | The claim named in the block when the judge gave none (Node: sanitizeClaim fallback). |
+| `speculation_judge.claim_ellipsis` | `…` |  |  | Appended to a claim cut at claim_max. |
+| `speculation_judge.claim_max` | `120` |  |  | UTF-16 units of the judge's claim kept in the block reason. |
+| `speculation_judge.claim_ws_re` | `\s+` |  |  | White space runs collapsed to one space in the judge's claim (Node: /\s+/g). |
+| `speculation_judge.decision_allow` | `allow` |  |  | The decision value that allows. |
+| `speculation_judge.decision_block` | `block` |  |  | The decision value that blocks. |
+| `speculation_judge.evidence_window` | `1048576` |  |  | Bytes of the transcript tail read for the user request and the tool evidence (Node: 1024 * 1024). |
+| `speculation_judge.hash_suffix` | `:judge` |  |  | Appended to the reply before hashing it, so the judge's hashes never collide with speculation-guard's. |
+| `speculation_judge.input_evidence` | `\n\nTOOL EVIDENCE (most recent last):\n` |  |  | Heading of the tool evidence in the judge input. |
+| `speculation_judge.input_item` | `[{n}] ` |  |  | Prefix of each evidence chunk; {n} is its 1-based number. |
+| `speculation_judge.input_message` | `\n\nMESSAGE to evaluate:\n\n` |  |  | Heading of the reply in the judge input. |
+| `speculation_judge.input_no_evidence` | `(none)` |  |  | Shown when there is no tool evidence. |
+| `speculation_judge.input_no_request` | `(not available)` |  |  | Shown when there is no user request. |
+| `speculation_judge.input_request` | `USER REQUEST:\n` |  |  | Heading of the user request in the judge input. |
+| `speculation_judge.jev_id` | `speculation` |  |  | The Jev integration whose mode on makes the judge stand down (Node: getMode('speculation') === 'on'). |
+| `speculation_judge.max_blocks` | `3` |  |  | Blocks per session after which the judge stays quiet (Node: MAX_BLOCKS). |
+| `speculation_judge.max_chunk` | `1500` |  |  | UTF-16 units one evidence chunk may contribute (Node: Math.min(1500, ...)). |
+| `speculation_judge.max_evidence` | `6000` |  |  | UTF-16 units of tool evidence the judge sees, newest chunks first (Node: MAX_EVIDENCE). |
+| `speculation_judge.max_message` | `8000` |  |  | UTF-16 units of the reply the judge sees (Node: MAX_MESSAGE). |
+| `speculation_judge.max_request` | `2000` |  |  | UTF-16 units of the user request the judge sees (Node: MAX_REQUEST). |
+| `speculation_judge.msg_instead` | `verify it with a tool, or say what is unverified ('I don't know, here is what...` |  |  | What to do instead. |
+| `speculation_judge.msg_what` | `your reply states '{claim}' as fact, but nothing this session checked shows i...` |  |  | What the block says; {claim} is the sanitized claim. |
+| `speculation_judge.msg_why` | `Unverified claims read as facts.` |  |  | Why the block matters. |
+| `speculation_judge.reply_window` | `524288` |  |  | Bytes of the transcript tail read for the reply when the payload does not carry it (Node: readTranscriptTail default 512 KB). |
+| `speculation_judge.state_prefix` | `judge-state-` |  |  | Name prefix of the per-session state file under the anti-hall directory (Node: judge-state-<session>.json). |
+| `speculation_judge.system_prompt` | `You are an anti-hallucination evaluator for a coding assistant.\nYour job: as...` |  |  | The judge's system prompt (judge-core.js JUDGE_SYSTEM), byte for byte. |
+| `speculation_judge.timeout_ms` | `25000` |  |  | The CLI judge's timeout (Node: runCliJudge timeoutMs 25000; the Stop hook's budget is 30 s). |
+
+### judge.toml / triage
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `triage.backend_haiku` | `haiku` |  |  | The triageBackend value that skips Jev and asks the model alone. |
+| `triage.backend_setting` | `7 entries` |  |  | Which backend labels mesh messages: jev (default, today's behaviour: Jev first, the Anthropic API fills a missing label when a key is visible) haiku (the model alone, through jev.judgeBackend) or cascade (as jev, then a label Jev left open is re-judged by the model, shown Jev's answer, through the Claude CLI). Setting jev.triageBackend, env ANTIHALL_JEV_TRIAGE_BACKEND. |
+| `triage.default_timeout_ms` | `2000` |  |  | The whole run's budget when the request names none (Node: 2000). |
+| `triage.default_urgent_threshold` | `0.9` |  |  | The confidence an urgent answer needs when the request names none (Node: 0.9). |
+| `triage.input_prefix` | `Message:\n\n` |  |  | Prefix of the message in the Haiku request (Node: 'Message:\n\n' + text). |
+| `triage.integration` | `triage` |  |  | The integration name telemetry rows of triage calls carry. |
+| `triage.kind_criteria` | `question-needs-answer, The message asks the recipient a direct question that ...` |  |  | The kind labels and their criteria, in the order Node sends them (KIND_QUESTION.criteria). |
+| `triage.kind_instructions` | `Classify this mesh message by what kind of response, if any, it needs from th...` |  |  | The Jev Choice question that classifies a mesh message's kind (Node: KIND_QUESTION.instructions). |
+| `triage.kind_key` | `kind` |  |  | The question key of the kind question in the multi-question call. |
+| `triage.label_haiku` | `haiku` |  |  | The backend label of a result the model answered (appended as +haiku after jev). |
+| `triage.label_jev` | `jev` |  |  | The backend label of a result Jev answered. |
+| `triage.label_unknown` | `unknown` |  |  | The backend label when nobody can be named (Node: 'unknown'). |
+| `triage.max_text` | `4000` |  |  | UTF-16 units of the message sent to Jev or the model (Node: slice(0, 4000)). |
+| `triage.min_remaining_ms` | `50` |  |  | A call starts only with more than this much of the budget left, and gets at least this much (Node: 50). |
+| `triage.normal` | `normal` |  |  | The urgency label of a message that can wait. |
+| `triage.system_prompt` | `You triage one internal coordination message between two AI agent workspaces....` |  |  | The Haiku triage system prompt (Node: HAIKU_SYSTEM), byte for byte. |
+| `triage.urgency_false` | `The message is a routine status update, a done-report, an FYI, or anything el...` |  |  | URGENCY_QUESTION criteria.false. |
+| `triage.urgency_instructions` | `Does this mesh message require URGENT, immediate attention — a blocker, or a ...` |  |  | The Jev Noul question that asks whether a mesh message is urgent (Node: URGENCY_QUESTION.instructions). |
+| `triage.urgency_key` | `urgency` |  |  | The question key of the urgency question in the multi-question call. |
+| `triage.urgency_true` | `The message is a live blocker or an unanswered question gating the sender's p...` |  |  | URGENCY_QUESTION criteria.true. |
+| `triage.urgent` | `urgent` |  |  | The urgency label of an urgent message. |
+
 ### dispatch.toml / dispatch
 
 | Key | Default | Env override | Unit | What it is |
@@ -2051,7 +2190,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_judge.event` | `Stop` |  |  | The only event this check answers. |
 | `speculation_judge.guard_name` | `speculation-judge` |  |  | The guard id this check answers to in skip.json. |
 | `speculation_judge.setting` | `6 entries` |  |  | Where the opt-in switch is read from (jev.semanticJudge, default off). |
-| `speculation_judge.summary` | `Stop: answers the off path of the opt-in semantic judge (switch off, judge ch...` |  |  | One-line description of the speculation-judge check in the generated reference. |
+| `speculation_judge.summary` | `Stop: the opt-in semantic judge; answers every path without a model call, and...` |  |  | One-line description of the speculation-judge check in the generated reference. |
 
 ### agent_controls.toml / agent_scan
 
@@ -3607,6 +3746,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.jev_no_home` | Printed by `ah-engine jev` when the home directory variable is not set, because the settings and the log live under it. |
 | `msg.jev_unknown_question_type` | Why a Jev request was refused: its question type is neither noul nor choice. Placeholder: kind. |
 | `msg.jev_usage` | Usage line of `ah-engine jev`. |
+| `msg.jev_triage_defer` | Said on stderr when `jev triage` leaves the run to the Node worker (it would need the Anthropic API, which only Node calls); the exit code is dispatch.defer_exit. |
 | `msg.cli_usage_restore` | The usage line of `restore`. |
 | `msg.cli_usage_schedule_run` | The usage line of `schedule run`. |
 | `msg.client_what_timeout` | What the client was doing when a socket option could not be set (the {what} of msg.client_io). |

@@ -335,7 +335,7 @@ value = "the home directory is not set, so there are no Jev settings to read"
 
 [msg.jev_usage]
 doc = "Usage line of `ah-engine jev`."
-value = "usage: ah-engine jev ask|status|scrub (ask reads one JSON request per line on stdin, scrub one JSON string per line)"
+value = "usage: ah-engine jev ask|status|scrub|triage (ask reads one JSON request per line on stdin, scrub one JSON string per line, triage one jev-triage-worker request)"
 
 # ---- metrics (D51) --------------------------------------------------------------------------------------------
 

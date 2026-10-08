@@ -19,6 +19,7 @@
 //! | `cache`, `log` | `jev-assist.js` cache and `appendLog` | content-hash cache and the `jev-assist.ndjson` rows |
 //! | `keep` | `jev-assist.js` `maybeWarnBudget`, `maybeWriteAuditSnippet`, `writeDailyRollups` | the budget watch, the audit snippets and the daily rollups |
 //! | `shared` | `jev-assist.js` `turnRefFromTranscript` | the process-wide lanes the checks ask through |
+//! | `cascade` | (new) | re-judges a Jev answer under the escalation threshold with the Claude CLI |
 //! | `assist` | `jev-assist.js` `ask`, `finalize` | modes, trust rules, budget, async queue, metrics |
 //!
 //! The decision record's rules for this lane: static checks never route to Jev (D34); every Jev decision has a
@@ -29,6 +30,7 @@
 pub mod assist;
 pub mod breaker;
 pub mod cache;
+pub mod cascade;
 pub mod cli;
 pub mod client;
 pub mod credentials;
