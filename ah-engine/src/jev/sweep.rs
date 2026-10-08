@@ -151,10 +151,13 @@ fn parse_events<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<Ev> {
             Some("assistant") => {
                 for b in content.as_array().into_iter().flatten() {
                     match b["type"].as_str() {
-                        Some("text") => out.push(Ev { t, kind: Kind::Text, name: String::new(), text: b["text"].as_str().unwrap_or("").to_string(), file: String::new() }),
+                        Some("text") => {
+                            out.push(Ev { t, kind: Kind::Text, name: String::new(), text: b["text"].as_str().unwrap_or("").to_string(), file: String::new() })
+                        }
                         Some("tool_use") => {
                             let name = b["name"].as_str().unwrap_or("").to_string();
-                            let file = if edit_tools.contains(&name.as_str()) { b["input"]["file_path"].as_str().unwrap_or("").to_string() } else { String::new() };
+                            let file =
+                                if edit_tools.contains(&name.as_str()) { b["input"]["file_path"].as_str().unwrap_or("").to_string() } else { String::new() };
                             out.push(Ev { t, kind: Kind::Tool, name, text: tool_arg(&b["input"]), file });
                         }
                         _ => {}
@@ -167,7 +170,11 @@ fn parse_events<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<Ev> {
                         out.push(Ev { t, kind: Kind::Err, name: String::new(), text: text_of(&b["content"]), file: String::new() });
                     }
                 }
-                let p = if content.is_string() || content.as_array().is_some_and(|a| a.iter().all(|b| b["type"] == "text")) { text_of(content) } else { String::new() };
+                let p = if content.is_string() || content.as_array().is_some_and(|a| a.iter().all(|b| b["type"] == "text")) {
+                    text_of(content)
+                } else {
+                    String::new()
+                };
                 let head = p.trim_start();
                 if !note.is_empty() && head.starts_with(note) {
                     out.push(Ev { t, kind: Kind::Note, name: String::new(), text: String::new(), file: String::new() });
@@ -199,7 +206,12 @@ fn run_argv(argv: &[&str], wt: &str, branch: &str, timeout_ms: u64) -> Option<St
 
 fn git_cfg() -> (Vec<&'static str>, Vec<&'static str>, &'static str, u64) {
     let g = defaults::raw("sweep.git");
-    (g.get("log").map(defaults::V::strings).unwrap_or_default(), g.get("branch").map(defaults::V::strings).unwrap_or_default(), g.str_field("log_sep"), g.get("timeout_ms").and_then(defaults::V::as_integer).unwrap_or(0) as u64)
+    (
+        g.get("log").map(defaults::V::strings).unwrap_or_default(),
+        g.get("branch").map(defaults::V::strings).unwrap_or_default(),
+        g.str_field("log_sep"),
+        g.get("timeout_ms").and_then(defaults::V::as_integer).unwrap_or(0) as u64,
+    )
 }
 
 /// `(epoch ms, subject)` of the newest commits in the worktree, or `None` when git could not be read.
@@ -257,7 +269,12 @@ fn mesh(base: &Path, desc: &Value, id: &str, now: i64) -> Option<MeshFacts> {
         let ask = if m["needsReply"] == Value::Bool(true) { word("ask") } else { "" };
         lines.push(fill(
             word("line_msg"),
-            &[("ago", &ago(now, num(m, "ts").unwrap_or(now))), ("dir", word(dir)), ("ask", ask), ("text", &cap(m["body"].as_str().unwrap_or(""), lim("msg_cap")))],
+            &[
+                ("ago", &ago(now, num(m, "ts").unwrap_or(now))),
+                ("dir", word(dir)),
+                ("ask", ask),
+                ("text", &cap(m["body"].as_str().unwrap_or(""), lim("msg_cap"))),
+            ],
         ));
     }
     Some(MeshFacts {
@@ -354,7 +371,10 @@ fn wait_kind(c: &mut Child) -> Value {
     ];
     let mut sections = Map::new();
     sections.insert("tool_calls".into(), json!(tool_lines));
-    sections.insert("assistant_texts".into(), json!(texts.iter().map(|e| fill(word("line_text"), &[("ago", &ago(now, e.t)), ("text", &cap(&e.text, lim("text_cap")))])).collect::<Vec<_>>()));
+    sections.insert(
+        "assistant_texts".into(),
+        json!(texts.iter().map(|e| fill(word("line_text"), &[("ago", &ago(now, e.t)), ("text", &cap(&e.text, lim("text_cap")))])).collect::<Vec<_>>()),
+    );
     sections.insert("errors".into(), json!(errors.iter().map(|t| fill(word("line_error"), &[("text", t)])).collect::<Vec<_>>()));
     if let Some(m) = &mesh {
         f.extend([("mesh_coverage", 1.0), ("unanswered_q_to_parent", f64::from(u8::from(m.unanswered))), ("last_report_newer", f64::from(u8::from(m.newer)))]);
@@ -379,7 +399,9 @@ fn looping(c: &mut Child) -> Value {
     let sums: Vec<String> = summaries(&c.plan)
         .iter()
         .filter(|s| num(s, "ts").unwrap_or(0) >= start)
-        .map(|s| fill(word("line_summary"), &[("ago", &ago(now, num(s, "ts").unwrap_or(now))), ("text", &cap(s["text"].as_str().unwrap_or(""), lim("text_cap")))]))
+        .map(|s| {
+            fill(word("line_summary"), &[("ago", &ago(now, num(s, "ts").unwrap_or(now))), ("text", &cap(s["text"].as_str().unwrap_or(""), lim("text_cap")))])
+        })
         .collect();
     let ev = c.events();
     let on_step: Vec<&Ev> = ev.iter().filter(|e| e.kind == Kind::Tool && e.t >= start).collect();
@@ -395,10 +417,12 @@ fn looping(c: &mut Child) -> Value {
     }
     let revert_pats = tr_list("revert_patterns");
     let reverts = on_step.iter().filter(|e| e.name == "Bash" && contains_ci(&e.text, &revert_pats)).count();
-    let mut repeats: Vec<String> = rep.iter().take(lim("repeat_show") as usize).map(|(cmd, n)| fill(word("line_repeat"), &[("cmd", cmd), ("n", &n.to_string())])).collect();
+    let mut repeats: Vec<String> =
+        rep.iter().take(lim("repeat_show") as usize).map(|(cmd, n)| fill(word("line_repeat"), &[("cmd", cmd), ("n", &n.to_string())])).collect();
     repeats.extend(edits.iter().filter(|(_, n)| **n >= lim("edit_repeat_min")).map(|(f, n)| fill(word("line_repeat"), &[("cmd", f), ("n", &n.to_string())])));
     let on_step_commits: Vec<&(i64, String)> = git.iter().flatten().filter(|(t, _)| *t >= start).collect();
-    let git_lines: Vec<String> = on_step_commits.iter().map(|(t, s)| fill(word("line_commit"), &[("ago", &ago(now, *t)), ("subject", &cap(s, lim("text_cap")))])).collect();
+    let git_lines: Vec<String> =
+        on_step_commits.iter().map(|(t, s)| fill(word("line_commit"), &[("ago", &ago(now, *t)), ("subject", &cap(s, lim("text_cap")))])).collect();
     let mut f = vec![
         ("tool_calls", on_step.len() as f64),
         ("repeat_cmd_max", rep.first().map_or(0, |(_, n)| *n) as f64),
@@ -472,7 +496,10 @@ pub fn sweep(home: &Path, env: &Env, now: i64) -> Value {
     let base = home.join(defaults::text("paths.base_dir"));
     let var = |k: &str| env.get_nonempty(defaults::raw("sweep.env").str_field(k));
     let held: Vec<String> = var("held_partitions").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
-    let stall = var("step_stall_min").and_then(|v| v.trim().parse::<f64>().ok()).filter(|m| *m >= 1.0).map_or(lim("step_stall_ms"), |m| (m * unit("ms_per_minute") as f64) as i64);
+    let stall = var("step_stall_min")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|m| *m >= 1.0)
+        .map_or(lim("step_stall_ms"), |m| (m * unit("ms_per_minute") as f64) as i64);
     let state_path = base.join(path_cfg("state"));
     let mut state = load_state(&state_path);
     let mut files: Vec<PathBuf> = std::fs::read_dir(base.join(path_cfg("plans"))).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
@@ -486,15 +513,22 @@ pub fn sweep(home: &Path, env: &Env, now: i64) -> Value {
         if key.is_empty() || plan["steps"].as_array().is_none_or(Vec::is_empty) || looked >= lim("max_children") {
             continue;
         }
-        let due: Vec<(&str, String)> = live.iter().filter_map(|i| trigger(i, &plan, now, stall).map(|k| (*i, k))).filter(|(i, k)| {
-            let seen = state.get(&format!("{key}|{i}")).unwrap_or(&Value::Null);
-            !(seen["subject"] == k.as_str() && now - num(seen, "at").unwrap_or(0) < lim("reask_ms"))
-        }).collect();
+        let due: Vec<(&str, String)> = live
+            .iter()
+            .filter_map(|i| trigger(i, &plan, now, stall).map(|k| (*i, k)))
+            .filter(|(i, k)| {
+                let seen = state.get(&format!("{key}|{i}")).unwrap_or(&Value::Null);
+                !(seen["subject"] == k.as_str() && now - num(seen, "at").unwrap_or(0) < lim("reask_ms"))
+            })
+            .collect();
         if due.is_empty() {
             continue;
         }
         looked += 1;
-        let desc = std::fs::read_to_string(base.join(path_cfg("workspaces")).join(format!("{id}{}", path_cfg("plan_ext")))).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+        let desc = std::fs::read_to_string(base.join(path_cfg("workspaces")).join(format!("{id}{}", path_cfg("plan_ext"))))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null);
         let mut child = Child { id, key: key.clone(), plan, desc, now, base: base.clone(), home: home.to_path_buf(), events: None, held: held.clone() };
         for (integ, subject) in due {
             let req = match integ {

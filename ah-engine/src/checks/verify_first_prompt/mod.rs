@@ -27,9 +27,9 @@ use crate::reqenv::RequestEnv;
 use crate::rules::Subject;
 use serde_json::Value;
 
-mod tier;
 #[cfg(test)]
 mod tests;
+mod tier;
 
 pub(crate) use tier::tier_text_on;
 
@@ -71,8 +71,7 @@ fn decide(payload: &Value, sha1_hex: &str, st: &Settings, env: &RequestEnv) -> R
     let session = emit_dedupe::session_of(payload)?;
     let transcript = emit_dedupe::transcript_of(payload)?;
     let every = get_number(st, defaults::raw("verify_first.num_repeat_every"));
-    let normalized =
-        if primary { defaults::text("verify_first.dedupe_normalized_primary") } else { defaults::text("verify_first.dedupe_normalized") };
+    let normalized = if primary { defaults::text("verify_first.dedupe_normalized_primary") } else { defaults::text("verify_first.dedupe_normalized") };
     let emit = match &session {
         Some(sid) => emit_dedupe::should_emit(
             st,

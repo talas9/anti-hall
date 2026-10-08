@@ -302,7 +302,11 @@ fn decide_inner(p: &Value, env: &RequestEnv) -> R<Verdict> {
             open
         };
     }
-    let final_text = [if emit { out.as_str() } else { "" }, primary_block.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(defaults::text("task_tracker.segment_joiner"));
+    let final_text = [if emit { out.as_str() } else { "" }, primary_block.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(defaults::text("task_tracker.segment_joiner"));
     Ok(if !final_text.is_empty() { Verdict::Advisory(msg::advisory_json(defaults::text("task_tracker.event"), &final_text)) } else { Verdict::Allow })
 }
 

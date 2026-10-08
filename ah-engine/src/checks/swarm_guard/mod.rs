@@ -197,12 +197,7 @@ fn shared_tree_note(p: &Value, st: &Settings, root: &str, env: &RequestEnv, now:
     Ok(Some(msg::message(
         Kind::Warn,
         defaults::text("swarm_guard.shared_tree_label"),
-        &Parts {
-            what: defaults::text("swarm_guard.msg_shared_what"),
-            why: defaults::text("swarm_guard.msg_shared_why"),
-            instead,
-            ..Parts::default()
-        },
+        &Parts { what: defaults::text("swarm_guard.msg_shared_what"), why: defaults::text("swarm_guard.msg_shared_why"), instead, ..Parts::default() },
     )))
 }
 

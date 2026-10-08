@@ -798,7 +798,9 @@ pub(super) fn fire(f: &Fire<'_>) -> R<Verdict> {
         return Ok(Verdict::Exact(Exact { code: 0, out: t("omc_text").to_string(), err: String::new() }));
     }
     if let Some((marker, body, _)) = &advisory {
-        crate::discard::harmless(std::fs::create_dir_all(&state_dir).and_then(|()| crate::atomic::write_after_reply(marker, body, crate::atomic::Style::default()))); // keep: best-effort cap
+        crate::discard::harmless(
+            std::fs::create_dir_all(&state_dir).and_then(|()| crate::atomic::write_after_reply(marker, body, crate::atomic::Style::default())),
+        ); // keep: best-effort cap
     }
     if let Some(pol) = policy.as_mut() {
         let now = date::now_ms();
@@ -807,7 +809,9 @@ pub(super) fn fire(f: &Fire<'_>) -> R<Verdict> {
         }
     }
     let state = J::Obj(vec![("hash".into(), J::Str(hash)), ("blocks".into(), J::Num(blocks + 1.0)), ("started".into(), J::Str(started))]);
-    if std::fs::create_dir_all(&state_dir).is_err() || crate::atomic::write_after_reply(&state_file, json::stringify(&state), crate::atomic::Style::default()).is_err() {
+    if std::fs::create_dir_all(&state_dir).is_err()
+        || crate::atomic::write_after_reply(&state_file, json::stringify(&state), crate::atomic::Style::default()).is_err()
+    {
         return Ok(Verdict::Allow);
     }
     crate::checks::guardkit::fsio::prune_stale(&state_dir, t("state_prefix"), Some(&state_file));
