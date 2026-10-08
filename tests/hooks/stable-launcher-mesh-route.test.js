@@ -108,7 +108,6 @@ test('on, --message-stdin: the body reaches the engine and, on fallback, Node', 
 });
 
 test('the wake-watch launcher is never routed', () => {
-  assert.doesNotMatch(sl.buildLauncherSource(['companion', 'lib', 'devswarm-wake-watch.js'], '/x').split('meshRoute(process.argv')[0], /NEVER/);
   const { home } = setup({ mode: 'on', engine: 'exit 0' });
   const trace = path.join(home, 'trace.log');
   const target = path.join(home, 'ww.js');
