@@ -181,6 +181,7 @@ fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_m
         add(slot, "tokens_in", fields_of(&e).and_then(|f| f.get_num("tokens_in")).unwrap_or(0));
         add(slot, "tokens_out", fields_of(&e).and_then(|f| f.get_num("tokens_out")).unwrap_or(0));
     }
+    let agent = agent_section(kind_events(tel, rec, Kind::Agent, days, now_ms));
     // daemon: the newest snapshot
     let snaps = kind_events(tel, rec, Kind::Daemon, days, now_ms);
     let latest = snaps.last().map(|e| {
@@ -195,7 +196,53 @@ fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_m
         "jev": {"calls": j_calls, "cache_hits": j_cache, "errors": j_err, "breaker_open": j_open, "cost_uc": j_cost, "by_integration": jev_by},
         "cmd": cmd,
         "model": model,
+        "agent": agent,
         "daemon": {"snapshots": snaps.len(), "latest": latest},
+    })
+}
+
+/// The agent tracker's daily totals: signals raised by name, reminders by channel and result, recoveries (with the mean
+/// seconds they took), false positives, and the tokens flagged agents burned (the growth of an agent's cumulative input and
+/// output tokens between two series samples taken while a signal was up on it).
+pub(crate) fn agent_section(events: Vec<super::event::Event>) -> Value {
+    let (mut signals, mut sent, mut suppressed): (BTreeMap<String, u64>, BTreeMap<String, u64>, BTreeMap<String, u64>) = Default::default();
+    let (mut recovered, mut fps, mut lat_sum, mut samples, mut burned) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut last: BTreeMap<String, u64> = BTreeMap::new();
+    let mut evs = events;
+    evs.sort_by_key(|e| e.ts_ms);
+    for e in &evs {
+        let f = fields_of(e);
+        let num = |k: &str| f.and_then(|f| f.get_num(k)).unwrap_or(0);
+        match e.h.as_str() {
+            "signal" if e.o == super::event::Outcome::Advise => *signals.entry(e.e.as_str().to_string()).or_default() += 1,
+            "reminder" => {
+                let m = if e.o == super::event::Outcome::Skip { &mut suppressed } else { &mut sent };
+                *m.entry(f.and_then(|f| f.get_tok("channel")).unwrap_or("").to_string()).or_default() += 1;
+            }
+            "outcome" => match e.e.as_str() {
+                "recovered" => {
+                    recovered += 1;
+                    lat_sum += num("lat_s");
+                }
+                "false_positive" => fps += 1,
+                _ => {}
+            },
+            "series" => {
+                samples += 1;
+                let agent = f.and_then(|f| f.get_tok("agent")).unwrap_or("").to_string();
+                let total = num("tin") + num("tout");
+                if let Some(prev) = last.insert(agent, total)
+                    && num("flagged") == 1
+                {
+                    burned += total.saturating_sub(prev);
+                }
+            }
+            _ => {}
+        }
+    }
+    json!({
+        "series_samples": samples, "signals": signals, "reminders_sent": sent, "reminders_suppressed": suppressed,
+        "recoveries": recovered, "mean_recovery_s": lat_sum.checked_div(recovered).unwrap_or(0), "false_positives": fps, "tokens_burned_flagged": burned,
     })
 }
 

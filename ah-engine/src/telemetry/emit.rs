@@ -313,6 +313,24 @@ pub fn model(c: &ModelCall<'_>) {
     event(model_call(c));
 }
 
+/// One agent-tracker record, for [`agent_call`]: `class` is `series`, `signal`, `reminder` or `outcome`, `name` the signal, the
+/// channel or the outcome kind. Numbers and identifiers only (the `agent` schema in `telemetry.fields`).
+pub struct AgentRec<'a> {
+    /// `series`, `signal`, `reminder` or `outcome`.
+    pub class: &'a str,
+    /// The signal name, the channel or the outcome kind.
+    pub name: &'a str,
+    /// How it ended: `Advise` for a raised signal or a delivered reminder, `Skip` for one held back, `Allow` otherwise.
+    pub outcome: Outcome,
+    /// The extra fields, in the order the schema lists them.
+    pub fields: Fields,
+}
+
+/// The event for one agent-tracker record.
+pub fn agent_call(r: AgentRec<'_>) -> Event {
+    base(Kind::Agent, r.class, r.name, r.outcome, 0, 0, Extras::Fields(r.fields))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

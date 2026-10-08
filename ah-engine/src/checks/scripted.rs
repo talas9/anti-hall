@@ -187,3 +187,6 @@ pub static COORDINATOR_WORK_GUARD: Scripted = Scripted::new("coordinator-work-gu
 /// `procwatch-advisory` (SessionStart, UserPromptSubmit, PreToolUse; engine-only, advisory unless the owner opts into blocking at
 /// critical disk space). A script failure defers to its no-op fallback, so a broken script is silence, never a block.
 pub static PROCWATCH_ADVISORY: Scripted = Scripted::new("procwatch-advisory", "procwatch.summary");
+
+/// `agent-reminders` (UserPromptSubmit, PostToolUse; engine-only): delivers the agent tracker's queued reminders.
+pub static AGENT_REMINDERS: Scripted = Scripted::new("agent-reminders", "agent_tracker.summary");

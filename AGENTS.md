@@ -302,6 +302,7 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - safety: gitGuard, commandGuard, editGuard, swarmGuard
 - context: verifyFirstSession, verifyFirstOrchestration, protocolLevel=compact, codexOrchFullOn=session, orchFullOn=auto, verifyFirstTurn, verifyFirstSubagent, taskTracker, handoverResume, defectNudge, injectGate, injectGateLimit, injectGateTask, injectGateComms, injectGateSwarm | dedupeWindowMin, injectGateLimitEvery, injectGateTaskEvery, injectGateCommsEvery, injectGateSwarmEvery
 - maintenance: repairOnReload, progressPrune, precompactSnapshot, taskLifecycleLog, sessionEndReaper
+- agents: tracker, reminders, ownerNotify=false
 - versionAlerts: antiHall, claudeCli, devswarm
 - updates: quiet=false, allowCachePrune | reconcileBudgetMs, postpullBudgetMs, sweepBudgetMs
 - limitConserve: mode=auto, threshold=85 | accountCheck

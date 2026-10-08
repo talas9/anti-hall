@@ -365,6 +365,7 @@ value = [
   { id = "repair-on-reload", matcher = "", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
   { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
   { id = "procwatch-advisory", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "agent-reminders", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
 ]
 
 [dispatch.hooks_claude_TaskCreated]
@@ -469,6 +470,7 @@ value = [
   { id = "coordinator-work-guard:post", matcher = "Bash", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post", timeout = 10, check = "coordinator-work-guard" },
   { id = "codex-quota-detect", matcher = "Agent", command = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js\"", timeout = 10, check = "codex-quota-detect" },
   { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js\"", timeout = 10, check = "dispatch-tier" },
+  { id = "agent-reminders", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
 ]
 
 [dispatch.hooks_claude_PostToolUseFailure]
@@ -525,6 +527,7 @@ value = [
   { id = "repair-on-reload", matcher = "", command = "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", timeout = 10, check = "repair-on-reload" },
   { id = "auto-handover", matcher = "", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"", timeout = 10, check = "auto-handover" },
   { id = "procwatch-advisory", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
+  { id = "agent-reminders", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
 ]
 
 [dispatch.hooks_codex_PreToolUse]
@@ -577,4 +580,5 @@ value = [
   { id = "git-guard:audit", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/git-guard.js\" --audit", timeout = 10, check = "git-audit" },
   { id = "devswarm-parent-reply-tracker", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", timeout = 10, check = "devswarm-parent-reply-tracker" },
   { id = "devswarm-child-drain", matcher = "Bash", command = "node \"${PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"", timeout = 10, check = "devswarm-child-drain" },
+  { id = "agent-reminders", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"", timeout = 10, check = "agent-reminders" },
 ]

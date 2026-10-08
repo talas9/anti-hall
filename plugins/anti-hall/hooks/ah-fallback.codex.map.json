@@ -1,5 +1,6 @@
 {
   "PostToolUse": {
+    "agent-reminders": "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"",
     "devswarm-child-drain": "node \"${PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"",
     "devswarm-parent-reply-tracker": "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"",
     "git-guard:audit": "node \"${PLUGIN_ROOT}/hooks/git-guard.js\" --audit",
@@ -56,6 +57,7 @@
     "sibling-sweep": "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\""
   },
   "UserPromptSubmit": {
+    "agent-reminders": "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"",
     "auto-handover": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/auto-handover.js\"",
     "devswarm-child-turn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"",
     "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",

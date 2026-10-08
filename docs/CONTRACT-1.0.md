@@ -31,6 +31,7 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `safety` | Safety Guards | 4 | `gitGuard`, `commandGuard`, `editGuard`, `swarmGuard` |
 | `context` | Context Injections | 20 | |
 | `maintenance` | Maintenance | 5 | |
+| `agents` | Agent tracker | 3 | |
 | `versionAlerts` | Version Alerts | 3 | |
 | `updates` | Updates / Maintenance | 5 | |
 | `limitConserve` | Limit Conservation | 3 | `mode` |

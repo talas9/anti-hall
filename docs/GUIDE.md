@@ -1411,6 +1411,9 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `maintenance.precompactSnapshot` | `true` | — | precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction. |
 | `maintenance.taskLifecycleLog` | `true` | — | task-lifecycle-log (TaskCreated/TaskCompleted): append task events to the per-session history ledger. |
 | `maintenance.sessionEndReaper` | `true` | `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`; canonical wins) | session-end-mcp-reaper (SessionEnd): kill orphaned MCP-server processes this session left behind. |
+| `agents.tracker` | `true` | `ANTIHALL_AGENT_TRACKER` | agent tracker (engine job `agent_tick`): follow every agent, raise hung / looping / token-waste / drift / stale-heartbeat / no-wake-path signals; off, a tick does nothing. |
+| `agents.reminders` | `true` | `ANTIHALL_AGENT_REMINDERS` | agent-reminders (UserPromptSubmit, PostToolUse): deliver the tracker's queued reminders to the agent that owns them; off, signals are recorded but nothing is queued. |
+| `agents.ownerNotify` | `false` | `ANTIHALL_AGENT_OWNER_NOTIFY` | agent tracker owner notices: also append hung / looping / token-waste advisories to the owner notices file. |
 | `versionAlerts.antiHall` | `true` | `ANTIHALL_VERSION_ALERT` | Alert when a newer anti-hall version is available. |
 | `versionAlerts.claudeCli` | `true` | `ANTIHALL_CLAUDE_CLI_VERSION_ALERT` | Alert when a newer Claude CLI version is available. |
 | `versionAlerts.devswarm` | `true` | `ANTIHALL_DEVSWARM_VERSION_ALERT` | Alert when a newer DevSwarm/hivecontrol version is available. |
