@@ -33,6 +33,10 @@ value = 4194304
 min = 1024
 max = 268435456
 
+[mesh.missing_table_error]
+doc = "Lower-cased text of the SQLite error for a table the store does not have yet (an older Node schema); a reader that meets it answers with no rows, as Node does."
+value = "no such table"
+
 [mesh.last_default]
 doc = "How many of a workspace's newest messages `mesh read --last` returns when no count is given."
 value = 5

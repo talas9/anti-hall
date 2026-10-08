@@ -334,6 +334,18 @@ value = "one honest line is enough when there is none: name the search and say i
 doc = "How to turn the reminder off, in the reminder."
 value = "guards.siblingSweep=off in /anti-hall:settings"
 
+[sibling_sweep.what_log]
+doc = "The {what} of `msg_log_failed` when the telemetry log cannot be written."
+value = "the telemetry log"
+
+[sibling_sweep.what_transcript]
+doc = "The {what} of `msg_log_failed` when the transcript cannot be read."
+value = "the transcript read"
+
+[sibling_sweep.what_state]
+doc = "The {what} of `msg_log_failed` when the per-scope state file cannot be read or written."
+value = "the state file"
+
 [sibling_sweep.msg_log_failed]
 doc = "Daemon log line, written once per process, when the telemetry log or the state file cannot be written. Placeholders: {what}, {error}."
 value = "sibling-sweep: cannot write {what}: {error}"

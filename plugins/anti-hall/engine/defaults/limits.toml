@@ -15,6 +15,12 @@ unit = "bytes"
 min = 512
 max = 1048576
 
+[guardkit.tail_reader_buf_bytes]
+doc = "Capacity of the buffered reader the shared transcript tail reader (`guardkit::tail::tail_lines`) streams lines through."
+value = 65536
+unit = "bytes"
+min = 4096
+
 [agent_scan.reader_buf_bytes]
 doc = "Capacity of the buffered reader over the tail of a transcript the agent scan reads."
 value = 1048576

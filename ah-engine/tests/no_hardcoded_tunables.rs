@@ -146,7 +146,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/jev/keep.rs", "b.len() < 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
     ("src/checks/taskstate/tail.rs", "b.len() >= 20", "the shortest ISO-8601 timestamp is 20 characters (a format)"),
     ("src/checks/ctxbudget/mod.rs", "#[doc = concat!", "a generated rustdoc attribute, not run-time text"),
-    ("src/checks/emit_dedupe/mod.rs", "[0u8; 4]", "the encoding buffer of one UTF-8 character (at most 4 bytes)"),
+    (
+        "src/migrate/mod.rs",
+        "out.len() < 11",
+        "the length of `Math.random().toString(36).slice(2)` that the Node migration writes: a JavaScript format, compared byte for byte",
+    ),
     ("src/checks/jsport/json.rs", "[0u8; 4]", "the encoding buffer of one UTF-8 character (at most 4 bytes)"),
     ("src/checks/guardkit/filelock.rs", "[0u8; 256]", "the hostname buffer of gethostname (HOST_NAME_MAX is 255 on every supported system)"),
     ("src/checks/guardkit/nodelock.rs", "[0u8; 256]", "the hostname buffer of gethostname (HOST_NAME_MAX is 255 on every supported system)"),

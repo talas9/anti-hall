@@ -17,7 +17,12 @@ pub fn tail_lines(path: &str, max: u64) -> Option<(TailLines, u64)> {
     let n = size.min(max);
     f.seek(SeekFrom::Start(size - n)).ok()?;
     crate::load::note_scan(n);
-    let mut t = TailLines { rd: std::io::BufReader::with_capacity(1 << 16, f.take(n)), buf: Vec::new(), ended_with_newline: true, done: false };
+    let mut t = TailLines {
+        rd: std::io::BufReader::with_capacity(crate::defaults::num("guardkit.tail_reader_buf_bytes") as usize, f.take(n)),
+        buf: Vec::new(),
+        ended_with_newline: true,
+        done: false,
+    };
     if size > n {
         t.next();
     }

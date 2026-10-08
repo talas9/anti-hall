@@ -396,7 +396,7 @@ impl MeshReader {
     pub fn reader_cursors(&self, partition: &str) -> Res<Vec<Value>> {
         let mut st = match self.conn.prepare_cached(sql::MESH_READER_CURSORS) {
             Ok(s) => s,
-            Err(e) if e.to_string().to_ascii_lowercase().contains("no such table") => return Ok(Vec::new()),
+            Err(e) if e.to_string().to_ascii_lowercase().contains(defaults::text("mesh.missing_table_error")) => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
         };
         let mut rows = st.query(params![partition])?;

@@ -1,29 +1,10 @@
-[message] src/checks/guardkit/jsdiff.rs: || m.contains("unicode code point")
-[message] src/checks/guardkit/jsdiff_sites.rs: ("negative 309-digit integer", format!(r#"{{"type":"assistant","n":-{}}}"#, "9".repeat(309))),
-[message] src/cli.rs: None => return report_result(p, Err(defaults::render("msg.cli_usage", &[("commands", &"schedule run <job>")]))),
 [message] src/cli.rs: Some(job) => format!("schedule run job={job}"),
-[message] src/hookcfg/mod.rs: .ok_or_else(|| bad(path, &format!("{key}.order"), "hooks.msg_cfg_bad_type", &[("field", &"order"), ("expected", &"a list of entry ids")]))?;
 [message] src/hookcfg/mod.rs: return Err(bad(path, &key, "hooks.msg_cfg_project_guard", &[("what", &format!("{id} on {event}"))]));
-[message] src/hookcfg/when.rs: "at_least" => Test::AtLeast(v.as_i64().ok_or_else(|| bad("at_least needs an integer".into()))?),
-[message] src/hookcfg/when.rs: "exists" => Test::Exists(v.as_bool().ok_or_else(|| bad("exists needs true or false".into()))?),
-[message] src/hookcfg/when.rs: "first" => return Err(bad("first must be true")),
-[message] src/hookcfg/when.rs: "glob" => Test::Glob(v.as_str().ok_or_else(|| bad("glob needs a string".into()))?.to_string()),
-[message] src/hookcfg/when.rs: .ok_or_else(|| bad("in needs a list".into()))?
 [message] src/hookcfg/when.rs: .ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &format!("{k} needs a non-empty list"))]))?;
-[message] src/hookcfg/when.rs: _ => Test::AtMost(v.as_i64().ok_or_else(|| bad("at_most needs an integer".into()))?),
-[message] src/hookcfg/when.rs: let [op] = given.as_slice() else { return Err(bad(&format!("exactly one of {}", ops.join(", ")))) };
-[message] src/hookcfg/when.rs: let o = v.as_object().ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &"a condition must be a table")]))?;
-[message] src/hookcfg/when.rs: let p = v.as_str().ok_or_else(|| bad("regex needs a string".into()))?;
-[message] src/hookcfg/when.rs: o["env"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| err("hooks.msg_when_bad_value", &[("what", &"env needs a variable name")]))?;
 [message] src/hookcfg/when.rs: return Err(bad(&format!("{k} is not a session field")));
 [message] src/jev/cli.rs: other => Err(JevError::Request(format!("unknown trust rule {other:?}"))),
-[message] src/jev/cli.rs: std::io::stdin().read_to_string(&mut text).map_err(|e| JevError::Io { what: "read the requests from stdin".into(), source: e })?;
-[message] src/jev/cli.rs: std::io::stdin().read_to_string(&mut text).map_err(|e| JevError::Io { what: "read the texts from stdin".into(), source: e })?;
-[message] src/jev/log.rs: std::fs::create_dir_all(dir).map_err(|e| self.io("create the directory of", e))?;
-[message] src/jev/question.rs: f.write_str("an object of strings")
 [message] src/spool.rs: let req = format!("P {cwd}\nW {id}\n{verb} {args}");
 [message] src/telemetry/cli.rs: let mut verb = format!("telemetry {sub} window={}", window);
-[number] src/checks/agent_scan/mod.rs: Some(Tail { r: std::io::BufReader::with_capacity(1 << 20, f.take(n)), drop_first: size > n })
 [number] src/checks/agent_scan/mod.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 59 {
 [number] src/checks/agent_scan/mod.rs: if oh > 23 || om > 59 {
 [number] src/checks/agent_scan/mod.rs: let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
@@ -33,12 +14,7 @@
 [number] src/checks/coordinator_work/post.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
 [number] src/checks/ctxbudget/limit.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 59 {
 [number] src/checks/ctxbudget/limit.rs: if oh > 23 || om > 59 {
-[number] src/checks/git/runner.rs: if ctx.rec > 1500 {
-[number] src/checks/git/runner.rs: } else if w.starts_with("--replace=") && w.chars().count() > 10 {
-[number] src/checks/git/segments.rs: && (c.chars().count() > 4096 || c.split('/').count() > 64)
-[number] src/checks/git/segments.rs: if ctx.handover_adds.len() < 50 && ev.args.iter().any(|t| t.text == "add") {
 [number] src/checks/guardkit/jsval/mod.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 24 || mi > 59 || se > 59 || (h == 24 && (mi != 0 || se != 0 || ms != 0)) {
-[number] src/checks/guardkit/jsval/mod.rs: if b.is_empty() || b.len() > 10 || !b.iter().all(u8::is_ascii_digit) || (b.len() > 1 && b[0] == b'0') {
 [number] src/checks/guardkit/jsval/mod.rs: if oh > 23 || om > 59 {
 [number] src/checks/guardkit/jsval/mod.rs: k.parse::<u64>().ok().filter(|n| *n <= 4_294_967_294).map(|n| n as u32)
 [number] src/checks/guardkit/jsval/mod.rs: let body = if k <= n && n <= 21 {
@@ -46,8 +22,6 @@
 [number] src/checks/guardkit/jsval/mod.rs: let era = if y >= 0 { y } else { y - 399 } / 400;
 [number] src/checks/guardkit/jsval/mod.rs: } else if 0 < n && n <= 21 {
 [number] src/checks/guardkit/msg.rs: let mut out = String::with_capacity(t.len() + 32);
-[number] src/checks/guardkit/nodelock.rs: while n > 0 && out.len() < 11 {
-[number] src/checks/guardkit/ojson.rs: if k.is_empty() || k.len() > 10 || !k.bytes().all(|b| b.is_ascii_digit()) || (k.len() > 1 && k.starts_with('0')) {
 [number] src/checks/guardkit/ojson.rs: k.parse::<u64>().ok().filter(|n| *n < 4_294_967_295).map(|n| n as u32)
 [number] src/checks/guardkit/text.rs: if m >= 2_147_483_648 { m - 4_294_967_296 } else { m }
 [number] src/checks/jsport/date.rs: None if h > 23 => return Parsed::Unknown,
@@ -77,18 +51,11 @@
 [number] src/checks/taskkit/time.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
 [number] src/checks/taskstate/tail.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 59 {
 [number] src/checks/taskstate/tail.rs: let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
-[number] src/checks/taskstate/tail.rs: let shape = b.len() >= 20
-[number] src/dispatch/mod.rs: let mut raw = Vec::with_capacity(keep.min(64 * 1024));
-[number] src/dispatch/stoploop.rs: v.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect()
-[number] src/docs.rs: let s = if s.chars().count() > 80 { format!("{}...", s.chars().take(77).collect::<String>()) } else { s };
-[number] src/frame.rs: let Some(nl) = buf.iter().take(64).position(|&b| b == b'\n') else {
 [number] src/jev/assist.rs: let m = if mp < 10 { mp + 3 } else { mp - 9 };
 [number] src/jev/assist.rs: let y = yoe + era * 400 + i64::from(m <= 2);
 [number] src/jev/client.rs: Some(Reason::Http(s)) => *s >= 500 || *s == 402 || *s == 429 || ((*s == 400 || *s == 403) && r.balance),
 [number] src/jev/client.rs: defaults::num("jev.fallback_reserve_ms").min(total_ms.saturating_mul(defaults::num("jev.fallback_reserve_pct")) / 100)
 [number] src/jev/keep.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 59 {
-[number] src/jev/keep.rs: if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' || *b.last()? != b'Z' {
 [number] src/schedule.rs: let delay = spec.backoff_ms.saturating_mul(1u64 << (failures - 1).min(30)).min(spec.backoff_max_ms);
 [number] src/spool.rs: let base = defaults::num("spool.backoff_ms").saturating_mul(1u64 << n.min(16));
 [number] src/transcript/record.rs: if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 24 || mi > 59 || sec > 59 {
-[number] src/transcript/record.rs: if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !(b[10] == b'T' || b[10] == b't' || b[10] == b' ') || b[13] != b':' || b[16] != b':' {

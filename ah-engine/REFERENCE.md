@@ -1693,6 +1693,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inject_gate.field_ctx` | `additionalContext` |  |  | The field of that object the gate rewrites. |
 | `inject_gate.field_hso` | `hookSpecificOutput` |  |  | The object of a hook's JSON output that carries the context. |
 | `inject_gate.hash_chars` | `16` |  |  | Hex characters of the SHA-1 kept as a block's fingerprint. |
+| `inject_gate.hash_input_max_chars` | `32` |  |  | Most characters of a client-sent block fingerprint the gate keeps before comparing (twice `hash_chars`, so every string the daemon holds is bounded whatever a client sends). |
 | `inject_gate.id_max` | `128` |  |  | Characters of a session or agent id kept (longer ids are cut). |
 | `inject_gate.iso_re` | `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z\|[+-]\d{2}:\d{2})` |  |  | An ISO 8601 timestamp (a reset time whose milliseconds jitter from one reading to the next); the hash sees it rounded to the minute. |
 | `inject_gate.limit_hook` | `limit-conserve-inject` |  |  | Dispatch entry id of the limit-conservation injector. |
@@ -1900,8 +1901,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.line_terminators` | `\n
-  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
+| `output_verify.line_terminators` | `\n  ` |  |  | The characters after which a pattern anchored to the start of a line may match (JavaScript's multi-line anchor). |
 | `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
 | `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
@@ -2690,6 +2690,605 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.source_branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable DevSwarm sets only on a child workspace; non-empty means this session is a child. |
 | `devswarm_gates.supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode; headline plugin option). |
 
+### migrate.toml / migrate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `migrate.action` | `migrations-only` |  |  | The action word of the JSON report of the migration pass. |
+| `migrate.auto_archive_action` | `auto-archive` |  |  | The action word of a successful automatic archive in the log. |
+| `migrate.auto_archive_log` | `devswarm-auto-archive.ndjson` |  |  | The log of automatic archives under the logs directory, one JSON record per line. |
+| `migrate.auto_archived_file` | `auto-archived.json` |  |  | The durable record of automatic archives under the DevSwarm directory. |
+| `migrate.base_dir` | `.anti-hall` |  |  | The per-user anti-hall directory under the home directory. |
+| `migrate.corrupt_infix` | `.corrupt-` |  |  | Appended (with a millisecond stamp) to the name a corrupt settings file is renamed to. |
+| `migrate.cursors` | `5 entries` |  |  | The cursor sweeps: the cursor and inbox directories under the DevSwarm directory, the separator of a sibling watermark name, and the pattern of a per-instance cursor file name. |
+| `migrate.day_ms` | `86400000` |  | ms | Milliseconds in a retention day. |
+| `migrate.devswarm_dir` | `devswarm` |  |  | The DevSwarm state directory under the anti-hall directory. |
+| `migrate.devswarm_section` | `devswarm` |  |  | The settings section the DevSwarm retention windows and the drain marker time to live are read from. |
+| `migrate.devswarm_state_dirs` | `workspaces, store, archived, archived-retired, recovery-intent` |  |  | The DevSwarm directories whose contents the engine does not migrate (workspace descriptors, per-project stores, archive markers, recovery intents): while any holds an entry, the store-backed migrations are left to the Node doctor. |
+| `migrate.drain_dir` | `drain` |  |  | The directory of in-flight drain markers under the DevSwarm directory. |
+| `migrate.drain_ttl` | `3 entries` |  |  | The drain marker time to live: the settings entry (section and key; its environment variable and bounds are in migrate_settings.toml) and the default when no source sets it. |
+| `migrate.errno_fallback` | `2 entries` |  |  | Node's error code and description used for an error not in the table. |
+| `migrate.errnos` | `7 items` |  |  | Node's error code and description for the operating-system errors a state file call can meet, by errno. |
+| `migrate.gate_acks_default` | `0` |  |  | The value a gate-loop state file's acknowledgement count gets when it lacks one. |
+| `migrate.gate_acks_key` | `intentAcks` |  |  | The key of the acknowledgement count a gate-loop state file gains when it lacks it. |
+| `migrate.gate_intents_key` | `intents` |  |  | The key of the stated-intent map a gate-loop state file gains when it lacks it. |
+| `migrate.gate_state_excluded_re` | `(?i)-replies\.json$` |  |  | A parent-gate JSON file whose name matches this is a reply-state file, not a gate-loop state file (case-insensitive). |
+| `migrate.host_settings_file` | `.claude/settings.json` |  |  | The host's settings file under the home directory, read for the plugin options it stores (never written). |
+| `migrate.ids` | `19 entries` |  |  | The step ids of the report (Node's), and the action word of the steps whose action differs from their id. |
+| `migrate.integrations_key_prefix` | `integrations.` |  |  | The prefix of the old dotted key of a per-integration value inside the jev section. |
+| `migrate.jev_integration_ids` | `13 items` |  |  | The Jev integration ids whose per-integration value moved from the jev section to the jevIntegrations section of settings.json. |
+| `migrate.jev_triage_cache` | `cache/jev-triage.json` |  |  | The Jev triage cache under the anti-hall directory. |
+| `migrate.json_depth` | `128` |  |  | The deepest nesting of a JSON state file this port reads the way JavaScript does; a file nested deeper is left alone. |
+| `migrate.json_ext` | `.json` |  |  | The extension of a JSON state file. |
+| `migrate.legacy_dest` | `.anti-hall/history/legacy` |  |  | Where the legacy state files are copied to, relative to the project root. |
+| `migrate.legacy_files` | `.anti-hall-progress.md, .anti-hall-history.md` |  |  | The legacy root-level state files copied into the dated history structure. |
+| `migrate.lock_scratch_re` | `\.lock\.(?:reclaim\.)?(?:tmp\|reap\|hb)[-.]\|\.lock\.reclaim$` |  |  | The name pattern of the scratch files a lock leaves behind when a process dies mid-acquire, mid-refresh or mid-reclaim. |
+| `migrate.lock_scratch_stale_ms` | `900000` |  | ms | A lock scratch file older than this can belong to no operation still running and is removed. |
+| `migrate.locks_dir` | `locks` |  |  | The directory of the DevSwarm locks under the DevSwarm directory. |
+| `migrate.logs_dir` | `logs` |  |  | The log directory under the anti-hall directory. |
+| `migrate.markers_file` | `update-sweep-state.json` |  |  | The per-version completion markers of the migrations, shared with the Node update and supervisor (a JSON object under the anti-hall directory). |
+| `migrate.max_dir_entries` | `200000` |  |  | The most entries of one directory a step lists at once; a larger directory is reported as an error instead of being held in memory (the retention sweeps stream a directory and have no such limit). |
+| `migrate.max_file_bytes` | `16777216` |  | bytes | The most bytes of one state file a step reads (the files are small: settings, markers, reply state, cursors); a larger file is left as it is and noted, so no read costs more than this in memory. |
+| `migrate.max_line_bytes` | `4194304` |  | bytes | The longest line of a log a step reads (one JSON record); a longer line is skipped and counted, never buffered whole. |
+| `migrate.max_notes` | `200` |  |  | The most notes (errors a step swallowed) a run keeps and prints. |
+| `migrate.parent_gate_dir` | `parent-gate` |  |  | The directory of the parent-gate state files under the DevSwarm directory. |
+| `migrate.plugin_config_keys` | `anti-hall, anti-hall@anti-hall` |  |  | The keys the host may store this plugin's answers under in its settings file, lowest priority first. |
+| `migrate.plugin_manifest` | `.claude-plugin/plugin.json` |  |  | The plugin manifest under the plugin root, whose version stamps a migration as done. |
+| `migrate.plugin_option_env_prefix` | `CLAUDE_PLUGIN_OPTION_` |  |  | The prefix of the environment variable the host exports for each plugin option (followed by the upper-cased option name). |
+| `migrate.registry` | `11 items` |  |  | The all-store forward-migrations of the Node migration registry, in order, as id:marker-key. Each needs the DevSwarm stores, so the engine reports them done only when there is no DevSwarm state and otherwise leaves them to the Node doctor. |
+| `migrate.replies_re` | `-replies\.json$` |  |  | The name pattern of a reply-state file. |
+| `migrate.reply_passes` | `3` |  |  | How many times a reply-state rewrite re-reads its source before it gives up (a reply keeps arriving) and leaves the file as it is. |
+| `migrate.retention_sweeps` | `7 entries, 7 entries, 7 entries, 7 entries, 7 entries` |  |  | The age-based retention sweeps: id, directory (relative to the base, or to the DevSwarm directory when devswarm is true), file suffix, the environment variable of the window (used alone, as a positive integer, when key is empty), the settings key it is read through (section devswarm), and the default window in days. |
+| `migrate.safe_id_re` | `^[A-Za-z0-9._-]+$` |  |  | The pattern of an identifier that is safe to use in a file name. |
+| `migrate.settings_file` | `settings.json` |  |  | The unified settings file under the anti-hall directory. |
+| `migrate.settings_lock_stale_ms` | `30000` |  | ms | A settings lock older than this is taken over by the next writer. |
+| `migrate.settings_lock_step_ms` | `20` |  | ms | The pause between attempts to take the settings lock. |
+| `migrate.settings_lock_suffix` | `.lock` |  |  | Appended to the settings file path to name the lock the Node settings writer takes. |
+| `migrate.settings_lock_wait_ms` | `2000` |  | ms | How long a settings write waits for the lock before it gives up. |
+| `migrate.settings_marker_key` | `migrateSettingsFromLegacy` |  |  | The marker key of the settings forward-migration. |
+| `migrate.settings_section_integrations` | `jevIntegrations` |  |  | The settings section the per-integration values live in now. |
+| `migrate.settings_section_jev` | `jev` |  |  | The settings section the per-integration values used to live in. |
+| `migrate.store_dir` | `store` |  |  | The directory of the per-project DevSwarm stores under the DevSwarm directory. |
+| `migrate.store_hash_res` | `^[0-9a-fA-F]{8}$, ^[a-z0-9-]{1,40}-[0-9a-f]{6}$` |  |  | The name patterns of a store directory: the legacy eight-hex form and the repository-key form. |
+| `migrate.store_journal_dir` | `journal` |  |  | The journal directory inside a store, which also holds locks. |
+| `migrate.summaries` | `3 entries` |  |  | The stale-summary sweep: the directory under the DevSwarm directory, the settings key of the window (section devswarm) and its default in days. |
+| `migrate.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables whose presence marks a test run, in which a state-changing run refuses to touch the real home directory. |
+| `migrate.tmp_ext` | `.tmp` |  |  | The extension of the scratch file an atomic write goes through. |
+| `migrate.unclaimed_prefix` | `unclaimed:` |  |  | The prefix of the synthetic session id a workspace carries until its real session is known. |
+| `migrate.walk_depth` | `1` |  |  | How many levels of subdirectories a retention sweep descends into (the receipts directory is partitioned by day, one level). |
+| `migrate.workspaces_dir` | `workspaces` |  |  | The directory of the workspace descriptors under the DevSwarm directory. |
+
+### migrate.toml / migrate_msg
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `migrate_msg.already_applied` | `already applied for {version} (marker)` |  |  | A migration already stamped for this plugin version. Placeholder: {version}. |
+| `migrate_msg.archive_records` | `{n} auto-archive record(s)` |  |  | The detail of the auto-archive state step. Placeholder: {n}. |
+| `migrate_msg.could_not_list` | `could not list {dir}: {error}` |  |  | A sweep that could not list a directory. Placeholders: {dir}, {error}. |
+| `migrate_msg.could_not_raise` | `could not raise {path}: {error}` |  |  | A cursor file that could not be raised. Placeholders: {path}, {error}. |
+| `migrate_msg.could_not_remove` | `could not remove {path}: {error}` |  |  | A file a retention sweep could not remove. Placeholders: {path}, {error}. |
+| `migrate_msg.deferred` | `left to the Node doctor: DevSwarm store state is present and the engine does ...` |  |  | A step that needs the DevSwarm stores, which the engine does not migrate yet, while DevSwarm state is present. |
+| `migrate_msg.deferred_git` | `left to the Node doctor: the git location of the working directory cannot be ...` |  |  | The legacy copy when the git location of the working directory cannot be confirmed without Node. |
+| `migrate_msg.dir_too_large` | `directory has more than {cap} entries` |  |  | A directory with more entries than a step lists at once. Placeholder: {cap}. |
+| `migrate_msg.drain_not_removed` | `failed to remove stale drain marker {id}` |  |  | A stale drain marker that could not be removed. Placeholder: {id}. |
+| `migrate_msg.drain_removed` | `removed stale drain marker {id} (age {age}ms)` |  |  | A stale drain marker that was removed. Placeholders: {id}, {age}. |
+| `migrate_msg.dry_run` | `[dry-run] would migrate: {detail}` |  |  | A step that would migrate, in a preview. Placeholder: {detail}. |
+| `migrate_msg.gate_files` | `{n} gate-state file(s)` |  |  | The detail of the gate-intents step. Placeholder: {n}. |
+| `migrate_msg.heal_dry_run` | `[dry-run] would sweep every per-project store registry for mis-keyed/stale ro...` |  |  | The registry heal step in a preview. |
+| `migrate_msg.heal_none` | `checked 0 registry row(s) across 0 store(s) — nothing mis-keyed/stale` |  |  | The registry heal step when there is no store to sweep. |
+| `migrate_msg.lock_scratch` | `{n} stale lock scratch file(s)` |  |  | The lock scratch sweep's count. Placeholder: {n}. |
+| `migrate_msg.marker_failed` | ` — marker write failed; retries next run` |  |  | Appended to a step whose completion marker could not be written. |
+| `migrate_msg.migrated` | `migrated: {detail}` |  |  | A step that migrated. Placeholder: {detail}. |
+| `migrate_msg.no_cwd` | `cannot determine the working directory ({error}); pass --cwd <dir>` |  |  | The working directory cannot be determined and --cwd was not given. Placeholder: {error}. |
+| `migrate_msg.no_home` | `no home directory: set HOME or pass --home <dir>` |  |  | The migrate command when no home directory is known. |
+| `migrate_msg.no_lock_dirs` | `no lock dirs` |  |  | The lock scratch sweep when no lock directory exists. |
+| `migrate_msg.node_error` | `{code}: {text}, {syscall} '{path}'` |  |  | A file call's error as Node prints it. Placeholders: {code}, {text}, {syscall}, {path}. |
+| `migrate_msg.not_stamped` | ` — not stamped, retries next run` |  |  | Appended when a settings migration finished cleanly but its marker could not be written. |
+| `migrate_msg.note_growing` | `{path} kept changing while it was rewritten; left as it is` |  |  | A reply-state file that kept growing while it was rewritten; it is left as it is. Placeholder: {path}. |
+| `migrate_msg.note_io` | `{error}` |  |  | A file call that failed and that the step could not put in a row. Placeholders: {what}, {path}, {error}. |
+| `migrate_msg.note_line` | `note: {note}` |  |  | One note on stderr: an error a step swallowed and could not put in a row. Placeholder: {note}. |
+| `migrate_msg.note_lock_busy` | `{path} is being written by another process; skipped, retried next run` |  |  | The settings file is locked by another writer past the wait limit; nothing was written. Placeholder: {path}. |
+| `migrate_msg.note_long_lines` | `{n} line(s) of {path} are longer than the read limit and were skipped` |  |  | Lines of a log too long to read, skipped. Placeholders: {path}, {n}. |
+| `migrate_msg.note_not_object` | `{path} is not a JSON object; left as it is` |  |  | A gate-loop state file that is not a JSON object; it is left as it is. Placeholder: {path}. |
+| `migrate_msg.note_unparseable` | `{path} is not valid JSON; left as it is` |  |  | A state file that does not parse as JSON; it is left exactly as it is. Placeholder: {path}. |
+| `migrate_msg.note_unsure` | `{path} holds JSON this build does not read exactly as Node does; left as it is` |  |  | A state file with content this port cannot read the way JavaScript does; it is left as it is and counted as an error. Placeholder: {path}. |
+| `migrate_msg.nothing` | `nothing to migrate` |  |  | A step with nothing to do. |
+| `migrate_msg.nothing_to_repair` | `nothing to repair` |  |  | The Jev triage cache repair when no entry is poisoned. |
+| `migrate_msg.raised` | `{id} raised: {error}` |  |  | A step that raised an error. Placeholders: {id}, {error}. |
+| `migrate_msg.real_home_refused` | `refused in a test run: {home} is the real user home; isolate HOME or pass --h...` |  |  | The migrate command in a test run pointed at the real home. Placeholder: {home}. |
+| `migrate_msg.reply_files` | `{n} reply-state file(s)` |  |  | The detail of the reply-state step. Placeholder: {n}. |
+| `migrate_msg.row_line` | `[{status}] {id}: {msg}` |  |  | One line of the migrate report for a person. Placeholders: {status}, {id}, {msg}. |
+| `migrate_msg.settings_errors` | `; {n} error(s)` |  |  | Appended to the settings migration's result when some fields failed. Placeholder: {n}. |
+| `migrate_msg.settings_migrated` | `{n} legacy field(s) forward-migrated into settings.json` |  |  | The settings migration's result. Placeholder: {n}. |
+| `migrate_msg.still_pending` | `still pending after migrate: {detail}` |  |  | A step whose work was still pending after it ran. Placeholder: {detail}. |
+| `migrate_msg.summary` | `{fixed} fixed, {skipped} skipped, {failed} failed` |  |  | The last line of the migrate report for a person. Placeholders: {fixed}, {skipped}, {failed}. |
+| `migrate_msg.sweep_failed` | `{n} of {total} item(s) failed: {msgs}` |  |  | A sweep some of whose items failed. Placeholders: {n}, {total}, {msgs}. |
+| `migrate_msg.sweep_handled` | `{n} item(s) handled` |  |  | A sweep that handled items. Placeholder: {n}. |
+| `migrate_msg.sweep_nothing` | `nothing to do` |  |  | A sweep that had nothing to do. |
+| `migrate_msg.sweep_nothing_pending` | `nothing pending` |  |  | A sweep in a preview that found nothing. |
+| `migrate_msg.sweep_pending` | `{n} item(s) pending (dry run — nothing touched)` |  |  | A sweep in a preview that found items. Placeholder: {n}. |
+| `migrate_msg.too_large` | `file larger than {cap} bytes` |  |  | A file too large to read whole. Placeholder: {cap}. |
+| `migrate_msg.triage_dry_run` | `[dry-run] would drop {n} poisoned no-label cache entries` |  |  | The Jev triage cache repair in a preview. Placeholder: {n}. |
+| `migrate_msg.triage_fixed` | `dropped {n} poisoned no-label jev-triage cache entries (re-triaged on next re...` |  |  | The Jev triage cache repair's result. Placeholders: {n}, {kept}. |
+| `migrate_msg.triage_not_object` | `jev-triage cache is not an object — left alone` |  |  | The Jev triage cache repair when the cache is not an object. |
+| `migrate_msg.triage_raised` | `raised: {error}` |  |  | The Jev triage cache repair when it raised. Placeholder: {error}. |
+| `migrate_msg.triage_unreadable` | `no readable jev-triage cache — nothing to repair` |  |  | The Jev triage cache repair when the cache cannot be read. |
+| `migrate_msg.unknown_version` | `(unknown)` |  |  | The version shown when the plugin manifest cannot be read. |
+| `migrate_msg.watermark_declined` | `no registry rows readable in any store — watermark sweep declined (never dele...` |  |  | The sibling watermark sweep when no store has a registry row to compare against (it never deletes on an empty read). |
+
+### migrate_settings.toml / migrate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `migrate.settings_schema` | `273 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+
+### doctor.toml / doctor
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `doctor.decision_block_re` | `"decision"\s*:\s*"block"` |  |  | The pattern of a Stop hook's block decision in what a guard prints. |
+| `doctor.default_event` | `PreToolUse` |  |  | The hook event a self-test payload is evaluated as when it names none. |
+| `doctor.hooks_dir` | `hooks` |  |  | The hooks directory under the plugin root. |
+| `doctor.hooks_json` | `hooks.json` |  |  | The generated hook registration file under the hooks directory. |
+| `doctor.hooks_registry` | `hooks.registry.json` |  |  | The per-hook registry under the hooks directory, which lists the hook scripts the thin triggers hand to the engine. |
+| `doctor.max_hook_output` | `1048576` |  | bytes | The most bytes of a Node hook's output a live self-test keeps. |
+| `doctor.node_default` | `node` |  |  | The Node binary a live self-test runs a deferred hook with when the engine's own variable for it is not set. |
+| `doctor.node_timeout_ms` | `30000` |  | ms | How long a Node hook gets in a live self-test before it is killed and the self-test fails. |
+| `doctor.passthrough_env` | `PATH, TMPDIR` |  |  | The process environment variables a live self-test keeps (the rest of its environment is the test's own). |
+| `doctor.platform_names` | `3 entries` |  |  | Node's name for each operating system and architecture Rust names differently (process.platform and process.arch). |
+| `doctor.plugin_root_envs` | `CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT` |  |  | Environment variables that name the plugin root, first set one wins, after the engine's own and the --plugin-root flag. |
+| `doctor.poll_ms` | `20` |  | ms | How often a live self-test checks whether its Node hook has finished. |
+| `doctor.script_re` | `[\w-]+\.js` |  |  | The name pattern of a hook script in the registry. |
+| `doctor.selftest_home_prefix` | `anti-hall-doctor-` |  |  | The name prefix of the throwaway home the live self-tests run against. |
+| `doctor.selftests` | `21 items` |  |  | The live self-tests. Each runs the named built-in check in-process (when the engine defers the payload, as the dispatcher would, its Node hook `script` is run instead) on the payload with the given environment (HOME is always the throwaway home) and expects: block (the guard denies: exit 2), allow (it does not), stop-block (a Stop decision of block), or alert-stale (see version-alert). `ok` and `bad` are the findings; `warn` is used instead of `bad` when set. |
+| `doctor.stale_version` | `999.0.0` |  |  | The version the version-alert self-test caches as newer than the running one. |
+| `doctor.statusline_marker` | `statusline.js` |  |  | A statusLine command that contains this is the anti-hall dispatcher. |
+| `doctor.statusline_scopes` | `3 entries, 3 entries, 3 entries` |  |  | Where a statusLine command may be configured, in order: label and file relative to the project (a leading ~ means the home directory). |
+| `doctor.statusline_shown` | `48` |  |  | How many UTF-16 units of a custom statusLine command the doctor shows. |
+| `doctor.transcript_file` | `t.jsonl` |  |  | The file name of the throwaway transcript a Stop self-test reads. |
+| `doctor.unhandled_flags` | `--prune-cache, --reclaim-ingest-lock, --repair-ingest-orphans, --repair-test-...` |  |  | Flags of the Node doctor that the engine doctor does not handle yet; each is reported and the run continues. |
+| `doctor.version_alert_env` | `ANTIHALL_VERSION_ALERT=` |  |  | Environment pairs of the version-alert self-test (the off switch is cleared so an inherited one cannot fake a pass). |
+| `doctor.version_alert_payload` | `{"hook_event_name":"SessionStart","session_id":"{SID}"}` |  |  | The SessionStart payload of the version-alert self-test; {SID} is a unique session id. |
+| `doctor.version_alert_re` | `"additionalContext"\s*:\s*"[^"]*version-alert: v{stale} is available \(you ar...` |  |  | The pattern of the version nudge in what the version-alert check prints; {stale} is the cached newer version, already escaped. |
+| `doctor.version_alert_script` | `version-alert.js` |  |  | The Node hook that answers the version-alert self-test when the engine defers it. |
+| `doctor.version_alert_sessions` | `doctor-va-stale, doctor-va-current` |  |  | Session id prefixes of the stale-cache and current-cache version-alert runs. |
+| `doctor.version_check_file` | `version-check.json` |  |  | The cached latest-version file the version-alert self-test seeds, under the anti-hall directory. |
+| `doctor.workflow_dir` | `.claude/workflows` |  |  | The directory of saved Workflow templates under the home directory and under the project (relative to each). |
+| `doctor.workflow_patterns` | `(?i)^deadly-loop.*\.js$, (?i)^ship-it.*\.js$` |  |  | The names of the saved Workflow templates the doctor looks for (case-insensitive patterns). |
+
+### doctor.toml / doctor_msg
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `doctor_msg.capture_failed` | `the output of {script} could not be captured` |  |  | The thread that captured a Node hook's output failed. Placeholder: {script}. |
+| `doctor_msg.daemon_down` | `the engine daemon is not running (it starts on the first hook call)` |  |  | The engine daemon is not running, which is normal until the first hook call. |
+| `doctor_msg.daemon_up` | `the engine daemon is running ({reply})` |  |  | The engine daemon is running. Placeholder: {reply}. |
+| `doctor_msg.deferred` | `{check}: the engine defers this self-test to its Node hook, so it was not exe...` |  |  | A live self-test the engine could not decide itself: the check defers this payload to its Node hook. Placeholder: {check}. |
+| `doctor_msg.engine_version` | `ah-engine {version}` |  |  | The engine version finding. Placeholder: {version}. |
+| `doctor_msg.head_engine` | `Engine` |  |  | The heading of the engine section. |
+| `doctor_msg.head_environment` | `Environment` |  |  | The heading of the environment section. |
+| `doctor_msg.head_guards` | `Guard behavior (live self-tests)` |  |  | The heading of the live self-test section. |
+| `doctor_msg.head_hooks` | `Hooks (present)` |  |  | The heading of the hooks section. |
+| `doctor_msg.head_statusline` | `Statusline` |  |  | The heading of the statusline section. |
+| `doctor_msg.head_unhandled` | `Not handled by the engine doctor` |  |  | The heading of the section that lists flags the engine doctor does not handle. |
+| `doctor_msg.head_workflows` | `Workflow templates (deadly-loop / ship-it)` |  |  | The heading of the Workflow templates section. |
+| `doctor_msg.hook_missing` | `{file} — REGISTERED BUT MISSING` |  |  | A registered hook script is not on disk. Placeholder: {file}. |
+| `doctor_msg.hook_present` | `{file} present` |  |  | A registered hook script is on disk. Placeholder: {file}. |
+| `doctor_msg.hook_timeout` | `{script} did not finish within the self-test time limit` |  |  | A Node hook did not finish a live self-test in time. Placeholder: {script}. |
+| `doctor_msg.hooks_invalid` | `hooks.json invalid or unreadable: {error}` |  |  | hooks.json or its registry does not parse. Placeholder: {error}. |
+| `doctor_msg.hooks_valid` | `hooks.json is valid JSON ({n} hook script(s) registered)` |  |  | hooks.json and its registry parse. Placeholder: {n}. |
+| `doctor_msg.no_plugin_root` | `plugin root not found (pass --plugin-root <dir> or set AH_ENGINE_PLUGIN_ROOT)...` |  |  | The doctor could not find the plugin root, so the checks that read the plugin's files were skipped. |
+| `doctor_msg.not_json` | `{file} is not valid JSON` |  |  | A plugin file that does not parse as JSON. Placeholder: {file}. |
+| `doctor_msg.platform` | `Platform {platform} / {arch}` |  |  | The platform finding. Placeholders: {platform}, {arch}. |
+| `doctor_msg.plugin_version` | `anti-hall plugin version {version}` |  |  | The plugin version finding. Placeholder: {version}. |
+| `doctor_msg.repair_failed` | `FAILED [{id}] {msg}` |  |  | A repair row that failed. Placeholders: {id}, {msg}. |
+| `doctor_msg.repair_fixed` | `FIXED [{id}] {msg}` |  |  | A repair row that fixed something. Placeholders: {id}, {msg}. |
+| `doctor_msg.repair_gated` | `GATED [{id}] {msg}` |  |  | A repair row held back by a gate. Placeholders: {id}, {msg}. |
+| `doctor_msg.repair_heading` | `Repair` |  |  | The heading of the repair section. |
+| `doctor_msg.repair_heading_dry` | `Repair (dry-run — no changes written)` |  |  | The heading of the repair section in a preview. |
+| `doctor_msg.repair_none` | `nothing to repair` |  |  | The repair pass found no rows and nothing failed. |
+| `doctor_msg.repair_read_only` | `read-only run — nothing was changed. Run with --repair to apply the safe repa...` |  |  | The note under the repair heading when no repair was asked for. |
+| `doctor_msg.repair_skipped` | `skipped [{id}] {msg}` |  |  | A repair row that did nothing. Placeholders: {id}, {msg}. |
+| `doctor_msg.row_bad` | `❌` |  |  | The marker in front of a failing finding. |
+| `doctor_msg.row_ok` | `✅` |  |  | The marker in front of a passing finding. |
+| `doctor_msg.row_prefix_info` | `i` |  |  | The marker in front of an informational finding. |
+| `doctor_msg.row_warn` | `⚠️` |  |  | The marker in front of a warning. |
+| `doctor_msg.statusline_installed` | `statusline installed ({label}) -> anti-hall dispatcher` |  |  | The statusline is the anti-hall dispatcher. Placeholder: {label}. |
+| `doctor_msg.statusline_none` | `no statusLine configured — run the install-statusline skill (then restart)` |  |  | No statusLine is configured. |
+| `doctor_msg.statusline_set` | `statusline set ({label}) -> {command}…` |  |  | A custom statusline is configured. Placeholders: {label}, {command}. |
+| `doctor_msg.title` | `anti-hall doctor v{version}` |  |  | The first line of the report. Placeholder: {version}. |
+| `doctor_msg.unhandled_flag` | `{flag} is not handled by the engine doctor yet (D81); run the Node doctor for it` |  |  | A flag of the Node doctor that the engine doctor does not handle. Placeholder: {flag}. |
+| `doctor_msg.unknown_version` | `(unknown)` |  |  | The version shown when the plugin manifest cannot be read. |
+| `doctor_msg.verdict_fail` | `❌ anti-hall · doctor: {fail} failure(s), {pass} passed, {warn} warning(s)` |  |  | The verdict when something failed. Placeholders: {fail}, {pass}, {warn}. |
+| `doctor_msg.verdict_ok` | `✅ anti-hall · doctor: active, {pass} checks passed` |  |  | The verdict when nothing failed. Placeholder: {pass}. |
+| `doctor_msg.verdict_warn` | `, {warn} warning(s)` |  |  | Appended to the passing verdict when there are warnings. Placeholder: {warn}. |
+| `doctor_msg.version_alert_bad` | `version-alert did NOT behave correctly for stale-vs-current cache` |  |  | The version-alert self-test failed. |
+| `doctor_msg.version_alert_ok` | `version-alert nudges on a stale cached version and stays silent when current` |  |  | The version-alert self-test passed. |
+| `doctor_msg.workflow_found` | `saved workflow template(s) found: {files}` |  |  | Saved Workflow templates exist. Placeholder: {files}. |
+| `doctor_msg.workflow_missing` | `no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ ...` |  |  | No saved deadly-loop or ship-it Workflow template exists. |
+
+### setup.toml / env
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `env.setup_host_plugin_root` | `CLAUDE_PLUGIN_ROOT` |  |  | The plugin-root variable the host exports to hooks and skills; `capability-scan` and `briefing` read the plugin tree it names when `--root` is not given. |
+
+### setup.toml / setup
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `setup.brief_caps_header_max` | `40` |  |  | Longest all-capitals comment line that is treated as a section header and skipped (Node: 40). |
+| `setup.brief_cli_file` | `scripts/devswarm.js` |  |  | The DevSwarm command-line script, relative to the plugin root. |
+| `setup.brief_code_words` | `7 items` |  |  | Words that, starting a line before any header comment, mean the file has no header comment. |
+| `setup.brief_colors` | `6 entries` |  |  | The terminal colour codes of the briefing: bold, cyan, dim, yellow, green, reset (used only when the output is a terminal). |
+| `setup.brief_command_key` | `command` |  |  | The member of a hook that holds its command. |
+| `setup.brief_comment` | `//` |  |  | The line-comment leader of the hook scripts, whose first comment is the purpose line. |
+| `setup.brief_companion_dir` | `companion/` |  |  | The companion directory, relative to the plugin root, as it prefixes a companion's name. |
+| `setup.brief_dashes` | `—–` |  |  | The dash characters (em dash, en dash) that separate a file name from its purpose in a header comment. |
+| `setup.brief_derived_line` | `Derived live from hooks.json + the files on disk — not a hardcoded list.` |  |  | The second line of the briefing. |
+| `setup.brief_docs_note` | `docs/ is repo-clone-only and not bundled with /plugin install — clone github....` |  |  | What the briefing says when the repository docs are not part of the install. |
+| `setup.brief_docs_prefix` | `docs/` |  |  | What a docs file's name is shown with. |
+| `setup.brief_docs_rel` | `../../docs` |  |  | The repository docs directory, relative to the plugin root. |
+| `setup.brief_doctor_line` | `Health check (do the guards actually fire?): node hooks/doctor.js` |  |  | The last line of the briefing. |
+| `setup.brief_ellipsis` | `…` |  |  | What ends a skill description that was cut. |
+| `setup.brief_ellipsis_cut` | `3` |  |  | How many characters shorter than the limit a cut description is before the ellipsis (Node: 3). |
+| `setup.brief_fence` | `---` |  |  | The line that opens and closes a skill file's frontmatter. |
+| `setup.brief_file_min` | `4` |  |  | The shortest file-name lead (one character and the extension) removed from a purpose line, in characters (Node: 4). |
+| `setup.brief_group_cli` | `CLI` |  |  | The title of the command-line group. |
+| `setup.brief_group_mechanical` | `mechanical triggers (hooks)` |  |  | The title of the group of mechanical-trigger hooks. |
+| `setup.brief_group_store` | `store` |  |  | The title of the store group. |
+| `setup.brief_group_supervisor` | `liveness supervisor + recovery` |  |  | The title of the supervisor group. |
+| `setup.brief_header_lines` | `30` |  |  | How many lines of a file's start are searched for its header comment (Node: 30). |
+| `setup.brief_heading_mark` | `#` |  |  | The mark that starts a Markdown heading. |
+| `setup.brief_heading_max` | `160` |  |  | Longest knowledge-base heading (Node: 160). |
+| `setup.brief_hooks_dir` | `hooks` |  |  | The hooks directory of a plugin tree. |
+| `setup.brief_hooks_key` | `hooks` |  |  | The member of the hook registry that holds the events, and of each group that holds its hooks. |
+| `setup.brief_js_suffix` | `.js` |  |  | What a hook script's name ends with. |
+| `setup.brief_kb_prefix` | `KB` |  |  | What a knowledge-base file's name starts with. |
+| `setup.brief_kb_suffix` | `.md` |  |  | What a knowledge-base file's name ends with. |
+| `setup.brief_key_desc` | `description:` |  |  | The frontmatter key that holds a skill's description. |
+| `setup.brief_key_name` | `name:` |  |  | The frontmatter key that holds a skill's name. |
+| `setup.brief_lead_sep` | `::` |  |  | What follows the project name in a header comment's lead (`anti-hall :: name`). |
+| `setup.brief_lib_dir` | `lib` |  |  | The helper directory inside the hooks directory. |
+| `setup.brief_lookahead_lines` | `8` |  |  | How many comment lines after a bare module name are searched for the real purpose (Node: 8). |
+| `setup.brief_matcher_key` | `matcher` |  |  | The member of a hook group that holds its tool matcher. |
+| `setup.brief_mechanical_hooks` | `devswarm-parent-inbox.js, devswarm-parent-gate.js, devswarm-child-turn.js, de...` |  |  | The DevSwarm mechanical-trigger hooks the briefing lists when present. |
+| `setup.brief_migration_files` | `devswarm-migrate.js, devswarm-ingest.js` |  |  | The DevSwarm migration companions the briefing lists when present. |
+| `setup.brief_migration_title` | `migration (auto-safe: idempotent, non-destructive, single-consumer-locked, co...` |  |  | The heading of the DevSwarm migration group. |
+| `setup.brief_name_seps` | `:` |  |  | The characters, besides white space and the dashes, that may follow a hook's own name at the start of its purpose line. |
+| `setup.brief_no_header` | `(no header comment)` |  |  | The purpose shown for a hook file with no header comment. |
+| `setup.brief_plugin_json` | `.claude-plugin/plugin.json` |  |  | The plugin manifest, relative to the plugin root. |
+| `setup.brief_project_tag` | `anti-hall` |  |  | The project name a hook's header comment may lead with, removed from its purpose line. |
+| `setup.brief_purpose_max` | `240` |  |  | Longest purpose line, in UTF-16 units (Node: 240). |
+| `setup.brief_registry_file` | `hooks.registry.json` |  |  | The per-hook registry under hooks/ that the briefing groups by event. |
+| `setup.brief_rule_chars` | `-=*` |  |  | The characters a rule line in a header comment is made of. |
+| `setup.brief_rule_min` | `3` |  |  | The fewest characters of a rule line (dashes, equals signs, asterisks) that is skipped in a header comment (Node: 3). |
+| `setup.brief_scan_bytes` | `262144` |  | bytes | How much of a hook file's start is read to find its header comment (Node reads the file and looks at its first 38 lines). |
+| `setup.brief_scope_sep` | ` — ` |  |  | What joins a scope tag to the purpose that follows it. |
+| `setup.brief_shebang` | `#!` |  |  | The start of an interpreter line, which is skipped when looking for the header comment. |
+| `setup.brief_skill_desc_max` | `200` |  |  | Longest skill description before it is cut with an ellipsis (Node: 200). |
+| `setup.brief_skill_file` | `SKILL.md` |  |  | The file in a skill directory that describes the skill. |
+| `setup.brief_skills_dir` | `skills` |  |  | The skills directory of a plugin tree. |
+| `setup.brief_store_file` | `companion/lib/devswarm-store.js` |  |  | The DevSwarm store module, relative to the plugin root. |
+| `setup.brief_strict_word` | `use strict` |  |  | The text of the strict-mode directive, which is skipped when looking for the header comment. |
+| `setup.brief_sub_indent` | `3` |  |  | The number of white-space characters before a subcommand name in the DevSwarm script's comment block (Node: 3). |
+| `setup.brief_sub_marker` | `// SUBCOMMANDS` |  |  | The comment line after which the DevSwarm script documents its subcommands. |
+| `setup.brief_sub_sep` | ` · ` |  |  | What separates the DevSwarm subcommands in the briefing. |
+| `setup.brief_supervisor_files` | `devswarm-supervisor.js, devswarm-recover.js, install-devswarm-supervisor.js, ...` |  |  | The DevSwarm supervisor and recovery companions the briefing lists when present. |
+| `setup.brief_unknown_version` | `(unknown)` |  |  | The version shown when plugin.json cannot be read. |
+| `setup.brief_unreadable` | `(unreadable)` |  |  | The purpose shown for a hook file that cannot be read. |
+| `setup.brief_version_key` | `version` |  |  | The member of the plugin manifest that holds the version. |
+| `setup.cap_companion_dir` | `companion` |  |  | The directory of a plugin tree that holds the companion installers. |
+| `setup.cap_const_fmt` | `const {name} = ` |  |  | How an installer declares a constant on its own line. Placeholder: name. |
+| `setup.cap_const_label` | `LABEL` |  |  | The name of the installer constant that holds its launchd label. |
+| `setup.cap_const_unit` | `UNIT` |  |  | The name of the installer constant that holds its systemd unit name. |
+| `setup.cap_cron_marker` | `# {unit}` |  |  | The managed marker line of a unit in the crontab. Placeholder: unit. |
+| `setup.cap_crontab_binary` | `crontab` |  |  | The program `capability-scan` asks for the managed cron markers on Linux. |
+| `setup.cap_enabled_service` | `default.target.wants/{unit}.service` |  |  | Where an enabled continuous service shows up under the systemd directory. Placeholder: unit. |
+| `setup.cap_enabled_timer` | `timers.target.wants/{unit}.timer` |  |  | Where an enabled timer shows up under the systemd directory. Placeholder: unit. |
+| `setup.cap_export_fmts` | `{name},, {name}:` |  |  | The two ways an installer lists the function among its exports (a shorthand entry, a keyed entry). Placeholder: name. |
+| `setup.cap_fn_decl_fmt` | `function {name}(` |  |  | How an installer declares its unit-listing function. Placeholder: name. |
+| `setup.cap_hash_len` | `8` |  |  | The length of a per-worktree suffix, in hexadecimal digits. |
+| `setup.cap_how_companion` | `node "${CLAUDE_PLUGIN_ROOT}/companion/{file}"` |  |  | How a companion is enabled. Placeholder: file. |
+| `setup.cap_how_migrations` | `node "${CLAUDE_PLUGIN_ROOT}/scripts/migrate-state.js"` |  |  | How pending state migrations are applied. |
+| `setup.cap_how_statusline` | `node "${CLAUDE_PLUGIN_ROOT}/statusline/install-statusline.js" --user` |  |  | How the status line is enabled. |
+| `setup.cap_installer_prefix` | `install-` |  |  | What a companion installer's file name starts with. |
+| `setup.cap_installer_suffix` | `.js` |  |  | What a companion installer's file name ends with. |
+| `setup.cap_key_max` | `40` |  |  | The longest head of a per-project suffix, in characters. |
+| `setup.cap_key_tail` | `6` |  |  | The length of the hexadecimal tail of a per-project suffix. |
+| `setup.cap_label_sep` | `.` |  |  | What separates a launchd label from its per-worktree or per-project suffix. |
+| `setup.cap_launchagents_dir` | `Library/LaunchAgents` |  |  | The macOS per-user launchd directory, under the home directory. |
+| `setup.cap_legacy_dir` | `.anti-hall/history/legacy` |  |  | Where the legacy progress and history files are copied, relative to the project root. |
+| `setup.cap_legacy_files` | `.anti-hall-progress.md, .anti-hall-history.md` |  |  | The legacy root progress and history files whose copy under .anti-hall/history/legacy is the state migration. |
+| `setup.cap_listing_fn` | `listInstalledIngestUnits` |  |  | The name of the installer export that lists every installed unit; an installer that exports it is checked with it (the per-worktree readback contract). |
+| `setup.cap_name_migrations` | `state-migrations` |  |  | The capability name of the state migrations. |
+| `setup.cap_name_statusline` | `statusline` |  |  | The capability name of the status line. |
+| `setup.cap_os_names` | `2 entries` |  |  | Operating-system names as Node reports them, by the name Rust reports. |
+| `setup.cap_plat_darwin` | `darwin` |  |  | The platform name of macOS. |
+| `setup.cap_plat_linux` | `linux` |  |  | The platform name of Linux. |
+| `setup.cap_plat_win32` | `win32` |  |  | The platform name of Windows. |
+| `setup.cap_plist_suffix` | `.plist` |  |  | The end of a launchd job file's name. |
+| `setup.cap_service_suffix` | `.service` |  |  | The end of a systemd service file's name. |
+| `setup.cap_state_active` | `active` |  |  | How the text report says a capability is active. |
+| `setup.cap_state_inactive` | `available, not active` |  |  | How the text report says a capability is shipped but not active. |
+| `setup.cap_status_command_key` | `command` |  |  | The member of the status-line setting that holds its command. |
+| `setup.cap_status_key` | `statusLine` |  |  | The settings member that configures the status line. |
+| `setup.cap_status_project_files` | `.claude/settings.local.json, .claude/settings.json` |  |  | The project-scope settings files a status line may be configured in, strongest first, relative to the working directory. |
+| `setup.cap_status_user_files` | `.claude/settings.json` |  |  | The user-scope settings files a status line may be configured in, relative to the home directory. |
+| `setup.cap_statusline_marker` | `statusline.js` |  |  | The file name a status line command must contain for the statusline capability to count as active. |
+| `setup.cap_systemd_dir` | `.config/systemd/user` |  |  | The Linux per-user systemd directory, under the home directory. |
+| `setup.cap_timer_suffix` | `.timer` |  |  | The end of a systemd timer file's name. |
+| `setup.cap_unit_sep` | `-` |  |  | What separates a systemd unit name from its per-worktree or per-project suffix. |
+| `setup.compare_chunk_bytes` | `65536` |  | bytes | Size of the chunks two files are compared in, so that neither is held in memory whole. |
+| `setup.corrupt_fmt` | `{file}.corrupt-{ms}` |  |  | Where a file that is not a JSON object is moved. Placeholders: file, ms. |
+| `setup.credit_fields` | `balance, total_used` |  |  | The field names of the credit endpoint's answer: the balance and the total used. |
+| `setup.credit_local_reasons` | `unsupported-transport, disabled, no-key` |  |  | Credit-balance answers that are local configuration answers, never cached. |
+| `setup.credit_reason_unsupported` | `unsupported-transport` |  |  | The credit answer when neither transport is Vercel. |
+| `setup.credit_silent_reasons` | `unsupported-transport, disabled` |  |  | Credit-balance answers `status` prints nothing for. |
+| `setup.credits_cache_file` | `cache/jev-credits.json` |  |  | The cached credit balance, relative to the anti-hall home directory, the same file the Node report reads. |
+| `setup.credits_endpoint` | `https://ai-gateway.vercel.sh/v1/credits` |  |  | The Vercel AI Gateway credit-balance endpoint `jev-setup status` reads (Node: CREDITS_ENDPOINT). |
+| `setup.credits_ttl_ms` | `900000` |  | ms | How long a cached credit balance is served before the endpoint is asked again (Node: 15 minutes). |
+| `setup.day_ms` | `86400000` |  | ms | The window of the `calls (last 24h)` count, in milliseconds. |
+| `setup.diag_generic_bound` | `jev_api_key is bound to {bound}; set {option} for {vendor} (or re-bind the ge...` |  |  | Why a present vendor-less key was not used. Placeholders: bound, vendor, option. |
+| `setup.diag_prefix` | `anti-hall jev: ` |  |  | The prefix of a diagnostic line the Jev client prints on stderr. |
+| `setup.disagreement_keys` | `enabled, transport, fallbackTransport` |  |  | The `jev.*` keys a status warning compares between the legacy jev.json and the value the hooks use. |
+| `setup.err_io` | `{what}: {source}` |  |  | How an operating-system failure reads. Placeholders: what, source. |
+| `setup.fail_prefix` | `❌ anti-hall · jev-setup: ` |  |  | The prefix of every error line `jev-setup` prints. |
+| `setup.fmt_brief_derived` | `{d}{line}{x}` |  |  | The second line of the briefing. Placeholders: d, x, line. |
+| `setup.fmt_brief_dev_h` | `\n{b}DevSwarm coordination substrate{x}` |  |  | The heading of the DevSwarm section. Placeholders: b, x. |
+| `setup.fmt_brief_doc` | `  {g}{file}{x} — {title}` |  |  | One knowledge-base file. Placeholders: g, x, file, title. |
+| `setup.fmt_brief_docs_h` | `\n{b}docs / KB map{x}` |  |  | The heading of the docs map. Placeholders: b, x. |
+| `setup.fmt_brief_event` | `  {y}{event}{x}` |  |  | An event heading. Placeholders: y, x, event. |
+| `setup.fmt_brief_group` | `  {y}{title}{x}` |  |  | A group heading inside the DevSwarm section. Placeholders: y, x, title. |
+| `setup.fmt_brief_hook` | `    {g}{file}{x}{matcher} — {purpose}` |  |  | One registered hook. Placeholders: g, x, file, matcher, purpose. |
+| `setup.fmt_brief_hooks_h` | `\n{b}Hooks (by event){x}` |  |  | The heading of the hook list. Placeholders: b, x. |
+| `setup.fmt_brief_item` | `    {g}{file}{x} — {purpose}` |  |  | One file of a DevSwarm group. Placeholders: g, x, file, purpose. |
+| `setup.fmt_brief_last` | `\n{d}{line}{x}` |  |  | The last line of the briefing. Placeholders: d, x, line. |
+| `setup.fmt_brief_matcher` | ` {d}[{matcher}]{x}` |  |  | A hook's tool matcher. Placeholders: d, x, matcher. |
+| `setup.fmt_brief_note` | `  {d}{note}{x}` |  |  | A dim note. Placeholders: d, x, note. |
+| `setup.fmt_brief_shared` | `  {g}{file}{x} — {purpose}` |  |  | One helper. Placeholders: g, x, file, purpose. |
+| `setup.fmt_brief_shared_h` | `\n{b}Shared helpers (not registered as hooks){x}` |  |  | The heading of the helper list. Placeholders: b, x. |
+| `setup.fmt_brief_skill` | `  {g}{name}{x} — {description}` |  |  | One skill. Placeholders: g, x, name, description. |
+| `setup.fmt_brief_skills_h` | `\n{b}Skills{x}` |  |  | The heading of the skill list. Placeholders: b, x. |
+| `setup.fmt_brief_subs` | `    {d}subcommands: {list}{x}` |  |  | The subcommand list of the DevSwarm script. Placeholders: d, x, list. |
+| `setup.fmt_brief_title` | `{c}{b}anti-hall system briefing{x} {d}v{version}{x}` |  |  | The first line of the briefing. Placeholders: c, b, d, x (colours), version. |
+| `setup.fmt_cached` | ` (cached)` |  |  | What follows a credit balance that came from the cache. |
+| `setup.fmt_cap_hint` | `  -> {how}` |  |  | The hint after an inactive capability. Placeholder: how. |
+| `setup.fmt_cap_line` | `{name}: {state}{hint}` |  |  | One line of the text report. Placeholders: name, state, hint. |
+| `setup.fmt_disabled` | `jev disabled` |  |  | Said by `disable` when it is done. |
+| `setup.fmt_enabled` | `jev enabled (transport: {transport}, fallback: {fallback})` |  |  | Said by `enable` when it is done. Placeholders: transport, fallback. |
+| `setup.fmt_harvest_title` | `\n{title}\n` |  |  | The title block of the `harvest` text table. Placeholder: title. |
+| `setup.fmt_harvest_total` | `\nTotal: {total}  Rot-risk: {rot}  With-trigger: {trigger}` |  |  | The last line of the `harvest` text table. Placeholders: total, rot, trigger. |
+| `setup.fmt_key_saved` | `key saved for {vendor}` |  |  | Said by `set-key` when it is done. Placeholder: vendor. |
+| `setup.fmt_mode_set` | `{integration} mode set to {value}` |  |  | Said by `mode` when it is done. Placeholders: integration, value. |
+| `setup.fmt_status_calls` | `calls (last 24h): {count}` |  |  | The call-count line. Placeholder: count. |
+| `setup.fmt_status_enabled` | `enabled: {value}` |  |  | The first line of `jev-setup status`. Placeholder: value. |
+| `setup.fmt_status_fallback` | `fallback transport: {value}` |  |  | The fallback line of `jev-setup status`. Placeholder: value. |
+| `setup.fmt_status_fallback_diag` | `  fallback: {text}` |  |  | A fallback diagnostic line of `jev-setup status`. Placeholder: text. |
+| `setup.fmt_status_fallback_key` | `fallback key present: {value}` |  |  | The fallback key line of `jev-setup status`. Placeholder: value. |
+| `setup.fmt_status_indent` | `  {text}` |  |  | An indented note line of `jev-setup status`. Placeholder: text. |
+| `setup.fmt_status_integration` | `  {id}: {mode}` |  |  | One integration line. Placeholders: id, mode. |
+| `setup.fmt_status_integrations` | `integrations:` |  |  | The heading of the integration list. |
+| `setup.fmt_status_key` | `key present: {value}` |  |  | The key line of `jev-setup status`. Placeholder: value. |
+| `setup.fmt_status_notice` | `notice: {text}` |  |  | A notice line of `jev-setup status`. Placeholder: text. |
+| `setup.fmt_status_transport` | `transport: {value}` |  |  | The transport line of `jev-setup status`. Placeholder: value. |
+| `setup.fmt_what` | `{action} {path}` |  |  | How an action and its target read together in an error. Placeholders: action, path. |
+| `setup.git_args` | `log, -1, --format=%ct, --` |  |  | The arguments of the git call that gives a file's last commit time, before the `--` and the file. |
+| `setup.git_binary` | `git` |  |  | The git program `harvest` asks for a file's last commit time. |
+| `setup.git_output_max_bytes` | `64` |  |  | Most bytes of git's answer to a last-commit-time question that are read; the answer is one number. |
+| `setup.git_poll_ms` | `5` |  | ms | How often `harvest` checks whether git has answered. |
+| `setup.git_timeout_ms` | `5000` |  | ms | Longest `harvest` waits for git to name one file's last commit time (Node: 5000 ms); a slower answer counts as no answer. |
+| `setup.harvest_binary_check_bytes` | `4096` |  | bytes | How much of a file's start is checked for a NUL byte before it is treated as binary and skipped (Node: 4096). |
+| `setup.harvest_cell_gap` | `2` |  |  | The ceiling and trigger cells are cut to their column width minus this (Node: 2). |
+| `setup.harvest_closers` | `*/, -->` |  |  | The comment terminators trimmed off a marker's text (block comments and HTML comments). |
+| `setup.harvest_default_stale_days` | `90` |  | days | Days after which an untouched file's marker counts as stale when --stale-days is not given (Node: 90). |
+| `setup.harvest_ellipsis` | `...` |  |  | What replaces the start of a file name that is too long for its column. |
+| `setup.harvest_file_gap` | `2` |  |  | A file name longer than its column width minus this is shortened (Node: 2). |
+| `setup.harvest_file_tail_gap` | `5` |  |  | A shortened file name keeps the last (column width minus this) characters (Node: 5). |
+| `setup.harvest_headers` | `FILE, LINE, CEILING, WHEN, ROT-RISK` |  |  | The column headings of the `harvest` text table: file, line, ceiling, trigger, rot risk. |
+| `setup.harvest_leaders` | `//, #, --, /*, <!--` |  |  | The comment leaders a debt marker may follow, in the order the Node pattern tries them. |
+| `setup.harvest_max_file_bytes` | `2097152` |  | bytes | Largest file `harvest` reads (Node: 2 MB); bigger files are skipped. |
+| `setup.harvest_none` | `(none)` |  |  | What the trigger cell shows when a marker has no trigger. |
+| `setup.harvest_reason_sep` | `; ` |  |  | What joins two rot reasons. |
+| `setup.harvest_rot_yes` | `YES: {reason}` |  |  | What the rot-risk cell starts with when a marker is a rot risk. Placeholder: reason. |
+| `setup.harvest_rule_char` | `-` |  |  | The character the rule under the `harvest` table header is drawn with. |
+| `setup.harvest_rule_extra` | `30` |  |  | How much longer than the four columns the rule under the `harvest` table header is (Node: 30). |
+| `setup.harvest_skip_dirs` | `.git, node_modules` |  |  | Directory names `harvest` never descends into (names starting with a dot are skipped too). |
+| `setup.harvest_tag` | `anti-hall:` |  |  | The word that makes a comment a debt marker, after the comment leader. |
+| `setup.harvest_w_ceiling` | `20` |  |  | Width of the ceiling column of the `harvest` text table (Node: 20). |
+| `setup.harvest_w_file` | `40` |  |  | Width of the file column of the `harvest` text table (Node: 40). |
+| `setup.harvest_w_line` | `6` |  |  | Width of the line column of the `harvest` text table (Node: 6). |
+| `setup.harvest_w_rot` | `40` |  |  | Longest rot-risk text of the `harvest` text table (Node: 40). |
+| `setup.harvest_w_when` | `26` |  |  | Width of the trigger column of the `harvest` text table (Node: 26). |
+| `setup.json_keys` | `7 entries` |  |  | The settings keys `jev-setup` writes and reads: the settings section, the integration sections, and the keys of the section. |
+| `setup.json_max_depth` | `512` |  |  | Nesting past which a JSON file the helper commands read is treated as unreadable (JSON.parse reads deeper than the port does). |
+| `setup.kill_switch_value` | `0` |  |  | The value of a per-integration kill-switch variable that turns the integration off. |
+| `setup.kind_boolean` | `boolean` |  |  | The word the settings-key tables use for a key that must be true or false. |
+| `setup.known_integrations` | `21 items` |  |  | The integrations `jev-setup status` always lists, in the order the Node script lists them (every one has a settings key). |
+| `setup.lock_boot_slop_s` | `5` |  | s | Two boot times closer than this many seconds are the same boot. |
+| `setup.lock_reclaim_stale_ms` | `5000` |  | ms | A takeover marker of the settings lock older than this is taken over (Node: 5000 ms). |
+| `setup.lock_record_max_bytes` | `4096` |  | bytes | Most bytes read of a settings lock file, which holds one small JSON record. |
+| `setup.lock_release_step_ms` | `10` |  | ms | The pause between those tries. |
+| `setup.lock_release_tries` | `5` |  |  | How many times releasing the settings lock tries to take the takeover marker. |
+| `setup.lock_stale_ms` | `30000` |  | ms | A settings lock held longer than this is taken over (Node: 30000 ms). |
+| `setup.lock_step_ms` | `20` |  | ms | The pause between tries for the settings lock (Node: 20 ms). |
+| `setup.lock_suffix` | `.lock` |  |  | What is added to the settings file's name to name its lock file. |
+| `setup.lock_wait_ms` | `2000` |  | ms | How long a settings write waits for the lock (Node: 2000 ms). |
+| `setup.log_max_bytes` | `16777216` |  | bytes | Most bytes of one Jev decision-log file `jev-setup status` reads to count the last day's calls; the log rotates at 2 MB. |
+| `setup.log_outcome_type` | `outcome` |  |  | The `type` of a decision-log row that records an outcome, not a call. |
+| `setup.log_rotated_suffix` | `.1` |  |  | The end of the first rotated decision-log file's name. |
+| `setup.msg_bind_usage` | `bind-generic-key: --vendor vercel\|typesafe is required` |  |  | Why `bind-generic-key` refused: no vendor. |
+| `setup.msg_bound` | `jev.genericKeyVendor = {vendor}: the generic jev_api_key and jev.keyFile are ...` |  |  | Said by `bind-generic-key` after it re-bound the generic key. Placeholder: vendor. |
+| `setup.msg_could_not_set` | `could not set jev.{key}: {error}` |  |  | A settings write failed. Placeholders: key, error. |
+| `setup.msg_credit_na` | `credit balance (vercel): n/a ({reason})` |  |  | A status line: the credit balance could not be read. Placeholder: reason. |
+| `setup.msg_credit_nokey` | `credit balance (vercel): n/a (no vercel key visible to this process)` |  |  | A status line: the credit balance needs a Vercel key this process cannot see. |
+| `setup.msg_credit_ok` | `credit balance (vercel): ${amount}{cached}` |  |  | A status line with the Vercel credit balance. Placeholders: amount, cached. |
+| `setup.msg_credit_typesafe` | `credit balance (typesafe): not available (TypeSafe has no balance endpoint)` |  |  | A status line: TypeSafe has no credit-balance endpoint. |
+| `setup.msg_disagree` | `  warning: ~/.anti-hall/jev.json says {key}={legacy} but {winner} wins with {...` |  |  | A status warning: the legacy jev.json holds another value than the one the hooks use. Placeholders: key, legacy, winner, effective. |
+| `setup.msg_enable_bad_fallback` | `enable: invalid --fallback "{value}" (expected vercel\|typesafe\|none)` |  |  | Why `enable` refused a fallback. Placeholder: value. |
+| `setup.msg_enable_bad_transport` | `enable: invalid --transport "{value}" (expected vercel\|typesafe)` |  |  | Why `enable` refused a transport. Placeholder: value. |
+| `setup.msg_expected_boolean` | `expected a boolean (true/false/on/off/1/0), got {got}` |  |  | Why a settings write was refused: the value is not a boolean. Placeholder: got. |
+| `setup.msg_fallback_equal` | `note: a fallback equal to the primary transport is treated as none` |  |  | Said by `enable` when the fallback named equals the primary and so counts as none. |
+| `setup.msg_fallback_note` | `  note: with a fallback, text can be sent to the second vendor when the prima...` |  |  | A status line warning that a fallback can send text to a second vendor. |
+| `setup.msg_generic_bound` | `generic key (jev_api_key / jev.keyFile) bound to: {vendor} (change only with ...` |  |  | A status line naming the vendor the generic key is bound to. Placeholder: vendor. |
+| `setup.msg_git_reader_panicked` | `warning: reading git's answer failed; the file has no last-commit time` |  |  | The thread that reads git's answer ended abnormally, so the file has no last-commit time. |
+| `setup.msg_lock_not_released` | `warning: the settings lock had changed hands and was left in place` |  |  | The settings lock was not ours any more when it was released, and was left alone. |
+| `setup.msg_migration_notice` | `a legacy Jev key file/env var exists but anti-hall no longer reads credential...` |  |  | A legacy Jev key exists on the machine but is not read. |
+| `setup.msg_mode_usage` | `mode: usage is `mode <integration> on\|shadow\|off`` |  |  | Why `mode` refused: a missing integration or a mode that is not on, shadow or off. |
+| `setup.msg_must_be_one_of` | `must be one of: {values}` |  |  | Why a settings write was refused: the value is not an allowed word. Placeholder: values. |
+| `setup.msg_no_home` | `the home directory is not set` |  |  | Printed by the helper commands when the home directory variable is not set, because their files live under it. |
+| `setup.msg_no_key_notice` | `no Jev key visible to this process: a key stored as a plugin option (the plug...` |  |  | Why a process other than a hook finds no Jev key. |
+| `setup.msg_no_plugin_root` | `no plugin tree to read: pass --root <plugin directory>, or run it where the h...` |  |  | Printed when a command that reads a plugin tree was given neither --root nor a plugin-root variable. |
+| `setup.msg_no_trigger` | `no payback trigger (when is absent)` |  |  | The rot reason of a marker with no payback trigger. |
+| `setup.msg_none_found` | `No anti-hall debt markers found.` |  |  | Printed by `harvest` when the tree holds no marker. |
+| `setup.msg_rejected` | `Jev key file rejected ({why}): it must be a regular file under ~/.config or ~...` |  |  | Why a present Jev key file was refused. Placeholder: why. |
+| `setup.msg_setkey_bad_role` | `set-key: invalid --role "{value}" (expected fallback)` |  |  | Why `set-key` refused a role. Placeholder: value. |
+| `setup.msg_setkey_bad_transport` | `set-key: invalid --transport "{value}" (expected vercel\|typesafe)` |  |  | Why `set-key` refused a transport. Placeholder: value. |
+| `setup.msg_setkey_empty` | `set-key: no key received on stdin — pipe the key in, e.g. `printf '%s' "$KEY"...` |  |  | Why `set-key` refused: nothing arrived on stdin. |
+| `setup.msg_setkey_no_fallback` | `set-key --role fallback: no fallback transport is configured — run `enable --...` |  |  | Why `set-key --role fallback` refused: no fallback is configured. |
+| `setup.msg_setkey_nonprintable` | `set-key: key contains non-printable characters — aborting` |  |  | Why `set-key` refused: the key holds a control character. |
+| `setup.msg_setkey_note` | `note: the hooks only read this key file when jev.allowLegacyKeyRead is on (cu...` |  |  | Said by `set-key` while the hooks do not read the key file. Placeholder: option. |
+| `setup.msg_setkey_too_large` | `set-key: more than {max} bytes on stdin; a key is a short single line` |  |  | Why `set-key` refused: more than the limit arrived on stdin. Placeholder: max. |
+| `setup.msg_settings_busy` | `settings.json is being written by another process (pid {pid}); retry` |  |  | Why a settings write was refused: another process holds the lock. Placeholder: pid. |
+| `setup.msg_settings_not_updated` | `⚠️ anti-hall · jev-setup: settings.json not updated: {error}` |  |  | A per-integration mode was written to jev.json but not to settings.json. Placeholder: error. |
+| `setup.msg_stale` | `file not touched in >{days} days` |  |  | The rot reason of a marker in a file not touched for the stale window. Placeholder: days. |
+| `setup.msg_table_title` | `anti-hall debt markers` |  |  | The title line of the `harvest` text table. |
+| `setup.msg_too_large` | `{path} is larger than {max} bytes, so it is not read` |  |  | Why a file was not read: it is larger than the limit. Placeholders: path, max. |
+| `setup.msg_treated_absent` | `warning: {error}; treated as absent` |  |  | A file or directory could not be read and is treated as absent, as the Node script treats it. Placeholder: error. |
+| `setup.msg_unbound_warning` | `warning: no key for {vendor} is visible to this process, and the stored gener...` |  |  | Said by `enable` when a chosen vendor has no key of its own and the generic key is bound to the other vendor. Placeholders: vendor, bound, option. |
+| `setup.msg_unknown_setting` | `unknown setting: {setting}` |  |  | Why a settings write was refused: the key is not one this command writes. Placeholder: setting. |
+| `setup.msg_unsupported_json` | `{path} holds JSON this build cannot rewrite safely; it was left unchanged` |  |  | Why a file was not rewritten: it holds JSON this build cannot read faithfully, so it is left unchanged. Placeholder: path. |
+| `setup.msg_usage` | `💡 anti-hall · jev-setup: usage: ah-engine jev-setup status\|enable [--transpor...` |  |  | Usage line of `ah-engine jev-setup`. |
+| `setup.option_name_fmt` | `jev_{vendor}_api_key` |  |  | The plugin option that holds a vendor's key. Placeholder: vendor. |
+| `setup.read_max_bytes` | `8388608` |  | bytes | Largest configuration or state file the helper commands read; a larger file is refused, never read in part or held in memory. |
+| `setup.reason_multiline` | `content is not a single line without whitespace` |  |  | Why a key file was refused: it is not one line without white space. |
+| `setup.reason_not_file` | `not a regular file` |  |  | Why a key file was refused: it is not a regular file. |
+| `setup.reason_outside` | `path is outside ~/.config and ~/.anti-hall` |  |  | Why a key file was refused: its real path lies outside the allowed directories. |
+| `setup.reason_too_large` | `larger than {max} bytes` |  |  | Why a key file was refused: it is too large. Placeholder: max. |
+| `setup.reason_unreadable` | `unreadable` |  |  | Why a key file was refused: it could not be read. |
+| `setup.role_fallback` | `fallback` |  |  | The value of --role that names the fallback transport. |
+| `setup.settings_entries` | `4 entries` |  |  | The settings keys `jev-setup` writes, by section.key, with what a value must be: boolean, or the name of the list of allowed words. |
+| `setup.stdin_max_bytes` | `65536` |  | bytes | Most bytes `jev-setup set-key` reads from stdin; a key is a short single line. |
+| `setup.tier_keys` | `3 entries` |  |  | How each key that a status warning compares is read: what it must be (boolean, or the list of allowed words), its default, and the plugin-option suffix. |
+| `setup.tmp_fmt` | `{file}.tmp.{pid}` |  |  | The temporary file a write goes through. Placeholders: file, pid. |
+| `setup.tmp_settings_fmt` | `{file}.{pid}.{ms}.tmp` |  |  | The temporary file a settings write goes through. Placeholders: file, pid, ms. |
+| `setup.valid_fallbacks` | `none, vercel, typesafe` |  |  | The values a fallback transport may take. |
+| `setup.valid_modes` | `on, shadow, off` |  |  | The modes an integration may be set to. |
+| `setup.valid_transports` | `vercel, typesafe` |  |  | The vendors a primary transport or a key may name. |
+| `setup.warn_prefix` | `⚠️ anti-hall · jev: ` |  |  | The prefix of a warning line the Jev client prints on stderr. |
+| `setup.what_create_dir` | `create directory` |  |  | What was being done when a directory could not be created, followed by its path. |
+| `setup.what_crontab` | `ask crontab for the managed cron markers` |  |  | What was being done when the crontab could not be read. |
+| `setup.what_cwd` | `read the current directory` |  |  | What was being done when the current directory could not be read. |
+| `setup.what_git` | `ask git for a last-commit time` |  |  | What was being done when git could not be run for a last-commit time. |
+| `setup.what_list` | `list` |  |  | What was being done when a directory could not be listed, followed by its path. |
+| `setup.what_read` | `read` |  |  | What was being done when a file could not be read, followed by its path. |
+| `setup.what_read_stdin` | `read standard input` |  |  | What was being done when standard input could not be read. |
+| `setup.what_remove` | `remove` |  |  | What was being done when a leftover temporary file could not be removed, followed by its path. |
+| `setup.what_resolve` | `resolve` |  |  | What was being done when the plugin tree named by --root could not be resolved, followed by its path. |
+| `setup.what_set_aside` | `move aside` |  |  | What was being done when a corrupt file could not be moved aside. |
+| `setup.what_stat` | `examine` |  |  | What was being done when a path could not be examined, followed by its path. |
+| `setup.what_write` | `write` |  |  | What was being done when a file could not be written, followed by its path. |
+| `setup.what_write_stdout` | `write to standard output` |  |  | What was being done when writing to standard output failed. |
+| `setup.winner_env` | `the environment` |  |  | How a status warning names the environment when it is the tier that wins. |
+| `setup.winner_file` | `~/.anti-hall/settings.json` |  |  | How a status warning names the settings file when it is the tier that wins. |
+| `setup.winner_option` | `the /config plugin option` |  |  | How a status warning names the plugin option when it is the tier that wins. |
+| `setup.word_no` | `no` |  |  | The word `status` prints for a false answer. |
+| `setup.word_none` | `none` |  |  | The word for no fallback transport. |
+| `setup.word_undefined` | `undefined` |  |  | How a missing value reads in a message (JavaScript's word for it). |
+| `setup.word_unknown` | `unknown` |  |  | The word for an answer that could not be determined. |
+| `setup.word_yes` | `yes` |  |  | The word `status` prints for a true answer. |
+
+### mesh.toml / mesh
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mesh.backend_marker` | `BACKEND` |  |  | File name of the marker that pins a store directory to one backend (Node's `BACKEND` file). |
+| `mesh.backend_sqlite` | `sqlite` |  |  | The marker text of a SQLite-backed store. Any other marker (the journal backend) means Node owns the store and the reader refuses it. |
+| `mesh.busy_timeout_ms` | `3000` |  |  | How long a read waits for a SQLite lock held by a Node writer, in milliseconds; the same 3 s Node's store uses. |
+| `mesh.cache_kib` | `256` |  |  | SQLite page cache for one open store, in KiB. Keeps one open reader to well under a megabyte of resident memory (D45 section 7). |
+| `mesh.js_safe_int` | `9007199254740991` |  |  | The largest integer JavaScript represents exactly (2^53 - 1). Node's sqlite binding throws on a larger value, so the reader fails the same way instead of rounding, which keeps the two readers byte-equal. |
+| `mesh.last_default` | `5` |  |  | How many of a workspace's newest messages `mesh read --last` returns when no count is given. |
+| `mesh.last_max` | `100` |  |  | The most messages `mesh read --last` returns whatever count is asked for; the reader never holds more message bodies than this at once. |
+| `mesh.missing_table_error` | `no such table` |  |  | Lower-cased text of the SQLite error for a table the store does not have yet (an older Node schema); a reader that meets it answers with no rows, as Node does. |
+| `mesh.preview_chars` | `120` |  |  | Characters of a pending question's body the reader returns as its preview; the same 120 Node's PREVIEW_MAX keeps. |
+| `mesh.read_byte_cap` | `4194304` |  |  | Most message-body bytes one `mesh read` call prints before it stops and reports where to resume (D45 section 7: bodies are never cached and a batch is capped). |
+
+### sibling_sweep.toml / sibling_sweep
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `sibling_sweep.agent_tools` | `Agent, Task` |  |  | Tool names that start a subagent; one whose subagent type is a search agent counts as a search. |
+| `sibling_sweep.b_text` | `text` |  |  | Content block type of a text block. |
+| `sibling_sweep.b_tool_use` | `tool_use` |  |  | Content block type of a tool call. |
+| `sibling_sweep.bash_search_re` | `(?:^\|[\s;&\|(`])(?:rg\|grep\|egrep\|fgrep\|ugrep\|ag\|ack)(?:\s\|$)\|\bgit\s+(?:-C\s+\...` |  |  | Regex source of a shell command that searches the codebase: rg, grep and relatives as a command word, git grep, git log -S/-G/--grep. |
+| `sibling_sweep.bash_tool` | `Bash` |  |  | The tool name of a shell call, whose command is read for a search program. |
+| `sibling_sweep.cause_cues` | `8 items` |  |  | Regex sources, any of which states the cause of a bug in the assertive form (root-cause statements, 'caused by', 'the bug was', 'found the bug', a Cause label). Matched sentence by sentence after markdown emphasis, fenced code and quoted lines are removed. |
+| `sibling_sweep.child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable the judge and Jev children carry; a hook that runs inside one does nothing (no recursion, no reminders to a classifier). |
+| `sibling_sweep.child_value` | `1` |  |  | The value of the child variable that means this process is a judge or Jev child. |
+| `sibling_sweep.code_span` | ``` |  |  | The character that opens and closes an inline code span; the first span of the cause sentence names the pattern in the reminder. |
+| `sibling_sweep.edit_tools` | `Edit, Write, MultiEdit, NotebookEdit` |  |  | Tool names that change a file; one in the turn makes it a fix context. |
+| `sibling_sweep.events` | `Stop, SubagentStop` |  |  | The events this check answers; the payload's hook_event_name must be one of them. |
+| `sibling_sweep.f_active` | `stop_hook_active` |  |  | Payload field that is true when the Stop is already a continuation of a Stop block; the check then only resolves follow-through and never reminds again. |
+| `sibling_sweep.f_agent` | `agent_id` |  |  | Payload field holding the subagent id (SubagentStop, and Stop inside a subagent). |
+| `sibling_sweep.f_agent_transcript` | `agent_transcript_path` |  |  | Payload field holding the subagent's own transcript path; it wins over the session transcript when present. |
+| `sibling_sweep.f_command` | `command` |  |  | Tool input field holding a shell command. |
+| `sibling_sweep.f_event` | `hook_event_name` |  |  | Payload field holding the event name. |
+| `sibling_sweep.f_reply` | `last_assistant_message` |  |  | Payload field holding the reply being stopped. |
+| `sibling_sweep.f_session` | `session_id` |  |  | Payload field holding the session id. |
+| `sibling_sweep.f_subagent_type` | `subagent_type` |  |  | Tool input field holding a subagent's type. |
+| `sibling_sweep.f_tool_input` | `input` |  |  | Content block field holding the tool input. |
+| `sibling_sweep.f_tool_name` | `name` |  |  | Content block field holding the tool name. |
+| `sibling_sweep.f_transcript` | `transcript_path` |  |  | Payload field holding the session transcript path. |
+| `sibling_sweep.fence_re` | ````[\s\S]*?```` |  |  | Regex source of a fenced code block, which is removed before matching (code and logs are not statements). |
+| `sibling_sweep.fix_context_re` | `\b(?:fix(?:ed\|es\|ing)?\|patch(?:ed\|es)?\|resolv(?:ed\|es\|ing)\|repair(?:ed\|s)?\|co...` |  |  | Regex source of fix words: the reply is about a bug being fixed (an edit tool call in the turn also makes it a fix context). |
+| `sibling_sweep.follow_window` | `12` |  | tool calls | Follow-through: the search counts as following the reminder when a search tool call is among the first this many tool calls after the reminded reply. |
+| `sibling_sweep.guard_name` | `sibling-sweep` |  |  | The guard id this check answers to in skip.json and in messages. |
+| `sibling_sweep.hard_breaks` | `\n;` |  |  | Characters that always end a sentence (a newline and a semicolon). |
+| `sibling_sweep.hash_chars` | `200` |  | chars | How many characters of the normalised cause sentence feed its identity hash (the once-per-cause key). |
+| `sibling_sweep.hash_short` | `10` |  |  | How many hex characters of a cause hash are written to the telemetry log. |
+| `sibling_sweep.hedge_any_re` | `\b(?:probably\|possibly\|presumably\|perhaps\|maybe\|apparently\|supposedly\|seems?\|...` |  |  | Regex source of words that make the whole sentence a guess, a plan or a question rather than a finding: it is then no cause statement. |
+| `sibling_sweep.hedge_before_re` | `\b(?:if\|unless\|suppose\|assuming\|whether\|may\|might\|could\|would\|should\|can\|cann...` |  |  | Regex source tested on the few characters just before the cue: a negation, condition, intent or modal there voids the cue ('to find the root cause', 'if it was caused by', 'may be caused by', 'not caused by'). |
+| `sibling_sweep.injected_re` | `^\s*<(?:task-notification\|system-reminder\|local-command\|command-name\|command-...` |  |  | Regex source of the text an injected user block starts with (notifications, reminders, command echoes), which is not a human prompt and so does not start a turn. |
+| `sibling_sweep.line_max_bytes` | `524288` |  | bytes | A transcript line longer than this is skipped unparsed (almost always one huge tool result); it bounds the memory of the one line being read. |
+| `sibling_sweep.log` | `logs/sibling-sweep.ndjson` |  |  | The telemetry log, relative to the anti-hall home directory: one JSON line per detected cause statement (reminded, swept, capped, duplicate, no fix context) and per resolved follow-through; holds no message text, only hashes and counts. |
+| `sibling_sweep.log_max_bytes` | `1048576` |  | bytes | The telemetry log is emptied before an append once it is larger than this (the same bound as the other guard logs). |
+| `sibling_sweep.max_causes` | `8` |  |  | The most distinct causes remembered for one turn. |
+| `sibling_sweep.max_events` | `4000` |  |  | The most events (assistant texts and tool calls) kept for one turn; older ones are dropped, the newest kept. |
+| `sibling_sweep.max_per_scope` | `6` |  |  | The most reminders for one session scope (the session, or one subagent of it); past it the check only counts. |
+| `sibling_sweep.meta_re` | `\broot[- ]cause[- ](?:claim\|attribution\|statement\|skill\|nudge\|guard\|hook\|prot...` |  |  | Regex source of mentions of the root-cause machinery itself (the skill, the nudge, a guard, a protocol): a sentence that holds one is about the tooling, not a bug cause. |
+| `sibling_sweep.min_span_chars` | `3` |  | chars | The shortest inline code span that names the pattern in the reminder (a one or two character span is punctuation, not a name). |
+| `sibling_sweep.msg_allowed` | `one honest line is enough when there is none: name the search and say it foun...` |  |  | What stays allowed, in the reminder. |
+| `sibling_sweep.msg_bad_setting` | `sibling-sweep: ignoring an invalid value ({setting}), using the shipped one` |  |  | Daemon log line, written once per process, when a settings file holds an invalid value for a sibling_sweep setting (a pattern that does not compile, a rejected config file); the shipped value is used instead. Placeholder: {setting}. |
+| `sibling_sweep.msg_instead` | `search the codebase for the same pattern (rg, grep or Glob), fix or list ever...` |  |  | What to do, in the reminder. |
+| `sibling_sweep.msg_log_failed` | `sibling-sweep: cannot write {what}: {error}` |  |  | Daemon log line, written once per process, when the telemetry log or the state file cannot be written. Placeholders: {what}, {error}. |
+| `sibling_sweep.msg_override` | `guards.siblingSweep=off in /anti-hall:settings` |  |  | How to turn the reminder off, in the reminder. |
+| `sibling_sweep.msg_pattern` | ` ({pattern})` |  |  | The text that names the pattern in the reminder. Placeholder: {pattern}. |
+| `sibling_sweep.msg_what` | `this reply states the cause of a bug{pattern} and the turn shows no search fo...` |  |  | What happened, in the reminder. Placeholder: {pattern} (the pattern named from the cause statement, or empty). |
+| `sibling_sweep.msg_why` | `a bug cause is rarely unique: fixing one site and calling it done leaves its ...` |  |  | Why it matters, in the reminder. |
+| `sibling_sweep.question_terminator` | `?` |  |  | The terminator that makes a sentence a question; a question is never a cause statement. |
+| `sibling_sweep.quote_line_re` | `(?m)^[ \t]*>.*$` |  |  | Regex source of a quoted line (a Markdown quote), removed before matching. |
+| `sibling_sweep.read_buf_bytes` | `65536` |  | bytes | The size of the buffer the transcript window is read through. |
+| `sibling_sweep.search_agent_types` | `Explore, explore, oh-my-claudecode:explore` |  |  | Subagent types that are search agents. |
+| `sibling_sweep.search_tool_re` | `(?:^\|__)(?:ast_grep_search\|lsp_find_references\|rip_grep_packages\|grep\|find_re...` |  |  | Regex source of tool names that are searches by their name (MCP structural search, find-references, ripgrep servers). |
+| `sibling_sweep.search_tools` | `Grep, Glob` |  |  | Tool names whose use is a codebase search (matched exactly). |
+| `sibling_sweep.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.siblingSweep, default on). A Jev mode for the judgement parts (is this a cause statement, did the search cover the pattern) is a later addition and is not wired. |
+| `sibling_sweep.snippet_chars` | `100` |  | chars | The longest excerpt of the cause sentence shown in the reminder when the pattern is named from the message. |
+| `sibling_sweep.state_prefix` | `sibling-sweep` |  |  | Prefix of the per-scope state file name under the state directory (the sanitised session id, the agent id and the JSON extension follow). |
+| `sibling_sweep.state_session_max` | `80` |  | chars | The most characters of the session id and of the agent id in the state file name. |
+| `sibling_sweep.strip_chars` | `*` |  |  | Characters removed from the text before matching (markdown emphasis markers), so a bold 'Root cause:' label reads as plain text. |
+| `sibling_sweep.subagent_event` | `SubagentStop` |  |  | The event name that is a subagent's own stop (the telemetry scope label differs and the agent's own transcript is read). |
+| `sibling_sweep.summary` | `Stop and SubagentStop reminder: when the reply states the cause of a bug in a...` |  |  | One-line description of the sibling-sweep check in the generated reference. |
+| `sibling_sweep.sweep_statement_re` | `\b(?:searched\\|grepp?ed\\|scanned\\|swept\\|checked\\|looked\\|audited\\|rg\\|ran)\b...` |  |  | Regex sources, any of which is an explicit statement that other occurrences were searched for ('searched for other occurrences', 'no other occurrences', 'all call sites fixed', 'sibling sweep'). |
+| `sibling_sweep.t_assistant` | `assistant` |  |  | Transcript entry type of an assistant entry. |
+| `sibling_sweep.t_user` | `user` |  |  | Transcript entry type of a user entry. |
+| `sibling_sweep.terminators` | `.!?` |  |  | Characters that end a sentence when followed by white space or the end of the text (a newline and a semicolon always end one). |
+| `sibling_sweep.text_max_bytes` | `65536` |  | bytes | The most of one assistant text that is scanned for a cause statement. |
+| `sibling_sweep.what_log` | `the telemetry log` |  |  | The {what} of `msg_log_failed` when the telemetry log cannot be written. |
+| `sibling_sweep.what_state` | `the state file` |  |  | The {what} of `msg_log_failed` when the per-scope state file cannot be read or written. |
+| `sibling_sweep.what_transcript` | `the transcript read` |  |  | The {what} of `msg_log_failed` when the transcript cannot be read. |
+| `sibling_sweep.window_bytes` | `1048576` |  | bytes | The most of the transcript's end that is read to find the turn (one streaming pass, never the whole file). |
+| `sibling_sweep.window_chars` | `48` |  | chars | How many characters before a cue are searched for a hedge or negation that voids the cue. |
+
 ### limits.toml / agent_scan
 
 | Key | Default | Env override | Unit | What it is |
@@ -2741,6 +3340,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `guardkit.settings_seen_max` | `256` |  |  | Most settings files the guard kit remembers the validity of before it starts over. |
+| `guardkit.tail_reader_buf_bytes` | `65536` |  | bytes | Capacity of the buffered reader the shared transcript tail reader (`guardkit::tail::tail_lines`) streams lines through. |
 
 ### limits.toml / io
 

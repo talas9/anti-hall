@@ -149,6 +149,11 @@ value = 128
 doc = "Hex characters of the SHA-1 kept as a block's fingerprint."
 value = 16
 
+[inject_gate.hash_input_max_chars]
+doc = "Most characters of a client-sent block fingerprint the gate keeps before comparing (twice `hash_chars`, so every string the daemon holds is bounded whatever a client sends)."
+value = 32
+min = 1
+
 # ---- wire (client to daemon) ----------------------------------------------------------------------------------------
 
 [inject_gate.reply_emit]

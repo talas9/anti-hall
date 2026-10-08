@@ -183,7 +183,7 @@ impl Load {
         let bounds = bounds();
         let g = self.minutes.lock().unwrap_or_else(|e| e.into_inner());
         let window = defaults::num("load.saturation_window_minutes");
-        let floor = (now_ms / 60_000).saturating_sub(window);
+        let floor = (now_ms / 1000 / 60).saturating_sub(window);
         let saturated_minutes = g.iter().filter(|m| m.start_min >= floor && m.saturated > 0).count();
         json!({
             "saturated": saturated_minutes > 0,

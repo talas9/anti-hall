@@ -130,7 +130,7 @@ impl Gate {
     pub fn decide(&self, sid: &str, agent: &str, q: &Query) -> Decision {
         let (sid, agent) = (cut_id(sid), cut_id(agent));
         // every string kept is bounded, whatever a client sends
-        let q = &Query { slot: cut_id(&q.slot), hash: q.hash.chars().take(2 * defaults::num("inject_gate.hash_chars") as usize).collect(), ..q.clone() };
+        let q = &Query { slot: cut_id(&q.slot), hash: q.hash.chars().take(defaults::num("inject_gate.hash_input_max_chars") as usize).collect(), ..q.clone() };
         let mut g = self.lock();
         let max_slots = defaults::num("inject_gate.max_slots") as usize;
         let mut dropped = 0;

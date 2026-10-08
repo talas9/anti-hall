@@ -132,7 +132,7 @@ fn log_row(t: &Tune, st: &Settings, row: &Value) {
         writeln!(f, "{row}")
     };
     if let Err(e) = go() {
-        warn_once(t, "the telemetry log", &e);
+        warn_once(t, &t.text("sibling_sweep.what_log"), &e);
     }
 }
 
@@ -208,7 +208,7 @@ pub fn decide(p: &Value, st: &Settings, now_ms: u64, user_cfg: Option<PathBuf>) 
     let turn = match turn::read(&t, transcript) {
         Ok(x) => x,
         Err(e) => {
-            warn_once(&t, "the transcript read", &e);
+            warn_once(&t, &t.text("sibling_sweep.what_transcript"), &e);
             return Verdict::Allow;
         }
     };
@@ -224,7 +224,7 @@ pub fn decide(p: &Value, st: &Settings, now_ms: u64, user_cfg: Option<PathBuf>) 
     }
     let finish = |state: &State, dirty: bool, v: Verdict| {
         if dirty && let Err(e) = save(&path, state) {
-            warn_once(&t, "the state file", &e);
+            warn_once(&t, &t.text("sibling_sweep.what_state"), &e);
         }
         v
     };
@@ -275,7 +275,7 @@ pub fn decide(p: &Value, st: &Settings, now_ms: u64, user_cfg: Option<PathBuf>) 
     state.pending = Some((cause.hash.clone(), turn.id.clone()));
     if let Err(e) = save(&path, &state) {
         // an unrecorded reminder would repeat on every Stop
-        warn_once(&t, "the state file", &e);
+        warn_once(&t, &t.text("sibling_sweep.what_state"), &e);
         return Verdict::Allow;
     }
     if let Some(dir) = path.parent() {

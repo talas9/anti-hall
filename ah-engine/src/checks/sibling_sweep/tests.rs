@@ -80,7 +80,9 @@ fn text_of(v: &Verdict) -> String {
 
 /// The corpus: one JSON object per line, the message and whether it states a bug cause (`corpus.ndjson`, data not code).
 fn corpus() -> Vec<(String, bool)> {
-    include_str!("corpus.ndjson")
+    // read at test time, never embedded (tests/no_compiled_config.rs)
+    std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/checks/sibling_sweep/corpus.ndjson"))
+        .expect("the corpus file is readable")
         .lines()
         .map(|l| {
             let v: Value = serde_json::from_str(l).expect("a corpus line is JSON");
