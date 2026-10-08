@@ -169,5 +169,33 @@ node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f
 FAKE_MODE=ok sh "$K/rollback.sh" >/dev/null 2>&1; A=$(shaof "$HOME/.claude/settings.json"); mkdir -p "$K/state/backup"; cp "$K"/state/rolled-back-*/backup/settings.json "$K/state/backup/settings.json"; cp "$K"/state/rolled-back-*/live.json "$K/state/live.json"
 FAKE_MODE=ok sh "$K/rollback.sh" >/dev/null 2>&1; [ "$A" = "$(shaof "$HOME/.claude/settings.json")" ]; chk $? "second rollback leaves settings.json as it is"
 
+echo "== 8. --compare: Node rows from before the engine was the decider are not 'engine weaker'; --rebaseline restarts the window"
+CH=$F/cmphome; NSD=$CH/.anti-hall/ah-node-shadow; mkdir -p "$NSD" "$F/cmproot"
+cp "$KITSRC/node-shadow.sh" "$NSD/node-shadow.sh"; printf '%s\n' "$F/cmproot" >"$NSD/root"
+cat >"$F/cmpeng" <<'EOS'
+#!/bin/sh
+case "$1" in
+  config) echo '{"settings":{"dispatch.hooks_claude_PreToolUse":{"value":[{"id":"git-guard","check":"git"}]}}}' ;;
+  telemetry) cat "$CMP_TEL" ;;
+esac
+EOS
+chmod +x "$F/cmpeng"
+tel() { printf '{"by_hook":[{"k":"check","h":"git","n":%s,"outcomes":{"allow":%s,"block":%s}}]}\n' "$1" "$(( $1 - $2 ))" "$2" >"$F/cmp-tel.json"; }
+logrow() { printf '{"ts":%s,"ev":"PreToolUse","sid":"s","tool":"Bash","id":"git-guard","rc":%s,"dec":"%s","ms":30,"out_bytes":0}\n' "$1" "$([ "$2" = block ] && echo 2 || echo 0)" "$2" >>"$NSD/node-shadow.ndjson"; }
+cmpweak() { HOME=$CH AH_ENGINE_BIN=$F/cmpeng CMP_TEL=$F/cmp-tel.json sh "$NSD/node-shadow.sh" --compare --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).rows.find(x=>x.check==="git");console.log(r?r.engine_weaker_by:"none")})'; }
+NOW=$(node -p 'Date.now()')
+# the witness started 10 h ago with the engine counting nothing for git (shadow period); Node decided and blocked 9 times in the first hours
+printf '{"ts":%s,"counts":{"git":{"n":0,"block":0,"defer":0}}}\n' "$((NOW-36000000))" >"$NSD/engine-baseline.json"
+i=0; while [ $i -lt 9 ]; do logrow "$((NOW-18000000+i*1000))" block; i=$((i+1)); done
+tel 3 1                                                  # the engine took over later: 3 calls, 1 block, since then
+[ "$(cmpweak)" = 8 ]; chk $? "without the fix: 9 old Node blocks vs 1 engine block read as 'engine weaker by 8' (the false positive)"
+HOME=$CH AH_ENGINE_BIN=$F/cmpeng CMP_TEL=$F/cmp-tel.json sh "$NSD/node-shadow.sh" --rebaseline >"$F/rebase.out" 2>&1; chk $? "--rebaseline succeeds"
+[ "$(cmpweak)" = none ]; chk $? "after --rebaseline the pre-decider Node rows are out of the window (no git row, nothing weaker)"
+sleep 1; N2=$(node -p 'Date.now()'); logrow "$N2" block; logrow "$((N2+1))" allow; tel 5 2
+[ "$(cmpweak)" = 0 ]; chk $? "a Node block after the window start that the engine also blocked: weaker 0"
+logrow "$((N2+2))" block
+[ "$(cmpweak)" = 1 ]; chk $? "a Node block after the window start the engine did NOT block: still reported (weaker 1)"
+grep -q -e '--rebaseline' "$KITSRC/go-live.sh"; chk $? "go-live.sh restarts the window when the engine becomes the decider"
+
 echo; echo "hardening: $fails failed"
 [ "$fails" -eq 0 ]

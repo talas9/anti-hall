@@ -119,6 +119,7 @@ if [ -f "$LIVE_JSON" ]; then
   cp "$CAND" "$CONFIG_TOML" || die "cannot write $CONFIG_TOML"
   node -e '
     const fs=require("fs"),j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); j.files.config.sha_after=process.argv[3]; fs.writeFileSync(process.argv[1],JSON.stringify(j,null,2)+"\n")' "$LIVE_JSON" x "$(sha "$CONFIG_TOML")"
+  lim 30 sh "$NODE_SHADOW" --rebaseline >/dev/null 2>&1 || klog W_REBASELINE "node-shadow.sh --rebaseline failed (rc=$?)"   # the set of engine-decided checks changed
   note "done (re-applied)"; exit 0
 fi
 
@@ -179,6 +180,8 @@ apply() {
   lim 60 sh "$NODE_SHADOW" --install --root "$(live_root)" || return 1
   # 7b2 one-time notice for sessions already running ("run /reload-plugins"); removed after 24 h or by rollback. Never worth failing go-live over.
   lim 30 sh "$KIT/reload-notice.sh" --install || { klog W_NOTICE_INSTALL "reload notice not installed"; note "warning: reload notice not installed (sessions already running will not be told to /reload-plugins)"; }
+  # 7b3 the engine decides from here on: restart the Node-vs-engine comparison window now (older Node rows had Node as the decider and would read as "engine weaker")
+  lim 30 sh "$NODE_SHADOW" --rebaseline >/dev/null 2>&1 || klog W_REBASELINE "node-shadow.sh --rebaseline failed (rc=$?)"
   # 7c the shadow2 install (WSL2/remote): its daemon is stopped; it keeps only the telemetry sync, which reads the live engine from live.conf
   if [ -f "$SHADOW2/.shadow2-installed" ]; then
     [ -x "$SHADOW2/bin/ah-engine" ] && HOME=$SHADOW2/home AH_ENGINE_DIR=$SHADOW2/state AH_ENGINE_PLUGIN_ROOT=$SHADOW2/plugin "$SHADOW2/bin/ah-engine" stop >/dev/null 2>&1

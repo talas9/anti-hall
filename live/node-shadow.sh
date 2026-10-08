@@ -8,6 +8,8 @@
 #   node-shadow.sh --install [--root PLUGIN_ROOT]   copy this script to ~/.anti-hall/ah-node-shadow/ and add the hook entries to
 #                                   settings.json (backup first). Root defaults to the installed anti-hall@anti-hall-engine-live.
 #   node-shadow.sh --uninstall      remove only our settings.json entries (logs stay)
+#   node-shadow.sh --rebaseline     restart the comparison window NOW (engine counters + Node log cut-off). go-live runs it the moment the engine
+#                                   becomes the decider: Node rows from before that moment are not comparable (Node was the decider, the engine only counted)
 #   node-shadow.sh --status         entries, log size, last call
 #   node-shadow.sh --compare [--window 7d] [--json]
 #                                   join the Node log with the engine's own per-check telemetry; disagreements, engine-weaker first
@@ -20,7 +22,7 @@
 D="$HOME/.anti-hall/ah-node-shadow"
 SHADOW2="$HOME/.anti-hall/ah-engine-shadow2"
 case "${1:-}" in
-  --install|--uninstall|--status|--compare|--worker)
+  --install|--uninstall|--status|--compare|--rebaseline|--worker)
     command -v node >/dev/null 2>&1 || { echo "node-shadow: node not found on PATH" >&2; exit 1; }
     AH_NODE_SHADOW_SRC=$(CDPATH= cd -- "$(dirname "$0")" && pwd)/$(basename "$0"); export AH_NODE_SHADOW_SRC
     sed -e '1,/^: <<.__JS__.$/d' -e '$d' "$0" | node - "$@"; exit $? ;;
@@ -172,6 +174,13 @@ if (mode === '--install') {
     }
   } catch (e) { try { fs.appendFileSync(path.join(D, 'worker-errors.log'), new Date().toISOString() + ' ' + ev + ' ' + e.message + '\n'); } catch (e2) { } }
   try { fs.unlinkSync(pf); } catch (e) { }
+} else if (mode === '--rebaseline') {
+  // The comparison window starts when the engine became the decider for the checks. Earlier Node rows (Node decided, the engine only counted a few calls)
+  // would show up as "engine weaker"; --compare drops Node rows older than the baseline and subtracts the engine counters recorded in it.
+  const root = fs.existsSync(path.join(D, 'root')) ? fs.readFileSync(path.join(D, 'root'), 'utf8').trim() : '';
+  if (!root) { console.error('node-shadow --rebaseline: no shadow install (' + D + '/root)'); process.exit(1); }
+  if (!saveBaseline(root)) { console.error('node-shadow --rebaseline: the engine did not answer telemetry; baseline unchanged'); process.exit(1); }
+  console.log('node-shadow: comparison window restarted at ' + new Date(readJson(BASEF, {}).ts).toISOString());
 } else if (mode === '--compare') {
   const win = opt('--window', '7d'), asJson = args.includes('--json');
   const days = parseInt(win, 10) || 7, since = Date.now() - days * 864e5;
