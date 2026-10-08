@@ -96,7 +96,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `claim-ledger` | Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js). |
 | `output-verify-guard` | PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js). |
 | `ask-guard` | Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js). |
-| `silent-agent-nudge` | Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js). |
+| `silent-agent-nudge` | Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge (port of silent-agent-nudge.js). |
 | `stale-agent-stop-note` | Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js). |
 | `merge-gate` | Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js). |
 | `api-guard` | Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js). |
@@ -113,7 +113,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `handover-resume` | SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js). |
 | `task-lifecycle-log` | Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js). |
 | `dispatch-tier` | Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off (port of dispatch-tier.js). |
-| `task-guard` | Stop gate: answers the Stops where the task list has nothing open (the loop state cleared, the advisories printed) and hands every Stop with an open task to the Node hook (port of task-guard.js). |
+| `task-guard` | Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic block), with the loop state, the per-prompt budget and the OMC and live-agent steps aside of the Node hook; hands a Stop whose answer needs the DevSwarm app database to Node (port of task-guard.js). |
 | `tasklist-guard` | Stop gate: answers the Stops that do not block (a trivial session, tracked work with a fresh progress file, plan mode, the resume-verification nudge) with the Node hook's file effects, and hands every Stop that would block to the Node hook (port of tasklist-guard.js). |
 | `devswarm-parent-inbox` | DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js). |
 | `devswarm-child-turn` | DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js). |
@@ -311,7 +311,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `request_env.allow` | `40 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). |
+| `request_env.allow` | `42 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). DISABLE_OMC and OMC_SKIP_HOOKS are the oh-my-claudecode kill switches task-guard reads before it steps aside for an OMC loop. |
 | `request_env.incomplete_key` | `ah_env_incomplete` |  |  | Reserved name, never a forwardable variable, that carries the request's incomplete flag inside the forwarded environment object (the client's variables were dropped or it had no HOME), so the daemon's checks defer to the Node guards. |
 | `request_env.line_prefix` | `E ` |  |  | Prefix of the request line that carries the forwarded environment as one JSON object. |
 | `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them and the request is marked incomplete, so every check defers to the Node guard (a missing or empty HOME marks it incomplete too). |
@@ -2298,7 +2298,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `silent_nudge.ack_dir` | `.anti-hall/stop-ack` |  |  | Directory of the per-session stop-ack files, relative to the home directory. |
+| `silent_nudge.ack_file_ext` | `.json` |  |  | Extension of a stop-ack file. |
+| `silent_nudge.ack_file_prefix` | `stop-ack-` |  |  | Prefix of a stop-ack file name, before the sanitized session id. |
+| `silent_nudge.ack_hint` | `Override (only if the user explicitly confirmed this exact condition is fine)...` |  |  | The override sentence appended to the nudge (stop-ack.js ackHint); {key} is hook:signature, {now} the time, {path} the ack file. |
+| `silent_nudge.ack_no_session` | `nosession` |  |  | Session part of a stop-ack file name when there is no session id. |
+| `silent_nudge.ack_sep` | `:` |  |  | Separator between the hook name and the signature in a stop-ack key. |
+| `silent_nudge.ack_session_max` | `128` |  |  | Longest sanitized session id in a stop-ack file name, in characters. |
+| `silent_nudge.ack_setting` | `6 entries` |  |  | Where the stop-ack switch is read from (guards.stopAck, default on; hooks/lib/stop-ack.js). |
+| `silent_nudge.ack_subject_sep` | `,` |  |  | Separator between the sorted agent ids the stop-ack signature is computed over. |
 | `silent_nudge.agents_dir` | `.anti-hall/agents` |  |  | Directory of subagent heartbeat files, relative to the home directory. |
+| `silent_nudge.control_re` | `[\x00-\x1f\x7f-\u{9f}]` |  |  | Rust regex source of the control characters turned into spaces in a name the nudge shows. |
+| `silent_nudge.ellipsis` | `…` |  |  | Text appended to a name that was cut. |
 | `silent_nudge.ever_key` | `everNudged` |  |  | Field of the state file that holds the once-per-agent records. |
 | `silent_nudge.ever_nudged_ttl_ms` | `2592000000` |  | ms | How long a once-per-agent nudge record is kept (30 days). |
 | `silent_nudge.ever_sep` | `::` |  |  | Separator between session id and agent id in a once-per-agent key. |
@@ -2312,16 +2323,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.judge_child_value` | `1` |  |  | Value of the judge-child variable that disables the hook. |
 | `silent_nudge.key_heartbeat` | `h:` |  |  | Prefix of a heartbeat-sourced nudge key. |
 | `silent_nudge.key_transcript` | `t:` |  |  | Prefix of a transcript-sourced nudge key. |
+| `silent_nudge.label_max` | `60` |  |  | Longest agent description, id or heartbeat step, in UTF-16 units, the nudge names (oneLine's max). |
+| `silent_nudge.max_named` | `3` |  |  | How many silent agents the nudge names before it says how many more there are (MAX_NAMED). |
 | `silent_nudge.min_default` | `20` |  |  | Minutes of silence used when the setting is not a number of at least 1 (DEFAULT_MIN of the hook). |
 | `silent_nudge.min_setting` | `7 entries` |  |  | Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1). |
 | `silent_nudge.missing` | `missing` |  |  | Snapshot of an agent whose output file is missing. |
+| `silent_nudge.msg_allowed` | `set ANTIHALL_SILENT_AGENT_NUDGE=off to silence this nudge` |  |  | Allowed-here line of the nudge. |
+| `silent_nudge.msg_instead` | `check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (Task...` |  |  | Do-instead line of the nudge; {them} is the pronoun for one agent or several. |
+| `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
+| `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
+| `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
+| `silent_nudge.msg_what` | `{count} of your own background subagent(s) have gone silent past the {min}m t...` |  |  | Headline of the nudge. |
+| `silent_nudge.msg_why` | `Advisory only; nothing was auto-killed.` |  |  | Why line of the nudge. |
 | `silent_nudge.nudged_key` | `nudged` |  |  | Field of the state file that holds the per-snapshot records. |
+| `silent_nudge.pronoun_many` | `them` |  |  | The pronoun for several silent agents. |
+| `silent_nudge.pronoun_one` | `it` |  |  | The pronoun for one silent agent. |
 | `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
 | `silent_nudge.scan_bytes` | `67108864` |  | bytes | Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES). |
 | `silent_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.silentAgentNudge, default on). |
 | `silent_nudge.sidechain_file_prefix` | `agent-` |  |  | Prefix of an agent's own sidechain transcript file name. |
+| `silent_nudge.signature_len` | `16` |  |  | Hex characters of the SHA-1 a stop-ack signature keeps. |
 | `silent_nudge.state_file` | `.anti-hall/silent-agent-nudge-state.json` |  |  | Nudge state file, relative to the home directory. |
-| `silent_nudge.summary` | `Stop: keeps the nudge state of silent background agents and answers every Sto...` |  |  | One-line description of the silent-agent-nudge check in the generated reference. |
+| `silent_nudge.summary` | `Stop: nudges once per silent background agent (the block text, the nudge stat...` |  |  | One-line description of the silent-agent-nudge check in the generated reference. |
+| `silent_nudge.version_gate_setting` | `6 entries` |  |  | Where the stale-build downgrade switch is read from (guards.stopHookVersionDowngrade, default on; hooks/lib/stop-version-gate.js). |
 
 ### agent_controls.toml / stale_note
 
@@ -2712,16 +2736,110 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `task_guard.agent_max_age_default_min` | `30` |  |  | The agent age limit used when the setting does not resolve to a number, in minutes. |
+| `task_guard.agent_max_age_setting` | `6 entries` |  |  | Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never). |
+| `task_guard.agents_dir` | `agents` |  |  | The directory of agent heartbeat files inside the anti-hall directory (the legacy liveness signal). |
+| `task_guard.agents_ext` | `.json` |  |  | The file ending of an agent heartbeat file. |
+| `task_guard.agents_fresh_ms` | `1200000` |  | ms | How long an agent heartbeat counts as a running agent. |
+| `task_guard.agents_line` | `[task-guard] open tasks remain but live agents are active — deferring Stop bl...` |  |  | The advisory printed instead of the generic block while agents are live. |
+| `task_guard.agents_ts_key` | `ts` |  |  | The heartbeat file's time field (milliseconds); without it the file time is used. |
+| `task_guard.app_db_darwin_dir` | `Library, Application Support` |  |  | The application data directory under the home directory on macOS, as path segments. |
+| `task_guard.app_db_env` | `ANTIHALL_DEVSWARM_APP_DB` |  |  | The environment variable that names the DevSwarm app database (or `off`). |
+| `task_guard.app_db_file` | `DevSwarm, devswarm.db` |  |  | The DevSwarm app database under the application data directory, as path segments. |
+| `task_guard.app_db_linux_config` | `.config` |  |  | The configuration directory under the home directory on Linux. |
+| `task_guard.app_db_off` | `off` |  |  | The override value (lowercase) that turns the DevSwarm app database off. |
+| `task_guard.app_db_xdg_env` | `XDG_CONFIG_HOME` |  |  | The environment variable that moves the configuration directory on Linux. |
+| `task_guard.block_json` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a block; `{reason}` is the reason as a JSON string. |
+| `task_guard.budget_at_field` | `lastAt` |  |  | The bucket field holding the time of the last block. |
+| `task_guard.budget_bucket` | `prompt` |  |  | The last part of the budget bucket key (`<session>\|task-guard\|<this>`). |
+| `task_guard.budget_count_field` | `count` |  |  | The bucket field holding the blocks made for that prompt. |
+| `task_guard.budget_key_field` | `promptKey` |  |  | The bucket field holding the prompt the count belongs to. |
+| `task_guard.budget_setting` | `6 entries` |  |  | Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget). |
+| `task_guard.cap_ceiling` | `16` |  |  | The highest CPU-based parallel cap. |
+| `task_guard.cap_fallback_cores` | `4` |  |  | The CPU count assumed when none is reported. |
+| `task_guard.cap_floor` | `1` |  |  | The lowest CPU-based parallel cap. |
+| `task_guard.cap_formula` | `~min(16, cores-2)` |  |  | The parallel cap as the idle-neglect block names it when no number was computed (the legacy rule). |
+| `task_guard.cap_reserve` | `2` |  |  | CPUs kept free when the parallel cap is derived from the CPU count. |
+| `task_guard.codex_patch_tool` | `apply_patch` |  |  | The Codex tool name that marks a Codex payload on its own. |
+| `task_guard.coordinator_owner_re` | `^(main\|orchestrator\|coordinator)$` |  |  | JavaScript regex source (case-insensitive) of an owner that is the orchestrator itself; such a task still counts as unowned. |
+| `task_guard.dispatch_demand_setting` | `5 entries` |  |  | Whether running agents are counted per task from this session's transcript (guards.dispatchDemand, default on); off restores the legacy rule (any fresh agent heartbeat silences the idle-neglect block). |
+| `task_guard.dispatch_list_max` | `12` |  |  | Most tasks the idle-neglect block names. |
+| `task_guard.generic_allowed` | `a genuinely blocked task: mark it via {upd} with blockedBy:[<open task id>] o...` |  |  | The allowed-here line of the generic block; `{upd}` is the task update tool. |
+| `task_guard.generic_instead` | `pick up pending tasks and dispatch subagents to finish them in parallel (up t...` |  |  | The do-instead line of the generic block; `{upd}` is the task update tool. |
+| `task_guard.generic_what` | `stop blocked: open tasks remain: {list}{more}.` |  |  | The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail. |
+| `task_guard.generic_why` | `Tasks should not sit neglected when the session stops.` |  |  | The why line of the generic block. |
 | `task_guard.guard_name` | `task-guard` |  |  | The guard id of task-guard (the skip key and the message prefix). |
+| `task_guard.hash_sep` | ` ` |  |  | The separator between the task ids hashed into the loop state (a NUL character). |
+| `task_guard.idle_allowed` | `a task blocked on the OWNER (hardware, a human decision): mark it metadata.bl...` |  |  | The allowed-here line of the idle-neglect block. |
+| `task_guard.idle_devswarm` | ` Delegated to a DevSwarm workspace: set the task owner ({upd} owner) to the w...` |  |  | The sentence the idle-neglect block adds while a DevSwarm workspace is live; `{upd}` is the task update tool. |
+| `task_guard.idle_hash_tags` | `idle, no-agents` |  |  | The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's. |
+| `task_guard.idle_instead` | `dispatch them now in parallel (one background agent each, cap {cap}), or stop...` |  |  | The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing). |
+| `task_guard.idle_what` | `stop blocked: {n} non-blocked, unassigned task(s) have no in-flight agent: {l...` |  |  | The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail. |
+| `task_guard.idle_why` | `Dispatchable work is sitting idle.` |  |  | The why line of the idle-neglect block. |
+| `task_guard.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of an in-progress status (tested unanchored, as Node does). |
+| `task_guard.js_object_text` | `[object Object]` |  |  | JavaScript's `String()` of a plain object. |
 | `task_guard.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable that marks a judge child process; every task hook is a no-op there. |
+| `task_guard.label_max` | `40` |  |  | Longest task subject in the idle-neglect block's list, in UTF-16 units. |
+| `task_guard.label_priority_prefix_re` | `^\s*P\d\s*[:\-—]\s*` |  |  | JavaScript regex source (case-insensitive) of a priority prefix (`P1: `, `P0 - `) removed from a subject in the idle-neglect list. |
+| `task_guard.label_sep` | `, ` |  |  | The separator between the tasks of the idle-neglect list. |
+| `task_guard.list_max` | `5` |  |  | Most tasks the generic block names. |
+| `task_guard.list_sep` | `; ` |  |  | The separator between the tasks of the generic block's list. |
+| `task_guard.max_blocks` | `5` |  |  | Most Stop blocks task-guard makes in one session (both kinds counted); after that every Stop is let through. |
+| `task_guard.max_parallel_setting` | `6 entries` |  |  | A fixed cap on running background agents (guards.maxParallelDispatch); 0 uses the CPU-based cap. |
+| `task_guard.metrics_counters` | `demandsShown, demandsFollowed, demandsIgnored, idleNeglectBlocks` |  |  | The counters of the metrics file, each reset to 0 when it is not a finite number of at least 0, in this order. |
+| `task_guard.metrics_file` | `dispatch-demand-metrics.json` |  |  | The dispatch-demand metrics file inside the anti-hall directory (the idle-neglect block counts itself there). |
+| `task_guard.metrics_idle_key` | `idleNeglectBlocks` |  |  | The counter an idle-neglect block increments. |
+| `task_guard.metrics_pending_key` | `pending` |  |  | The metrics file's per-session pending-demand object (kept as is, made an empty object when it is not one). |
+| `task_guard.min_priority_setting` | `7 entries` |  |  | The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags. |
+| `task_guard.more` | ` (and {n} more)` |  |  | The tail of a block's list when tasks were left out; `{n}` is how many. |
+| `task_guard.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (the unit conversion of the agent age limit). |
 | `task_guard.note_line` | `[task-guard] {note}\n` |  |  | The line that carries the unknown-state note; `{note}` is the note. |
+| `task_guard.omc_active_key` | `active` |  |  | The state field that must be exactly true. |
+| `task_guard.omc_claude_dir` | `.claude` |  |  | The Claude Code settings directory (under the home directory and the project). |
+| `task_guard.omc_disable_env` | `DISABLE_OMC` |  |  | The environment variable that turns OMC off. |
+| `task_guard.omc_disable_value` | `1` |  |  | The value of the OMC kill switch that turns it off. |
+| `task_guard.omc_fresh_ms` | `7200000` |  | ms | How old an OMC loop's newest time may be for the loop to count as active. |
+| `task_guard.omc_line` | `[task-guard] OMC autonomous loop active — deferring Stop block to avoid deadl...` |  |  | The advisory printed instead of a block while an OMC autonomous loop is active. |
+| `task_guard.omc_plugin_id` | `oh-my-claudecode@omc` |  |  | The OMC plugin's id in the enabled-plugins list. |
+| `task_guard.omc_plugins_key` | `enabledPlugins` |  |  | The settings field that lists enabled plugins. |
+| `task_guard.omc_project_settings` | `settings.json, settings.local.json` |  |  | The project's Claude Code settings files, in the order read. |
+| `task_guard.omc_session_key` | `session_id` |  |  | The state field that ties a loop to one session. |
+| `task_guard.omc_settings_file` | `settings.json` |  |  | The user's Claude Code settings file inside the settings directory. |
+| `task_guard.omc_settings_max_bytes` | `262144` |  |  | Largest settings file read for the OMC plugin switch; a larger one counts as not enabling it. |
+| `task_guard.omc_skip_env` | `OMC_SKIP_HOOKS` |  |  | The environment variable that lists OMC hooks to skip (comma separated). |
+| `task_guard.omc_skip_token` | `persistent-mode` |  |  | The skip-list entry that turns OMC's persistent mode off. |
+| `task_guard.omc_state_dir` | `.omc, state` |  |  | OMC's state directory (under the project, else under the home directory), as path segments. |
+| `task_guard.omc_state_files` | `8 items` |  |  | The OMC loop state files, in the order checked. |
+| `task_guard.omc_state_max_bytes` | `65536` |  |  | Largest OMC state file read; a larger one counts as malformed. |
+| `task_guard.omc_ts_keys` | `last_checked_at, updated_at, started_at` |  |  | The state fields that may carry a fresh time, in the order tried. |
+| `task_guard.pending_status` | `pending` |  |  | The status (lowercase) of a task that can be dispatched now. |
+| `task_guard.priority_default_rank` | `1` |  |  | The rank of a task with no priority or an unrecognised one (fail-open: it counts as P1). |
+| `task_guard.priority_low` | `low, deferred` |  |  | Priority words (lowercase) that rank below the default. |
+| `task_guard.priority_low_rank` | `2` |  |  | The rank of a low or deferred task. |
+| `task_guard.priority_rank_re` | `^p([0-9]+)$` |  |  | JavaScript regex source of a priority label with a rank (`p0`, `p1`, ...), matched on the trimmed lowercase label. |
+| `task_guard.prompt_id_key` | `prompt_id` |  |  | The Stop payload field that names the prompt. |
+| `task_guard.proven_only_setting` | `5 entries` |  |  | Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on). |
 | `task_guard.prune_advisory` | `[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory...` |  |  | The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit. |
 | `task_guard.prune_setting` | `6 entries` |  |  | How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter). |
 | `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
 | `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
+| `task_guard.state_blocks_key` | `blocks` |  |  | The loop state file's field for the number of blocks made this session. |
+| `task_guard.state_hash_key` | `hash` |  |  | The loop state file's field for the hash of the last blocked set. |
 | `task_guard.state_prefix` | `last-stop-taskset-` |  |  | Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`). |
-| `task_guard.summary` | `Stop gate: answers the Stops where the task list has nothing open (the loop s...` |  |  | One-line description of the task-guard check in the generated reference. |
+| `task_guard.status_max` | `24` |  |  | Longest task status in the generic block's list, in UTF-16 units. |
+| `task_guard.status_open` | `open` |  |  | What the generic block shows for a task without a status. |
+| `task_guard.stop_policy_dir` | `devswarm, stop-policy` |  |  | The budget files' directory inside the anti-hall directory, as path segments. |
+| `task_guard.stop_policy_ext` | `.json` |  |  | The ending of a session's budget file. |
+| `task_guard.subject_max` | `60` |  |  | Longest task subject in the generic block's list, in UTF-16 units. |
+| `task_guard.subject_unknown` | `(subject unknown)` |  |  | What the generic block shows for a task whose subject was never seen. |
+| `task_guard.summary` | `Stop gate: blocks a Stop while tasks are open (the idle-neglect block when di...` |  |  | One-line description of the task-guard check in the generated reference. |
+| `task_guard.task_ref_re` | `#(\d+)\b` |  |  | JavaScript regex source of a task number named in an agent's description (`#12`); such an agent covers that task. |
+| `task_guard.tool_result_type` | `tool_result` |  |  | The content block type of a tool result (not a real user prompt). |
 | `task_guard.unknown_tag` | `guard` |  |  | The tag of the unknown-state note's state file for task-guard. |
+| `task_guard.update_claude` | `TaskUpdate` |  |  | How the block messages name the task update tool on Claude Code. |
+| `task_guard.update_codex` | `update your task list` |  |  | How the block messages name the task update on Codex, which has no task tools. |
+| `task_guard.user_type` | `user` |  |  | The transcript entry type of a user turn. |
+| `task_guard.workspace_prefix_re` | `^(workspace\|ws\|devswarm)\s*[:#]\s*` |  |  | JavaScript regex source (case-insensitive) of the prefix removed from an owner before it is looked up as a DevSwarm workspace. |
 
 ### task_guards.toml / task_lifecycle_log
 
@@ -2795,6 +2913,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `taskstate.re_created` | `^Task\s+#(\d+)\s+created\s+successfully` |  |  | JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number. |
 | `taskstate.re_list_empty` | `^\s*No\s+tasks\s+found\b` |  |  | JavaScript regex source (case-insensitive) of the TaskList result that says the task store is empty. |
 | `taskstate.re_not_found` | `^\s*Task\s*(?:#\S+)?\s*not\s+found\b` |  |  | JavaScript regex source (case-insensitive) of the TaskGet or TaskUpdate result that says one task id does not exist. |
+| `taskstate.since_status_re` | `^(pending\|in[-_]?progress)$` |  |  | JavaScript regex source (case-insensitive) of the TaskUpdate statuses that restart a task's clock (`sinceMs`, read by the idle-neglect proof). |
 | `taskstate.tail_bytes` | `1572864` |  |  | How much of the end of a transcript the task reconstruction reads (the Node `MAX_TAIL_BYTES`, 1.5 MiB). |
 | `taskstate.terminal_status_re` | `^(completed\|done\|cancelled\|canceled\|deleted)$` |  |  | JavaScript regex source (case-insensitive) of the statuses that close a task for the backfill (`TERMINAL`). |
 | `taskstate.tools_collect_keys` | `content, message, messages, tool_uses, parts` |  |  | The object keys the tool-use collector descends into, in order (the Node `collectToolUses`). |

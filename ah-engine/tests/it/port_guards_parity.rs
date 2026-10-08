@@ -589,39 +589,38 @@ fn weekly_cases() -> Vec<Case> {
     let on = |c: Case| c.file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#);
     let latch = |age: u64| format!(r#"{{"lastCheckedTs":{{NOW-{age}}}}}"#);
     let l = ".anti-hall/state/jev-weekly-notice.json";
+    const LOG: &str = ".anti-hall/logs/jev-assist.ndjson";
     vec![
         Case::json("jev-off-by-default", session_start(), ex),
         Case::json("jev-off-explicit", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#),
-        on(Case::json("on-no-latch-defers", session_start(), df).acts()),
+        on(Case::json("on-no-latch-stamps", session_start(), ex)),
         on(Case::json("on-latch-yesterday-silent", session_start(), ex).file(l, &latch(DAY))),
         on(Case::json("on-latch-six-days-silent", session_start(), ex).file(l, &latch(6 * DAY))),
-        on(Case::json("on-latch-eight-days-defers", session_start(), df).acts().file(l, &latch(8 * DAY))),
+        on(Case::json("on-latch-eight-days-stamps", session_start(), ex).file(l, &latch(8 * DAY))),
         on(Case::json("on-latch-in-the-future-silent", session_start(), ex)
             .file(l, r#"{"lastCheckedTs":{NOW}0}"#.replace("{NOW}0", "99999999999999").as_str())),
-        on(Case::json("on-latch-garbage-defers", session_start(), df).acts().file(l, "{torn")),
-        on(Case::json("on-latch-string-ts-defers", session_start(), df).acts().file(l, r#"{"lastCheckedTs":"x"}"#)),
-        on(Case::json("on-latch-array-defers", session_start(), df).acts().file(l, "[1]")),
-        on(Case::json("on-latch-null-defers", session_start(), df).acts().file(l, "null")),
-        Case::json("on-by-env", session_start(), df).acts().env("ANTIHALL_JEV", "1"),
+        on(Case::json("on-latch-garbage-stamps", session_start(), ex).file(l, "{torn")),
+        on(Case::json("on-latch-string-ts-stamps", session_start(), ex).file(l, r#"{"lastCheckedTs":"x"}"#)),
+        on(Case::json("on-latch-array-stamps", session_start(), ex).file(l, "[1]")),
+        on(Case::json("on-latch-null-stamps", session_start(), ex).file(l, "null")),
+        Case::json("on-by-env", session_start(), ex).env("ANTIHALL_JEV", "1"),
         Case::json("env-off-beats-settings-on", session_start(), ex).env("ANTIHALL_JEV", "0").file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#),
-        Case::json("on-by-legacy-file", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"enabled":true}"#),
-        Case::json("on-by-legacy-file-string", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"enabled":"yes"}"#),
+        Case::json("on-by-legacy-file", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":true}"#),
+        Case::json("on-by-legacy-file-string", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":"yes"}"#),
         Case::json("legacy-file-off", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":false}"#),
         Case::json("legacy-file-corrupt", session_start(), ex).file(".anti-hall/jev.json", "{torn"),
         Case::json("settings-off-beats-legacy-on", session_start(), ex)
             .file(".anti-hall/jev.json", r#"{"enabled":true}"#)
             .file(".anti-hall/settings.json", r#"{"jev":{"enabled":false}}"#),
-        Case::json("on-by-plugin-option", session_start(), df).acts().env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
+        Case::json("on-by-plugin-option", session_start(), ex).env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
         Case::json("plugin-option-default-ignored", session_start(), ex).env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "false"),
-        Case::json("plugin-option-default-never-masks-legacy-on", session_start(), df)
-            .acts()
+        Case::json("plugin-option-default-never-masks-legacy-on", session_start(), ex)
             .file(".anti-hall/jev.json", r#"{"enabled":true}"#)
             .env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "false"),
         Case::json("unstamped-legacy-off-beats-plugin-option-on", session_start(), ex)
             .file(".anti-hall/jev.json", r#"{"enabled":false}"#)
             .env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
-        Case::json("stamped-plugin-option-on-beats-legacy-off", session_start(), df)
-            .acts()
+        Case::json("stamped-plugin-option-on-beats-legacy-off", session_start(), ex)
             .file(".anti-hall/jev.json", r#"{"enabled":false}"#)
             .file(".anti-hall/update-sweep-state.json", r#"{"migrateSettingsFromLegacy":{"completedVersion":"{V}"}}"#)
             .env("CLAUDE_PLUGIN_OPTION_JEV_ENABLED", "true"),
@@ -632,15 +631,32 @@ fn weekly_cases() -> Vec<Case> {
         Case::json("notice-off-settings", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"enabled":true,"weeklyNotice":false}}"#),
         on(Case::json("notice-off-legacy-file", session_start(), ex).file(".anti-hall/jev.json", r#"{"weeklyNotice":false}"#)),
         on(Case::json("notice-off-plugin-option", session_start(), ex).env("CLAUDE_PLUGIN_OPTION_JEV_WEEKLY_NOTICE", "false")),
-        on(Case::json("notice-garbage-stays-on", session_start(), df).acts().file(".anti-hall/jev.json", r#"{"weeklyNotice":"maybe"}"#)),
+        on(Case::json("notice-garbage-stays-on", session_start(), ex).file(".anti-hall/jev.json", r#"{"weeklyNotice":"maybe"}"#)),
         on(Case::json("child-workspace-silent", session_start(), ex).env("DEVSWARM_SOURCE_BRANCH", "feature/x")),
-        on(Case::json("child-env-blank-defers", session_start(), df).acts().env("DEVSWARM_SOURCE_BRANCH", "   ")),
+        on(Case::json("child-env-blank-stamps", session_start(), ex).env("DEVSWARM_SOURCE_BRANCH", "   ")),
         on(Case::json("judge-child-silent", session_start(), ex).env("ANTIHALL_JUDGE_CHILD", "1")),
-        on(Case::json("judge-child-other-value-defers", session_start(), df).acts().env("ANTIHALL_JUDGE_CHILD", "0")),
+        on(Case::json("judge-child-other-value-stamps", session_start(), ex).env("ANTIHALL_JUDGE_CHILD", "0")),
+        // the decision log the weekly report reads (jev-assist.js retainedLogFiles + readNdjsonFiles)
+        on(Case::json("log-empty-file-stamps", session_start(), ex).file(LOG, "")),
+        on(Case::json("log-blank-lines-stamps", session_start(), ex).file(LOG, "\n  \n\t\r\n")),
+        on(Case::json("log-blank-generations-stamps", session_start(), ex).file(&format!("{LOG}.1"), "\n").file(&format!("{LOG}.12"), " ")),
+        on(Case::json("log-is-a-directory-stamps", session_start(), ex).file(&format!("{LOG}/x"), "{\"id\":\"speculation\"}")),
+        on(Case::json("log-non-generation-names-ignored", session_start(), ex)
+            .file(&format!("{LOG}.bak"), "{\"id\":\"speculation\"}\n")
+            .file(&format!("{LOG}.1x"), "{\"id\":\"speculation\"}\n")
+            .file(&format!("{LOG}."), "{\"id\":\"speculation\"}\n")
+            .file(".anti-hall/logs/jev-triage.ndjson", "{\"hash\":\"h\",\"backend\":\"jev\"}\n")),
+        on(Case::json("log-row-defers", session_start(), df).acts().file(LOG, "{\"id\":\"speculation\",\"ts\":\"2020-01-01\"}\n")),
+        on(Case::json("log-row-in-generation-defers", session_start(), df).acts().file(&format!("{LOG}.3"), "{\"id\":\"speculation\"}\n")),
+        on(Case::json("log-garbage-line-defers", session_start(), df).acts().file(LOG, "{torn\n")),
+        on(Case::json("log-row-but-latch-recent-silent", session_start(), ex).file(l, &latch(DAY)).file(LOG, "{\"id\":\"speculation\"}\n")),
+        on(Case::json("state-dir-is-a-file-silent", session_start(), ex).file(".anti-hall/state", "x")),
+        on(Case::json("latch-fractional-old-stamps", session_start(), ex).file(l, r#"{"lastCheckedTs":5.5}"#)),
+        on(Case::json("latch-huge-number-stamps", session_start(), ex).file(l, r#"{"lastCheckedTs":1e400}"#)),
         on(Case::new("empty-stdin-defers", "", df)),
         on(Case::new("garbage-stdin-defers", "{nope", df)),
-        on(Case::new("payload-null-defers", "null", df).acts()),
-        on(Case::json("payload-other-event-name", json!({"hook_event_name":"Other"}), df).acts()),
+        on(Case::new("payload-null-stamps", "null", ex)),
+        on(Case::json("payload-other-event-name", json!({"hook_event_name":"Other"}), ex)),
     ]
 }
 
@@ -649,7 +665,7 @@ fn jev_weekly_scorecard_matches_node() {
     let rows = weekly_cases();
     assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("jev-weekly-scorecard.js", "jev-weekly-scorecard", rows);
-    assert!(same >= 14 && deferred >= 14);
+    assert!(same >= 40 && deferred >= 5);
 }
 
 // ---- jev-review-reminder -------------------------------------------------------------------------------------
@@ -665,18 +681,18 @@ fn review_cases() -> Vec<Case> {
         p
     };
     vec![
-        Case::json("first-run-recommend-due", session_start(), df).acts(),
+        Case::json("first-run-recommend-due", session_start(), ex),
         Case::json("shown-yesterday-silent", session_start(), ex).file(l, &shown(DAY)),
         Case::json("shown-29-days-silent", session_start(), ex).file(l, &shown(29 * DAY)),
-        Case::json("shown-31-days-due", session_start(), df).acts().file(l, &shown(31 * DAY)),
-        Case::json("shown-in-the-future-due", session_start(), df).acts().file(l, r#"{"lastShownTs":99999999999999}"#),
-        Case::json("latch-zero-due", session_start(), df).acts().file(l, r#"{"lastShownTs":0}"#),
-        Case::json("latch-garbage-due", session_start(), df).acts().file(l, "{torn"),
-        Case::json("latch-string-due", session_start(), df).acts().file(l, r#"{"lastShownTs":"x"}"#),
+        Case::json("shown-31-days-due", session_start(), ex).file(l, &shown(31 * DAY)),
+        Case::json("shown-in-the-future-due", session_start(), ex).file(l, r#"{"lastShownTs":99999999999999}"#),
+        Case::json("latch-zero-due", session_start(), ex).file(l, r#"{"lastShownTs":0}"#),
+        Case::json("latch-garbage-due", session_start(), ex).file(l, "{torn"),
+        Case::json("latch-string-due", session_start(), ex).file(l, r#"{"lastShownTs":"x"}"#),
         Case::json("recommend-off-settings", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"recommendNotice":false}}"#),
         Case::json("recommend-off-env", session_start(), ex).env("ANTIHALL_JEV_RECOMMEND_NOTICE", "off"),
         Case::json("recommend-off-plugin-option", session_start(), ex).env("CLAUDE_PLUGIN_OPTION_JEV_RECOMMEND_NOTICE", "false"),
-        Case::json("recommend-garbage-stays-on", session_start(), df).acts().file(".anti-hall/settings.json", r#"{"jev":{"recommendNotice":"perhaps"}}"#),
+        Case::json("recommend-garbage-stays-on", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"recommendNotice":"perhaps"}}"#),
         Case::json("jev-on-defers", session_start(), df).file(".anti-hall/settings.json", r#"{"jev":{"enabled":true}}"#),
         Case::json("jev-on-legacy-defers", session_start(), df).file(".anti-hall/jev.json", r#"{"enabled":true}"#),
         Case::json("jev-on-env-defers", session_start(), df).env("ANTIHALL_JEV", "1"),
@@ -690,12 +706,12 @@ fn review_cases() -> Vec<Case> {
         Case::json("subagent-agent-type", sub("agent_type", json!("Explore")), ex),
         Case::json("subagent-sidechain", sub("isSidechain", json!(true)), ex),
         Case::json("subagent-sidechain-snake", sub("is_sidechain", json!(true)), ex),
-        Case::json("sidechain-string-is-not-subagent", sub("isSidechain", json!("true")), df).acts(),
-        Case::json("agent-id-empty-string-is-not-subagent", sub("agent_id", json!("")), df).acts(),
-        Case::json("agent-id-null-is-not-subagent", sub("agent_id", Value::Null), df).acts(),
-        Case::json("agent-id-zero-is-not-subagent", sub("agent_id", json!(0)), df).acts(),
-        Case::json("headless-defers", session_start(), df).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
-        Case::json("headless-model-only-is-not-codex", sub("model", json!("gpt-5")), df).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
+        Case::json("sidechain-string-is-not-subagent", sub("isSidechain", json!("true")), ex),
+        Case::json("agent-id-empty-string-is-not-subagent", sub("agent_id", json!("")), ex),
+        Case::json("agent-id-null-is-not-subagent", sub("agent_id", Value::Null), ex),
+        Case::json("agent-id-zero-is-not-subagent", sub("agent_id", json!(0)), ex),
+        Case::json("headless-recent-latch-silent", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
+        Case::json("headless-model-only-is-not-codex", sub("model", json!("gpt-5")), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").file(l, &shown(DAY)),
         Case::json(
             "headless-codex-recent-latch-silent",
             sub("model", json!("gpt-5"))
@@ -712,10 +728,64 @@ fn review_cases() -> Vec<Case> {
         .file(l, &shown(DAY)),
         Case::json("interactive-entrypoint-recent-latch-silent", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "cli").file(l, &shown(DAY)),
         Case::json("judge-child-silent", session_start(), ex).env("ANTIHALL_JUDGE_CHILD", "1"),
+        // the recommend notice in a non-interactive run (jev-recommend.js isHeadless / headlessAllowed)
+        Case::json("headless-first-run-silent-no-latch", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli"),
+        Case::json("headless-sdk-ts-silent", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts"),
+        Case::json("entrypoint-sdk-without-dash-is-interactive", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk"),
+        Case::json("headless-allowed-by-env", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").env("ANTIHALL_JEV_NOTICE_HEADLESS", "1"),
+        Case::json("headless-allowed-by-settings", session_start(), ex)
+            .env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+            .file(".anti-hall/settings.json", r#"{"jev":{"recommendNoticeHeadless":true}}"#),
+        Case::json("headless-garbage-setting-is-unset", session_start(), ex)
+            .env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+            .env("ANTIHALL_JEV_NOTICE_HEADLESS", "maybe"),
+        Case::json("headless-protocol-full-allows", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").env("ANTIHALL_PROTOCOL_LEVEL", "full"),
+        Case::json("headless-protocol-full-in-settings-allows", session_start(), ex)
+            .env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+            .file(".anti-hall/settings.json", r#"{"context":{"protocolLevel":" FULL "}}"#),
+        Case::json("headless-protocol-full-but-explicit-off-silent", session_start(), ex)
+            .env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+            .env("ANTIHALL_PROTOCOL_LEVEL", "full")
+            .file(".anti-hall/settings.json", r#"{"jev":{"recommendNoticeHeadless":false}}"#),
+        Case::json("headless-protocol-compact-silent", session_start(), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli").env("ANTIHALL_PROTOCOL_LEVEL", "compact"),
+        Case::json("headless-allowed-but-recent-latch-silent", session_start(), ex)
+            .env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+            .env("ANTIHALL_JEV_NOTICE_HEADLESS", "true")
+            .file(l, &shown(DAY)),
+        Case::json(
+            "headless-codex-first-run-shows",
+            sub("model", json!("gpt-5"))
+                .as_object()
+                .map(|o| {
+                    let mut o = o.clone();
+                    o.insert("turn_id".into(), json!("t1"));
+                    Value::Object(o)
+                })
+                .unwrap(),
+            ex,
+        )
+        .env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli"),
+        Case::json("codex-apply-patch-payload-shows", sub("tool_name", json!("apply_patch")), ex).env("CLAUDE_CODE_ENTRYPOINT", "sdk-cli"),
+        // the event name the notice carries, and the latch write
+        Case::json("event-name-echoed", sub("hook_event_name", json!("Other")), ex),
+        Case::json("event-name-empty-defaults", sub("hook_event_name", json!("")), ex),
+        Case::json("event-name-not-a-string-defaults", sub("hook_event_name", json!(7)), ex),
+        Case::json("no-event-name-defaults", json!({"session_id":"s"}), ex),
+        Case::json("latch-fractional-recent-silent", session_start(), ex).file(l, r#"{"lastShownTs":{NOW-1000}.5}"#),
+        Case::json("latch-array-due", session_start(), ex).file(l, "[1]"),
+        Case::json("latch-null-due", session_start(), ex).file(l, "null"),
+        Case::json("latch-huge-number-due", session_start(), ex).file(l, r#"{"lastShownTs":1e400}"#),
+        Case::json("latch-negative-due", session_start(), ex).file(l, r#"{"lastShownTs":-5}"#),
+        Case::json("latch-other-keys-kept-out", session_start(), ex).file(l, r#"{"lastShownTs":5,"extra":1}"#),
+        Case::json("state-dir-is-a-file-silent", session_start(), ex).file(".anti-hall/state", "x"),
+        Case::json("recommend-on-explicit-shows", session_start(), ex).file(".anti-hall/settings.json", r#"{"jev":{"recommendNotice":true,"enabled":false}}"#),
+        Case::json("jev-off-env-shows", session_start(), ex).env("ANTIHALL_JEV", "0"),
+        Case::json("legacy-jev-off-shows", session_start(), ex).file(".anti-hall/jev.json", r#"{"enabled":false}"#),
+        Case::json("judge-off-env-shows", session_start(), ex).env("ANTIHALL_SEMANTIC_JUDGE", "0"),
         Case::new("empty-stdin-defers", "", df),
         Case::new("garbage-stdin-defers", "{nope", df),
-        Case::new("payload-null", "null", df).acts(),
-        Case::json("payload-array", json!([1]), df).acts(),
+        Case::new("payload-null", "null", ex),
+        Case::json("payload-array", json!([1]), ex),
     ]
 }
 
@@ -724,7 +794,7 @@ fn jev_review_reminder_matches_node() {
     let rows = review_cases();
     assert!(rows.len() >= 30, "need at least 30 rows, got {}", rows.len());
     let (same, deferred) = check_rows("jev-review-reminder.js", "jev-review-reminder", rows);
-    assert!(same >= 10 && deferred >= 14);
+    assert!(same >= 55 && deferred >= 7);
 }
 
 // ---- repair-on-reload ----------------------------------------------------------------------------------------
@@ -791,6 +861,8 @@ fn repair_cases() -> Vec<Case> {
         Case::json("cooldown-string-ts-pending", prompt_submit(), df).skip_node().file(cool, r#"{"ts":"x","version":"{V}"}"#),
         Case::json("cooldown-garbage-pending", prompt_submit(), df).skip_node().file(cool, "{torn"),
         Case::json("cooldown-array-pending", prompt_submit(), df).skip_node().file(cool, "[1]"),
+        // the lock: whether Node skips (a live holder) or steals and spawns is Node's to judge
+        Case::json("lock-held-pending", prompt_submit(), df).skip_node().file(".anti-hall/repair-on-reload.lock", r#"{"pid":1,"ts":{NOW}}"#),
         // switches, skip, payload
         Case::json("switch-off-env", prompt_submit(), ex).env("ANTIHALL_REPAIR_ON_RELOAD", "off"),
         Case::json("switch-off-env-zero", prompt_submit(), ex).env("ANTIHALL_REPAIR_ON_RELOAD", "0"),

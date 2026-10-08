@@ -84,6 +84,54 @@ pub struct Task {
     pub unknown: Option<Unknown>,
     /// The block state could not be established (set by the backfill).
     pub block_unknown: bool,
+    /// When the task was created or last set pending or in progress (the guard variant only; `sinceMs`).
+    pub since: Since,
+}
+
+/// A task's `sinceMs`: `NaN` when unknown, a time, or a timestamp only JavaScript's date parser could read.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Since {
+    /// `NaN` or `undefined`.
+    #[default]
+    Unknown,
+    /// Milliseconds since the epoch.
+    Ms(f64),
+    /// A timestamp this port cannot read exactly: a caller that needs the value defers.
+    Unsure,
+}
+
+impl Since {
+    /// The value as JavaScript holds it (`NaN` when unknown); [`Unsure`] when only JavaScript could tell.
+    pub fn value(self) -> R<f64> {
+        match self {
+            Since::Unknown => Ok(f64::NAN),
+            Since::Ms(v) => Ok(v),
+            Since::Unsure => Err(Unsure),
+        }
+    }
+
+    /// `Date.parse(entry.timestamp)` when the timestamp is a string, else `NaN`.
+    pub fn of_entry(entry: &Value) -> Since {
+        match crate::checks::taskkit::jsval::get(entry, "timestamp") {
+            Some(Value::String(s)) => match tail::parse_iso_ms(s) {
+                Ok(Some(ms)) => Since::Ms(ms),
+                Ok(None) => Since::Unknown,
+                Err(_) => Since::Unsure,
+            },
+            _ => Since::Unknown,
+        }
+    }
+
+    /// `if (Number.isFinite(rec) && !(ex >= rec)) ex = rec` of the end-of-scan step: the create's time replaces an unknown or
+    /// earlier one.
+    pub fn merge_create(self, rec: Since) -> Since {
+        match (self, rec) {
+            (_, Since::Unknown) => self,
+            (Since::Unsure, _) | (_, Since::Unsure) => Since::Unsure,
+            (Since::Ms(e), Since::Ms(r)) if e >= r => self,
+            (_, r) => r,
+        }
+    }
 }
 
 impl Task {
@@ -101,6 +149,7 @@ impl Task {
             subject_updated: false,
             unknown: Some(Unknown::all()),
             block_unknown: false,
+            since: Since::Unknown,
         }
     }
 
@@ -203,6 +252,31 @@ pub fn is_digits(s: &str) -> bool {
 /// `Number(s)` for an all-digit string.
 pub fn number_of_digits(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(f64::INFINITY)
+}
+
+/// `normPriority(p)`: `null` for null or undefined, else `String(p).trim()`, empty as `null`.
+pub fn norm_priority(v: Option<&Value>) -> R<Option<String>> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(x) => {
+            let s = crate::checks::taskkit::js_string(x).ok_or(Unsure)?;
+            let t = crate::checks::guardkit::text::js_trim(&s);
+            Ok((!t.is_empty()).then(|| t.to_string()))
+        }
+    }
+}
+
+/// `(inp.metadata != null && inp.metadata.priority != null) ? inp.metadata.priority : inp.priority`.
+pub fn priority_field(inp: &Value) -> Option<&Value> {
+    use crate::checks::taskkit::jsval::get;
+    let meta = get(inp, "metadata").filter(|m| !m.is_null());
+    meta.and_then(|m| get(m, "priority")).filter(|p| !p.is_null()).or_else(|| get(inp, "priority"))
+}
+
+/// True when `inp.priority !== undefined || (inp.metadata != null && inp.metadata.priority !== undefined)`.
+pub fn has_priority_update(inp: &Value) -> bool {
+    use crate::checks::taskkit::jsval::get;
+    get(inp, "priority").is_some() || get(inp, "metadata").filter(|m| !m.is_null()).and_then(|m| get(m, "priority")).is_some()
 }
 
 /// `normOwner(o)`: a string trimmed, anything else empty.

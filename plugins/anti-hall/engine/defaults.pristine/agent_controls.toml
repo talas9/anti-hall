@@ -398,7 +398,7 @@ value = "advisory only; the stop is not blocked."
 
 [silent_nudge.summary]
 doc = "One-line description of the silent-agent-nudge check in the generated reference."
-value = "Stop: keeps the nudge state of silent background agents and answers every Stop that would not nudge; a Stop that would nudge defers to the Node hook, which words and records it (port of silent-agent-nudge.js)."
+value = "Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge (port of silent-agent-nudge.js)."
 
 [silent_nudge.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -494,3 +494,103 @@ value = "a JSON object"
 [silent_nudge.sidechain_file_prefix]
 doc = "Prefix of an agent's own sidechain transcript file name."
 value = "agent-"
+
+[silent_nudge.label_max]
+doc = "Longest agent description, id or heartbeat step, in UTF-16 units, the nudge names (oneLine's max)."
+value = 60
+min = 1
+
+[silent_nudge.control_re]
+doc = "Rust regex source of the control characters turned into spaces in a name the nudge shows."
+value = '[\x00-\x1f\x7f-\u{9f}]'
+
+[silent_nudge.ellipsis]
+doc = "Text appended to a name that was cut."
+value = "…"
+
+[silent_nudge.max_named]
+doc = "How many silent agents the nudge names before it says how many more there are (MAX_NAMED)."
+value = 3
+min = 1
+
+[silent_nudge.msg_item]
+doc = "One named silent agent in the nudge."
+value = "{label} — silent {mins}m"
+
+[silent_nudge.msg_item_sep]
+doc = "Text between two named silent agents."
+value = "; "
+
+[silent_nudge.msg_more]
+doc = "Tail of the list when more agents are silent than are named."
+value = ", +{n} more"
+
+[silent_nudge.msg_what]
+doc = "Headline of the nudge."
+value = "{count} of your own background subagent(s) have gone silent past the {min}m threshold: {shown}{more}."
+
+[silent_nudge.msg_why]
+doc = "Why line of the nudge."
+value = "Advisory only; nothing was auto-killed."
+
+[silent_nudge.msg_instead]
+doc = "Do-instead line of the nudge; {them} is the pronoun for one agent or several."
+value = "check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (TaskStop first, per orchestration rule I). Verify, do not assume."
+
+[silent_nudge.pronoun_one]
+doc = "The pronoun for one silent agent."
+value = "it"
+
+[silent_nudge.pronoun_many]
+doc = "The pronoun for several silent agents."
+value = "them"
+
+[silent_nudge.msg_allowed]
+doc = "Allowed-here line of the nudge."
+value = "set ANTIHALL_SILENT_AGENT_NUDGE=off to silence this nudge"
+
+[silent_nudge.ack_subject_sep]
+doc = "Separator between the sorted agent ids the stop-ack signature is computed over."
+value = ","
+
+[silent_nudge.version_gate_setting]
+doc = "Where the stale-build downgrade switch is read from (guards.stopHookVersionDowngrade, default on; hooks/lib/stop-version-gate.js)."
+value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
+
+[silent_nudge.ack_setting]
+doc = "Where the stop-ack switch is read from (guards.stopAck, default on; hooks/lib/stop-ack.js)."
+value = { section = "guards", key = "stopAck", env = "ANTIHALL_STOP_ACK", aliases = [], option = "", default = true }
+
+[silent_nudge.ack_dir]
+doc = "Directory of the per-session stop-ack files, relative to the home directory."
+value = ".anti-hall/stop-ack"
+
+[silent_nudge.ack_file_prefix]
+doc = "Prefix of a stop-ack file name, before the sanitized session id."
+value = "stop-ack-"
+
+[silent_nudge.ack_file_ext]
+doc = "Extension of a stop-ack file."
+value = ".json"
+
+[silent_nudge.ack_no_session]
+doc = "Session part of a stop-ack file name when there is no session id."
+value = "nosession"
+
+[silent_nudge.ack_session_max]
+doc = "Longest sanitized session id in a stop-ack file name, in characters."
+value = 128
+min = 1
+
+[silent_nudge.ack_sep]
+doc = "Separator between the hook name and the signature in a stop-ack key."
+value = ":"
+
+[silent_nudge.signature_len]
+doc = "Hex characters of the SHA-1 a stop-ack signature keeps."
+value = 16
+min = 1
+
+[silent_nudge.ack_hint]
+doc = "The override sentence appended to the nudge (stop-ack.js ackHint); {key} is hook:signature, {now} the time, {path} the ack file."
+value = "Override (only if the user explicitly confirmed this exact condition is fine): write {\"{key}\": {now}} into {path} (merge with existing keys); it then stays advisory for the rest of the session."

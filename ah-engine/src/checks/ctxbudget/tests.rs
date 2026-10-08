@@ -87,6 +87,11 @@ fn empty() -> Verdict {
     super::ups_empty()
 }
 
+/// A native answer that injects or blocks (not the quiet answer, not a deferral).
+fn loud(v: &Verdict) -> bool {
+    matches!(v, Verdict::Exact(e) if !e.out.is_empty() && *e != match empty() { Verdict::Exact(x) => x, _ => unreachable!() })
+}
+
 fn usage_line(tokens: u64) -> String {
     json!({"type":"assistant","message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":tokens - 10,"cache_read_input_tokens":0},"content":[{"type":"text","text":"x"}]}}).to_string()
 }
@@ -282,7 +287,7 @@ fn cache(five: u32, resets: &str, ts: u64) -> (&'static str, String) {
 }
 
 #[test]
-fn limit_conserve_answers_the_quiet_cases_and_defers_the_active_ones() {
+fn limit_conserve_answers_quiet_and_active_cases() {
     let name = "limit-conserve-inject";
     let p = ups(&Home::new("x", &[]), false);
     let future = iso(now_ms() + 3_600_000);
@@ -294,25 +299,21 @@ fn limit_conserve_answers_the_quiet_cases_and_defers_the_active_ones() {
     assert_eq!(run(vec![], &[]), empty(), "no cache");
     assert_eq!(run(vec![(CACHE, "{bad".into())], &[]), empty(), "unreadable cache");
     assert_eq!(run(vec![cache(84, &future, now_ms())], &[]), empty(), "just under the threshold");
-    assert_eq!(run(vec![cache(85, &future, now_ms())], &[]), Verdict::Defer, "at the threshold");
+    assert!(loud(&run(vec![cache(85, &future, now_ms())], &[])), "at the threshold");
     assert_eq!(run(vec![cache(99, &past, now_ms())], &[]), empty(), "the bucket has reset");
     assert_eq!(run(vec![cache(99, "", now_ms() - 7 * 3_600_000)], &[]), empty(), "an old snapshot without a reset time");
-    assert_eq!(run(vec![cache(99, "", now_ms() - 3_600_000)], &[]), Verdict::Defer, "a recent snapshot without a reset time");
+    assert!(loud(&run(vec![cache(99, "", now_ms() - 3_600_000)], &[])), "a recent snapshot without a reset time");
     assert_eq!(run(vec![cache(99, "2099-01-01T00:00:00", now_ms())], &[]), Verdict::Defer, "a reset text only JavaScript can read");
     assert_eq!(run(vec![cache(99, &future, now_ms())], &[("ANTIHALL_LIMIT_CONSERVE", "off")]), empty(), "mode off");
-    assert_eq!(run(vec![], &[("ANTIHALL_LIMIT_CONSERVE", "on")]), Verdict::Defer, "mode on");
-    assert_eq!(run(vec![cache(60, &future, now_ms())], &[("ANTIHALL_LIMIT_THRESHOLD", "0x32")]), Verdict::Defer, "a hexadecimal threshold");
+    assert!(loud(&run(vec![], &[("ANTIHALL_LIMIT_CONSERVE", "on")])), "mode on");
+    assert!(loud(&run(vec![cache(60, &future, now_ms())], &[("ANTIHALL_LIMIT_THRESHOLD", "0x32")])), "a hexadecimal threshold");
     assert_eq!(run(vec![cache(60, &future, now_ms())], &[("ANTIHALL_LIMIT_THRESHOLD", "100")]), empty(), "a threshold above the maximum clamps to 99");
     assert_eq!(
         run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"limit-conserve\":{}}}", now_ms() + 60_000))], &[]),
         empty(),
         "skipped"
     );
-    assert_eq!(
-        run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"all\":{}}}", now_ms() - 1))], &[]),
-        Verdict::Defer,
-        "an expired skip"
-    );
+    assert!(loud(&run(vec![cache(99, &future, now_ms()), (".anti-hall/skip.json", format!("{{\"all\":{}}}", now_ms() - 1))], &[])), "an expired skip");
     assert_eq!(run(vec![cache(99, &future, now_ms())], &[("ANTIHALL_JUDGE_CHILD", "1")]), Verdict::Allow, "the judge child prints nothing");
     assert_eq!(run(vec![("x", String::new())], &[]), empty());
     assert_eq!(run(vec![(CACHE, "{\"data\":{\"x\":\"\\ud83d\"}}".into())], &[]), Verdict::Defer, "a lone surrogate escape is for Node");
@@ -346,7 +347,10 @@ fn the_context_reading_follows_the_node_sources_and_defers_where_node_writes() {
     write("tr.jsonl", lines(&[usage_line(300_000)]));
     assert_eq!(reading(context_pct(&st(&[]), Some(&sid), Some(&tr), None)), Some((75.0, true)), "the sticky window beats the inference");
     std::fs::remove_file(h.0.join(".anti-hall/context-pct/sess1.json")).unwrap();
-    assert_eq!(context_pct(&st(&[]), Some(&sid), Some(&tr), None), Pct::Defer, "Node records the inferred window here");
+    assert!(
+        matches!(context_pct(&st(&[]), Some(&sid), Some(&tr), None), Pct::Reading(r) if r.pct == 30.0 && r.infer_write),
+        "Node records the inferred window here: the reading asks its caller to"
+    );
     assert_eq!(reading(context_pct(&st(&[]), None, Some(&tr), None)), Some((30.0, true)), "without a tag nothing is recorded");
     write(
         "tr.jsonl",
@@ -370,7 +374,7 @@ fn latch(v: Value) -> (&'static str, String) {
 }
 
 #[test]
-fn auto_handover_answers_only_the_cases_that_write_nothing() {
+fn auto_handover_answers_quiet_fire_nag_and_rearm_cases() {
     let name = "auto-handover";
     let at = |pct: u64| lines(&[usage_line(pct * 2000)]);
     let env200 = [("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")];
@@ -384,35 +388,23 @@ fn auto_handover_answers_only_the_cases_that_write_nothing() {
     let plain = |h: &Home| ups(h, true);
     assert_eq!(case(vec![tr(50)], &env200, &plain), empty(), "below the threshold");
     assert_eq!(case(vec![tr(84)], &env200, &plain), empty(), "just below");
-    assert_eq!(case(vec![tr(85)], &env200, &plain), Verdict::Defer, "the crossing fires");
-    assert_eq!(case(vec![tr(90), latch(json!({"fired": true}))], &env200, &plain), Verdict::Defer, "fired and still over: nags and the gate are Node's");
-    assert_eq!(case(vec![tr(20), latch(json!({"fired": true}))], &env200, &plain), Verdict::Defer, "back below: the latch is re-armed by a write");
-    assert_eq!(case(vec![tr(20), latch(json!({"softFired": true}))], &env200, &plain), Verdict::Defer, "back below with the soft latch set");
+    assert!(loud(&case(vec![tr(85)], &env200, &plain)), "the crossing fires");
+    assert!(loud(&case(vec![tr(90), latch(json!({"fired": true}))], &env200, &plain)), "fired and still over: nags and the gate are Node's");
+    assert_eq!(case(vec![tr(20), latch(json!({"fired": true}))], &env200, &plain), empty(), "back below: the latch is re-armed by a write");
+    assert_eq!(case(vec![tr(20), latch(json!({"softFired": true}))], &env200, &plain), empty(), "back below with the soft latch set");
     assert_eq!(case(vec![tr(20), latch(json!({"fired": "true"}))], &env200, &plain), empty(), "only a literal true counts as fired");
-    assert_eq!(case(vec![tr(90)], &[], &plain), Verdict::Defer, "against a guessed window one soft advisory is due, and it is Node's");
+    assert!(loud(&case(vec![tr(90)], &[], &plain)), "against a guessed window one soft advisory is due, and it is Node's");
     assert_eq!(case(vec![tr(90), latch(json!({"softFired": true}))], &[], &plain), empty(), "but it is not repeated");
     assert_eq!(case(vec![tr(90), ("x", "".into())], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain), empty(), "the variable set to 0 disables it");
-    assert_eq!(
-        case(vec![tr(90), latch(json!({"fired": true}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain),
-        Verdict::Defer,
-        "disabled with a latch set: cleared by a write"
-    );
+    assert_eq!(case(vec![tr(90), latch(json!({"fired": true}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0")], &plain), empty(), "disabled with a latch set: cleared by a write");
     assert_eq!(case(vec![tr(90)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0x32")], &plain), empty(), "parseInt reads 0x32 as 0, which disables it");
     assert_eq!(
         case(vec![tr(90), (".anti-hall/settings.json", r#"{"autoHandover":{"enabled":false}}"#.into())], &env200, &plain),
         empty(),
         "disabled in settings"
     );
-    assert_eq!(
-        case(vec![tr(30)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "25"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain),
-        Verdict::Defer,
-        "a lower threshold"
-    );
-    assert_eq!(
-        case(vec![tr(10)], &[("ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", "15000"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain),
-        Verdict::Defer,
-        "the token ceiling"
-    );
+    assert!(loud(&case(vec![tr(30)], &[("ANTIHALL_AUTO_HANDOVER_PCT", "25"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain)), "a lower threshold");
+    assert!(loud(&case(vec![tr(10)], &[("ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", "15000"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &plain)), "the token ceiling");
     assert_eq!(case(vec![tr(90), (".anti-hall/skip.json", format!("{{\"auto-handover\":{}}}", now_ms() + 60_000))], &env200, &plain), empty(), "skipped");
     assert_eq!(case(vec![tr(90)], &[("ANTIHALL_JUDGE_CHILD", "1")], &plain), Verdict::Allow);
     assert_eq!(
@@ -429,15 +421,11 @@ fn auto_handover_answers_only_the_cases_that_write_nothing() {
     );
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!([1])), empty(), "an array payload");
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!(5)), empty(), "a scalar payload");
-    assert_eq!(
-        case(vec![tr(90)], &env200, &|h| {
+    assert!(loud(&case(vec![tr(90)], &env200, &|h| {
             let mut p = ups(h, true);
             p.as_object_mut().unwrap().remove("session_id");
             p
-        }),
-        Verdict::Defer,
-        "the tag is a hash of the path"
-    );
+        })), "the tag is a hash of the path");
     assert_eq!(case(vec![tr(90)], &env200, &|_| json!({"prompt": "x"})), empty(), "no session and no transcript: nothing to key on");
     assert_eq!(
         case(vec![tr(20), (".anti-hall/auto-handover/sess1.json", "{\"fired\":true,\"x\":\"\\ud83d\"}".into())], &env200, &plain),
@@ -445,14 +433,14 @@ fn auto_handover_answers_only_the_cases_that_write_nothing() {
         "a latch only JavaScript can parse"
     );
     let fresh = |pct: u64, age_ms: u64| (".anti-hall/context-pct/sess1.json", json!({"pct": pct, "maxTokens": 200_000, "ts": now_ms() - age_ms}).to_string());
-    assert_eq!(case(vec![tr(10), fresh(95, 1000)], &env200, &plain), Verdict::Defer, "a fresh statusline reading over the threshold");
+    assert!(loud(&case(vec![tr(10), fresh(95, 1000)], &env200, &plain)), "a fresh statusline reading over the threshold");
     assert_eq!(case(vec![tr(10), fresh(95, 3_600_000)], &env200, &plain), empty(), "a stale one is ignored");
 }
 
 // ---- auto-handover-pause-nag -----------------------------------------------------------------------------------
 
 #[test]
-fn the_pause_nag_answers_only_the_cases_that_block_and_write_nothing() {
+fn the_pause_nag_answers_quiet_fire_nag_and_rearm_cases() {
     let name = "auto-handover-pause-nag";
     let env200 = [("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")];
     let case = |used: u64, files: Vec<(&str, String)>, env: &[(&str, &str)], edit: &dyn Fn(&mut Value)| {
@@ -470,11 +458,11 @@ fn the_pause_nag_answers_only_the_cases_that_block_and_write_nothing() {
         latch(base)
     };
     assert_eq!(case(100_000, vec![], &env200, &keep), Verdict::Allow, "below the threshold, latch not set");
-    assert_eq!(case(170_000, vec![], &env200, &keep), Verdict::Defer, "the Stop-side fire");
-    assert_eq!(case(100_000, vec![latch(json!({"fired": true}))], &env200, &keep), Verdict::Defer, "back below: re-arm");
+    assert!(loud(&case(170_000, vec![], &env200, &keep)), "the Stop-side fire");
+    assert_eq!(case(100_000, vec![latch(json!({"fired": true}))], &env200, &keep), Verdict::Allow, "back below: re-arm");
     assert_eq!(case(184_000, vec![fired(json!({}))], &env200, &keep), Verdict::Allow, "92 percent, 2 over the baseline, inside the quiet window");
-    assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &keep), Verdict::Defer, "96 percent: a step past the baseline");
-    assert_eq!(case(184_000, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000}))], &env200, &keep), Verdict::Defer, "the quiet period has passed");
+    assert!(loud(&case(192_000, vec![fired(json!({}))], &env200, &keep)), "96 percent: a step past the baseline");
+    assert!(loud(&case(184_000, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000}))], &env200, &keep)), "the quiet period has passed");
     assert_eq!(
         case(184_000, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 92}))], &env200, &keep),
         Verdict::Allow,
@@ -485,41 +473,32 @@ fn the_pause_nag_answers_only_the_cases_that_block_and_write_nothing() {
         Verdict::Allow,
         "92.6 shows as 93 (Math.round)"
     );
-    assert_eq!(
-        case(184_800, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 93}))], &env200, &keep),
-        Verdict::Defer,
-        "92.4 shows as 92"
-    );
+    assert!(loud(&case(184_800, vec![fired(json!({"lastNagAt": now_ms() - 16 * 60_000, "lastPauseNagPct": 93}))], &env200, &keep)), "92.4 shows as 92");
     assert_eq!(
         case(184_000, vec![fired(json!({})), (".anti-hall/settings.json", r#"{"autoHandover":{"nag":false}}"#.into())], &env200, &keep),
         Verdict::Allow,
         "nag off"
     );
-    assert_eq!(
-        case(
+    assert!(loud(&case(
             184_000,
             vec![fired(json!({"lastNagAt": now_ms() - 120_000})), (".anti-hall/settings.json", r#"{"autoHandover":{"nagQuietMin":1}}"#.into())],
             &env200,
             &keep
-        ),
-        Verdict::Defer,
-        "a one minute quiet period"
-    );
+        )), "a one minute quiet period");
     assert_eq!(
         case(192_000, vec![fired(json!({})), (".anti-hall/settings.json", r#"{"autoHandover":{"nagStepPct":10}}"#.into())], &env200, &keep),
         Verdict::Allow,
         "a ten point step"
     );
     assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| p["stop_hook_active"] = json!(true)), Verdict::Allow, "the stop was already continued");
-    assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| p["stop_hook_active"] = json!("true")), Verdict::Defer, "only a literal true counts");
+    assert!(loud(&case(192_000, vec![fired(json!({}))], &env200, &|p| p["stop_hook_active"] = json!("true"))), "only a literal true counts");
     assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| p["agent_id"] = json!("a")), Verdict::Allow, "a subagent");
     assert_eq!(case(192_000, vec![fired(json!({}))], &env200, &|p| p["transcript_path"] = json!("t/tr.jsonl")), Verdict::Defer, "a relative path is Node's");
-    assert_eq!(
-        case(192_000, vec![fired(json!({}))], &env200, &|p| {
+    assert!(
+        loud(&case(192_000, vec![fired(json!({}))], &env200, &|p| {
             p.as_object_mut().unwrap().remove("session_id");
-        }),
-        Verdict::Defer,
-        "the tag is a hash of the path"
+        })),
+        "the tag is a hash of the path: no latch under it, so the Stop-side fire"
     );
     assert_eq!(
         case(192_000, vec![fired(json!({}))], &[("ANTIHALL_AUTO_HANDOVER_PCT", "0"), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")], &keep),
@@ -532,7 +511,7 @@ fn the_pause_nag_answers_only_the_cases_that_block_and_write_nothing() {
 // ---- compact-advice-guard ------------------------------------------------------------------------------------------
 
 #[test]
-fn compact_advice_allows_texts_that_cannot_recommend_and_defers_the_rest() {
+fn compact_advice_blocks_once_at_low_context_and_allows_the_rest() {
     let name = "compact-advice-guard";
     let asst = |t: &str| json!({"type":"assistant","message":{"content":[{"type":"text","text":t}]}}).to_string();
     let user = |t: &str| json!({"type":"user","message":{"content":t}}).to_string();
@@ -562,17 +541,18 @@ fn compact_advice_allows_texts_that_cannot_recommend_and_defers_the_rest() {
         "safe to /clear",
         "good point for /new",
     ] {
-        assert_eq!(case(turn(t), &[], vec![], &keep), Verdict::Defer, "{t:?}");
+        // no context reading and no compact boundary: neither rule applies
+        assert_eq!(case(turn(t), &[], vec![], &keep), Verdict::Allow, "{t:?}");
     }
     assert_eq!(
         case(turn("safe to compact"), &[], vec![], &|p| p["last_assistant_message"] = json!("fine")),
         Verdict::Allow,
         "the last message replaces the transcript"
     );
-    assert_eq!(case(turn("fine"), &[], vec![], &|p| p["last_assistant_message"] = json!("safe to compact")), Verdict::Defer);
+    assert_eq!(case(turn("fine"), &[], vec![], &|p| p["last_assistant_message"] = json!("safe to compact")), Verdict::Allow);
     assert_eq!(
         case(turn("safe to compact"), &[], vec![], &|p| p["last_assistant_message"] = json!("  ")),
-        Verdict::Defer,
+        Verdict::Allow,
         "a blank last message falls back to the turn"
     );
     assert_eq!(case(vec![user("go"), asst("safe to compact"), user("next"), asst("ok")], &[], vec![], &keep), Verdict::Allow, "an earlier turn does not count");
@@ -583,12 +563,12 @@ fn compact_advice_allows_texts_that_cannot_recommend_and_defers_the_rest() {
             vec![],
             &keep
         ),
-        Verdict::Defer,
-        "a tool result does not start a turn"
+        Verdict::Allow,
+        "a tool result does not start a turn, but ends the final part"
     );
     assert_eq!(
         case(vec!["{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"s\\u0061fe to compact\"}]}}".into()], &[], vec![], &keep),
-        Verdict::Defer,
+        Verdict::Allow,
         "an escape can spell the words"
     );
     assert_eq!(
@@ -618,6 +598,20 @@ fn compact_advice_allows_texts_that_cannot_recommend_and_defers_the_rest() {
     assert_eq!(case(turn("safe to compact"), &[], vec![], &|p| p["transcript_path"] = json!("t/tr.jsonl")), Verdict::Defer, "a relative path is Node's");
     assert_eq!(case(turn("safe to compact"), &[("ANTIHALL_JUDGE_CHILD", "1")], vec![], &keep), Verdict::Allow);
     assert_eq!(case(turn("x"), &[], vec![], &|p| *p = json!([1])), Verdict::Allow);
+}
+
+#[test]
+fn compact_advice_blocks_a_recommendation_at_low_context_once() {
+    let low = json!({"type":"assistant","message":{"content":[{"type":"text","text":"SAFE TO COMPACT NOW"}],"usage":{"input_tokens":20000}}}).to_string();
+    let h = Home::new("cab", &[("tr.jsonl", lines(&[json!({"type":"user","message":{"content":"go"}}).to_string(), low]))]);
+    let env = h.env(&[("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")]);
+    let p = stop(&h);
+    assert!(loud(&call("compact-advice-guard", &p, &env)), "10 percent is low");
+    assert!(h.0.join(".anti-hall/compact-advice/sess1.json").is_file(), "the declaration is recorded");
+    assert_eq!(call("compact-advice-guard", &p, &env), Verdict::Allow, "the same declaration is blocked once");
+    let mut q = p.clone();
+    q["last_assistant_message"] = json!("Not safe to compact yet.");
+    assert_eq!(call("compact-advice-guard", &q, &env), Verdict::Allow, "a negated one is no recommendation");
 }
 
 #[test]

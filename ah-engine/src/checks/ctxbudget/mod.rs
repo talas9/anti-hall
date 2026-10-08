@@ -18,7 +18,9 @@ pub mod advice;
 pub mod handover;
 pub mod limit;
 pub mod pct;
+pub mod phrase;
 pub mod setting;
+pub mod text;
 
 #[cfg(test)]
 mod tests;
@@ -42,15 +44,19 @@ pub(crate) enum Jf {
     Hazard,
 }
 
+/// Whether JSON text the engine's parser rejected might still be accepted by `JSON.parse` (a lone surrogate escape,
+/// nesting past the limit, an exponent out of range).
+pub(crate) fn hazard(text: &str) -> bool {
+    text.contains("\\u") || json_depth(text) > defaults::num("ctxbudget.deep_json_depth") as usize || js_reads_differently_str(text)
+}
+
 /// Read and parse a JSON file as Node does (UTF-8 with replacement characters, then `JSON.parse`).
 pub(crate) fn read_json(path: &str) -> Jf {
     let Ok(bytes) = std::fs::read(path) else { return Jf::Bad };
     let text = String::from_utf8_lossy(&bytes);
     match serde_json::from_str::<Value>(&text) {
         Ok(v) => Jf::Ok(v),
-        Err(_) if text.contains("\\u") || json_depth(&text) > defaults::num("ctxbudget.deep_json_depth") as usize || js_reads_differently_str(&text) => {
-            Jf::Hazard
-        }
+        Err(_) if hazard(&text) => Jf::Hazard,
         Err(_) => Jf::Bad,
     }
 }
@@ -80,40 +86,6 @@ pub(crate) fn is_objectish(p: &Value) -> bool {
 /// `isSubagentByPayload` (`hooks/coordinator-detect.js`): `agent_id` or `agent_type` present and not null.
 pub(crate) fn subagent_by_payload(p: &Value) -> bool {
     is_objectish(p) && defaults::list("coordinator_work.agent_markers").iter().any(|k| p.get(k).is_some_and(|v| !v.is_null()))
-}
-
-/// What `sessionTag` (`hooks/lib/auto-handover-state.js`) came to.
-pub(crate) enum Tag {
-    /// The sanitized session id.
-    Id(String),
-    /// Neither a session id nor a transcript path.
-    None,
-    /// The tag is a hash of the transcript path; the Node hook computes it.
-    Hash,
-}
-
-/// `sessionTag(payload)`.
-pub(crate) fn session_tag(p: &Value) -> Tag {
-    if let Some(t) = pct::tag_of(p.get("session_id")) {
-        return Tag::Id(t);
-    }
-    if p.get("transcript_path").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) { Tag::Hash } else { Tag::None }
-}
-
-/// The per-session latch (`hooks/lib/auto-handover-state.js` `readLatch`): the JSON object of the session's file, else
-/// empty. `Err` when the file needs the Node parser.
-pub(crate) fn read_latch(st: &Settings, tag: &str) -> Result<Value, ()> {
-    let path = format!("{}/{}/{}/{tag}.json", st.home, defaults::text("ctxbudget.state_root"), defaults::text("ctxbudget.latch_dir"));
-    match read_json(&path) {
-        Jf::Ok(v) if v.is_object() => Ok(v),
-        Jf::Hazard => Err(()),
-        _ => Ok(Value::Object(serde_json::Map::new())),
-    }
-}
-
-/// A finite number of a latch or payload field.
-pub(crate) fn finite(v: Option<&Value>) -> Option<f64> {
-    v.and_then(Value::as_f64).filter(|f| f.is_finite())
 }
 
 /// The milliseconds since the epoch.

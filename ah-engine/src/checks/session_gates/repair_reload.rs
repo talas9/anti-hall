@@ -58,38 +58,44 @@ fn in_cooldown(st: &Settings, version: &str) -> bool {
     })
 }
 
-/// `Ok(())` when the Node hook would start no repair; `Err` when it might.
+/// `Ok(Allow)` when the Node hook would start no repair; `Err` when it might.
 ///
 /// The Node hook returns, in this order: in a judge child; with the switch off; on a subagent turn; when skipped; when the
 /// plugin manifest cannot be read; with every default migration stamped at the running version or newer; within the
 /// cooldown after a start. Past all of them it takes the lock and starts the detached repair, which is Node's to do.
 pub(crate) fn decide(payload: &Value, st: &Settings, root: &str) -> Gate {
     if judge_child(st) {
-        return Ok(());
+        return Ok(Verdict::Allow);
     }
     if !enabled(st, defaults::raw("repair_reload.setting"), root)? {
-        return Ok(());
+        return Ok(Verdict::Allow);
     }
     if subagent_by_payload(payload) {
-        return Ok(());
+        return Ok(Verdict::Allow);
     }
     if is_skipped(st, defaults::text("repair_reload.guard_name")) {
-        return Ok(());
+        return Ok(Verdict::Allow);
     }
     if root.is_empty() {
         return Err(Undecidable);
     }
     let manifest =
         std::fs::read_to_string(format!("{root}/{}", defaults::text("guardkit.plugin_manifest"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
-    let Some(version) = manifest.as_ref().and_then(|m| m.get("version")).and_then(Value::as_str).filter(|v| !v.is_empty()) else { return Ok(()) };
+    let Some(version) = manifest.as_ref().and_then(|m| m.get("version")).and_then(Value::as_str).filter(|v| !v.is_empty()) else { return Ok(Verdict::Allow) };
     // A version that is not a plain three-part one is compared by Node with NaN arithmetic; leave it to Node.
     let Some(running) = triple(js_trim(version)).filter(|_| js_trim(version) == version) else { return Err(Undecidable) };
     if !repair_pending(st, running) {
-        return Ok(());
+        return Ok(Verdict::Allow);
     }
     if in_cooldown(st, version) {
-        return Ok(());
+        return Ok(Verdict::Allow);
     }
+    // Stays Node's, by design: past this point the hook takes `repair-on-reload.lock` (stealing a dead holder's), starts
+    // `doctor.js --repair --migrations-only` as a DETACHED process, re-points the lock at the child's pid, stamps the
+    // cooldown only when the spawn started, and prunes old repair logs. The engine never starts background processes, and
+    // every write on this path depends on the spawn's outcome, so none of it can be done here without the spawn. Even the
+    // lock-held case (silent in Node) is left to Node: its answer turns on the holder's liveness and the lock's stale age
+    // at the moment Node looks, and the case is transient (a repair in flight).
     Err(Undecidable)
 }
 

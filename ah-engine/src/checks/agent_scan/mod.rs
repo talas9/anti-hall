@@ -139,12 +139,14 @@ pub struct Row {
     pub id: String,
     /// Its description (empty when unknown).
     pub description: String,
+    /// The whole record (launch, resume and sign-of-life times, output file).
+    pub rec: Rec,
 }
 
 impl Scan {
     /// `rowsOf(scan)`: launched and not terminal.
     pub fn rows(&self) -> Vec<Row> {
-        self.launched.iter().filter(|(id, _)| !self.terminal.contains(*id)).map(|(id, r)| Row { id: id.clone(), description: r.description.clone() }).collect()
+        self.launched.iter().filter(|(id, _)| !self.terminal.contains(*id)).map(|(id, r)| Row { id: id.clone(), description: r.description.clone(), rec: r.clone() }).collect()
     }
 }
 

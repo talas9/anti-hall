@@ -75,6 +75,7 @@ impl Env {
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
+            .env("ANTIHALL_JEV_RECOMMEND_NOTICE", "false") // the session gate answers the notice itself; these tests probe the Node fallback
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             // DevSwarm active makes the native verify-first-orch check defer to its mapped Node command, so the
             // SessionStart tests below keep driving Node hooks only (the check itself is covered by spawn_ctx_parity.rs)
@@ -389,8 +390,21 @@ fn the_agent_controls_are_answered_by_the_dispatcher() {
     let stop_args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
     let stop_payload = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop"}).to_string();
     let (code, out, err) = e.run(&stop_args, true, &stop_payload, true);
-    e.stop();
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "silent-agent-nudge is answered by the check, not run as Node");
+    // Stop with a background agent silent for 90 minutes: the check nudges itself (the dispatcher hands it the plugin root)
+    let ts =
+        ah_engine::checks::agent_scan::iso_utc((std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() - 5_400_000) as f64);
+    let launch = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "tu_1", "type": "tool_result", "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a1b2c3d4e5f601 (x)\noutput_file: /nonexistent/out.txt\n"}]}]}, "timestamp": ts});
+    let transcript = e.dir.join("silent.jsonl");
+    std::fs::write(&transcript, format!("{launch}\n")).unwrap();
+    let silent = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "transcript_path": transcript}).to_string();
+    let (code, out, err) = e.run(&stop_args, true, &silent, true);
+    e.stop();
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert!(
+        out.starts_with("{\"decision\":\"block\",\"reason\":\"") && out.contains("silent-agent-nudge: 1 of your own") && !err.contains("NODE-RAN"),
+        "{out:?} {err:?}"
+    );
 }
 
 #[test]
@@ -1455,10 +1469,10 @@ fn deferred_stop_blocks_keep_every_reason_and_message() {
     let joiner = ah_engine::defaults::text("dispatch.reason_joiner");
     assert_eq!(v["decision"], "block");
     assert_eq!(v["reason"], format!("TASK-REASON{joiner}SPEC-REASON"), "{out:?}");
-    assert_eq!(v["systemMessage"], "task msg");
-    // exit 2: stderr carries every reason too, then codex-nudge's plain note (the host shows neither to the model next to
-    // the JSON block's reason, and stdout must stay one object)
-    assert_eq!(err, format!("TASK-REASON{joiner}SPEC-REASON\nadvisory plain text\n"));
+    // codex-nudge's plain note rides in the system message (user-facing); stdout stays one object
+    assert_eq!(v["systemMessage"], "task msg\nadvisory plain text");
+    // exit 2: stderr is the reason the model reads, so it carries every reason and no note
+    assert_eq!(err, format!("TASK-REASON{joiner}SPEC-REASON\n"));
     assert_no_stop_counters(&e);
 }
 

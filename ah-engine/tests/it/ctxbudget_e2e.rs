@@ -113,20 +113,25 @@ fn a_quiet_prompt_has_no_stray_newlines_whichever_checks_answer_natively() {
 }
 
 #[test]
-fn a_prompt_the_checks_defer_runs_their_node_hooks() {
+fn a_prompt_fire_is_answered_natively_and_only_what_still_defers_reaches_node() {
     let e = Env::new("ups-defer");
     let loud = ["limit-conserve-inject", "auto-handover"];
     let map = e.map("UserPromptSubmit", &loud, "echo NODE-{id}");
-    let tr = e.transcript(180_000); // 90 percent: the fire is Node's
+    let tr = e.transcript(180_000); // 90 percent: the fire directive
     let (code, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
     assert_eq!(code, 0);
-    assert!(out.contains("NODE-auto-handover") && !out.contains("NODE-limit-conserve-inject"), "{out:?}");
+    assert!(!out.contains("NODE-") && out.contains("auto-handover: context is at ~90%"), "{out:?}");
     let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW, ("ANTIHALL_LIMIT_CONSERVE", "on")]);
-    assert!(out.contains("NODE-auto-handover") && out.contains("NODE-limit-conserve-inject"), "{out:?}");
+    assert!(!out.contains("NODE-") && out.contains("limit conservation is active (manual-on)"), "{out:?}");
+    // the post-handover gate on a prompt with text consults Jev in Node: still deferred
+    std::fs::create_dir_all(e.dir.join("home/.anti-hall/auto-handover")).unwrap();
+    std::fs::write(e.dir.join("home/.anti-hall/auto-handover/e2e.json"), r#"{"fired":true,"firedPct":85,"lastNagPct":89,"handoverPct":80}"#).unwrap();
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
+    assert!(out.contains("NODE-auto-handover") && !out.contains("NODE-limit-conserve-inject"), "{out:?}");
 }
 
 #[test]
-fn a_quiet_stop_is_answered_by_the_engine_and_a_fire_reaches_node() {
+fn a_quiet_stop_and_a_stop_fire_are_answered_by_the_engine_and_a_deferral_reaches_node() {
     let e = Env::new("stop");
     let loud = ["auto-handover-pause-nag", "compact-advice-guard"];
     let map = e.map("Stop", &loud, "echo NODEBLOCK-{id} >&2; exit 2");
@@ -134,7 +139,10 @@ fn a_quiet_stop_is_answered_by_the_engine_and_a_fire_reaches_node() {
     let (code, out, err) = e.run("Stop", &map, &stop(&quiet), &[WINDOW]);
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "nothing to nag about, no compact recommendation");
     let high = e.transcript(180_000);
-    let (code, _, err) = e.run("Stop", &map, &stop(&high), &[WINDOW]);
+    let (_, out, err) = e.run("Stop", &map, &stop(&high), &[WINDOW]);
+    assert!(!err.contains("NODEBLOCK-") && format!("{out}{err}").contains("auto-handover: context is at ~90%"), "{out:?} {err:?}");
+    // a relative transcript path is resolved by Node against its own directory: deferred
+    let (code, _, err) = e.run("Stop", &map, &stop("tr.jsonl"), &[WINDOW]);
     assert_eq!(code, 2, "{err:?}");
-    assert!(err.contains("NODEBLOCK-auto-handover-pause-nag") && !err.contains("NODEBLOCK-compact-advice-guard"), "{err:?}");
+    assert!(err.contains("NODEBLOCK-auto-handover-pause-nag"), "{err:?}");
 }
