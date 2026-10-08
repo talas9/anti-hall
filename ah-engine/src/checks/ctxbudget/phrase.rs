@@ -396,8 +396,7 @@ fn strip_leading_reminders(txt: &str) -> &str {
     let tags = defaults::raw("compact_decl.reminder_tags");
     let (open, close) = (tags.str_field("open"), tags.str_field("close"));
     let mut rest = txt;
-    loop {
-        let Some(inner) = rest.trim_start_matches(is_js_space).strip_prefix(open) else { break };
+    while let Some(inner) = rest.trim_start_matches(is_js_space).strip_prefix(open) {
         let Some(end) = inner.find(close) else { break };
         rest = &inner[end + close.len()..];
     }
@@ -496,6 +495,7 @@ fn classify(e: &Value) -> Result<Vec<Ev>, ()> {
 }
 
 /// `readTurn(lines)` (the final text and the compact facts). `Err` where a line is not judged exactly here.
+#[allow(clippy::result_unit_err)] // Err(()) is the one fail-closed signal (a JS throw in the Node hook); it carries no detail
 pub fn read_turn(lines: &[String]) -> Result<Turn, ()> {
     let mut finals: Vec<String> = Vec::new();
     let mut since: Option<f64> = None;

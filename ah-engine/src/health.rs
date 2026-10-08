@@ -105,12 +105,12 @@ fn append_to(p: &std::path::Path, line: &str) -> std::io::Result<()> {
 /// Append `ts<TAB>kind<TAB>code<TAB>detail`. The log is trimmed to its last `health.log_keep_lines` lines once it passes
 /// `health.log_cap`. When the log exists in principle but cannot be written (a full disk, a permission or path error) the line
 /// goes to stderr instead, never nowhere (review finding 9). A state directory that does not exist (no engine ever ran for
-/// this home, as in a hook answered in-process) is not an error: the line is dropped, so a hook's stderr stays what the Node
+/// this home, as in a hook answered in-process; a regular file where `~/.anti-hall` should be is the same: no state dir can exist) is not an error: the line is dropped, so a hook's stderr stays what the Node
 /// hook prints.
 pub fn log_event(kind: &str, code: &str, detail: &str) {
     let line = event_line(kind, code, detail);
     if let Err(e) = append_event_line(&line)
-        && e.kind() != std::io::ErrorKind::NotFound
+        && !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
     {
         crate::discard::harmless(std::io::stderr().write_all(line.as_bytes())); // keep: a closed pipe leaves nobody to tell
     }

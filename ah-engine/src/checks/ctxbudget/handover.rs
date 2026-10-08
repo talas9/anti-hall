@@ -578,7 +578,7 @@ fn ws_to_line_end(s: &str, a: usize) -> Option<usize> {
     if run == s.len() {
         return Some(run);
     }
-    s[a..run].char_indices().filter(|(_, c)| is_lt(*c)).last().map(|(i, _)| a + i)
+    s[a..run].char_indices().rfind(|(_, c)| is_lt(*c)).map(|(i, _)| a + i)
 }
 
 /// `## ` (two hashes and white space) at `i`, returning where the white space ends.
