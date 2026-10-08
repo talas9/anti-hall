@@ -322,7 +322,7 @@ fn cmd_send(inv: &Inv, a: &Args) -> R<Obj> {
 }
 
 /// `maybeRehomeToCwdProject(home, primaryMeshId, ctx)` does nothing (else defer).
-fn rehome_is_noop(inv: &Inv, id: &str) -> R<()> {
+pub(crate) fn rehome_is_noop(inv: &Inv, id: &str) -> R<()> {
     let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return Ok(()) };
     let hash_key = hash_from_workspace_id(id);
     if hash_key == repo_key {

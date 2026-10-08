@@ -666,7 +666,7 @@ fn process_start_ms(pid: i64) -> Option<f64> {
 }
 
 /// `Date.parse("Wed Oct  8 09:12:33 2026")` in the local time zone.
-fn parse_lstart(s: &str) -> Option<f64> {
+pub(crate) fn parse_lstart(s: &str) -> Option<f64> {
     let p: Vec<&str> = s.split_whitespace().collect();
     if p.len() != 5 {
         return None;

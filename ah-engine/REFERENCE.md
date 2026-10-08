@@ -3424,6 +3424,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `mesh_write.action_ack_primary` | `ack-primary` |  |  | The `action` of an ack-primary result. |
 | `mesh_write.action_mesh_history` | `mesh-history` |  |  | `action` of a mesh history result. |
 | `mesh_write.action_mesh_read` | `mesh-read` |  |  | `action` of a mesh read result. |
 | `mesh_write.action_send` | `send` |  |  | `action` of a send result. |
@@ -3445,6 +3446,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.busy_retry_base_ms` | `20` |  |  | Fixed part of the sleep between those attempts, in milliseconds (Node: 20). |
 | `mesh_write.busy_retry_jitter_ms` | `40` |  |  | Random part of that sleep, in milliseconds (Node: up to 40). |
 | `mesh_write.busy_text` | `database is locked` |  |  | Lower-cased text of a SQLite busy error (Node's isSqliteBusyError also matches it). |
+| `mesh_write.channel_store_cursor` | `store-cursor` |  |  | The `channel` of a failed own-partition cursor move in an ack result. |
 | `mesh_write.claude_dir` | `.claude` |  |  | The harness's directory under the home directory. |
 | `mesh_write.commondir_file` | `commondir` |  |  | The file of a linked worktree's git directory naming the common directory. |
 | `mesh_write.csv_separator` | `,` |  |  | Separator of a comma-separated setting. |
@@ -3452,16 +3454,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.cursor_floor_reader` | `#floor` |  |  | The reader key of a partition's floor row in reader_cursors (reader-cursors.js FLOOR). |
 | `mesh_write.cursor_inst_sep` | `#inst-` |  |  | Separator of a legacy per-instance store cursor file name (cursors/<id>#inst-<short>.json). |
 | `mesh_write.cursor_line_field` | `line` |  |  | Field of a JSON cursor file that holds its position (devswarm-inbox-cursor.js readCursor). |
+| `mesh_write.cursor_log_cap` | `2000` |  |  | Records a cursor-write journal keeps (CURSOR_LOG_CAP); older ones move to the `.1` file. |
+| `mesh_write.cursor_log_old_suffix` | `.1` |  |  | Suffix of the file that receives the records rotated out of a journal. |
+| `mesh_write.cursor_log_unknown_key` | `unknown` |  |  | Journal file name used when the project key is missing or unsafe. |
+| `mesh_write.cursor_namespaces` | `store, nd` |  |  | The two cursor namespaces of `reader_cursors`, in Node's order (NAMESPACES): the store and the NDJSON inbox. |
 | `mesh_write.cursor_ns_nd` | `nd` |  |  | The reader_cursors namespace of the durable NDJSON inbox side. |
 | `mesh_write.cursor_ns_store` | `store` |  |  | The reader_cursors namespace of the store side. |
 | `mesh_write.dir_anti_hall` | `.anti-hall` |  |  | anti-hall's directory under the home directory. |
 | `mesh_write.dir_archived` | `archived` |  |  | The archived workspace descriptors directory under the DevSwarm state directory (row-state.js archiveCompleteIds). |
 | `mesh_write.dir_cache` | `cache` |  |  | anti-hall's cache directory under its home directory (Jev's triage label cache lives there). |
+| `mesh_write.dir_cursor_log` | `cursor-log` |  |  | Directory of the cursor-write journals under the DevSwarm root (cursors.js cursorLogPath). |
 | `mesh_write.dir_cursors` | `cursors` |  |  | The legacy cursor files directory under the DevSwarm state directory (reader-cursors.js cursorsDir). |
 | `mesh_write.dir_devswarm` | `devswarm` |  |  | The DevSwarm state directory under it. |
+| `mesh_write.dir_drain` | `drain` |  |  | Directory of the drain markers under the DevSwarm root (devswarm-drain-marker.js). |
 | `mesh_write.dir_heartbeats` | `heartbeats` |  |  | The heartbeats directory under the DevSwarm state directory. |
 | `mesh_write.dir_locks` | `locks` |  |  | The locks directory under the DevSwarm state directory. |
 | `mesh_write.dir_plans` | `plans` |  |  | The plans directory under the DevSwarm state directory (devswarm-plan.js). |
+| `mesh_write.dir_read_receipts` | `read-receipts` |  |  | Directory of read receipts under the DevSwarm root (readReceiptDir). |
 | `mesh_write.dir_send_receipts` | `send-receipts` |  |  | The send receipts directory under the DevSwarm state directory (one JSON file per send, by UTC day). |
 | `mesh_write.dir_state` | `state` |  |  | anti-hall's state directory under its home directory. |
 | `mesh_write.dir_store` | `store` |  |  | The per-repo stores directory under the DevSwarm state directory. |
@@ -3479,16 +3488,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.env_session_id` | `CLAUDE_CODE_SESSION_ID` |  |  | The variable naming the caller's session (the Primary seat guard reads it). |
 | `mesh_write.env_store_backend` | `ANTIHALL_DEVSWARM_STORE_BACKEND` |  |  | The variable that forces Node's store backend (ANTIHALL_DEVSWARM_STORE_BACKEND). |
 | `mesh_write.env_xdg_config` | `XDG_CONFIG_HOME` |  |  | The XDG config directory variable (Linux). |
-| `mesh_write.exit_committed_failure` | `75` |  |  | Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (EX_TEMPFAIL). |
-| `mesh_write.exit_no_node` | `127` |  |  | Exit code when Node's CLI cannot be found or started. |
+| `mesh_write.err_cursor_import_needed` | `reader_cursors floor row missing (legacy import needed)` |  |  | Failure text when a partition has no floor row and the engine will not import the legacy cursors itself (Node's reader-cursors import). |
+| `mesh_write.exit_committed_failure` | `70` |  |  | Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (sysexits EX_SOFTWARE, 70). Deliberately NOT 75: exit 75 (EX_TEMPFAIL) means 'deferred, nothing written' everywhere in the engine (dispatch.defer_exit), and a caller that sees 75 may run Node. |
+| `mesh_write.exit_defer` | `75` |  |  | Exit code meaning: the engine did not act and wrote nothing, so the caller should run the verb in Node (sysexits EX_TEMPFAIL, 75). `ah-engine mesh` runs a deferred verb in Node itself, so it exits with this only when it cannot start Node (it replaces the former 127 for that case). Never used after a write: see exit_committed_failure. |
 | `mesh_write.exit_signal_base` | `128` |  |  | A Node child killed by signal N exits as this plus N (the shell convention). |
 | `mesh_write.field_cursor_path` | `cursorPath` |  |  | Descriptor field naming the durable inbox's cursor file. |
 | `mesh_write.field_enabled` | `enabled` |  |  | Jev's on/off field. |
 | `mesh_write.field_kind` | `kind` |  |  | Field of a triage label that holds its kind. |
 | `mesh_write.field_owner_key` | `ownerKey` |  |  | A descriptor's owner store key (a re-home candidate when it is the legacy hash bucket). |
+| `mesh_write.field_repo_key` | `repoKey` |  |  | A descriptor's persisted project key. |
 | `mesh_write.field_session_id` | `sessionId` |  |  | A descriptor's session field. |
 | `mesh_write.field_worktree_path` | `worktreePath` |  |  | A descriptor's worktree field. |
 | `mesh_write.flag_ack` | `ack` |  |  | roster's consume flag. |
+| `mesh_write.flag_ack_as_owner` | `ack-as-owner` |  |  | The flag that skips the ownership check of ack-primary. |
 | `mesh_write.flag_answers` | `answers` |  |  | send's reply-correlation flag. |
 | `mesh_write.flag_broadcast` | `broadcast` |  |  | send's broadcast flag. |
 | `mesh_write.flag_cc_primary` | `cc-primary` |  |  | send's copy-the-Primary flag (Node only). |
@@ -3504,14 +3516,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_peek` | `peek` |  |  | mesh read's non-consuming flag. |
 | `mesh_write.flag_question` | `question` |  |  | send's needs-reply flag. |
 | `mesh_write.flag_quiet` | `quiet` |  |  | send's one-line output flag. |
+| `mesh_write.flag_receipt` | `receipt` |  |  | The ack-primary flag naming the read receipt. |
 | `mesh_write.flag_seq` | `seq` |  |  | mesh read's explicit baseline flag. |
 | `mesh_write.flag_since` | `since` |  |  | mesh read's time filter (Node only). |
+| `mesh_write.flag_tail` | `tail` |  |  | A window flag the acking inbox verbs refuse (INBOX_WINDOW_FLAGS); with --since it sends the call to Node. |
 | `mesh_write.flag_to` | `to` |  |  | send's recipient flag. |
 | `mesh_write.flag_to_primary` | `to-primary` |  |  | send's Primary flag. |
 | `mesh_write.flag_type` | `type` |  |  | send's type flag (`--type broadcast`). |
 | `mesh_write.flag_urgency` | `urgency` |  |  | send's urgency flag. |
+| `mesh_write.floor_reader` | `#floor` |  |  | The reader name of the floor row in `reader_cursors` (FLOOR). |
 | `mesh_write.gate_done` | `done` |  |  | The gate a child's `done` verb sets. |
 | `mesh_write.gate_merged_verified` | `merged_verified` |  |  | The report-only gate recording the merged ancestry check. |
+| `mesh_write.gate_owner` | `owner` |  |  | The journal `gate` of a cursor move of the caller's own partition. |
 | `mesh_write.git_config_file` | `config` |  |  | A git directory's config file. |
 | `mesh_write.git_core_section` | `[core]` |  |  | The config section holding `worktree`. |
 | `mesh_write.git_modules_dir` | `modules` |  |  | Where a superproject keeps absorbed submodule git directories. |
@@ -3557,12 +3573,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.legacy_cursor_forbidden` | `#, .seen-` |  |  | Texts a partition id must not contain to have legacy cursor files (reader-cursors.js legacySafeId). |
 | `mesh_write.legacy_cursor_short_len` | `6` |  |  | Length of the hex instance tag in a legacy cursor file name (reader-cursors.js listLegacy). |
 | `mesh_write.lock_suffix` | `.lock` |  |  | File-name suffix of a lock file. |
+| `mesh_write.log_ns_store` | `reader_cursors:store` |  |  | The journal `ns` of a store-namespace reader cursor move. |
 | `mesh_write.max_ppid_hops` | `6` |  |  | Parent hops the reader-nonce walk takes looking for a harness session record (reader-identity.js MAX_PPID_HOPS). |
 | `mesh_write.max_submodule_hops` | `32` |  |  | Superproject hops a resolution takes (identity.js MAX_SUBMODULE_HOPS). |
 | `mesh_write.merged_setby_prefix` | `devswarm-merged@` |  |  | Setter prefix of a merged_verified gate that carries the HEAD sha (devswarm-store.js MERGED_VERIFIED_SETBY_PREFIX). |
 | `mesh_write.mesh_hash_prefix` | `mesh:` |  |  | Prefix of a store-direct mesh message's dedupe hash (Node's meshMessageHash namespace). |
 | `mesh_write.mesh_id_hex` | `8` |  |  | Hex characters of the worktree hash in a meshId (and of hashFromWorkspaceId). |
 | `mesh_write.messages_added_columns` | `9 items` |  |  | The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`. |
+| `mesh_write.min_plausible_start_ms` | `1000000000000` |  |  | A recorded reader start time below this is not an epoch-milliseconds value, so no pid-reuse conclusion is drawn from it. |
 | `mesh_write.mode_on` | `on` |  |  | The `mode` of an on-mode record in the shadow log. |
 | `mesh_write.mode_shadow` | `shadow` |  |  | The `mode` of a shadow record in the shadow log. |
 | `mesh_write.monitor_failure_threshold` | `3` |  |  | Consecutive monitor failures that make a live ingest daemon FAILING (doctor-repair.js MONITOR_FAILURE_FAIL_THRESHOLD). |
@@ -3576,20 +3594,31 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_registry_collision` | `[devswarm-store] upsertRegistry: id {id} already maps to worktree_path {exist...` |  |  | stderr line of a registry upsert refused by the id-collision guard. Placeholders: {id}, {existing}, {incoming} (JSON-quoted). |
 | `mesh_write.mtype_broadcast` | `broadcast` |  |  | The `mtype` of a broadcast (also `send --type broadcast`). |
 | `mesh_write.mtype_direct` | `direct` |  |  | The `mtype` of a direct message. |
+| `mesh_write.ndjson_suffix` | `.ndjson` |  |  | Suffix of a journal file. |
 | `mesh_write.node_bin` | `node` |  |  | The Node binary the engine hands a verb to. |
 | `mesh_write.node_cli` | `scripts/devswarm.js` |  |  | Node's mesh CLI, relative to the plugin root. |
 | `mesh_write.nonce_prefix` | `h:` |  |  | Prefix of a reader nonce (`h:<pid>:<startMs>`). |
+| `mesh_write.ns_store` | `store` |  |  | The store cursor namespace of `reader_cursors` (the position in the store's messages). |
 | `mesh_write.on_native` | `native` |  |  | On-mode result: the engine answered the call itself. |
+| `mesh_write.op_nd` | `nd` |  |  | The `k` of a read-receipt op that moves the NDJSON inbox cursor (Node's). |
+| `mesh_write.op_own` | `own` |  |  | The `k` of a read-receipt op that moves the caller's own partition cursor. |
+| `mesh_write.op_sibling` | `sibling` |  |  | The `k` of a read-receipt op that moves a sibling partition's cursor (Node's). |
+| `mesh_write.pid_reuse_margin_ms` | `1000` |  |  | A process whose start time is later than the recorded one by more than this is a reused pid (PID_REUSE_MARGIN_MS). |
 | `mesh_write.primary_prefix` | `primary-` |  |  | Prefix of a worktree meshId (`primary-<hash>`). |
 | `mesh_write.ps_bin` | `ps` |  |  | The process-table tool the nonce walk runs, as Node does. |
 | `mesh_write.ps_lstart_args` | `-o, lstart=, -p` |  |  | Its arguments for one process's start time, followed by the pid (liveness.js processStartMs). |
+| `mesh_write.ps_poll_ms` | `5` |  |  | How often the process snapshot checks whether `ps` has finished. |
 | `mesh_write.ps_ppid_args` | `-A, -o, pid=,ppid=` |  |  | Its arguments for the pid/parent table (reader-identity.js defaultPpidTable). |
+| `mesh_write.ps_snapshot_args` | `-A, -o, pid=,lstart=` |  |  | Arguments of the one `ps` call that snapshots every process with its start time (psSnapshot). |
+| `mesh_write.ps_snapshot_timeout_ms` | `5000` |  |  | Time limit of that call (psSnapshot's 5000). |
 | `mesh_write.quiet_broadcast` | `(broadcast)` |  |  | The {to} of a broadcast in the quiet line. |
 | `mesh_write.quiet_fail` | `ok:false {why}` |  |  | `send --quiet` line of a failed send. Placeholder: {why}. |
 | `mesh_write.quiet_failed` | `send failed` |  |  | The {why} of a failed send with neither error nor reason. |
 | `mesh_write.quiet_ok` | `sent seq {seq} -> {to}, {bytes} bytes, ok` |  |  | `send --quiet` line of a delivered send. Placeholders: {seq}, {to}, {bytes}. |
 | `mesh_write.quiet_unknown` | `(unknown)` |  |  | The {to} of a send with no recipient in the quiet line. |
 | `mesh_write.reason_not_verified` | `send-not-verified` |  |  | `reason` of a send whose readback did not find the row. |
+| `mesh_write.receipt_id_prefix` | `r` |  |  | A read receipt id is this letter followed by lowercase letters and digits (readReadReceipt's /^r[a-z0-9]+$/). |
+| `mesh_write.receipt_ttl_ms` | `86400000` |  |  | Age past which a read receipt can no longer be acked (READ_RECEIPT_TTL_MS, 24 hours). |
 | `mesh_write.repo_key_hex` | `6` |  |  | Hex characters of the common-dir hash in a repoKey. |
 | `mesh_write.repo_name_fallback` | `repo` |  |  | A repo name that sanitizes to nothing. |
 | `mesh_write.repo_name_max` | `40` |  |  | Length cap of a repo name in a repoKey (identity.js MAX_NAME_LEN). |
@@ -3599,6 +3628,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.required_gates_key` | `requiredGates` |  |  | settings.json key of the gates a workspace needs before it is archive-ready. |
 | `mesh_write.required_gates_option` | `devswarm_required_gates` |  |  | Plugin option (/config) of devswarm.requiredGates. |
 | `mesh_write.required_gates_option_default` | `done,merged,tests_passed` |  |  | The plugin option's manifest default; a plugin option equal to it does not override (settings.js readPluginOption). |
+| `mesh_write.result_committed` | `committed-failure` |  |  | Log result of a call that failed after its write was committed. |
+| `mesh_write.retire_pin_age_ms` | `60000` |  |  | A foreign reader row must be this old before an ack looks for proof that its process ended (RETIRE_PIN_AGE_MS). |
 | `mesh_write.send_lock_attempts` | `3` |  |  | Whole lock acquisitions a direct send tries before reporting lockBusy (Node's SEND_LOCK_RETRY_ATTEMPTS). |
 | `mesh_write.send_lock_max_shift` | `8` |  |  | Cap on the backoff exponent (a guard; Node's 3 attempts never reach it). |
 | `mesh_write.send_lock_retry_base_ms` | `150` |  |  | Backoff base between those attempts: base * 2^attempt plus up to base of jitter (Node's SEND_LOCK_RETRY_BASE_MS). |
@@ -3619,6 +3650,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.shadow_mismatch` | `mismatch` |  |  | Shadow result: something differs and no other writer touched the store meanwhile. |
 | `mesh_write.shadow_no_store` | `no-store` |  |  | Defer reason when the project has no store file yet. |
 | `mesh_write.shadow_panic` | `panic` |  |  | Shadow result: the engine path panicked (caught; Node's result was unaffected). |
+| `mesh_write.shadow_skipped` | `skipped` |  |  | Log result of a shadow-mode call for a verb that cannot be replayed on a store copy: Node ran it, the engine only counted it. |
+| `mesh_write.short_nonce_len` | `6` |  |  | Hex characters of the short form of a reader key in the cursor journal (shortInstanceNonce: sha1, first 6). |
 | `mesh_write.store_file` | `devswarm.db` |  |  | File name of a per-repo store (`devswarm.db`). |
 | `mesh_write.summary_failed` | `summary-failed` |  |  | Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file). |
 | `mesh_write.summary_pending_questions_cap` | `200` |  |  | Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP). |
@@ -3629,8 +3662,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.urgency_default` | `normal` |  |  | send's urgency when none is given. |
 | `mesh_write.urgency_rank` | `low, normal, high, urgent` |  |  | Urgency words from lowest to highest (devswarm-store.js URGENCY_RANK); any other word is ignored. |
 | `mesh_write.value_required_flags` | `message, message-file` |  |  | Flags that always take the next word as their value (Node's VALUE_REQUIRED_FLAGS). |
+| `mesh_write.verb_ack_primary` | `ack-primary` |  |  | The inbox sub-verb that applies a read receipt's cursor moves. |
 | `mesh_write.verb_help` | `help` |  |  | The help verb. |
 | `mesh_write.verb_history` | `history` |  |  | Its history subcommand. |
+| `mesh_write.verb_inbox` | `inbox` |  |  | The inbox verb. |
 | `mesh_write.verb_mesh` | `mesh` |  |  | The mesh verb. |
 | `mesh_write.verb_read` | `read` |  |  | Its read subcommand. |
 | `mesh_write.verb_roster` | `roster` |  |  | The roster verb (`roster --ack` is `mesh read`). |
