@@ -403,12 +403,14 @@ fn a_guard_event_that_cannot_run_its_node_hooks_fails_closed() {
     let bad = e.dir.join("bad-map.json");
     std::fs::write(&bad, "not json").unwrap();
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", bad.to_str().unwrap()];
+    // review finding 16: an unreadable map and a usage error are install faults, not verdicts: the Node hooks decide (75)
+    let defer = ah_engine::defaults::num("dispatch.defer_exit") as i32;
     let (code, out, err) = e.run(&args, true, &bash("ls", &e.dir), true);
-    assert_eq!((code, out.as_str()), (2, ""), "{err}");
-    assert!(err.contains("cannot read the fallback map"), "{err}");
+    assert_eq!((code, out.as_str()), (defer, ""), "{err}");
+    assert!(err.contains("cannot read the fallback map") && err.contains("the Node hooks decide"), "{err}");
     // a usage error on a guard event does not exit 64 (a non-blocking error the host reads as an allow)
     let (code, _, err) = e.run(&["hook", "--event", "PreToolUse", "--host", "nope"], true, &bash("ls", &e.dir), true);
-    assert_eq!(code, 2, "{err}");
+    assert_eq!(code, defer, "{err}");
     let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
     assert_eq!(log.matches("dispatch_defer").count(), 3, "{log}");
 }
@@ -667,12 +669,13 @@ fn over_cap_stop_active_runs_node_and_unrunnable_failures_are_capped() {
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
     assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
 
+    // a hook the OS will not start is an infrastructure fault (review finding 2): every Stop hands over to the Node hooks
+    // (dispatch.defer_exit), never a block, so there is no loop for the cap to bound
     let broken = event_map(&e, "Stop", "a\0b", "true");
     let args = ["hook", "--event", "Stop", "--fallback-map", broken.to_str().unwrap()];
     let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
     let codes: Vec<i32> = (0..cap + 2).map(|_| e.run(&args, true, &payload, true).0).collect();
-    let expect: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
-    assert_eq!(codes, expect, "a Stop whose Node hooks cannot run must fail open only after the cap");
+    assert_eq!(codes, vec![ah_engine::defaults::num("dispatch.defer_exit") as i32; cap + 2], "a Stop whose Node hook cannot start defers");
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
 }
 
@@ -796,7 +799,8 @@ fn small_payloads_do_not_need_a_usable_spool_dir() {
     let payload = bash("npm test", &e.dir);
     let (code, out, err) =
         e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
-    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!((code, out.as_str()), (0, ""));
+    assert!(only_event_lines(&err), "{err:?}");
     assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
 
     let mark = e.dir.join("session-ran");
@@ -805,8 +809,15 @@ fn small_payloads_do_not_need_a_usable_spool_dir() {
     let payload = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
     let (code, out, err) =
         e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state_file.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
-    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+    assert_eq!((code, out.as_str()), (0, ""));
+    assert!(only_event_lines(&err), "{err:?}");
     assert_eq!(std::fs::read_to_string(&mark).unwrap().trim().parse::<usize>().unwrap(), payload.len());
+}
+
+/// Stderr holds nothing but event-log lines (`ts<TAB>kind<TAB>code<TAB>detail`): with the state dir unusable, the log
+/// falls back to stderr (review finding 9) instead of losing the line.
+fn only_event_lines(err: &str) -> bool {
+    err.lines().all(|l| l.split('\t').count() == 4 && l.split('\t').next().is_some_and(|ts| ts.parse::<u64>().is_ok()))
 }
 
 #[test]
@@ -833,9 +844,12 @@ fn assert_over_cap_spool_failure_modes(e: &Env, state: &Path, ctx: &str) {
     let map = e.map(&[("command-guard", r#"touch "$AH_TEST_MARK""#)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    // review finding 3: a payload that cannot be spooled is an infrastructure fault: the wrapper, which holds the payload,
+    // runs the Node hooks (dispatch.defer_exit) for guard and non-guard events alike, never a block and never a skip
+    let defer = ah_engine::defaults::num("dispatch.defer_exit") as i32;
     let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
-    assert_eq!((code, out.as_str()), (2, ""), "{ctx}: {err:?}");
-    assert!(err.contains("could not run the guards") && err.contains("payload"), "{ctx}: {err:?}");
+    assert_eq!((code, out.as_str()), (defer, ""), "{ctx}: {err:?}");
+    assert!(err.contains("the Node hooks decide") && err.contains("payload"), "{ctx}: {err:?}");
     assert!(!mark.exists(), "{ctx}: Node must not run without the full payload");
 
     let mark = e.dir.join("session-ran");
@@ -843,8 +857,8 @@ fn assert_over_cap_spool_failure_modes(e: &Env, state: &Path, ctx: &str) {
     let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
     let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
     let (code, out, err) = e.run_with(&args, true, &payload, true, &[("AH_ENGINE_DIR", state.to_str().unwrap()), ("AH_TEST_MARK", mark.to_str().unwrap())]);
-    assert_eq!((code, out.as_str()), (0, ""), "{ctx}: {err:?}");
-    assert!(err.contains("skipped SessionStart Node hooks") && err.contains("dispatch_spool_unavailable"), "{ctx}: {err:?}");
+    assert_eq!((code, out.as_str()), (defer, ""), "{ctx}: {err:?}");
+    assert!(err.contains("the Node hooks decide") && err.contains("dispatch_spool_unavailable"), "{ctx}: {err:?}");
     assert!(!mark.exists(), "{ctx}: Node must not run without the full payload");
 }
 
@@ -857,8 +871,8 @@ fn over_cap_guard_payload_fails_closed_when_anonymous_spool_write_fails() {
     let payload = pretool_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
     let (code, out, err) = e.run_with_file_size_limit(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())], 1024 * 1024);
 
-    assert_eq!((code, out.as_str()), (2, ""), "{err:?}");
-    assert!(err.contains("could not run the guards") && err.contains("could not be spooled"), "{err:?}");
+    assert_eq!((code, out.as_str()), (ah_engine::defaults::num("dispatch.defer_exit") as i32, ""), "{err:?}");
+    assert!(err.contains("the Node hooks decide") && err.contains("spooled"), "{err:?}");
     assert!(!mark.exists(), "Node must not run after the anonymous payload spool write fails");
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
 }
@@ -872,8 +886,8 @@ fn over_cap_non_guard_payload_reports_when_anonymous_spool_write_fails() {
     let payload = session_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
     let (code, out, err) = e.run_with_file_size_limit(&args, true, &payload, true, &[("AH_TEST_MARK", mark.to_str().unwrap())], 1024 * 1024);
 
-    assert_eq!((code, out.as_str()), (0, ""), "{err:?}");
-    assert!(err.contains("skipped SessionStart Node hooks") && err.contains("could not be spooled"), "{err:?}");
+    assert_eq!((code, out.as_str()), (ah_engine::defaults::num("dispatch.defer_exit") as i32, ""), "{err:?}");
+    assert!(err.contains("the Node hooks decide") && err.contains("spooled"), "{err:?}");
     let log = std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).unwrap();
     assert!(log.contains("dispatch_spool_unavailable"), "{log}");
     assert!(!mark.exists(), "Node must not run after the anonymous payload spool write fails");
