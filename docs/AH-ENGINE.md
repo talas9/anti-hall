@@ -245,7 +245,7 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Agent-targeted jobs delivered to a session's mailbox | planned (D45) | D45 |
 | Adding and removing jobs from the command line, schedules in versioned config | planned (D33, D18) | D33, D18 |
 | Mesh messaging, Monitor push, chat database | planned (D45) | D45 |
-| Read-only reader of the per-repo DevSwarm stores Node writes (`ah-engine mesh`, `src/mesh.rs`): roster, per-workspace counts, messages, gates, cursors, reader cursors; byte-equal to Node's reader on every live store copy (parity P1). Writes, locking, the summary projection and ingest are the later D45 stages | implemented in part | D45 |
+| Read-only reader of the per-repo DevSwarm stores Node writes (`ah-engine mesh`, `src/mesh.rs`): roster, per-workspace counts, messages, gates, cursors, reader cursors; byte-equal to Node's reader on every live store copy (parity P1). Stage 2 (`src/meshw/`, switch `mesh.engine_writes`, default off): `send`, `mesh read`, `mesh history` and `roster --ack` with Node's store writes, locking and output, a shadow mode that replays each call on a store copy and logs the comparison, and deferral to Node for anything not reproduced exactly. Still Node: the summary projection, the inbox read/ack, heartbeat and tick verbs, and ingest | implemented in part | D45 |
 | Jev lane: Vercel and TypeSafe transports with fallback and breaker, Noul and Choice calls, off/shadow/on modes, add-block and advisory trust, cache, async queue with budgets, the `jev-assist.ndjson` rows, `ah-engine jev` | implemented, one-shot only | D34-D38 |
 | Jev wired into the dispatcher and the daemon, spend budget watch, audit snippets, daily rollups, persisted breaker and cache | planned (D58, D38) | D38, D58 |
 | Operator helpers: `ah-engine jev-setup` (status, enable, disable, set-key, bind-generic-key, mode), `capability-scan`, `harvest`, `briefing`, byte-for-byte with the Node scripts | implemented | D81 |
@@ -379,6 +379,7 @@ arguments, is in the generated reference.
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
 | `ah-engine schedule list\|run <job>\|history` | no | The scheduler's jobs with their next run and last result; run one now; the run history. |
 | `ah-engine mesh <roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]` | yes | Read a repo's DevSwarm store in place, read-only (D45 stage S0): the registered workspaces, the per-workspace counts, a workspace's messages (capped, with a resume position), and the full canonical dump the parity harness compares with Node's reader. Refuses a journal-backed store; never creates or writes one. |
+| `ah-engine mesh <devswarm.js argv>` | no | D45 stage 2: the same argv as `node scripts/devswarm.js`. `mesh.engine_writes` off (default): Node runs it. shadow: Node runs it, the engine replays it on a copy of the store and logs the comparison to `mesh-shadow.jsonl` in the state directory. on: the engine answers `send`, `mesh read`, `mesh history` and `roster --ack` itself where it reproduces Node exactly and hands the rest to Node. |
 
 ### Replacing the Node operator scripts (cutover notes)
 
@@ -760,7 +761,8 @@ Files:
 | `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |
 | `codex_handover.toml` | patterns, switches, limits, file names and messages of the handover and Codex hook ports and the JavaScript-behavior helpers they share |
 | `devswarm_gates.toml` | switches, role and mode variables and the command pre-filter words of the DevSwarm child gate, reply tracker and drain checks |
-| `mesh.toml` | the mesh store reader (D45 S0): store and marker file names, the SQLite busy timeout and page cache, the preview length, the read byte cap and the `--last` bounds |
+| `mesh.toml` | the mesh store reader (D45 S0): store and marker file names, the SQLite busy timeout and page cache, the preview length, the read byte cap and the `--last` bounds; and `mesh.engine_writes` (off, shadow, on), the switch of the stage 2 mesh writers |
+| `mesh_write.toml` | the mesh store writers (D45 stage 2, `ah-engine mesh <devswarm.js argv>`): Node's store names and statements' column list, the busy retry, the per-workspace lock budget and steal limits, the identity file and variable names, argv flag names, output texts, and the shadow log, scratch and snapshot settings |
 | `command.toml` | every table, pattern and limit of the command check (heavy verbs and patterns, light exceptions, wrapper grammar, cloud CLI grammars, write-scan markers, the defer triggers) |
 | `commands.toml` | the command registry data |
 | `schedules.toml` | the scheduled jobs (maintain, backup, metrics snapshot, spool drain) and the scheduler settings |
