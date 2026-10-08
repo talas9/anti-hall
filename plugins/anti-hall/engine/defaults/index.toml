@@ -49,6 +49,7 @@ files = [
     "limits.toml",
     "script.toml",
     "mcp_reaper.toml",
+    "devswarm_rt.toml",
     "task_tracker.toml",
     "settings_cli.toml",
     "operator.toml",
